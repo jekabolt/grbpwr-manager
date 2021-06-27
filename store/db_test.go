@@ -21,6 +21,7 @@ func TestCreateDB(t *testing.T) {
 	db.Update(func(tx *buntdb.Tx) error {
 		tx.Set("1", `{"id":1,"date":1624440128,"mainImage":"http://kek.com/img.jpg","name":"item","price":{"usd":33,"rub":0,"byn":100},"availableSizes":{"xxs":0,"xs":0,"s":0,"m":0,"l":0,"xl":0,"xxl":0,"os":11},"description":"kek item","categories":["kek","item"],"imageURLs":["http://kek.com/img1.jpg","http://kek.com/img2.jpg"]}`, nil)
 		tx.Set("2", `{"id":2,"date":1624440129,"mainImage":"http://lel.com/img.jpg","name":"item2","price":{"usd":34,"rub":0,"byn":102},"availableSizes":{"xxs":0,"xs":0,"s":0,"m":0,"l":0,"xl":0,"xxl":0,"os":10},"description":"lel item","categories":["lel","item"],"imageURLs":["http://lel.com/img1.jpg","http://lel.com/img2.jpg"]}`, nil)
+		tx.Set("3", `{"id":1,"date":1624440128,"mainImage":"http://kek.com/img.jpg","name":"item","price":{"usd":33,"rub":0,"byn":100},"availableSizes":{"xxs":0,"xs":0,"s":0,"m":0,"l":0,"xl":0,"xxl":0,"os":11},"description":"kek item","categories":["kek","item"],"imageURLs":["http://kek.com/img1.jpg","http://kek.com/img2.jpg"]}`, nil)
 		return nil
 	})
 
@@ -28,10 +29,6 @@ func TestCreateDB(t *testing.T) {
 		fmt.Println("Order by date")
 		tx.Ascend("date", func(key, value string) bool {
 			fmt.Printf("Ascend %s: %s\n", key, value)
-			return true
-		})
-		tx.Descend("date", func(key, value string) bool {
-			fmt.Printf("Descend %s: %s\n", key, value)
 			return true
 		})
 		return nil
@@ -51,6 +48,10 @@ func TestCreateDB(t *testing.T) {
 		})
 		return nil
 	})
+}
+
+func FindAllInCategory() {
+
 }
 
 func TestCreat(t *testing.T) {

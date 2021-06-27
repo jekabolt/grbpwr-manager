@@ -12,9 +12,7 @@ ENV GOPRIVATE=gitlab.com/dvision,gitlab.com/miapago
 # install dependencies
 RUN go mod download
 
-COPY ./cmd/ ./cmd/
-COPY ./store/ ./store/
-COPY ./app/ ./app/
+COPY ./ ./
 
 RUN go build -o ./bin/grbpwr-pm ./cmd/
 

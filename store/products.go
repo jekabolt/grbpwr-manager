@@ -17,6 +17,7 @@ type Price struct {
 	USD float64 `json:"usd"`
 	RUB float64 `json:"rub"`
 	BYN float64 `json:"byn"`
+	EUR float64 `json:"eur"`
 }
 
 type Size struct {

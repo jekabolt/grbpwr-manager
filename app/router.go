@@ -35,8 +35,11 @@ func (s *Server) Serve() error {
 	r.Get("/", s.healthCheck)
 
 	r.Post("/product", s.addProduct)
-	r.Get("/{id}", s.getProductsById)
-	r.Delete("/{id}", s.deleteProductById)
+	r.Put("/product/{id}", s.modifyProductsById)
+	r.Get("/product", s.getAllProductsList)
+	r.Get("/product/{id}", s.getProductsById)
+	r.Get("/product/{category}", s.getProductsByCategory)
+	r.Delete("/product/{id}", s.deleteProductById)
 
 	log.Info().Msg("Listening on :" + s.Port)
 	return http.ListenAndServe(":"+s.Port, r)
