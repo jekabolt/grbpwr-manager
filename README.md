@@ -22,4 +22,6 @@ service for upload and manage stock products and articles on [grbpwr.com](https:
     make image-run
 ```
 
-#### Swagger file with api spec can be found in doc folder
+### Swagger file
+
+can be found [here](https://github.com/jekabolt/grbpwr-manager/tree/master/doc)
