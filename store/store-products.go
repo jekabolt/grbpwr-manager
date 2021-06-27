@@ -16,7 +16,7 @@ func (db *DB) AddProduct(p *Product) error {
 	p.LastActionTime = now
 
 	return db.products.Update(func(tx *buntdb.Tx) error {
-		tx.Set(fmt.Sprintf("%s", time.Now().UnixNano()), p.String(), nil)
+		tx.Set(fmt.Sprintf("%d", now), p.String(), nil)
 		return nil
 	})
 }
@@ -38,11 +38,11 @@ func (db *DB) GetProductsById(id string) (*Product, error) {
 	return prd, err
 }
 
-func (db *DB) GetAllProducts() ([]string, error) {
-	products := []string{}
+func (db *DB) GetAllProducts() ([]Product, error) {
+	products := []Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
-		tx.Ascend("date", func(_, productStr string) bool {
-			products = append(products, productStr)
+		tx.Ascend("", func(_, productStr string) bool {
+			products = append(products, getProductFromString(productStr))
 			return true
 		})
 		return nil
@@ -50,15 +50,15 @@ func (db *DB) GetAllProducts() ([]string, error) {
 	return products, err
 }
 
-func (db *DB) GetAllProductsInCategory(category string) ([]string, error) {
-	products := []string{}
+func (db *DB) GetAllProductsInCategory(category string) ([]Product, error) {
+	products := []Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
-		tx.Ascend("date", func(_, productStr string) bool {
+		tx.Ascend("", func(_, productStr string) bool {
 			if isCategoryExist(productStr, category) {
-				products = append(products, productStr)
+				products = append(products, getProductFromString(productStr))
 				return true
 			}
-			return false
+			return true
 		})
 		return nil
 	})
@@ -66,7 +66,7 @@ func (db *DB) GetAllProductsInCategory(category string) ([]string, error) {
 }
 
 func (db *DB) DeleteProductById(id string) error {
-	err := db.products.View(func(tx *buntdb.Tx) error {
+	err := db.products.Update(func(tx *buntdb.Tx) error {
 		_, err := tx.Delete(id)
 		return err
 	})
@@ -75,10 +75,15 @@ func (db *DB) DeleteProductById(id string) error {
 
 func (db *DB) ModifyProductById(id string, pNew *Product) error {
 
-	_, err := db.GetProductsById(id)
+	pNew.LastActionTime = time.Now().Unix()
+
+	pOld, err := db.GetProductsById(id)
 	if err != nil {
 		return fmt.Errorf("not exist")
 	}
+
+	pNew.Id = pOld.Id
+	pNew.DateCreated = pOld.DateCreated
 
 	bs, err := json.Marshal(pNew)
 	if err != nil {
@@ -86,7 +91,7 @@ func (db *DB) ModifyProductById(id string, pNew *Product) error {
 	}
 
 	err = db.products.Update(func(tx *buntdb.Tx) error {
-		tx.Set(fmt.Sprintf("%s", time.Now().UnixNano()), string(bs), nil)
+		tx.Set(id, string(bs), nil)
 		return nil
 	})
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	"github.com/go-chi/httprate"
 	"github.com/go-chi/render"
 	"github.com/rs/cors"
 	"github.com/rs/zerolog/log"
@@ -23,7 +24,6 @@ func (s *Server) Serve() error {
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 	})
-	r.Use(cors.Handler)
 
 	// Init middlewares
 	r.Use(middleware.RequestID)
@@ -31,14 +31,25 @@ func (s *Server) Serve() error {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 	r.Use(render.SetContentType(render.ContentTypeJSON))
+	r.Use(cors.Handler)
+	r.Use(httprate.Limit(
+		7,              // requests
+		15*time.Second, // per duration
+		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		}),
+	))
 
-	r.Get("/", s.healthCheck)
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
 	r.Post("/product", s.addProduct)
 	r.Put("/product/{id}", s.modifyProductsById)
 	r.Get("/product", s.getAllProductsList)
 	r.Get("/product/{id}", s.getProductsById)
-	r.Get("/product/{category}", s.getProductsByCategory)
+	r.Get("/products/{category}", s.getProductsByCategory)
 	r.Delete("/product/{id}", s.deleteProductById)
 
 	log.Info().Msg("Listening on :" + s.Port)

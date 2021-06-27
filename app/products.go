@@ -31,6 +31,7 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		err := map[string]interface{}{"validationError": errors}
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	err := s.DB.AddProduct(product)
@@ -39,6 +40,7 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		err := map[string]interface{}{"addProduct:AddProduct": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	resp := map[string]interface{}{"status": http.StatusText(http.StatusCreated)}
@@ -53,13 +55,14 @@ func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
 
 	err := s.DB.DeleteProductById(id)
 	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
+		log.Error().Msgf("deleteProductById:DeleteProductById [%v]", err)
+		err := map[string]interface{}{"deleteProductById:DeleteProductById": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
-	resp := map[string]interface{}{"status": http.StatusText(http.StatusCreated)}
+	resp := map[string]interface{}{"status": http.StatusText(http.StatusOK)}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
 }
@@ -70,10 +73,11 @@ func (s *Server) getProductsById(w http.ResponseWriter, r *http.Request) {
 
 	product, err := s.DB.GetProductsById(id)
 	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
+		log.Error().Msgf("getProductsById:GetProductsById [%v]", err)
+		err := map[string]interface{}{"getProductsById:GetProductsById": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	json.NewEncoder(w).Encode(product)
@@ -90,8 +94,8 @@ func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
-		log.Error().Err(err).Msgf("addProduct:json.NewDecoder [%v]", err.Error())
-		err := map[string]interface{}{"addProduct:Decode": err}
+		log.Error().Err(err).Msgf("modifyProductsById:json.NewDecoder [%v]", err.Error())
+		err := map[string]interface{}{"modifyProductsById:Decode": err}
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(err)
 		return
@@ -102,14 +106,16 @@ func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 		err := map[string]interface{}{"validationError": errors}
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	err := s.DB.ModifyProductById(id, product)
 	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
+		log.Error().Msgf("modifyProductsById:ModifyProductById [%v]", err)
+		err := map[string]interface{}{"modifyProductsById:ModifyProductById": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	resp := map[string]interface{}{"status": http.StatusText(http.StatusCreated)}
@@ -124,10 +130,11 @@ func (s *Server) getProductsByCategory(w http.ResponseWriter, r *http.Request) {
 
 	product, err := s.DB.GetAllProductsInCategory(category)
 	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
+		log.Error().Msgf("getProductsByCategory:GetAllProductsInCategory [%v]", err)
+		err := map[string]interface{}{"getProductsByCategory:GetAllProductsInCategory": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	json.NewEncoder(w).Encode(product)
@@ -138,10 +145,11 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 
 	product, err := s.DB.GetAllProducts()
 	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
+		log.Error().Msgf("getAllProductsList:GetAllProducts [%v]", err)
+		err := map[string]interface{}{"getAllProductsList:GetAllProducts": err}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
+		return
 	}
 
 	json.NewEncoder(w).Encode(product)

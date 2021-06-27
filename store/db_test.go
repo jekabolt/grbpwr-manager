@@ -57,12 +57,14 @@ func FindAllInCategory() {
 func TestCreat(t *testing.T) {
 	b, _ := json.Marshal(Product{
 		Id:          1,
-		DateCreated: time.Now().Unix(),
+		DateCreated: time.Now().UnixNano(),
 		MainImage:   "http://kek.com/img.jpg",
 		Name:        "item",
 		Price: &Price{
 			BYN: 100,
 			USD: 33,
+			RUB: 22,
+			EUR: 11,
 		},
 		Description: "kek item",
 		Categories: []string{

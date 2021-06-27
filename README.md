@@ -9,3 +9,17 @@ service for upload and manage stock products and articles on [grbpwr.com](https:
 ```shell script
     make run
 ```
+
+## Build docker image
+
+```shell script
+    make image
+```
+
+## Run in docker
+
+```shell script
+    make image-run
+```
+
+#### Swagger file with api spec can be found in doc folder
