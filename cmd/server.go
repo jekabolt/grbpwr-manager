@@ -20,6 +20,12 @@ type Config struct {
 	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"articles.db"`
 	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"sales.db"`
 
+	DOAccessKey       string `env:"DO_ACCESS_KEY" envDefault:"key"`
+	DOSecretAccessKey string `env:"DO_SECRET_ACCESS_KEY" envDefault:"key"`
+	DOEndpoint        string `env:"DO_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
+	DOBucketName      string `env:"DO_BUCKET_NAME" envDefault:"grbpwr"`
+	DOBucketLocation  string `env:"DO_BUCKET_LOCATION" envDefault:"fra-1"`
+
 	Debug bool `env:"DEBUG" envDefault:"false"`
 }
 

@@ -1,0 +1,5 @@
+package bucket
+
+func GetClient() {
+
+}

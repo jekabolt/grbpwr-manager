@@ -7,7 +7,10 @@ require (
 	github.com/go-chi/chi v4.1.2+incompatible
 	github.com/go-chi/httprate v0.5.0 // indirect
 	github.com/go-chi/render v1.0.1
+	github.com/go-ini/ini v1.62.0 // indirect
 	github.com/go-kivik/couchdb/v4 v4.0.0-20200818191020-c997633e0a27
+	github.com/minio/minio-go v6.0.14+incompatible // indirect
+	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/rs/cors v1.7.0
 	github.com/rs/zerolog v1.19.0
 	github.com/tidwall/buntdb v1.2.4
