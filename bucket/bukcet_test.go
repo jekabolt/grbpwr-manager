@@ -11,8 +11,8 @@ import (
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "C5REP77P6P2GTSNYCFUN"
-const DOSecretAccessKey = "A+i5k+mOQAV/9vjY9c1e6m9xpODzAexwVYpOuptgA1k"
+const DOAccessKey = "test"
+const DOSecretAccessKey = "test"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
