@@ -1,23 +1,55 @@
 package bucket
 
 import (
+	"encoding/base64"
 	"fmt"
+	"io/ioutil"
 	"log"
-	"strings"
+	"net/http"
 	"testing"
 
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "*"
-const DOSecretAccessKey = "*"
+const DOAccessKey = "C5REP77P6P2GTSNYCFUN"
+const DOSecretAccessKey = "A+i5k+mOQAV/9vjY9c1e6m9xpODzAexwVYpOuptgA1k"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
-const objectName = "gbpwr-com/test.png"
+const objectName = "test.png"
 const filePath = "./test.png"
 const contentType = "image/png"
 
 const b64Image = ""
+
+func imageToB64(filePath string) (string, error) {
+	bytes, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	var base64Encoding string
+
+	// Determine the content type of the image file
+	mimeType := http.DetectContentType(bytes)
+
+	// Prepend the appropriate URI scheme header depending
+	// on the MIME type
+	switch mimeType {
+	case "image/jpeg":
+		base64Encoding += "data:image/jpeg;base64,"
+	case "image/png":
+		base64Encoding += "data:image/png;base64,"
+	}
+
+	// Append the base64 encoded output
+	base64Encoding += toBase64(bytes)
+
+	return base64Encoding, nil
+}
+
+func toBase64(b []byte) string {
+	return base64.StdEncoding.EncodeToString(b)
+}
 
 func TestClient(t *testing.T) {
 	client, err := minio.New(DOEndpoint, DOAccessKey, DOSecretAccessKey, true)
@@ -39,13 +71,16 @@ func TestClient(t *testing.T) {
 		fmt.Println(space.Name)
 	}
 
-	// _, err = client.FPutObject(bucketName, objectName, filePath, minio.PutObjectOptions{ContentType: contentType})
-	// if err != nil {
-	// 	log.Fatalln(err)
-	// }
+	i, err := imageToB64(filePath)
+	if err != nil {
+		log.Fatal("imageToB64 err ", err)
+	}
 
-	r := strings.NewReader(b64Image)
+	_, ft, err := B64ToImage(i)
 
-	_, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
+	fmt.Println(ft.Extension)
+	fmt.Println(ft.MIMEType)
+
+	// _, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
 
 }

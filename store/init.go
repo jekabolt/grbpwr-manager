@@ -6,25 +6,28 @@ import (
 )
 
 type DB struct {
-	products *buntdb.DB
-	articles *buntdb.DB
-	sales    *buntdb.DB
+	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"products.db"`
+	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"articles.db"`
+	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"sales.db"`
+	products           *buntdb.DB
+	articles           *buntdb.DB
+	sales              *buntdb.DB
 }
 
 func GetDB(dbFilePath string) (*buntdb.DB, error) {
 	return buntdb.Open(dbFilePath)
 }
 
-func InitDB(products, articles, sales string) (*DB, error) {
-	productsDB, err := GetDB(products)
+func (db *DB) InitDB() (*DB, error) {
+	productsDB, err := GetDB(db.BuntDBProductsPath)
 	if err != nil {
 		return nil, err
 	}
-	articlesDB, err := GetDB(articles)
+	articlesDB, err := GetDB(db.BuntDBArticlesPath)
 	if err != nil {
 		return nil, err
 	}
-	salesDB, err := GetDB(sales)
+	salesDB, err := GetDB(db.BuntDBSalesPath)
 	if err != nil {
 		return nil, err
 	}

@@ -1,29 +1,23 @@
 package app
 
 import (
-	"log"
-
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/store"
-	"github.com/minio/minio-go"
 )
 
 type Server struct {
-	DB *store.DB
+	DB     *store.DB
+	Bucket *bucket.Bucket
 
 	Port   string
 	Host   string
 	origin string
 }
 
-func InitServer(db *store.DB, port, host, origin string) *Server {
-
-	client, err := minio.New("nyc3.digitaloceanspaces.com", accessKey, secKey, ssl)
-	if err != nil {
-		log.Fatal(err)
-	}
-
+func InitServer(db *store.DB, bucket *bucket.Bucket, port, host, origin string) *Server {
 	return &Server{
 		DB:     db,
+		Bucket: bucket,
 		Port:   port,
 		Host:   host,
 		origin: origin,

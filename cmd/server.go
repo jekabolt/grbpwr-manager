@@ -6,6 +6,7 @@ import (
 
 	"github.com/caarlos0/env/v6"
 	"github.com/jekabolt/grbpwr-manager/app"
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -16,21 +17,17 @@ type Config struct {
 	Host   string `env:"HOST" envDefault:"localhost:8080"`
 	Origin string `env:"ORIGIN" envDefault:"*"`
 
-	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"products.db"`
-	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"articles.db"`
-	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"sales.db"`
-
-	DOAccessKey       string `env:"DO_ACCESS_KEY" envDefault:"key"`
-	DOSecretAccessKey string `env:"DO_SECRET_ACCESS_KEY" envDefault:"key"`
-	DOEndpoint        string `env:"DO_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
-	DOBucketName      string `env:"DO_BUCKET_NAME" envDefault:"grbpwr"`
-	DOBucketLocation  string `env:"DO_BUCKET_LOCATION" envDefault:"fra-1"`
+	Bucket *bucket.Bucket
+	DB     *store.DB
 
 	Debug bool `env:"DEBUG" envDefault:"false"`
 }
 
 func main() {
-	cfg := &Config{}
+	cfg := &Config{
+		Bucket: &bucket.Bucket{},
+		DB:     &store.DB{},
+	}
 	err := env.Parse(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to parse env variables")
@@ -45,12 +42,17 @@ func main() {
 	b, _ := json.Marshal(cfg)
 	log.Info().Str("config", string(b)).Msg("Started with config")
 
-	db, err := store.InitDB(cfg.BuntDBProductsPath, cfg.BuntDBArticlesPath, cfg.BuntDBSalesPath)
+	db, err := cfg.DB.InitDB()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, cfg.Port, cfg.Host, cfg.Origin)
+	bucket, err := cfg.Bucket.GetBucket()
+	if err != nil {
+		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
+	}
+
+	s := app.InitServer(db, bucket, cfg.Port, cfg.Host, cfg.Origin)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }
