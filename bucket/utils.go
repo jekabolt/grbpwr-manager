@@ -43,3 +43,7 @@ func (b *Bucket) getImageFullPath(filenameExtension string) string {
 	}
 	return fmt.Sprintf("%d/%s/%d.%s", now.Year(), now.Month().String(), now.Unix(), filenameExtension)
 }
+
+func (b *Bucket) GetCDNURL(path string) string {
+	return fmt.Sprintf("https://%s.%s/%s", b.DOBucketName, b.DOEndpoint, path)
+}

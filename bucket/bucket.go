@@ -38,10 +38,13 @@ func (b *Bucket) UploadImage(b64Image string) (string, error) {
 		return "", fmt.Errorf("getImageFullPath:err [%v]", err.Error())
 	}
 
-	_, err = b.PutObject(b.DOBucketName, fp, r, r.Size(), minio.PutObjectOptions{ContentType: ft.MIMEType})
+	userMetaData := map[string]string{"x-amz-acl": "public-read"} // make it public
+	cacheControl := "max-age=31536000"
+
+	_, err = b.PutObject(b.DOBucketName, fp, r, r.Size(), minio.PutObjectOptions{ContentType: ft.MIMEType, CacheControl: cacheControl, UserMetadata: userMetaData})
 	if err != nil {
 		return "", fmt.Errorf("PutObject:err [%v]", err.Error())
 	}
 
-	return fp, nil
+	return b.GetCDNURL(fp), nil
 }

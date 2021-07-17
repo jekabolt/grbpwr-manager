@@ -111,5 +111,18 @@ func TestUploadImage(t *testing.T) {
 	fp, err := b.UploadImage(i)
 	fmt.Println("--- ", fp)
 	fmt.Println("--- ", err)
+	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
+	// https://grbpwr.fra1.cdn.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
+}
 
+func TestGetCDNPath(t *testing.T) {
+	b := &Bucket{}
+	err := env.Parse(b)
+	if err != nil {
+		log.Fatal("Parse err ", err)
+	}
+	path := "grbpwr-com/2021/July/1626540861.png"
+	fmt.Printf("%s ", b.GetCDNURL(path))
+	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
+	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
 }
