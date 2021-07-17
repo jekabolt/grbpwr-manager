@@ -42,17 +42,17 @@ func main() {
 	b, _ := json.Marshal(cfg)
 	log.Info().Str("config", string(b)).Msg("Started with config")
 
-	db, err := cfg.DB.InitDB()
+	err = cfg.DB.InitDB()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
 
-	bucket, err := cfg.Bucket.GetBucket()
+	err = cfg.Bucket.GetBucket()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, bucket, cfg.Port, cfg.Host, cfg.Origin)
+	s := app.InitServer(cfg.DB, cfg.Bucket, cfg.Port, cfg.Host, cfg.Origin)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }

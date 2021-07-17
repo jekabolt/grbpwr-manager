@@ -18,23 +18,22 @@ func GetDB(dbFilePath string) (*buntdb.DB, error) {
 	return buntdb.Open(dbFilePath)
 }
 
-func (db *DB) InitDB() (*DB, error) {
+func (db *DB) InitDB() error {
 	productsDB, err := GetDB(db.BuntDBProductsPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	articlesDB, err := GetDB(db.BuntDBArticlesPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	salesDB, err := GetDB(db.BuntDBSalesPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &DB{
-		products: productsDB,
-		articles: articlesDB,
-		sales:    salesDB,
-	}, nil
+	db.products = productsDB
+	db.articles = articlesDB
+	db.sales = salesDB
+	return nil
 }

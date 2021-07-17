@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/caarlos0/env/v6"
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "test"
-const DOSecretAccessKey = "test"
+const DOAccessKey = "xxx"
+const DOSecretAccessKey = "xxx"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
@@ -76,11 +77,39 @@ func TestClient(t *testing.T) {
 		log.Fatal("imageToB64 err ", err)
 	}
 
-	_, ft, err := B64ToImage(i)
+	r, ft, err := B64ToImage(i)
 
 	fmt.Println(ft.Extension)
 	fmt.Println(ft.MIMEType)
+	fmt.Printf("client %+v ", client)
 
-	// _, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
+	_, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
+
+}
+
+func TestUploadImage(t *testing.T) {
+	b := &Bucket{}
+	err := env.Parse(b)
+	if err != nil {
+		log.Fatal("Parse err ", err)
+	}
+
+	err = b.GetBucket()
+	if err != nil {
+		log.Fatal("GetBucket err ", err)
+	}
+
+	i, err := imageToB64(filePath)
+	if err != nil {
+		log.Fatal("imageToB64 err ", err)
+	}
+
+	b.DOAccessKey = DOAccessKey
+	b.DOSecretAccessKey = DOSecretAccessKey
+	b.DOEndpoint = DOEndpoint
+
+	fp, err := b.UploadImage(i)
+	fmt.Println("--- ", fp)
+	fmt.Println("--- ", err)
 
 }

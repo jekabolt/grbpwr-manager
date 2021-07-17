@@ -26,17 +26,20 @@ func B64ToImage(b64Image string) (*bytes.Reader, *FileType, error) {
 
 	switch b64Image[:coI+1] {
 	case "data:image/jpeg;base64,":
-		ft.Extension = ".jpg"
+		ft.Extension = "jpg"
 		ft.MIMEType = "image/jpeg"
 	case "data:image/png;base64,":
-		ft.Extension = ".png"
+		ft.Extension = "png"
 		ft.MIMEType = "image/png"
 	}
 
 	return bytes.NewReader(decoded), ft, nil
 }
 
-func getImageFullPath(filenameExtension string) string {
+func (b *Bucket) getImageFullPath(filenameExtension string) string {
 	now := time.Now()
-	return fmt.Sprintf("/%d/%s/%d.%s", now.Year(), now.Month().String(), now.Unix(), filenameExtension)
+	if len(b.ImageStorePrefix) > 0 {
+		return fmt.Sprintf("%s/%d/%s/%d.%s", b.ImageStorePrefix, now.Year(), now.Month().String(), now.Unix(), filenameExtension)
+	}
+	return fmt.Sprintf("%d/%s/%d.%s", now.Year(), now.Month().String(), now.Unix(), filenameExtension)
 }
