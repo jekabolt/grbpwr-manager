@@ -9,10 +9,12 @@ require (
 	github.com/go-chi/render v1.0.1
 	github.com/go-ini/ini v1.62.0 // indirect
 	github.com/go-kivik/couchdb/v4 v4.0.0-20200818191020-c997633e0a27
+	github.com/jdeng/goheif v0.0.0-20200323230657-a0d6a8b3e68f
 	github.com/minio/minio-go v6.0.14+incompatible
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/rs/cors v1.7.0
 	github.com/rs/zerolog v1.19.0
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd // indirect
 	github.com/smartystreets/goconvey v1.6.4 // indirect
 	github.com/tidwall/buntdb v1.2.4
 	github.com/tidwall/gjson v1.8.0

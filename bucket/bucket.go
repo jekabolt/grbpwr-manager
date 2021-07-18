@@ -1,6 +1,7 @@
 package bucket
 
 import (
+	"bufio"
 	"fmt"
 
 	"github.com/minio/minio-go"
@@ -9,8 +10,8 @@ import (
 type Bucket struct {
 	*minio.Client
 
-	DOAccessKey       string `env:"DO_ACCESS_KEY" envDefault:"XBVIVKBMDZ3PZZWNCX2X"`
-	DOSecretAccessKey string `env:"DO_SECRET_ACCESS_KEY" envDefault:"aVwVjUTZDYgIDnRCaisePv3iYuKgo9rsQwUWy5kAyG8"`
+	DOAccessKey       string `env:"DO_ACCESS_KEY" envDefault:"xxx"`
+	DOSecretAccessKey string `env:"DO_SECRET_ACCESS_KEY" envDefault:"xxx"`
 	DOEndpoint        string `env:"DO_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
 	DOBucketName      string `env:"DO_BUCKET_NAME" envDefault:"grbpwr"`
 	DOBucketLocation  string `env:"DO_BUCKET_LOCATION" envDefault:"fra-1"`
@@ -42,6 +43,21 @@ func (b *Bucket) UploadImage(b64Image string) (string, error) {
 	cacheControl := "max-age=31536000"
 
 	_, err = b.PutObject(b.DOBucketName, fp, r, r.Size(), minio.PutObjectOptions{ContentType: ft.MIMEType, CacheControl: cacheControl, UserMetadata: userMetaData})
+	if err != nil {
+		return "", fmt.Errorf("PutObject:err [%v]", err.Error())
+	}
+
+	return b.GetCDNURL(fp), nil
+}
+
+func (b *Bucket) UploadImage2(img *bufio.Reader) (string, error) {
+
+	fp := b.getImageFullPath("jpg")
+
+	userMetaData := map[string]string{"x-amz-acl": "public-read"} // make it public
+	cacheControl := "max-age=31536000"
+
+	_, err := b.PutObject(b.DOBucketName, fp, img, int64(img.Buffered()), minio.PutObjectOptions{ContentType: "image/jpeg", CacheControl: cacheControl, UserMetadata: userMetaData})
 	if err != nil {
 		return "", fmt.Errorf("PutObject:err [%v]", err.Error())
 	}

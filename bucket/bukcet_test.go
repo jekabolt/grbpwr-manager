@@ -1,19 +1,26 @@
 package bucket
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/caarlos0/env/v6"
+	"github.com/jdeng/goheif"
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "xxx"
-const DOSecretAccessKey = "xxx"
+const DOAccessKey = "XBVIVKBMDZ3PZZWNCX2X"
+const DOSecretAccessKey = "aVwVjUTZDYgIDnRCaisePv3iYuKgo9rsQwUWy5kAyG8"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
@@ -21,6 +28,16 @@ const filePath = "./test.png"
 const contentType = "image/png"
 
 const b64Image = ""
+
+func imageToB64_v2(filePath string) (string, error) {
+	ff, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	b := make([]byte, len(ff)*2)
+	base64.StdEncoding.Encode(b, ff)
+	return string(b), nil
+}
 
 func imageToB64(filePath string) (string, error) {
 	bytes, err := ioutil.ReadFile(filePath)
@@ -125,4 +142,69 @@ func TestGetCDNPath(t *testing.T) {
 	fmt.Printf("%s ", b.GetCDNURL(path))
 	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
 	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
+}
+
+func TestConvert(t *testing.T) {
+
+	i, err := imageToB64(filePath)
+	if err != nil {
+		log.Fatal("imageToB64 err ", err)
+	}
+
+	fmt.Println("i   ", http.DetectContentType([]byte(i)))
+
+	return
+
+	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(i))
+
+	imageData, _, err := image.Decode(reader)
+	if err != nil {
+		log.Fatal("Decode err ", err)
+	}
+
+	var b bytes.Buffer
+	imageOut := bufio.NewWriter(&b)
+
+	opts := &jpeg.Options{
+		Quality: 1,
+	}
+
+	err = jpeg.Encode(imageOut, imageData, opts)
+	if err != nil {
+		log.Fatal("Encode err ", err)
+	}
+
+	r := bytes.NewReader(b.Bytes())
+
+	///
+
+	///
+
+	client, err := minio.New(DOEndpoint, DOAccessKey, DOSecretAccessKey, true)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
+
+}
+
+func TestFormatRegistered(t *testing.T) {
+	// b, err := ioutil.ReadFile()
+	// if err != nil {
+	// 	t.Fatal(err)
+	// }
+	fi, err := os.Open("camel.heic")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	img, err := goheif.DecodeImage(fi)
+	if err != nil {
+		log.Fatalf("Failed to parse  %v\n", err)
+	}
+
+	fmt.Println("err ", err)
+	fmt.Println("img ", img)
+
 }

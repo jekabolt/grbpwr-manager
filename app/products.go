@@ -1,10 +1,15 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"net/http"
 
 	"github.com/go-chi/chi"
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog/log"
 )
@@ -153,4 +158,53 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(product)
+}
+
+func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request) {
+	bs, err := ioutil.ReadAll(r.Body)
+
+	if err != nil {
+		log.Error().Err(err).Msgf("uploadImage:ioutil.ReadAll [%v]", err.Error())
+		err := map[string]interface{}{"uploadImage:ioutil.ReadAll": err}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(err)
+		return
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	switch r.Header.Get("Content-Type") {
+	case "image/jpeg":
+
+	case "image/png":
+		i, err := bucket.PNGFromB64(string(bs))
+		if err != nil {
+			log.Error().Msgf("uploadImage:ImageFromB64 [%v]", err)
+			err := map[string]interface{}{"getAllProductsList:GetAllProducts": err}
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(err)
+			return
+		}
+		var b bytes.Buffer
+		imgW := bufio.NewWriter(&b)
+
+		err = bucket.Encode(imgW, i)
+		if err != nil {
+			log.Error().Msgf("uploadImage:bucket.Encode [%v]", err)
+			err := map[string]interface{}{"uploadImage:bucket.Encode": err}
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(err)
+			return
+		}
+		s, err := s.Bucket.UploadImage2(bufio.NewReader(&b))
+
+		fmt.Println("------ s", s)
+		fmt.Println("------ err", err)
+
+	default:
+		err := map[string]interface{}{"uploadImage": fmt.Errorf("type is not supported %v", contentType)}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(err)
+		return
+	}
+
 }

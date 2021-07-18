@@ -52,6 +52,8 @@ func (s *Server) Serve() error {
 	r.Get("/products/{category}", s.getProductsByCategory)
 	r.Delete("/product/{id}", s.deleteProductById)
 
+	r.Post("/image", s.uploadImage)
+
 	log.Info().Msg("Listening on :" + s.Port)
 	return http.ListenAndServe(":"+s.Port, r)
 }
