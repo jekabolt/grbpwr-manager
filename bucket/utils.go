@@ -13,6 +13,21 @@ type FileType struct {
 	MIMEType  string
 }
 
+func fileExtensionFromContentType(contentType string) string {
+	switch contentType {
+	case "image/jpeg":
+		return "jpg"
+	case "image/png":
+		return "png"
+	default:
+		ss := strings.Split(contentType, "/")
+		if len(ss) > 0 {
+			return ss[1]
+		}
+		return contentType
+	}
+}
+
 func B64ToImage(b64Image string) (*bytes.Reader, *FileType, error) {
 	coI := strings.Index(b64Image, ",")
 	rawImage := b64Image[coI+1:]

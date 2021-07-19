@@ -28,7 +28,7 @@ func JPGFromB64(b64Image string) (image.Image, error) {
 	return i, nil
 }
 
-func Encode(w io.Writer, img image.Image) error {
+func EncodeJPG(w io.Writer, img image.Image) error {
 	var err error
 
 	var rgba *image.RGBA

@@ -10,12 +10,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/caarlos0/env/v6"
-	"github.com/jdeng/goheif"
 	"github.com/minio/minio-go"
 )
 
@@ -111,9 +109,9 @@ func TestUploadImage(t *testing.T) {
 		log.Fatal("Parse err ", err)
 	}
 
-	err = b.GetBucket()
+	err = b.InitBucket()
 	if err != nil {
-		log.Fatal("GetBucket err ", err)
+		log.Fatal("InitBucket err ", err)
 	}
 
 	i, err := imageToB64(filePath)
@@ -186,25 +184,5 @@ func TestConvert(t *testing.T) {
 	}
 
 	_, err = client.PutObject(bucketName, objectName, r, r.Size(), minio.PutObjectOptions{ContentType: contentType})
-
-}
-
-func TestFormatRegistered(t *testing.T) {
-	// b, err := ioutil.ReadFile()
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	fi, err := os.Open("camel.heic")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	img, err := goheif.DecodeImage(fi)
-	if err != nil {
-		log.Fatalf("Failed to parse  %v\n", err)
-	}
-
-	fmt.Println("err ", err)
-	fmt.Println("img ", img)
 
 }

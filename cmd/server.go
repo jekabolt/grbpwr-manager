@@ -47,7 +47,7 @@ func main() {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
 
-	err = cfg.Bucket.GetBucket()
+	err = cfg.Bucket.InitBucket()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
