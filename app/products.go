@@ -172,7 +172,7 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request) {
 	url, err := s.Bucket.UploadImage(bs, contentType)
 	if err != nil {
 		log.Error().Msgf("uploadImages.Bucket.UploadImage [%v]", err)
-		err := map[string]interface{}{"uploadImages.Bucket.UploadImage": err}
+		err := map[string]interface{}{"uploadImages.Bucket.UploadImage": err.Error()}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(err)
 		return

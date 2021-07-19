@@ -58,7 +58,7 @@ func (b *Bucket) UploadImage(body []byte, contentType string) (string, error) {
 	case "image/jpeg":
 		img, err = JPGFromB64(string(body))
 		if err != nil {
-			return "", fmt.Errorf("uploadImage:PNGFromB64: [%v]", err.Error())
+			return "", fmt.Errorf("uploadImage:JPGFromB64: [%v]", err.Error())
 		}
 	case "image/png":
 		img, err = PNGFromB64(string(body))

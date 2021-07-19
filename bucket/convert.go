@@ -14,7 +14,7 @@ func PNGFromB64(b64Image string) (image.Image, error) {
 	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Image))
 	i, err := png.Decode(reader)
 	if err != nil {
-		return nil, fmt.Errorf("PNGFromB64:image.Decode")
+		return nil, fmt.Errorf("PNGFromB64:image.Decode: [%v]", err.Error())
 	}
 	return i, nil
 }
