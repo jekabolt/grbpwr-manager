@@ -1,4 +1,4 @@
-REGISTRY=dvision
+REGISTRY=grbpwr
 IMAGE_NAME=grbpwr-pm
 VERSION=1.0.0
 
@@ -12,7 +12,7 @@ local: build
 	source .env && ./bin/$(IMAGE_NAME)
 
 image:
-	docker build -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) -f ./docker/Dockerfile . 
+	docker build -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
 
-compose: image
-	docker-compose up -d
+image-run:
+	docker run --publish 8081:8081 --env-file .env grbpwr/grbpwr-pm:1.0.0

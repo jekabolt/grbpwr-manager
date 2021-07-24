@@ -13,7 +13,7 @@ import (
 )
 
 type Config struct {
-	Port   string `env:"PORT" envDefault:"8080"`
+	Port   string `env:"PORT" envDefault:"8081"`
 	Host   string `env:"HOST" envDefault:"localhost:8080"`
 	Origin string `env:"ORIGIN" envDefault:"*"`
 
