@@ -15,4 +15,4 @@ image:
 	docker build -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
 
 image-run:
-	docker run --publish 8081:8081 --env-file .env grbpwr/grbpwr-pm:1.0.0
+	docker run --publish 8081:8081 --env-file .env $(REGISTRY)/${IMAGE_NAME}:$(VERSION)
