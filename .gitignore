@@ -4,6 +4,7 @@ admin-client
 .env
 *.db
 bin
+bunt
 
 #
 layout

@@ -19,6 +19,8 @@ FROM alpine:latest
 
 WORKDIR /go/src/github.com/jekabolt/grbpwr-manager
 
+RUN mkdir -p /root/bunt
+
 COPY --from=0 /go/src/github.com/jekabolt/grbpwr-manager .
 
 EXPOSE 8081

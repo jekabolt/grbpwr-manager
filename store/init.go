@@ -6,9 +6,9 @@ import (
 )
 
 type DB struct {
-	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"products.db"`
-	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"articles.db"`
-	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"sales.db"`
+	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"/tmp/products.db"`
+	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
+	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
 	products           *buntdb.DB
 	articles           *buntdb.DB
 	sales              *buntdb.DB
