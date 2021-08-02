@@ -1,4 +1,4 @@
-name: Build an angular project
+name: Build and run docker image on remote
 on:
   push:
     branches:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   push:
-    name: Push Docker image to multiple registries
+    name: Push Docker image
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -49,4 +49,4 @@ jobs:
       - name: Pull container
         run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'docker pull jekabolt/grbpwr-manager:pipeline'
       - name: Run container
-        run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'docker run -d --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:pipeline'
+        run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd grbpwr-manager && docker run -d --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:pipeline'
