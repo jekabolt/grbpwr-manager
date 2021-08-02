@@ -46,5 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install sshpass -y
-      - name: Run container
+      - name: Pull container
         run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'docker pull jekabolt/grbpwr-manager:pipeline'
+      - name: Run container
+        run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'docker run -d --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:pipeline'
