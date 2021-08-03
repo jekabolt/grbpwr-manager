@@ -17,8 +17,8 @@ import (
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "XBVIVKBMDZ3PZZWNCX2X"
-const DOSecretAccessKey = "aVwVjUTZDYgIDnRCaisePv3iYuKgo9rsQwUWy5kAyG8"
+const DOAccessKey = "xxx"
+const DOSecretAccessKey = "xxx"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
@@ -123,7 +123,7 @@ func TestUploadImage(t *testing.T) {
 	b.DOSecretAccessKey = DOSecretAccessKey
 	b.DOEndpoint = DOEndpoint
 
-	fp, err := b.UploadImage(i)
+	fp, err := b.UploadImage([]byte(i), "image/jpeg")
 	fmt.Println("--- ", fp)
 	fmt.Println("--- ", err)
 	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
