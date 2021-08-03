@@ -4,19 +4,19 @@ service for upload and manage stock products and articles on [grbpwr.com](https:
 
 # How to run
 
-## for local development
+#### for local development
 
 ```shell script
     make run
 ```
 
-## Build docker image
+#### Build docker image
 
 ```shell script
     make image
 ```
 
-## Run in docker
+#### Run in docker
 
 ```shell script
     make image-run
@@ -24,7 +24,7 @@ service for upload and manage stock products and articles on [grbpwr.com](https:
 
 ## Env variables needed to deploy
 
-### router
+#### router
 
 ```
 PORT=8081
@@ -32,7 +32,7 @@ HOST=localhost:8080
 ORIGIN=*
 ```
 
-### bucket
+#### bucket
 
 ```
 DO_ACCESS_KEY=xxx
@@ -43,7 +43,7 @@ DO_BUCKET_LOCATION=fra-1
 IMAGE_STORE_PREFIX=grbpwr-com
 ```
 
-### db
+#### db
 
 ```
 BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
