@@ -45,10 +45,16 @@ IMAGE_STORE_PREFIX=grbpwr-com
 
 ### db
 
+```
 BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
 BUNT_DB_ARTICLES_PATH=/root/bunt/articles.db
 BUNT_DB_SALES_PATH=/root/bunt/sales.db
+```
 
 ## Swagger for requests
 
 can be found [here](https://github.com/jekabolt/grbpwr-manager/tree/master/doc)
+
+```
+
+```
