@@ -21,12 +21,12 @@ type Price struct {
 }
 
 type Size struct {
-	XXS int `json:"xxs"`
-	XS  int `json:"xs"`
-	S   int `json:"s"`
-	M   int `json:"m"`
-	L   int `json:"l"`
-	XL  int `json:"xl"`
-	XXL int `json:"xxl"`
-	OS  int `json:"os"`
+	XXS int `json:"xxs,omitempty"`
+	XS  int `json:"xs,omitempty"`
+	S   int `json:"s,omitempty"`
+	M   int `json:"m,omitempty"`
+	L   int `json:"l,omitempty"`
+	XL  int `json:"xl,omitempty"`
+	XXL int `json:"xxl,omitempty"`
+	OS  int `json:"os,omitempty"`
 }
