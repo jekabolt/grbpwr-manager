@@ -20,5 +20,3 @@ require (
 	golang.org/x/text v0.3.2 // indirect
 	gopkg.in/ini.v1 v1.62.0 // indirect
 )
-
-//replace gitlab.com/dvision/go-cri => ../../dvision/go-cri

@@ -1,7 +1,6 @@
 REGISTRY=grbpwr
 IMAGE_NAME=grbpwr-pm
 VERSION=1.0.0
-DB_PATH=/Users/jekabolt/code/go/src/github.com/jekabolt/grbpwr-products-manager/bunt'
 
 build:
 	go build -o ./bin/$(IMAGE_NAME) ./cmd/
