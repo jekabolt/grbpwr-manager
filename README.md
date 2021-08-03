@@ -54,7 +54,3 @@ BUNT_DB_SALES_PATH=/root/bunt/sales.db
 ## Swagger for requests
 
 can be found [here](https://github.com/jekabolt/grbpwr-manager/tree/master/doc)
-
-```
-
-```
