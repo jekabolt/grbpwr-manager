@@ -19,9 +19,7 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := r.Header.Get("Content-Type")
-
-	url, err := s.Bucket.UploadImage(bs, contentType)
+	url, err := s.Bucket.UploadImage(string(bs))
 	if err != nil {
 		log.Error().Msgf("uploadImages.Bucket.UploadImage [%v]", err)
 		err := map[string]interface{}{"uploadImages.Bucket.UploadImage": err.Error()}

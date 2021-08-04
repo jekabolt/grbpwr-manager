@@ -1,17 +1,17 @@
 package bucket
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
-	"strings"
 )
 
-func PNGFromB64(b64Image string) (image.Image, error) {
-	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Image))
+func PNGFromB64(b64Image []byte) (image.Image, error) {
+	reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(b64Image))
 	i, err := png.Decode(reader)
 	if err != nil {
 		return nil, fmt.Errorf("PNGFromB64:image.Decode: [%v]", err.Error())
@@ -19,8 +19,8 @@ func PNGFromB64(b64Image string) (image.Image, error) {
 	return i, nil
 }
 
-func JPGFromB64(b64Image string) (image.Image, error) {
-	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Image))
+func JPGFromB64(b64Image []byte) (image.Image, error) {
+	reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(b64Image))
 	i, err := jpeg.Decode(reader)
 	if err != nil {
 		return nil, fmt.Errorf("JPGFromB64:image.Decode")
