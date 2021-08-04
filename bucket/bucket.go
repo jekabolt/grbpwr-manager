@@ -7,6 +7,7 @@ import (
 	"image"
 	"io"
 	"io/ioutil"
+	"strings"
 
 	"github.com/minio/minio-go"
 )
@@ -28,6 +29,7 @@ func (b *Bucket) InitBucket() error {
 		return err
 	}
 	b.Client = cli
+	fmt.Printf("%+v", b)
 	return nil
 }
 
@@ -36,10 +38,13 @@ func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, erro
 
 	fp := b.getImageFullPath(fileExtensionFromContentType(contentType))
 
+	fmt.Println(fp)
+
 	userMetaData := map[string]string{"x-amz-acl": "public-read"} // make it public
 	cacheControl := "max-age=31536000"
 
 	bs, _ := ioutil.ReadAll(img)
+
 	r := bytes.NewReader(bs)
 
 	_, err := b.PutObject(b.DOBucketName, fp, r, int64(len(bs)), minio.PutObjectOptions{ContentType: contentType, CacheControl: cacheControl, UserMetadata: userMetaData})
@@ -50,24 +55,32 @@ func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, erro
 	return b.GetCDNURL(fp), nil
 }
 
-func (b *Bucket) UploadImage(body []byte, contentType string) (string, error) {
+func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
 	var img image.Image
 	var err error
 
+	ss := strings.Split(rawB64Image, ";base64,")
+	if len(ss) != 2 {
+		return "", fmt.Errorf("UploadImage:bad base64 image [%v]", err.Error())
+	}
+
+	b64Image := ss[1]
+	contentType := ss[0]
+
 	switch contentType {
-	case "image/jpeg":
-		img, err = JPGFromB64(string(body))
+	case "data:image/jpeg":
+		img, err = JPGFromB64([]byte(b64Image))
 		if err != nil {
-			return "", fmt.Errorf("uploadImage:JPGFromB64: [%v]", err.Error())
+			return "", fmt.Errorf("UploadImage:JPGFromB64: [%v]", err.Error())
 		}
-	case "image/png":
-		img, err = PNGFromB64(string(body))
+	case "data:image/png":
+		img, err = PNGFromB64([]byte(b64Image))
 		if err != nil {
-			return "", fmt.Errorf("uploadImage:PNGFromB64: [%v]", err.Error())
+			return "", fmt.Errorf("UploadImage:PNGFromB64: [%v]", err.Error())
 		}
 
 	default:
-		return "", fmt.Errorf("uploadImage:PNGFromB64: File type is not supported [%s]", contentType)
+		return "", fmt.Errorf("UploadImage:PNGFromB64: File type is not supported [%s]", contentType)
 	}
 
 	var buf bytes.Buffer
@@ -75,13 +88,13 @@ func (b *Bucket) UploadImage(body []byte, contentType string) (string, error) {
 
 	err = EncodeJPG(imgWriter, img)
 	if err != nil {
-		return "", fmt.Errorf("uploadImage:Encode: [%v]", err.Error())
+		return "", fmt.Errorf("UploadImage:Encode: [%v]", err.Error())
 	}
 
-	// imgReader := bufio.NewReader(&buf)
-	url, err := b.UploadToBucket(io.TeeReader(&buf, imgWriter), "image/jpeg")
+	imgReader := bufio.NewReader(&buf)
+	url, err := b.UploadToBucket(imgReader, "image/jpeg")
 	if err != nil {
-		return "", fmt.Errorf("uploadImage:UploadToBucket: [%v]", err.Error())
+		return "", fmt.Errorf("UploadImage:UploadToBucket: [%v]", err.Error())
 	}
 
 	return url, nil

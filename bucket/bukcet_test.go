@@ -22,7 +22,7 @@ const DOSecretAccessKey = "xxx"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
-const filePath = "./test.png"
+const filePath = "/Users/jekabolt/Desktop/grbpwr-logo-pride-month.jpg"
 const contentType = "image/png"
 
 const b64Image = ""
@@ -109,21 +109,22 @@ func TestUploadImage(t *testing.T) {
 		log.Fatal("Parse err ", err)
 	}
 
-	err = b.InitBucket()
+	b.DOAccessKey = DOAccessKey
+	b.DOSecretAccessKey = DOSecretAccessKey
+	b.DOEndpoint = DOEndpoint
+
+	cli, err := minio.New(b.DOEndpoint, b.DOAccessKey, b.DOSecretAccessKey, true)
 	if err != nil {
 		log.Fatal("InitBucket err ", err)
 	}
+	b.Client = cli
 
 	i, err := imageToB64(filePath)
 	if err != nil {
 		log.Fatal("imageToB64 err ", err)
 	}
 
-	b.DOAccessKey = DOAccessKey
-	b.DOSecretAccessKey = DOSecretAccessKey
-	b.DOEndpoint = DOEndpoint
-
-	fp, err := b.UploadImage([]byte(i), "image/jpeg")
+	fp, err := b.UploadImage(i)
 	fmt.Println("--- ", fp)
 	fmt.Println("--- ", err)
 	// https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/July/1626540861.png
