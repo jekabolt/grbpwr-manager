@@ -42,9 +42,9 @@ func EncodeJPG(w io.Writer, img image.Image) error {
 		}
 	}
 	if rgba != nil {
-		err = jpeg.Encode(w, rgba, &jpeg.Options{Quality: 95})
+		err = jpeg.Encode(w, rgba, &jpeg.Options{Quality: 85})
 	} else {
-		err = jpeg.Encode(w, img, &jpeg.Options{Quality: 95})
+		err = jpeg.Encode(w, img, &jpeg.Options{Quality: 85})
 	}
 
 	return err
