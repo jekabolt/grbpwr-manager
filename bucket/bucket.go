@@ -38,8 +38,6 @@ func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, erro
 
 	fp := b.getImageFullPath(fileExtensionFromContentType(contentType))
 
-	fmt.Println(fp)
-
 	userMetaData := map[string]string{"x-amz-acl": "public-read"} // make it public
 	cacheControl := "max-age=31536000"
 

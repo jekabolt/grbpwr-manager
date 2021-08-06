@@ -71,7 +71,7 @@ func TestCreat(t *testing.T) {
 			"kek",
 			"item",
 		},
-		ImageURLs: []string{
+		ProductImages: []string{
 			"http://kek.com/img1.jpg",
 			"http://kek.com/img2.jpg",
 		},
