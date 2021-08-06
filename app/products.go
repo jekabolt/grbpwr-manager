@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi"
 	"github.com/jekabolt/grbpwr-manager/store"
@@ -17,6 +18,33 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 	product := &store.Product{}
 
 	defer r.Body.Close()
+
+	// upload raw base64 images from request
+	if !strings.Contains(product.MainImage, "https://") {
+		urls := []string{}
+		for _, rawB64Image := range product.ProductImages {
+			url, err := s.Bucket.UploadImage(rawB64Image)
+			if err != nil {
+				log.Error().Err(err).Msgf("addProductWImages:ProductImagesB64:s.Bucket.UploadImage [%v]", err.Error())
+				err := map[string]interface{}{"addProductWImages:ProductImagesB64:UploadImage": err}
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(err)
+				return
+			}
+			urls = append(urls, url)
+		}
+		product.ProductImages = urls
+
+		mainUrl, err := s.Bucket.UploadImage(product.MainImage)
+		if err != nil {
+			log.Error().Err(err).Msgf("addProductWImages:MainImageB64:s.Bucket.UploadImage [%v]", err.Error())
+			err := map[string]interface{}{"addProductWImages:MainImageB64:UploadImage": err}
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(err)
+			return
+		}
+		product.MainImage = mainUrl
+	}
 
 	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
 		log.Error().Err(err).Msgf("addProduct:json.NewDecoder [%v]", err.Error())

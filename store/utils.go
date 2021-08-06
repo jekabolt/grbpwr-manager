@@ -42,7 +42,7 @@ func (p *Product) Validate() url.Values {
 		err.Add("Categories", "validateProduct:empty categories")
 	}
 
-	if len(p.ImageURLs) == 0 {
+	if len(p.ProductImages) == 0 {
 		err.Add("ImageURLs", "validateProduct:no images")
 	}
 

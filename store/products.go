@@ -1,11 +1,5 @@
 package store
 
-type ProductSubmut struct {
-	Product
-	MainImageB64     string `json:"mainImageB64"`
-	ProductImagesB64 string `json:"productImagesB64"`
-}
-
 type Product struct {
 	Id             int64    `json:"id"`
 	DateCreated    int64    `json:"dateCreated"`
@@ -16,7 +10,7 @@ type Product struct {
 	AvailableSizes *Size    `json:"availableSizes"`
 	Description    string   `json:"description,omitempty"`
 	Categories     []string `json:"categories,omitempty"`
-	ImageURLs      []string `json:"imageURLs,omitempty"`
+	ProductImages  []string `json:"productImages,omitempty"`
 }
 
 type Price struct {
