@@ -59,7 +59,7 @@ func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
 
 	ss := strings.Split(rawB64Image, ";base64,")
 	if len(ss) != 2 {
-		return "", fmt.Errorf("UploadImage:bad base64 image [%v]", err.Error())
+		return "", fmt.Errorf("UploadImage:bad base64 image")
 	}
 
 	b64Image := ss[1]

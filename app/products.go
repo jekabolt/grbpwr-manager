@@ -19,6 +19,22 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 
 	defer r.Body.Close()
 
+	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
+		log.Error().Err(err).Msgf("addProduct:json.NewDecoder [%v]", err.Error())
+		err := map[string]interface{}{"addProduct:Decode": err}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(err)
+		return
+	}
+
+	if errors := product.Validate(); len(errors) > 0 {
+		log.Error().Msgf("addProduct:product.Validate [%v]", errors)
+		err := map[string]interface{}{"validationError": errors}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(err)
+		return
+	}
+
 	// upload raw base64 images from request
 	if !strings.Contains(product.MainImage, "https://") {
 		urls := []string{}
@@ -44,22 +60,6 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		product.MainImage = mainUrl
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
-		log.Error().Err(err).Msgf("addProduct:json.NewDecoder [%v]", err.Error())
-		err := map[string]interface{}{"addProduct:Decode": err}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
-		return
-	}
-
-	if errors := product.Validate(); len(errors) > 0 {
-		log.Error().Msgf("addProduct:product.Validate [%v]", errors)
-		err := map[string]interface{}{"validationError": errors}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
-		return
 	}
 
 	err := s.DB.AddProduct(product)

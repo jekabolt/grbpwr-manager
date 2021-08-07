@@ -22,7 +22,7 @@ const DOSecretAccessKey = "xxx"
 const DOEndpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
-const filePath = "/Users/jekabolt/Desktop/grbpwr-logo-pride-month.jpg"
+const filePath = "/Users/jekabolt/go/src/github.com/jekabolt/Angular-Reactive-Demo-Shop/src/img/grb-logo.png"
 const contentType = "image/png"
 
 const b64Image = ""
@@ -123,6 +123,7 @@ func TestUploadImage(t *testing.T) {
 	if err != nil {
 		log.Fatal("imageToB64 err ", err)
 	}
+	fmt.Printf("------ ss")
 
 	fp, err := b.UploadImage(i)
 	fmt.Println("--- ", fp)
