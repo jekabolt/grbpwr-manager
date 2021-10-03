@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"strings"
 
+	"github.com/caarlos0/env/v6"
 	"github.com/minio/minio-go"
 )
 
@@ -23,14 +24,15 @@ type Bucket struct {
 	ImageStorePrefix  string `env:"IMAGE_STORE_PREFIX" envDefault:"grbpwr-com"`
 }
 
-func (b *Bucket) InitBucket() error {
-	cli, err := minio.New(b.DOEndpoint, b.DOAccessKey, b.DOSecretAccessKey, true)
+func InitBucket() (*Bucket, error) {
+	b := &Bucket{}
+	err := env.Parse(b)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("BuntDB:InitDB:env.Parse: %s ", err.Error())
 	}
+	cli, err := minio.New(b.DOEndpoint, b.DOAccessKey, b.DOSecretAccessKey, true)
 	b.Client = cli
-	fmt.Printf("%+v", b)
-	return nil
+	return b, err
 }
 
 // func (b *Bucket) UploadToBucket(img *bufio.Reader, contentType string) (string, error) {

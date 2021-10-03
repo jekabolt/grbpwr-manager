@@ -6,7 +6,7 @@ import (
 )
 
 type Server struct {
-	DB     *store.DB
+	DB     store.ProductStore
 	Bucket *bucket.Bucket
 
 	Port   string
@@ -14,7 +14,7 @@ type Server struct {
 	origin string
 }
 
-func InitServer(db *store.DB, bucket *bucket.Bucket, port, host, origin string) *Server {
+func InitServer(db store.ProductStore, bucket *bucket.Bucket, port, host, origin string) *Server {
 	return &Server{
 		DB:     db,
 		Bucket: bucket,

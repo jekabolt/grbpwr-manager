@@ -9,6 +9,11 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
+func TestCreateD(t *testing.T) {
+	p := &Product{}
+	bs, _ := json.Marshal(p)
+	fmt.Println("---", string(bs))
+}
 func TestCreateDB(t *testing.T) {
 	db, err := buntdb.Open("data.db")
 	if err != nil {

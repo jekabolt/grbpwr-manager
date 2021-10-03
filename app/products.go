@@ -95,7 +95,7 @@ func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *Server) getProductsById(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getProductById(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	w.Header().Set("Content-type", "application/json")
 
@@ -152,22 +152,6 @@ func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 }
 
 // site
-func (s *Server) getProductsByCategory(w http.ResponseWriter, r *http.Request) {
-	category := chi.URLParam(r, "category")
-	w.Header().Set("Content-type", "application/json")
-
-	product, err := s.DB.GetAllProductsInCategory(category)
-	if err != nil {
-		log.Error().Msgf("getProductsByCategory:GetAllProductsInCategory [%v]", err)
-		err := map[string]interface{}{"getProductsByCategory:GetAllProductsInCategory": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
-		return
-	}
-
-	json.NewEncoder(w).Encode(product)
-}
-
 func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-type", "application/json")
 

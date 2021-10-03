@@ -13,21 +13,16 @@ import (
 )
 
 type Config struct {
-	Port   string `env:"PORT" envDefault:"8081"`
-	Host   string `env:"HOST" envDefault:"localhost:8080"`
-	Origin string `env:"ORIGIN" envDefault:"*"`
-
-	Bucket *bucket.Bucket
-	DB     *store.DB
+	Port        string `env:"PORT" envDefault:"8081"`
+	Host        string `env:"HOST" envDefault:"localhost:8080"`
+	Origin      string `env:"ORIGIN" envDefault:"*"`
+	StorageType string `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
 
 	Debug bool `env:"DEBUG" envDefault:"false"`
 }
 
 func main() {
-	cfg := &Config{
-		Bucket: &bucket.Bucket{},
-		DB:     &store.DB{},
-	}
+	cfg := &Config{}
 	err := env.Parse(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to parse env variables")
@@ -42,17 +37,22 @@ func main() {
 	b, _ := json.Marshal(cfg)
 	log.Info().Str("config", string(b)).Msg("Started with config")
 
-	err = cfg.DB.InitDB()
+	db, err := store.GetDB(cfg.StorageType)
+	if err != nil {
+		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to GetDB err:[%s]", err.Error()))
+	}
+
+	err = db.InitDB()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
 
-	err = cfg.Bucket.InitBucket()
+	bucket, err := bucket.InitBucket()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(cfg.DB, cfg.Bucket, cfg.Port, cfg.Host, cfg.Origin)
+	s := app.InitServer(db, bucket, cfg.Port, cfg.Host, cfg.Origin)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }
