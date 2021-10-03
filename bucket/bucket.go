@@ -16,11 +16,11 @@ import (
 type Bucket struct {
 	*minio.Client
 
-	DOAccessKey       string `env:"DO_ACCESS_KEY" envDefault:"xxx"`
-	DOSecretAccessKey string `env:"DO_SECRET_ACCESS_KEY" envDefault:"xxx"`
-	DOEndpoint        string `env:"DO_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
-	DOBucketName      string `env:"DO_BUCKET_NAME" envDefault:"grbpwr"`
-	DOBucketLocation  string `env:"DO_BUCKET_LOCATION" envDefault:"fra-1"`
+	DOAccessKey       string `env:"S3_ACCESS_KEY" envDefault:"xxx"`
+	DOSecretAccessKey string `env:"S3_SECRET_ACCESS_KEY" envDefault:"xxx"`
+	DOEndpoint        string `env:"S3_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
+	DOBucketName      string `env:"S3_BUCKET_NAME" envDefault:"grbpwr"`
+	DOBucketLocation  string `env:"S3_BUCKET_LOCATION" envDefault:"fra-1"`
 	ImageStorePrefix  string `env:"IMAGE_STORE_PREFIX" envDefault:"grbpwr-com"`
 }
 

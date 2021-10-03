@@ -13,7 +13,6 @@ type BuntDB struct {
 	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"/tmp/products.db"`
 	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
 	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
-	BuntDBPageSize     int    `env:"BUNT_DB_PAGE_SIZE" envDefault:"5"`
 	products           *buntdb.DB
 	articles           *buntdb.DB
 	sales              *buntdb.DB

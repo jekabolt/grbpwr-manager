@@ -35,11 +35,11 @@ ORIGIN=*
 #### bucket
 
 ```
-DO_ACCESS_KEY=xxx
-DO_SECRET_ACCESS_KEY=xxx
-DO_ENDPOINT=fra1.digitaloceanspaces.com
-DO_BUCKET_NAME=grbpwr
-DO_BUCKET_LOCATION=fra-1
+S3_ACCESS_KEY=xxx
+S3_SECRET_ACCESS_KEY=xxx
+S3_ENDPOINT=fra1.digitaloceanspaces.com
+S3_BUCKET_NAME=grbpwr
+S3_BUCKET_LOCATION=fra-1
 IMAGE_STORE_PREFIX=grbpwr-com
 ```
 
@@ -49,6 +49,7 @@ IMAGE_STORE_PREFIX=grbpwr-com
 BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
 BUNT_DB_ARTICLES_PATH=/root/bunt/articles.db
 BUNT_DB_SALES_PATH=/root/bunt/sales.db
+STORAGE_TYPE=bunt
 ```
 
 ## Swagger for requests
