@@ -18,16 +18,6 @@ func (p *Product) String() string {
 	return string(bs)
 }
 
-// func CustomMarshalArrayOfProducts(products []string) []byte {
-// 	resp := "{"
-// 	for _, p := range products {
-// 		resp = append(resp,)
-// 	}
-// 	resp  = append(resp,"}")
-
-// 	return []byte(resp)
-// }
-
 func getProductFromString(product string) Product {
 	p := &Product{}
 	json.Unmarshal([]byte(product), p)

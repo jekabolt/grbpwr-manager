@@ -48,8 +48,7 @@ func (s *Server) Serve() error {
 	r.Post("/product", s.addProduct)
 	r.Put("/product/{id}", s.modifyProductsById)
 	r.Get("/product", s.getAllProductsList)
-	r.Get("/product/{id}", s.getProductsById)
-	r.Get("/products/{category}", s.getProductsByCategory)
+	r.Get("/product/{id}", s.getProductById)
 	r.Delete("/product/{id}", s.deleteProductById)
 
 	r.Post("/image", s.uploadImage)

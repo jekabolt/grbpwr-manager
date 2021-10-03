@@ -5,10 +5,49 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/caarlos0/env/v6"
 	"github.com/tidwall/buntdb"
 )
 
-func (db *DB) AddProduct(p *Product) error {
+type BuntDB struct {
+	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"/tmp/products.db"`
+	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
+	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
+	BuntDBPageSize     int    `env:"BUNT_DB_PAGE_SIZE" envDefault:"5"`
+	products           *buntdb.DB
+	articles           *buntdb.DB
+	sales              *buntdb.DB
+}
+
+func (db *BuntDB) InitDB() error {
+
+	err := env.Parse(db)
+	if err != nil {
+		return fmt.Errorf("BuntDB:InitDB:env.Parse: %s ", err.Error())
+	}
+
+	productsDB, err := buntdb.Open(db.BuntDBProductsPath)
+	if err != nil {
+		return err
+	}
+	articlesDB, err := buntdb.Open(db.BuntDBArticlesPath)
+	if err != nil {
+		return err
+	}
+	salesDB, err := buntdb.Open(db.BuntDBSalesPath)
+	if err != nil {
+		return err
+	}
+
+	db.products = productsDB
+	db.articles = articlesDB
+	db.sales = salesDB
+	return nil
+}
+
+// products
+
+func (db *BuntDB) AddProduct(p *Product) error {
 
 	now := time.Now().Unix()
 	p.Id = now
@@ -21,7 +60,7 @@ func (db *DB) AddProduct(p *Product) error {
 	})
 }
 
-func (db *DB) GetProductsById(id string) (*Product, error) {
+func (db *BuntDB) GetProductsById(id string) (*Product, error) {
 	prd := &Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
 		productStr, err := tx.Get(id)
@@ -38,7 +77,7 @@ func (db *DB) GetProductsById(id string) (*Product, error) {
 	return prd, err
 }
 
-func (db *DB) GetAllProducts() ([]Product, error) {
+func (db *BuntDB) GetAllProducts() ([]Product, error) {
 	products := []Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
 		tx.Ascend("", func(_, productStr string) bool {
@@ -50,22 +89,7 @@ func (db *DB) GetAllProducts() ([]Product, error) {
 	return products, err
 }
 
-func (db *DB) GetAllProductsInCategory(category string) ([]Product, error) {
-	products := []Product{}
-	err := db.products.View(func(tx *buntdb.Tx) error {
-		tx.Ascend("", func(_, productStr string) bool {
-			if isCategoryExist(productStr, category) {
-				products = append(products, getProductFromString(productStr))
-				return true
-			}
-			return true
-		})
-		return nil
-	})
-	return products, err
-}
-
-func (db *DB) DeleteProductById(id string) error {
+func (db *BuntDB) DeleteProductById(id string) error {
 	err := db.products.Update(func(tx *buntdb.Tx) error {
 		_, err := tx.Delete(id)
 		return err
@@ -73,7 +97,7 @@ func (db *DB) DeleteProductById(id string) error {
 	return err
 }
 
-func (db *DB) ModifyProductById(id string, pNew *Product) error {
+func (db *BuntDB) ModifyProductById(id string, pNew *Product) error {
 
 	pNew.LastActionTime = time.Now().Unix()
 
