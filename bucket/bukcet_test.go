@@ -17,9 +17,9 @@ import (
 	"github.com/minio/minio-go"
 )
 
-const DOAccessKey = "xxx"
-const DOSecretAccessKey = "xxx"
-const DOEndpoint = "fra1.digitaloceanspaces.com"
+const S3AccessKey = "xxx"
+const S3SecretAccessKey = "xxx"
+const S3Endpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const objectName = "test.png"
 const filePath = "/Users/jekabolt/go/src/github.com/jekabolt/Angular-Reactive-Demo-Shop/src/img/grb-logo.png"
@@ -68,7 +68,7 @@ func toBase64(b []byte) string {
 }
 
 func TestClient(t *testing.T) {
-	client, err := minio.New(DOEndpoint, DOAccessKey, DOSecretAccessKey, true)
+	client, err := minio.New(S3Endpoint, S3AccessKey, S3SecretAccessKey, true)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -109,11 +109,11 @@ func TestUploadImage(t *testing.T) {
 		log.Fatal("Parse err ", err)
 	}
 
-	b.DOAccessKey = DOAccessKey
-	b.DOSecretAccessKey = DOSecretAccessKey
-	b.DOEndpoint = DOEndpoint
+	b.S3AccessKey = S3AccessKey
+	b.S3SecretAccessKey = S3SecretAccessKey
+	b.S3Endpoint = S3Endpoint
 
-	cli, err := minio.New(b.DOEndpoint, b.DOAccessKey, b.DOSecretAccessKey, true)
+	cli, err := minio.New(b.S3Endpoint, b.S3AccessKey, b.S3SecretAccessKey, true)
 	if err != nil {
 		log.Fatal("InitBucket err ", err)
 	}
@@ -180,7 +180,7 @@ func TestConvert(t *testing.T) {
 
 	///
 
-	client, err := minio.New(DOEndpoint, DOAccessKey, DOSecretAccessKey, true)
+	client, err := minio.New(S3Endpoint, S3AccessKey, S3SecretAccessKey, true)
 	if err != nil {
 		log.Fatal(err)
 	}

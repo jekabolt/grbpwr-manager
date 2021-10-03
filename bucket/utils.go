@@ -60,5 +60,5 @@ func (b *Bucket) getImageFullPath(filenameExtension string) string {
 }
 
 func (b *Bucket) GetCDNURL(path string) string {
-	return fmt.Sprintf("https://%s.%s/%s", b.DOBucketName, b.DOEndpoint, path)
+	return fmt.Sprintf("https://%s.%s/%s", b.S3BucketName, b.S3Endpoint, path)
 }

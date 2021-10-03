@@ -16,11 +16,11 @@ import (
 type Bucket struct {
 	*minio.Client
 
-	DOAccessKey       string `env:"S3_ACCESS_KEY" envDefault:"xxx"`
-	DOSecretAccessKey string `env:"S3_SECRET_ACCESS_KEY" envDefault:"xxx"`
-	DOEndpoint        string `env:"S3_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
-	DOBucketName      string `env:"S3_BUCKET_NAME" envDefault:"grbpwr"`
-	DOBucketLocation  string `env:"S3_BUCKET_LOCATION" envDefault:"fra-1"`
+	S3AccessKey       string `env:"S3_ACCESS_KEY" envDefault:"xxx"`
+	S3SecretAccessKey string `env:"S3_SECRET_ACCESS_KEY" envDefault:"xxx"`
+	S3Endpoint        string `env:"S3_ENDPOINT" envDefault:"fra1.digitaloceanspaces.com"`
+	S3BucketName      string `env:"S3_BUCKET_NAME" envDefault:"grbpwr"`
+	S3BucketLocation  string `env:"S3_BUCKET_LOCATION" envDefault:"fra-1"`
 	ImageStorePrefix  string `env:"IMAGE_STORE_PREFIX" envDefault:"grbpwr-com"`
 }
 
@@ -30,7 +30,7 @@ func InitBucket() (*Bucket, error) {
 	if err != nil {
 		return nil, fmt.Errorf("BuntDB:InitDB:env.Parse: %s ", err.Error())
 	}
-	cli, err := minio.New(b.DOEndpoint, b.DOAccessKey, b.DOSecretAccessKey, true)
+	cli, err := minio.New(b.S3Endpoint, b.S3AccessKey, b.S3SecretAccessKey, true)
 	b.Client = cli
 	return b, err
 }
@@ -47,7 +47,7 @@ func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, erro
 
 	r := bytes.NewReader(bs)
 
-	_, err := b.PutObject(b.DOBucketName, fp, r, int64(len(bs)), minio.PutObjectOptions{ContentType: contentType, CacheControl: cacheControl, UserMetadata: userMetaData})
+	_, err := b.PutObject(b.S3BucketName, fp, r, int64(len(bs)), minio.PutObjectOptions{ContentType: contentType, CacheControl: cacheControl, UserMetadata: userMetaData})
 	if err != nil {
 		return "", fmt.Errorf("PutObject:err [%v]", err.Error())
 	}
@@ -81,6 +81,11 @@ func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
 
 	default:
 		return "", fmt.Errorf("UploadImage:PNGFromB64: File type is not supported [%s]", contentType)
+	}
+
+	// square check
+	if img.Bounds().Max.X != img.Bounds().Max.Y {
+		return "", fmt.Errorf("UploadImage:image is not square: [%v]", err.Error())
 	}
 
 	var buf bytes.Buffer
