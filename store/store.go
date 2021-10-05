@@ -9,11 +9,24 @@ const (
 
 type ProductStore interface {
 	InitDB() error
+	ProductCRUD
+	ArchiveArticleCRUD
+}
+
+type ProductCRUD interface {
 	AddProduct(p *Product) error
-	GetProductsById(id string) (*Product, error)
-	GetAllProducts() ([]Product, error)
+	GetProductById(id string) (*Product, error)
+	GetAllProducts() ([]*Product, error)
 	DeleteProductById(id string) error
 	ModifyProductById(id string, pNew *Product) error
+}
+
+type ArchiveArticleCRUD interface {
+	AddArchiveArticle(aa *ArchiveArticle) error
+	GetArchiveArticleById(id string) (*ArchiveArticle, error)
+	GetAllArchiveArticles() ([]*ArchiveArticle, error)
+	DeleteArchiveArticleById(id string) error
+	ModifyArchiveArticleById(id string, aNew *ArchiveArticle) error
 }
 
 func GetDB(t string) (ProductStore, error) {
