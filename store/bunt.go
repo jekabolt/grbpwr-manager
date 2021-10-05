@@ -59,7 +59,7 @@ func (db *BuntDB) AddProduct(p *Product) error {
 	})
 }
 
-func (db *BuntDB) GetProductsById(id string) (*Product, error) {
+func (db *BuntDB) GetProductById(id string) (*Product, error) {
 	prd := &Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
 		productStr, err := tx.Get(id)
@@ -76,8 +76,8 @@ func (db *BuntDB) GetProductsById(id string) (*Product, error) {
 	return prd, err
 }
 
-func (db *BuntDB) GetAllProducts() ([]Product, error) {
-	products := []Product{}
+func (db *BuntDB) GetAllProducts() ([]*Product, error) {
+	products := []*Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
 		tx.Ascend("", func(_, productStr string) bool {
 			products = append(products, getProductFromString(productStr))
@@ -100,7 +100,7 @@ func (db *BuntDB) ModifyProductById(id string, pNew *Product) error {
 
 	pNew.LastActionTime = time.Now().Unix()
 
-	pOld, err := db.GetProductsById(id)
+	pOld, err := db.GetProductById(id)
 	if err != nil {
 		return fmt.Errorf("not exist")
 	}
@@ -114,6 +114,81 @@ func (db *BuntDB) ModifyProductById(id string, pNew *Product) error {
 	}
 
 	err = db.products.Update(func(tx *buntdb.Tx) error {
+		tx.Set(id, string(bs), nil)
+		return nil
+	})
+
+	return err
+}
+
+// archive
+
+func (db *BuntDB) AddArchiveArticle(aa *ArchiveArticle) error {
+
+	now := time.Now().Unix()
+	aa.Id = now
+	aa.DateCreated = now
+
+	return db.articles.Update(func(tx *buntdb.Tx) error {
+		tx.Set(fmt.Sprintf("%d", now), aa.String(), nil)
+		return nil
+	})
+}
+
+func (db *BuntDB) GetArchiveArticleById(id string) (*ArchiveArticle, error) {
+	prd := &ArchiveArticle{}
+	err := db.articles.View(func(tx *buntdb.Tx) error {
+		articleStr, err := tx.Get(id)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal([]byte(articleStr), prd)
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("GetArchiveArticleById:db.articles.View:err [%v]", err.Error())
+	}
+
+	return prd, err
+}
+
+func (db *BuntDB) GetAllArchiveArticles() ([]*ArchiveArticle, error) {
+	aa := []*ArchiveArticle{}
+	err := db.articles.View(func(tx *buntdb.Tx) error {
+		tx.Ascend("", func(_, articlesStr string) bool {
+			article := getArchiveArticleFromString(articlesStr)
+			aa = append(aa, &article)
+			return true
+		})
+		return nil
+	})
+	return aa, err
+}
+
+func (db *BuntDB) DeleteArchiveArticleById(id string) error {
+	err := db.articles.Update(func(tx *buntdb.Tx) error {
+		_, err := tx.Delete(id)
+		return err
+	})
+	return err
+}
+
+func (db *BuntDB) ModifyArchiveArticleById(id string, aaNew *ArchiveArticle) error {
+
+	aaOld, err := db.GetArchiveArticleById(id)
+	if err != nil {
+		return fmt.Errorf("not exist")
+	}
+
+	aaNew.Id = aaOld.Id
+	aaNew.DateCreated = aaOld.DateCreated
+
+	bs, err := json.Marshal(aaNew)
+	if err != nil {
+		return fmt.Errorf("ModifyArchiveArticleById:json.Marshal [%v]", err.Error())
+	}
+
+	err = db.articles.Update(func(tx *buntdb.Tx) error {
 		tx.Set(id, string(bs), nil)
 		return nil
 	})

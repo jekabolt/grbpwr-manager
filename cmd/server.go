@@ -52,7 +52,7 @@ func main() {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, bucket, cfg.Port, cfg.Host, cfg.Origin)
+	s := app.InitServer(db, bucket, cfg.Port, cfg.Host, cfg.Origin, cfg.Debug)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }

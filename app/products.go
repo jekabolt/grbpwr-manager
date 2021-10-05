@@ -1,168 +1,146 @@
 package app
 
 import (
-	"encoding/json"
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/render"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog/log"
 )
 
 // admin panel
 func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
-
-	w.Header().Set("Content-type", "application/json")
-
-	product := &store.Product{}
-
-	defer r.Body.Close()
-
-	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
-		log.Error().Err(err).Msgf("addProduct:json.NewDecoder [%v]", err.Error())
-		err := map[string]interface{}{"addProduct:Decode": err}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
-		return
-	}
-
-	if errors := product.Validate(); len(errors) > 0 {
-		log.Error().Msgf("addProduct:product.Validate [%v]", errors)
-		err := map[string]interface{}{"validationError": errors}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
+	data := &ProductRequest{}
+	if err := render.Bind(r, data); err != nil {
+		log.Error().Err(err).Msgf("addProduct:render.Bind [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
 	// upload raw base64 images from request
-	if !strings.Contains(product.MainImage, "https://") {
+	if !strings.Contains(data.MainImage, "https://") {
 		urls := []string{}
-		for _, rawB64Image := range product.ProductImages {
+		for _, rawB64Image := range data.ProductImages {
 			url, err := s.Bucket.UploadImage(rawB64Image)
 			if err != nil {
-				log.Error().Err(err).Msgf("addProductWImages:ProductImagesB64:s.Bucket.UploadImage [%v]", err.Error())
-				err := map[string]interface{}{"addProductWImages:ProductImagesB64:UploadImage": err}
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(err)
+				log.Error().Err(err).Msgf("addProduct:s.Bucket.UploadImage [%v]", err.Error())
+				render.Render(w, r, ErrInternalServerError(err))
 				return
 			}
 			urls = append(urls, url)
 		}
-		product.ProductImages = urls
+		data.ProductImages = urls
 
-		mainUrl, err := s.Bucket.UploadImage(product.MainImage)
+		mainUrl, err := s.Bucket.UploadImage(data.MainImage)
 		if err != nil {
-			log.Error().Err(err).Msgf("addProductWImages:MainImageB64:s.Bucket.UploadImage [%v]", err.Error())
-			err := map[string]interface{}{"addProductWImages:MainImageB64:UploadImage": err}
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(err)
+			log.Error().Err(err).Msgf("addProduct:s.Bucket.UploadImage:main [%v]", err.Error())
+			render.Render(w, r, ErrInternalServerError(err))
 			return
 		}
-		product.MainImage = mainUrl
+		data.MainImage = mainUrl
 	}
 
-	err := s.DB.AddProduct(product)
-	if err != nil {
-		log.Error().Msgf("addProduct:AddProduct [%v]", err)
-		err := map[string]interface{}{"addProduct:AddProduct": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
-		return
+	if err := s.DB.AddProduct(data.Product); err != nil {
+		log.Error().Err(err).Msgf("addProduct:s.DB.AddProduct [%v]", err.Error())
+		render.Render(w, r, ErrInternalServerError(err))
 	}
-
-	resp := map[string]interface{}{"status": http.StatusText(http.StatusCreated)}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-
+	render.Render(w, r, NewProductResponse(data.Product, http.StatusCreated))
 }
 
 func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	w.Header().Set("Content-type", "application/json")
-
-	err := s.DB.DeleteProductById(id)
-	if err != nil {
-		log.Error().Msgf("deleteProductById:DeleteProductById [%v]", err)
-		err := map[string]interface{}{"deleteProductById:DeleteProductById": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
-		return
+	cProduct, ok := r.Context().Value("product").(*store.Product)
+	if !ok {
+		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("deleteProductById:empty context")))
 	}
 
-	resp := map[string]interface{}{"status": http.StatusText(http.StatusOK)}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) getProductById(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	w.Header().Set("Content-type", "application/json")
-
-	product, err := s.DB.GetProductsById(id)
-	if err != nil {
-		log.Error().Msgf("getProductsById:GetProductsById [%v]", err)
-		err := map[string]interface{}{"getProductsById:GetProductsById": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
+	if err := s.DB.DeleteProductById(fmt.Sprint(cProduct.Id)); err != nil {
+		log.Error().Err(err).Msgf("deleteProductById:s.DB.DeleteProductById [%v]", err.Error())
+		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-
-	json.NewEncoder(w).Encode(product)
+	render.Render(w, r, NewProductResponse(cProduct, http.StatusOK))
 }
 
 func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 
-	id := chi.URLParam(r, "id")
+	cProduct, ok := r.Context().Value("product").(*store.Product)
+	if !ok {
+		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("modifyProductsById:empty context")))
+	}
 
-	w.Header().Set("Content-type", "application/json")
+	data := &ProductRequest{}
 
-	product := &store.Product{}
-
-	defer r.Body.Close()
-
-	if err := json.NewDecoder(r.Body).Decode(product); err != nil {
-		log.Error().Err(err).Msgf("modifyProductsById:json.NewDecoder [%v]", err.Error())
-		err := map[string]interface{}{"modifyProductsById:Decode": err}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
+	if err := render.Bind(r, data); err != nil {
+		log.Error().Err(err).Msgf("modifyProductsById:render.Bind [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
-	if errors := product.Validate(); len(errors) > 0 {
-		log.Error().Msgf("addProduct:product.Validate [%v]", errors)
-		err := map[string]interface{}{"validationError": errors}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
+	if err := s.DB.ModifyProductById(fmt.Sprint(cProduct.Id), data.Product); err != nil {
+		log.Error().Err(err).Msgf("modifyProductsById:s.DB.ModifyProductById [%v]", err.Error())
+		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
 
-	err := s.DB.ModifyProductById(id, product)
-	if err != nil {
-		log.Error().Msgf("modifyProductsById:ModifyProductById [%v]", err)
-		err := map[string]interface{}{"modifyProductsById:ModifyProductById": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
-		return
-	}
-
-	resp := map[string]interface{}{"status": http.StatusText(http.StatusCreated)}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	render.Render(w, r, NewProductResponse(data.Product, http.StatusOK))
 }
 
 // site
 func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
 
-	product, err := s.DB.GetAllProducts()
-	if err != nil {
-		log.Error().Msgf("getAllProductsList:GetAllProducts [%v]", err)
-		err := map[string]interface{}{"getAllProductsList:GetAllProducts": err}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
+	products := []*store.Product{}
+	var err error
+	if products, err = s.DB.GetAllProducts(); err != nil {
+		log.Error().Err(err).Msgf("getAllProductsList:s.DB.GetAllProducts [%v]", err.Error())
+		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
+	if err := render.RenderList(w, r, NewProductListResponse(products)); err != nil {
+		render.Render(w, r, ErrRender(err))
+		return
+	}
+}
 
-	json.NewEncoder(w).Encode(product)
+func (s *Server) getProductById(w http.ResponseWriter, r *http.Request) {
+	product := r.Context().Value("product").(*store.Product)
+	if err := render.Render(w, r, NewProductResponse(product, http.StatusOK)); err != nil {
+		render.Render(w, r, ErrRender(err))
+		return
+	}
+}
+
+func (s *Server) ProductCtx(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		var product *store.Product
+		productId := strings.TrimPrefix(r.URL.Path, "/api/product/")
+
+		if productId != "" {
+			product, err = s.DB.GetProductById(productId)
+			if err != nil {
+				log.Error().Msgf("s.DB.GetProductById [%v]", err.Error())
+				render.Render(w, r, ErrNotFound)
+				return
+			}
+		}
+
+		if productId == "" {
+			render.Render(w, r, ErrNotFound)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), "product", product)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+type ProductRequest struct {
+	*store.Product
+}
+
+func (p *ProductRequest) Bind(r *http.Request) error {
+	return p.Validate()
 }
