@@ -1,10 +1,10 @@
 package app
 
 import (
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 
+	"github.com/go-chi/render"
 	"github.com/rs/zerolog/log"
 )
 
@@ -13,24 +13,20 @@ func (s *Server) uploadImage(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Error().Err(err).Msgf("uploadImage:ioutil.ReadAll [%v]", err.Error())
-		err := map[string]interface{}{"uploadImage:ioutil.ReadAll": err}
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(err)
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
 	url, err := s.Bucket.UploadImage(string(bs))
 	if err != nil {
-		log.Error().Msgf("uploadImages.Bucket.UploadImage [%v]", err)
-		err := map[string]interface{}{"uploadImages.Bucket.UploadImage": err.Error()}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(err)
+		log.Error().Err(err).Msgf("uploadImage:s.Bucket.UploadImage [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
-	resp := map[string]interface{}{
-		"status": http.StatusText(http.StatusCreated),
-		"url":    url}
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	if err := render.Render(w, r, NewImageResponse(http.StatusText(http.StatusCreated), url)); err != nil {
+		render.Render(w, r, ErrRender(err))
+		return
+	}
+
 }

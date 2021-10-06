@@ -109,3 +109,19 @@ func NewProductListResponse(products []*store.Product) []render.Renderer {
 	}
 	return list
 }
+
+// image
+
+type ImageResponse struct {
+	Status string `json:"status"`
+	Url    string `json:"url"`
+}
+
+func NewImageResponse(status, url string) *ImageResponse {
+	resp := &ImageResponse{Status: status, Url: url}
+	return resp
+}
+
+func (i *ImageResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
+}
