@@ -11,6 +11,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type ArchiveCtxKey struct{}
+
 // admin panel
 func (s *Server) addArchiveArticle(w http.ResponseWriter, r *http.Request) {
 	data := &ArticleRequest{}
@@ -40,12 +42,10 @@ func (s *Server) addArchiveArticle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteArchiveArticleById(w http.ResponseWriter, r *http.Request) {
-	cArticle, ok := r.Context().Value("article").(*store.ArchiveArticle)
+	cArticle, ok := r.Context().Value(ArchiveCtxKey{}).(*store.ArchiveArticle)
 	if !ok {
 		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("modifyArchiveArticleById:empty context")))
 	}
-
-	fmt.Println("----- ", cArticle.Id)
 
 	if err := s.DB.DeleteArchiveArticleById(fmt.Sprint(cArticle.Id)); err != nil {
 		log.Error().Err(err).Msgf("deleteArchiveArticleById:s.DB.DeleteArchiveArticleById [%v]", err.Error())
@@ -57,7 +57,7 @@ func (s *Server) deleteArchiveArticleById(w http.ResponseWriter, r *http.Request
 
 func (s *Server) modifyArchiveArticleById(w http.ResponseWriter, r *http.Request) {
 
-	cArticle, ok := r.Context().Value("article").(*store.ArchiveArticle)
+	cArticle, ok := r.Context().Value(ArchiveCtxKey{}).(*store.ArchiveArticle)
 	if !ok {
 		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("modifyArchiveArticleById:empty context")))
 	}
@@ -95,7 +95,7 @@ func (s *Server) getAllArchiveArticlesList(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) getArchiveArticleById(w http.ResponseWriter, r *http.Request) {
-	article := r.Context().Value("article").(*store.ArchiveArticle)
+	article := r.Context().Value(ArchiveCtxKey{}).(*store.ArchiveArticle)
 	if err := render.Render(w, r, NewArticleResponse(article, http.StatusOK)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
@@ -109,7 +109,6 @@ func (s *Server) ArchiveCtx(next http.Handler) http.Handler {
 		articleID := strings.TrimPrefix(r.URL.Path, "/api/archive/")
 
 		if articleID != "" {
-
 			article, err = s.DB.GetArchiveArticleById(articleID)
 			if err != nil {
 				log.Error().Msgf("s.DB.GetArchiveArticleById [%v]", err.Error())
@@ -123,7 +122,7 @@ func (s *Server) ArchiveCtx(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), "article", article)
+		ctx := context.WithValue(r.Context(), ArchiveCtxKey{}, article)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

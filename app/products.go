@@ -11,6 +11,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type ProductCtxKey struct{}
+
 // admin panel
 func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 	data := &ProductRequest{}
@@ -51,7 +53,7 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
-	cProduct, ok := r.Context().Value("product").(*store.Product)
+	cProduct, ok := r.Context().Value(ProductCtxKey{}).(*store.Product)
 	if !ok {
 		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("deleteProductById:empty context")))
 	}
@@ -66,7 +68,7 @@ func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 
-	cProduct, ok := r.Context().Value("product").(*store.Product)
+	cProduct, ok := r.Context().Value(ProductCtxKey{}).(*store.Product)
 	if !ok {
 		render.Render(w, r, ErrInvalidRequest(fmt.Errorf("modifyProductsById:empty context")))
 	}
@@ -105,7 +107,7 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getProductById(w http.ResponseWriter, r *http.Request) {
-	product := r.Context().Value("product").(*store.Product)
+	product := r.Context().Value(ProductCtxKey{}).(*store.Product)
 	if err := render.Render(w, r, NewProductResponse(product, http.StatusOK)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
@@ -132,7 +134,7 @@ func (s *Server) ProductCtx(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), "product", product)
+		ctx := context.WithValue(r.Context(), ProductCtxKey{}, product)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
