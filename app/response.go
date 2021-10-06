@@ -50,6 +50,15 @@ func ErrInternalServerError(err error) render.Renderer {
 	}
 }
 
+func ErrUnauthorizedError(err error) render.Renderer {
+	return &ErrResponse{
+		Err:            err,
+		HTTPStatusCode: http.StatusUnauthorized,
+		StatusText:     http.StatusText(http.StatusUnauthorized),
+		ErrorText:      err.Error(),
+	}
+}
+
 var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not found."}
 
 // archive article
@@ -123,5 +132,20 @@ func NewImageResponse(status, url string) *ImageResponse {
 }
 
 func (i *ImageResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
+}
+
+// auth
+
+type AuthResponse struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+}
+
+func NewAuthResponse(ar *AuthResponse) *AuthResponse {
+	return ar
+}
+
+func (i *AuthResponse) Render(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
