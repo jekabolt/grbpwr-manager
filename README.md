@@ -53,6 +53,15 @@ STORAGE_TYPE=redis # not implemented
 
 ```
 
+#### bunt-db
+
+```
+BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
+BUNT_DB_ARTICLES_PATH=/root/bunt/articles.db
+BUNT_DB_SALES_PATH=/root/bunt/sales.db
+
+```
+
 #### auth 
 
 ```
@@ -61,13 +70,6 @@ ADMIN_SECRET=xxx # password for access protected api routes
 
 ```
 
-
-```
-BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
-BUNT_DB_ARTICLES_PATH=/root/bunt/articles.db
-BUNT_DB_SALES_PATH=/root/bunt/sales.db
-
-```
 
 ## Swagger for requests
 
