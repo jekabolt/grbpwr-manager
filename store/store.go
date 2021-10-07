@@ -14,7 +14,7 @@ type ProductStore interface {
 }
 
 type ProductCRUD interface {
-	AddProduct(p *Product) error
+	AddProduct(p *Product) (*Product, error)
 	GetProductById(id string) (*Product, error)
 	GetAllProducts() ([]*Product, error)
 	DeleteProductById(id string) error
@@ -22,7 +22,7 @@ type ProductCRUD interface {
 }
 
 type ArchiveArticleCRUD interface {
-	AddArchiveArticle(aa *ArchiveArticle) error
+	AddArchiveArticle(aa *ArchiveArticle) (*ArchiveArticle, error)
 	GetArchiveArticleById(id string) (*ArchiveArticle, error)
 	GetAllArchiveArticles() ([]*ArchiveArticle, error)
 	DeleteArchiveArticleById(id string) error
@@ -32,7 +32,7 @@ type ArchiveArticleCRUD interface {
 func GetDB(t string) (ProductStore, error) {
 	switch t {
 	case BuntDBType:
-		return &BuntDB{}, nil
+		return BuntFromEnv()
 	}
 	return nil, fmt.Errorf("GetDB: db type [%s] is not exist ", t)
 }

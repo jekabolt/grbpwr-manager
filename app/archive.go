@@ -33,7 +33,7 @@ func (s *Server) addArchiveArticle(w http.ResponseWriter, r *http.Request) {
 		data.MainImage = mainUrl
 	}
 
-	if err := s.DB.AddArchiveArticle(data.ArchiveArticle); err != nil {
+	if _, err := s.DB.AddArchiveArticle(data.ArchiveArticle); err != nil {
 		log.Error().Err(err).Msgf("addArchiveArticle:s.DB.AddArchiveArticle [%v]", err.Error())
 		render.Render(w, r, ErrInternalServerError(err))
 	}

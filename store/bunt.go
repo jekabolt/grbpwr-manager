@@ -18,12 +18,13 @@ type BuntDB struct {
 	sales              *buntdb.DB
 }
 
-func (db *BuntDB) InitDB() error {
+func BuntFromEnv() (*BuntDB, error) {
+	b := BuntDB{}
+	err := env.Parse(b)
+	return &b, err
+}
 
-	err := env.Parse(db)
-	if err != nil {
-		return fmt.Errorf("BuntDB:InitDB:env.Parse: %s ", err.Error())
-	}
+func (db *BuntDB) InitDB() error {
 
 	productsDB, err := buntdb.Open(db.BuntDBProductsPath)
 	if err != nil {
@@ -46,14 +47,14 @@ func (db *BuntDB) InitDB() error {
 
 // products
 
-func (db *BuntDB) AddProduct(p *Product) error {
+func (db *BuntDB) AddProduct(p *Product) (*Product, error) {
 
 	now := time.Now().Unix()
 	p.Id = now
 	p.DateCreated = now
 	p.LastActionTime = now
 
-	return db.products.Update(func(tx *buntdb.Tx) error {
+	return p, db.products.Update(func(tx *buntdb.Tx) error {
 		tx.Set(fmt.Sprintf("%d", now), p.String(), nil)
 		return nil
 	})
@@ -123,13 +124,13 @@ func (db *BuntDB) ModifyProductById(id string, pNew *Product) error {
 
 // archive
 
-func (db *BuntDB) AddArchiveArticle(aa *ArchiveArticle) error {
+func (db *BuntDB) AddArchiveArticle(aa *ArchiveArticle) (*ArchiveArticle, error) {
 
 	now := time.Now().Unix()
 	aa.Id = now
 	aa.DateCreated = now
 
-	return db.articles.Update(func(tx *buntdb.Tx) error {
+	return aa, db.articles.Update(func(tx *buntdb.Tx) error {
 		tx.Set(fmt.Sprintf("%d", now), aa.String(), nil)
 		return nil
 	})
