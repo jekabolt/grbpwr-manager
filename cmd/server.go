@@ -36,8 +36,8 @@ func main() {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
-	b, _ := json.Marshal(cfg)
-	log.Info().Str("config", string(b)).Msg("Started with config")
+	confBytes, _ := json.Marshal(cfg)
+	log.Info().Str("config", string(confBytes)).Msg("Started with config")
 
 	db, err := store.GetDB(cfg.StorageType)
 	if err != nil {
@@ -49,12 +49,15 @@ func main() {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
 
-	bucket, err := bucket.InitBucket()
+	b, err := bucket.BucketFromEnv()
 	if err != nil {
+		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init get bucket env err:[%s]", err.Error()))
+	}
+	if err := b.InitBucket(); err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, bucket, cfg.Port, cfg.Host,
+	s := app.InitServer(db, b, cfg.Port, cfg.Origin,
 		cfg.Origin, cfg.JWTSecret, cfg.AdminSecret, cfg.Debug)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
