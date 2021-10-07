@@ -45,7 +45,7 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		data.MainImage = mainUrl
 	}
 
-	if err := s.DB.AddProduct(data.Product); err != nil {
+	if _, err := s.DB.AddProduct(data.Product); err != nil {
 		log.Error().Err(err).Msgf("addProduct:s.DB.AddProduct [%v]", err.Error())
 		render.Render(w, r, ErrInternalServerError(err))
 	}
