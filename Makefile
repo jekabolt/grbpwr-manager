@@ -1,6 +1,6 @@
 REGISTRY=grbpwr
 IMAGE_NAME=grbpwr-pm
-VERSION=1.0.0
+VERSION=master
 
 build:
 	go build -o ./bin/$(IMAGE_NAME) ./cmd/

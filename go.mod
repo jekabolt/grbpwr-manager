@@ -7,7 +7,6 @@ require (
 	github.com/go-chi/chi v1.5.4
 	github.com/go-chi/chi/v5 v5.0.4
 	github.com/go-chi/cors v1.2.0
-	github.com/go-chi/docgen v1.2.0
 	github.com/go-chi/httprate v0.5.1
 	github.com/go-chi/jwtauth/v5 v5.0.2
 	github.com/go-chi/render v1.0.1
