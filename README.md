@@ -45,11 +45,28 @@ IMAGE_STORE_PREFIX=grbpwr-com
 
 #### db
 
+Maybe I'll implement redis as storage 
+
+```
+STORAGE_TYPE=bunt
+STORAGE_TYPE=redis # not implemented
+
+```
+
+#### auth 
+
+```
+JWT_SECRET=xxx
+ADMIN_SECRET=xxx # password for access protected api routes
+
+```
+
+
 ```
 BUNT_DB_PRODUCTS_PATH=/root/bunt/products.db
 BUNT_DB_ARTICLES_PATH=/root/bunt/articles.db
 BUNT_DB_SALES_PATH=/root/bunt/sales.db
-STORAGE_TYPE=bunt
+
 ```
 
 ## Swagger for requests
