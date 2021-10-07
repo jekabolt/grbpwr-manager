@@ -24,18 +24,23 @@ type Bucket struct {
 	ImageStorePrefix  string `env:"IMAGE_STORE_PREFIX" envDefault:"grbpwr-com"`
 }
 
-func InitBucket() (*Bucket, error) {
-	b := &Bucket{}
-	err := env.Parse(b)
-	if err != nil {
-		return nil, fmt.Errorf("BuntDB:InitDB:env.Parse: %s ", err.Error())
-	}
-	cli, err := minio.New(b.S3Endpoint, b.S3AccessKey, b.S3SecretAccessKey, true)
-	b.Client = cli
-	return b, err
+type B64Image struct {
+	Content     []byte
+	ContentType string
 }
 
-// func (b *Bucket) UploadToBucket(img *bufio.Reader, contentType string) (string, error) {
+func BucketFromEnv() (*Bucket, error) {
+	b := Bucket{}
+	err := env.Parse(b)
+	return &b, err
+}
+
+func (b *Bucket) InitBucket() error {
+	cli, err := minio.New(b.S3Endpoint, b.S3AccessKey, b.S3SecretAccessKey, true)
+	b.Client = cli
+	return err
+}
+
 func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, error) {
 
 	fp := b.getImageFullPath(fileExtensionFromContentType(contentType))
@@ -55,32 +60,40 @@ func (b *Bucket) UploadToBucket(img io.Reader, contentType string) (string, erro
 	return b.GetCDNURL(fp), nil
 }
 
-func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
-	var img image.Image
-	var err error
-
+func GetB64ImageFromString(rawB64Image string) (*B64Image, error) {
 	ss := strings.Split(rawB64Image, ";base64,")
 	if len(ss) != 2 {
-		return "", fmt.Errorf("UploadImage:bad base64 image")
+		return nil, fmt.Errorf("UploadImage:bad base64 image")
+	}
+	return &B64Image{
+		Content:     []byte(ss[1]),
+		ContentType: ss[0],
+	}, nil
+
+}
+
+func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
+	var img image.Image
+
+	b64Img, err := GetB64ImageFromString(rawB64Image)
+	if err != nil {
+		return "", err
 	}
 
-	b64Image := ss[1]
-	contentType := ss[0]
-
-	switch contentType {
+	switch b64Img.ContentType {
 	case "data:image/jpeg":
-		img, err = JPGFromB64([]byte(b64Image))
+		img, err = JPGFromB64(b64Img.Content)
 		if err != nil {
 			return "", fmt.Errorf("UploadImage:JPGFromB64: [%v]", err.Error())
 		}
 	case "data:image/png":
-		img, err = PNGFromB64([]byte(b64Image))
+		img, err = PNGFromB64(b64Img.Content)
 		if err != nil {
 			return "", fmt.Errorf("UploadImage:PNGFromB64: [%v]", err.Error())
 		}
 
 	default:
-		return "", fmt.Errorf("UploadImage:PNGFromB64: File type is not supported [%s]", contentType)
+		return "", fmt.Errorf("UploadImage:PNGFromB64: File type is not supported [%s]", b64Img.ContentType)
 	}
 
 	// square check
