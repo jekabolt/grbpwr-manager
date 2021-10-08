@@ -6,6 +6,9 @@ admin-client
 bin
 bunt
 
+cover.out 
+cover.html
+
 #
 layout
 
