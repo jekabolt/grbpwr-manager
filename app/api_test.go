@@ -154,6 +154,30 @@ func getProductReq(t *testing.T, name string) *bytes.Reader {
 
 }
 
+func getArticleReq(t *testing.T, title string) *bytes.Reader {
+	a := store.ArchiveArticle{
+		Title:       title,
+		Description: "desc",
+		MainImage:   "https://main.com/img.jpg",
+		Content: []store.Content{
+			{
+				MediaLink:              "https://MediaLink.com/img.jpg",
+				Description:            "desc",
+				DescriptionAlternative: "alt",
+			},
+		},
+	}
+
+	aBytes, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+		return nil
+	}
+
+	return bytes.NewReader(aBytes)
+
+}
+
 func TestProductsCRUDWAuth(t *testing.T) {
 	db := buntFromConst()
 	if err := db.InitDB(); err != nil {
@@ -218,5 +242,72 @@ func TestProductsCRUDWAuth(t *testing.T) {
 	}
 	if len(*allProductResp) != 0 {
 		t.Fatal("TestProductsCRUDWAuth: should be empty")
+	}
+}
+
+func TestArticlesCRUDWAuth(t *testing.T) {
+	db := buntFromConst()
+	if err := db.InitDB(); err != nil {
+		t.Fatal("TestArticlesCRUDWAuth:buntFromConst ", err)
+	}
+	s := InitServer(db, nil, serverPort, host, origin, jwtSecret, adminSecret, true)
+
+	ts := httptest.NewServer(s.Router())
+	defer ts.Close()
+
+	// jwt token
+	authData, err := s.GetJWT()
+	if err != nil {
+		t.Fatal("TestArticlesCRUDWAuth:s.GetJWT ", err)
+	}
+
+	// add article
+	articleResp := &ArticleResponse{}
+	title1 := "title1"
+	res, pr := testRequest(t, ts, http.MethodPost, "/api/archive", getArticleReq(t, title1), articleResp, authData.AccessToken)
+	articleResp = pr.(*ArticleResponse)
+	if res.StatusCode != http.StatusOK {
+		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
+	}
+
+	// modify article
+	articleResp2 := &ArticleResponse{}
+	title2 := "title2"
+	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), getArticleReq(t, title2), articleResp2, authData.AccessToken)
+	// articleResp2 = mr.(*ArticleResponse)
+	if res2.StatusCode != http.StatusOK {
+		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
+	}
+
+	// get article by id
+	articleResp3 := &ArticleResponse{}
+	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp3, authData.AccessToken)
+	articleResp3 = gr.(*ArticleResponse)
+	if res3.StatusCode != http.StatusOK {
+		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
+	}
+	if articleResp3.ArchiveArticle.Title != title2 {
+		t.Fatal("TestArticlesCRUDWAuth: not modified")
+	}
+
+	// delete article by id
+	articleResp4 := &ArticleResponse{}
+	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp4, authData.AccessToken)
+	articleResp4 = dr.(*ArticleResponse)
+	if res4.StatusCode != http.StatusOK {
+		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
+	}
+
+	t.Logf("%+v", articleResp4)
+
+	// get all
+	allArticleResp := &[]store.Product{}
+	res5, ar := testRequest(t, ts, http.MethodGet, "/api/archive", nil, allArticleResp, authData.AccessToken)
+	allArticleResp = ar.(*[]store.Product)
+	if res5.StatusCode != http.StatusOK {
+		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
+	}
+	if len(*allArticleResp) != 0 {
+		t.Fatal("TestArticlesCRUDWAuth: should be empty")
 	}
 }
