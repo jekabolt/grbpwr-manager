@@ -97,8 +97,8 @@ type ProductResponse struct {
 	Product    *store.Product `json:"product,omitempty"`
 }
 
-func NewProductResponse(article *store.Product, statusCode int) *ProductResponse {
-	resp := &ProductResponse{Product: article, StatusCode: statusCode}
+func NewProductResponse(product *store.Product, statusCode int) *ProductResponse {
+	resp := &ProductResponse{Product: product, StatusCode: statusCode}
 	return resp
 }
 

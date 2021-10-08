@@ -14,7 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func (s *Server) Serve() error {
+func (s *Server) Router() *chi.Mux {
 	r := chi.NewRouter()
 
 	cors := cors.New(cors.Options{
@@ -90,7 +90,7 @@ func (s *Server) Serve() error {
 		})
 
 		r.Route("/product/{id}", func(r chi.Router) {
-			r.Use(s.ArchiveCtx)
+			r.Use(s.ProductCtx)
 
 			// with jwt auth
 			r.Group(func(r chi.Router) {
@@ -112,8 +112,12 @@ func (s *Server) Serve() error {
 
 	})
 
+	return r
+}
+
+func (s *Server) Serve() error {
 	log.Info().Msg("Listening on :" + s.Port)
-	return http.ListenAndServe(":"+s.Port, r)
+	return http.ListenAndServe(":"+s.Port, s.Router())
 }
 
 func PostCtx(next http.Handler) http.Handler {

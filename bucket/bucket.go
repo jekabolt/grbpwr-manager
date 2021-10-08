@@ -30,9 +30,9 @@ type B64Image struct {
 }
 
 func BucketFromEnv() (*Bucket, error) {
-	b := Bucket{}
+	b := &Bucket{}
 	err := env.Parse(b)
-	return &b, err
+	return b, err
 }
 
 func (b *Bucket) InitBucket() error {
