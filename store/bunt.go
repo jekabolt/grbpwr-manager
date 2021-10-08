@@ -19,9 +19,9 @@ type BuntDB struct {
 }
 
 func BuntFromEnv() (*BuntDB, error) {
-	b := BuntDB{}
+	b := &BuntDB{}
 	err := env.Parse(b)
-	return &b, err
+	return b, err
 }
 
 func (db *BuntDB) InitDB() error {

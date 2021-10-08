@@ -22,7 +22,6 @@ type Server struct {
 }
 
 func InitServer(db store.ProductStore, bucket *bucket.Bucket, port, host, origin, jwtSecret, adminSecret string, debug bool) *Server {
-
 	return &Server{
 		DB:          db,
 		Bucket:      bucket,
