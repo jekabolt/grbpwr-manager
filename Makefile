@@ -8,6 +8,9 @@ build:
 run: build
 	./bin/$(IMAGE_NAME)
 
+coverage:
+	go test ./... -v -coverprofile cover.out .  && go tool cover -func cover.out
+
 local: build
 	source .env && ./bin/$(IMAGE_NAME)
 
