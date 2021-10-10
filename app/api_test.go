@@ -25,9 +25,8 @@ const (
 	BuntDBArticlesPath = "../bunt/articles.db"
 	BuntDBSalesPath    = "../bunt/sales.db"
 
-	serverPort  = "8080"
-	host        = ""
-	origin      = "*"
+	serverPort = "8080"
+
 	jwtSecret   = "jwtSecret"
 	adminSecret = "adminSecret"
 )
@@ -96,7 +95,8 @@ func (s *Server) getAuthRequestRefresh(rt string) *bytes.Reader {
 }
 
 func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
-	s := InitServer(nil, nil, serverPort, host, origin, jwtSecret, adminSecret, true)
+	hosts := []string{"*"}
+	s := InitServer(nil, nil, serverPort, jwtSecret, adminSecret, hosts, true)
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -183,7 +183,9 @@ func TestProductsCRUDWAuth(t *testing.T) {
 	if err := db.InitDB(); err != nil {
 		t.Fatal("TestProductsCRUDWAuth:buntFromConst ", err)
 	}
-	s := InitServer(db, nil, serverPort, host, origin, jwtSecret, adminSecret, true)
+
+	hosts := []string{"*"}
+	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -250,7 +252,8 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 	if err := db.InitDB(); err != nil {
 		t.Fatal("TestArticlesCRUDWAuth:buntFromConst ", err)
 	}
-	s := InitServer(db, nil, serverPort, host, origin, jwtSecret, adminSecret, true)
+	hosts := []string{"*"}
+	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()

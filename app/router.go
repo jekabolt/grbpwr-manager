@@ -18,7 +18,7 @@ func (s *Server) Router() *chi.Mux {
 	r := chi.NewRouter()
 
 	cors := cors.New(cors.Options{
-		AllowedOrigins: []string{s.Origin},
+		AllowedOrigins: s.Hosts,
 		AllowedMethods: []string{
 			http.MethodHead,
 			http.MethodGet,
@@ -27,8 +27,6 @@ func (s *Server) Router() *chi.Mux {
 			http.MethodOptions,
 			http.MethodDelete,
 		},
-		OptionsPassthrough: true,
-
 		Debug: s.Debug,
 	})
 
@@ -54,7 +52,7 @@ func (s *Server) Router() *chi.Mux {
 		w.Write([]byte("OK"))
 	})
 
-	r.Options("/*", s.handleOptions)
+	// r.Options("/*", s.handleOptions)
 
 	r.Post("/auth", s.auth)
 

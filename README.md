@@ -28,7 +28,6 @@ service for upload and manage stock products and articles on [grbpwr.com](https:
 
 ```
 PORT=8081
-HOST=localhost:8080
 ORIGIN=*
 ```
 

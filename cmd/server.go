@@ -13,12 +13,11 @@ import (
 )
 
 type Config struct {
-	Port        string `env:"PORT" envDefault:"8081"`
-	Host        string `env:"HOST" envDefault:"localhost:8080"`
-	Origin      string `env:"ORIGIN" envDefault:"*"`
-	StorageType string `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
-	JWTSecret   string `env:"JWT_SECRET" envDefault:"kek"`
-	AdminSecret string `env:"ADMIN_SECRET" envDefault:"kek"`
+	Port        string   `env:"PORT" envDefault:"8081"`
+	Hosts       []string `env:"HOSTS" envSeparator:":"`
+	StorageType string   `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
+	JWTSecret   string   `env:"JWT_SECRET" envDefault:"kek"`
+	AdminSecret string   `env:"ADMIN_SECRET" envDefault:"kek"`
 
 	Debug bool `env:"DEBUG" envDefault:"false"`
 }
@@ -57,8 +56,8 @@ func main() {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, b, cfg.Port, cfg.Origin,
-		cfg.Origin, cfg.JWTSecret, cfg.AdminSecret, cfg.Debug)
+	s := app.InitServer(db, b, cfg.Port,
+		cfg.JWTSecret, cfg.AdminSecret, cfg.Hosts, cfg.Debug)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }
