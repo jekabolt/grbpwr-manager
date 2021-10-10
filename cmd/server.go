@@ -14,7 +14,7 @@ import (
 
 type Config struct {
 	Port        string   `env:"PORT" envDefault:"8081"`
-	Hosts       []string `env:"HOSTS" envSeparator:":"`
+	Hosts       []string `env:"HOSTS" envSeparator:"|"`
 	StorageType string   `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
 	JWTSecret   string   `env:"JWT_SECRET" envDefault:"kek"`
 	AdminSecret string   `env:"ADMIN_SECRET" envDefault:"kek"`
