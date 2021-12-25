@@ -54,12 +54,10 @@ jobs:
           key: ${{ secrets.ID_RSA }}
           script: |
             docker pull jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
-            docker stop grbpwr-manager 
-            docker rm grbpwr-manager
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped  \
               --publish 8081:8081 \
-              --env-file .env \
+              --env-file /root/env.env \
               --mount src=/root/bunt,target=/root/bunt,type=bind \
               jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
 
@@ -76,3 +74,7 @@ jobs:
       #       docker pull jekabolt/grbpwr-manager:master 
       # - name: Run container
       #   run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd grbpwr-manager && docker stop grbpwr-manager && docker rm grbpwr-manager && docker run --name=grbpwr-manager  -d --restart=unless-stopped --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:master'
+
+
+#             docker stop grbpwr-manager 
+            # docker rm grbpwr-manager
