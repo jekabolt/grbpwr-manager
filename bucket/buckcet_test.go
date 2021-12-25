@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/matryer/is"
 )
 
 const S3AccessKey = "xxx"
@@ -27,6 +30,12 @@ const pngContentType = "image/png"
 const tifContentType = "image/tiff"
 
 const urlPrefix = "https://grbpwr.fra1.digitaloceanspaces.com/"
+
+func skipCI(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("Skipping testing in CI environment")
+	}
+}
 
 func BucketFromConst() *Bucket {
 	return &Bucket{
@@ -77,61 +86,46 @@ func getObjNameFromUrl(url string) string {
 }
 
 func TestUpload(t *testing.T) {
+	skipCI(t)
+
+	is := is.New(t)
+
 	b := BucketFromConst()
-	if err := b.InitBucket(); err != nil {
-		t.Fatal("TestClient:InitBucket ", err)
-	}
+	err := b.InitBucket()
+	is.NoErr(err)
 
 	spaces, err := b.ListBuckets()
-	if err != nil {
-		t.Fatal("TestClient:ListBuckets ", err)
-	}
+	is.NoErr(err)
 
 	for _, space := range spaces {
 		fmt.Println(space.Name)
 	}
 
 	jpg, err := imageToB64(jpgFilePath)
-	if err != nil {
-		t.Fatal("imageToB64 err ", err)
-	}
+	is.NoErr(err)
 
 	png, err := imageToB64(pngFilePath)
-	if err != nil {
-		t.Fatal("imageToB64 err ", err)
-	}
+	is.NoErr(err)
 
 	tif, err := imageToB64(tifFilePath)
-	if err != nil {
-		t.Fatal("imageToB64 err ", err)
-	}
+	is.NoErr(err)
 
 	jpgUrl, err := b.UploadImage(jpg)
-	if err != nil {
-		t.Fatal("UploadImage jpg ", err)
-	}
+	is.NoErr(err)
 
 	pngUrl, err := b.UploadImage(png)
-	if err != nil {
-		t.Fatal("UploadImage png ", err)
-	}
+	is.NoErr(err)
 
 	_, err = b.UploadImage(tif)
-	if err == nil {
-		t.Fatal("tif is not supported ", err)
-	}
+	is.NoErr(err)
 
 	t.Logf("jpgUrl %s", jpgUrl)
 
 	t.Logf("pngUrl %s", pngUrl)
 
 	err = b.Client.RemoveObject(b.S3BucketName, getObjNameFromUrl(jpgUrl))
-	if err != nil {
-		t.Fatal("UploadImage jpg ", err)
-	}
+	is.NoErr(err)
 
 	err = b.Client.RemoveObject(b.S3BucketName, getObjNameFromUrl(pngUrl))
-	if err != nil {
-		t.Fatal("UploadImage png ", err)
-	}
+	is.NoErr(err)
 }

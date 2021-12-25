@@ -6,8 +6,7 @@ admin-client
 bin
 bunt
 
-cover.out 
-cover.html
+*coverage*
 
 #
 layout

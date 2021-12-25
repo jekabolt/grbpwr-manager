@@ -11,6 +11,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/store"
+	"github.com/matryer/is"
 )
 
 const (
@@ -52,27 +53,20 @@ func buntFromConst() *store.BuntDB {
 
 func testRequest(t *testing.T, ts *httptest.Server, method, path string, body io.Reader, response interface{}, at string) (*http.Response, interface{}) {
 
+	is := is.New(t)
+
 	req, err := http.NewRequest(method, ts.URL+path, body)
-	if err != nil {
-		t.Fatal(err)
-		return nil, ""
-	}
+	is.NoErr(err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", at))
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-		return nil, ""
-	}
+	is.NoErr(err)
 
 	defer resp.Body.Close()
 
 	err = json.NewDecoder(resp.Body).Decode(response)
-	if err != nil {
-		t.Fatal(err)
-		return nil, ""
-	}
+	is.NoErr(err)
 
 	return resp, response
 }
@@ -95,6 +89,8 @@ func (s *Server) getAuthRequestRefresh(rt string) *bytes.Reader {
 }
 
 func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
+	is := is.New(t)
+
 	hosts := []string{"*"}
 	s := InitServer(nil, nil, serverPort, jwtSecret, adminSecret, hosts, true)
 
@@ -105,21 +101,19 @@ func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
 	authResp := &AuthResponse{}
 	res, ar := testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestPw(), authResp, "")
 	authResp = ar.(*AuthResponse)
-	if res.StatusCode != http.StatusOK {
-		t.Fatal("TestAuthTokenByPassword: status code should be 200")
-	}
+
+	is.Equal(res.StatusCode, http.StatusOK)
 
 	// auth w refresh
 	res, ar = testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestRefresh(authResp.RefreshToken), authResp, "")
 	authResp = ar.(*AuthResponse)
-	if res.StatusCode != http.StatusOK {
-		t.Fatal("TestAuthTokenByPassword: status code should be 200")
-	}
-
+	is.Equal(res.StatusCode, http.StatusOK)
+	is.Equal(res.StatusCode, http.StatusOK)
 	t.Logf("%+v", authResp)
 }
 
 func getProductReq(t *testing.T, name string) *bytes.Reader {
+	is := is.New(t)
 	prd := store.Product{
 		MainImage: "https://main.com/img.jpg",
 		Name:      name,
@@ -145,16 +139,14 @@ func getProductReq(t *testing.T, name string) *bytes.Reader {
 	}
 
 	prdBytes, err := json.Marshal(prd)
-	if err != nil {
-		t.Fatal(err)
-		return nil
-	}
+	is.NoErr(err)
 
 	return bytes.NewReader(prdBytes)
 
 }
 
 func getArticleReq(t *testing.T, title string) *bytes.Reader {
+	is := is.New(t)
 	a := store.ArchiveArticle{
 		Title:       title,
 		Description: "desc",
@@ -169,20 +161,18 @@ func getArticleReq(t *testing.T, title string) *bytes.Reader {
 	}
 
 	aBytes, err := json.Marshal(a)
-	if err != nil {
-		t.Fatal(err)
-		return nil
-	}
+	is.NoErr(err)
 
 	return bytes.NewReader(aBytes)
 
 }
 
 func TestProductsCRUDWAuth(t *testing.T) {
+	is := is.New(t)
+
 	db := buntFromConst()
-	if err := db.InitDB(); err != nil {
-		t.Fatal("TestProductsCRUDWAuth:buntFromConst ", err)
-	}
+	err := db.InitDB()
+	is.NoErr(err)
 
 	hosts := []string{"*"}
 	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
@@ -192,46 +182,34 @@ func TestProductsCRUDWAuth(t *testing.T) {
 
 	// jwt token
 	authData, err := s.GetJWT()
-	if err != nil {
-		t.Fatal("TestProductsCRUDWAuth:s.GetJWT ", err)
-	}
+	is.NoErr(err)
 
 	// add product
 	productResp := &ProductResponse{}
 	name1 := "name1"
 	res, pr := testRequest(t, ts, http.MethodPost, "/api/product", getProductReq(t, name1), productResp, authData.AccessToken)
 	productResp = pr.(*ProductResponse)
-	if res.StatusCode != http.StatusOK {
-		t.Fatal("TestProductsCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res.StatusCode, http.StatusOK)
 
 	// modify product
 	productResp2 := &ProductResponse{}
 	name2 := "name2"
 	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/product/%d", productResp.Product.Id), getProductReq(t, name2), productResp2, authData.AccessToken)
 	// productResp2 = mr.(*ProductResponse)
-	if res2.StatusCode != http.StatusOK {
-		t.Fatal("TestProductsCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res2.StatusCode, http.StatusOK)
 
 	// get product by id
 	productResp3 := &ProductResponse{}
 	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/product/%d", productResp.Product.Id), nil, productResp3, authData.AccessToken)
 	productResp3 = gr.(*ProductResponse)
-	if res3.StatusCode != http.StatusOK {
-		t.Fatal("TestProductsCRUDWAuth: status code should be 200")
-	}
-	if productResp3.Product.Name != name2 {
-		t.Fatal("TestProductsCRUDWAuth: not modified")
-	}
+	is.Equal(res3.StatusCode, http.StatusOK)
+	is.Equal(productResp3.Product.Name, name2)
 
 	// delete by id
 	productResp4 := &ProductResponse{}
 	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/product/%d", productResp.Product.Id), nil, productResp4, authData.AccessToken)
 	productResp4 = dr.(*ProductResponse)
-	if res4.StatusCode != http.StatusOK {
-		t.Fatal("TestProductsCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res4.StatusCode, http.StatusOK)
 
 	t.Logf("%+v", productResp4)
 
@@ -239,19 +217,17 @@ func TestProductsCRUDWAuth(t *testing.T) {
 	allProductResp := &[]store.Product{}
 	res5, ar := testRequest(t, ts, http.MethodGet, "/api/product", nil, allProductResp, authData.AccessToken)
 	allProductResp = ar.(*[]store.Product)
-	if res5.StatusCode != http.StatusOK {
-		t.Fatal("TestProductsCRUDWAuth: status code should be 200")
-	}
-	if len(*allProductResp) != 0 {
-		t.Fatal("TestProductsCRUDWAuth: should be empty")
-	}
+	is.Equal(res5.StatusCode, http.StatusOK)
+	is.Equal(len(*allProductResp), 0)
 }
 
 func TestArticlesCRUDWAuth(t *testing.T) {
+	is := is.New(t)
+
 	db := buntFromConst()
-	if err := db.InitDB(); err != nil {
-		t.Fatal("TestArticlesCRUDWAuth:buntFromConst ", err)
-	}
+	err := db.InitDB()
+	is.NoErr(err)
+
 	hosts := []string{"*"}
 	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
 
@@ -260,46 +236,34 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 
 	// jwt token
 	authData, err := s.GetJWT()
-	if err != nil {
-		t.Fatal("TestArticlesCRUDWAuth:s.GetJWT ", err)
-	}
+	is.NoErr(err)
 
 	// add article
 	articleResp := &ArticleResponse{}
 	title1 := "title1"
 	res, pr := testRequest(t, ts, http.MethodPost, "/api/archive", getArticleReq(t, title1), articleResp, authData.AccessToken)
 	articleResp = pr.(*ArticleResponse)
-	if res.StatusCode != http.StatusOK {
-		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res.StatusCode, http.StatusOK)
 
 	// modify article
 	articleResp2 := &ArticleResponse{}
 	title2 := "title2"
 	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), getArticleReq(t, title2), articleResp2, authData.AccessToken)
 	// articleResp2 = mr.(*ArticleResponse)
-	if res2.StatusCode != http.StatusOK {
-		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res2.StatusCode, http.StatusOK)
 
 	// get article by id
 	articleResp3 := &ArticleResponse{}
 	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp3, authData.AccessToken)
 	articleResp3 = gr.(*ArticleResponse)
-	if res3.StatusCode != http.StatusOK {
-		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
-	}
-	if articleResp3.ArchiveArticle.Title != title2 {
-		t.Fatal("TestArticlesCRUDWAuth: not modified")
-	}
+	is.Equal(res3.StatusCode, http.StatusOK)
+	is.Equal(articleResp3.ArchiveArticle.Title, title2)
 
 	// delete article by id
 	articleResp4 := &ArticleResponse{}
 	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp4, authData.AccessToken)
 	articleResp4 = dr.(*ArticleResponse)
-	if res4.StatusCode != http.StatusOK {
-		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
-	}
+	is.Equal(res4.StatusCode, http.StatusOK)
 
 	t.Logf("%+v", articleResp4)
 
@@ -307,10 +271,6 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 	allArticleResp := &[]store.Product{}
 	res5, ar := testRequest(t, ts, http.MethodGet, "/api/archive", nil, allArticleResp, authData.AccessToken)
 	allArticleResp = ar.(*[]store.Product)
-	if res5.StatusCode != http.StatusOK {
-		t.Fatal("TestArticlesCRUDWAuth: status code should be 200")
-	}
-	if len(*allArticleResp) != 0 {
-		t.Fatal("TestArticlesCRUDWAuth: should be empty")
-	}
+	is.Equal(res5.StatusCode, http.StatusOK)
+	is.Equal(len(*allArticleResp), 0)
 }
