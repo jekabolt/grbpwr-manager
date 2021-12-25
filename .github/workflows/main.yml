@@ -4,6 +4,15 @@ on:
     branches:
       - master
 
+
+  # create:
+  #   tags:
+  #     - v*
+
+  # create:
+  #   tags:
+  #     - v*
+
 jobs:
   push:
     name: Push Docker image
@@ -39,13 +48,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: push
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-      - name: Instal sshpass
+      # - name: ID_RSA setup 
+      #   run: echo ${{ secrets.ID_RSA }} >> ~/.ssh/id_rsa && chmod og ~/.ssh/id_rsa
+      - name: Update 
+        run: apk update && apk add openssh-client
+      - name: Run
         run: |
-          sudo apt-get update
-          sudo apt-get install sshpass -y
-      - name: Pull container
-        run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'docker pull jekabolt/grbpwr-manager:master'
-      - name: Run container
-        run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd grbpwr-manager && docker stop grbpwr-manager && docker rm grbpwr-manager && docker run --name=grbpwr-manager  -d --restart=unless-stopped --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:master'
+          echo "${{ secrets.ID_RSA }}" | ssh -q -i /dev/stdin -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            docker pull jekabolt/grbpwr-manager:master 
+      # - name: Run container
+      #   run: sudo sshpass -v -p '${{ secrets.SSH_PASS }}' -v  ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'cd grbpwr-manager && docker stop grbpwr-manager && docker rm grbpwr-manager && docker run --name=grbpwr-manager  -d --restart=unless-stopped --publish 8081:8081 --env-file .env --mount src=/root/bunt,target=/root/bunt,type=bind jekabolt/grbpwr-manager:master'

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/matryer/is"
 )
 
 const (
@@ -28,12 +30,12 @@ func buntFromConst() *BuntDB {
 
 func TestCRUDProducts(t *testing.T) {
 	b := buntFromConst()
+	is := is.New(t)
 
-	if err := b.InitDB(); err != nil {
-		t.Fatal("TestCRUDProducts:InitBucket ", err)
-	}
+	err := b.InitDB()
+	is.NoErr(err)
 
-	prd := Product{
+	prd := &Product{
 		MainImage: "img",
 		Name:      "name",
 		Price: &Price{
@@ -57,62 +59,43 @@ func TestCRUDProducts(t *testing.T) {
 		ProductImages: []string{"img1", "img2"},
 	}
 
-	p, err := b.AddProduct(&prd)
-	if err != nil {
-		t.Fatal("TestCRUDProducts:AddProduct ", err)
-	}
+	p, err := b.AddProduct(prd)
+	is.NoErr(err)
 
 	found, err := b.GetProductById(fmt.Sprint(p.Id))
-	if err != nil {
-		t.Fatal("TestCRUDProducts:GetProductById ", err)
-	}
-	if p.Name != found.Name {
-		t.Fatal("TestCRUDProducts:products not math ", err)
-	}
+	is.NoErr(err)
+	is.Equal(prd, found)
 
-	newName := "new name"
-
-	p.Name = newName
+	p.Name = "new name"
 
 	pNew := p
 
 	err = b.ModifyProductById(fmt.Sprint(p.Id), pNew)
-	if err != nil {
-		t.Fatal("TestCRUDProducts:ModifyProductById ", err)
-	}
+	is.NoErr(err)
 
 	foundModified, err := b.GetProductById(fmt.Sprint(p.Id))
-	if err != nil {
-		t.Fatal("TestCRUDProducts:GetProductById ", err)
-	}
-	if newName != foundModified.Name {
-		t.Fatal("TestCRUDProducts:products name  not math ", err)
-	}
+	is.NoErr(err)
+
+	is.Equal(pNew, foundModified)
 
 	err = b.DeleteProductById(fmt.Sprint(foundModified.Id))
-	if err != nil {
-		t.Fatal("TestCRUDProducts:DeleteProductById ", err)
-	}
+	is.NoErr(err)
 
 	prds, err := b.GetAllProducts()
-	if err != nil {
-		t.Fatal("TestCRUDProducts:GetAllProducts ", err)
-	}
+	is.NoErr(err)
 
-	if len(prds) != 0 {
-		t.Fatal("should be zero after deletion", err)
-	}
+	is.Equal(len(prds), 0)
 
 }
 
 func TestCRUDArticles(t *testing.T) {
 	b := buntFromConst()
+	is := is.New(t)
 
-	if err := b.InitDB(); err != nil {
-		t.Fatal("TestCRUDArticles:InitBucket ", err)
-	}
+	err := b.InitDB()
+	is.NoErr(err)
 
-	art := ArchiveArticle{
+	art := &ArchiveArticle{
 		Title:       "title",
 		Description: "desc",
 		MainImage:   "img",
@@ -125,50 +108,32 @@ func TestCRUDArticles(t *testing.T) {
 		},
 	}
 
-	a, err := b.AddArchiveArticle(&art)
-	if err != nil {
-		t.Fatal("TestCRUDArticles:AddProduct ", err)
-	}
+	a, err := b.AddArchiveArticle(art)
+	is.NoErr(err)
 
 	found, err := b.GetArchiveArticleById(fmt.Sprint(a.Id))
-	if err != nil {
-		t.Fatal("TestCRUDArticles:GetProductById ", err)
-	}
-	if a.Title != found.Title {
-		t.Fatal("TestCRUDArticles:articles not math ", err)
-	}
+	is.NoErr(err)
 
-	newTitle := "new title"
+	is.Equal(art, found)
 
-	a.Title = newTitle
+	a.Title = "new title"
 
 	aNew := a
 
 	err = b.ModifyArchiveArticleById(fmt.Sprint(a.Id), aNew)
-	if err != nil {
-		t.Fatal("TestCRUDArticles:ModifyProductById ", err)
-	}
+	is.NoErr(err)
 
 	foundModified, err := b.GetArchiveArticleById(fmt.Sprint(a.Id))
-	if err != nil {
-		t.Fatal("TestCRUDArticles:GetProductById ", err)
-	}
-	if newTitle != foundModified.Title {
-		t.Fatal("TestCRUDArticles:articles name  not math ", err)
-	}
+	is.NoErr(err)
+
+	is.Equal(aNew, foundModified)
 
 	err = b.DeleteArchiveArticleById(fmt.Sprint(foundModified.Id))
-	if err != nil {
-		t.Fatal("TestCRUDArticles:DeleteProductById ", err)
-	}
+	is.NoErr(err)
 
 	arts, err := b.GetAllArchiveArticles()
-	if err != nil {
-		t.Fatal("TestCRUDArticles:GetAllProducts ", err)
-	}
+	is.NoErr(err)
 
-	if len(arts) != 0 {
-		t.Fatal("should be zero after deletion", err)
-	}
+	is.Equal(len(arts), 0)
 
 }
