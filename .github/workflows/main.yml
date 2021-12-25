@@ -1,17 +1,12 @@
 name: Build and run docker image on remote
 on:
-  push:
-    branches:
-      - master
+  create:
+    tags:
+      - v*
 
-
-  # create:
-  #   tags:
-  #     - v*
-
-  # create:
-  #   tags:
-  #     - v*
+  # push:
+  #   branches:
+  #     - master
 
 jobs:
   push:
@@ -56,6 +51,7 @@ jobs:
           key: ${{ secrets.ID_RSA }}
           script: |
             docker pull jekabolt/grbpwr-manager:master
+            echo ${GITHUB_REF##*/}
 
         
     
