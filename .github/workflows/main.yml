@@ -50,8 +50,8 @@ jobs:
     steps:
       # - name: ID_RSA setup 
       #   run: echo ${{ secrets.ID_RSA }} >> ~/.ssh/id_rsa && chmod og ~/.ssh/id_rsa
-      - name: Update 
-        run: apk update && apk add openssh-client
+      # - name: Update 
+      #   run: apk update && apk add openssh-client
       - name: Run
         run: |
           echo "${{ secrets.ID_RSA }}" | ssh -q -i /dev/stdin -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
