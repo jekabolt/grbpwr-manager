@@ -54,7 +54,11 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.ID_RSA }}
-          script: whoami
+          script: |
+            docker pull jekabolt/grbpwr-manager:master
+
+        
+    
       # - name: ID_RSA setup 
       #   run: echo ${{ secrets.ID_RSA }} >> ~/.ssh/id_rsa && chmod og ~/.ssh/id_rsa
       # - name: Update 
