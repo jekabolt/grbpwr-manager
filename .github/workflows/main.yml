@@ -56,7 +56,7 @@ jobs:
             docker pull jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped  \
-              --publish 8081:8081 \
+              --publish 8081:80 \
               --env-file /root/env/.env \
               --mount src=/root/bunt,target=/root/bunt,type=bind \
               jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
