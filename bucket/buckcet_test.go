@@ -117,7 +117,7 @@ func TestUpload(t *testing.T) {
 	is.NoErr(err)
 
 	_, err = b.UploadImage(tif)
-	is.NoErr(err)
+	is.True(err != nil)
 
 	t.Logf("jpgUrl %s", jpgUrl)
 
