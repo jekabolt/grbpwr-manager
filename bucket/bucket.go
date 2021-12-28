@@ -96,9 +96,11 @@ func (b *Bucket) UploadImage(rawB64Image string) (string, error) {
 		return "", fmt.Errorf("UploadImage:PNGFromB64: File type is not supported [%s]", b64Img.ContentType)
 	}
 
+	fmt.Println("--- img.Bounds().Max.X ", img.Bounds().Max.X)
+	fmt.Println("--- img.Bounds().Max.Y ", img.Bounds().Max.Y)
 	// square check
 	if img.Bounds().Max.X != img.Bounds().Max.Y {
-		return "", fmt.Errorf("UploadImage:image is not square: [%v]", err.Error())
+		return "", fmt.Errorf("UploadImage:image is not square: [%d x %d]", img.Bounds().Max.X, img.Bounds().Max.Y)
 	}
 
 	var buf bytes.Buffer
