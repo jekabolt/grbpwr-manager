@@ -112,12 +112,20 @@ func TestCRUDArticles(t *testing.T) {
 	art := &ArchiveArticle{
 		Title:       "title",
 		Description: "desc",
-		MainImage:   "img",
+		MainImage: bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "img",
+			},
+		},
 		Content: []Content{
 			{
+				Image: bucket.Image{
+					FullSize: "img",
+				},
 				MediaLink:              "link",
 				Description:            "desc",
 				DescriptionAlternative: "alt",
+				TextPosition:           "top",
 			},
 		},
 	}
