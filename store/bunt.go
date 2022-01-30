@@ -10,12 +10,14 @@ import (
 )
 
 type BuntDB struct {
-	BuntDBProductsPath string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"/tmp/products.db"`
-	BuntDBArticlesPath string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
-	BuntDBSalesPath    string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
-	products           *buntdb.DB
-	articles           *buntdb.DB
-	sales              *buntdb.DB
+	BuntDBProductsPath    string `env:"BUNT_DB_PRODUCTS_PATH" envDefault:"/tmp/products.db"`
+	BuntDBArticlesPath    string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
+	BuntDBSalesPath       string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
+	BuntDBSubscribersPath string `env:"BUNT_DB_SUBSCRIBERS_PATH" envDefault:"/tmp/subscribers.db"`
+	products              *buntdb.DB
+	articles              *buntdb.DB
+	subscribers           *buntdb.DB
+	sales                 *buntdb.DB
 }
 
 func BuntFromEnv() (*BuntDB, error) {
@@ -38,10 +40,15 @@ func (db *BuntDB) InitDB() error {
 	if err != nil {
 		return err
 	}
+	subscribers, err := buntdb.Open(db.BuntDBSubscribersPath)
+	if err != nil {
+		return err
+	}
 
 	db.products = productsDB
 	db.articles = articlesDB
 	db.sales = salesDB
+	db.subscribers = subscribers
 	return nil
 }
 
@@ -81,7 +88,10 @@ func (db *BuntDB) GetAllProducts() ([]*Product, error) {
 	products := []*Product{}
 	err := db.products.View(func(tx *buntdb.Tx) error {
 		tx.Ascend("", func(_, productStr string) bool {
-			products = append(products, getProductFromString(productStr))
+			p := getProductFromString(productStr)
+			if p != nil {
+				products = append(products, p)
+			}
 			return true
 		})
 		return nil
@@ -194,5 +204,52 @@ func (db *BuntDB) ModifyArchiveArticleById(id string, aaNew *ArchiveArticle) err
 		return nil
 	})
 
+	return err
+}
+
+// newsletter
+
+func (db *BuntDB) AddSubscriber(s *Subscriber) (*Subscriber, error) {
+	return s, db.subscribers.Update(func(tx *buntdb.Tx) error {
+		tx.Set(s.Email, s.String(), nil)
+		return nil
+	})
+}
+
+func (db *BuntDB) GetSubscriberByEmail(email string) (*Subscriber, error) {
+	nl := &Subscriber{}
+	err := db.subscribers.View(func(tx *buntdb.Tx) error {
+		subscriberStr, err := tx.Get(email)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal([]byte(subscriberStr), nl)
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("GetSubscriberByEmail:db.articles.View:err [%v]", err.Error())
+	}
+
+	return nl, err
+}
+
+func (db *BuntDB) GetAllSubscribers() ([]*Subscriber, error) {
+	s := []*Subscriber{}
+	err := db.subscribers.View(func(tx *buntdb.Tx) error {
+		tx.Ascend("", func(_, articlesStr string) bool {
+			subscriber := getSubscriberFromString(articlesStr)
+			s = append(s, subscriber)
+			return true
+		})
+		return nil
+	})
+	return s, err
+}
+
+func (db *BuntDB) DeleteSubscriberByEmail(id string) error {
+	err := db.subscribers.Update(func(tx *buntdb.Tx) error {
+		_, err := tx.Delete(id)
+		return err
+	})
 	return err
 }

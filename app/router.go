@@ -40,7 +40,7 @@ func (s *Server) Router() *chi.Mux {
 	r.Use(render.SetContentType(render.ContentTypeJSON))
 
 	r.Use(httprate.Limit(
-		7,              // requests
+		10,             // requests
 		15*time.Second, // per duration
 		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
@@ -51,8 +51,6 @@ func (s *Server) Router() *chi.Mux {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-
-	// r.Options("/*", s.handleOptions)
 
 	r.Post("/auth", s.auth)
 
@@ -105,8 +103,17 @@ func (s *Server) Router() *chi.Mux {
 
 		})
 
+		r.Group(func(r chi.Router) {
+			r.Use(jwtauth.Verifier(s.JWTAuth))
+			r.Use(s.Authenticator)
+
+			r.Get("/subscribe", s.getAllSubscribers)
+			r.Delete("/subscribe/{emailB64}", s.deleteSubscriberByEmail)
+		})
+
 		r.Get("/archive", s.getAllArchiveArticlesList) // public
 		r.Get("/product", s.getAllProductsList)        // public
+		r.Post("/subscribe", s.subscribeNewsletter)    // public
 
 	})
 
