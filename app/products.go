@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/render"
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog/log"
 )
@@ -23,26 +24,26 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// upload raw base64 images from request
-	if !strings.Contains(data.MainImage, "https://") {
-		urls := []string{}
+	if !strings.Contains(data.MainImage.FullSize, "https://") {
+		productImages := []bucket.Image{}
 		for _, rawB64Image := range data.ProductImages {
-			url, err := s.Bucket.UploadImage(rawB64Image)
+			prdImg, err := s.Bucket.UploadProductImage(rawB64Image.FullSize)
 			if err != nil {
 				log.Error().Err(err).Msgf("addProduct:s.Bucket.UploadImage [%v]", err.Error())
 				render.Render(w, r, ErrInternalServerError(err))
 				return
 			}
-			urls = append(urls, url)
+			productImages = append(productImages, *prdImg)
 		}
-		data.ProductImages = urls
+		data.ProductImages = productImages
 
-		mainUrl, err := s.Bucket.UploadImage(data.MainImage)
+		mainImage, err := s.Bucket.UploadProductMainImage(data.MainImage.FullSize)
 		if err != nil {
 			log.Error().Err(err).Msgf("addProduct:s.Bucket.UploadImage:main [%v]", err.Error())
 			render.Render(w, r, ErrInternalServerError(err))
 			return
 		}
-		data.MainImage = mainUrl
+		data.MainImage = *mainImage
 	}
 
 	if _, err := s.DB.AddProduct(data.Product); err != nil {
