@@ -5,20 +5,21 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/tidwall/gjson"
 )
 
 type Product struct {
-	Id             int64    `json:"id"`
-	DateCreated    int64    `json:"dateCreated"`
-	LastActionTime int64    `json:"lat"`
-	MainImage      string   `json:"mainImage"`
-	Name           string   `json:"name"`
-	Price          *Price   `json:"price"`
-	AvailableSizes *Size    `json:"availableSizes"`
-	Description    string   `json:"description,omitempty"`
-	Categories     []string `json:"categories,omitempty"`
-	ProductImages  []string `json:"productImages,omitempty"`
+	Id             int64            `json:"id"`
+	DateCreated    int64            `json:"dateCreated"`
+	LastActionTime int64            `json:"lat"`
+	MainImage      bucket.MainImage `json:"mainImage"`
+	Name           string           `json:"name"`
+	Price          *Price           `json:"price"`
+	AvailableSizes *Size            `json:"availableSizes"`
+	Description    string           `json:"description,omitempty"`
+	Categories     []string         `json:"categories,omitempty"`
+	ProductImages  []bucket.Image   `json:"productImages,omitempty"`
 }
 
 type Price struct {

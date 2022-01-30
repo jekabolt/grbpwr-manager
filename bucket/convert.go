@@ -8,8 +8,6 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-
-	"github.com/nfnt/resize"
 )
 
 func PNGFromB64(b64Image []byte) (image.Image, error) {
@@ -30,13 +28,10 @@ func JPGFromB64(b64Image []byte) (image.Image, error) {
 	return i, nil
 }
 
-func EncodeJPG(w io.Writer, img image.Image) error {
+func EncodeJPG(w io.Writer, img image.Image, quality int) error {
 	var err error
-
-	newImage := resize.Resize(1000, 1000, img, resize.Lanczos3)
-
 	var rgba *image.RGBA
-	if nrgba, ok := newImage.(*image.NRGBA); ok {
+	if nrgba, ok := img.(*image.NRGBA); ok {
 		if nrgba.Opaque() {
 			rgba = &image.RGBA{
 				Pix:    nrgba.Pix,
@@ -47,9 +42,9 @@ func EncodeJPG(w io.Writer, img image.Image) error {
 	}
 
 	if rgba != nil {
-		err = jpeg.Encode(w, rgba, &jpeg.Options{Quality: 60})
+		err = jpeg.Encode(w, rgba, &jpeg.Options{Quality: quality})
 	} else {
-		err = jpeg.Encode(w, newImage, &jpeg.Options{Quality: 60})
+		err = jpeg.Encode(w, img, &jpeg.Options{Quality: quality})
 	}
 
 	return err
