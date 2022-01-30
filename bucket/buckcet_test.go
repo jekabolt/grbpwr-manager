@@ -12,8 +12,8 @@ import (
 	"github.com/matryer/is"
 )
 
-const S3AccessKey = "xxx"
-const S3SecretAccessKey = "xxx"
+const S3AccessKey = "YEYEN6TU2NCOPNPICGY3"
+const S3SecretAccessKey = "lyvzQ6f20TxiGE2hadU3Og7Er+f8j0GfUAB3GnZkreE"
 const S3Endpoint = "fra1.digitaloceanspaces.com"
 const bucketName = "grbpwr"
 const bucketLocation = "fra-1"
@@ -128,4 +128,52 @@ func TestUpload(t *testing.T) {
 
 	err = b.Client.RemoveObject(b.S3BucketName, getObjNameFromUrl(pngUrl))
 	is.NoErr(err)
+}
+
+func TestUploadProductImage(t *testing.T) {
+	skipCI(t)
+
+	is := is.New(t)
+
+	b := BucketFromConst()
+	err := b.InitBucket()
+	is.NoErr(err)
+
+	spaces, err := b.ListBuckets()
+	is.NoErr(err)
+
+	for _, space := range spaces {
+		fmt.Println(space.Name)
+	}
+
+	jpg, err := imageToB64(jpgFilePath)
+	is.NoErr(err)
+
+	i, err := b.UploadProductImage(jpg)
+	is.NoErr(err)
+	fmt.Printf("%+v", i)
+}
+
+func TestUploadProductMainImage(t *testing.T) {
+	skipCI(t)
+
+	is := is.New(t)
+
+	b := BucketFromConst()
+	err := b.InitBucket()
+	is.NoErr(err)
+
+	spaces, err := b.ListBuckets()
+	is.NoErr(err)
+
+	for _, space := range spaces {
+		fmt.Println(space.Name)
+	}
+
+	jpg, err := imageToB64(jpgFilePath)
+	is.NoErr(err)
+
+	i, err := b.UploadProductMainImage(jpg)
+	is.NoErr(err)
+	fmt.Printf("%+v", i)
 }

@@ -26,12 +26,12 @@ func fileExtensionFromContentType(contentType string) string {
 	}
 }
 
-func (b *Bucket) getImageFullPath(filenameExtension string) string {
+func (b *Bucket) getImageFullPath(filenameExtension, postfix string) string {
 	now := time.Now()
 	if len(b.ImageStorePrefix) > 0 {
-		return fmt.Sprintf("%s/%d/%s/%d.%s", b.ImageStorePrefix, now.Year(), now.Month().String(), now.UnixNano(), filenameExtension)
+		return fmt.Sprintf("%s/%d/%s/%d-%s.%s", b.ImageStorePrefix, now.Year(), now.Month().String(), now.UnixNano(), postfix, filenameExtension)
 	}
-	return fmt.Sprintf("%d/%s/%d.%s", now.Year(), now.Month().String(), now.UnixNano(), filenameExtension)
+	return fmt.Sprintf("%d/%s/%d-%s.%s", now.Year(), now.Month().String(), now.UnixNano(), postfix, filenameExtension)
 }
 
 func (b *Bucket) GetCDNURL(path string) string {
