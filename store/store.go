@@ -11,6 +11,14 @@ type ProductStore interface {
 	InitDB() error
 	ProductCRUD
 	ArchiveArticleCRUD
+	SubscriberCRUD
+}
+
+type SubscriberCRUD interface {
+	AddSubscriber(n *Subscriber) (*Subscriber, error)
+	GetSubscriberByEmail(id string) (*Subscriber, error)
+	GetAllSubscribers() ([]*Subscriber, error)
+	DeleteSubscriberByEmail(email string) error
 }
 
 type ProductCRUD interface {

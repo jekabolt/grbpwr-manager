@@ -149,3 +149,34 @@ func NewAuthResponse(ar *AuthResponse) *AuthResponse {
 func (i *AuthResponse) Render(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
+
+// subscription
+
+type SubscriptionResponse struct {
+	StatusCode int               `json:"statusCode,omitempty"`
+	Subscriber *store.Subscriber `json:"subscriber,omitempty"`
+}
+
+func NewSubscriptionResponse(statusCode int) *SubscriptionResponse {
+	return &SubscriptionResponse{StatusCode: statusCode}
+}
+
+func NewSubscriptionResponseNoStatusCode(subscriber *store.Subscriber) *SubscriptionResponse {
+	return &SubscriptionResponse{Subscriber: subscriber}
+}
+
+func NewSubscriptionResponseStatusCodeOnly(statusCode int) *SubscriptionResponse {
+	return &SubscriptionResponse{StatusCode: statusCode}
+}
+
+func (sr *SubscriptionResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
+}
+
+func NewSubscriptionsResponse(subscribers []*store.Subscriber) []render.Renderer {
+	list := []render.Renderer{}
+	for _, s := range subscribers {
+		list = append(list, NewSubscriptionResponseNoStatusCode(s))
+	}
+	return list
+}
