@@ -21,7 +21,7 @@ const imageStorePrefix = "grbpwr-com"
 
 const objectName = "test.jpg"
 
-const jpgFilePath = "files/test.jpg"
+const jpgFilePath = "/Users/jekabolt/Desktop/spin4spin-hero.jpg"
 const pngFilePath = "files/test.png"
 const tifFilePath = "files/test.tif"
 
@@ -174,6 +174,54 @@ func TestUploadProductMainImage(t *testing.T) {
 	is.NoErr(err)
 
 	i, err := b.UploadProductMainImage(jpg)
+	is.NoErr(err)
+	fmt.Printf("%+v", i)
+}
+
+func TestUploadContentImage(t *testing.T) {
+	skipCI(t)
+
+	is := is.New(t)
+
+	b := BucketFromConst()
+	err := b.InitBucket()
+	is.NoErr(err)
+
+	spaces, err := b.ListBuckets()
+	is.NoErr(err)
+
+	for _, space := range spaces {
+		fmt.Println(space.Name)
+	}
+
+	jpg, err := imageToB64(jpgFilePath)
+	is.NoErr(err)
+
+	i, err := b.UploadContentImage(jpg)
+	is.NoErr(err)
+	fmt.Printf("%+v", i)
+}
+
+func TestUploadNewsMainImage(t *testing.T) {
+	skipCI(t)
+
+	is := is.New(t)
+
+	b := BucketFromConst()
+	err := b.InitBucket()
+	is.NoErr(err)
+
+	spaces, err := b.ListBuckets()
+	is.NoErr(err)
+
+	for _, space := range spaces {
+		fmt.Println(space.Name)
+	}
+
+	jpg, err := imageToB64(jpgFilePath)
+	is.NoErr(err)
+
+	i, err := b.UploadNewsMainImage(jpg)
 	is.NoErr(err)
 	fmt.Printf("%+v", i)
 }

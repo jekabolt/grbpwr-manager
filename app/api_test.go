@@ -163,12 +163,20 @@ func getArticleReq(t *testing.T, title string) *bytes.Reader {
 	a := store.ArchiveArticle{
 		Title:       title,
 		Description: "desc",
-		MainImage:   "https://main.com/img.jpg",
+		MainImage: bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "https://main.com/img.jpg",
+			},
+		},
 		Content: []store.Content{
 			{
+				Image: bucket.Image{
+					FullSize: "https://ProductImages.com/img.jpg",
+				},
 				MediaLink:              "https://MediaLink.com/img.jpg",
 				Description:            "desc",
 				DescriptionAlternative: "alt",
+				TextPosition:           "top",
 			},
 		},
 	}

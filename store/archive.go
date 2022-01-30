@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/jekabolt/grbpwr-manager/bucket"
 )
 
 type TextPosition string
@@ -37,15 +39,16 @@ func (tp TextPosition) IsValid() error {
 }
 
 type ArchiveArticle struct {
-	Id               int64     `json:"id"`
-	DateCreated      int64     `json:"dateCreated"`
-	Title            string    `json:"title"`
-	Description      string    `json:"description"`
-	ShortDescription string    `json:"shortDescription"`
-	MainImage        string    `json:"mainImage"`
-	Content          []Content `json:"content"`
+	Id               int64            `json:"id"`
+	DateCreated      int64            `json:"dateCreated"`
+	Title            string           `json:"title"`
+	Description      string           `json:"description"`
+	ShortDescription string           `json:"shortDescription"`
+	MainImage        bucket.MainImage `json:"mainImage"`
+	Content          []Content        `json:"content"`
 }
 type Content struct {
+	Image                  bucket.Image `json:"image"`
 	MediaLink              string       `json:"mediaLink"`
 	TextPosition           TextPosition `json:"textPosition"`
 	Description            string       `json:"description"`
@@ -72,7 +75,7 @@ func (p *ArchiveArticle) Validate() error {
 		return fmt.Errorf("missing description")
 	}
 
-	if len(p.MainImage) == 0 {
+	if len(p.MainImage.FullSize) == 0 {
 		return fmt.Errorf("no main image")
 	}
 

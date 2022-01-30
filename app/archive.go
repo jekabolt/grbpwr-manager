@@ -23,14 +23,24 @@ func (s *Server) addArchiveArticle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// upload raw base64 images from request
-	if !strings.Contains(data.MainImage, "https://") {
-		mainUrl, err := s.Bucket.UploadImage(data.MainImage)
+	if !strings.Contains(data.MainImage.FullSize, "https://") {
+		for i, c := range data.Content {
+			contentImg, err := s.Bucket.UploadContentImage(c.Image.FullSize)
+			if err != nil {
+				log.Error().Err(err).Msgf("addProduct:s.Bucket.UploadImage [%v]", err.Error())
+				render.Render(w, r, ErrInternalServerError(err))
+				return
+			}
+			data.Content[i].Image = *contentImg
+		}
+
+		mainImage, err := s.Bucket.UploadNewsMainImage(data.MainImage.FullSize)
 		if err != nil {
 			log.Error().Err(err).Msgf("addArchiveArticle:s.Bucket.UploadImage [%v]", err.Error())
 			render.Render(w, r, ErrInternalServerError(err))
 			return
 		}
-		data.MainImage = mainUrl
+		data.MainImage = *mainImage
 	}
 
 	if _, err := s.DB.AddArchiveArticle(data.ArchiveArticle); err != nil {

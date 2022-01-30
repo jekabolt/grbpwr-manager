@@ -167,7 +167,7 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 	return b64Img.B64ToImage()
 }
 
-func (b *Bucket) UploadImageObj(img image.Image) (*Image, error) {
+func (b *Bucket) UploadImageObjSquared(img image.Image) (*Image, error) {
 	imgObj := &Image{}
 	var err error
 
@@ -184,6 +184,28 @@ func (b *Bucket) UploadImageObj(img image.Image) (*Image, error) {
 
 	resizedImage = resize.Resize(500, 500, img, resize.Lanczos3)
 	imgObj.Thumbnail, err = b.Upload(resizedImage, 70, "thumb")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload: [%v]", err.Error())
+	}
+
+	return imgObj, nil
+}
+
+func (b *Bucket) UploadImageObj(img image.Image) (*Image, error) {
+	imgObj := &Image{}
+	var err error
+
+	imgObj.FullSize, err = b.Upload(img, 100, "og")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload:FullSize [%v]", err.Error())
+	}
+
+	imgObj.Compressed, err = b.Upload(img, 60, "compressed")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload:Compressed [%v]", err.Error())
+	}
+
+	imgObj.Thumbnail, err = b.Upload(img, 70, "thumb")
 	if err != nil {
 		return nil, fmt.Errorf("UploadProductImage:Upload: [%v]", err.Error())
 	}
@@ -207,7 +229,7 @@ func (b *Bucket) UploadProductImage(rawB64Image string) (*Image, error) {
 		return nil, fmt.Errorf("UploadProductImage:cutter.Crop: [%v]", err.Error())
 	}
 
-	return b.UploadImageObj(croppedImg)
+	return b.UploadImageObjSquared(croppedImg)
 }
 
 func (b *Bucket) UploadProductMainImage(rawB64Image string) (*MainImage, error) {
@@ -228,9 +250,9 @@ func (b *Bucket) UploadProductMainImage(rawB64Image string) (*MainImage, error) 
 		return nil, fmt.Errorf("UploadProductMainImage:cutter.Crop: [%v]", err.Error())
 	}
 
-	imgObj, err := b.UploadImageObj(croppedImg)
+	imgObj, err := b.UploadImageObjSquared(croppedImg)
 	if err != nil {
-		return nil, fmt.Errorf("UploadProductMainImage:UploadImageObj: [%v]", err.Error())
+		return nil, fmt.Errorf("UploadProductMainImage:UploadImageObjSqared: [%v]", err.Error())
 	}
 	mainImgObj.Image = *imgObj
 
@@ -241,6 +263,52 @@ func (b *Bucket) UploadProductMainImage(rawB64Image string) (*MainImage, error) 
 	// place in the middle
 	offset := image.Pt(300, 0)
 	draw.Draw(metaBg, resizedImageMeta.Bounds().Add(offset), resizedImageMeta, image.Point{}, draw.Over)
+
+	mainImgObj.MetaImage, err = b.Upload(metaBg, 60, "meta")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductMainImage:Upload:Compressed [%v]", err.Error())
+	}
+
+	return mainImgObj, nil
+}
+
+func (b *Bucket) UploadContentImage(rawB64Image string) (*Image, error) {
+	img, err := imageFromString(rawB64Image)
+	if err != nil {
+		return nil, err
+	}
+	return b.UploadImageObj(img)
+}
+
+func (b *Bucket) UploadNewsMainImage(rawB64Image string) (*MainImage, error) {
+	mainImgObj := &MainImage{}
+
+	img, err := imageFromString(rawB64Image)
+	if err != nil {
+		return nil, err
+	}
+
+	// make it centered and 1920x1000
+	croppedImg, err := cutter.Crop(img, cutter.Config{
+		Width:  1920,
+		Height: 1000,
+		Mode:   cutter.Centered,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductMainImage:cutter.Crop: [%v]", err.Error())
+	}
+
+	imgObj, err := b.UploadImageObj(croppedImg)
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductMainImage:UploadImageObjSqared: [%v]", err.Error())
+	}
+	mainImgObj.Image = *imgObj
+
+	// resize og image to fit
+	resizedImageMeta := resize.Resize(1200, 625, croppedImg, resize.Lanczos3)
+	metaBg := getMetaBackground()
+
+	draw.Draw(metaBg, resizedImageMeta.Bounds(), resizedImageMeta, image.Point{}, draw.Over)
 
 	mainImgObj.MetaImage, err = b.Upload(metaBg, 60, "meta")
 	if err != nil {
