@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/matryer/is"
 )
 
 const (
-	BuntDBProductsPath = "../bunt/products.db"
-	BuntDBArticlesPath = "../bunt/articles.db"
-	BuntDBSalesPath    = "../bunt/sales.db"
+	BuntDBProductsPath    = "../bunt/products.db"
+	BuntDBArticlesPath    = "../bunt/articles.db"
+	BuntDBSalesPath       = "../bunt/sales.db"
+	BuntDBSubscribersPath = "../bunt/subscribers.db"
 )
 
 func TestCreateD(t *testing.T) {
@@ -22,9 +24,10 @@ func TestCreateD(t *testing.T) {
 
 func buntFromConst() *BuntDB {
 	return &BuntDB{
-		BuntDBProductsPath: BuntDBProductsPath,
-		BuntDBArticlesPath: BuntDBArticlesPath,
-		BuntDBSalesPath:    BuntDBSalesPath,
+		BuntDBProductsPath:    BuntDBProductsPath,
+		BuntDBArticlesPath:    BuntDBArticlesPath,
+		BuntDBSalesPath:       BuntDBSalesPath,
+		BuntDBSubscribersPath: BuntDBSubscribersPath,
 	}
 }
 
@@ -36,8 +39,12 @@ func TestCRUDProducts(t *testing.T) {
 	is.NoErr(err)
 
 	prd := &Product{
-		MainImage: "img",
-		Name:      "name",
+		MainImage: bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "https://main.com/img.jpg",
+			},
+		},
+		Name: "name",
 		Price: &Price{
 			USD: 1,
 			BYN: 1,
@@ -54,9 +61,16 @@ func TestCRUDProducts(t *testing.T) {
 			XXL: 1,
 			OS:  1,
 		},
-		Description:   "desc",
-		Categories:    []string{"1", "2"},
-		ProductImages: []string{"img1", "img2"},
+		Description: "desc",
+		Categories:  []string{"1", "2"},
+		ProductImages: []bucket.Image{
+			{
+				FullSize: "https://ProductImages.com/img.jpg",
+			},
+			{
+				FullSize: "https://ProductImages2.com/img.jpg",
+			},
+		},
 	}
 
 	p, err := b.AddProduct(prd)

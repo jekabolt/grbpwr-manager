@@ -65,7 +65,7 @@ func (p *Product) Validate() error {
 		return fmt.Errorf("missing product images")
 	}
 
-	if len(p.MainImage) == 0 {
+	if len(p.MainImage.FullSize) == 0 {
 		return fmt.Errorf("missing main image")
 	}
 

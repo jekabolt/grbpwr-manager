@@ -167,14 +167,36 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 	return b64Img.B64ToImage()
 }
 
-func (b *Bucket) UploadProductImage(rawB64Image string) (*Image, error) {
+func (b *Bucket) UploadImageObj(img image.Image) (*Image, error) {
 	imgObj := &Image{}
+	var err error
 
+	imgObj.FullSize, err = b.Upload(img, 100, "og")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload:FullSize [%v]", err.Error())
+	}
+
+	resizedImage := resize.Resize(1000, 1000, img, resize.Lanczos3)
+	imgObj.Compressed, err = b.Upload(resizedImage, 60, "compressed")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload:Compressed [%v]", err.Error())
+	}
+
+	resizedImage = resize.Resize(500, 500, img, resize.Lanczos3)
+	imgObj.Thumbnail, err = b.Upload(resizedImage, 70, "thumb")
+	if err != nil {
+		return nil, fmt.Errorf("UploadProductImage:Upload: [%v]", err.Error())
+	}
+
+	return imgObj, nil
+
+}
+
+func (b *Bucket) UploadProductImage(rawB64Image string) (*Image, error) {
 	img, err := imageFromString(rawB64Image)
 	if err != nil {
 		return nil, err
 	}
-
 	// make it centered and 1x1
 	croppedImg, err := cutter.Crop(img, cutter.Config{
 		Width:  img.Bounds().Max.X,
@@ -185,28 +207,11 @@ func (b *Bucket) UploadProductImage(rawB64Image string) (*Image, error) {
 		return nil, fmt.Errorf("UploadProductImage:cutter.Crop: [%v]", err.Error())
 	}
 
-	imgObj.FullSize, err = b.Upload(croppedImg, 100, "og")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload:FullSize [%v]", err.Error())
-	}
-
-	resizedImage := resize.Resize(1000, 1000, croppedImg, resize.Lanczos3)
-	imgObj.Compressed, err = b.Upload(resizedImage, 60, "compressed")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload:Compressed [%v]", err.Error())
-	}
-
-	resizedImage = resize.Resize(500, 500, croppedImg, resize.Lanczos3)
-	imgObj.Thumbnail, err = b.Upload(resizedImage, 70, "thumb")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload: [%v]", err.Error())
-	}
-
-	return imgObj, nil
+	return b.UploadImageObj(croppedImg)
 }
 
 func (b *Bucket) UploadProductMainImage(rawB64Image string) (*MainImage, error) {
-	imgObj := &MainImage{}
+	mainImgObj := &MainImage{}
 
 	img, err := imageFromString(rawB64Image)
 	if err != nil {
@@ -220,41 +225,35 @@ func (b *Bucket) UploadProductMainImage(rawB64Image string) (*MainImage, error) 
 		Mode:   cutter.Centered,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:cutter.Crop: [%v]", err.Error())
+		return nil, fmt.Errorf("UploadProductMainImage:cutter.Crop: [%v]", err.Error())
 	}
 
-	imgObj.FullSize, err = b.Upload(croppedImg, 100, "og")
+	imgObj, err := b.UploadImageObj(croppedImg)
 	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload:FullSize [%v]", err.Error())
+		return nil, fmt.Errorf("UploadProductMainImage:UploadImageObj: [%v]", err.Error())
 	}
+	mainImgObj.Image = *imgObj
 
-	bounds := image.Rect(0, 0, 1200, 630).Bounds()
-	merged := image.NewRGBA(bounds)
-	draw.Draw(merged, merged.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	// resize og image to fit
 	resizedImageMeta := resize.Resize(630, 630, croppedImg, resize.Lanczos3)
+	metaBg := getMetaBackground()
+
+	// place in the middle
 	offset := image.Pt(300, 0)
-	draw.Draw(merged, resizedImageMeta.Bounds().Add(offset), resizedImageMeta, image.Point{}, draw.Over)
+	draw.Draw(metaBg, resizedImageMeta.Bounds().Add(offset), resizedImageMeta, image.Point{}, draw.Over)
 
+	mainImgObj.MetaImage, err = b.Upload(metaBg, 60, "meta")
 	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:cutter.Crop [%v]", err.Error())
+		return nil, fmt.Errorf("UploadProductMainImage:Upload:Compressed [%v]", err.Error())
 	}
 
-	imgObj.MetaImage, err = b.Upload(merged, 60, "meta")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload:Compressed [%v]", err.Error())
-	}
+	return mainImgObj, nil
+}
 
-	resizedImage := resize.Resize(630, 630, croppedImg, resize.Lanczos3)
-	imgObj.Compressed, err = b.Upload(resizedImage, 60, "compressed")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload:Compressed [%v]", err.Error())
-	}
-
-	resizedImage = resize.Resize(500, 500, croppedImg, resize.Lanczos3)
-	imgObj.Thumbnail, err = b.Upload(resizedImage, 70, "thumb")
-	if err != nil {
-		return nil, fmt.Errorf("UploadProductImage:Upload: [%v]", err.Error())
-	}
-
-	return imgObj, nil
+func getMetaBackground() *image.RGBA {
+	// 1200 x 630 og:image
+	bounds := image.Rect(0, 0, 1200, 630).Bounds()
+	metaBackground := image.NewRGBA(bounds)
+	draw.Draw(metaBackground, metaBackground.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	return metaBackground
 }

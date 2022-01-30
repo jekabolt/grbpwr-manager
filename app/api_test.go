@@ -22,9 +22,10 @@ const (
 	bucketLocation    = "fra-1"
 	imageStorePrefix  = "grbpwr-com"
 
-	BuntDBProductsPath = "../bunt/products.db"
-	BuntDBArticlesPath = "../bunt/articles.db"
-	BuntDBSalesPath    = "../bunt/sales.db"
+	BuntDBProductsPath    = "../bunt/products.db"
+	BuntDBArticlesPath    = "../bunt/articles.db"
+	BuntDBSalesPath       = "../bunt/sales.db"
+	BuntDBSubscribersPath = "../bunt/subscribers.db"
 
 	serverPort = "8080"
 
@@ -45,9 +46,10 @@ func bucketFromConst() *bucket.Bucket {
 
 func buntFromConst() *store.BuntDB {
 	return &store.BuntDB{
-		BuntDBProductsPath: BuntDBProductsPath,
-		BuntDBArticlesPath: BuntDBArticlesPath,
-		BuntDBSalesPath:    BuntDBSalesPath,
+		BuntDBProductsPath:    BuntDBProductsPath,
+		BuntDBArticlesPath:    BuntDBArticlesPath,
+		BuntDBSalesPath:       BuntDBSalesPath,
+		BuntDBSubscribersPath: BuntDBSubscribersPath,
 	}
 }
 
@@ -115,8 +117,12 @@ func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
 func getProductReq(t *testing.T, name string) *bytes.Reader {
 	is := is.New(t)
 	prd := store.Product{
-		MainImage: "https://main.com/img.jpg",
-		Name:      name,
+		MainImage: bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "https://main.com/img.jpg",
+			},
+		},
+		Name: name,
 		Price: &store.Price{
 			USD: 1,
 			BYN: 1,
@@ -133,9 +139,16 @@ func getProductReq(t *testing.T, name string) *bytes.Reader {
 			XXL: 1,
 			OS:  1,
 		},
-		Description:   "desc",
-		Categories:    []string{"1", "2"},
-		ProductImages: []string{"https://ProductImages.com/img.jpg", "https://ProductImages2.com/img.jpg"},
+		Description: "desc",
+		Categories:  []string{"1", "2"},
+		ProductImages: []bucket.Image{
+			{
+				FullSize: "https://ProductImages.com/img.jpg",
+			},
+			{
+				FullSize: "https://ProductImages2.com/img.jpg",
+			},
+		},
 	}
 
 	prdBytes, err := json.Marshal(prd)
