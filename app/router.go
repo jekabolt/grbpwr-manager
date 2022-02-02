@@ -113,6 +113,7 @@ func (s *Server) Router() *chi.Mux {
 
 		r.Get("/archive", s.getAllArchiveArticlesList) // public
 		r.Get("/product", s.getAllProductsList)        // public
+		r.Get("/main", s.getMainPage)                  // public
 		r.Post("/subscribe", s.subscribeNewsletter)    // public
 
 	})

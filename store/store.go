@@ -12,6 +12,7 @@ type ProductStore interface {
 	ProductCRUD
 	ArchiveArticleCRUD
 	SubscriberCRUD
+	HeroCRUD
 }
 
 type SubscriberCRUD interface {
@@ -35,6 +36,11 @@ type ArchiveArticleCRUD interface {
 	GetAllArchiveArticles() ([]*ArchiveArticle, error)
 	DeleteArchiveArticleById(id string) error
 	ModifyArchiveArticleById(id string, aNew *ArchiveArticle) error
+}
+
+type HeroCRUD interface {
+	UpsertHero(h *Hero) (*Hero, error)
+	GetHero() (*Hero, error)
 }
 
 func GetDB(t string) (ProductStore, error) {

@@ -14,10 +14,12 @@ type BuntDB struct {
 	BuntDBArticlesPath    string `env:"BUNT_DB_ARTICLES_PATH" envDefault:"/tmp/articles.db"`
 	BuntDBSalesPath       string `env:"BUNT_DB_SALES_PATH" envDefault:"/tmp/sales.db"`
 	BuntDBSubscribersPath string `env:"BUNT_DB_SUBSCRIBERS_PATH" envDefault:"/tmp/subscribers.db"`
+	BuntDBHeroPath        string `env:"BUNT_DB_HERO_PATH" envDefault:"/tmp/hero.db"`
 	products              *buntdb.DB
 	articles              *buntdb.DB
 	subscribers           *buntdb.DB
 	sales                 *buntdb.DB
+	hero                  *buntdb.DB
 }
 
 func BuntFromEnv() (*BuntDB, error) {
@@ -44,11 +46,16 @@ func (db *BuntDB) InitDB() error {
 	if err != nil {
 		return err
 	}
+	main, err := buntdb.Open(db.BuntDBHeroPath)
+	if err != nil {
+		return err
+	}
 
 	db.products = productsDB
 	db.articles = articlesDB
 	db.sales = salesDB
 	db.subscribers = subscribers
+	db.hero = main
 	return nil
 }
 
@@ -252,4 +259,34 @@ func (db *BuntDB) DeleteSubscriberByEmail(id string) error {
 		return err
 	})
 	return err
+}
+
+// hero
+
+const (
+	heroKey = "hero"
+)
+
+func (db *BuntDB) UpsertHero(h *Hero) (*Hero, error) {
+	return h, db.hero.Update(func(tx *buntdb.Tx) error {
+		tx.Set(heroKey, h.String(), nil)
+		return nil
+	})
+}
+
+func (db *BuntDB) GetHero() (*Hero, error) {
+	h := &Hero{}
+	err := db.products.View(func(tx *buntdb.Tx) error {
+		heroStr, err := tx.Get(heroKey)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal([]byte(heroStr), h)
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("GetHero [%v]", err.Error())
+	}
+
+	return h, err
 }
