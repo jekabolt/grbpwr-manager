@@ -180,3 +180,23 @@ func NewSubscriptionsResponse(subscribers []*store.Subscriber) []render.Renderer
 	}
 	return list
 }
+
+// mainpage
+
+type MainPageResponse struct {
+	StatusCode int              `json:"statusCode,omitempty"`
+	Hero       *store.Hero      `json:"hero,omitempty"`
+	Products   []*store.Product `json:"hero,omitempty"`
+}
+
+func NewMainPageResponse(h *store.Hero, products []*store.Product) *MainPageResponse {
+	return &MainPageResponse{
+		StatusCode: http.StatusOK,
+		Hero:       h,
+		Products:   products,
+	}
+}
+
+func (mp *MainPageResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
+}
