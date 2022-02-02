@@ -139,8 +139,9 @@ func getProductReq(t *testing.T, name string) *bytes.Reader {
 			XXL: 1,
 			OS:  1,
 		},
-		Description: "desc",
-		Categories:  []string{"1", "2"},
+		ShortDescription:    "desc",
+		DetailedDescription: []string{"1", "2"},
+		Categories:          []string{"1", "2"},
 		ProductImages: []bucket.Image{
 			{
 				FullSize: "https://ProductImages.com/img.jpg",

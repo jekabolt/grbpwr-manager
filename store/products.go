@@ -10,16 +10,17 @@ import (
 )
 
 type Product struct {
-	Id             int64            `json:"id"`
-	DateCreated    int64            `json:"dateCreated"`
-	LastActionTime int64            `json:"lat"`
-	MainImage      bucket.MainImage `json:"mainImage"`
-	Name           string           `json:"name"`
-	Price          *Price           `json:"price"`
-	AvailableSizes *Size            `json:"availableSizes"`
-	Description    string           `json:"description,omitempty"`
-	Categories     []string         `json:"categories,omitempty"`
-	ProductImages  []bucket.Image   `json:"productImages,omitempty"`
+	Id                  int64            `json:"id"`
+	DateCreated         int64            `json:"dateCreated"`
+	LastActionTime      int64            `json:"lat"`
+	MainImage           bucket.MainImage `json:"mainImage"`
+	Name                string           `json:"name"`
+	Price               *Price           `json:"price"`
+	AvailableSizes      *Size            `json:"availableSizes"`
+	ShortDescription    string           `json:"shortDescription,omitempty"`
+	DetailedDescription []string         `json:"detailedDescription,omitempty"`
+	Categories          []string         `json:"categories,omitempty"`
+	ProductImages       []bucket.Image   `json:"productImages,omitempty"`
 }
 
 type Price struct {
@@ -69,7 +70,10 @@ func (p *Product) Validate() error {
 		return fmt.Errorf("missing main image")
 	}
 
-	if len(p.Description) == 0 {
+	if len(p.ShortDescription) == 0 {
+		return fmt.Errorf("missing description")
+	}
+	if len(p.DetailedDescription) == 0 {
 		return fmt.Errorf("missing description")
 	}
 
