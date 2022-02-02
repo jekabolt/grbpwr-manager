@@ -197,6 +197,17 @@ func NewMainPageResponse(h *store.Hero, products []*store.Product) *MainPageResp
 	}
 }
 
+func NewHeroUpdateResponse(h *store.Hero) *MainPageResponse {
+	return &MainPageResponse{
+		StatusCode: http.StatusOK,
+		Hero:       h,
+	}
+}
+
 func (mp *MainPageResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return nil
+}
+
+func (h *MainPageResponse) Bind(r *http.Request) error {
 	return nil
 }
