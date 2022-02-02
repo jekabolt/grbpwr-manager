@@ -30,3 +30,25 @@ func (s *Server) getMainPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
+func (s *Server) updateMainPage(w http.ResponseWriter, r *http.Request) {
+	data := &store.Hero{}
+	var err error
+
+	if err := render.Bind(r, data); err != nil {
+		log.Error().Err(err).Msgf("addProduct:render.Bind [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
+
+	if data, err = s.DB.UpsertHero(data); err != nil {
+		log.Error().Err(err).Msgf("getAllProductsList:s.DB.GetAllProducts [%v]", err.Error())
+		render.Render(w, r, ErrInternalServerError(err))
+		return
+	}
+
+	if err := render.Render(w, r, NewHeroUpdateResponse(data)); err != nil {
+		render.Render(w, r, ErrRender(err))
+		return
+	}
+}

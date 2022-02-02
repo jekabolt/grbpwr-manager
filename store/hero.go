@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 )
 
 type Hero struct {
@@ -11,6 +12,10 @@ type Hero struct {
 	ContentType string `json:"contentType,omitempty"`
 	ExploreLink string `json:"exploreLink,omitempty"`
 	ExploreText string `json:"exploreText,omitempty"`
+}
+
+func (h *Hero) Bind(r *http.Request) error {
+	return h.Validate()
 }
 
 func (h *Hero) Validate() error {
