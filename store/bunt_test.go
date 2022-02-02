@@ -61,8 +61,9 @@ func TestCRUDProducts(t *testing.T) {
 			XXL: 1,
 			OS:  1,
 		},
-		Description: "desc",
-		Categories:  []string{"1", "2"},
+		ShortDescription:    "desc",
+		DetailedDescription: []string{"desc", "desc2"},
+		Categories:          []string{"1", "2"},
 		ProductImages: []bucket.Image{
 			{
 				FullSize: "https://ProductImages.com/img.jpg",

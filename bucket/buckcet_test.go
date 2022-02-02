@@ -21,7 +21,7 @@ const imageStorePrefix = "grbpwr-com"
 
 const objectName = "test.jpg"
 
-const jpgFilePath = "/Users/jekabolt/Desktop/spin4spin-hero.jpg"
+const jpgFilePath = "files/test.jpg"
 const pngFilePath = "files/test.png"
 const tifFilePath = "files/test.tif"
 
