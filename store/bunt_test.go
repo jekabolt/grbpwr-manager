@@ -161,3 +161,57 @@ func TestCRUDArticles(t *testing.T) {
 	is.Equal(len(arts), 0)
 
 }
+
+func TestCRUDSubscribers(t *testing.T) {
+	b := buntFromConst()
+	is := is.New(t)
+
+	err := b.InitDB()
+	is.NoErr(err)
+
+	s := &Subscriber{
+		Email:    "test",
+		IP:       "test",
+		City:     "test",
+		Region:   "test",
+		Country:  "test",
+		Loc:      "test",
+		Org:      "test",
+		Postal:   "test",
+		Timezone: "test",
+	}
+
+	sUpserted, err := b.AddSubscriber(s)
+	is.NoErr(err)
+
+	sFound, err := b.GetAllSubscribers()
+	is.NoErr(err)
+
+	is.Equal(sUpserted, sFound[0])
+
+}
+
+func TestCRUDHero(t *testing.T) {
+	b := buntFromConst()
+	is := is.New(t)
+
+	err := b.InitDB()
+	is.NoErr(err)
+
+	h := &Hero{
+		TimeChanged: 14,
+		ContentLink: "-",
+		ContentType: "-",
+		ExploreLink: "-",
+		ExploreText: "-",
+	}
+
+	hUpserted, err := b.UpsertHero(h)
+	is.NoErr(err)
+
+	hFound, err := b.GetHero()
+	is.NoErr(err)
+
+	is.Equal(hUpserted, hFound)
+
+}

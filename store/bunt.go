@@ -276,7 +276,7 @@ func (db *BuntDB) UpsertHero(h *Hero) (*Hero, error) {
 
 func (db *BuntDB) GetHero() (*Hero, error) {
 	h := &Hero{}
-	err := db.products.View(func(tx *buntdb.Tx) error {
+	err := db.hero.View(func(tx *buntdb.Tx) error {
 		heroStr, err := tx.Get(heroKey)
 		if err != nil {
 			return err

@@ -108,6 +108,8 @@ func (s *Server) Router() *chi.Mux {
 
 			r.Get("/subscribe", s.getAllSubscribers)
 			r.Delete("/subscribe/{emailB64}", s.deleteSubscriberByEmail)
+
+			r.Post("/main", s.updateMainPage)
 		})
 
 		r.Get("/archive", s.getAllArchiveArticlesList) // public

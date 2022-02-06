@@ -5,6 +5,7 @@ admin-client
 *.db
 bin
 bunt
+.env-local
 
 *coverage*
 
