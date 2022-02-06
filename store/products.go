@@ -71,10 +71,10 @@ func (p *Product) Validate() error {
 	}
 
 	if len(p.ShortDescription) == 0 {
-		return fmt.Errorf("missing description")
+		return fmt.Errorf("missing short description")
 	}
 	if len(p.DetailedDescription) == 0 {
-		return fmt.Errorf("missing description")
+		return fmt.Errorf("missing detailed description")
 	}
 
 	if len(p.Name) == 0 {

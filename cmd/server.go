@@ -4,27 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/caarlos0/env/v6"
 	"github.com/jekabolt/grbpwr-manager/app"
 	"github.com/jekabolt/grbpwr-manager/bucket"
+	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
-type Config struct {
-	Port        string   `env:"PORT" envDefault:"8081"`
-	Hosts       []string `env:"HOSTS" envSeparator:"|"`
-	StorageType string   `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
-	JWTSecret   string   `env:"JWT_SECRET" envDefault:"kek"`
-	AdminSecret string   `env:"ADMIN_SECRET" envDefault:"kek"`
-
-	Debug bool `env:"DEBUG" envDefault:"false"`
-}
-
 func main() {
-	cfg := &Config{}
-	err := env.Parse(cfg)
+	cfg, err := config.GetConfig()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to parse env variables")
 	}
@@ -36,7 +25,7 @@ func main() {
 	}
 
 	confBytes, _ := json.Marshal(cfg)
-	log.Info().Str("config", string(confBytes)).Msg("Started with config")
+	log.Info().Str("config:", "").Msg(string(confBytes))
 
 	db, err := store.GetDB(cfg.StorageType)
 	if err != nil {
@@ -56,8 +45,7 @@ func main() {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to init bucket err:[%s]", err.Error()))
 	}
 
-	s := app.InitServer(db, b, cfg.Port,
-		cfg.JWTSecret, cfg.AdminSecret, cfg.Hosts, cfg.Debug)
+	s := app.InitServer(db, b, cfg)
 
 	log.Fatal().Err(s.Serve()).Msg("InitServer")
 }

@@ -73,3 +73,13 @@ ADMIN_SECRET=xxx # password for access protected api routes
 ## Swagger for requests
 
 can be found [here](https://github.com/jekabolt/grbpwr-manager/tree/master/doc)
+
+
+
+#### Export all envs from file 
+
+```bash
+    set -o allexport
+    source .env-local
+    set +o allexport
+```

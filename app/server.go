@@ -1,31 +1,25 @@
 package app
 
 import (
-	"github.com/go-chi/jwtauth/v5"
+	"github.com/jekabolt/grbpwr-manager/auth"
 	"github.com/jekabolt/grbpwr-manager/bucket"
+	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/store"
 )
 
 type Server struct {
-	DB      store.ProductStore
-	Bucket  *bucket.Bucket
-	JWTAuth *jwtauth.JWTAuth
-
-	Port        string
-	Hosts       []string
-	AdminSecret string
-
-	Debug bool
+	DB     store.ProductStore
+	Bucket *bucket.Bucket
+	Auth   *auth.Auth
+	Config *config.Config
 }
 
-func InitServer(db store.ProductStore, bucket *bucket.Bucket, port, jwtSecret, adminSecret string, hosts []string, debug bool) *Server {
+func InitServer(db store.ProductStore, bucket *bucket.Bucket, cfg *config.Config) *Server {
+	a := cfg.Auth.New()
 	return &Server{
-		DB:          db,
-		Bucket:      bucket,
-		Port:        port,
-		Hosts:       hosts,
-		AdminSecret: adminSecret,
-		JWTAuth:     jwtauth.New("HS256", []byte(jwtSecret), nil),
-		Debug:       debug,
+		DB:     db,
+		Bucket: bucket,
+		Auth:   a,
+		Config: cfg,
 	}
 }

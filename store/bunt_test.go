@@ -14,6 +14,7 @@ const (
 	BuntDBArticlesPath    = "../bunt/articles.db"
 	BuntDBSalesPath       = "../bunt/sales.db"
 	BuntDBSubscribersPath = "../bunt/subscribers.db"
+	BuntDBHeroPath        = "../bunt/hero.db"
 )
 
 func TestCreateD(t *testing.T) {
@@ -28,6 +29,7 @@ func buntFromConst() *BuntDB {
 		BuntDBArticlesPath:    BuntDBArticlesPath,
 		BuntDBSalesPath:       BuntDBSalesPath,
 		BuntDBSubscribersPath: BuntDBSubscribersPath,
+		BuntDBHeroPath:        BuntDBHeroPath,
 	}
 }
 
@@ -123,10 +125,9 @@ func TestCRUDArticles(t *testing.T) {
 				Image: bucket.Image{
 					FullSize: "img",
 				},
-				MediaLink:              "link",
-				Description:            "desc",
-				DescriptionAlternative: "alt",
-				TextPosition:           "top",
+				MediaLink:    "link",
+				Description:  "desc",
+				TextPosition: "top",
 			},
 		},
 	}

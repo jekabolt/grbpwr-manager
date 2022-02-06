@@ -7,11 +7,11 @@ import (
 )
 
 type Hero struct {
-	TimeChanged string `json:"contentLink,omitempty"`
-	ContentLink string `json:"contentLink,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
-	ExploreLink string `json:"exploreLink,omitempty"`
-	ExploreText string `json:"exploreText,omitempty"`
+	TimeChanged string `json:"timeChanged" env:"HERO_TIME_CHANGED" envDefault:""`
+	ContentLink string `json:"contentLink" env:"HERO_CONTENT_LINK" envDefault:""`
+	ContentType string `json:"contentType" env:"HERO_CONTENT_TYPE" envDefault:""`
+	ExploreLink string `json:"exploreLink" env:"HERO_EXPLORE_LINK" envDefault:""`
+	ExploreText string `json:"exploreText" env:"HERO_EXPLORE_TEXT" envDefault:""`
 }
 
 func (h *Hero) Bind(r *http.Request) error {

@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/auth"
 	"github.com/jekabolt/grbpwr-manager/bucket"
+	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/matryer/is"
 )
 
-const (
+var (
 	S3AccessKey       = "xxx"
 	S3SecretAccessKey = "xxx"
 	S3Endpoint        = "fra1.digitaloceanspaces.com"
@@ -26,11 +28,13 @@ const (
 	BuntDBArticlesPath    = "../bunt/articles.db"
 	BuntDBSalesPath       = "../bunt/sales.db"
 	BuntDBSubscribersPath = "../bunt/subscribers.db"
+	BuntDBHeroPath        = "../bunt/hero.db"
 
 	serverPort = "8080"
 
 	jwtSecret   = "jwtSecret"
 	adminSecret = "adminSecret"
+	hosts       = []string{"*"}
 )
 
 func bucketFromConst() *bucket.Bucket {
@@ -50,6 +54,28 @@ func buntFromConst() *store.BuntDB {
 		BuntDBArticlesPath:    BuntDBArticlesPath,
 		BuntDBSalesPath:       BuntDBSalesPath,
 		BuntDBSubscribersPath: BuntDBSubscribersPath,
+		BuntDBHeroPath:        BuntDBHeroPath,
+	}
+}
+
+func InitServerFromConst() *Server {
+	b := bucketFromConst()
+	db := buntFromConst()
+	db.InitDB()
+	ac := &auth.Config{
+		AdminSecret: adminSecret,
+		JWTSecret:   jwtSecret,
+	}
+	return &Server{
+		DB:     db,
+		Bucket: b,
+		Auth:   ac.New(),
+		Config: &config.Config{
+			Port:  serverPort,
+			Hosts: hosts,
+			Auth:  ac,
+			Debug: true,
+		},
 	}
 }
 
@@ -74,16 +100,32 @@ func testRequest(t *testing.T, ts *httptest.Server, method, path string, body io
 }
 
 func (s *Server) getAuthRequestPw() *bytes.Reader {
-	a := AuthRequest{
-		Password: s.AdminSecret,
+	a := auth.AuthRequest{
+		Password: s.Auth.AdminSecret,
+	}
+	aBytes, _ := json.Marshal(a)
+	return bytes.NewReader(aBytes)
+}
+
+func (s *Server) getAuthRequestWrongPw() *bytes.Reader {
+	a := auth.AuthRequest{
+		Password: s.Auth.AdminSecret + "wrong",
 	}
 	aBytes, _ := json.Marshal(a)
 	return bytes.NewReader(aBytes)
 }
 
 func (s *Server) getAuthRequestRefresh(rt string) *bytes.Reader {
-	a := AuthRequest{
+	a := auth.AuthRequest{
 		RefreshToken: rt,
+	}
+	aBytes, _ := json.Marshal(a)
+	return bytes.NewReader(aBytes)
+}
+
+func (s *Server) getAuthRequestWrongRefresh(rt string) *bytes.Reader {
+	a := auth.AuthRequest{
+		RefreshToken: rt + "wrong",
 	}
 	aBytes, _ := json.Marshal(a)
 	return bytes.NewReader(aBytes)
@@ -93,8 +135,7 @@ func (s *Server) getAuthRequestRefresh(rt string) *bytes.Reader {
 func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
 	is := is.New(t)
 
-	hosts := []string{"*"}
-	s := InitServer(nil, nil, serverPort, jwtSecret, adminSecret, hosts, true)
+	s := InitServerFromConst()
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -103,14 +144,27 @@ func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
 	authResp := &AuthResponse{}
 	res, ar := testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestPw(), authResp, "")
 	authResp = ar.(*AuthResponse)
-
 	is.Equal(res.StatusCode, http.StatusOK)
+	// t.Logf("%+v", authResp)
 
 	// auth w refresh
 	res, ar = testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestRefresh(authResp.RefreshToken), authResp, "")
 	authResp = ar.(*AuthResponse)
 	is.Equal(res.StatusCode, http.StatusOK)
-	is.Equal(res.StatusCode, http.StatusOK)
+	t.Logf("%+v", authResp)
+
+	// auth with wrong password
+	authResp = &AuthResponse{}
+	res, ar = testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestWrongPw(), authResp, "")
+	authResp = ar.(*AuthResponse)
+	is.Equal(res.StatusCode, http.StatusUnauthorized)
+	// t.Logf("%+v", authResp)
+
+	// auth w  wrong refresh
+	res, ar = testRequest(t, ts, http.MethodPost, "/auth", s.getAuthRequestWrongRefresh(authResp.RefreshToken), authResp, "")
+	authResp = ar.(*AuthResponse)
+	is.Equal(res.StatusCode, http.StatusUnauthorized)
+
 	t.Logf("%+v", authResp)
 }
 
@@ -174,10 +228,9 @@ func getArticleReq(t *testing.T, title string) *bytes.Reader {
 				Image: bucket.Image{
 					FullSize: "https://ProductImages.com/img.jpg",
 				},
-				MediaLink:              "https://MediaLink.com/img.jpg",
-				Description:            "desc",
-				DescriptionAlternative: "alt",
-				TextPosition:           "top",
+				MediaLink:    "https://MediaLink.com/img.jpg",
+				Description:  "desc",
+				TextPosition: "top",
 			},
 		},
 	}
@@ -196,15 +249,15 @@ func TestProductsCRUDWAuth(t *testing.T) {
 	err := db.InitDB()
 	is.NoErr(err)
 
-	hosts := []string{"*"}
-	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
+	s := InitServerFromConst()
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
 
 	// jwt token
-	authData, err := s.GetJWT()
+	authData, err := s.Auth.GetJWT()
 	is.NoErr(err)
+	t.Log(authData)
 
 	// add product
 	productResp := &ProductResponse{}
@@ -250,14 +303,13 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 	err := db.InitDB()
 	is.NoErr(err)
 
-	hosts := []string{"*"}
-	s := InitServer(db, nil, serverPort, jwtSecret, adminSecret, hosts, true)
+	s := InitServerFromConst()
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
 
 	// jwt token
-	authData, err := s.GetJWT()
+	authData, err := s.Auth.GetJWT()
 	is.NoErr(err)
 
 	// add article
