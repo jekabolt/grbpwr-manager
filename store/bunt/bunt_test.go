@@ -1,4 +1,4 @@
-package store
+package bunt
 
 import (
 	"encoding/json"
@@ -6,54 +6,55 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/bucket"
+	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/matryer/is"
 )
 
 const (
-	BuntDBProductsPath    = "../bunt/products.db"
-	BuntDBArticlesPath    = "../bunt/articles.db"
-	BuntDBSalesPath       = "../bunt/sales.db"
-	BuntDBSubscribersPath = "../bunt/subscribers.db"
-	BuntDBHeroPath        = "../bunt/hero.db"
+	BuntDBProductsPath    = "../../bunt/products.db"
+	BuntDBArticlesPath    = "../../bunt/articles.db"
+	BuntDBSalesPath       = "../../bunt/sales.db"
+	BuntDBSubscribersPath = "../../bunt/subscribers.db"
+	BuntDBHeroPath        = "../../bunt/hero.db"
 )
 
 func TestCreateD(t *testing.T) {
-	p := &Product{}
+	p := &store.Product{}
 	bs, _ := json.Marshal(p)
 	fmt.Println("---", string(bs))
 }
 
-func buntFromConst() *BuntDB {
-	return &BuntDB{
-		BuntDBProductsPath:    BuntDBProductsPath,
-		BuntDBArticlesPath:    BuntDBArticlesPath,
-		BuntDBSalesPath:       BuntDBSalesPath,
-		BuntDBSubscribersPath: BuntDBSubscribersPath,
-		BuntDBHeroPath:        BuntDBHeroPath,
+func buntFromConst() *Config {
+	return &Config{
+		ProductsPath:    BuntDBProductsPath,
+		ArticlesPath:    BuntDBArticlesPath,
+		SalesPath:       BuntDBSalesPath,
+		SubscribersPath: BuntDBSubscribersPath,
+		HeroPath:        BuntDBHeroPath,
 	}
 }
 
 func TestCRUDProducts(t *testing.T) {
-	b := buntFromConst()
 	is := is.New(t)
 
-	err := b.InitDB()
+	c := buntFromConst()
+	b, err := c.InitDB()
 	is.NoErr(err)
 
-	prd := &Product{
+	prd := &store.Product{
 		MainImage: bucket.MainImage{
 			Image: bucket.Image{
 				FullSize: "https://main.com/img.jpg",
 			},
 		},
 		Name: "name",
-		Price: &Price{
+		Price: &store.Price{
 			USD: 1,
 			BYN: 1,
 			EUR: 1,
 			RUB: 1,
 		},
-		AvailableSizes: &Size{
+		AvailableSizes: &store.Size{
 			XXS: 1,
 			XS:  1,
 			S:   1,
@@ -106,13 +107,12 @@ func TestCRUDProducts(t *testing.T) {
 }
 
 func TestCRUDArticles(t *testing.T) {
-	b := buntFromConst()
 	is := is.New(t)
 
-	err := b.InitDB()
+	c := buntFromConst()
+	b, err := c.InitDB()
 	is.NoErr(err)
-
-	art := &ArchiveArticle{
+	art := &store.NewsArticle{
 		Title:       "title",
 		Description: "desc",
 		MainImage: bucket.MainImage{
@@ -120,7 +120,7 @@ func TestCRUDArticles(t *testing.T) {
 				FullSize: "img",
 			},
 		},
-		Content: []Content{
+		Content: []store.Content{
 			{
 				Image: bucket.Image{
 					FullSize: "img",
@@ -132,10 +132,10 @@ func TestCRUDArticles(t *testing.T) {
 		},
 	}
 
-	a, err := b.AddArchiveArticle(art)
+	a, err := b.AddNewsArticle(art)
 	is.NoErr(err)
 
-	found, err := b.GetArchiveArticleById(fmt.Sprint(a.Id))
+	found, err := b.GetNewsArticleById(fmt.Sprint(a.Id))
 	is.NoErr(err)
 
 	is.Equal(art, found)
@@ -144,18 +144,18 @@ func TestCRUDArticles(t *testing.T) {
 
 	aNew := a
 
-	err = b.ModifyArchiveArticleById(fmt.Sprint(a.Id), aNew)
+	err = b.ModifyNewsArticleById(fmt.Sprint(a.Id), aNew)
 	is.NoErr(err)
 
-	foundModified, err := b.GetArchiveArticleById(fmt.Sprint(a.Id))
+	foundModified, err := b.GetNewsArticleById(fmt.Sprint(a.Id))
 	is.NoErr(err)
 
 	is.Equal(aNew, foundModified)
 
-	err = b.DeleteArchiveArticleById(fmt.Sprint(foundModified.Id))
+	err = b.DeleteNewsArticleById(fmt.Sprint(foundModified.Id))
 	is.NoErr(err)
 
-	arts, err := b.GetAllArchiveArticles()
+	arts, err := b.GetAllNewsArticles()
 	is.NoErr(err)
 
 	is.Equal(len(arts), 0)
@@ -163,13 +163,13 @@ func TestCRUDArticles(t *testing.T) {
 }
 
 func TestCRUDSubscribers(t *testing.T) {
-	b := buntFromConst()
 	is := is.New(t)
 
-	err := b.InitDB()
+	c := buntFromConst()
+	b, err := c.InitDB()
 	is.NoErr(err)
 
-	s := &Subscriber{
+	s := &store.Subscriber{
 		Email:    "test",
 		IP:       "test",
 		City:     "test",
@@ -192,13 +192,13 @@ func TestCRUDSubscribers(t *testing.T) {
 }
 
 func TestCRUDHero(t *testing.T) {
-	b := buntFromConst()
 	is := is.New(t)
 
-	err := b.InitDB()
+	c := buntFromConst()
+	b, err := c.InitDB()
 	is.NoErr(err)
 
-	h := &Hero{
+	h := &store.Hero{
 		TimeChanged: 14,
 		ContentLink: "-",
 		ContentType: "-",

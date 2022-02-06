@@ -23,7 +23,7 @@ func (nl *Subscriber) String() string {
 	return string(bs)
 }
 
-func getSubscriberFromString(ns string) *Subscriber {
+func GetSubscriberFromString(ns string) *Subscriber {
 	subscriber := &Subscriber{}
 	json.Unmarshal([]byte(ns), subscriber)
 	return subscriber

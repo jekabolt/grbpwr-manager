@@ -18,6 +18,7 @@ type Product struct {
 	Price               *Price           `json:"price"`
 	AvailableSizes      *Size            `json:"availableSizes"`
 	ShortDescription    string           `json:"shortDescription,omitempty"`
+	Season              string           `json:"season,omitempty"`
 	DetailedDescription []string         `json:"detailedDescription,omitempty"`
 	Categories          []string         `json:"categories,omitempty"`
 	ProductImages       []bucket.Image   `json:"productImages,omitempty"`
@@ -50,41 +51,34 @@ func isCategoryExist(json string, category string) bool {
 	return strings.Contains(gjson.Get(json, "categories").String(), category)
 }
 
-func getProductFromString(product string) *Product {
+func GetProductFromString(product string) *Product {
 	p := &Product{}
 	json.Unmarshal([]byte(product), p)
 	return p
 }
 
 func (p *Product) Validate() error {
-
 	if len(p.Categories) == 0 {
 		return fmt.Errorf("missing categories")
 	}
-
 	if len(p.ProductImages) == 0 {
 		return fmt.Errorf("missing product images")
 	}
-
 	if len(p.MainImage.FullSize) == 0 {
 		return fmt.Errorf("missing main image")
 	}
-
 	if len(p.ShortDescription) == 0 {
 		return fmt.Errorf("missing short description")
 	}
 	if len(p.DetailedDescription) == 0 {
 		return fmt.Errorf("missing detailed description")
 	}
-
 	if len(p.Name) == 0 {
 		return fmt.Errorf("missing Name")
 	}
-
 	if p.Price.BYN == 0 || p.Price.EUR == 0 || p.Price.USD == 0 || p.Price.RUB == 0 {
 		return fmt.Errorf("prices were not set [%+v]", p.Price)
 	}
-
 	return nil
 
 }

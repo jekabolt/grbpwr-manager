@@ -64,17 +64,17 @@ var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not fo
 // archive article
 
 type ArticleResponse struct {
-	StatusCode     int                   `json:"statusCode,omitempty"`
-	ArchiveArticle *store.ArchiveArticle `json:"article,omitempty"`
+	StatusCode  int                `json:"statusCode,omitempty"`
+	NewsArticle *store.NewsArticle `json:"article,omitempty"`
 }
 
-func NewArticleResponse(article *store.ArchiveArticle, statusCode int) *ArticleResponse {
-	resp := &ArticleResponse{ArchiveArticle: article, StatusCode: statusCode}
+func NewArticleResponse(article *store.NewsArticle, statusCode int) *ArticleResponse {
+	resp := &ArticleResponse{NewsArticle: article, StatusCode: statusCode}
 	return resp
 }
 
-func NewArticleResponseNoStatusCode(article *store.ArchiveArticle) *ArticleResponse {
-	resp := &ArticleResponse{ArchiveArticle: article}
+func NewArticleResponseNoStatusCode(article *store.NewsArticle) *ArticleResponse {
+	resp := &ArticleResponse{NewsArticle: article}
 	return resp
 }
 
@@ -82,7 +82,7 @@ func (rd *ArticleResponse) Render(w http.ResponseWriter, r *http.Request) error 
 	return nil
 }
 
-func NewArticleListResponse(articles []*store.ArchiveArticle) []render.Renderer {
+func NewArticleListResponse(articles []*store.NewsArticle) []render.Renderer {
 	list := []render.Renderer{}
 	for _, article := range articles {
 		list = append(list, NewArticleResponseNoStatusCode(article))

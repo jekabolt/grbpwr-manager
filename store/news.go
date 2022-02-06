@@ -27,7 +27,6 @@ func (tp *TextPosition) UnmarshalJSON(b []byte) error {
 	}
 	*tp = TP
 	return nil
-
 }
 
 func (tp TextPosition) IsValid() error {
@@ -38,7 +37,7 @@ func (tp TextPosition) IsValid() error {
 	return errors.New("invalid text position type")
 }
 
-type ArchiveArticle struct {
+type NewsArticle struct {
 	Id               int64            `json:"id"`
 	DateCreated      int64            `json:"dateCreated"`
 	Title            string           `json:"title"`
@@ -54,17 +53,17 @@ type Content struct {
 	Description  string       `json:"description"`
 }
 
-func (aa *ArchiveArticle) String() string {
-	bs, _ := json.Marshal(aa)
+func (na *NewsArticle) String() string {
+	bs, _ := json.Marshal(na)
 	return string(bs)
 }
-func getArchiveArticleFromString(archiveArticle string) ArchiveArticle {
-	aa := &ArchiveArticle{}
-	json.Unmarshal([]byte(archiveArticle), aa)
-	return *aa
+func GetNewsArticleFromString(newsArticle string) NewsArticle {
+	na := &NewsArticle{}
+	json.Unmarshal([]byte(newsArticle), na)
+	return *na
 }
 
-func (p *ArchiveArticle) Validate() error {
+func (p *NewsArticle) Validate() error {
 
 	if len(p.Title) == 0 {
 		return fmt.Errorf("missing title")
@@ -83,10 +82,27 @@ func (p *ArchiveArticle) Validate() error {
 	}
 
 	for _, c := range p.Content {
-		if err := c.TextPosition.IsValid(); err != nil {
+		if err := c.Validate(); err != nil {
 			return err
 		}
 	}
 	return nil
 
+}
+
+func (c *Content) Validate() error {
+	if c.MediaLink == "" {
+		err := c.Image.Validate()
+		if err != nil {
+			return err
+		}
+	}
+	if err := c.TextPosition.IsValid(); err != nil {
+		return err
+	}
+
+	if len(c.Description) == 0 {
+		return fmt.Errorf("missing description")
+	}
+	return nil
 }

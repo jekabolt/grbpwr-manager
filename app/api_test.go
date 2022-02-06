@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/store"
+	"github.com/jekabolt/grbpwr-manager/store/bunt"
 	"github.com/matryer/is"
 )
 
@@ -48,24 +49,29 @@ func bucketFromConst() *bucket.Bucket {
 	}
 }
 
-func buntFromConst() *store.BuntDB {
-	return &store.BuntDB{
-		BuntDBProductsPath:    BuntDBProductsPath,
-		BuntDBArticlesPath:    BuntDBArticlesPath,
-		BuntDBSalesPath:       BuntDBSalesPath,
-		BuntDBSubscribersPath: BuntDBSubscribersPath,
-		BuntDBHeroPath:        BuntDBHeroPath,
+func buntFromConst() *bunt.Config {
+	return &bunt.Config{
+		ProductsPath:    BuntDBProductsPath,
+		ArticlesPath:    BuntDBArticlesPath,
+		SalesPath:       BuntDBSalesPath,
+		SubscribersPath: BuntDBSubscribersPath,
+		HeroPath:        BuntDBHeroPath,
 	}
 }
 
-func InitServerFromConst() *Server {
+func InitServerFromConst() (*Server, error) {
 	b := bucketFromConst()
-	db := buntFromConst()
-	db.InitDB()
+	c := buntFromConst()
+	db, err := c.InitDB()
+	if err != nil {
+		return nil, err
+	}
+
 	ac := &auth.Config{
 		AdminSecret: adminSecret,
 		JWTSecret:   jwtSecret,
 	}
+
 	return &Server{
 		DB:     db,
 		Bucket: b,
@@ -76,7 +82,7 @@ func InitServerFromConst() *Server {
 			Auth:  ac,
 			Debug: true,
 		},
-	}
+	}, nil
 }
 
 func testRequest(t *testing.T, ts *httptest.Server, method, path string, body io.Reader, response interface{}, at string) (*http.Response, interface{}) {
@@ -135,7 +141,8 @@ func (s *Server) getAuthRequestWrongRefresh(rt string) *bytes.Reader {
 func TestAuthTokenByPasswordAndRefresh(t *testing.T) {
 	is := is.New(t)
 
-	s := InitServerFromConst()
+	s, err := InitServerFromConst()
+	is.NoErr(err)
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -215,7 +222,7 @@ func getProductReq(t *testing.T, name string) *bytes.Reader {
 
 func getArticleReq(t *testing.T, title string) *bytes.Reader {
 	is := is.New(t)
-	a := store.ArchiveArticle{
+	a := store.NewsArticle{
 		Title:       title,
 		Description: "desc",
 		MainImage: bucket.MainImage{
@@ -245,11 +252,8 @@ func getArticleReq(t *testing.T, title string) *bytes.Reader {
 func TestProductsCRUDWAuth(t *testing.T) {
 	is := is.New(t)
 
-	db := buntFromConst()
-	err := db.InitDB()
+	s, err := InitServerFromConst()
 	is.NoErr(err)
-
-	s := InitServerFromConst()
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -299,11 +303,8 @@ func TestProductsCRUDWAuth(t *testing.T) {
 func TestArticlesCRUDWAuth(t *testing.T) {
 	is := is.New(t)
 
-	db := buntFromConst()
-	err := db.InitDB()
+	s, err := InitServerFromConst()
 	is.NoErr(err)
-
-	s := InitServerFromConst()
 
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
@@ -315,27 +316,27 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 	// add article
 	articleResp := &ArticleResponse{}
 	title1 := "title1"
-	res, pr := testRequest(t, ts, http.MethodPost, "/api/archive", getArticleReq(t, title1), articleResp, authData.AccessToken)
+	res, pr := testRequest(t, ts, http.MethodPost, "/api/news", getArticleReq(t, title1), articleResp, authData.AccessToken)
 	articleResp = pr.(*ArticleResponse)
 	is.Equal(res.StatusCode, http.StatusOK)
 
 	// modify article
 	articleResp2 := &ArticleResponse{}
 	title2 := "title2"
-	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), getArticleReq(t, title2), articleResp2, authData.AccessToken)
+	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/news/%d", articleResp.NewsArticle.Id), getArticleReq(t, title2), articleResp2, authData.AccessToken)
 	// articleResp2 = mr.(*ArticleResponse)
 	is.Equal(res2.StatusCode, http.StatusOK)
 
 	// get article by id
 	articleResp3 := &ArticleResponse{}
-	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp3, authData.AccessToken)
+	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/news/%d", articleResp.NewsArticle.Id), nil, articleResp3, authData.AccessToken)
 	articleResp3 = gr.(*ArticleResponse)
 	is.Equal(res3.StatusCode, http.StatusOK)
-	is.Equal(articleResp3.ArchiveArticle.Title, title2)
+	is.Equal(articleResp3.NewsArticle.Title, title2)
 
 	// delete article by id
 	articleResp4 := &ArticleResponse{}
-	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/archive/%d", articleResp.ArchiveArticle.Id), nil, articleResp4, authData.AccessToken)
+	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/news/%d", articleResp.NewsArticle.Id), nil, articleResp4, authData.AccessToken)
 	articleResp4 = dr.(*ArticleResponse)
 	is.Equal(res4.StatusCode, http.StatusOK)
 
@@ -343,7 +344,7 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 
 	// get all
 	allArticleResp := &[]store.Product{}
-	res5, ar := testRequest(t, ts, http.MethodGet, "/api/archive", nil, allArticleResp, authData.AccessToken)
+	res5, ar := testRequest(t, ts, http.MethodGet, "/api/news", nil, allArticleResp, authData.AccessToken)
 	allArticleResp = ar.(*[]store.Product)
 	is.Equal(res5.StatusCode, http.StatusOK)
 	is.Equal(len(*allArticleResp), 0)

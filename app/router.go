@@ -55,38 +55,39 @@ func (s *Server) Router() *chi.Mux {
 
 	r.Route("/api", func(r chi.Router) {
 
-		r.Route("/archive/{id}", func(r chi.Router) {
-			r.Use(s.ArchiveCtx)
-
+		r.Route("/news/{id}", func(r chi.Router) {
+			r.Use(s.NewsCtx)
 			// with jwt auth
 			r.Group(func(r chi.Router) {
 
 				r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 				r.Use(s.Authenticator)
 
-				r.Put("/", s.modifyArchiveArticleById)
-				r.Delete("/", s.deleteArchiveArticleById)
+				r.Put("/", s.modifyNewsArticleById)
+				r.Delete("/", s.deleteNewsArticleById)
 			})
-
-			r.Get("/", s.getArchiveArticleById) // public
-
+			r.Get("/", s.getNewsArticleById) // public
 		})
 
-		// with jwt auth
-		r.Group(func(r chi.Router) {
+		//TODO:
+		r.Route("/collections/{collection}", func(r chi.Router) {
+			r.Use(s.NewsCtx)
+			// with jwt auth
+			r.Group(func(r chi.Router) {
 
-			r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
-			r.Use(s.Authenticator)
+				r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
+				r.Use(s.Authenticator)
 
-			r.Post("/archive", s.addArchiveArticle)
-			r.Post("/product", s.addProduct)
-			r.Post("/image", s.uploadImage)
+				r.Put("/", s.modifyNewsArticleById)
+				r.Delete("/", s.deleteNewsArticleById)
+			})
+
+			r.Get("/", s.getNewsArticleById) // public
 
 		})
 
 		r.Route("/product/{id}", func(r chi.Router) {
 			r.Use(s.ProductCtx)
-
 			// with jwt auth
 			r.Group(func(r chi.Router) {
 
@@ -112,10 +113,22 @@ func (s *Server) Router() *chi.Mux {
 			r.Post("/main", s.updateMainPage)
 		})
 
-		r.Get("/archive", s.getAllArchiveArticlesList) // public
-		r.Get("/product", s.getAllProductsList)        // public
-		r.Get("/main", s.getMainPage)                  // public
-		r.Post("/subscribe", s.subscribeNewsletter)    // public
+		// with jwt auth
+		r.Group(func(r chi.Router) {
+			r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
+			r.Use(s.Authenticator)
+
+			r.Post("/news", s.addNewsArticle)
+			r.Post("/collections", s.addNewsArticle)
+			r.Post("/product", s.addProduct)
+			r.Post("/image", s.uploadImage)
+
+		})
+
+		r.Get("/news", s.getAllNewsArticlesList)    // public
+		r.Get("/product", s.getAllProductsList)     // public
+		r.Get("/main", s.getMainPage)               // public
+		r.Post("/subscribe", s.subscribeNewsletter) // public
 
 	})
 
