@@ -3,6 +3,7 @@ package app
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/render"
 	"github.com/jekabolt/grbpwr-manager/store"
@@ -54,6 +55,8 @@ func (s *Server) updateMainPage(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
+
+	data.TimeChanged = time.Now().Unix()
 
 	if data, err = s.DB.UpsertHero(data); err != nil {
 		log.Error().Err(err).Msgf("updateMainPage:s.DB.GetAllProducts [%v]", err.Error())

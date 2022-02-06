@@ -7,7 +7,7 @@ import (
 )
 
 type Hero struct {
-	TimeChanged string `json:"timeChanged" env:"HERO_TIME_CHANGED" envDefault:""`
+	TimeChanged int64  `json:"timeChanged" env:"HERO_TIME_CHANGED" envDefault:""`
 	ContentLink string `json:"contentLink" env:"HERO_CONTENT_LINK" envDefault:""`
 	ContentType string `json:"contentType" env:"HERO_CONTENT_TYPE" envDefault:""`
 	ExploreLink string `json:"exploreLink" env:"HERO_EXPLORE_LINK" envDefault:""`
@@ -19,10 +19,6 @@ func (h *Hero) Bind(r *http.Request) error {
 }
 
 func (h *Hero) Validate() error {
-
-	if len(h.TimeChanged) == 0 {
-		return fmt.Errorf("missing TimeChanged")
-	}
 
 	if len(h.ContentLink) == 0 {
 		return fmt.Errorf("missing ContentLink")
