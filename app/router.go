@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -18,7 +17,7 @@ func (s *Server) Router() *chi.Mux {
 	r := chi.NewRouter()
 
 	cors := cors.New(cors.Options{
-		AllowedOrigins: s.Hosts,
+		AllowedOrigins: s.Config.Hosts,
 		AllowedMethods: []string{
 			http.MethodHead,
 			http.MethodGet,
@@ -27,7 +26,7 @@ func (s *Server) Router() *chi.Mux {
 			http.MethodOptions,
 			http.MethodDelete,
 		},
-		Debug: s.Debug,
+		Debug: s.Config.Debug,
 	})
 
 	// Init middlewares
@@ -62,7 +61,7 @@ func (s *Server) Router() *chi.Mux {
 			// with jwt auth
 			r.Group(func(r chi.Router) {
 
-				r.Use(jwtauth.Verifier(s.JWTAuth))
+				r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 				r.Use(s.Authenticator)
 
 				r.Put("/", s.modifyArchiveArticleById)
@@ -76,7 +75,7 @@ func (s *Server) Router() *chi.Mux {
 		// with jwt auth
 		r.Group(func(r chi.Router) {
 
-			r.Use(jwtauth.Verifier(s.JWTAuth))
+			r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 			r.Use(s.Authenticator)
 
 			r.Post("/archive", s.addArchiveArticle)
@@ -91,7 +90,7 @@ func (s *Server) Router() *chi.Mux {
 			// with jwt auth
 			r.Group(func(r chi.Router) {
 
-				r.Use(jwtauth.Verifier(s.JWTAuth))
+				r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 				r.Use(s.Authenticator)
 
 				r.Put("/", s.modifyProductsById)
@@ -104,7 +103,7 @@ func (s *Server) Router() *chi.Mux {
 		})
 
 		r.Group(func(r chi.Router) {
-			r.Use(jwtauth.Verifier(s.JWTAuth))
+			r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 			r.Use(s.Authenticator)
 
 			r.Get("/subscribe", s.getAllSubscribers)
@@ -122,14 +121,6 @@ func (s *Server) Router() *chi.Mux {
 }
 
 func (s *Server) Serve() error {
-	log.Info().Msg("Listening on :" + s.Port)
-	return http.ListenAndServe(":"+s.Port, s.Router())
-}
-
-func PostCtx(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Fatal().Msg("kek")
-		ctx := context.WithValue(r.Context(), "id", chi.URLParam(r, "id"))
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	log.Info().Msg("Listening on :" + s.Config.Port)
+	return http.ListenAndServe(":"+s.Config.Port, s.Router())
 }

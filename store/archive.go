@@ -48,11 +48,10 @@ type ArchiveArticle struct {
 	Content          []Content        `json:"content"`
 }
 type Content struct {
-	Image                  bucket.Image `json:"image"`
-	MediaLink              string       `json:"mediaLink"`
-	TextPosition           TextPosition `json:"textPosition"`
-	Description            string       `json:"description"`
-	DescriptionAlternative string       `json:"descriptionAlternative"` // TODO: deprecated
+	Image        bucket.Image `json:"image"`
+	MediaLink    string       `json:"mediaLink"`
+	TextPosition TextPosition `json:"textPosition"`
+	Description  string       `json:"description"`
 }
 
 func (aa *ArchiveArticle) String() string {

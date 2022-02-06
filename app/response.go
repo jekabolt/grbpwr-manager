@@ -186,7 +186,7 @@ func NewSubscriptionsResponse(subscribers []*store.Subscriber) []render.Renderer
 type MainPageResponse struct {
 	StatusCode int              `json:"statusCode,omitempty"`
 	Hero       *store.Hero      `json:"hero,omitempty"`
-	Products   []*store.Product `json:"hero,omitempty"`
+	Products   []*store.Product `json:"products,omitempty"`
 }
 
 func NewMainPageResponse(h *store.Hero, products []*store.Product) *MainPageResponse {
