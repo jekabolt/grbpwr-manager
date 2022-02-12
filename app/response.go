@@ -61,7 +61,7 @@ func ErrUnauthorizedError(err error) render.Renderer {
 
 var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not found."}
 
-// archive article
+// news article
 
 type ArticleResponse struct {
 	StatusCode  int                `json:"statusCode,omitempty"`
@@ -79,13 +79,42 @@ func NewArticleResponseNoStatusCode(article *store.NewsArticle) *ArticleResponse
 }
 
 func (rd *ArticleResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
+	return rd.NewsArticle.Validate()
 }
 
 func NewArticleListResponse(articles []*store.NewsArticle) []render.Renderer {
 	list := []render.Renderer{}
 	for _, article := range articles {
 		list = append(list, NewArticleResponseNoStatusCode(article))
+	}
+	return list
+}
+
+// collections
+
+type CollectionResponse struct {
+	StatusCode int               `json:"statusCode,omitempty"`
+	Collection *store.Collection `json:"collection,omitempty"`
+}
+
+func NewCollectionResponse(collection *store.Collection, statusCode int) *CollectionResponse {
+	resp := &CollectionResponse{Collection: collection, StatusCode: statusCode}
+	return resp
+}
+
+func NewCollectionResponseNoStatusCode(collection *store.Collection) *CollectionResponse {
+	resp := &CollectionResponse{Collection: collection}
+	return resp
+}
+
+func (cr *CollectionResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return cr.Collection.Validate()
+}
+
+func NewCollectionListResponse(collections []*store.Collection) []render.Renderer {
+	list := []render.Renderer{}
+	for _, collection := range collections {
+		list = append(list, NewCollectionResponseNoStatusCode(collection))
 	}
 	return list
 }

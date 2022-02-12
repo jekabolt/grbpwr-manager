@@ -13,13 +13,14 @@ import (
 const (
 	BuntDBProductsPath    = "../../bunt/products.db"
 	BuntDBArticlesPath    = "../../bunt/articles.db"
+	BuntDBCollectionsPath = "../../bunt/collections.db"
 	BuntDBSalesPath       = "../../bunt/sales.db"
 	BuntDBSubscribersPath = "../../bunt/subscribers.db"
 	BuntDBHeroPath        = "../../bunt/hero.db"
 )
 
 func TestCreateD(t *testing.T) {
-	p := &store.Product{}
+	p := &store.Collection{}
 	bs, _ := json.Marshal(p)
 	fmt.Println("---", string(bs))
 }
@@ -28,6 +29,7 @@ func buntFromConst() *Config {
 	return &Config{
 		ProductsPath:    BuntDBProductsPath,
 		ArticlesPath:    BuntDBArticlesPath,
+		CollectionsPath: BuntDBCollectionsPath,
 		SalesPath:       BuntDBSalesPath,
 		SubscribersPath: BuntDBSubscribersPath,
 		HeroPath:        BuntDBHeroPath,
@@ -122,7 +124,7 @@ func TestCRUDArticles(t *testing.T) {
 		},
 		Content: []store.Content{
 			{
-				Image: bucket.Image{
+				Image: &bucket.Image{
 					FullSize: "img",
 				},
 				MediaLink:    "link",
@@ -156,6 +158,71 @@ func TestCRUDArticles(t *testing.T) {
 	is.NoErr(err)
 
 	arts, err := b.GetAllNewsArticles()
+	is.NoErr(err)
+
+	is.Equal(len(arts), 0)
+
+}
+
+func TestCRUDCollections(t *testing.T) {
+	is := is.New(t)
+
+	c := buntFromConst()
+	b, err := c.InitDB()
+	is.NoErr(err)
+	art := &store.Collection{
+		MainImage: &bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "img",
+			},
+		},
+		Title:  "title",
+		Season: "desc",
+		Article: &store.NewsArticle{
+			Title:       "title",
+			Description: "desc",
+			MainImage: bucket.MainImage{
+				Image: bucket.Image{
+					FullSize: "img",
+				},
+			},
+			Content: []store.Content{
+				{
+					Image: &bucket.Image{
+						FullSize: "img",
+					},
+					MediaLink:    "link",
+					Description:  "desc",
+					TextPosition: "top",
+				},
+			},
+		},
+	}
+
+	a, err := b.AddCollection(art)
+	is.NoErr(err)
+
+	found, err := b.GetCollectionBySeason(fmt.Sprint(a.Season))
+	is.NoErr(err)
+
+	is.Equal(art, found)
+
+	a.Title = "new title"
+
+	aNew := a
+
+	err = b.ModifyCollectionBySeason(fmt.Sprint(a.Season), aNew)
+	is.NoErr(err)
+
+	foundModified, err := b.GetCollectionBySeason(fmt.Sprint(a.Season))
+	is.NoErr(err)
+
+	is.Equal(aNew, foundModified)
+
+	err = b.DeleteCollectionBySeason(fmt.Sprint(foundModified.Season))
+	is.NoErr(err)
+
+	arts, err := b.GetAllCollections()
 	is.NoErr(err)
 
 	is.Equal(len(arts), 0)

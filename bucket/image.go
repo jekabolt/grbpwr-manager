@@ -9,6 +9,9 @@ type Image struct {
 }
 
 func (i *Image) Validate() error {
+	if i == nil {
+		return fmt.Errorf("missing Image")
+	}
 	if len(i.FullSize) == 0 {
 		return fmt.Errorf("missing Image FullSize")
 	}
@@ -27,6 +30,9 @@ type MainImage struct {
 }
 
 func (mi *MainImage) Validate() error {
+	if mi == nil {
+		return fmt.Errorf("missing MetaImage")
+	}
 	if len(mi.MetaImage) == 0 {
 		return fmt.Errorf("missing Image MetaImage")
 	}

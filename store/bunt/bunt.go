@@ -38,6 +38,10 @@ func (c *Config) InitDB() (*BuntDB, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.collections, err = buntdb.Open(c.CollectionsPath)
+	if err != nil {
+		return nil, err
+	}
 
 	return &db, nil
 }

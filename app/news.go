@@ -31,7 +31,7 @@ func (s *Server) addNewsArticle(w http.ResponseWriter, r *http.Request) {
 				render.Render(w, r, ErrInternalServerError(err))
 				return
 			}
-			data.Content[i].Image = *contentImg
+			data.Content[i].Image = contentImg
 		}
 
 		mainImage, err := s.Bucket.UploadNewsMainImage(data.MainImage.FullSize)

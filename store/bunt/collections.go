@@ -35,9 +35,9 @@ func (db *BuntDB) GetCollectionBySeason(season string) (*store.Collection, error
 func (db *BuntDB) GetAllCollections() ([]*store.Collection, error) {
 	aa := []*store.Collection{}
 	err := db.collections.View(func(tx *buntdb.Tx) error {
-		tx.Ascend("", func(_, articlesStr string) bool {
-			article := store.GetCollectionFromString(articlesStr)
-			aa = append(aa, &article)
+		tx.Ascend("", func(_, collectionsStr string) bool {
+			collection := store.GetCollectionFromString(collectionsStr)
+			aa = append(aa, &collection)
 			return true
 		})
 		return nil

@@ -8,15 +8,9 @@ const (
 type Store interface {
 	ProductCRUD
 	NewsArticleCRUD
+	CollectionCRUD
 	SubscriberCRUD
 	HeroCRUD
-}
-
-type SubscriberCRUD interface {
-	AddSubscriber(n *Subscriber) (*Subscriber, error)
-	GetSubscriberByEmail(id string) (*Subscriber, error)
-	GetAllSubscribers() ([]*Subscriber, error)
-	DeleteSubscriberByEmail(email string) error
 }
 
 type ProductCRUD interface {
@@ -33,6 +27,20 @@ type NewsArticleCRUD interface {
 	GetAllNewsArticles() ([]*NewsArticle, error)
 	DeleteNewsArticleById(id string) error
 	ModifyNewsArticleById(id string, aNew *NewsArticle) error
+}
+type CollectionCRUD interface {
+	AddCollection(aa *Collection) (*Collection, error)
+	GetCollectionBySeason(id string) (*Collection, error)
+	GetAllCollections() ([]*Collection, error)
+	DeleteCollectionBySeason(id string) error
+	ModifyCollectionBySeason(id string, aNew *Collection) error
+}
+
+type SubscriberCRUD interface {
+	AddSubscriber(n *Subscriber) (*Subscriber, error)
+	GetSubscriberByEmail(id string) (*Subscriber, error)
+	GetAllSubscribers() ([]*Subscriber, error)
+	DeleteSubscriberByEmail(email string) error
 }
 
 type HeroCRUD interface {

@@ -47,10 +47,10 @@ type NewsArticle struct {
 	Content          []Content        `json:"content"`
 }
 type Content struct {
-	Image        bucket.Image `json:"image"`
-	MediaLink    string       `json:"mediaLink"`
-	TextPosition TextPosition `json:"textPosition"`
-	Description  string       `json:"description"`
+	Image        *bucket.Image `json:"image,omitempty"`
+	MediaLink    string        `json:"mediaLink,omitempty"`
+	TextPosition TextPosition  `json:"textPosition"`
+	Description  string        `json:"description"`
 }
 
 func (na *NewsArticle) String() string {
@@ -63,25 +63,28 @@ func GetNewsArticleFromString(newsArticle string) NewsArticle {
 	return *na
 }
 
-func (p *NewsArticle) Validate() error {
-
-	if len(p.Title) == 0 {
-		return fmt.Errorf("missing title")
+func (na *NewsArticle) Validate() error {
+	if na == nil {
+		return fmt.Errorf("missing NewsArticle")
 	}
 
-	if len(p.Description) == 0 {
-		return fmt.Errorf("missing description")
+	if len(na.Title) == 0 {
+		return fmt.Errorf("NewsArticle missing title")
 	}
 
-	if len(p.MainImage.FullSize) == 0 {
-		return fmt.Errorf("no main image")
+	if len(na.Description) == 0 {
+		return fmt.Errorf("NewsArticle missing description")
 	}
 
-	if len(p.Content) == 0 {
-		return fmt.Errorf("content should have at least one record")
+	if len(na.MainImage.FullSize) == 0 {
+		return fmt.Errorf("NewsArticle no main image")
 	}
 
-	for _, c := range p.Content {
+	if len(na.Content) == 0 {
+		return fmt.Errorf("NewsArticle content should have at least one record")
+	}
+
+	for _, c := range na.Content {
 		if err := c.Validate(); err != nil {
 			return err
 		}
@@ -102,7 +105,7 @@ func (c *Content) Validate() error {
 	}
 
 	if len(c.Description) == 0 {
-		return fmt.Errorf("missing description")
+		return fmt.Errorf("missing content description [%v]", c.Description)
 	}
 	return nil
 }

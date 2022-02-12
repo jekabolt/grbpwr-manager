@@ -27,6 +27,7 @@ var (
 
 	BuntDBProductsPath    = "../bunt/products.db"
 	BuntDBArticlesPath    = "../bunt/articles.db"
+	BuntDBCollectionsPath = "../bunt/collections.db"
 	BuntDBSalesPath       = "../bunt/sales.db"
 	BuntDBSubscribersPath = "../bunt/subscribers.db"
 	BuntDBHeroPath        = "../bunt/hero.db"
@@ -53,6 +54,7 @@ func buntFromConst() *bunt.Config {
 	return &bunt.Config{
 		ProductsPath:    BuntDBProductsPath,
 		ArticlesPath:    BuntDBArticlesPath,
+		CollectionsPath: BuntDBCollectionsPath,
 		SalesPath:       BuntDBSalesPath,
 		SubscribersPath: BuntDBSubscribersPath,
 		HeroPath:        BuntDBHeroPath,
@@ -232,12 +234,53 @@ func getArticleReq(t *testing.T, title string) *bytes.Reader {
 		},
 		Content: []store.Content{
 			{
-				Image: bucket.Image{
+				Image: &bucket.Image{
 					FullSize: "https://ProductImages.com/img.jpg",
 				},
 				MediaLink:    "https://MediaLink.com/img.jpg",
 				Description:  "desc",
 				TextPosition: "top",
+			},
+		},
+	}
+
+	aBytes, err := json.Marshal(a)
+	is.NoErr(err)
+
+	return bytes.NewReader(aBytes)
+
+}
+
+func getCollectionsReq(t *testing.T, title string) *bytes.Reader {
+	is := is.New(t)
+	a := store.Collection{
+		Title:  title,
+		Season: "desc",
+		MainImage: &bucket.MainImage{
+			Image: bucket.Image{
+				FullSize: "https://main.com/img.jpg",
+			},
+		},
+		CollectionItems: []store.Product{
+			{},
+		},
+		Article: &store.NewsArticle{
+			Title:       title,
+			Description: "test desc",
+			MainImage: bucket.MainImage{
+				Image: bucket.Image{
+					FullSize: "https://main.com/img.jpg",
+				},
+			},
+			Content: []store.Content{
+				{
+					Image: &bucket.Image{
+						FullSize: "https://ProductImages.com/img.jpg",
+					},
+					MediaLink:    "https://MediaLink.com/img.jpg",
+					Description:  "desc",
+					TextPosition: "top",
+				},
 			},
 		},
 	}
@@ -343,9 +386,60 @@ func TestArticlesCRUDWAuth(t *testing.T) {
 	t.Logf("%+v", articleResp4)
 
 	// get all
-	allArticleResp := &[]store.Product{}
+	allArticleResp := &[]store.NewsArticle{}
 	res5, ar := testRequest(t, ts, http.MethodGet, "/api/news", nil, allArticleResp, authData.AccessToken)
-	allArticleResp = ar.(*[]store.Product)
+	allArticleResp = ar.(*[]store.NewsArticle)
 	is.Equal(res5.StatusCode, http.StatusOK)
 	is.Equal(len(*allArticleResp), 0)
+}
+
+func TestCollectionsCRUDWAuth(t *testing.T) {
+	is := is.New(t)
+
+	s, err := InitServerFromConst()
+	is.NoErr(err)
+	t.Logf("%+v", s)
+
+	ts := httptest.NewServer(s.Router())
+	defer ts.Close()
+
+	// jwt token
+	authData, err := s.Auth.GetJWT()
+	is.NoErr(err)
+
+	// add collection
+	collectionResp := &CollectionResponse{}
+	title1 := "title1"
+	res, pr := testRequest(t, ts, http.MethodPost, "/api/collections", getCollectionsReq(t, title1), collectionResp, authData.AccessToken)
+	collectionResp = pr.(*CollectionResponse)
+	is.Equal(res.StatusCode, http.StatusOK)
+
+	// modify collection
+	collectionResp2 := &CollectionResponse{}
+	title2 := "title2"
+	res2, _ := testRequest(t, ts, http.MethodPut, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), getCollectionsReq(t, title2), collectionResp2, authData.AccessToken)
+	// collectionResp2 = mr.(*CollectionResponse)
+	is.Equal(res2.StatusCode, http.StatusOK)
+
+	// // get collection by id
+	// collectionResp3 := &CollectionResponse{}
+	// res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp3, authData.AccessToken)
+	// collectionResp3 = gr.(*CollectionResponse)
+	// is.Equal(res3.StatusCode, http.StatusOK)
+	// is.Equal(collectionResp3.Collection.Title, title2)
+
+	// // delete collection by id
+	// collectionResp4 := &CollectionResponse{}
+	// res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp4, authData.AccessToken)
+	// collectionResp4 = dr.(*CollectionResponse)
+	// is.Equal(res4.StatusCode, http.StatusOK)
+
+	// t.Logf("%+v", collectionResp4)
+
+	// // get all
+	// allArticleResp := &[]store.Collection{}
+	// res5, ar := testRequest(t, ts, http.MethodGet, "/api/collections", nil, allArticleResp, authData.AccessToken)
+	// allArticleResp = ar.(*[]store.Collection)
+	// is.Equal(res5.StatusCode, http.StatusOK)
+	// is.Equal(len(*allArticleResp), 0)
 }

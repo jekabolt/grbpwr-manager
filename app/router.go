@@ -70,19 +70,18 @@ func (s *Server) Router() *chi.Mux {
 		})
 
 		//TODO:
-		r.Route("/collections/{collection}", func(r chi.Router) {
-			r.Use(s.NewsCtx)
+		r.Route("/collections/{season}", func(r chi.Router) {
+			r.Use(s.CollectionsCtx)
 			// with jwt auth
 			r.Group(func(r chi.Router) {
-
 				r.Use(jwtauth.Verifier(s.Auth.JWTAuth))
 				r.Use(s.Authenticator)
 
-				r.Put("/", s.modifyNewsArticleById)
-				r.Delete("/", s.deleteNewsArticleById)
+				r.Put("/", s.modifyCollectionBySeason)
+				r.Delete("/", s.deleteCollectionBySeason)
 			})
 
-			r.Get("/", s.getNewsArticleById) // public
+			r.Get("/", s.getCollectionBySeason) // public
 
 		})
 
@@ -119,15 +118,16 @@ func (s *Server) Router() *chi.Mux {
 			r.Use(s.Authenticator)
 
 			r.Post("/news", s.addNewsArticle)
-			r.Post("/collections", s.addNewsArticle)
 			r.Post("/product", s.addProduct)
-			r.Post("/image", s.uploadImage)
+			r.Post("/collections", s.addCollection)
 
 		})
 
-		r.Get("/news", s.getAllNewsArticlesList)    // public
-		r.Get("/product", s.getAllProductsList)     // public
-		r.Get("/main", s.getMainPage)               // public
+		r.Get("/news", s.getAllNewsArticlesList)       // public
+		r.Get("/product", s.getAllProductsList)        // public
+		r.Get("/collections", s.getAllCollectionsList) // public
+		r.Get("/main", s.getMainPage)                  // public
+
 		r.Post("/subscribe", s.subscribeNewsletter) // public
 
 	})

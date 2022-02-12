@@ -101,7 +101,7 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-	if err := render.RenderList(w, r, NewProductListResponse(products)); err != nil {
+	if err := render.RenderList(w, r, NewProductListResponse(store.BulkProductPreview(products))); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
 	}
