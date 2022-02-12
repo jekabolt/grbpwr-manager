@@ -79,7 +79,7 @@ func (a *Auth) IsAuthorized(ar *AuthRequest) bool {
 func (a *Auth) GetJWT() (*AuthToken, error) {
 	_, ts, err := a.JWTAuth.Encode(map[string]interface{}{
 		"iss": "backend.grbpwr.com",
-		"exp": time.Now().Add(time.Minute * 15).Unix(),
+		"exp": time.Now().Add(time.Hour * 15).Unix(),
 	})
 	if err != nil {
 		return nil, err
@@ -87,7 +87,7 @@ func (a *Auth) GetJWT() (*AuthToken, error) {
 
 	_, rts, err := a.JWTAuth.Encode(map[string]interface{}{
 		"sub": RefreshTokenSub,
-		"exp": time.Now().Add(time.Hour * 24).Unix(),
+		"exp": time.Now().Add((time.Hour * 24) * 5).Unix(),
 	})
 	if err != nil {
 		return nil, err
