@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/render"
@@ -64,12 +65,15 @@ var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not fo
 // news article
 
 type ArticleResponse struct {
-	StatusCode  int                `json:"statusCode,omitempty"`
 	NewsArticle *store.NewsArticle `json:"article,omitempty"`
 }
 
-func NewArticleResponse(article *store.NewsArticle, statusCode int) *ArticleResponse {
-	resp := &ArticleResponse{NewsArticle: article, StatusCode: statusCode}
+func (ar *ArticleResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(ar.NewsArticle)
+}
+
+func NewArticleResponse(article *store.NewsArticle) *ArticleResponse {
+	resp := &ArticleResponse{NewsArticle: article}
 	return resp
 }
 
@@ -93,12 +97,15 @@ func NewArticleListResponse(articles []*store.NewsArticle) []render.Renderer {
 // collections
 
 type CollectionResponse struct {
-	StatusCode int               `json:"statusCode,omitempty"`
 	Collection *store.Collection `json:"collection,omitempty"`
 }
 
-func NewCollectionResponse(collection *store.Collection, statusCode int) *CollectionResponse {
-	resp := &CollectionResponse{Collection: collection, StatusCode: statusCode}
+func (cr *CollectionResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(cr.Collection)
+}
+
+func NewCollectionResponse(collection *store.Collection) *CollectionResponse {
+	resp := &CollectionResponse{Collection: collection}
 	return resp
 }
 
@@ -122,12 +129,15 @@ func NewCollectionListResponse(collections []*store.Collection) []render.Rendere
 // product
 
 type ProductResponse struct {
-	StatusCode int            `json:"statusCode,omitempty"`
-	Product    *store.Product `json:"product,omitempty"`
+	Product *store.Product `json:"product,omitempty"`
 }
 
-func NewProductResponse(product *store.Product, statusCode int) *ProductResponse {
-	resp := &ProductResponse{Product: product, StatusCode: statusCode}
+func (pr *ProductResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pr.Product)
+}
+
+func NewProductResponse(product *store.Product) *ProductResponse {
+	resp := &ProductResponse{Product: product}
 	return resp
 }
 
@@ -148,22 +158,6 @@ func NewProductListResponse(products []*store.Product) []render.Renderer {
 	return list
 }
 
-// image
-
-type ImageResponse struct {
-	Status string `json:"status"`
-	Url    string `json:"url"`
-}
-
-func NewImageResponse(status, url string) *ImageResponse {
-	resp := &ImageResponse{Status: status, Url: url}
-	return resp
-}
-
-func (i *ImageResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
-}
-
 // auth
 
 type AuthResponse struct {
@@ -180,7 +174,6 @@ func (i *AuthResponse) Render(w http.ResponseWriter, r *http.Request) error {
 }
 
 // subscription
-
 type SubscriptionResponse struct {
 	StatusCode int               `json:"statusCode,omitempty"`
 	Subscriber *store.Subscriber `json:"subscriber,omitempty"`
@@ -213,23 +206,20 @@ func NewSubscriptionsResponse(subscribers []*store.Subscriber) []render.Renderer
 // mainpage
 
 type MainPageResponse struct {
-	StatusCode int              `json:"statusCode,omitempty"`
-	Hero       *store.Hero      `json:"hero,omitempty"`
-	Products   []*store.Product `json:"products,omitempty"`
+	Hero     *store.Hero      `json:"hero,omitempty"`
+	Products []*store.Product `json:"products,omitempty"`
 }
 
 func NewMainPageResponse(h *store.Hero, products []*store.Product) *MainPageResponse {
 	return &MainPageResponse{
-		StatusCode: http.StatusOK,
-		Hero:       h,
-		Products:   products,
+		Hero:     h,
+		Products: products,
 	}
 }
 
 func NewHeroUpdateResponse(h *store.Hero) *MainPageResponse {
 	return &MainPageResponse{
-		StatusCode: http.StatusOK,
-		Hero:       h,
+		Hero: h,
 	}
 }
 

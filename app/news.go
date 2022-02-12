@@ -48,7 +48,7 @@ func (s *Server) addNewsArticle(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 	}
 
-	render.Render(w, r, NewArticleResponse(data.NewsArticle, http.StatusCreated))
+	render.Render(w, r, NewArticleResponse(data.NewsArticle))
 }
 
 func (s *Server) deleteNewsArticleById(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +62,7 @@ func (s *Server) deleteNewsArticleById(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-	render.Render(w, r, NewArticleResponse(cArticle, http.StatusOK))
+	render.Render(w, r, NewArticleResponse(cArticle))
 }
 
 func (s *Server) modifyNewsArticleById(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +86,7 @@ func (s *Server) modifyNewsArticleById(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	render.Render(w, r, NewArticleResponse(data.NewsArticle, http.StatusOK))
+	render.Render(w, r, NewArticleResponse(data.NewsArticle))
 }
 
 // site
@@ -106,7 +106,7 @@ func (s *Server) getAllNewsArticlesList(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) getNewsArticleById(w http.ResponseWriter, r *http.Request) {
 	article := r.Context().Value(NewsCtxKey{}).(*store.NewsArticle)
-	if err := render.Render(w, r, NewArticleResponse(article, http.StatusOK)); err != nil {
+	if err := render.Render(w, r, NewArticleResponse(article)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
 	}

@@ -48,7 +48,7 @@ func (s *Server) addCollection(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 	}
 
-	render.Render(w, r, NewCollectionResponse(data.Collection, http.StatusCreated))
+	render.Render(w, r, NewCollectionResponse(data.Collection))
 }
 
 func (s *Server) deleteCollectionBySeason(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +62,7 @@ func (s *Server) deleteCollectionBySeason(w http.ResponseWriter, r *http.Request
 		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-	render.Render(w, r, NewCollectionResponse(cCollection, http.StatusOK))
+	render.Render(w, r, NewCollectionResponse(cCollection))
 }
 
 func (s *Server) modifyCollectionBySeason(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func (s *Server) modifyCollectionBySeason(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	render.Render(w, r, NewCollectionResponse(data.Collection, http.StatusOK))
+	render.Render(w, r, NewCollectionResponse(data.Collection))
 }
 
 // site
@@ -105,7 +105,7 @@ func (s *Server) getAllCollectionsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getCollectionBySeason(w http.ResponseWriter, r *http.Request) {
 	collection := r.Context().Value(CollectionsCtxKey{}).(*store.Collection)
-	if err := render.Render(w, r, NewCollectionResponse(collection, http.StatusOK)); err != nil {
+	if err := render.Render(w, r, NewCollectionResponse(collection)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
 	}
