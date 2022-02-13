@@ -21,6 +21,11 @@ func (s *Server) addNewsArticle(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
+	if err := data.Validate(); err != nil {
+		log.Error().Err(err).Msgf("addNewsArticle:render.Validate [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
 
 	// upload raw base64 images from request
 	if !strings.Contains(data.MainImage.FullSize, "https://") {

@@ -22,6 +22,11 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
+	if err := data.Validate(); err != nil {
+		log.Error().Err(err).Msgf("addProduct:render.Validate [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
 
 	// upload raw base64 images from request
 	if !strings.Contains(data.MainImage.FullSize, "https://") {
