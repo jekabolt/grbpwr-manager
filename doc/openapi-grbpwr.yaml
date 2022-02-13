@@ -1,14 +1,14 @@
 _type: export
 __export_format: 4
-__export_date: 2021-12-24T13:37:43.347Z
-__export_source: insomnia.desktop.app:v2021.6.0
+__export_date: 2022-02-12T14:56:51.523Z
+__export_source: insomnia.desktop.app:v2021.7.2
 resources:
   - _id: req_6af72ee4e1ff4f8590b2d0aa68df363b
     parentId: wrk_f860d950aac949fc80bf564a52132ee1
-    modified: 1640352546956
+    modified: 1644677138113
     created: 1633603985077
     url: "{{ _.base_url }}/auth"
-    name: auth local
+    name: auth
     description: ""
     method: POST
     body:
@@ -23,7 +23,7 @@ resources:
         value: application/json
         id: pair_68a9834312ca4cf186864cb9624f7e41
     authentication: {}
-    metaSortKey: -1640351972664
+    metaSortKey: -1644142220797
     isPrivate: false
     settingStoreCookies: true
     settingSendCookies: true
@@ -42,7 +42,7 @@ resources:
     _type: workspace
   - _id: req_ba0d32cac10049ed8b8bb35eb1e86709
     parentId: wrk_f860d950aac949fc80bf564a52132ee1
-    modified: 1640352052062
+    modified: 1644677124704
     created: 1626626710883
     url: "{{ _.base_url }}/api/image"
     name: upload image
@@ -59,7 +59,187 @@ resources:
     authentication:
       type: bearer
       token: "{{ _.token }}"
-    metaSortKey: -1640351972639
+    metaSortKey: -1644142220772
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_4c174645bc964a0c98a3434bf08b410e
+    parentId: fld_d812beb7273c427c8e750e22c3bfcb87
+    modified: 1644153543940
+    created: 1644142236945
+    url: "{{ _.base_url }}/api/main"
+    name: get main
+    description: ""
+    method: GET
+    body: {}
+    parameters: []
+    headers: []
+    authentication: {}
+    metaSortKey: -1640351986720.875
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_d812beb7273c427c8e750e22c3bfcb87
+    parentId: wrk_f860d950aac949fc80bf564a52132ee1
+    modified: 1644142220747
+    created: 1644142220747
+    name: main
+    description: ""
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -1644142220747
+    _type: request_group
+  - _id: req_e8d6fbc961d44862bced17d19305d5d5
+    parentId: fld_d812beb7273c427c8e750e22c3bfcb87
+    modified: 1644161554155
+    created: 1644153419203
+    url: "{{ _.base_url }}/api/main"
+    name: new hero
+    description: ""
+    method: POST
+    body:
+      mimeType: application/json
+      text: >-
+        {
+        	"contentLink": "https://player.vimeo.com/video/619710465?h=cad62e5804&autoplay=1&loop=1&title=0&byline=0&portrait=0&muted=1&controls=0",
+        	"contentType": "video",
+        	"exploreLink": "/test",
+        	"exploreText": "test"
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+        id: pair_869ed1976794435e9fb683a9a75fb2fd
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+    metaSortKey: -1640351986670.875
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_052c0f9d23804ead9a8f36bfefe62c20
+    parentId: fld_e890e7dcfdb64d04b7f12c876b2ebbbc
+    modified: 1644675173909
+    created: 1643543587497
+    url: "{{ _.base_url }}/api/subscribe"
+    name: add subscriber
+    description: ""
+    method: POST
+    body:
+      mimeType: application/json
+      text: |-
+        {
+        	"email":"jekabolt@yahoo.com",
+        	"ip": "46.216.112.3",
+        	"city": "minsk",
+        	"region": "minsk city",
+        	"country": "by",
+        	"loc": "53.9000,27.5667",
+        	"org": "as25106 mobile telesystems jllc",
+        	"postal": "220002",
+        	"timezone": "europe/minsk"
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+        id: pair_869ed1976794435e9fb683a9a75fb2fd
+    authentication: {}
+    metaSortKey: -1640351986767.75
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_e890e7dcfdb64d04b7f12c876b2ebbbc
+    parentId: wrk_f860d950aac949fc80bf564a52132ee1
+    modified: 1643543459159
+    created: 1643543459159
+    name: newsletters
+    description: ""
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -1643543459160
+    _type: request_group
+  - _id: req_a6cd30c850ef4aecbcf01b83bbe03936
+    parentId: fld_e890e7dcfdb64d04b7f12c876b2ebbbc
+    modified: 1643544829451
+    created: 1643543613534
+    url: "{{ _.base_url }}/api/subscribe/{{ _.b64email }}"
+    name: delete subscriber by email
+    description: ""
+    method: DELETE
+    body: {}
+    parameters: []
+    headers: []
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+    metaSortKey: -1640351986717.75
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_6ae5bd793fe04ffda13033862e0b2c87
+    parentId: fld_e890e7dcfdb64d04b7f12c876b2ebbbc
+    modified: 1643544827267
+    created: 1643543633071
+    url: "{{ _.base_url }}/api/subscribe"
+    name: get all subscribers
+    description: ""
+    method: GET
+    body: {}
+    parameters: []
+    headers: []
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+      prefix: ""
+    metaSortKey: -1640351986667.75
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_e52f830c27884084b11e3250466026c6
+    parentId: wrk_f860d950aac949fc80bf564a52132ee1
+    modified: 1640615120246
+    created: 1640615106241
+    url: "{{ _.base_url }}/"
+    name: health
+    description: ""
+    method: GET
+    body: {}
+    parameters: []
+    headers: []
+    authentication: {}
+    metaSortKey: -1640351972714
     isPrivate: false
     settingStoreCookies: true
     settingSendCookies: true
@@ -70,7 +250,7 @@ resources:
     _type: request
   - _id: req_92e9b2af03a343a684d51ca689008f90
     parentId: fld_7c244e5a793547f39ef9a666eff76082
-    modified: 1640352294281
+    modified: 1644672013381
     created: 1624801826472
     url: "{{ _.base_url }}/api/product"
     name: add product
@@ -78,37 +258,52 @@ resources:
     method: POST
     body:
       mimeType: application/json
-      text: |-
+      text: >-
         {
-        	"id": 1624802479,
-        	"dateCreated": 1624802479,
-        	"lat": 1624802479,
-        	"mainImage": "https://kek.com/img.jpg",
-        	"name": "item-created",
+        	"id": 1640711670,
+        	"dateCreated": 1640711670,
+        	"lat": 1640711670,
+        	"mainImage": {
+        		"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        	},
+        	"name": "sheer dress 2",
         	"price": {
-        		"usd": 33,
-        		"rub": 22,
-        		"byn": 100,
-        		"eur": 11
+        		"usd": 120,
+        		"rub": 1,
+        		"byn": 1,
+        		"eur": 1
         	},
         	"availableSizes": {
-        		"xxs": 0,
-        		"xs": 0,
-        		"s": 0,
-        		"m": 0,
-        		"l": 0,
-        		"xl": 0,
-        		"xxl": 0,
-        		"os": 11
+        		"xxs": 1,
+        		"xs": 1,
+        		"s": 1,
+        		"m": 1,
+        		"l": 1
         	},
-        	"description": "kek item",
-        	"categories": [
+        	"shortDescription": "cotton 100%",
+        	"detailedDescription": [
         		"kek",
-        		"item"
+        		"lel"
+        	],
+        	"categories": [
+        		"dress"
         	],
         	"productImages": [
-        		"https://kek.com/img1.jpg",
-        		"https://kek.com/img2.jpg"
+        		{
+        			"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        		},
+        		{
+        			"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        		}
         	]
         }
     parameters: []
@@ -119,7 +314,7 @@ resources:
     authentication:
       type: bearer
       token: "{{ _.token }}"
-    metaSortKey: -1640351986749
+    metaSortKey: -1640351986786.5
     isPrivate: false
     settingStoreCookies: true
     settingSendCookies: true
@@ -140,7 +335,7 @@ resources:
     _type: request_group
   - _id: req_6279f6dba525436b81fe7e571c3bc310
     parentId: fld_7c244e5a793547f39ef9a666eff76082
-    modified: 1640352183309
+    modified: 1644161570834
     created: 1624805351636
     url: "{{ _.base_url }}/api/product/{{ _.product_id }}"
     name: modify product by id
@@ -148,39 +343,33 @@ resources:
     method: PUT
     body:
       mimeType: application/json
-      text: |-
+      text: >-
         {
-        	"id": 1624802479,
-        	"dateCreated": 1624802479,
-        	"lat": 1624802479,
-        	"mainImage": "https://kek.com/img.jpg",
-        	"name": "hehe",
-        	"price": {
-        		"usd": 33,
-        		"rub": 22,
-        		"byn": 100,
-        		"eur": 11
-        	},
-        	"availableSizes": {
-        		"xxs": 0,
-        		"xs": 0,
-        		"s": 0,
-        		"m": 0,
-        		"l": 0,
-        		"xl": 0,
-        		"xxl": 0,
-        		"os": 11
-        	},
-        	"description": "kek item",
-        	"categories": [
-        		"kek",
-        		"item"
-        	],
-        	"productImages": [
-        		"https://kek.com/img1.jpg",
-        		"https://kek.com/img2.jpg"
-        	]
-        }
+              "id": 1641809691,
+              "dateCreated": 1641809691,
+              "lat": 1641809691,
+              "mainImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/January/1641809691884503639.jpg",
+              "name": "grbpwr shawl",
+              "price": {
+                "usd": 20,
+                "rub": 20,
+                "byn": 20,
+                "eur": 20
+              },
+              "availableSizes": {
+                "os": 1
+              },
+              "description": "90x90 cm;\n\n\n 100% acryl;\n\n\n double printed",
+              "categories": [
+                "shawl"
+              ],
+              "productImages": [
+                "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/January/1641809685830385897.jpg",
+                "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/January/1641809687385931593.jpg",
+                "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/January/1641809688917566256.jpg",
+                "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/January/1641809690514137801.jpg"
+              ]
+            }
     parameters: []
     headers:
       - name: Content-Type
@@ -204,7 +393,7 @@ resources:
     _type: request
   - _id: req_43b7ed5e98ee4763864712b551a87f9a
     parentId: fld_7c244e5a793547f39ef9a666eff76082
-    modified: 1640352157782
+    modified: 1641810293337
     created: 1624803073678
     url: "{{ _.base_url }}/api/product"
     name: get all products
@@ -246,7 +435,7 @@ resources:
     _type: request
   - _id: req_359cc3405b97480b8b8d2ec96db85e97
     parentId: fld_7c244e5a793547f39ef9a666eff76082
-    modified: 1640352621530
+    modified: 1641809046050
     created: 1624805853603
     url: "{{ _.base_url }}/api/product/{{ _.product_id }}"
     name: delete product by id
@@ -269,9 +458,9 @@ resources:
     _type: request
   - _id: req_72c4baea34584abd9f28188c80e1ad60
     parentId: fld_0b8c3413d5a64430b041532133ab4f22
-    modified: 1640352576431
+    modified: 1644675178171
     created: 1640352281381
-    url: "{{ _.base_url }}/api/archive"
+    url: "{{ _.base_url }}/api/news"
     name: add article
     description: ""
     method: POST
@@ -279,18 +468,32 @@ resources:
       mimeType: application/json
       text: >-
         {
-            "id": 2, 
-            "dateCreated": 1633273798459,
-            "title": "Article 1",
-            "description": "description 2",
-            "descriptionAlternative": "",
-            "mainImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/August/1628418483.jpg",
-            "type": "",
-            "content": [{
-                "mediaLink": "",
-                "description": "description 2",
-                "descriptionAlternative": ""
-            }]
+        	"id": 2,
+        	"dateCreated": 1633273798459,
+        	"title": "2 video",
+        	"description": "description ",
+        	"shortDescription": "",
+        	"descriptionAlternative": "",
+        	"mainImage": {
+        		"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        	},
+        	"content": [
+        		{
+        			"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        			"description": "description 2",
+        			"descriptionAlternative": "video",
+        			"textPosition": "bottom"
+        		},
+        		{
+        			"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        			"description": "description 2",
+        			"descriptionAlternative": "video",
+        			"textPosition": "bottom"
+        		}
+        	]
         }
     parameters: []
     headers:
@@ -311,9 +514,9 @@ resources:
     _type: request
   - _id: fld_0b8c3413d5a64430b041532133ab4f22
     parentId: wrk_f860d950aac949fc80bf564a52132ee1
-    modified: 1640352308260
+    modified: 1644161587371
     created: 1640352281377
-    name: archive
+    name: news
     description: ""
     environment: {}
     environmentPropertyOrder: null
@@ -321,28 +524,38 @@ resources:
     _type: request_group
   - _id: req_c59d2d6823004e26978d646459dfef7b
     parentId: fld_0b8c3413d5a64430b041532133ab4f22
-    modified: 1640352606824
+    modified: 1644164948121
     created: 1640352281384
-    url: "{{ _.base_url }}/api/archive/{{ _.article_id }}"
+    url: "{{ _.base_url }}/api/news/{{ _.article_id }}"
     name: modify article by id
     description: ""
     method: PUT
     body:
       mimeType: application/json
-      text: |-
+      text: >-
         {
-            "id": 2, 
-            "dateCreated": 1633447513,
-            "title": "Article 2",
-            "description": "description",
-            "descriptionAlternative": "",
-            "mainImage": "https://kek.com/img/tumb.png",
-            "type": "",
-            "content": [{
-                "mediaLink": "",
-                "description": "description 2",
-                "descriptionAlternative": ""
-            }]
+        	"id": 1641491797,
+        	"dateCreated": 1641491797,
+        	"title": "grbpwr x spin4spin",
+        	"description": "don't forget to watch video in heartpones and fullscreen",
+        	"mainImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/heros/spin4spin-hero.jpg",
+        	"content": [
+        		{
+        			"mediaLink": "https://player.vimeo.com/video/584924932?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        			"description": "1/3",
+        			"descriptionAlternative": "video"
+        		},
+        		{
+        			"mediaLink": "https://player.vimeo.com/video/585958111?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        			"description": "2/3",
+        			"descriptionAlternative": "video"
+        		},
+        		{
+        			"mediaLink": "https://player.vimeo.com/video/584920912?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        			"description": "3/3",
+        			"descriptionAlternative": "video"
+        		}
+        	]
         }
     parameters: []
     headers:
@@ -367,9 +580,9 @@ resources:
     _type: request
   - _id: req_2ff234feeca2444dae93bfe4d4fde6ab
     parentId: fld_0b8c3413d5a64430b041532133ab4f22
-    modified: 1640352406371
+    modified: 1644161605077
     created: 1640352281383
-    url: "{{ _.base_url }}/api/archive"
+    url: "{{ _.base_url }}/api/news"
     name: get all articles
     description: ""
     method: GET
@@ -388,9 +601,9 @@ resources:
     _type: request
   - _id: req_82fdf30dc74148ecbb5c9a828c6d9a8d
     parentId: fld_0b8c3413d5a64430b041532133ab4f22
-    modified: 1640352511269
+    modified: 1644161608649
     created: 1640352281386
-    url: "{{ _.base_url }}/api/archive/{{ _.article_id }}"
+    url: "{{ _.base_url }}/api/news/{{ _.article_id }}"
     name: get article by id
     description: ""
     method: GET
@@ -409,10 +622,218 @@ resources:
     _type: request
   - _id: req_42ed4f9c7f9347eb9839af3050165820
     parentId: fld_0b8c3413d5a64430b041532133ab4f22
-    modified: 1640352610238
+    modified: 1644165719714
     created: 1640352281385
-    url: "{{ _.base_url }}/api/archive/{{ _.article_id }}"
+    url: "{{ _.base_url }}/api/news/{{ _.article_id }}"
     name: delete article by id
+    description: ""
+    method: DELETE
+    body: {}
+    parameters: []
+    headers: []
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+    metaSortKey: -1640351986599
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_8c349edf6aeb4a818ba4c880c977fab8
+    parentId: fld_0b887aa84f44441f8109da963a2bd369
+    modified: 1644677081055
+    created: 1644165779731
+    url: "{{ _.base_url }}/api/collections"
+    name: add collection
+    description: ""
+    method: POST
+    body:
+      mimeType: application/json
+      text: >-
+        {
+        	"mainImage": {
+        		"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        	},
+        	"season": "fw21",
+        	"title": "fib",
+        	"article": {
+        		"id": 2,
+        		"dateCreated": 1633273798459,
+        		"title": "2 video",
+        		"description": "description ",
+        		"shortDescription": "",
+        		"descriptionAlternative": "",
+        		"mainImage": {
+        			"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        		},
+        		"content": [
+        			{
+        				"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        				"description": "description 2",
+        				"descriptionAlternative": "video",
+        				"textPosition": "bottom"
+        			},
+        			{
+        				"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        				"description": "description 2",
+        				"descriptionAlternative": "video",
+        				"textPosition": "bottom"
+        			}
+        		]
+        	}
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+        id: pair_869ed1976794435e9fb683a9a75fb2fd
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+    metaSortKey: -1640351986749
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_0b887aa84f44441f8109da963a2bd369
+    parentId: wrk_f860d950aac949fc80bf564a52132ee1
+    modified: 1644165779723
+    created: 1644165779723
+    name: collections
+    description: ""
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -1640229975268.75
+    _type: request_group
+  - _id: req_184c373825c24da397d163c0e5bc8263
+    parentId: fld_0b887aa84f44441f8109da963a2bd369
+    modified: 1644677142107
+    created: 1644165779734
+    url: "{{ _.base_url }}/api/collections/fw21"
+    name: modify collection by season
+    description: ""
+    method: PUT
+    body:
+      mimeType: application/json
+      text: >-
+        {
+        	"mainImage": {
+        		"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        		"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        	},
+        	"season": "fw21",
+        	"title": "fib2",
+        	"article": {
+        		"id": 2,
+        		"dateCreated": 1633273798459,
+        		"title": "2 video",
+        		"description": "description ",
+        		"shortDescription": "",
+        		"mainImage": {
+        			"fullSize": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"thumbnail": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"compressed": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg",
+        			"metaImage": "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2021/December/1640711670317154543.jpg"
+        		},
+        		"content": [
+        			{
+        				"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        				"textPosition": "bottom",
+        				"description": "description 2"
+        			},
+        			{
+        				"mediaLink": "https://player.vimeo.com/video/521417674?autoplay=1&sidedock=0&loop=1&muted=1&controls=0&&color=00000&title=0&byline=0&portrait=0",
+        				"textPosition": "bottom",
+        				"description": "description 2"
+        			}
+        		]
+        	}
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+        id: pair_f173c6cf19084aab91317d14c6146be5
+      - id: pair_645250c40a2a40328dd6c72be1a443a0
+        name: ""
+        value: ""
+        description: ""
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+    metaSortKey: -1640351986736.5
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_44062998bf93473289ef58a746cc1795
+    parentId: fld_0b887aa84f44441f8109da963a2bd369
+    modified: 1644165850231
+    created: 1644165779733
+    url: "{{ _.base_url }}/api/collections"
+    name: get all collections
+    description: ""
+    method: GET
+    body: {}
+    parameters: []
+    headers: []
+    authentication: {}
+    metaSortKey: -1640351986724
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_954ee2727074438ca0f115a9d25827ca
+    parentId: fld_0b887aa84f44441f8109da963a2bd369
+    modified: 1644676102679
+    created: 1644165779737
+    url: "{{ _.base_url }}/api/collections/fw21"
+    name: get collection by season
+    description: ""
+    method: GET
+    body: {}
+    parameters: []
+    headers: []
+    authentication: {}
+    metaSortKey: -1640351986686.5
+    isPrivate: false
+    settingStoreCookies: true
+    settingSendCookies: true
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_8ed824ea133340dc8d2b0ce9b1cdd93b
+    parentId: fld_0b887aa84f44441f8109da963a2bd369
+    modified: 1644677061793
+    created: 1644165779736
+    url: "{{ _.base_url }}/api/collections/{{ _.article_id }}"
+    name: delete collection by season
     description: ""
     method: DELETE
     body: {}
@@ -432,26 +853,34 @@ resources:
     _type: request
   - _id: env_9fa946653971aa7f4db198bab1a95bca081be364
     parentId: wrk_f860d950aac949fc80bf564a52132ee1
-    modified: 1640352560395
+    modified: 1644677137936
     created: 1624801796968
     name: Base Environment
     data:
       scheme: http
       base_path: ""
       host: localhost:8081
+      base_url_: https://backend.grbpwr.com
       base_url: http://localhost:8081
-      token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NDAzNTM0MzMsImlzcyI6ImJhY2tlbmQuZ3JicHdyLmNvbSJ9.sd_NDVpOamwafT7utxz1qY8Jm2XhxLNEhZDo08oq53k
-      product_id: "1640351429"
-      article_id: "1640352552"
+      token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2NDQ2NzgwMjcsImlzcyI6ImJhY2tlbmQuZ3JicHdyLmNvbSJ9.v3ShWvdeDjsHUQsHAihd9y4hul_eviL_dWG63QxUZAk
+      product_id: "1641809691"
+      article_id: "1644164270"
+      test: IHvJNcRf0B5pPVNqUf
+      email: jekabolt@yahoo.com
+      b64email: "{% base64 'encode', 'normal', _.email %}"
     dataPropertyOrder:
       "&":
         - scheme
         - base_path
         - host
+        - base_url_
         - base_url
         - token
         - product_id
         - article_id
+        - test
+        - email
+        - b64email
     color: null
     isPrivate: false
     metaSortKey: 1624801796968

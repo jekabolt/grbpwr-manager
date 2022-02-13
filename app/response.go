@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/render"
@@ -61,28 +62,40 @@ func ErrUnauthorizedError(err error) render.Renderer {
 
 var ErrNotFound = &ErrResponse{HTTPStatusCode: 404, StatusText: "Resource not found."}
 
-// archive article
+// news article
 
 type ArticleResponse struct {
-	StatusCode     int                   `json:"statusCode,omitempty"`
-	ArchiveArticle *store.ArchiveArticle `json:"article,omitempty"`
+	NewsArticle *store.NewsArticle `json:"article,omitempty"`
 }
 
-func NewArticleResponse(article *store.ArchiveArticle, statusCode int) *ArticleResponse {
-	resp := &ArticleResponse{ArchiveArticle: article, StatusCode: statusCode}
+func (ar *ArticleResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(ar.NewsArticle)
+}
+
+func (ar *ArticleResponse) UnmarshalJSON(data []byte) error {
+	a := &store.NewsArticle{}
+	if err := json.Unmarshal(data, a); err != nil {
+		return err
+	}
+	ar.NewsArticle = a
+	return nil
+}
+
+func NewArticleResponse(article *store.NewsArticle) *ArticleResponse {
+	resp := &ArticleResponse{NewsArticle: article}
 	return resp
 }
 
-func NewArticleResponseNoStatusCode(article *store.ArchiveArticle) *ArticleResponse {
-	resp := &ArticleResponse{ArchiveArticle: article}
+func NewArticleResponseNoStatusCode(article *store.NewsArticle) *ArticleResponse {
+	resp := &ArticleResponse{NewsArticle: article}
 	return resp
 }
 
 func (rd *ArticleResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
+	return rd.NewsArticle.Validate()
 }
 
-func NewArticleListResponse(articles []*store.ArchiveArticle) []render.Renderer {
+func NewArticleListResponse(articles []*store.NewsArticle) []render.Renderer {
 	list := []render.Renderer{}
 	for _, article := range articles {
 		list = append(list, NewArticleResponseNoStatusCode(article))
@@ -90,15 +103,68 @@ func NewArticleListResponse(articles []*store.ArchiveArticle) []render.Renderer 
 	return list
 }
 
+// collections
+
+type CollectionResponse struct {
+	Collection *store.Collection `json:"collection,omitempty"`
+}
+
+func (cr *CollectionResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(cr.Collection)
+}
+
+func (cr *CollectionResponse) UnmarshalJSON(data []byte) error {
+	c := &store.Collection{}
+	if err := json.Unmarshal(data, c); err != nil {
+		return err
+	}
+	cr.Collection = c
+	return nil
+}
+
+func NewCollectionResponse(collection *store.Collection) *CollectionResponse {
+	resp := &CollectionResponse{Collection: collection}
+	return resp
+}
+
+func NewCollectionResponseNoStatusCode(collection *store.Collection) *CollectionResponse {
+	resp := &CollectionResponse{Collection: collection}
+	return resp
+}
+
+func (cr *CollectionResponse) Render(w http.ResponseWriter, r *http.Request) error {
+	return cr.Collection.Validate()
+}
+
+func NewCollectionListResponse(collections []*store.Collection) []render.Renderer {
+	list := []render.Renderer{}
+	for _, collection := range collections {
+		list = append(list, NewCollectionResponseNoStatusCode(collection))
+	}
+	return list
+}
+
 // product
 
 type ProductResponse struct {
-	StatusCode int            `json:"statusCode,omitempty"`
-	Product    *store.Product `json:"product,omitempty"`
+	Product *store.Product `json:"product,omitempty"`
 }
 
-func NewProductResponse(product *store.Product, statusCode int) *ProductResponse {
-	resp := &ProductResponse{Product: product, StatusCode: statusCode}
+func (pr *ProductResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pr.Product)
+}
+
+func (pr *ProductResponse) UnmarshalJSON(data []byte) error {
+	p := &store.Product{}
+	if err := json.Unmarshal(data, p); err != nil {
+		return err
+	}
+	pr.Product = p
+	return nil
+}
+
+func NewProductResponse(product *store.Product) *ProductResponse {
+	resp := &ProductResponse{Product: product}
 	return resp
 }
 
@@ -119,22 +185,6 @@ func NewProductListResponse(products []*store.Product) []render.Renderer {
 	return list
 }
 
-// image
-
-type ImageResponse struct {
-	Status string `json:"status"`
-	Url    string `json:"url"`
-}
-
-func NewImageResponse(status, url string) *ImageResponse {
-	resp := &ImageResponse{Status: status, Url: url}
-	return resp
-}
-
-func (i *ImageResponse) Render(w http.ResponseWriter, r *http.Request) error {
-	return nil
-}
-
 // auth
 
 type AuthResponse struct {
@@ -151,7 +201,6 @@ func (i *AuthResponse) Render(w http.ResponseWriter, r *http.Request) error {
 }
 
 // subscription
-
 type SubscriptionResponse struct {
 	StatusCode int               `json:"statusCode,omitempty"`
 	Subscriber *store.Subscriber `json:"subscriber,omitempty"`
@@ -184,23 +233,20 @@ func NewSubscriptionsResponse(subscribers []*store.Subscriber) []render.Renderer
 // mainpage
 
 type MainPageResponse struct {
-	StatusCode int              `json:"statusCode,omitempty"`
-	Hero       *store.Hero      `json:"hero,omitempty"`
-	Products   []*store.Product `json:"products,omitempty"`
+	Hero     *store.Hero      `json:"hero,omitempty"`
+	Products []*store.Product `json:"products,omitempty"`
 }
 
 func NewMainPageResponse(h *store.Hero, products []*store.Product) *MainPageResponse {
 	return &MainPageResponse{
-		StatusCode: http.StatusOK,
-		Hero:       h,
-		Products:   products,
+		Hero:     h,
+		Products: products,
 	}
 }
 
 func NewHeroUpdateResponse(h *store.Hero) *MainPageResponse {
 	return &MainPageResponse{
-		StatusCode: http.StatusOK,
-		Hero:       h,
+		Hero: h,
 	}
 }
 

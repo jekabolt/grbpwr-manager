@@ -11,16 +11,33 @@ import (
 
 type Product struct {
 	Id                  int64            `json:"id"`
-	DateCreated         int64            `json:"dateCreated"`
-	LastActionTime      int64            `json:"lat"`
+	DateCreated         int64            `json:"dateCreated,omitempty"`
+	LastActionTime      int64            `json:"lat,omitempty"`
 	MainImage           bucket.MainImage `json:"mainImage"`
 	Name                string           `json:"name"`
 	Price               *Price           `json:"price"`
-	AvailableSizes      *Size            `json:"availableSizes"`
+	AvailableSizes      *Size            `json:"availableSizes,omitempty"`
 	ShortDescription    string           `json:"shortDescription,omitempty"`
+	Season              string           `json:"season,omitempty"`
 	DetailedDescription []string         `json:"detailedDescription,omitempty"`
 	Categories          []string         `json:"categories,omitempty"`
 	ProductImages       []bucket.Image   `json:"productImages,omitempty"`
+}
+
+func (p *Product) PreviewProduct() *Product {
+	return &Product{
+		Id:        p.Id,
+		MainImage: p.MainImage,
+		Name:      p.Name,
+		Price:     p.Price,
+	}
+}
+func BulkProductPreview(ps []*Product) []*Product {
+	prods := []*Product{}
+	for _, p := range ps {
+		prods = append(prods, p.PreviewProduct())
+	}
+	return prods
 }
 
 type Price struct {
@@ -50,41 +67,34 @@ func isCategoryExist(json string, category string) bool {
 	return strings.Contains(gjson.Get(json, "categories").String(), category)
 }
 
-func getProductFromString(product string) *Product {
+func GetProductFromString(product string) *Product {
 	p := &Product{}
 	json.Unmarshal([]byte(product), p)
 	return p
 }
 
 func (p *Product) Validate() error {
-
 	if len(p.Categories) == 0 {
 		return fmt.Errorf("missing categories")
 	}
-
 	if len(p.ProductImages) == 0 {
 		return fmt.Errorf("missing product images")
 	}
-
 	if len(p.MainImage.FullSize) == 0 {
 		return fmt.Errorf("missing main image")
 	}
-
 	if len(p.ShortDescription) == 0 {
 		return fmt.Errorf("missing short description")
 	}
 	if len(p.DetailedDescription) == 0 {
 		return fmt.Errorf("missing detailed description")
 	}
-
 	if len(p.Name) == 0 {
 		return fmt.Errorf("missing Name")
 	}
-
 	if p.Price.BYN == 0 || p.Price.EUR == 0 || p.Price.USD == 0 || p.Price.RUB == 0 {
 		return fmt.Errorf("prices were not set [%+v]", p.Price)
 	}
-
 	return nil
 
 }

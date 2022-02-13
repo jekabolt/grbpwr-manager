@@ -22,6 +22,11 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
+	if err := data.Validate(); err != nil {
+		log.Error().Err(err).Msgf("addProduct:render.Validate [%v]", err.Error())
+		render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
 
 	// upload raw base64 images from request
 	if !strings.Contains(data.MainImage.FullSize, "https://") {
@@ -50,7 +55,7 @@ func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msgf("addProduct:s.DB.AddProduct [%v]", err.Error())
 		render.Render(w, r, ErrInternalServerError(err))
 	}
-	render.Render(w, r, NewProductResponse(data.Product, http.StatusCreated))
+	render.Render(w, r, NewProductResponse(data.Product))
 }
 
 func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +69,7 @@ func (s *Server) deleteProductById(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-	render.Render(w, r, NewProductResponse(cProduct, http.StatusOK))
+	render.Render(w, r, NewProductResponse(cProduct))
 }
 
 func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +93,7 @@ func (s *Server) modifyProductsById(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	render.Render(w, r, NewProductResponse(data.Product, http.StatusOK))
+	render.Render(w, r, NewProductResponse(data.Product))
 }
 
 // site
@@ -101,7 +106,7 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 		render.Render(w, r, ErrInternalServerError(err))
 		return
 	}
-	if err := render.RenderList(w, r, NewProductListResponse(products)); err != nil {
+	if err := render.RenderList(w, r, NewProductListResponse(store.BulkProductPreview(products))); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
 	}
@@ -109,7 +114,7 @@ func (s *Server) getAllProductsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getProductById(w http.ResponseWriter, r *http.Request) {
 	product := r.Context().Value(ProductCtxKey{}).(*store.Product)
-	if err := render.Render(w, r, NewProductResponse(product, http.StatusOK)); err != nil {
+	if err := render.Render(w, r, NewProductResponse(product)); err != nil {
 		render.Render(w, r, ErrRender(err))
 		return
 	}

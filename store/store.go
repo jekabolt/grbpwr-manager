@@ -1,25 +1,16 @@
 package store
 
-import "fmt"
-
 const (
 	BuntDBType = "bunt"
 	RedisType  = "redis"
 )
 
-type ProductStore interface {
-	InitDB() error
+type Store interface {
 	ProductCRUD
-	ArchiveArticleCRUD
+	NewsArticleCRUD
+	CollectionCRUD
 	SubscriberCRUD
 	HeroCRUD
-}
-
-type SubscriberCRUD interface {
-	AddSubscriber(n *Subscriber) (*Subscriber, error)
-	GetSubscriberByEmail(id string) (*Subscriber, error)
-	GetAllSubscribers() ([]*Subscriber, error)
-	DeleteSubscriberByEmail(email string) error
 }
 
 type ProductCRUD interface {
@@ -30,23 +21,29 @@ type ProductCRUD interface {
 	ModifyProductById(id string, pNew *Product) error
 }
 
-type ArchiveArticleCRUD interface {
-	AddArchiveArticle(aa *ArchiveArticle) (*ArchiveArticle, error)
-	GetArchiveArticleById(id string) (*ArchiveArticle, error)
-	GetAllArchiveArticles() ([]*ArchiveArticle, error)
-	DeleteArchiveArticleById(id string) error
-	ModifyArchiveArticleById(id string, aNew *ArchiveArticle) error
+type NewsArticleCRUD interface {
+	AddNewsArticle(aa *NewsArticle) (*NewsArticle, error)
+	GetNewsArticleById(id string) (*NewsArticle, error)
+	GetAllNewsArticles() ([]*NewsArticle, error)
+	DeleteNewsArticleById(id string) error
+	ModifyNewsArticleById(id string, aNew *NewsArticle) error
+}
+type CollectionCRUD interface {
+	AddCollection(aa *Collection) (*Collection, error)
+	GetCollectionBySeason(id string) (*Collection, error)
+	GetAllCollections() ([]*Collection, error)
+	DeleteCollectionBySeason(id string) error
+	ModifyCollectionBySeason(id string, aNew *Collection) error
+}
+
+type SubscriberCRUD interface {
+	AddSubscriber(n *Subscriber) (*Subscriber, error)
+	GetSubscriberByEmail(id string) (*Subscriber, error)
+	GetAllSubscribers() ([]*Subscriber, error)
+	DeleteSubscriberByEmail(email string) error
 }
 
 type HeroCRUD interface {
 	UpsertHero(h *Hero) (*Hero, error)
 	GetHero() (*Hero, error)
-}
-
-func GetDB(t string) (ProductStore, error) {
-	switch t {
-	case BuntDBType:
-		return BuntFromEnv()
-	}
-	return nil, fmt.Errorf("GetDB: db type [%s] is not exist ", t)
 }

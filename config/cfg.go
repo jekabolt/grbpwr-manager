@@ -6,12 +6,13 @@ import (
 	"github.com/caarlos0/env/v6"
 	"github.com/jekabolt/grbpwr-manager/auth"
 	"github.com/jekabolt/grbpwr-manager/store"
+	"github.com/jekabolt/grbpwr-manager/store/bunt"
 )
 
 type Config struct {
-	Port        string   `env:"PORT" envDefault:"8081"`
-	Hosts       []string `env:"HOSTS" envSeparator:"|"`
-	StorageType string   `env:"STORAGE_TYPE" envDefault:"bunt"` // bunt, redis
+	Port  string   `env:"PORT" envDefault:"8081"`
+	Hosts []string `env:"HOSTS" envSeparator:"|"`
+	Bunt  *bunt.Config
 
 	Auth *auth.Config
 	Hero *store.Hero
@@ -25,6 +26,7 @@ func GetConfig() (*Config, error) {
 	cfg := &Config{
 		Hero: &store.Hero{},
 		Auth: &auth.Config{},
+		Bunt: &bunt.Config{},
 	}
 
 	err = env.Parse(cfg)

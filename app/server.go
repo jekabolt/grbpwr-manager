@@ -8,13 +8,13 @@ import (
 )
 
 type Server struct {
-	DB     store.ProductStore
+	DB     store.Store
 	Bucket *bucket.Bucket
 	Auth   *auth.Auth
 	Config *config.Config
 }
 
-func InitServer(db store.ProductStore, bucket *bucket.Bucket, cfg *config.Config) *Server {
+func InitServer(db store.Store, bucket *bucket.Bucket, cfg *config.Config) *Server {
 	a := cfg.Auth.New()
 	return &Server{
 		DB:     db,

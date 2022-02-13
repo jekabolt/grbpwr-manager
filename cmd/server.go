@@ -7,7 +7,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/app"
 	"github.com/jekabolt/grbpwr-manager/bucket"
 	"github.com/jekabolt/grbpwr-manager/config"
-	"github.com/jekabolt/grbpwr-manager/store"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -27,12 +26,7 @@ func main() {
 	confBytes, _ := json.Marshal(cfg)
 	log.Info().Str("config:", "").Msg(string(confBytes))
 
-	db, err := store.GetDB(cfg.StorageType)
-	if err != nil {
-		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to GetDB err:[%s]", err.Error()))
-	}
-
-	err = db.InitDB()
+	db, err := cfg.Bunt.InitDB()
 	if err != nil {
 		log.Fatal().Err(err).Msg(fmt.Sprintf("Failed to InitDB err:[%s]", err.Error()))
 	}
