@@ -258,8 +258,11 @@ func getCollectionsReq(t *testing.T, title string) *bytes.Reader {
 		Season: "desc",
 		MainImage: &bucket.MainImage{
 			Image: bucket.Image{
-				FullSize: "https://main.com/img.jpg",
+				FullSize:   "https://main.com/img.jpg",
+				Thumbnail:  "https://main.com/img.jpg",
+				Compressed: "https://main.com/img.jpg",
 			},
+			MetaImage: "https://main.com/img.jpg",
 		},
 		CollectionItems: []store.Product{
 			{},
@@ -269,13 +272,18 @@ func getCollectionsReq(t *testing.T, title string) *bytes.Reader {
 			Description: "test desc",
 			MainImage: bucket.MainImage{
 				Image: bucket.Image{
-					FullSize: "https://main.com/img.jpg",
+					FullSize:   "https://main.com/img.jpg",
+					Thumbnail:  "https://main.com/img.jpg",
+					Compressed: "https://main.com/img.jpg",
 				},
+				MetaImage: "https://main.com/img.jpg",
 			},
 			Content: []store.Content{
 				{
 					Image: &bucket.Image{
-						FullSize: "https://ProductImages.com/img.jpg",
+						FullSize:   "https://main.com/img.jpg",
+						Thumbnail:  "https://main.com/img.jpg",
+						Compressed: "https://main.com/img.jpg",
 					},
 					MediaLink:    "https://MediaLink.com/img.jpg",
 					Description:  "desc",
@@ -304,7 +312,7 @@ func TestProductsCRUDWAuth(t *testing.T) {
 	// jwt token
 	authData, err := s.Auth.GetJWT()
 	is.NoErr(err)
-	t.Log(authData)
+	// t.Log(authData)
 
 	// add product
 	productResp := &ProductResponse{}
@@ -421,25 +429,25 @@ func TestCollectionsCRUDWAuth(t *testing.T) {
 	// collectionResp2 = mr.(*CollectionResponse)
 	is.Equal(res2.StatusCode, http.StatusOK)
 
-	// // get collection by id
-	// collectionResp3 := &CollectionResponse{}
-	// res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp3, authData.AccessToken)
-	// collectionResp3 = gr.(*CollectionResponse)
-	// is.Equal(res3.StatusCode, http.StatusOK)
-	// is.Equal(collectionResp3.Collection.Title, title2)
+	// get collection by id
+	collectionResp3 := &CollectionResponse{}
+	res3, gr := testRequest(t, ts, http.MethodGet, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp3, authData.AccessToken)
+	collectionResp3 = gr.(*CollectionResponse)
+	is.Equal(res3.StatusCode, http.StatusOK)
+	is.Equal(collectionResp3.Collection.Title, title2)
 
-	// // delete collection by id
-	// collectionResp4 := &CollectionResponse{}
-	// res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp4, authData.AccessToken)
-	// collectionResp4 = dr.(*CollectionResponse)
-	// is.Equal(res4.StatusCode, http.StatusOK)
+	// delete collection by id
+	collectionResp4 := &CollectionResponse{}
+	res4, dr := testRequest(t, ts, http.MethodDelete, fmt.Sprintf("/api/collections/%s", collectionResp.Collection.Season), nil, collectionResp4, authData.AccessToken)
+	collectionResp4 = dr.(*CollectionResponse)
+	is.Equal(res4.StatusCode, http.StatusOK)
 
-	// t.Logf("%+v", collectionResp4)
+	t.Logf("%+v", collectionResp4)
 
-	// // get all
-	// allArticleResp := &[]store.Collection{}
-	// res5, ar := testRequest(t, ts, http.MethodGet, "/api/collections", nil, allArticleResp, authData.AccessToken)
-	// allArticleResp = ar.(*[]store.Collection)
-	// is.Equal(res5.StatusCode, http.StatusOK)
-	// is.Equal(len(*allArticleResp), 0)
+	// get all
+	allArticleResp := &[]store.Collection{}
+	res5, ar := testRequest(t, ts, http.MethodGet, "/api/collections", nil, allArticleResp, authData.AccessToken)
+	allArticleResp = ar.(*[]store.Collection)
+	is.Equal(res5.StatusCode, http.StatusOK)
+	is.Equal(len(*allArticleResp), 0)
 }

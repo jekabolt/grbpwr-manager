@@ -72,6 +72,15 @@ func (ar *ArticleResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(ar.NewsArticle)
 }
 
+func (ar *ArticleResponse) UnmarshalJSON(data []byte) error {
+	a := &store.NewsArticle{}
+	if err := json.Unmarshal(data, a); err != nil {
+		return err
+	}
+	ar.NewsArticle = a
+	return nil
+}
+
 func NewArticleResponse(article *store.NewsArticle) *ArticleResponse {
 	resp := &ArticleResponse{NewsArticle: article}
 	return resp
@@ -104,6 +113,15 @@ func (cr *CollectionResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(cr.Collection)
 }
 
+func (cr *CollectionResponse) UnmarshalJSON(data []byte) error {
+	c := &store.Collection{}
+	if err := json.Unmarshal(data, c); err != nil {
+		return err
+	}
+	cr.Collection = c
+	return nil
+}
+
 func NewCollectionResponse(collection *store.Collection) *CollectionResponse {
 	resp := &CollectionResponse{Collection: collection}
 	return resp
@@ -134,6 +152,15 @@ type ProductResponse struct {
 
 func (pr *ProductResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(pr.Product)
+}
+
+func (pr *ProductResponse) UnmarshalJSON(data []byte) error {
+	p := &store.Product{}
+	if err := json.Unmarshal(data, p); err != nil {
+		return err
+	}
+	pr.Product = p
+	return nil
 }
 
 func NewProductResponse(product *store.Product) *ProductResponse {
