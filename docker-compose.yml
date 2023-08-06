@@ -1,4 +1,5 @@
-version: '3.3'
+version: '3.4' # Using version 3.4 to ensure healthcheck support
+
 services:
   db:
     image: mysql:8.0
@@ -11,9 +12,21 @@ services:
       MYSQL_TCP_PORT: 3306
     ports:
       - '3306:3306'
-    expose:
-      - '3306'
-    volumes:
-      - my-db:/var/lib/mysql
+    networks:
+      - grbpwr-network
+
+  product_manager:
+    image: grbpwr/grbpwr-pm:master
+    ports:
+      - '8081:8081'
+    depends_on:
+      - db
+    networks:
+      - grbpwr-network
+
 volumes:
   my-db:
+
+
+networks:
+  grbpwr-network:
