@@ -1,8 +1,10 @@
-FROM golang:1.17.1-alpine
-
-ENV GO111MODULE=on
+FROM golang:1.21rc4-alpine3.18
 
 RUN apk add --no-cache git libgit2-dev alpine-sdk
+
+COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /go/src/github.com/jekabolt/grbpwr-manager
 
@@ -13,16 +15,16 @@ RUN go mod download
 
 COPY ./ ./
 
-RUN go build -o ./bin/grbpwr-pm ./cmd/
+RUN make init
+
+RUN make build
 
 FROM alpine:latest
 
 WORKDIR /go/src/github.com/jekabolt/grbpwr-manager
 
-RUN mkdir -p /root/bunt
-
 COPY --from=0 /go/src/github.com/jekabolt/grbpwr-manager .
 
 EXPOSE 8081
 
-CMD ["/go/src/github.com/jekabolt/grbpwr-manager/bin/grbpwr-pm"]
+CMD ["/go/src/github.com/jekabolt/grbpwr-manager/bin/products-manager"]

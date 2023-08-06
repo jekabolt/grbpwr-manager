@@ -15,7 +15,9 @@ proto:
 	--path proto/auth/auth.proto \
 	--path proto/frontend/frontend.proto 
 
-build: proto generate internal/statics 
+build: proto generate internal/statics build-only
+
+build-only:
 	mkdir -p bin
 	go build $(GO_EXTRA_BUILD_ARGS) -ldflags "-s -w -X main.version=$(VERSION)" -o bin/products-manager ./cmd/*.go
 
@@ -55,3 +57,14 @@ install:
 	go install golang.org/x/text/cmd/gotext@latest
 	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
 	go install github.com/vektra/mockery/v2@latest 
+
+
+REGISTRY=grbpwr
+IMAGE_NAME=grbpwr-pm
+VERSION=master
+
+image:
+	docker build --no-cache -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
+
+image-run:
+	docker run --publish 8081:8081 \$(REGISTRY)/${IMAGE_NAME}:$(VERSION)
