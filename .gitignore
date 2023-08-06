@@ -6,6 +6,12 @@ admin-client
 bin
 bunt
 .env-local
+**/mocks
+
+*.swagger.json
+*.pb.go
+*.gw.go
+config.toml
 
 *coverage*
 

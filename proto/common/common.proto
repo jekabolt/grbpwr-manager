@@ -1,0 +1,206 @@
+syntax = "proto3";
+
+package common;
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+import "google/protobuf/timestamp.proto";
+    
+message Product {
+    // Product ID
+    int64 id = 1;  
+    // Timestamp when the product was created
+    google.protobuf.Timestamp created =2; 
+    // Product name
+    string name = 3;
+    // preorder text 
+    string preorder = 4;                      
+    // Product price
+    Price price = 5;                      
+    // Available sizes
+    Size available_sizes = 6;             
+    // Product description
+    string description = 7;               
+    // Product categories
+    repeated string categories = 8;       
+    // Images of the product
+    repeated Image product_images = 9;    
+  }
+  
+  message Price {
+    // Price in USD
+    double usd = 1;   
+    // Price in EUR
+    double eur = 2;   
+    // Price in USDC
+    double usdc = 3;  
+    // Price in ETH
+    double eth = 4;   
+    // Sale price
+    double sale = 5;  
+  }
+  
+  message Image {
+    // Full-size image URL
+    string full_size = 1;   
+    // Thumbnail image URL
+    string thumbnail = 2;   
+    // Compressed image URL
+    string compressed = 3;  
+  }
+  
+  message Size {
+    // Quantity of size XXS available
+    int32 xxs = 1;  
+    // Quantity of size XS available
+    int32 xs = 2;   
+    // Quantity of size S available
+    int32 s = 3;    
+    // Quantity of size M available
+    int32 m = 4;    
+    // Quantity of size L available
+    int32 l = 5;    
+    // Quantity of size XL available
+    int32 xl = 6;   
+    // Quantity of size XXL available
+    int32 xxl = 7;  
+    // Quantity of one-size available
+    int32 os = 8;   
+  }
+  
+  // Payment method enum for Order
+  enum PaymentMethod {
+    // Credit card
+    CARD = 0;
+    // Ethereum
+    ETHEREUM = 1;
+    // USDC
+    USDC = 2;
+    // USDT
+    USDT = 3;
+  }
+  
+  enum PaymentCurrency {
+    // EUR - Euro can be used only for card payments
+    EUR = 0;
+    // USD - US Dollar can be used for card payments
+    USD = 1;
+    // USDC - USD Coin can be used for crypto payments
+    USDCRYPTO = 2;
+    // ETH - Ethereum can be used for crypto payments
+    ETH = 3;
+  }
+  
+  enum OrderStatus {
+    // Order is placed but not confirmed yet
+    PLACED = 0;
+    // Order is confirmed and payment submitted, ready to be shipped
+    CONFIRMED = 1;
+    // Order is shipped
+    SHIPPED = 2;
+    // Order is delivered
+    DELIVERED = 3;
+    // Order is cancelled
+    CANCELLED = 4;
+    // Order is refunded
+    REFUNDED = 5;
+  }
+  
+  message Payment {
+     // Payment ID
+    int64 id = 1;                  
+     // Payment method used
+    PaymentMethod method = 2;      
+     // Payment currency
+    PaymentCurrency currency = 3;  
+     // Transaction ID
+    string transaction_id = 4;     
+     // Transaction amount
+    double transaction_amount = 5; 
+     // Payer information
+    string payer = 6;              
+     // Payee information
+    string payee = 7;              
+     // Indicates if the transaction is completed
+    bool is_transaction_done = 8; 
+  }
+  
+  message Address {
+     // Address ID
+    int64 id = 1;                
+     // Street address
+    string street = 2;           
+     // House number
+    string house_number = 3;     
+     // Apartment number
+    string apartment_number = 4; 
+     // City
+    string city = 5;             
+     // State
+    string state = 6;            
+     // Country
+    string country = 7;          
+     // Postal code
+    string postal_code = 8;      
+  }
+  
+  message Buyer {
+     // Buyer ID
+    int64 id = 1;                 
+     // First name
+    string first_name = 2;        
+     // Last name
+    string last_name = 3;         
+     // Email address
+    string email = 4;             
+     // Phone number
+    string phone = 5;             
+     // Billing address
+    Address billing_address = 6;  
+     // Shipping address
+    Address shipping_address = 7; 
+     // Indicates if the buyer wants to receive promotional emails
+    bool receive_promo_emails =  8; 
+  }
+  
+  message Shipment {
+     // Shipment ID
+    int64 id = 1;                                
+     // Carrier
+    string carrier = 2;                          
+     // Shipment cost
+    double cost = 3;                             
+     // Tracking code
+    string tracking_code = 4;                    
+     // Shipping date
+    google.protobuf.Timestamp shipping_date = 5; 
+     // Estimated arrival date
+    google.protobuf.Timestamp estimated_arrival_date = 6; 
+  }
+  
+  message Item {
+    // Item ID
+    int64 id = 1;       
+    // Quantity of the item
+    int32 quantity = 2; 
+    // Size of the item
+    string size = 3;    
+  }
+  
+  message Order {
+     // Order ID
+    int64 id = 1;                         
+     // Buyer information
+    Buyer buyer = 2;                      
+     // Timestamp when the order was placed
+    google.protobuf.Timestamp placed = 3; 
+     // List of items in the order
+    repeated Item items = 4;              
+     // Payment information
+    Payment payment = 5;                  
+     // Shipment information
+    Shipment shipment = 6;                
+     // Total price of the order
+    double total_price = 7;               
+     // Order status
+    OrderStatus status = 8;               
+  }
