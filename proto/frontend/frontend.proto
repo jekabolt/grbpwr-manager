@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package frontend;
+option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/frontend;frontend";
+
+import "google/api/annotations.proto";
+import "common/common.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service FrontendService {
+  // Get paged products
+  rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
+    option (google.api.http) = {
+      get : "/api/frontend/products/{page}"
+    };
+  }
+
+  // Get product by id
+  rpc GetProductById(GetProductByIdRequest) returns (GetProductByIdResponse) {
+    option (google.api.http) = {
+      get : "/api/frontend/product/{product_id}"
+    };
+  }
+ 
+  // Submit an order
+  rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse) {
+    option (google.api.http) = {
+      post : "/api/frontend/order/new"
+      body : "*"
+    };
+  }
+
+  // ApplyPromoCode applies promo code on selected order id
+  rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post : "/api/frontend/order/promo/{code}"
+      body : "*"
+    };
+  }
+
+   // Acquire an order
+  rpc AcquireOrder (AcquireOrderRequest) returns (AcquireOrderResponse) {
+    option (google.api.http) = {
+      post : "/api/frontend/order/acquire"
+      body : "*"
+    };
+  }
+
+  // Update an order
+  rpc UpdateOrder(UpdateOrderRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post : "/api/frontend/order/update"
+      body : "*"
+    };
+  }
+
+   // Update an order
+  rpc UpdateOrderCurrency(UpdateOrderCurrencyRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post : "/api/frontend/order/update/currency"
+      body : "*"
+    };
+  }
+
+  // Get orders by email
+  rpc GetOrdersByEmail(GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
+    option (google.api.http) = {
+      get : "/api/frontend/order/email/{email}"
+    };
+  }
+
+  // Subscribe to the newsletter
+  rpc SubscribeNewsletter(SubscribeNewsletterRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post : "/api/frontend/newsletter/subscribe"
+      body : "*"
+    };
+  }
+
+  // Unsubscribe from the newsletter
+  rpc UnsubscribeNewsletter(UnsubscribeNewsletterRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post : "/api/frontend/newsletter/unsubscribe"
+      body : "*"
+    };
+  }
+
+  // Get hero information
+  rpc GetHero(google.protobuf.Empty) returns (GetHeroResponse) {
+    option (google.api.http) = {
+      post : "/api/frontend/hero/get"
+      body : "*"
+    };
+  }
+}
+// Request for GetProductsPaged
+message GetProductsPagedRequest {
+  // Page number
+  int32 page = 1; 
+}
+
+// Response for GetProductsPaged
+message GetProductsPagedResponse {
+  // Page number
+  int32 page = 1;  
+  // List of products
+  repeated common.Product products = 2;  
+}
+
+// Request for GetProductsPaged
+message GetProductByIdRequest {
+  // product id
+  int32 product_id = 1;  
+}
+
+// Response for GetProductsPaged
+message GetProductByIdResponse {
+  // resulted product
+  common.Product product = 1;  
+}
+
+
+// Request for ApplyPromoCode
+message ApplyPromoCodeRequest {
+    // Order ID
+    int64 orderId = 1;    
+    // Promo code
+    string code = 2;    
+}
+
+// Request for SubmitOrder
+message SubmitOrderRequest {
+   // Buyer information
+  common.Buyer buyer = 1;         
+   // List of items in the order
+  repeated common.Item items = 2; 
+   // Payment information
+  common.Payment payment = 3;     
+   // Shipment information
+  common.Shipment shipment = 4;   
+}
+
+// Request for AcquireOrder
+message AcquireOrderRequest {
+  // Concrete payment for the order 
+  common.Payment payment = 3;     
+}
+
+
+// Response for AcquireOrder
+message AcquireOrderResponse {
+  // ID of the submitted order
+ string order_id = 1;
+}
+
+
+// Request for UpdateOrderCurrency
+message UpdateOrderCurrencyRequest {
+  // Payment method used
+  common.PaymentMethod method = 1;      
+  // Payment currency
+  common.PaymentCurrency currency = 2;  
+  // ID of the submitted order
+  string order_id = 3; 
+}
+
+// Response for SubmitOrder
+message SubmitOrderResponse {
+  // ID of the submitted order
+  string order_id = 1; 
+}
+
+message UpdateOrderRequest {
+   // Updated list of items in the order
+  repeated common.Item items = 1; 
+}
+
+message GetOrdersByEmailRequest {
+   // Email address to retrieve orders for
+  string email = 1; 
+}
+
+message GetOrdersByEmailResponse {
+   // List of orders matching the email address
+  repeated common.Order orders = 1; 
+}
+
+message SubscribeNewsletterRequest {
+   // Email address to subscribe to the newsletter
+  string email = 1; 
+}
+
+message UnsubscribeNewsletterRequest {
+   // Email address to unsubscribe from the newsletter
+  string email = 1; 
+}
+
+message GetHeroResponse {
+   // Email address for the hero response
+  string email = 1; 
+}

@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package admin;
+option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
+
+import "google/api/annotations.proto";
+import "common/common.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+
+service AdminService {
+    rpc RefundOrder (RefundOrderRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/order/refund/{order_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdateShippingInfo (UpdateShippingInfoRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/shipping/update"
+          body: "*"
+        };
+    }
+
+    rpc GetOrdersByStatus (GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
+        option (google.api.http) = {
+          get: "/api/admin/orders/{status}"
+        };
+    }
+
+    rpc AddProduct (AddProductRequest) returns (AddProductResponse) {
+        option (google.api.http) = {
+          post: "/api/admin/product/add"
+          body: "*"
+        };
+    }
+
+    rpc DeleteProduct (DeleteProductRequest) returns (DeleteProductResponse) {
+        option (google.api.http) = {
+          delete: "/api/admin/product/delete/{product_id}"
+        };
+    }
+
+    rpc HideProduct (HideProductRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/hide/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc SetSaleByID (SetSaleByIDRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/sale/{product_id}/{sale}"
+          body: "*"
+        };
+    }
+
+    rpc SetHero (SetHeroRequest) returns (SetHeroResponse) {
+        option (google.api.http) = {
+          post: "/api/admin/hero/set"
+          body: "*"
+        };
+    }
+}
+
+
+message RefundOrderRequest {
+    // order id
+    int32 order_id = 1;
+}
+
+
+message UpdateShippingInfoRequest {
+    // order id
+    int32 order_id = 1;
+    // carrier name
+    string carrier = 2;
+    // tracking code
+    string trackingCode = 3;
+    // shipping time
+    google.protobuf.Timestamp shippingTime = 4; 
+}
+
+message UpdateShippingInfoResponse {
+
+}
+
+message GetOrdersByStatusRequest {
+    common.OrderStatus status = 1;
+}
+
+message GetOrdersByStatusResponse {
+  repeated common.Order orders = 1;
+}
+
+message AddProductRequest {
+  common.Product product = 1;
+}
+
+message AddProductResponse {
+    // product id
+    int32 product_id = 1;
+}
+
+message DeleteProductRequest {
+    // product id
+    int32 product_id = 1;
+}
+
+message DeleteProductResponse {
+
+}
+
+message HideProductRequest {
+    // product id
+    int32 product_id = 1;
+}
+
+message HideProductResponse {
+
+}
+
+message SetSaleByIDRequest {
+    // product id
+    int32 product_id = 1;
+    // sale percent e.g 1 = 1%; 10 = 10%
+    int32 sale = 2;
+}
+
+message SetSaleByIDResponse {
+
+}
+
+message SetHeroRequest {
+
+}
+
+message SetHeroResponse {
+
+}
+        
+
+
