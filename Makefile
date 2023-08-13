@@ -22,7 +22,7 @@ build-only:
 	go build $(GO_EXTRA_BUILD_ARGS) -ldflags "-s -w -X main.version=$(VERSION)" -o bin/products-manager ./cmd/*.go
 
 run: build
-	./bin/products-manager
+	source .env && ./bin/products-manager
 	
 internal/statics:
 	@echo "Generating combined Swagger JSON"
@@ -64,7 +64,11 @@ IMAGE_NAME=grbpwr-pm
 VERSION=master
 
 image:
-	docker build --no-cache -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
+	docker build -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
 
 image-run:
-	docker run --publish 8081:8081 \$(REGISTRY)/${IMAGE_NAME}:$(VERSION)
+	docker rm -f product_manager &>/dev/null && echo 'Removed old container'
+	docker run --rm --name product_manager \
+		-v ${PWD}/config:/config \
+		-p 8081:8081 \
+		grbpwr/grbpwr-pm:master

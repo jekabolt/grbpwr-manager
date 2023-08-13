@@ -6,13 +6,13 @@ import (
 )
 
 type Config struct {
-	S3AccessKey       string `mapstructure:"s3AccessKey"`
-	S3SecretAccessKey string `mapstructure:"s3SecretAccessKey"`
-	S3Endpoint        string `mapstructure:"s3Endpoint"`
-	S3BucketName      string `mapstructure:"s3BucketName"`
-	S3BucketLocation  string `mapstructure:"s3BucketLocation"`
-	BaseFolder        string `mapstructure:"baseFolder"`
-	ImageStorePrefix  string `mapstructure:"imageStorePrefix"`
+	S3AccessKey       string `mapstructure:"s3_access_key"`
+	S3SecretAccessKey string `mapstructure:"s3_secret_access_key"`
+	S3Endpoint        string `mapstructure:"s3_endpoint"`
+	S3BucketName      string `mapstructure:"s3_bucket_name"`
+	S3BucketLocation  string `mapstructure:"s3_bucket_location"`
+	BaseFolder        string `mapstructure:"base_folder"`
+	ImageStorePrefix  string `mapstructure:"image_store_prefix"`
 }
 type Bucket struct {
 	*minio.Client

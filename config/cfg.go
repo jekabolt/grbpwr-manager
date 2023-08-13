@@ -2,8 +2,6 @@ package config
 
 import (
 	"fmt"
-	"reflect"
-	"strings"
 
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -22,53 +20,27 @@ type Config struct {
 	Bucket bucket.Config  `mapstructure:"bucket"`
 }
 
-// LoadConfig inits config from file or suggested files and updates with env
+// LoadConfig loads the configuration from a file.
 func LoadConfig(cfgFile string) (*Config, error) {
+	viper.SetConfigType("toml")
+	viper.SetConfigFile(cfgFile)
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
 	} else {
 		viper.SetConfigName("config")
 		viper.AddConfigPath("./config")
-		viper.AddConfigPath("$HOME/config")
+		viper.AddConfigPath("$HOME/config/grbpwr-products-manager")
 		viper.AddConfigPath("/etc/grbpwr-products-manager")
 	}
+
 	if err := viper.ReadInConfig(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config: %v", err)
 	}
 
-	var cfg Config
-	viperBindEnvs(cfg)
-
-	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal config error: %v", err)
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
 	}
-
-	return &cfg, nil
-}
-
-func viperBindEnvs(iface interface{}, parts ...string) {
-	ifv := reflect.ValueOf(iface)
-	ift := reflect.TypeOf(iface)
-	for i := 0; i < ift.NumField(); i++ {
-		v := ifv.Field(i)
-		t := ift.Field(i)
-		tv, ok := t.Tag.Lookup("mapstructure")
-		if !ok {
-			tv = strings.ToLower(t.Name)
-		}
-		if tv == "-" {
-			continue
-		}
-
-		switch v.Kind() {
-		case reflect.Struct:
-			viperBindEnvs(v.Interface(), append(parts, tv)...)
-		default:
-			// Bash doesn't allow env variable names with a dot so
-			// bind the double underscore version.
-			keyDot := strings.Join(append(parts, tv), ".")
-			keyUnderscore := strings.Join(append(parts, tv), "__")
-			_ = viper.BindEnv(keyDot, strings.ToUpper(keyUnderscore))
-		}
-	}
+	fmt.Printf("conf---- %+v", config)
+	return &config, nil
 }
