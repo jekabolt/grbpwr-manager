@@ -51,10 +51,14 @@ CREATE TABLE product_prices (
 
 CREATE TABLE hero (
     time_changed TIMESTAMP,
-    content_link VARCHAR(255) NOT NULL,
-    content_type VARCHAR(255) NOT NULL,
-    explore_link VARCHAR(255) NOT NULL,
-    explore_text VARCHAR(255) NOT NULL
+    content_link_left VARCHAR(255) NOT NULL,
+    content_type_left VARCHAR(255) NOT NULL,
+    explore_link_left VARCHAR(255) NOT NULL,
+    explore_text_left VARCHAR(255) NOT NULL,
+    content_link_right VARCHAR(255) NOT NULL,
+    content_type_right VARCHAR(255) NOT NULL,
+    explore_link_right VARCHAR(255) NOT NULL,
+    explore_text_right VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE payment_method (

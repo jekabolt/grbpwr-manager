@@ -27,7 +27,7 @@ type (
 		SetSaleByID(ctx context.Context, id int64, salePercent float64) error
 	}
 	Hero interface {
-		SetHero(ctx context.Context, content, contentType, exploreLink, exploreText string) error
+		SetHero(ctx context.Context, left, right dto.HeroElement) error
 		GetHero(ctx context.Context) (*dto.Hero, error)
 	}
 	Order interface {

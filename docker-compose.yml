@@ -12,21 +12,8 @@ services:
       MYSQL_TCP_PORT: 3306
     ports:
       - '3306:3306'
-    networks:
-      - grbpwr-network
-
-  product_manager:
-    image: grbpwr/grbpwr-pm:master
-    ports:
-      - '8081:8081'
-    depends_on:
-      - db
-    networks:
-      - grbpwr-network
 
 volumes:
   my-db:
 
 
-networks:
-  grbpwr-network:

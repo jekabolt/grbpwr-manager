@@ -33,7 +33,7 @@ func New(c *config.Config, rep dependency.Repository) *App {
 // Start starts the app
 func (a *App) Start(ctx context.Context) error {
 	var err error
-	slog.Default().InfoCtx(ctx, "starting airdrops service")
+	slog.Default().InfoCtx(ctx, "starting product manager")
 
 	a.db, err = store.New(ctx, a.c.DB)
 	if err != nil {

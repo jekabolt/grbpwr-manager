@@ -36,11 +36,11 @@ type Server struct {
 
 // Config contains the configuration for the auth server.
 type Config struct {
-	JWTSecret                string `mapstructure:"jwtSecret"`
-	MasterPassword           string `mapstructure:"masterPassword"`
-	PasswordHasherSaltSize   int    `mapstructure:"passwordHasherSaltSize"`
-	PasswordHasherIterations int    `mapstructure:"passwordHasherIterations"`
-	JWTTTL                   string `mapstructure:"jwtttl"`
+	JWTSecret                string `mapstructure:"jwt_secret"`
+	MasterPassword           string `mapstructure:"master_password"`
+	PasswordHasherSaltSize   int    `mapstructure:"password_hasher_salt_size"`
+	PasswordHasherIterations int    `mapstructure:"password_hasher_iterations"`
+	JWTTTL                   string `mapstructure:"jwt_ttl"`
 }
 
 // New creates a new auth server.
