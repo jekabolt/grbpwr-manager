@@ -64,7 +64,7 @@ IMAGE_NAME=grbpwr-pm
 VERSION=master
 
 image:
-	docker build -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
+	docker build --no-cache -t $(REGISTRY)/${IMAGE_NAME}:$(VERSION) .
 
 image-run:
 	docker rm -f product_manager &>/dev/null && echo 'Removed old container'
