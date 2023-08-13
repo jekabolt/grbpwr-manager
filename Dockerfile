@@ -6,7 +6,7 @@ COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-WORKDIR /go/src/github.com/jekabolt/grbpwr-manager
+WORKDIR /grbpwr-manager
 
 COPY go.mod .
 COPY go.sum .
@@ -21,10 +21,8 @@ RUN make build
 
 FROM alpine:latest
 
-WORKDIR /go/src/github.com/jekabolt/grbpwr-manager
-
-COPY --from=0 /go/src/github.com/jekabolt/grbpwr-manager .
+COPY --from=0 /grbpwr-manager/bin/ /grbpwr-manager/bin/
 
 EXPOSE 8081
 
-CMD ["/go/src/github.com/jekabolt/grbpwr-manager/bin/products-manager"]
+ENTRYPOINT ["./grbpwr-manager/bin/products-manager"]

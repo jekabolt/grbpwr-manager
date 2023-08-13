@@ -20,8 +20,8 @@ import (
 type Config struct {
 	DSN                string `mapstructure:"dsn"`
 	Automigrate        bool   `mapstructure:"automigrate"`
-	MaxOpenConnections int    `mapstructure:"maxOpenConnections"`
-	MaxIdleConnections int    `mapstructure:"maxIdleConnections"`
+	MaxOpenConnections int    `mapstructure:"max_open_connections"`
+	MaxIdleConnections int    `mapstructure:"max_idle_connections"`
 }
 
 // MYSQLStore implements methods to access MYSQL database
@@ -38,23 +38,15 @@ const retryInterval = 5 * time.Second
 
 // New connects to the database, applies migrations and returns a new MYSQLStore object
 func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
-	var d *sqlx.DB
-	var err error
-
-	// Connection retry loop
-	for i := 0; i < maxRetries; i++ {
-		d, err = sqlx.Open("mysql", cfg.DSN)
-		if err == nil && d.PingContext(ctx) == nil {
-			break
-		}
-
-		log.Default().Printf("Failed to connect to database. Retrying in %v...", retryInterval)
-		time.Sleep(retryInterval)
-	}
-
-	// If connection is still unsuccessful after retries
+	d, err := sqlx.Open("mysql", cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't open database after %d retries: %v", maxRetries, err)
+		return nil, fmt.Errorf("couldn't open database : %v", err)
+	}
+	if cfg.Automigrate {
+		log.Default().Printf("applying migrations")
+		if err := Migrate(d.Unsafe().DB); err != nil {
+			return nil, err
+		}
 	}
 
 	if cfg.Automigrate {

@@ -30,7 +30,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 	repo, err := store.New(ctx, cfg.DB)
 	if err != nil {
-		return fmt.Errorf("cannot create a repository %v", err.Error())
+		return fmt.Errorf("cannot create a repository %v %v", err.Error(), cfg.DB.DSN)
 	}
 
 	a := app.New(cfg, repo)

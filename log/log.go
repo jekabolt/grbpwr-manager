@@ -9,7 +9,7 @@ import (
 
 type Config struct {
 	Level     int  `mapstructure:"level"`
-	AddSource bool `mapstructure:"addSource"`
+	AddSource bool `mapstructure:"add_source"`
 }
 
 // InterceptorLogger adapts slog logger to interceptor logger.
