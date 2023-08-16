@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/go-chi/chi"
+	"github.com/go-chi/cors"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 
 	"golang.org/x/exp/slog"
@@ -69,6 +70,17 @@ func (s *Server) Done() <-chan struct{} {
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
 
 	r := chi.NewRouter()
+
+	//TODO: make configurable
+	r.Use(cors.Handler(cors.Options{
+		// AllowedOrigins:   []string{"https://foo.com"}, // Use this to allow specific origin hosts
+		AllowedOrigins: []string{"https://*", "http://*"},
+		// AllowOriginFunc:  func(r *http.Request, origin string) bool { return true },
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders: []string{"Link"},
+		MaxAge:         300, // Maximum value not ignored by any of major browsers
+	}))
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
