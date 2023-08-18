@@ -10,14 +10,14 @@ import (
 
 var (
 	rootCmd = &cobra.Command{
-		Use:   "bonus-processing",
-		Short: "Service to handle bonus-processing ",
+		Use:   "grbpwr-products-manager",
+		Short: "Service to handle grbpwr-products-manager ",
 		RunE:  run,
 	}
 
 	versionCmd = &cobra.Command{
 		Use:   "version",
-		Short: "Print the bonus-processing service version",
+		Short: "Print the grbpwr-products-manager service version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(version)
 		},

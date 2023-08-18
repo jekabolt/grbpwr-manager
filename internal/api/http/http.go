@@ -9,7 +9,6 @@ import (
 	"text/template"
 
 	"github.com/go-chi/chi"
-	"github.com/go-chi/cors"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 
 	"golang.org/x/exp/slog"
@@ -70,17 +69,6 @@ func (s *Server) Done() <-chan struct{} {
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
 
 	r := chi.NewRouter()
-
-	//TODO: make configurable
-	r.Use(cors.Handler(cors.Options{
-		// AllowedOrigins:   []string{"https://foo.com"}, // Use this to allow specific origin hosts
-		AllowedOrigins: []string{"https://*", "http://*"},
-		// AllowOriginFunc:  func(r *http.Request, origin string) bool { return true },
-		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		ExposedHeaders: []string{"Link"},
-		MaxAge:         300, // Maximum value not ignored by any of major browsers
-	}))
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
@@ -240,11 +228,11 @@ func (s *Server) Start(ctx context.Context,
 	listenerAddr := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 	s.hs = &http.Server{
 		Addr:    listenerAddr,
-		Handler: h2c.NewHandler(handler, &http2.Server{}),
+		Handler: cors(h2c.NewHandler(handler, &http2.Server{})),
 	}
 
 	go func() {
-		slog.Default().InfoCtx(ctx, fmt.Sprintf("bonus-processing new listener on:http://%v", listenerAddr))
+		slog.Default().InfoCtx(ctx, fmt.Sprintf("grbpwr-products-manager new listener on: http://%v", listenerAddr))
 		err := s.hs.ListenAndServe()
 		if err == http.ErrServerClosed {
 			slog.Default().InfoCtx(ctx, "http server returned")
@@ -262,4 +250,18 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	return nil
+}
+
+// TODO: make configurable
+func cors(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			return
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType")
+		}
+		h.ServeHTTP(w, r)
+	})
 }
