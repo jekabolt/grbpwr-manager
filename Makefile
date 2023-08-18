@@ -68,7 +68,7 @@ image:
 
 image-run:
 	docker rm -f product_manager &>/dev/null && echo 'Removed old container'
-	docker run --rm --name product_manager \
+	docker run -d --rm --name product_manager\
 		-v ${PWD}/config:/config \
 		-p 8081:8081 \
 		grbpwr/grbpwr-pm:master
