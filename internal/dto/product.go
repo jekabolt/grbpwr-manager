@@ -15,7 +15,7 @@ type Product struct {
 	AvailableSizes *Size
 	Description    string
 	Categories     []string
-	ProductImages  []Image
+	Media          []Media
 }
 
 type Price struct {
@@ -26,7 +26,7 @@ type Price struct {
 	Sale decimal.Decimal
 }
 
-type Image struct {
+type Media struct {
 	FullSize   string `json:"fullSize"`
 	Thumbnail  string `json:"thumbnail"`
 	Compressed string `json:"compressed"`

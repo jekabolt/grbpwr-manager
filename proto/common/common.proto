@@ -22,8 +22,8 @@ message Product {
     string description = 7;               
     // Product categories
     repeated string categories = 8;       
-    // Images of the product
-    repeated Image product_images = 9;    
+    // Medias of the product
+    repeated Media product_media = 9;    
   }
   
   message Price {
@@ -39,14 +39,14 @@ message Product {
     double sale = 5;  
   }
   
-  message Image {
-    // Full-size image URL
+  message Media {
+    // Full-size media URL
     string full_size = 1;   
-    // Thumbnail image URL
+    // Thumbnail media URL
     string thumbnail = 2;   
-    // Compressed image URL
+    // Compressed media URL
     string compressed = 3;  
-  }
+  }  
   
   message Size {
     // Quantity of size XXS available

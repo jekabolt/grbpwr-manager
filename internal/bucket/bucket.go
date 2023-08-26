@@ -1,8 +1,11 @@
 package bucket
 
 import (
+	"fmt"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/minio/minio-go"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 type Config struct {
@@ -12,7 +15,7 @@ type Config struct {
 	S3BucketName      string `mapstructure:"s3_bucket_name"`
 	S3BucketLocation  string `mapstructure:"s3_bucket_location"`
 	BaseFolder        string `mapstructure:"base_folder"`
-	ImageStorePrefix  string `mapstructure:"image_store_prefix"`
+	MediaStorePrefix  string `mapstructure:"media_store_prefix"`
 }
 type Bucket struct {
 	*minio.Client
@@ -25,9 +28,15 @@ type B64Image struct {
 }
 
 func (c *Config) Init() (dependency.FileStore, error) {
-	cli, err := minio.New(c.S3Endpoint, c.S3AccessKey, c.S3SecretAccessKey, true)
+	cli, err := minio.New(c.S3Endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(c.S3AccessKey, c.S3SecretAccessKey, ""),
+		Secure: true, // assuming you're using SSL/TLS; set to false if not
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
+	}
 	return &Bucket{
 		Client: cli,
 		Config: c,
-	}, err
+	}, nil
 }
