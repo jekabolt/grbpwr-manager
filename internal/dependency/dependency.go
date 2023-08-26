@@ -129,6 +129,8 @@ type (
 	}
 
 	FileStore interface {
-		UploadContentImage(rawB64Image, folder, imageName string) (*pb_common.Image, error)
+		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Image, error)
+		// DeleteFromBucket deletes an object from the specified bucket.
+		DeleteFromBucket(ctx context.Context, objectName string) error
 	}
 )

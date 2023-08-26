@@ -29,20 +29,20 @@ func fileExtensionFromContentType(contentType string) string {
 	case contentTypeJSON:
 		return "json"
 	default:
-		ss := strings.Split(contentType, "/")
-		if len(ss) > 0 {
-			return ss[1]
+		parts := strings.Split(contentType, "/")
+		if len(parts) > 1 {
+			return parts[1]
 		}
 		return contentType
 	}
 }
 
-func (b *Bucket) getImageFullPath(folderPath, imageName, filenameExtension string) string {
-	return path.Clean(path.Join(b.BaseFolder, folderPath, imageName) + "." + filenameExtension)
+func (b *Bucket) constructFullPath(folder, fileName, ext string) string {
+	return path.Clean(path.Join(b.BaseFolder, folder, fileName) + "." + ext)
 }
 
-func (b *Bucket) GetCDNURL(path string) string {
-	return fmt.Sprintf("https://%s.%s/%s", b.S3BucketName, b.S3Endpoint, path)
+func (b *Bucket) getCDNURL(filePath string) string {
+	return fmt.Sprintf("https://%s.%s/%s", b.S3BucketName, b.S3Endpoint, filePath)
 }
 
 type rawImage struct {
@@ -52,10 +52,10 @@ type rawImage struct {
 }
 
 func GetExtensionFromB64String(b64 string) (string, error) {
-	// data:image/jpeg;base64,/9j/2wCEA...
-
+	// Expected format: data:image/jpeg;base64,/9j/2wCEA...
 	if strings.HasPrefix(b64, "data:") {
-		ss := strings.Split(strings.Trim(b64, "data:"), ";")
+		mimeTypePart := strings.TrimPrefix(b64, "data:")
+		ss := strings.Split(mimeTypePart, ";")
 		if len(ss) > 0 {
 			return fileExtensionFromContentType(ss[0]), nil
 		}
@@ -64,7 +64,7 @@ func GetExtensionFromB64String(b64 string) (string, error) {
 }
 
 // image URL to base64 string
-func getImageB64(url string) (*rawImage, error) {
+func getMediaB64(url string) (*rawImage, error) {
 
 	// data:image/jpeg;base64
 

@@ -31,7 +31,7 @@ func getTestProd(count int) []*dto.Product {
 				L: i,
 			},
 			Categories: []string{"category1", "category2"},
-			ProductImages: []dto.Image{
+			Media: []dto.Media{
 				{
 					FullSize:   "https://example.com/fullsize.jpg",
 					Thumbnail:  "https://example.com/thumbnail.jpg",
@@ -58,7 +58,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	prds[0].Preorder = "test"
 	err := ps.AddProduct(ctx, prds[0])
 	assert.NoError(t, err)
-	
+
 }
 
 func TestProductStore_GetProductsPaged(t *testing.T) {
@@ -96,9 +96,9 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 			assert.True(t, expectedPrd.Price.Sale.Equal(fetchedPrd.Price.Sale))
 			assert.Equal(t, expectedPrd.AvailableSizes, fetchedPrd.AvailableSizes)
 			assert.ElementsMatch(t, expectedPrd.Categories, fetchedPrd.Categories)
-			assert.Equal(t, expectedPrd.ProductImages[0].FullSize, fetchedPrd.ProductImages[0].FullSize)
-			assert.Equal(t, expectedPrd.ProductImages[0].Thumbnail, fetchedPrd.ProductImages[0].Thumbnail)
-			assert.Equal(t, expectedPrd.ProductImages[0].Compressed, fetchedPrd.ProductImages[0].Compressed)
+			assert.Equal(t, expectedPrd.Media[0].FullSize, fetchedPrd.Media[0].FullSize)
+			assert.Equal(t, expectedPrd.Media[0].Thumbnail, fetchedPrd.Media[0].Thumbnail)
+			assert.Equal(t, expectedPrd.Media[0].Compressed, fetchedPrd.Media[0].Compressed)
 		}
 	}
 
@@ -138,7 +138,7 @@ func TestProductStore_GetProductsPagedSortAndFilter(t *testing.T) {
 
 	// Check that the products are in the correct order (sorted by DateAdded Descending and then by Price Ascending).
 	for i := 0; i < len(products)-1; i++ {
-		assert.Len(t, products[i].ProductImages, 2)
+		assert.Len(t, products[i].Media, 2)
 		if products[i].Created.Equal(products[i+1].Created) {
 			assert.True(t, products[i].Price.USD.LessThan(products[i+1].Price.USD) || products[i].Price.USD.Equal(products[i+1].Price.USD))
 		} else {
@@ -256,9 +256,9 @@ func TestProductStore_GetProductById(t *testing.T) {
 	assert.NoError(t, err)
 	fmt.Printf("%+v", prd)
 	assert.Equal(t, products[0].Id, prd.Id)
-	assert.Equal(t, prd.ProductImages[0].FullSize, prds[0].ProductImages[0].FullSize)
-	assert.Equal(t, prd.ProductImages[1].FullSize, prds[0].ProductImages[1].FullSize)
-	assert.Len(t, prd.ProductImages, 2)
+	assert.Equal(t, prd.Media[0].FullSize, prds[0].Media[0].FullSize)
+	assert.Equal(t, prd.Media[1].FullSize, prds[0].Media[1].FullSize)
+	assert.Len(t, prd.Media, 2)
 }
 
 func TestProductStore_DeleteProductByID(t *testing.T) {
@@ -333,7 +333,7 @@ func TestProductStore_HideProductByID(t *testing.T) {
 
 	prd, err := ps.GetProductByID(ctx, id)
 	assert.NoError(t, err)
-	assert.True(t, prd.ProductImages != nil)
+	assert.True(t, prd.Media != nil)
 
 }
 func TestProductStore_DecreaseAvailableSize(t *testing.T) {

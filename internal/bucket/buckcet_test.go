@@ -1,9 +1,9 @@
 package bucket
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"testing"
@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	S3AccessKey       = "xxx"
-	S3SecretAccessKey = "xxx"
+	S3AccessKey       = "YEYEN6TU2NCOPNPICGY3"
+	S3SecretAccessKey = "lyvzQ6f20TxiGE2hadU3Og7Er+f8j0GfUAB3GnZkreE"
 	S3Endpoint        = "fra1.digitaloceanspaces.com"
 	bucketName        = "grbpwr"
 	bucketLocation    = "fra-1"
-	imageStorePrefix  = "grbpwr-com"
+	mediaStorePrefix  = "grbpwr-com"
 
-	baseFolder = "solutions"
+	baseFolder = "grbpwr-com"
 
 	jpgFilePath = "files/test.jpg"
 )
@@ -31,6 +31,13 @@ func skipCI(t *testing.T) {
 	}
 }
 
+func cleanup(ctx context.Context, bucket dependency.FileStore, objectKey string) {
+	err := bucket.DeleteFromBucket(ctx, objectKey)
+	if err != nil {
+		fmt.Printf("Failed to cleanup: %v", err)
+	}
+}
+
 func BucketFromConst() (dependency.FileStore, error) {
 	c := &Config{
 		S3AccessKey:       S3AccessKey,
@@ -38,21 +45,21 @@ func BucketFromConst() (dependency.FileStore, error) {
 		S3Endpoint:        S3Endpoint,
 		S3BucketName:      bucketName,
 		S3BucketLocation:  bucketLocation,
-		ImageStorePrefix:  imageStorePrefix,
-		BaseFolder:        "solutions",
+		MediaStorePrefix:  mediaStorePrefix,
+		BaseFolder:        baseFolder,
 	}
 	return c.Init()
 }
 
-func imageToB64ByPath(filePath string) (string, error) {
-	bytes, err := ioutil.ReadFile(filePath)
+func fileToB64ByPath(filePath string) (string, error) {
+	bytes, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", err
 	}
 
 	var base64Encoding string
 
-	// Determine the content type of the image file
+	// Determine the content type of the file
 	mimeType := http.DetectContentType(bytes)
 
 	base64Encoding += fmt.Sprintf("data:%s;base64,", mimeType)
@@ -65,16 +72,17 @@ func imageToB64ByPath(filePath string) (string, error) {
 
 func TestUploadContentImage(t *testing.T) {
 	skipCI(t)
+	ctx := context.Background()
 
 	is := is.New(t)
 
 	b, err := BucketFromConst()
 	is.NoErr(err)
 
-	jpg, err := imageToB64ByPath(jpgFilePath)
+	jpg, err := fileToB64ByPath(jpgFilePath)
 	is.NoErr(err)
 
-	i, err := b.UploadContentImage(jpg, "test", "test")
+	i, err := b.UploadContentImage(ctx, jpg, "test", "test")
 	is.NoErr(err)
 	fmt.Printf("%+v", i)
 }
@@ -82,7 +90,7 @@ func TestUploadContentImage(t *testing.T) {
 func TestGetB64FromUrl(t *testing.T) {
 	url := "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/April/1650908019115367000-og.jpg"
 	is := is.New(t)
-	rawImage, err := getImageB64(url)
+	rawImage, err := getMediaB64(url)
 	is.NoErr(err)
 
 	fmt.Println("--- b64", rawImage.B64Image)
