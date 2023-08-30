@@ -4,17 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/matryer/is"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
-	S3AccessKey       = "YEYEN6TU2NCOPNPICGY3"
-	S3SecretAccessKey = "lyvzQ6f20TxiGE2hadU3Og7Er+f8j0GfUAB3GnZkreE"
+	S3AccessKey       = "***"
+	S3SecretAccessKey = "***"
 	S3Endpoint        = "fra1.digitaloceanspaces.com"
 	bucketName        = "grbpwr"
 	bucketLocation    = "fra-1"
@@ -22,19 +23,14 @@ const (
 
 	baseFolder = "grbpwr-com"
 
-	jpgFilePath = "files/test.jpg"
+	jpgFilePath  = "files/test.jpg"
+	mp4FilePath  = "files/test.mp4"
+	webmFilePath = "files/test.webm"
 )
 
 func skipCI(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping testing in CI environment")
-	}
-}
-
-func cleanup(ctx context.Context, bucket dependency.FileStore, objectKey string) {
-	err := bucket.DeleteFromBucket(ctx, objectKey)
-	if err != nil {
-		fmt.Printf("Failed to cleanup: %v", err)
 	}
 }
 
@@ -70,28 +66,81 @@ func fileToB64ByPath(filePath string) (string, error) {
 	return base64Encoding, nil
 }
 
+func fileToBytes(filePath string) ([]byte, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	fileStat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("fileStat ", fileStat.Size())
+
+	return io.ReadAll(file)
+}
+
 func TestUploadContentImage(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	is := is.New(t)
-
 	b, err := BucketFromConst()
-	is.NoErr(err)
+	assert.NoError(t, err)
 
 	jpg, err := fileToB64ByPath(jpgFilePath)
-	is.NoErr(err)
+	assert.NoError(t, err)
 
 	i, err := b.UploadContentImage(ctx, jpg, "test", "test")
-	is.NoErr(err)
-	fmt.Printf("%+v", i)
+	assert.NoError(t, err)
+	t.Logf("%+v", i)
+
+	err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	assert.NoError(t, err)
+}
+
+func TestUploadContentVideoMP4(t *testing.T) {
+	skipCI(t)
+	ctx := context.Background()
+
+	b, err := BucketFromConst()
+	assert.NoError(t, err)
+
+	mp4, err := fileToBytes(mp4FilePath)
+	assert.NoError(t, err)
+
+	media, err := b.UploadContentVideo(ctx, mp4, "test", "test", contentTypeMP4)
+	assert.NoError(t, err)
+	fmt.Printf("----- %+v", media)
+
+	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	assert.NoError(t, err)
+}
+
+func TestUploadContentVideoWEBM(t *testing.T) {
+	skipCI(t)
+	ctx := context.Background()
+
+	b, err := BucketFromConst()
+	assert.NoError(t, err)
+
+	mp4, err := fileToBytes(webmFilePath)
+	assert.NoError(t, err)
+
+	media, err := b.UploadContentVideo(ctx, mp4, "test", "test", contentTypeWEBM)
+	assert.NoError(t, err)
+	fmt.Printf("----- %+v", media)
+
+	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	assert.NoError(t, err)
 }
 
 func TestGetB64FromUrl(t *testing.T) {
 	url := "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/April/1650908019115367000-og.jpg"
-	is := is.New(t)
+
 	rawImage, err := getMediaB64(url)
-	is.NoErr(err)
+	assert.NoError(t, err)
 
 	fmt.Println("--- b64", rawImage.B64Image)
 	fmt.Println("--- ext", rawImage.Extension)

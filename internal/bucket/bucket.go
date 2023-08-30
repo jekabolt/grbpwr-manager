@@ -22,15 +22,10 @@ type Bucket struct {
 	*Config
 }
 
-type B64Image struct {
-	Content     []byte
-	ContentType string
-}
-
 func (c *Config) Init() (dependency.FileStore, error) {
 	cli, err := minio.New(c.S3Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(c.S3AccessKey, c.S3SecretAccessKey, ""),
-		Secure: true, // assuming you're using SSL/TLS; set to false if not
+		Secure: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)

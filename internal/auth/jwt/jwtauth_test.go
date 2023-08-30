@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/go-chi/jwtauth/v5"
-	"github.com/matryer/is"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestToken(t *testing.T) {
@@ -15,14 +15,13 @@ func TestToken(t *testing.T) {
 
 	now := time.Now()
 	fmt.Println(time.Parse(RFC3339, now.Format("2006-01-02T15:04:05.999999999Z07:00")))
-	is := is.New(t)
 
 	jwtAuth := jwtauth.New("HS256", []byte("secret"), nil)
 	tok, err := NewToken(jwtAuth, time.Hour)
-	is.NoErr(err)
+	assert.NoError(t, err)
 
 	subToken, err := VerifyToken(jwtAuth, tok)
-	is.NoErr(err)
+	assert.NoError(t, err)
 
 	t.Log(subToken)
 

@@ -156,8 +156,6 @@ package frontend
 
 // func TestBonus(t *testing.T) {
 
-// 	is := is.New(t)
-
 // 	ps := newTs()
 
 // 	jwtInstance := jwtauth.New("HS256", []byte(secret), nil)

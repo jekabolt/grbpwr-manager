@@ -45,7 +45,11 @@ message Product {
     // Thumbnail media URL
     string thumbnail = 2;   
     // Compressed media URL
-    string compressed = 3;  
+    string compressed = 3;
+    // Media duration in seconds
+    uint32 duration = 4;
+    // Object IDs of full-size, thumbnail and compressed media
+    repeated string object_ids = 5;
   }  
   
   message Size {
