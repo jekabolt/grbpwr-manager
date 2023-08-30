@@ -129,8 +129,10 @@ type (
 	}
 
 	FileStore interface {
-		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Image, error)
+		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Media, error)
+		// UploadContentVideo uploads mp4 video to bucket
+		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
 		// DeleteFromBucket deletes an object from the specified bucket.
-		DeleteFromBucket(ctx context.Context, objectName string) error
+		DeleteFromBucket(ctx context.Context, objectKeys []string) error
 	}
 )

@@ -120,7 +120,7 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit, offset int, s
 		}
 
 		p.Categories = strings.Split(categories, ",")
-		p.ProductImages = splitImage(images)
+		p.Media = splitImage(images)
 		products = append(products, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -129,13 +129,13 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit, offset int, s
 	return products, nil
 }
 
-func splitImage(imageString string) []dto.Image {
+func splitImage(imageString string) []dto.Media {
 	images := strings.Split(imageString, ",")
-	productImages := make([]dto.Image, 0)
+	productImages := make([]dto.Media, 0)
 	for _, image := range images {
 		imageParts := strings.Split(image, "|")
 		if len(imageParts) == 3 {
-			image := dto.Image{
+			image := dto.Media{
 				FullSize:   imageParts[0],
 				Thumbnail:  imageParts[1],
 				Compressed: imageParts[2],
@@ -164,7 +164,7 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, p *dto.Product) error {
 			return err
 		}
 
-		err = addProductImages(ctx, rep, pid, p.ProductImages)
+		err = addProductImages(ctx, rep, pid, p.Media)
 		if err != nil {
 			return err
 		}
@@ -202,7 +202,7 @@ func addCategories(ctx context.Context, rep dependency.Repository, productID int
 
 	return nil
 }
-func addProductImages(ctx context.Context, rep dependency.Repository, productID int64, images []dto.Image) error {
+func addProductImages(ctx context.Context, rep dependency.Repository, productID int64, images []dto.Media) error {
 	if !rep.InTx() {
 		return fmt.Errorf("addProductImages must be called from within transaction")
 	}
@@ -289,7 +289,7 @@ func (ms *MYSQLStore) GetProductByID(ctx context.Context, id int64) (*dto.Produc
 	}
 
 	p.Categories = strings.Split(categories, ",")
-	p.ProductImages = splitImage(images)
+	p.Media = splitImage(images)
 
 	return p, nil
 }
