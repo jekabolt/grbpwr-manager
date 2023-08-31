@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	S3AccessKey       = "***"
-	S3SecretAccessKey = "***"
+	S3AccessKey       = "YEYEN6TU2NCOPNPICGY3"
+	S3SecretAccessKey = "lyvzQ6f20TxiGE2hadU3Og7Er+f8j0GfUAB3GnZkreE"
 	S3Endpoint        = "fra1.digitaloceanspaces.com"
 	bucketName        = "grbpwr"
 	bucketLocation    = "fra-1"
@@ -47,7 +47,7 @@ func BucketFromConst() (dependency.FileStore, error) {
 		BaseFolder:        baseFolder,
 		SubdomainEndpoint: subdomainEndpoint,
 	}
-	return c.Init()
+	return c.New()
 }
 
 func fileToB64ByPath(filePath string) (string, error) {

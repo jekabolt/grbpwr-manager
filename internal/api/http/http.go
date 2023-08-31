@@ -103,9 +103,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 	})
 
-	r.Mount("/api/admin", auth.WithAuth(adminHandler))
-	r.Mount("/api/frontend", frontendHandler)
-	r.Mount("/api/auth", authHandler)
+	r.Mount("/api/admin", cors(auth.WithAuth(adminHandler)))
+	r.Mount("/api/frontend", cors(frontendHandler))
+	r.Mount("/api/auth", cors(authHandler))
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
 
@@ -255,7 +255,7 @@ func (s *Server) Start(ctx context.Context,
 func cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType")
 
 		if r.Method == http.MethodOptions {

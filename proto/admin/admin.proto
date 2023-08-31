@@ -10,6 +10,39 @@ import "google/protobuf/timestamp.proto";
 
 
 service AdminService {
+  
+    // bucket manager 
+
+    // UploadContentImage uploads an image to a specific folder with a specified name.
+    rpc UploadContentImage(UploadContentImageRequest) returns (common.Media) {
+      option (google.api.http) = {
+        post: "/api/admin/content/image"
+        body: "*"
+      };
+    }
+    
+    // UploadContentVideo uploads a video to a specific folder with a specified name.
+    rpc UploadContentVideo(UploadContentVideoRequest) returns (common.Media) {
+      option (google.api.http) = {
+        post: "/api/admin/content/video"
+        body: "*"
+      };
+    }
+    
+    // DeleteFromBucket deletes objects specified by their keys.
+    rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
+      option (google.api.http) = {
+        delete: "/api/admin/content"
+      };
+    }
+    
+    // ListObjects lists all objects in the base folder.
+    rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) {
+      option (google.api.http) = {
+        get: "/api/admin/content"
+      };
+    }
+
     rpc RefundOrder (RefundOrderRequest) returns (google.protobuf.Empty) {
         option (google.api.http) = {
           post: "/api/admin/order/refund/{order_id}"
@@ -64,6 +97,36 @@ service AdminService {
         };
     }
 }
+
+// Request and Response messages for bucket storage
+message UploadContentImageRequest {
+  string raw_b64_image = 1;
+  string folder = 2;
+  string image_name = 3;
+}
+
+message UploadContentVideoRequest {
+  bytes raw = 1;
+  string folder = 2;
+  string video_name = 3;
+  string content_type = 4;
+}
+
+message DeleteFromBucketRequest {
+  repeated string object_keys = 1;
+}
+
+message DeleteFromBucketResponse {
+}
+
+message ListObjectsRequest {
+  // Add fields for filtering if needed
+}
+
+message ListObjectsResponse {
+  repeated common.ListEntityMedia entities = 1;
+}
+
 
 
 message RefundOrderRequest {

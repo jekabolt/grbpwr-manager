@@ -17,16 +17,18 @@ import (
 type App struct {
 	hs   *httpapi.Server
 	db   dependency.Repository
+	b    dependency.FileStore
 	c    *config.Config
 	done chan struct{}
 }
 
 // New returns a new instance of App
-func New(c *config.Config, rep dependency.Repository) *App {
+func New(c *config.Config, rep dependency.Repository, b dependency.FileStore) *App {
 	return &App{
 		c:    c,
 		done: make(chan struct{}),
 		db:   rep,
+		b:    b,
 	}
 }
 
@@ -46,7 +48,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db)
+	adminS := admin.New(a.db, a.b)
 
 	frontendS := frontend.New(a.db)
 
