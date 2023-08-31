@@ -11,14 +11,14 @@ import (
 )
 
 // ListObjectsByPage lists objects in a S3 bucket by page
-func (b *Bucket) ListObjects(ctx context.Context) ([]pb_common.ListEntityMedia, error) {
+func (b *Bucket) ListObjects(ctx context.Context) ([]*pb_common.ListEntityMedia, error) {
 
 	objectCh := b.Client.ListObjects(context.Background(), b.S3BucketName, minio.ListObjectsOptions{
 		Prefix:    b.BaseFolder,
 		Recursive: true,
 	})
 
-	allObjects := []pb_common.ListEntityMedia{}
+	allObjects := []*pb_common.ListEntityMedia{}
 	for o := range objectCh {
 		if o.Err != nil {
 			return nil, o.Err
@@ -32,11 +32,9 @@ func (b *Bucket) ListObjects(ctx context.Context) ([]pb_common.ListEntityMedia, 
 
 		// Filter based on extension
 		if isOgJpg || ext == ".mp4" || ext == ".webm" {
-			allObjects = append(allObjects, pb_common.ListEntityMedia{
+			allObjects = append(allObjects, &pb_common.ListEntityMedia{
 				Url:          b.getCDNURL(o.Key),
 				LastModified: timestamppb.New(o.LastModified),
-				Size:         o.Size,
-				ContentType:  o.ContentType,
 			})
 		}
 	}

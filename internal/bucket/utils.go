@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 )
 
 const (
@@ -40,7 +41,16 @@ type FileType struct {
 }
 
 func (b *Bucket) constructFullPath(folder, fileName, ext string) string {
-	return path.Clean(path.Join(b.BaseFolder, folder, fileName) + "." + ext)
+	// Get the current date
+	now := time.Now()
+	year := fmt.Sprintf("%d", now.Year())
+	month := now.Month().String()
+
+	// Convert the month to lowercase to match your example URL
+	month = strings.ToLower(month)
+
+	// Assuming that the BaseFolder contains "https://files.grbpwr.com/grbpwr-com/"
+	return path.Clean(strings.Join([]string{b.BaseFolder, folder, year, month, fileName + "." + ext}, "/"))
 }
 
 func (b *Bucket) getOriginEndpoint(filePath string) string {
