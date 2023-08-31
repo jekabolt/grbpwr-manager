@@ -8,6 +8,7 @@ import (
 )
 
 // UploadContentImage get raw image from b64 encoded string and upload full size and compressed images to s3
+// content types jpg, png
 func (b *Bucket) UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Media, error) {
 	img, err := imageFromString(rawB64Image)
 	if err != nil {
@@ -17,6 +18,7 @@ func (b *Bucket) UploadContentImage(ctx context.Context, rawB64Image, folder, im
 }
 
 // UploadContentVideo get raw video from uint8 array and upload video to s3
+// content types webm, mp4
 func (b *Bucket) UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error) {
 	return b.uploadVideoObj(ctx, raw, folder, videoName, contentType)
 }

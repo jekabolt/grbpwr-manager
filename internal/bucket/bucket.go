@@ -16,6 +16,7 @@ type Config struct {
 	S3BucketLocation  string `mapstructure:"s3_bucket_location"`
 	BaseFolder        string `mapstructure:"base_folder"`
 	MediaStorePrefix  string `mapstructure:"media_store_prefix"`
+	SubdomainEndpoint string `mapstructure:"subdomain_endpoint"`
 }
 type Bucket struct {
 	*minio.Client

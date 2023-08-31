@@ -43,8 +43,12 @@ func (b *Bucket) constructFullPath(folder, fileName, ext string) string {
 	return path.Clean(path.Join(b.BaseFolder, folder, fileName) + "." + ext)
 }
 
-func (b *Bucket) getCDNURL(filePath string) string {
+func (b *Bucket) getOriginEndpoint(filePath string) string {
 	return fmt.Sprintf("https://%s.%s/%s", b.S3BucketName, b.S3Endpoint, filePath)
+}
+
+func (b *Bucket) getCDNURL(filePath string) string {
+	return fmt.Sprintf("https://%s/%s", b.SubdomainEndpoint, filePath)
 }
 
 type rawImage struct {
