@@ -46,10 +46,19 @@ message Product {
     string thumbnail = 2;   
     // Compressed media URL
     string compressed = 3;
-    // Media duration in seconds
-    uint32 duration = 4;
     // Object IDs of full-size, thumbnail and compressed media
     repeated string object_ids = 5;
+  }  
+
+  message ListEntityMedia {
+    // Full-size media URL
+    string url = 1;
+    // Media last modified date
+    google.protobuf.Timestamp last_modified = 2;
+    // Media file size in kilobytes 
+    int64 size = 3;
+    // Media content type
+    string content_type = 4;
   }  
   
   message Size {

@@ -26,6 +26,8 @@ const (
 	jpgFilePath  = "files/test.jpg"
 	mp4FilePath  = "files/test.mp4"
 	webmFilePath = "files/test.webm"
+
+	subdomainEndpoint = "files.grbpwr.com"
 )
 
 func skipCI(t *testing.T) {
@@ -43,6 +45,7 @@ func BucketFromConst() (dependency.FileStore, error) {
 		S3BucketLocation:  bucketLocation,
 		MediaStorePrefix:  mediaStorePrefix,
 		BaseFolder:        baseFolder,
+		SubdomainEndpoint: subdomainEndpoint,
 	}
 	return c.Init()
 }
@@ -96,7 +99,7 @@ func TestUploadContentImage(t *testing.T) {
 	assert.NoError(t, err)
 	t.Logf("%+v", i)
 
-	err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)
 }
 
@@ -131,6 +134,24 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	media, err := b.UploadContentVideo(ctx, mp4, "test", "test", contentTypeWEBM)
 	assert.NoError(t, err)
 	fmt.Printf("----- %+v", media)
+
+	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	assert.NoError(t, err)
+}
+
+func TestListObjects(t *testing.T) {
+	skipCI(t)
+	ctx := context.Background()
+
+	b, err := BucketFromConst()
+	assert.NoError(t, err)
+
+	mediaList, err := b.ListObjects(ctx)
+	assert.NoError(t, err)
+
+	for _, m := range mediaList {
+		fmt.Println(m.Url)
+	}
 
 	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)

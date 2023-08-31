@@ -134,5 +134,7 @@ type (
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
 		// DeleteFromBucket deletes an object from the specified bucket.
 		DeleteFromBucket(ctx context.Context, objectKeys []string) error
+		// ListObjects list all objects in base folder
+		ListObjects(ctx context.Context) ([]pb_common.ListEntityMedia, error)
 	}
 )
