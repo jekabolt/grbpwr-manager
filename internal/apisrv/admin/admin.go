@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"golang.org/x/exp/slog"
@@ -39,19 +40,35 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 
 // UploadContentVideo
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_common.Media, error) {
-	return s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
+	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't upload content video",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return media, nil
 }
 
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
-	//TODO:
-	return nil, s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
+	err := s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return nil, err
 }
 
 // ListObjects
 func (s *Server) ListObjects(ctx context.Context, req *pb_admin.ListObjectsRequest) (*pb_admin.ListObjectsResponse, error) {
 	list, err := s.bucket.ListObjects(ctx)
 	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't list objects from bucket",
+			slog.String("err", err.Error()),
+		)
 		return nil, err
 	}
 	return &pb_admin.ListObjectsResponse{
@@ -61,6 +78,20 @@ func (s *Server) ListObjects(ctx context.Context, req *pb_admin.ListObjectsReque
 
 // AddProduct
 func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest) (*pb_admin.AddProductResponse, error) {
+	prd, err := dto.ValidateConvertProtoProduct(req.GetProduct())
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	err = s.repo.Products().AddProduct(ctx, prd)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't create a product",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
 	return nil, nil
 }
 

@@ -113,8 +113,8 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.Media, error) {
 	imgObj := &pb_common.Media{}
 
-	fullSizeName := fmt.Sprintf("%s_%s", imageName, "og")
-	compressedName := fmt.Sprintf("%s_%s", imageName, "compressed")
+	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
+	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
 
 	// Upload full size image
 	if um, err := b.uploadSingleImage(ctx, img, 100, folder, fullSizeName); err != nil {
