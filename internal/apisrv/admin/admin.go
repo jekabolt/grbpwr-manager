@@ -75,23 +75,29 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
+
+	slog.Default().DebugCtx(ctx, "DeleteFromBucket request",
+		slog.Any("req", req.ObjectKeys),
+	)
+
 	r := form.DeleteFromBucketRequest{
 		DeleteFromBucketRequest: req,
 	}
+	resp := &pb_admin.DeleteFromBucketResponse{}
 	if err := r.Validate(); err != nil {
 		slog.Default().ErrorCtx(ctx, "validation request failed",
 			slog.String("err", err.Error()),
 		)
-		return &pb_admin.DeleteFromBucketResponse{}, err
+		return resp, err
 	}
 	err := s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
-		return &pb_admin.DeleteFromBucketResponse{}, err
+		return resp, err
 	}
-	return &pb_admin.DeleteFromBucketResponse{}, err
+	return resp, err
 }
 
 // ListObjects
@@ -175,11 +181,13 @@ func (s *Server) DeleteProduct(ctx context.Context, req *pb_admin.DeleteProductR
 	r := form.DeleteProductRequest{
 		DeleteProductRequest: req,
 	}
+
+	resp := &pb_admin.DeleteProductResponse{}
 	if err := r.Validate(); err != nil {
 		slog.Default().ErrorCtx(ctx, "validation request failed",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return resp, err
 	}
 
 	err := s.repo.Products().DeleteProductByID(ctx, req.GetProductId())
@@ -187,10 +195,10 @@ func (s *Server) DeleteProduct(ctx context.Context, req *pb_admin.DeleteProductR
 		slog.Default().ErrorCtx(ctx, "can't delete a product",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return resp, err
 	}
 
-	return nil, nil
+	return resp, nil
 }
 
 // GetOrdersByStatus
