@@ -5,9 +5,12 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/form"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"golang.org/x/exp/slog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -28,6 +31,16 @@ func New(r dependency.Repository, b dependency.FileStore) *Server {
 
 // UploadContentImage
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_common.Media, error) {
+	r := form.UploadContentImageRequest{
+		UploadContentImageRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, req.Folder, req.ImageName)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content image",
@@ -40,6 +53,16 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 
 // UploadContentVideo
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_common.Media, error) {
+	r := form.UploadContentVideoRequest{
+		UploadContentVideoRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
 	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content video",
@@ -52,14 +75,23 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
+	r := form.DeleteFromBucketRequest{
+		DeleteFromBucketRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return &pb_admin.DeleteFromBucketResponse{}, err
+	}
 	err := s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return &pb_admin.DeleteFromBucketResponse{}, err
 	}
-	return nil, err
+	return &pb_admin.DeleteFromBucketResponse{}, err
 }
 
 // ListObjects
@@ -78,14 +110,35 @@ func (s *Server) ListObjects(ctx context.Context, req *pb_admin.ListObjectsReque
 
 // AddProduct
 func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest) (*pb_admin.AddProductResponse, error) {
-	prd, err := dto.ValidateConvertProtoProduct(req.GetProduct())
-	if err != nil {
+	r := form.AddProductRequest{
+		AddProductRequest: req,
+	}
+	if err := r.Validate(); err != nil {
 		slog.Default().ErrorCtx(ctx, "validation request failed",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
 	}
-	err = s.repo.Products().AddProduct(ctx, prd)
+
+	sizes := dto.ConvertProtoSize(req.GetAvailableSizes())
+	prices, err := dto.ConvertProtoPrice(req.GetPrice())
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert proto price to dto price",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	media := dto.ConvertProtoMediaArray(req.GetProductMedia())
+
+	err = s.repo.Products().AddProduct(ctx,
+		req.GetName(),
+		req.GetDescription(),
+		req.GetPreorder(),
+		sizes,
+		prices,
+		media,
+		req.Categories,
+	)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't create a product",
 			slog.String("err", err.Error()),
@@ -95,18 +148,113 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 	return nil, nil
 }
 
+func (s *Server) UpdateName(context.Context, *pb_admin.UpdateNameRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateName not implemented")
+}
+func (s *Server) UpdateDescription(context.Context, *pb_admin.UpdateDescriptionRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateDescription not implemented")
+}
+func (s *Server) UpdatePreorder(context.Context, *pb_admin.UpdatePreorderRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdatePreorder not implemented")
+}
+func (s *Server) UpdatePrice(context.Context, *pb_admin.UpdatePriceRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdatePrice not implemented")
+}
+func (s *Server) UpdateSizes(context.Context, *pb_admin.UpdateSizesRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateSizes not implemented")
+}
+func (s *Server) UpdateCategories(context.Context, *pb_admin.UpdateCategoriesRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateCategories not implemented")
+}
+func (s *Server) UpdateMedia(context.Context, *pb_admin.UpdateMediaRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateMedia not implemented")
+}
+
 // DeleteProduct
 func (s *Server) DeleteProduct(ctx context.Context, req *pb_admin.DeleteProductRequest) (*pb_admin.DeleteProductResponse, error) {
+	r := form.DeleteProductRequest{
+		DeleteProductRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	err := s.repo.Products().DeleteProductByID(ctx, req.GetProductId())
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't delete a product",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
 	return nil, nil
 }
 
 // GetOrdersByStatus
 func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersByStatusRequest) (*pb_admin.GetOrdersByStatusResponse, error) {
-	return nil, nil
+	r := form.GetOrdersByStatusRequest{
+		GetOrdersByStatusRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	status, err := dto.ConvertProtoOrderStatus(&req.Status)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert proto order status to dto order status",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	orders, err := s.repo.Order().GetOrderByStatus(ctx, status)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't create a product",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	ordersProto := &pb_admin.GetOrdersByStatusResponse{}
+	for _, order := range orders {
+		opb, err := order.ConvertToProtoOrder()
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert dto order to proto order",
+				slog.String("err", err.Error()),
+			)
+			return nil, err
+		}
+		ordersProto.Orders = append(ordersProto.Orders, opb)
+	}
+	return ordersProto, nil
 }
 
 // HideProduct
 func (s *Server) HideProduct(ctx context.Context, req *pb_admin.HideProductRequest) (*emptypb.Empty, error) {
+	r := form.HideProductRequest{
+		HideProductRequest: req,
+	}
+	if err := r.Validate(); err != nil {
+		slog.Default().ErrorCtx(ctx, "validation request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	err := s.repo.Products().HideProductByID(ctx, req.ProductId, req.Hide)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't hide a product",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
 	return nil, nil
 }
 

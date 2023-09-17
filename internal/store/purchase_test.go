@@ -18,21 +18,26 @@ func TestValidateOrder(t *testing.T) {
 	ctx := context.Background()
 
 	prd := getTestProd(1)[0]
-	err := ps.AddProduct(ctx, prd)
+	categories := []string{}
+	for _, c := range prd.Categories {
+		categories = append(categories, c.Category)
+	}
+
+	err := ps.AddProduct(ctx, prd.ProductInfo.Name, prd.ProductInfo.Description, prd.ProductInfo.Preorder, prd.AvailableSizes, prd.Price, prd.Media, categories)
 	assert.NoError(t, err)
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 
 	order := getTestOrders(1, products)[0]
 
 	items := []dto.Item{
 		{
-			ID:   products[0].Id,
+			ID:   products[0].ProductInfo.Id,
 			Size: "S",
 			// overflows available size to trigger error
 			Quantity: prd.AvailableSizes.S + 1,
@@ -77,21 +82,26 @@ func TestPurchase(t *testing.T) {
 	ctx := context.Background()
 
 	prd := getTestProd(1)[0]
-	err := ps.AddProduct(ctx, prd)
+
+	categories := []string{}
+	for _, c := range prd.Categories {
+		categories = append(categories, c.Category)
+	}
+	err := ps.AddProduct(ctx, prd.ProductInfo.Name, prd.ProductInfo.Description, prd.ProductInfo.Preorder, prd.AvailableSizes, prd.Price, prd.Media, categories)
 	assert.NoError(t, err)
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 
 	order := getTestOrders(1, products)[0]
 
 	items := []dto.Item{
 		{
-			ID:       products[0].Id,
+			ID:       products[0].ProductInfo.Id,
 			Size:     "S",
 			Quantity: prd.AvailableSizes.S,
 		},

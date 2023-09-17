@@ -153,7 +153,7 @@ func addShipment(ctx context.Context, rep dependency.Repository, carrier string)
 	return shipmentID, nil
 }
 
-func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int64, promoCode string) error {
+func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int32, promoCode string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		currency, err := rep.Order().GetOrderCurrency(ctx, orderId)
 		if err != nil {
@@ -202,7 +202,7 @@ func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int64, promoCo
 	})
 }
 
-func (ms *MYSQLStore) GetOrderCurrency(ctx context.Context, orderID int64) (dto.PaymentCurrency, error) {
+func (ms *MYSQLStore) GetOrderCurrency(ctx context.Context, orderId int32) (dto.PaymentCurrency, error) {
 	var currency string
 	err := ms.DB().QueryRowContext(ctx,
 		`SELECT pc.currency 
@@ -211,7 +211,7 @@ func (ms *MYSQLStore) GetOrderCurrency(ctx context.Context, orderID int64) (dto.
 			ON o.payment_id = p.id 
 			JOIN payment_currency pc 
 			ON p.currency_id = pc.id 
-			WHERE o.id = ?`, orderID).Scan(&currency)
+			WHERE o.id = ?`, orderId).Scan(&currency)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +219,7 @@ func (ms *MYSQLStore) GetOrderCurrency(ctx context.Context, orderID int64) (dto.
 }
 
 func (ms *MYSQLStore) UpdateOrderTotalByCurrency(ctx context.Context,
-	orderID int64, pc dto.PaymentCurrency, promo *dto.PromoCode) (decimal.Decimal, error) {
+	orderId int32, pc dto.PaymentCurrency, promo *dto.PromoCode) (decimal.Decimal, error) {
 	if !ms.InTx() {
 		return decimal.Zero, fmt.Errorf("UpdateOrderTotalByCurrency must be called from within transaction")
 	}
@@ -238,7 +238,7 @@ func (ms *MYSQLStore) UpdateOrderTotalByCurrency(ctx context.Context,
 		SELECT product_id
 		FROM order_item
 		WHERE order_id = ?
-	)`, pc), orderID, orderID).Scan(&itemsPrice)
+	)`, pc), orderId, orderId).Scan(&itemsPrice)
 	if err != nil {
 		return decimal.Zero, err
 	}
@@ -268,7 +268,7 @@ func (ms *MYSQLStore) UpdateOrderTotalByCurrency(ctx context.Context,
 		JOIN 
 			shipment_carriers sc ON s.carrier_id = sc.id
 		WHERE 
-			o.id = ?;`, orderID).Scan(&shippingPrice)
+			o.id = ?;`, orderId).Scan(&shippingPrice)
 
 		if err != nil {
 			return decimal.Zero, err
@@ -281,7 +281,7 @@ func (ms *MYSQLStore) UpdateOrderTotalByCurrency(ctx context.Context,
 			UPDATE orders
 			SET total_price = ?
 			WHERE id = ?`,
-		total, orderID)
+		total, orderId)
 	if err != nil {
 		return decimal.Zero, err
 	}
@@ -303,18 +303,18 @@ func addOrder(ctx context.Context, rep dependency.Repository, order *dto.Order, 
 	if err != nil {
 		return err
 	}
-	orderID, err := res.LastInsertId()
+	orderId, err := res.LastInsertId()
 	if err != nil {
 		return err
 	}
-	order.ID = orderID
+	order.ID = int32(orderId)
 
 	// Prepare a batch insert for order_item
 	valueStrings := make([]string, 0, len(order.Items))
 	valueArgs := make([]interface{}, 0, len(order.Items)*4)
 	for _, item := range order.Items {
 		valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-		valueArgs = append(valueArgs, orderID, item.ID, item.Quantity, item.Size)
+		valueArgs = append(valueArgs, orderId, item.ID, item.Quantity, item.Size)
 	}
 
 	stmt := fmt.Sprintf("INSERT INTO order_item (order_id, product_id, quantity, size) VALUES %s",
@@ -326,7 +326,7 @@ func addOrder(ctx context.Context, rep dependency.Repository, order *dto.Order, 
 
 	// Update total_price in the order table by calculating it from the product_prices table
 	// and shipping price from the shipment_carriers table.
-	total, err := rep.Order().UpdateOrderTotalByCurrency(ctx, orderID, order.Payment.Currency, nil)
+	total, err := rep.Order().UpdateOrderTotalByCurrency(ctx, order.ID, order.Payment.Currency, nil)
 	if err != nil {
 		return err
 	}
@@ -336,9 +336,9 @@ func addOrder(ctx context.Context, rep dependency.Repository, order *dto.Order, 
 }
 
 // UpdateOrderItems update order items
-func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderID int64, items []dto.Item) error {
+func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int32, items []dto.Item) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		_, err := rep.DB().ExecContext(ctx, `DELETE FROM order_item WHERE order_id = ?`, orderID)
+		_, err := rep.DB().ExecContext(ctx, `DELETE FROM order_item WHERE order_id = ?`, orderId)
 		if err != nil {
 			return err
 		}
@@ -348,7 +348,7 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderID int64, items
 		valueArgs := make([]interface{}, 0, len(items)*4)
 		for _, item := range items {
 			valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-			valueArgs = append(valueArgs, orderID, item.ID, item.Quantity, item.Size)
+			valueArgs = append(valueArgs, orderId, item.ID, item.Quantity, item.Size)
 		}
 
 		stmt := fmt.Sprintf("INSERT INTO order_item (order_id, product_id, quantity, size) VALUES %s",
@@ -358,12 +358,12 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderID int64, items
 			return err
 		}
 
-		cur, err := rep.Order().GetOrderCurrency(ctx, orderID)
+		cur, err := rep.Order().GetOrderCurrency(ctx, orderId)
 		if err != nil {
 			return err
 		}
 
-		_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderID, cur, nil)
+		_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderId, cur, nil)
 		if err != nil {
 			return err
 		}
@@ -372,13 +372,13 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderID int64, items
 }
 
 // UpdateOrderStatus is used to update the status of an order.
-func (ms *MYSQLStore) UpdateOrderStatus(ctx context.Context, orderID int64, status dto.OrderStatus) error {
+func (ms *MYSQLStore) UpdateOrderStatus(ctx context.Context, orderId int32, status dto.OrderStatus) error {
 	if !ms.InTx() {
 		return fmt.Errorf("UpdateOrderStatus must be called from within transaction")
 	}
 	_, err := ms.DB().ExecContext(ctx, `UPDATE orders 
 					SET status_id = (SELECT id FROM order_status WHERE status = ?) 
-					WHERE id = ?`, status, orderID)
+					WHERE id = ?`, status, orderId)
 	if err != nil {
 		return err
 	}
@@ -386,7 +386,7 @@ func (ms *MYSQLStore) UpdateOrderStatus(ctx context.Context, orderID int64, stat
 	return nil
 }
 
-func (ms *MYSQLStore) updatePayment(ctx context.Context, orderId int64, payment *dto.Payment) error {
+func (ms *MYSQLStore) updatePayment(ctx context.Context, orderId int32, payment *dto.Payment) error {
 	if !ms.InTx() {
 		return fmt.Errorf("updatePayment must be called from within transaction")
 	}
@@ -436,17 +436,17 @@ func (ms *MYSQLStore) updatePayment(ctx context.Context, orderId int64, payment 
 }
 
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderID int64, payment *dto.Payment) error {
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int32, payment *dto.Payment) error {
 	if !ms.InTx() {
 		return fmt.Errorf("OrderPaymentDone must be called from within transaction")
 	}
 	// Change order status to 'Confirmed'.
-	err := ms.UpdateOrderStatus(ctx, orderID, dto.OrderConfirmed)
+	err := ms.UpdateOrderStatus(ctx, orderId, dto.OrderConfirmed)
 	if err != nil {
 		return err
 	}
 	// Add payment info to the order.
-	err = ms.updatePayment(ctx, orderID, payment)
+	err = ms.updatePayment(ctx, orderId, payment)
 	if err != nil {
 		return err
 	}
@@ -456,7 +456,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderID int64, payme
 
 // UpdateShippingStatus updates the shipping status of an order.
 func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context,
-	orderID int64, carrier string,
+	orderId int32, carrier string,
 	trackingCode string, shippingTime time.Time) error {
 	// Execute the query.
 	_, err := ms.DB().ExecContext(ctx, `
@@ -465,7 +465,7 @@ func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context,
 		tracking_code = ?, 
 		shipping_date = ?
 		WHERE id = (SELECT shipment_id FROM orders WHERE id = ?)
-	`, carrier, trackingCode, shippingTime, orderID)
+	`, carrier, trackingCode, shippingTime, orderId)
 	if err != nil {
 		return err
 	}
@@ -473,7 +473,7 @@ func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context,
 }
 
 // GetOrderItems
-func (ms *MYSQLStore) GetOrderItems(ctx context.Context, orderID int64) ([]dto.Item, error) {
+func (ms *MYSQLStore) GetOrderItems(ctx context.Context, orderId int32) ([]dto.Item, error) {
 	rows, err := ms.DB().QueryContext(ctx, `
 		SELECT product_id, quantity, size from order_item where order_id = 141;
 	`)
@@ -498,10 +498,10 @@ func (ms *MYSQLStore) GetOrderItems(ctx context.Context, orderID int64) ([]dto.I
 }
 
 // RefundOrder refunds an existing order TODO: can be refunded only if payed.
-func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderID int64) error {
+func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int32) error {
 	ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Change order status to 'Refunded'.
-		err := rep.Order().UpdateOrderStatus(ctx, orderID, dto.OrderRefunded)
+		err := rep.Order().UpdateOrderStatus(ctx, orderId, dto.OrderRefunded)
 		if err != nil {
 			return err
 		}
@@ -509,7 +509,7 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderID int64) error {
 		UPDATE payment 
 		SET is_transaction_done = false 
 		WHERE id = (SELECT payment_id FROM orders WHERE id = ?)
-		`, orderID)
+		`, orderId)
 		if err != nil {
 			return err
 		}
@@ -664,7 +664,7 @@ func (ms *MYSQLStore) OrdersByEmail(ctx context.Context, email string) ([]dto.Or
 }
 
 // GetOrder retrieves an existing order by its ID.
-func (ms *MYSQLStore) GetOrder(ctx context.Context, orderID int64) (*dto.Order, error) {
+func (ms *MYSQLStore) GetOrder(ctx context.Context, orderId int32) (*dto.Order, error) {
 	orderQuery := `
 	SELECT 
 		o.id, 
@@ -697,7 +697,7 @@ func (ms *MYSQLStore) GetOrder(ctx context.Context, orderID int64) (*dto.Order, 
 		o.id = ?
 	`
 
-	row := ms.DB().QueryRowContext(ctx, orderQuery, orderID)
+	row := ms.DB().QueryRowContext(ctx, orderQuery, orderId)
 
 	var order dto.Order
 	order.Buyer = &dto.Buyer{}
@@ -794,4 +794,9 @@ func (ms *MYSQLStore) GetOrder(ctx context.Context, orderID int64) (*dto.Order, 
 	}
 
 	return &order, nil
+}
+
+// TODO: implement
+func (ms *MYSQLStore) GetOrderByStatus(ctx context.Context, status dto.OrderStatus) ([]dto.Order, error) {
+	return nil, nil
 }

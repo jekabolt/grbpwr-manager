@@ -9,101 +9,111 @@ import (
 )
 
 type Product struct {
-	Id             int64
-	Created        time.Time
-	Name           string
-	Preorder       string
+	ProductInfo    *ProductInfo
 	Price          *Price
 	AvailableSizes *Size
-	Description    string
-	Categories     []string
+	Categories     []Category
 	Media          []Media
 }
 
+type ProductInfo struct {
+	Id          int32     `db:"id"`
+	Created     time.Time `db:"created_at"`
+	Name        string    `db:"name"`
+	Preorder    string    `db:"preorder"`
+	Description string    `db:"description"`
+	Hidden      bool      `db:"hidden"`
+}
+
 type Price struct {
-	USD  decimal.Decimal
-	EUR  decimal.Decimal
-	USDC decimal.Decimal
-	ETH  decimal.Decimal
-	Sale decimal.Decimal
+	Id        int32           `db:"id"`
+	ProductID int32           `db:"product_id"`
+	USD       decimal.Decimal `db:"USD"`
+	EUR       decimal.Decimal `db:"EUR"`
+	USDC      decimal.Decimal `db:"USDC"`
+	ETH       decimal.Decimal `db:"ETH"`
+	Sale      decimal.Decimal `db:"sale"`
 }
 
 type Media struct {
-	FullSize   string `json:"fullSize"`
-	Thumbnail  string `json:"thumbnail"`
-	Compressed string `json:"compressed"`
+	Id         int32  `db:"id"`
+	ProductID  int32  `db:"product_id"`
+	FullSize   string `db:"full_size"`
+	Thumbnail  string `db:"thumbnail"`
+	Compressed string `db:"compressed"`
 }
 
 type Size struct {
-	XXS int `json:"xxs,omitempty"`
-	XS  int `json:"xs,omitempty"`
-	S   int `json:"s,omitempty"`
-	M   int `json:"m,omitempty"`
-	L   int `json:"l,omitempty"`
-	XL  int `json:"xl,omitempty"`
-	XXL int `json:"xxl,omitempty"`
-	OS  int `json:"os,omitempty"`
+	Id        int32 `db:"id"`
+	ProductID int32 `db:"product_id"`
+	XXS       int   `db:"XXS"`
+	XS        int   `db:"XS"`
+	S         int   `db:"S"`
+	M         int   `db:"M"`
+	L         int   `db:"L"`
+	XL        int   `db:"XL"`
+	XXL       int   `db:"XXL"`
+	OS        int   `db:"OS"`
 }
 
-// ValidateConvertProtoProduct converts a common.Product to dto.Product
-func ValidateConvertProtoProduct(commonProduct *common_pb.Product) (*Product, error) {
-	if commonProduct == nil {
-		return nil, fmt.Errorf("invalid product equals nil")
+type Category struct {
+	Id        int32  `db:"id"`
+	ProductID int32  `db:"product_id"`
+	Category  string `db:"category"`
+}
+
+func ConvertProtoSize(size *common_pb.Size) *Size {
+	return &Size{
+		XXS: int(size.Xxs),
+		XS:  int(size.Xs),
+		S:   int(size.S),
+		M:   int(size.M),
+		L:   int(size.L),
+		XL:  int(size.Xl),
+		XXL: int(size.Xxl),
+		OS:  int(size.Os),
+	}
+}
+
+func ConvertProtoPrice(size *common_pb.Price) (*Price, error) {
+	USD, err := decimal.NewFromString(size.Usd)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert USD price: %w", err)
+	}
+	EUR, err := decimal.NewFromString(size.Eur)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert EUR price: %w", err)
+	}
+	USDC, err := decimal.NewFromString(size.Usdc)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert USDC price: %w", err)
+	}
+	ETH, err := decimal.NewFromString(size.Eth)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert ETH price: %w", err)
+	}
+	Sale, err := decimal.NewFromString(size.Sale)
+	if err != nil {
+		return nil, fmt.Errorf("could not convert Sale price: %w", err)
 	}
 
-	var dtoPrice *Price
-	if commonProduct.Price != nil {
-		if commonProduct.Price.Usd == 0 ||
-			commonProduct.Price.Eur == 0 ||
-			commonProduct.Price.Usdc == 0 ||
-			commonProduct.Price.Eth == 0 {
-			return nil, fmt.Errorf("price cannot be zero")
-		}
-		dtoPrice = &Price{
-			USD:  decimal.NewFromFloat(commonProduct.Price.Usd),
-			EUR:  decimal.NewFromFloat(commonProduct.Price.Eur),
-			USDC: decimal.NewFromFloat(commonProduct.Price.Usdc),
-			ETH:  decimal.NewFromFloat(commonProduct.Price.Eth),
-			Sale: decimal.NewFromFloat(commonProduct.Price.Sale),
-		}
-	} else {
-		return nil, fmt.Errorf("invalid product price")
-	}
+	return &Price{
+		USD:  USD,
+		EUR:  EUR,
+		USDC: USDC,
+		ETH:  ETH,
+		Sale: Sale,
+	}, nil
+}
 
-	var dtoSize *Size
-	if commonProduct.AvailableSizes != nil {
-		dtoSize = &Size{
-			XXS: int(commonProduct.AvailableSizes.Xxs),
-			XS:  int(commonProduct.AvailableSizes.Xs),
-			S:   int(commonProduct.AvailableSizes.S),
-			M:   int(commonProduct.AvailableSizes.M),
-			L:   int(commonProduct.AvailableSizes.L),
-			XL:  int(commonProduct.AvailableSizes.Xl),
-			XXL: int(commonProduct.AvailableSizes.Xxl),
-			OS:  int(commonProduct.AvailableSizes.Os),
-		}
-	} else {
-		return nil, fmt.Errorf("invalid available sizes")
-	}
-
+func ConvertProtoMediaArray(media []*common_pb.Media) []Media {
 	var dtoMedia []Media
-	for _, media := range commonProduct.ProductMedia {
+	for _, media := range media {
 		dtoMedia = append(dtoMedia, Media{
 			FullSize:   media.FullSize,
 			Thumbnail:  media.Thumbnail,
 			Compressed: media.Compressed,
 		})
 	}
-
-	dtoProduct := &Product{
-		Name:           commonProduct.Name,
-		Preorder:       commonProduct.Preorder,
-		Price:          dtoPrice,
-		AvailableSizes: dtoSize,
-		Description:    commonProduct.Description,
-		Categories:     commonProduct.Categories,
-		Media:          dtoMedia,
-	}
-
-	return dtoProduct, nil
+	return dtoMedia
 }

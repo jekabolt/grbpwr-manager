@@ -9,7 +9,7 @@ message Product {
     // Product ID
     int64 id = 1;  
     // Timestamp when the product was created
-    google.protobuf.Timestamp created =2; 
+    google.protobuf.Timestamp created = 2; 
     // Product name
     string name = 3;
     // preorder text 
@@ -28,15 +28,15 @@ message Product {
   
   message Price {
     // Price in USD
-    double usd = 1;   
+    string usd = 1;   
     // Price in EUR
-    double eur = 2;   
+    string eur = 2;   
     // Price in USDC
-    double usdc = 3;  
+    string usdc = 3;  
     // Price in ETH
-    double eth = 4;   
+    string eth = 4;   
     // Sale price
-    double sale = 5;  
+    string sale = 5;
   }
   
   message Media {
@@ -124,7 +124,7 @@ message Product {
      // Transaction ID
     string transaction_id = 4;     
      // Transaction amount
-    double transaction_amount = 5; 
+    string transaction_amount = 5; 
      // Payer information
     string payer = 6;              
      // Payee information
@@ -177,7 +177,7 @@ message Product {
      // Carrier
     string carrier = 2;                          
      // Shipment cost
-    double cost = 3;                             
+    string cost = 3;                             
      // Tracking code
     string tracking_code = 4;                    
      // Shipping date
@@ -209,7 +209,7 @@ message Product {
      // Shipment information
     Shipment shipment = 6;                
      // Total price of the order
-    double total_price = 7;               
+    string total_price = 7;               
      // Order status
     OrderStatus status = 8;               
   }

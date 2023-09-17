@@ -18,13 +18,13 @@ type (
 	}
 	Products interface {
 		ContextStore
-		GetProductsPaged(ctx context.Context, limit, offset int, sortFactors []dto.SortFactor, filterConditions []dto.FilterCondition) ([]dto.Product, error)
-		AddProduct(ctx context.Context, p *dto.Product) error
-		GetProductByID(ctx context.Context, id int64) (*dto.Product, error)
-		DeleteProductByID(ctx context.Context, id int64) error
-		HideProductByID(ctx context.Context, id int64, hide bool) error
+		GetProductsPaged(ctx context.Context, limit, offset int32, sortFactors []dto.SortFactor, filterConditions []dto.FilterCondition, showHidden bool) ([]dto.Product, error)
+		AddProduct(ctx context.Context, name, description, preorder string, availableSizes *dto.Size, price *dto.Price, media []dto.Media, categories []string) error
+		GetProductByID(ctx context.Context, id int32) (*dto.Product, error)
+		DeleteProductByID(ctx context.Context, id int32) error
+		HideProductByID(ctx context.Context, id int32, hide bool) error
 		DecreaseAvailableSizes(ctx context.Context, items []dto.Item) error
-		SetSaleByID(ctx context.Context, id int64, salePercent float64) error
+		SetSaleByID(ctx context.Context, id int32, salePercent float64) error
 	}
 	Hero interface {
 		SetHero(ctx context.Context, left, right dto.HeroElement) error
@@ -35,45 +35,48 @@ type (
 		CreateOrder(ctx context.Context, order *dto.Order) (*dto.Order, error)
 
 		// ApplyPromoCode applies a promo code to an order and returns the order if promo is valid.
-		ApplyPromoCode(ctx context.Context, orderId int64, promoCode string) error
+		ApplyPromoCode(ctx context.Context, orderId int32, promoCode string) error
 
 		// GetOrder retrieves an existing order by its ID.
-		GetOrder(ctx context.Context, orderID int64) (*dto.Order, error)
+		GetOrder(ctx context.Context, orderId int32) (*dto.Order, error)
+
+		// GetOrderByStatus retrieves all orders by provided status.
+		GetOrderByStatus(ctx context.Context, status dto.OrderStatus) ([]dto.Order, error)
 
 		// UpdateOrderStatus is used to update the status of an order.
-		UpdateOrderStatus(ctx context.Context, orderID int64, status dto.OrderStatus) error
+		UpdateOrderStatus(ctx context.Context, orderId int32, status dto.OrderStatus) error
 
 		// UpdateShippingInfo updates the shipping status of an order.
-		UpdateShippingInfo(ctx context.Context, orderID int64, carrier string, trackingCode string, shippingTime time.Time) error
+		UpdateShippingInfo(ctx context.Context, orderId int32, carrier string, trackingCode string, shippingTime time.Time) error
 
 		// UpdateOrderTotalByCurrency retrieves the total price of an order
 		// including shipping and updates total price in the order.
-		UpdateOrderTotalByCurrency(ctx context.Context, orderID int64, pc dto.PaymentCurrency, promo *dto.PromoCode) (decimal.Decimal, error)
+		UpdateOrderTotalByCurrency(ctx context.Context, orderId int32, pc dto.PaymentCurrency, promo *dto.PromoCode) (decimal.Decimal, error)
 
 		// RefundOrder refunds an existing order.
-		RefundOrder(ctx context.Context, orderID int64) error
+		RefundOrder(ctx context.Context, orderId int32) error
 
 		// UpdateOrderItems updates the items of an order.
-		UpdateOrderItems(ctx context.Context, orderID int64, items []dto.Item) error
+		UpdateOrderItems(ctx context.Context, orderId int32, items []dto.Item) error
 
 		// GetOrderCurrency gets orders currency
-		GetOrderCurrency(ctx context.Context, orderID int64) (dto.PaymentCurrency, error)
+		GetOrderCurrency(ctx context.Context, orderId int32) (dto.PaymentCurrency, error)
 
 		// OrderPaymentDone updates the payment status of an order and adds payment info to order.
-		OrderPaymentDone(ctx context.Context, orderID int64, payment *dto.Payment) error
+		OrderPaymentDone(ctx context.Context, orderId int32, payment *dto.Payment) error
 
 		// OrdersByEmail retrieves all orders for a given email address.
 		OrdersByEmail(ctx context.Context, email string) ([]dto.Order, error)
 
 		// GetOrderItems retrieves all items for a given order id.
-		GetOrderItems(ctx context.Context, orderID int64) ([]dto.Item, error)
+		GetOrderItems(ctx context.Context, orderId int32) ([]dto.Item, error)
 	}
 	Purchase interface {
 		// Acquire acquires an order if order is valid and all items are available
-		Acquire(ctx context.Context, oid int64, payment *dto.Payment) error
+		Acquire(ctx context.Context, oid int32, payment *dto.Payment) error
 
 		// ValidateOrder validates an order i.e checks if order is valid and all items are available
-		ValidateOrder(ctx context.Context, oid int64) (bool, error)
+		ValidateOrder(ctx context.Context, oid int32) (bool, error)
 	}
 
 	Subscribers interface {
