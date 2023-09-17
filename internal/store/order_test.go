@@ -84,7 +84,7 @@ func getTestItems(count int, prds []dto.Product) []dto.Item {
 		// rand elem in prds
 		n := rand.Int() % len(prds)
 		item := dto.Item{
-			ID:       prds[n].Id,
+			ID:       prds[n].ProductInfo.Id,
 			Quantity: count,
 			Size:     "M",
 		}
@@ -114,16 +114,20 @@ func TestOrdersStore_CreateOrder(t *testing.T) {
 	ctx := context.Background()
 
 	prds := getTestProd(10)
-	for _, prd := range prds {
-		err := ps.AddProduct(ctx, prd)
+	for _, p := range prds {
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 
 	orders := getTestOrders(10, products)
@@ -217,15 +221,19 @@ func TestOrdersStore_Promo(t *testing.T) {
 	prs := db.Promo()
 	ctx := context.Background()
 
-	prd := getTestProd(1)[0]
-	err := ps.AddProduct(ctx, prd)
+	p := getTestProd(1)[0]
+	categories := []string{}
+	for _, c := range p.Categories {
+		categories = append(categories, c.Category)
+	}
+	err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 	assert.NoError(t, err)
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 
 	orders := getTestOrders(1, products)
@@ -240,7 +248,7 @@ func TestOrdersStore_Promo(t *testing.T) {
 	order, err = os.GetOrder(ctx, order.ID)
 	assert.NoError(t, err)
 	// check wether order total price is equal to product price + shipment cost
-	assert.True(t, order.TotalPrice.Equal(prd.Price.USDC.Add(order.Shipment.Cost)))
+	assert.True(t, order.TotalPrice.Equal(p.Price.USDC.Add(order.Shipment.Cost)))
 
 	// apply wrong promo code
 	err = os.ApplyPromoCode(ctx, order.ID, "fake promo")

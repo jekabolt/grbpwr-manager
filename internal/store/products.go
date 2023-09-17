@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,51 +24,51 @@ func (ms *MYSQLStore) Products() dependency.Products {
 	}
 }
 
-// GetProductsPaged retrieves a paged list of products based on the provided parameters.
-// Parameters:
-//   - limit: The maximum number of products per page.
-//   - offset: The starting offset for retrieving products.
-//   - sortFactors: Sorting factors and orders.
-//   - filterConditions: Filtering conditions.
-func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit, offset int, sortFactors []dto.SortFactor, filterConditions []dto.FilterCondition) ([]dto.Product, error) {
-	var queryBuilder strings.Builder
-
+// Function to fetch basic product information
+func (ms *MYSQLStore) fetchProductInfo(ctx context.Context, productId int32) (*dto.ProductInfo, error) {
+	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(`
-        SELECT p.id, p.created_at, p.name, p.description, p.preorder,
-        IF(pr.sale > 0, pr.USD * (1 - pr.sale / 100.0), pr.USD) as USD, 
-        IF(pr.sale > 0, pr.EUR * (1 - pr.sale / 100.0), pr.EUR) as EUR, 
-        IF(pr.sale > 0, pr.USDC * (1 - pr.sale / 100.0), pr.USDC) as USDC, 
-        IF(pr.sale > 0, pr.ETH * (1 - pr.sale / 100.0), pr.ETH) as ETH, 
-		pr.sale,
-        s.XXS, s.XS, s.S, s.M, s.L, s.XL, s.XXL, s.OS,
-        GROUP_CONCAT(DISTINCT pc.category) as categories,
-        GROUP_CONCAT(DISTINCT CONCAT(pi.full_size, '|', pi.thumbnail, '|', pi.compressed)) as images
-		FROM products p
-		INNER JOIN product_prices pr ON p.id = pr.product_id
-		INNER JOIN product_sizes s ON p.id = s.product_id
-		LEFT JOIN product_categories pc ON p.id = pc.product_id
-		LEFT JOIN product_images pi ON p.id = pi.product_id
-		WHERE p.hidden = FALSE
-    `)
+	SELECT 
+		id, 
+		created_at, 
+		name, 
+		reorder, 
+		description, 
+		hidden 
+	FROM products 
+	WHERE id = :productId`)
+
+	params := map[string]interface{}{
+		"productId": productId,
+	}
+
+	productInfo, err := QueryNamedOne[dto.ProductInfo](ctx, ms.DB(), queryBuilder.String(), params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product info: %w", err)
+	}
+	return &productInfo, nil
+
+}
+
+// Function to fetch basic products information
+func (ms *MYSQLStore) fetchProductsInfo(ctx context.Context, limit, offset int32, sortFactors []dto.SortFactor, filterConditions []dto.FilterCondition, showHidden bool) ([]dto.ProductInfo, error) {
+	queryBuilder := strings.Builder{}
+	queryBuilder.WriteString("SELECT id, created_at, name, preorder, description, hidden FROM products WHERE ")
+
+	if !showHidden {
+		queryBuilder.WriteString("hidden = FALSE ")
+	}
 
 	// Adding filters
 	if len(filterConditions) > 0 {
-		for _, condition := range filterConditions {
-			queryBuilder.WriteString(" AND ")
-			switch condition.Field {
-			case dto.FilterFieldSize:
-				sz := strings.ToUpper(condition.Value)
-				// check if value in validSizes
-				if slices.Contains(validSizes, sz) {
-					queryBuilder.WriteString(fmt.Sprintf("s.%s > 0", sz))
-				}
-			case dto.FilterFieldCategory:
-				queryBuilder.WriteString(fmt.Sprintf("pc.category = '%s'", condition.Value))
+		queryBuilder.WriteString(" AND ")
+		for i, condition := range filterConditions {
+			if i > 0 {
+				queryBuilder.WriteString(" AND ")
 			}
+			queryBuilder.WriteString(fmt.Sprintf("%s = '%s'", condition.Field, condition.Value))
 		}
 	}
-
-	queryBuilder.WriteString(" GROUP BY p.id, p.created_at, p.name, p.description, pr.USD, pr.EUR, pr.USDC, pr.ETH, pr.sale, s.XXS, s.XS, s.S, s.M, s.L, s.XL, s.XXL, s.OS ")
 
 	// Adding sorting
 	if len(sortFactors) > 0 {
@@ -93,65 +92,267 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit, offset int, s
 	}
 
 	queryBuilder.WriteString(" LIMIT ? OFFSET ?")
-
 	query := queryBuilder.String()
-	args := []interface{}{limit, offset}
 
-	rows, err := ms.DB().QueryContext(ctx, query, args...)
+	rows, err := ms.DB().QueryContext(ctx, query, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	products := make([]dto.Product, 0)
+	var productInfos []dto.ProductInfo
 	for rows.Next() {
-		p := dto.Product{
-			Price:          &dto.Price{},
-			AvailableSizes: &dto.Size{},
-		}
-		var images, categories string
-		err := rows.Scan(&p.Id, &p.Created, &p.Name, &p.Description, &p.Preorder,
-			&p.Price.USD, &p.Price.EUR, &p.Price.USDC, &p.Price.ETH, &p.Price.Sale,
-			&p.AvailableSizes.XXS, &p.AvailableSizes.XS, &p.AvailableSizes.S, &p.AvailableSizes.M,
-			&p.AvailableSizes.L, &p.AvailableSizes.XL, &p.AvailableSizes.XXL, &p.AvailableSizes.OS,
-			&categories, &images)
-		if err != nil {
+		var info dto.ProductInfo
+		if err := rows.Scan(&info.Id, &info.Created, &info.Name, &info.Preorder, &info.Description, &info.Hidden); err != nil {
 			return nil, err
 		}
-
-		p.Categories = strings.Split(categories, ",")
-		p.Media = splitImage(images)
-		products = append(products, p)
+		productInfos = append(productInfos, info)
 	}
-	if err := rows.Err(); err != nil {
+	return productInfos, nil
+}
+
+// Function to fetch sizes for a list of product IDs
+func (ms *MYSQLStore) fetchSizes(ctx context.Context, productIDs []int32) ([]dto.Size, error) {
+	if len(productIDs) == 0 {
+		return []dto.Size{}, nil
+	}
+	query := `SELECT 
+	id, product_id, XXS, XS, S, M, L, XL, XXL, OS FROM product_sizes 
+	WHERE product_id IN (:productIds)`
+
+	params := map[string]interface{}{
+		"productIds": productIDs,
+	}
+
+	sizes, err := QueryListNamed[dto.Size](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get sizes: %w", err)
+	}
+
+	return sizes, nil
+}
+
+// Function to fetch sizes for a list of product IDs
+func (ms *MYSQLStore) fetchSize(ctx context.Context, productID int32) (*dto.Size, error) {
+	query := `SELECT 
+	id, product_id, XXS, XS, S, M, L, XL, XXL, OS FROM product_sizes 
+	WHERE product_id IN :productId`
+
+	params := map[string]interface{}{
+		"productId": productID,
+	}
+
+	size, err := QueryNamedOne[dto.Size](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get sizes: %w", err)
+	}
+
+	return &size, nil
+}
+
+// Function to fetch categories for a list of product IDs
+func (ms *MYSQLStore) fetchCategories(ctx context.Context, productIDs []int32) ([]dto.Category, error) {
+	if len(productIDs) == 0 {
+		return []dto.Category{}, nil
+	}
+	query := `SELECT 
+	id, product_id, category FROM product_categories 
+	WHERE product_id IN (:productIds)`
+
+	params := map[string]interface{}{
+		"productIds": productIDs,
+	}
+
+	categories, err := QueryListNamed[dto.Category](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get categories: %w", err)
+	}
+
+	return categories, nil
+}
+
+// Function to fetch media for a list of product IDs
+func (ms *MYSQLStore) fetchMedia(ctx context.Context, productIDs []int32) ([]dto.Media, error) {
+	if len(productIDs) == 0 {
+		return []dto.Media{}, nil
+	}
+	query := `SELECT 
+	id, product_id, full_size, thumbnail, compressed FROM product_images 
+	WHERE product_id IN (:productIds)`
+
+	params := map[string]interface{}{
+		"productIds": productIDs,
+	}
+
+	media, err := QueryListNamed[dto.Media](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get media: %w", err)
+	}
+
+	return media, nil
+}
+
+// fetchPrices fetches prices related to a slice of product IDs
+func (ms *MYSQLStore) fetchPrices(ctx context.Context, productIDs []int32) ([]dto.Price, error) {
+	if len(productIDs) == 0 {
+		return []dto.Price{}, nil
+	}
+	query := `SELECT 
+	id, product_id, USD, EUR, USDC, ETH, sale FROM product_prices 
+	WHERE product_id IN (:productIds)`
+
+	params := map[string]interface{}{
+		"productIds": productIDs,
+	}
+
+	prices, err := QueryListNamed[dto.Price](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get prices: %w", err)
+	}
+
+	return prices, nil
+}
+
+// fetchPrice fetches prices related to a slice of product IDs
+func (ms *MYSQLStore) fetchPrice(ctx context.Context, productID int32) (*dto.Price, error) {
+	query := `SELECT 
+	id, product_id, USD, EUR, USDC, ETH, sale FROM product_prices 
+	WHERE product_id = :productId`
+
+	params := map[string]interface{}{
+		"productId": productID,
+	}
+
+	price, err := QueryNamedOne[dto.Price](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, fmt.Errorf("can't get prices: %w", err)
+	}
+
+	return &price, nil
+}
+
+// GetProductsPaged retrieves a paged list of products based on the provided parameters.
+// Parameters:
+//   - limit: The maximum number of products per page.
+//   - offset: The starting offset for retrieving products.
+//   - sortFactors: Sorting factors and orders.
+//   - filterConditions: Filtering conditions.
+func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit, offset int32, sortFactors []dto.SortFactor, filterConditions []dto.FilterCondition, showHidden bool) ([]dto.Product, error) {
+	// Fetch products info first
+	productInfos, err := ms.fetchProductsInfo(ctx, limit, offset, sortFactors, filterConditions, showHidden)
+	if err != nil {
 		return nil, err
 	}
+
+	// Extract product IDs
+	var productIDs []int32
+	for _, pi := range productInfos {
+		productIDs = append(productIDs, pi.Id)
+	}
+
+	// Fetch Prices, Sizes, Categories, and Media
+	prices, err := ms.fetchPrices(ctx, productIDs)
+	if err != nil {
+		return nil, err
+	}
+	sizes, err := ms.fetchSizes(ctx, productIDs)
+	if err != nil {
+		return nil, err
+	}
+	categories, err := ms.fetchCategories(ctx, productIDs)
+	if err != nil {
+		return nil, err
+	}
+	media, err := ms.fetchMedia(ctx, productIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Assemble the final []dto.Product
+	var products []dto.Product
+	for _, pi := range productInfos {
+		product := dto.Product{
+			ProductInfo: &pi,
+		}
+
+		// Assign Price
+		for _, price := range prices {
+			if price.ProductID == pi.Id {
+				product.Price = &price
+				break
+			}
+		}
+
+		// Assign Size
+		for _, size := range sizes {
+			if size.ProductID == pi.Id {
+				product.AvailableSizes = &size
+				break
+			}
+		}
+
+		// Assign Categories
+		for _, category := range categories {
+			if category.ProductID == pi.Id {
+				product.Categories = append(product.Categories, category)
+			}
+		}
+
+		// Assign Media
+		for _, m := range media {
+			if m.ProductID == pi.Id {
+				product.Media = append(product.Media, m)
+			}
+		}
+		products = append(products, product)
+	}
+
 	return products, nil
 }
 
-func splitImage(imageString string) []dto.Media {
-	images := strings.Split(imageString, ",")
-	productImages := make([]dto.Media, 0)
-	for _, image := range images {
-		imageParts := strings.Split(image, "|")
-		if len(imageParts) == 3 {
-			image := dto.Media{
-				FullSize:   imageParts[0],
-				Thumbnail:  imageParts[1],
-				Compressed: imageParts[2],
-			}
-			productImages = append(productImages, image)
-		}
+// GetProductByID retrieves product information from the product store based on the given product ID.
+func (ms *MYSQLStore) GetProductByID(ctx context.Context, productId int32) (*dto.Product, error) {
+	product := &dto.Product{}
+	var err error
+
+	product.ProductInfo, err = ms.fetchProductInfo(ctx, productId)
+	if err != nil {
+		return nil, err
 	}
-	return productImages
+	// Fetch Prices, Sizes, Categories, and Media
+	product.Price, err = ms.fetchPrice(ctx, productId)
+	if err != nil {
+		return nil, err
+	}
+	product.AvailableSizes, err = ms.fetchSize(ctx, productId)
+	if err != nil {
+		return nil, err
+	}
+	product.Categories, err = ms.fetchCategories(ctx, []int32{productId})
+	if err != nil {
+		return nil, err
+	}
+	product.Media, err = ms.fetchMedia(ctx, []int32{productId})
+	if err != nil {
+		return nil, err
+	}
+
+	return product, nil
+
 }
 
 // AddProduct adds a new product to the product store.
-func (ms *MYSQLStore) AddProduct(ctx context.Context, p *dto.Product) error {
+func (ms *MYSQLStore) AddProduct(ctx context.Context,
+	name, description,
+	preorder string,
+	availableSizes *dto.Size,
+	price *dto.Price,
+	media []dto.Media,
+	categories []string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		res, err := rep.DB().ExecContext(ctx, `
 		INSERT INTO products (name, description, preorder)
-		VALUES (?, ?, ?)`, p.Name, p.Description, p.Preorder)
+		VALUES (?, ?, ?)`, name, description, preorder)
 		if err != nil {
 			return err
 		}
@@ -159,20 +360,20 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, p *dto.Product) error {
 		if err != nil {
 			return err
 		}
-		err = addCategories(ctx, rep, pid, p.Categories)
+		err = addCategories(ctx, rep, pid, categories)
 		if err != nil {
 			return err
 		}
 
-		err = addProductImages(ctx, rep, pid, p.Media)
+		err = addProductImages(ctx, rep, pid, media)
 		if err != nil {
 			return err
 		}
-		err = addPrices(ctx, rep, pid, p.Price)
+		err = addPrices(ctx, rep, pid, price)
 		if err != nil {
 			return err
 		}
-		err = addSizes(ctx, rep, pid, p.AvailableSizes)
+		err = addSizes(ctx, rep, pid, availableSizes)
 		if err != nil {
 			return err
 		}
@@ -252,50 +453,8 @@ func addSizes(ctx context.Context, rep dependency.Repository, productID int64, s
 	return nil
 }
 
-// GetProductByID retrieves product information from the product store based on the given product ID.
-func (ms *MYSQLStore) GetProductByID(ctx context.Context, id int64) (*dto.Product, error) {
-	p := &dto.Product{
-		Price:          &dto.Price{},
-		AvailableSizes: &dto.Size{},
-	}
-	query := `
-		SELECT 
-			p.id, p.created_at, p.name, p.description, p.preorder,
-			GROUP_CONCAT(DISTINCT pc.category),
-			GROUP_CONCAT(DISTINCT CONCAT(pi.full_size, '|', pi.thumbnail, '|', pi.compressed)),
-			pr.USD,	pr.EUR, pr.USDC, pr.ETH, s.XXS, 
-			s.XS, s.S, s.M, s.L, s.XL, s.XXL, s.OS
-		FROM products p
-		LEFT JOIN product_categories pc ON p.id = pc.product_id
-		LEFT JOIN product_images pi ON p.id = pi.product_id
-		LEFT JOIN product_prices pr ON p.id = pr.product_id
-		LEFT JOIN product_sizes s ON p.id = s.product_id
-		WHERE p.id = ?
-		GROUP BY p.id, p.created_at, p.name, p.description, pr.USD, pr.EUR, pr.USDC, pr.ETH, s.XXS, s.XS, s.S, s.M, s.L, s.XL, s.XXL, s.OS
-	`
-
-	row := ms.DB().QueryRowContext(ctx, query, id)
-
-	var categories, images string
-	if err := row.Scan(
-		&p.Id, &p.Created, &p.Name, &p.Description, &p.Preorder, &categories, &images,
-		&p.Price.USD, &p.Price.EUR, &p.Price.USDC, &p.Price.ETH, &p.AvailableSizes.XXS,
-		&p.AvailableSizes.XS, &p.AvailableSizes.S, &p.AvailableSizes.M, &p.AvailableSizes.L, &p.AvailableSizes.XL, &p.AvailableSizes.XXL, &p.AvailableSizes.OS,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("product with id %d does not exist", id)
-		}
-		return nil, err
-	}
-
-	p.Categories = strings.Split(categories, ",")
-	p.Media = splitImage(images)
-
-	return p, nil
-}
-
 // DeleteProductByID deletes a product from the product store based on the given product ID.
-func (ms *MYSQLStore) DeleteProductByID(ctx context.Context, id int64) error {
+func (ms *MYSQLStore) DeleteProductByID(ctx context.Context, id int32) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		_, err := rep.DB().ExecContext(ctx, `
 		DELETE FROM product_categories 
@@ -336,7 +495,7 @@ func (ms *MYSQLStore) DeleteProductByID(ctx context.Context, id int64) error {
 }
 
 // HideProductByID updates the "hidden" status of a product in the product store based on the given product ID.
-func (ms *MYSQLStore) HideProductByID(ctx context.Context, id int64, hide bool) error {
+func (ms *MYSQLStore) HideProductByID(ctx context.Context, id int32, hide bool) error {
 	res, err := ms.DB().ExecContext(ctx, `
 		UPDATE products 
 		SET hidden = ? 
@@ -389,7 +548,7 @@ func (ms *MYSQLStore) DecreaseAvailableSizes(ctx context.Context, items []dto.It
 	return nil
 }
 
-func (ms *MYSQLStore) SetSaleByID(ctx context.Context, id int64, salePercent float64) error {
+func (ms *MYSQLStore) SetSaleByID(ctx context.Context, id int32, salePercent float64) error {
 	res, err := ms.DB().ExecContext(ctx, `
         UPDATE product_prices 
         SET sale = ?

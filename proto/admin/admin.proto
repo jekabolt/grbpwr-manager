@@ -70,6 +70,55 @@ service AdminService {
         };
     }
 
+    rpc UpdateName (UpdateNameRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/name/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdateDescription (UpdateDescriptionRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/description/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdatePreorder (UpdatePreorderRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/preorder/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdatePrice (UpdatePriceRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/price/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdateSizes (UpdateSizesRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/sizes/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdateCategories (UpdateCategoriesRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/categories/{product_id}"
+          body: "*"
+        };
+    }
+
+    rpc UpdateMedia (UpdateMediaRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+          post: "/api/admin/product/update/media/{product_id}"
+          body: "*"
+        };
+    }
+
     rpc DeleteProduct (DeleteProductRequest) returns (DeleteProductResponse) {
         option (google.api.http) = {
           delete: "/api/admin/product/delete/{product_id}"
@@ -159,13 +208,71 @@ message GetOrdersByStatusResponse {
 }
 
 message AddProductRequest {
-  common.Product product = 1;
+  // Product name
+  string name = 1;
+  // Product description
+  string description = 2;  
+  // preorder text 
+  string preorder = 3;
+  // Product price
+  common.Price price = 4; 
+  // Available sizes
+  common.Size available_sizes = 5;
+  // Product categories
+  repeated string categories = 6;
+  // Medias of the product
+  repeated common.Media product_media = 7; 
 }
 
 message AddProductResponse {
     // product id
     int32 product_id = 1;
 }
+
+
+message UpdateNameRequest {
+    // product id
+    int32 product_id = 1;
+    // product name
+    string name = 2;
+}
+message UpdateDescriptionRequest {
+    // product id
+    int32 product_id = 1;
+    // product description
+    string description = 2;
+}
+message UpdatePreorderRequest {
+    // product id
+    int32 product_id = 1;
+    // product preorder
+    string preorder = 2;
+}
+message UpdatePriceRequest {
+    // product id
+    int32 product_id = 1;
+    // product price
+    common.Price price = 2;
+}
+message UpdateSizesRequest {
+    // product id
+    int32 product_id = 1;
+    // product sizes
+    common.Size available_sizes = 2;
+}
+message UpdateCategoriesRequest {
+    // product id
+    int32 product_id = 1;
+    // product categories
+    repeated string categories = 2;
+}
+message UpdateMediaRequest {
+    // product id
+    int32 product_id = 1;
+    // product media
+    repeated common.Media product_media = 2;
+}
+
 
 message DeleteProductRequest {
     // product id
@@ -179,6 +286,7 @@ message DeleteProductResponse {
 message HideProductRequest {
     // product id
     int32 product_id = 1;
+    bool hide = 2;
 }
 
 message HideProductResponse {

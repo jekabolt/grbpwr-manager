@@ -17,8 +17,12 @@ func getTestProd(count int) []*dto.Product {
 	p := []*dto.Product{}
 	for i := 0; i < count; i++ {
 		p = append(p, &dto.Product{
-			Name:        fmt.Sprintf("Test Product %d", i),
-			Description: "This is a test product",
+			ProductInfo: &dto.ProductInfo{
+				Name:        fmt.Sprintf("Test Product %d", i),
+				Preorder:    "test",
+				Description: "This is a test product",
+				Hidden:      false,
+			},
 			Price: &dto.Price{
 				USD:  decimal.NewFromFloat(10.0*float64(i+1) + rand.Float64()*10.0),
 				EUR:  decimal.NewFromFloat(9.0 * float64(i+1)),
@@ -30,7 +34,13 @@ func getTestProd(count int) []*dto.Product {
 				M: 20,
 				L: i,
 			},
-			Categories: []string{"category1", "category2"},
+			Categories: []dto.Category{
+				{
+					Category: "category1",
+				}, {
+					Category: "category2",
+				},
+			},
 			Media: []dto.Media{
 				{
 					FullSize:   "https://example.com/fullsize.jpg",
@@ -54,9 +64,15 @@ func TestProductStore_AddProduct(t *testing.T) {
 	ps := db.Products()
 	ctx := context.Background()
 	prds := getTestProd(1)
+	prds[0].ProductInfo.Preorder = "test"
+	p := prds[0]
 
-	prds[0].Preorder = "test"
-	err := ps.AddProduct(ctx, prds[0])
+	categories := []string{}
+	for _, c := range p.Categories {
+		categories = append(categories, c.Category)
+	}
+
+	err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 	assert.NoError(t, err)
 
 }
@@ -70,17 +86,23 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 	// Generate and insert test products
 	prds := getTestProd(10)
 	for _, prd := range prds {
-		err := ps.AddProduct(ctx, prd)
+
+		categories := []string{}
+		for _, c := range prd.Categories {
+			categories = append(categories, c.Category)
+		}
+
+		err := ps.AddProduct(ctx, prd.ProductInfo.Name, prd.ProductInfo.Description, prd.ProductInfo.Preorder, prd.AvailableSizes, prd.Price, prd.Media, categories)
 		assert.NoError(t, err)
 	}
 
 	// Define the number of products to be fetched per page
-	limit := 5
+	limit := int32(5)
 
 	// Fetch and validate products for each page
 	for i := 0; i < 2; i++ {
-		offset := i * limit
-		fetchedPrds, err := ps.GetProductsPaged(ctx, limit, offset, nil, nil)
+		offset := int32(i) * limit
+		fetchedPrds, err := ps.GetProductsPaged(ctx, limit, offset, nil, nil, false)
 		assert.NoError(t, err)
 
 		// Assert that the number of fetched products is as expected
@@ -88,9 +110,9 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 
 		// Assert that the fetched products match the inserted products
 		for j, fetchedPrd := range fetchedPrds {
-			expectedPrd := prds[offset+j]
-			assert.Equal(t, expectedPrd.Name, fetchedPrd.Name)
-			assert.Equal(t, expectedPrd.Description, fetchedPrd.Description)
+			expectedPrd := prds[offset+int32(j)]
+			assert.Equal(t, expectedPrd.ProductInfo.Name, fetchedPrd.ProductInfo.Name)
+			assert.Equal(t, expectedPrd.ProductInfo.Description, fetchedPrd.ProductInfo.Description)
 			assert.True(t, expectedPrd.Price.EUR.Equal(fetchedPrd.Price.EUR))
 			assert.True(t, expectedPrd.Price.USDC.Equal(fetchedPrd.Price.USDC))
 			assert.True(t, expectedPrd.Price.Sale.Equal(fetchedPrd.Price.Sale))
@@ -113,11 +135,16 @@ func TestProductStore_GetProductsPagedSortAndFilter(t *testing.T) {
 	prds := getTestProd(20)
 
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{
 		{Field: dto.SortFieldDateAdded, Order: dto.SortOrderDesc},
 		{Field: dto.SortFieldPriceUSD, Order: dto.SortOrderAsc},
@@ -127,7 +154,7 @@ func TestProductStore_GetProductsPagedSortAndFilter(t *testing.T) {
 	}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 
 	// Assert no error
 	assert.NoError(t, err)
@@ -139,10 +166,10 @@ func TestProductStore_GetProductsPagedSortAndFilter(t *testing.T) {
 	// Check that the products are in the correct order (sorted by DateAdded Descending and then by Price Ascending).
 	for i := 0; i < len(products)-1; i++ {
 		assert.Len(t, products[i].Media, 2)
-		if products[i].Created.Equal(products[i+1].Created) {
+		if products[i].ProductInfo.Created.Equal(products[i+1].ProductInfo.Created) {
 			assert.True(t, products[i].Price.USD.LessThan(products[i+1].Price.USD) || products[i].Price.USD.Equal(products[i+1].Price.USD))
 		} else {
-			assert.True(t, products[i].Created.After(products[i+1].Created))
+			assert.True(t, products[i].ProductInfo.Created.After(products[i+1].ProductInfo.Created))
 		}
 	}
 
@@ -157,15 +184,25 @@ func TestProductStore_GetProductsPagedSortAndFilterCategories(t *testing.T) {
 	ctx := context.Background()
 
 	prds := getTestProd(3)
-	prds[0].Categories = append(prds[0].Categories, "men")
-	prds[1].Categories = append(prds[1].Categories, "women")
-	prds[1].Categories = append(prds[1].Categories, "men")
+	prds[0].Categories = append(prds[0].Categories, dto.Category{
+		Category: "men",
+	})
+	prds[1].Categories = append(prds[1].Categories, dto.Category{
+		Category: "women",
+	})
+	prds[1].Categories = append(prds[1].Categories, dto.Category{
+		Category: "men",
+	})
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{
 		{Field: dto.SortFieldDateAdded, Order: dto.SortOrderDesc},
 	}
@@ -174,7 +211,7 @@ func TestProductStore_GetProductsPagedSortAndFilterCategories(t *testing.T) {
 	}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 
 	// Assert no error
 	assert.NoError(t, err)
@@ -182,8 +219,12 @@ func TestProductStore_GetProductsPagedSortAndFilterCategories(t *testing.T) {
 	// Assert the returned data.
 	// For simplicity, we're just checking the count here.
 	assert.Len(t, products, 2)
-	assert.True(t, slices.Contains(products[0].Categories, "men"))
-	assert.True(t, slices.Contains(products[1].Categories, "men"))
+	assert.True(t, slices.Contains(products[0].Categories, dto.Category{
+		Category: "men",
+	}))
+	assert.True(t, slices.Contains(products[1].Categories, dto.Category{
+		Category: "men",
+	}))
 
 }
 
@@ -198,11 +239,16 @@ func TestProductStore_GetProductsPagedSortAndFilterSize(t *testing.T) {
 	prds[1].AvailableSizes.L = 2
 	prds[2].AvailableSizes.L = 2
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{
 		{Field: dto.SortFieldDateAdded, Order: dto.SortOrderDesc},
 	}
@@ -211,7 +257,7 @@ func TestProductStore_GetProductsPagedSortAndFilterSize(t *testing.T) {
 	}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 
 	// Assert no error
 	assert.NoError(t, err)
@@ -234,16 +280,20 @@ func TestProductStore_GetProductById(t *testing.T) {
 
 	prds := getTestProd(3)
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 
 	// Assert no error
 	assert.NoError(t, err)
@@ -252,10 +302,10 @@ func TestProductStore_GetProductById(t *testing.T) {
 	// For simplicity, we're just checking the count here.
 	assert.Len(t, products, 3)
 
-	prd, err := ps.GetProductByID(ctx, products[0].Id)
+	prd, err := ps.GetProductByID(ctx, products[0].ProductInfo.Id)
 	assert.NoError(t, err)
 	fmt.Printf("%+v", prd)
-	assert.Equal(t, products[0].Id, prd.Id)
+	assert.Equal(t, products[0].ProductInfo.Id, prd.ProductInfo.Id)
 	assert.Equal(t, prd.Media[0].FullSize, prds[0].Media[0].FullSize)
 	assert.Equal(t, prd.Media[1].FullSize, prds[0].Media[1].FullSize)
 	assert.Len(t, prd.Media, 2)
@@ -269,27 +319,32 @@ func TestProductStore_DeleteProductByID(t *testing.T) {
 
 	prds := getTestProd(1)
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 1)
 
 	// prod id
-	id := products[0].Id
+	id := products[0].ProductInfo.Id
 
 	err = ps.DeleteProductByID(ctx, id)
 	assert.NoError(t, err)
 
 	// Execute the function
-	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 0)
 
@@ -306,28 +361,32 @@ func TestProductStore_HideProductByID(t *testing.T) {
 
 	prds := getTestProd(1)
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 1)
 
 	// prod id
-	id := products[0].Id
+	id := products[0].ProductInfo.Id
 	hide := true
 
 	err = ps.HideProductByID(ctx, id, hide)
 	assert.NoError(t, err)
 
 	// Execute the function
-	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 0)
 
@@ -344,22 +403,26 @@ func TestProductStore_DecreaseAvailableSize(t *testing.T) {
 
 	prds := getTestProd(1)
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 1)
 
 	avS := products[0].AvailableSizes.S
 	avM := products[0].AvailableSizes.M
-	id := products[0].Id
+	id := products[0].ProductInfo.Id
 
 	items := []dto.Item{
 		{
@@ -399,25 +462,29 @@ func TestProductStore_SetSaleByID(t *testing.T) {
 
 	prds := getTestProd(1)
 	for _, p := range prds {
-		err := ps.AddProduct(ctx, p)
+		categories := []string{}
+		for _, c := range p.Categories {
+			categories = append(categories, c.Category)
+		}
+		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
 		assert.NoError(t, err)
 	}
 
-	limit, offset := 10, 0
+	limit, offset := int32(10), int32(0)
 	sortFactors := []dto.SortFactor{}
 	filterConditions := []dto.FilterCondition{}
 
 	// Execute the function
-	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 	assert.Len(t, products, 1)
 
-	id := products[0].Id
+	id := products[0].ProductInfo.Id
 
 	err = ps.SetSaleByID(ctx, id, 10)
 	assert.NoError(t, err)
 
-	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions)
+	products, err = ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
 	assert.NoError(t, err)
 
 	// validate that the size has been decreased

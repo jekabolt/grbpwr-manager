@@ -20,7 +20,7 @@ func (ms *MYSQLStore) Purchase() dependency.Purchase {
 }
 
 // Acquire acquires an order if order is valid and all items are available
-func (ms *MYSQLStore) Acquire(ctx context.Context, oid int64, payment *dto.Payment) error {
+func (ms *MYSQLStore) Acquire(ctx context.Context, oid int32, payment *dto.Payment) error {
 
 	return ms.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
 		// Validate order
@@ -53,7 +53,7 @@ func (ms *MYSQLStore) Acquire(ctx context.Context, oid int64, payment *dto.Payme
 
 }
 
-func (ms *MYSQLStore) ValidateOrder(ctx context.Context, oid int64) (bool, error) {
+func (ms *MYSQLStore) ValidateOrder(ctx context.Context, oid int32) (bool, error) {
 	// Query to get all order items for the given order id`
 	rows, err := ms.db.QueryContext(ctx, `
 		SELECT oi.product_id, oi.quantity, oi.size, ps.XXS, ps.XS, ps.S, ps.M, ps.L, ps.XL, ps.XXL, ps.OS
