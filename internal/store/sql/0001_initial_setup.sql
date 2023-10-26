@@ -134,7 +134,7 @@ CREATE TABLE size_measurement (
     product_id INT NOT NULL,
     product_size_id INT NOT NULL,
     measurement_name_id INT NOT NULL,
-    measurement_value DECIMAL(1, 2) NOT NULL,
+    measurement_value DECIMAL(10, 2) NOT NULL,
     UNIQUE(product_id, product_size_id, measurement_name_id),
     FOREIGN KEY(product_size_id) REFERENCES product_size(id) ON DELETE CASCADE,
     FOREIGN KEY(measurement_name_id) REFERENCES measurement_name(id) ON DELETE CASCADE
