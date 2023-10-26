@@ -6,6 +6,7 @@ option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 
+
 service Auth {
     // Authenticate a user. Returns a JWT token if the user is authenticated.
     rpc Login (LoginRequest) returns (LoginResponse) {

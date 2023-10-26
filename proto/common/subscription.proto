@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package common;
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+
+// Subscriber represents the subscriber table
+message Subscriber {
+    int32 id = 1;
+    string name = 2;
+    string email = 3;
+    bool receive_promo_emails = 4;
+  }

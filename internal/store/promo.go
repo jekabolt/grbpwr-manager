@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 type promoStore struct {
@@ -19,56 +19,45 @@ func (ms *MYSQLStore) Promo() dependency.Promo {
 	}
 }
 
-func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *dto.PromoCode) error {
-	_, err := ms.DB().ExecContext(ctx, `
-		INSERT INTO promo_codes 
-		(code, free_shipping, sale, expiration, allowed) VALUES 
-		(?, ?, ?, ?, ?)`,
-		promo.Code, promo.FreeShipping, promo.Sale, promo.Expiration, promo.Allowed)
+func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
+	err := ExecNamed(ctx, ms.DB(), `INSERT INTO promo_codes (code, free_shipping, discount, expiration, allowed) VALUES
+		(:code, :freeShipping, :discount, :expiration, :allowed)`, map[string]any{
+		"code":         promo.Code,
+		"freeShipping": promo.FreeShipping,
+		"discount":     promo.Discount,
+		"expiration":   promo.Expiration,
+		"allowed":      promo.Allowed,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to insert promo code: %w", err)
+		return fmt.Errorf("failed to add promo code: %w", err)
 	}
 	return nil
 }
-func (ms *MYSQLStore) GetAllPromoCodes(ctx context.Context) ([]dto.PromoCode, error) {
-	rows, err := ms.DB().QueryContext(ctx,
-		`SELECT id, code, free_shipping, sale, expiration, allowed FROM promo_codes`)
+
+func (ms *MYSQLStore) ListPromos(ctx context.Context) ([]entity.PromoCode, error) {
+	query := `
+	SELECT * FROM promo_codes`
+	promos, err := QueryListNamed[entity.PromoCode](ctx, ms.DB(), query, map[string]interface{}{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get all promo codes: %w", err)
-	}
-	defer rows.Close()
-	promos := []dto.PromoCode{}
-	for rows.Next() {
-		promo := dto.PromoCode{}
-		err := rows.Scan(&promo.ID, &promo.Code, &promo.FreeShipping, &promo.Sale, &promo.Expiration, &promo.Allowed)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan promo: %w", err)
-		}
-		promos = append(promos, promo)
+		return nil, fmt.Errorf("can't get PromoCode list: %w", err)
 	}
 	return promos, nil
 }
+
 func (ms *MYSQLStore) DeletePromoCode(ctx context.Context, code string) error {
-	_, err := ms.DB().ExecContext(ctx, `DELETE FROM promo_codes WHERE code = ?`, code)
+	err := ExecNamed(ctx, ms.DB(), `DELETE FROM promo_codes WHERE code = :code`, map[string]any{
+		"code": code,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete promo code: %w", err)
 	}
 	return nil
 }
-func (ms *MYSQLStore) GetPromoByCode(ctx context.Context, code string) (*dto.PromoCode, error) {
-	row := ms.DB().QueryRowContext(ctx, `
-		SELECT id, code, free_shipping, sale, expiration, allowed 
-		FROM promo_codes WHERE code = ?`, code)
-	promo := dto.PromoCode{}
-	err := row.Scan(&promo.ID, &promo.Code, &promo.FreeShipping, &promo.Sale, &promo.Expiration, &promo.Allowed)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan promo: %w", err)
-	}
-	return &promo, nil
-}
 
 func (ms *MYSQLStore) DisablePromoCode(ctx context.Context, code string) error {
-	_, err := ms.DB().ExecContext(ctx, `UPDATE promo_codes SET allowed = FALSE WHERE code = ?`, code)
+	err := ExecNamed(ctx, ms.DB(), `UPDATE promo_codes SET allowed = false WHERE code = :code`, map[string]any{
+		"code": code,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to disable promo code: %w", err)
 	}

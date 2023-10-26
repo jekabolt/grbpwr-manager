@@ -5,17 +5,24 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Knetic/go-namedParameterQuery"
-	"github.com/blockloop/scan"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
+	"github.com/jmoiron/sqlx/reflectx"
 	"github.com/lib/pq"
 )
 
 type ltx struct {
 	*sqlx.Tx
+}
+type Tx struct {
+	*sql.Tx
+	driverName string
+	unsafe     bool
+	Mapper     *reflectx.Mapper
 }
 
 func (t ltx) BeginTxx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) {
@@ -29,6 +36,10 @@ type txDB interface {
 
 func (ms *MYSQLStore) DB() dependency.DB {
 	return ms.db
+}
+
+func (ms *MYSQLStore) Cache() dependency.Cache {
+	return ms.cache
 }
 
 // Tx starts transaction and executes the function passing to it Handler
@@ -142,17 +153,20 @@ func QueryListNamed[T any](
 		return nil, fmt.Errorf("in: %w", err)
 	}
 
-	rows, err := conn.QueryContext(ctx, query, args...)
+	rows, err := conn.QueryxContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query context: %w", err)
 	}
 	defer rows.Close()
 
 	var target []T
-	if err := scan.Rows(&target, rows); err != nil {
-		return nil, fmt.Errorf("struct scan: %w", err)
+	for rows.Next() {
+		var t T
+		if err := rows.StructScan(&t); err != nil {
+			return nil, fmt.Errorf("struct scan: %w", err)
+		}
+		target = append(target, t)
 	}
-
 	return target, nil
 }
 
@@ -166,20 +180,15 @@ func QueryNamedOne[T any](ctx context.Context, conn dependency.DB, query string,
 		return target, fmt.Errorf("sqlx in: %w", err)
 	}
 
-	rows, err := conn.QueryContext(ctx, query, args...)
-	if err != nil {
-		return target, fmt.Errorf("query context: %w", err)
+	row := conn.QueryRowxContext(ctx, query, args...)
+	if err := row.Err(); err != nil {
+		return target, fmt.Errorf("query row: %w", err)
 	}
-	defer rows.Close()
 
-	var results []T
-	if err := scan.Rows(&results, rows); err != nil {
-		return target, fmt.Errorf("scan rows: %w", err)
+	if err := row.StructScan(&target); err != nil {
+		return target, fmt.Errorf("struct scan: %w", err)
 	}
-	if len(results) == 0 {
-		return target, sql.ErrNoRows
-	}
-	return results[0], nil
+	return target, nil
 }
 
 func QueryCountNamed(
@@ -197,7 +206,7 @@ func QueryCountNamed(
 	}
 
 	var count int32
-	if err := conn.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := conn.QueryRowxContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("query row scan: %w", err)
 	}
 
@@ -223,4 +232,67 @@ func ExecNamed(
 	}
 
 	return nil
+}
+
+// BulkInsert performs a bulk insert operation
+func BulkInsert(ctx context.Context, conn dependency.DB, tableName string, rows []map[string]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Get the columns from the first map, assume all maps have the same columns
+	columns := make([]string, 0, len(rows[0]))
+	for column := range rows[0] {
+		columns = append(columns, column)
+	}
+
+	// Generate the placeholders for an INSERT query
+	valueStrings := make([]string, 0, len(rows))
+	values := make([]any, 0)
+	for _, row := range rows {
+		var placeholders []string
+		for _, column := range columns {
+			placeholders = append(placeholders, "?")
+			values = append(values, row[column])
+		}
+		valueStrings = append(valueStrings, "("+strings.Join(placeholders, ", ")+")")
+	}
+
+	// Create the full SQL query
+	query := fmt.Sprintf(
+		"INSERT INTO %s (%s) VALUES %s",
+		tableName,
+		strings.Join(columns, ", "),
+		strings.Join(valueStrings, ", "),
+	)
+
+	// Execute the query
+	_, err := conn.ExecContext(ctx, query, values...)
+	if err != nil {
+		return fmt.Errorf("BulkInsert failed: %w", err)
+	}
+
+	return nil
+}
+
+// nolint: interfacer
+func ExecNamedLastId(
+	ctx context.Context,
+	conn dependency.DB,
+	query string,
+	params map[string]any,
+) (int, error) {
+	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
+	queryNamed.SetValuesFromMap(params)
+	query, args, argsErr := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+	if argsErr != nil {
+		return 0, fmt.Errorf("sqlx In: %w", argsErr)
+	}
+	res, err := conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("ExecContext: %w", err)
+	}
+	lid, err := res.LastInsertId()
+
+	return int(lid), err
 }
