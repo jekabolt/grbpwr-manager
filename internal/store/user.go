@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 type adminStore struct {
@@ -76,37 +77,28 @@ func (as *adminStore) ChangePassword(ctx context.Context, un, newHash string) er
 
 // GetUserPasswordHash returns password hash of a user
 func (as *adminStore) PasswordHashByUsername(ctx context.Context, un string) (string, error) {
-	row := as.db.QueryRowContext(ctx, `
-	 	SELECT
-	 	password_hash
-	 	FROM admins WHERE username = ?`, un)
-	if row.Err() != nil {
-		return "", fmt.Errorf("not found %v", row.Err().Error())
-	}
-	var pw string
-	err := row.Scan(&pw)
+	query := `
+	SELECT
+		*
+	FROM admins WHERE username = :username`
+	adm, err := QueryNamedOne[entity.Admins](ctx, as.db, query, map[string]any{"username": un})
 	if err != nil {
-		return "", fmt.Errorf("failed to scan password")
+		return "", fmt.Errorf("failed to get password hash %w", err)
 	}
-	return pw, nil
+	return adm.PasswordHash, nil
 }
 
 // GetUserByUsername returns user by username
 func (as *adminStore) GetAdminByUsername(ctx context.Context, un string) (*dto.Admin, error) {
-	row := as.db.QueryRowContext(ctx, `
-		SELECT
+	query := `
+	SELECT
 		id,
 		username,
 		password_hash
-		FROM admins WHERE username = ?`, un)
-	if row.Err() != nil {
-		return nil, fmt.Errorf("not found %v", row.Err().Error())
-	}
-
-	var admin dto.Admin
-	err := row.Scan(&admin.ID, &admin.Username, &admin.PasswordHash)
+	FROM admins WHERE username = :username`
+	admin, err := QueryNamedOne[dto.Admin](ctx, as.db, query, map[string]any{"username": un})
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan admin")
+		return nil, fmt.Errorf("failed to get admin")
 	}
 	return &admin, nil
 }

@@ -4,12 +4,27 @@ package admin;
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
 
 import "google/api/annotations.proto";
-import "common/common.proto";
+import "common/media.proto";
+import "common/product.proto";
+import "common/filter.proto";
+import "common/order.proto";
+import "common/promo.proto";
+import "common/dict.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
 
 
 service AdminService {
+
+    // KEY VALUE DICTIONARY
+
+    rpc GetDictionary (GetDictionaryRequest) returns (GetDictionaryResponse) {
+      option (google.api.http) = {
+        get: "/api/admin/dictionary"
+      };
+    }
   
     // bucket manager 
 
@@ -43,25 +58,8 @@ service AdminService {
       };
     }
 
-    rpc RefundOrder (RefundOrderRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/order/refund/{order_id}"
-          body: "*"
-        };
-    }
 
-    rpc UpdateShippingInfo (UpdateShippingInfoRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/shipping/update"
-          body: "*"
-        };
-    }
-
-    rpc GetOrdersByStatus (GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
-        option (google.api.http) = {
-          get: "/api/admin/orders/{status}"
-        };
-    }
+    // proucts manager
 
     rpc AddProduct (AddProductRequest) returns (AddProductResponse) {
         option (google.api.http) = {
@@ -70,84 +68,226 @@ service AdminService {
         };
     }
 
-    rpc UpdateName (UpdateNameRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/name/{product_id}"
-          body: "*"
-        };
+    rpc GetProductsPaged (GetProductsPagedRequest) returns (GetProductsPagedResponse) {
+      option (google.api.http) = {
+          get: "/api/admin/product/paged/{limit}/{offset}/{orderFactor}"
+      };
     }
 
-    rpc UpdateDescription (UpdateDescriptionRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/description/{product_id}"
-          body: "*"
-        };
+    rpc GetProductByID (GetProductByIDRequest) returns (GetProductByIDResponse) {
+      option (google.api.http) = {
+          get: "/api/admin/product/{id}"
+      };
     }
 
-    rpc UpdatePreorder (UpdatePreorderRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/preorder/{product_id}"
-          body: "*"
-        };
+    rpc DeleteProductByID (DeleteProductByIDRequest) returns (DeleteProductByIDResponse) {
+      option (google.api.http) = {
+          delete: "/api/admin/product/{id}"
+      };
     }
 
-    rpc UpdatePrice (UpdatePriceRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/price/{product_id}"
+    rpc HideProductByID (HideProductByIDRequest) returns (HideProductByIDResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{id}/hide"
           body: "*"
-        };
+      };
     }
 
-    rpc UpdateSizes (UpdateSizesRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/sizes/{product_id}"
+    rpc SetSaleByID (SetSaleByIDRequest) returns (SetSaleByIDResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{id}/set/sale"
           body: "*"
-        };
+      };
     }
 
-    rpc UpdateCategories (UpdateCategoriesRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/categories/{product_id}"
+    rpc ReduceStockForProductSizes (ReduceStockForProductSizesRequest) returns (ReduceStockForProductSizesResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/reducestock"
           body: "*"
-        };
+      };
     }
 
-    rpc UpdateMedia (UpdateMediaRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/update/media/{product_id}"
+    rpc RestoreStockForProductSizes (RestoreStockForProductSizesRequest) returns (RestoreStockForProductSizesResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/restorestock"
           body: "*"
-        };
+      };
     }
 
-    rpc DeleteProduct (DeleteProductRequest) returns (DeleteProductResponse) {
-        option (google.api.http) = {
-          delete: "/api/admin/product/delete/{product_id}"
-        };
+    rpc UpdateProductPreorder (UpdateProductPreorderRequest) returns (UpdateProductPreorderResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatepreorder"
+          body: "*"
+      };
     }
 
-    rpc HideProduct (HideProductRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/hide/{product_id}"
+    rpc UpdateProductName (UpdateProductNameRequest) returns (UpdateProductNameResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatename"
           body: "*"
-        };
+      };
     }
 
-    rpc SetSaleByID (SetSaleByIDRequest) returns (google.protobuf.Empty) {
-        option (google.api.http) = {
-          post: "/api/admin/product/sale/{product_id}/{sale}"
+    rpc UpdateProductSKU (UpdateProductSKURequest) returns (UpdateProductSKUResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updateSKU"
           body: "*"
-        };
+      };
+    }
+  
+  
+    rpc UpdateProductColorAndColorHex (UpdateProductColorAndColorHexRequest) returns (UpdateProductColorAndColorHexResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatecolor"
+          body: "*"
+      };
     }
 
-    rpc SetHero (SetHeroRequest) returns (SetHeroResponse) {
-        option (google.api.http) = {
-          post: "/api/admin/hero/set"
+    rpc UpdateProductCountryOfOrigin (UpdateProductCountryOfOriginRequest) returns (UpdateProductCountryOfOriginResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatecountry"
           body: "*"
-        };
+      };
     }
+
+    rpc UpdateProductBrand (UpdateProductBrandRequest) returns (UpdateProductBrandResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatebrand"
+          body: "*"
+      };
+    }
+  
+    rpc UpdateProductTargetGender (UpdateProductTargetGenderRequest) returns (UpdateProductTargetGenderResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updategender"
+          body: "*"
+      };
+    }
+
+    rpc UpdateProductThumbnail (UpdateProductThumbnailRequest) returns (UpdateProductThumbnailResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatethumbnail"
+          body: "*"
+      };
+    }
+
+    rpc UpdateProductPrice (UpdateProductPriceRequest) returns (UpdateProductPriceResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updateprice"
+          body: "*"
+      };
+    }
+
+    rpc UpdateProductSale (UpdateProductSaleRequest) returns (UpdateProductSaleResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatesale"
+          body: "*"
+      };
+    }
+    
+    rpc UpdateProductCategory (UpdateProductCategoryRequest) returns (UpdateProductCategoryResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatecategory"
+          body: "*"
+      };
+    }
+    
+    rpc UpdateProductDescription (UpdateProductDescriptionRequest) returns (UpdateProductDescriptionResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productID}/updatedescription"
+          body: "*"
+      };
+    }
+
+    rpc DeleteProductMeasurement (DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
+      option (google.api.http) = {
+          delete: "/api/admin/product/measurement/{id}/delete"
+      };
+    }
+    
+
+    rpc AddProductMeasurement (AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/measurement/add"
+          body: "*"
+      };
+    }
+
+    rpc UpdateProductSizeStock (UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productId}/size/{sizeId}/updatestock"
+          body: "*"
+      };
+    }
+    
+
+    rpc DeleteProductMedia (DeleteProductMediaRequest) returns (DeleteProductMediaResponse) {
+      option (google.api.http) = {
+          delete: "/api/admin/product/media/{productMediaId}/delete"
+      };
+    }
+    
+    rpc AddProductMedia (AddProductMediaRequest) returns (AddProductMediaResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productId}/media/add"
+          body: "*"
+      };
+    }
+    
+    rpc AddProductTag (AddProductTagRequest) returns (AddProductTagResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/product/{productId}/tag/add"
+          body: "*"
+      };
+    }
+    
+    rpc DeleteProductTag (DeleteProductTagRequest) returns (DeleteProductTagResponse) {
+      option (google.api.http) = {
+          delete: "/api/admin/product/{productId}/tag/{tag}/delete"
+      };
+    }
+
+    // Promo manager
+
+    rpc AddPromo (AddPromoRequest) returns (AddPromoResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/promo/add"
+          body: "*"
+      };
+    }
+
+    rpc ListPromos (ListPromosRequest) returns (ListPromosResponse) {
+      option (google.api.http) = {
+          get: "/api/admin/promo/list"
+      };
+    }
+
+    rpc DeletePromoCode (DeletePromoCodeRequest) returns (DeletePromoCodeResponse) {
+      option (google.api.http) = {
+          delete: "/api/admin/promo/{code}/delete"
+      };
+    }
+
+    rpc DisablePromoCode (DisablePromoCodeRequest) returns (DisablePromoCodeResponse) {
+      option (google.api.http) = {
+          post: "/api/admin/promo/{code}/disable"
+          body: "*"
+      };
+    }
+    
 }
 
-// Request and Response messages for bucket storage
+// DICITONARY
+
+message GetDictionaryRequest {
+}
+
+message GetDictionaryResponse {
+  common.Dictionary dictionary = 1;
+}
+
+// MEDIA MANAGER
+
 message UploadContentImageRequest {
   string raw_b64_image = 1;
   string folder = 2;
@@ -161,15 +301,8 @@ message UploadContentVideoRequest {
   string content_type = 4;
 }
 
-message DeleteFromBucketRequest {
-  repeated string object_keys = 1;
-}
-
-message DeleteFromBucketResponse {
-}
 
 message ListObjectsRequest {
-  // Add fields for filtering if needed
 }
 
 message ListObjectsResponse {
@@ -177,140 +310,265 @@ message ListObjectsResponse {
 }
 
 
-
-message RefundOrderRequest {
-    // order id
-    int32 order_id = 1;
+message DeleteFromBucketRequest {
+  repeated string object_keys = 1;
 }
 
-
-message UpdateShippingInfoRequest {
-    // order id
-    int32 order_id = 1;
-    // carrier name
-    string carrier = 2;
-    // tracking code
-    string trackingCode = 3;
-    // shipping time
-    google.protobuf.Timestamp shippingTime = 4; 
+message DeleteFromBucketResponse {
 }
 
-message UpdateShippingInfoResponse {
-
-}
-
-message GetOrdersByStatusRequest {
-    common.OrderStatus status = 1;
-}
-
-message GetOrdersByStatusResponse {
-  repeated common.Order orders = 1;
-}
+// PRODUCTS MANAGER
 
 message AddProductRequest {
-  // Product name
-  string name = 1;
-  // Product description
-  string description = 2;  
-  // preorder text 
-  string preorder = 3;
-  // Product price
-  common.Price price = 4; 
-  // Available sizes
-  common.Size available_sizes = 5;
-  // Product categories
-  repeated string categories = 6;
-  // Medias of the product
-  repeated common.Media product_media = 7; 
+  common.ProductNew product = 1;
 }
 
 message AddProductResponse {
-    // product id
-    int32 product_id = 1;
+  common.ProductFull product = 1;
 }
 
-
-message UpdateNameRequest {
-    // product id
-    int32 product_id = 1;
-    // product name
-    string name = 2;
-}
-message UpdateDescriptionRequest {
-    // product id
-    int32 product_id = 1;
-    // product description
-    string description = 2;
-}
-message UpdatePreorderRequest {
-    // product id
-    int32 product_id = 1;
-    // product preorder
-    string preorder = 2;
-}
-message UpdatePriceRequest {
-    // product id
-    int32 product_id = 1;
-    // product price
-    common.Price price = 2;
-}
-message UpdateSizesRequest {
-    // product id
-    int32 product_id = 1;
-    // product sizes
-    common.Size available_sizes = 2;
-}
-message UpdateCategoriesRequest {
-    // product id
-    int32 product_id = 1;
-    // product categories
-    repeated string categories = 2;
-}
-message UpdateMediaRequest {
-    // product id
-    int32 product_id = 1;
-    // product media
-    repeated common.Media product_media = 2;
+message GetProductsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  repeated common.SortFactor sortFactors = 3;
+  common.OrderFactor orderFactor = 4;
+  common.FilterConditions filterConditions = 5;
+  bool showHidden = 6;
 }
 
-
-message DeleteProductRequest {
-    // product id
-    int32 product_id = 1;
+message GetProductsPagedResponse {
+  repeated common.Product products = 1;
 }
 
-message DeleteProductResponse {
-
+message GetProductByIDRequest {
+  int32 id = 1;
 }
 
-message HideProductRequest {
-    // product id
-    int32 product_id = 1;
-    bool hide = 2;
+message GetProductByIDResponse {
+  common.ProductFull product = 1;
 }
 
-message HideProductResponse {
+message DeleteProductByIDRequest {
+  int32 id = 1;
+}
 
+message DeleteProductByIDResponse {
+}
+
+message HideProductByIDRequest {
+  int32 id = 1;
+  bool hide = 2;
+}
+
+message HideProductByIDResponse {
 }
 
 message SetSaleByIDRequest {
-    // product id
-    int32 product_id = 1;
-    // sale percent e.g 1 = 1%; 10 = 10%
-    int32 sale = 2;
+  int32 id = 1;
+  string salePercent = 2;
 }
 
 message SetSaleByIDResponse {
-
 }
 
-message SetHeroRequest {
-
+message ReduceStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
 }
 
-message SetHeroResponse {
+message ReduceStockForProductSizesResponse {
+}
+
+message RestoreStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
+}
+
+message RestoreStockForProductSizesResponse {
+}
+
+message UpdateProductPreorderRequest {
+  int32 productID = 1;
+  string preorder = 2;
+}
+
+message UpdateProductPreorderResponse {
+}
+
+message UpdateProductNameRequest {
+  int32 productID = 1;
+  string name = 2;
+}
+
+message UpdateProductNameResponse {
+}
+
+message UpdateProductSKURequest {
+  int32 productID = 1;
+  string sku = 2;
+}
+
+message UpdateProductSKUResponse {
+}
+
+message UpdateProductColorAndColorHexRequest {
+  int32 productID = 1;
+  string color = 2;
+  string colorHex = 3;
+}
+
+message UpdateProductColorAndColorHexResponse {
+}
+
+message UpdateProductCountryOfOriginRequest {
+  int32 productID = 1;
+  string countryOfOrigin = 2;
+}
+
+message UpdateProductCountryOfOriginResponse {
+}
+
+message UpdateProductBrandRequest {
+  int32 productID = 1;
+  string brand = 2;
+}
+
+message UpdateProductBrandResponse {
+}
+
+message UpdateProductTargetGenderRequest {
+  int32 productID = 1;
+  common.GenderEnum gender = 2;
+}
+
+message UpdateProductTargetGenderResponse {
+}
+
+message UpdateProductThumbnailRequest {
+  int32 productID = 1;
+  string thumbnail = 2;
+}
+
+message UpdateProductThumbnailResponse {
+}
+
+message UpdateProductPriceRequest {
+  int32 productID = 1;
+  string price = 2;
+}
+
+message UpdateProductPriceResponse {
+}
+
+message UpdateProductSaleRequest {
+  int32 productID = 1;
+  string sale = 2;
+}
+
+message UpdateProductSaleResponse {
+}
+
+message UpdateProductCategoryRequest {
+  int32 productID = 1;
+  int32 categoryID = 2;
+}
+
+message UpdateProductCategoryResponse {
+}
+
+message UpdateProductDescriptionRequest {
+  int32 productID = 1;
+  string description = 2;
+}
+
+message UpdateProductDescriptionResponse {
+}
+
+message DeleteProductMeasurementRequest {
+  int32 id = 1;
+}
+
+message DeleteProductMeasurementResponse {
+}
+
+message AddProductMeasurementRequest {
+  int32 productId = 1;
+  int32 sizeId = 2;
+  int32 measurementNameId = 3;
+  string measurementValue = 4;
+}
+
+message AddProductMeasurementResponse {
+}
+
+message UpdateProductSizeStockRequest {
+  int32 productId = 1;
+  int32 sizeId = 2;
+  int32 quantity = 3;
+}
+
+message UpdateProductSizeStockResponse {
+}
+
+message DeleteProductMediaRequest {
+  int32 productMediaId = 1;
+}
+
+message DeleteProductMediaResponse {
+}
+
+
+message AddProductMediaRequest {
+  int32 productId = 1;
+  string fullSize = 2;
+  string thumbnail = 3;
+  string compressed = 4;
+}
+
+message AddProductMediaResponse {
+}
+
+message AddProductTagRequest {
+  int32 productId = 1;
+  string tag = 2;
+}
+
+message AddProductTagResponse {
+}
+
+message DeleteProductTagRequest {
+  int32 productId = 1;
+  string tag = 2;
+}
+
+message DeleteProductTagResponse {
+}
+
+// PROMO MANAGER
+
+message AddPromoRequest {
+  common.PromoCodeInsert promo = 1;
+}
+message AddPromoResponse {
+}
+
+message ListPromosRequest {
 
 }
-        
+message ListPromosResponse {
+  repeated common.PromoCode promoCodes = 1;
+}
 
 
+message DeletePromoCodeRequest {
+  string code = 1;
+}
+message DeletePromoCodeResponse {
+  
+}
+
+
+message DisablePromoCodeRequest {
+  string code = 1;
+}
+message DisablePromoCodeResponse {
+  
+}

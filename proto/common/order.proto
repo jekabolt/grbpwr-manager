@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package common;
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+import "google/protobuf/timestamp.proto";
+
+message Order {
+    int32 id = 1;
+    int32 buyer_id = 2;
+    google.protobuf.Timestamp placed = 3;
+    google.protobuf.Timestamp modified = 4;
+    int32 payment_id = 5;
+    string total_price = 6; // Using string to represent decimal.Decimal
+    int32 order_status_id = 7;
+    int32 shipment_id = 8;
+    int32 promo_id = 9;
+}
+
+message OrderItem {
+    int32 id = 1;
+    int32 order_id = 2;
+    int32 product_id = 3;
+    int32 quantity = 4;
+    int32 size_id = 5;
+}
+
+enum OrderStatusEnum {
+    UNKNOWN = 0;
+    PLACED = 1;
+    CONFIRMED = 2;
+    SHIPPED = 3;
+    DELIVERED = 4;
+    CANCELLED = 5;
+    REFUNDED = 6;
+}
+
+message OrderStatus {
+    int32 id = 1;
+    OrderStatusEnum name = 2;
+}

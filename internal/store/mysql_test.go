@@ -17,34 +17,55 @@ func newTestDB(t *testing.T) *MYSQLStore {
 
 	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_images")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_tag")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_categories")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_media")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_sizes")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_prices")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM promo_code")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM shipment_carrier")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM payment")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM size_measurement")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM address where id > 1")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_size")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM buyer")
-	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM shipment")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM products")
-	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM order_item")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM promo_codes")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM customer_order")
 	assert.NoError(t, err)
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM orders")
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM payment")
 	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM buyer")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM address")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM subscriber")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero")
+	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM admins")
 	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 	assert.NoError(t, err)
 
