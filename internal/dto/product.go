@@ -1,119 +1,239 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
-	"time"
+	"strings"
 
-	common_pb "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type Product struct {
-	ProductInfo    *ProductInfo
-	Price          *Price
-	AvailableSizes *Size
-	Categories     []Category
-	Media          []Media
-}
-
-type ProductInfo struct {
-	Id          int32     `db:"id"`
-	Created     time.Time `db:"created_at"`
-	Name        string    `db:"name"`
-	Preorder    string    `db:"preorder"`
-	Description string    `db:"description"`
-	Hidden      bool      `db:"hidden"`
-}
-
-type Price struct {
-	Id        int32           `db:"id"`
-	ProductID int32           `db:"product_id"`
-	USD       decimal.Decimal `db:"USD"`
-	EUR       decimal.Decimal `db:"EUR"`
-	USDC      decimal.Decimal `db:"USDC"`
-	ETH       decimal.Decimal `db:"ETH"`
-	Sale      decimal.Decimal `db:"sale"`
-}
-
-type Media struct {
-	Id         int32  `db:"id"`
-	ProductID  int32  `db:"product_id"`
-	FullSize   string `db:"full_size"`
-	Thumbnail  string `db:"thumbnail"`
-	Compressed string `db:"compressed"`
-}
-
-type Size struct {
-	Id        int32 `db:"id"`
-	ProductID int32 `db:"product_id"`
-	XXS       int   `db:"XXS"`
-	XS        int   `db:"XS"`
-	S         int   `db:"S"`
-	M         int   `db:"M"`
-	L         int   `db:"L"`
-	XL        int   `db:"XL"`
-	XXL       int   `db:"XXL"`
-	OS        int   `db:"OS"`
-}
-
-type Category struct {
-	Id        int32  `db:"id"`
-	ProductID int32  `db:"product_id"`
-	Category  string `db:"category"`
-}
-
-func ConvertProtoSize(size *common_pb.Size) *Size {
-	return &Size{
-		XXS: int(size.Xxs),
-		XS:  int(size.Xs),
-		S:   int(size.S),
-		M:   int(size.M),
-		L:   int(size.L),
-		XL:  int(size.Xl),
-		XXL: int(size.Xxl),
-		OS:  int(size.Os),
+func ConvertPbGenderEnumToEntityGenderEnum(pbGenderEnum pb_common.GenderEnum) (entity.GenderEnum, error) {
+	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(pbGenderEnum))]
+	if !ok {
+		return "", fmt.Errorf("bad target gender")
 	}
+	return entity.GenderEnum(tg), nil
 }
 
-func ConvertProtoPrice(size *common_pb.Price) (*Price, error) {
-	USD, err := decimal.NewFromString(size.Usd)
+func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
+	if pbProductNew == nil {
+		return nil, fmt.Errorf("input pbProductNew is nil")
+	}
+
+	// Convert ProductInsert
+	price, err := decimal.NewFromString(pbProductNew.Product.Price)
 	if err != nil {
-		return nil, fmt.Errorf("could not convert USD price: %w", err)
+		return nil, err
 	}
-	EUR, err := decimal.NewFromString(size.Eur)
+	salePercentage, err := decimal.NewFromString(pbProductNew.Product.SalePercentage)
 	if err != nil {
-		return nil, fmt.Errorf("could not convert EUR price: %w", err)
+		return nil, err
 	}
-	USDC, err := decimal.NewFromString(size.Usdc)
-	if err != nil {
-		return nil, fmt.Errorf("could not convert USDC price: %w", err)
-	}
-	ETH, err := decimal.NewFromString(size.Eth)
-	if err != nil {
-		return nil, fmt.Errorf("could not convert ETH price: %w", err)
-	}
-	Sale, err := decimal.NewFromString(size.Sale)
-	if err != nil {
-		return nil, fmt.Errorf("could not convert Sale price: %w", err)
+	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(pbProductNew.Product.TargetGender))]
+	if !ok {
+		return nil, fmt.Errorf("bad target gender")
 	}
 
-	return &Price{
-		USD:  USD,
-		EUR:  EUR,
-		USDC: USDC,
-		ETH:  ETH,
-		Sale: Sale,
+	productInsert := &entity.ProductInsert{
+		Preorder:        sql.NullString{String: pbProductNew.Product.Preorder, Valid: pbProductNew.Product.Preorder != ""},
+		Name:            pbProductNew.Product.Name,
+		Brand:           pbProductNew.Product.Brand,
+		SKU:             pbProductNew.Product.Sku,
+		Color:           pbProductNew.Product.Color,
+		ColorHex:        pbProductNew.Product.ColorHex,
+		CountryOfOrigin: pbProductNew.Product.CountryOfOrigin,
+		Thumbnail:       pbProductNew.Product.Thumbnail,
+		Price:           price,
+		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.Product.SalePercentage != ""},
+		CategoryID:      int(pbProductNew.Product.CategoryId),
+		Description:     pbProductNew.Product.Description,
+		Hidden:          sql.NullBool{Bool: pbProductNew.Product.Hidden, Valid: true},
+		TargetGender:    entity.GenderEnum(tg),
+	}
+
+	// Convert SizeMeasurements
+	var sizeMeasurements []entity.SizeWithMeasurementInsert
+	for _, pbSizeMeasurement := range pbProductNew.SizeMeasurements {
+		quantity, err := decimal.NewFromString(pbSizeMeasurement.ProductSize.Quantity)
+		if err != nil {
+			return nil, err
+		}
+
+		productSize := &entity.ProductSizeInsert{
+			Quantity: quantity,
+			SizeID:   int(pbSizeMeasurement.ProductSize.SizeId),
+		}
+
+		var measurements []entity.ProductMeasurementInsert
+		for _, pbMeasurement := range pbSizeMeasurement.Measurements {
+			measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue)
+			if err != nil {
+				return nil, err
+			}
+
+			measurement := entity.ProductMeasurementInsert{
+				MeasurementNameID: int(pbMeasurement.MeasurementNameId),
+				MeasurementValue:  measurementValue,
+			}
+
+			measurements = append(measurements, measurement)
+		}
+
+		sizeMeasurement := entity.SizeWithMeasurementInsert{
+			ProductSize:  *productSize,
+			Measurements: measurements,
+		}
+
+		sizeMeasurements = append(sizeMeasurements, sizeMeasurement)
+	}
+
+	// Convert Media
+	var media []entity.ProductMediaInsert
+	for _, pbMedia := range pbProductNew.Media {
+		mediaInsert := entity.ProductMediaInsert{
+			FullSize:   pbMedia.FullSize,
+			Thumbnail:  pbMedia.Thumbnail,
+			Compressed: pbMedia.Compressed,
+		}
+		media = append(media, mediaInsert)
+	}
+
+	// Convert Tags
+	var tags []entity.ProductTagInsert
+	for _, pbTag := range pbProductNew.Tags {
+		tagInsert := entity.ProductTagInsert{
+			Tag: pbTag.Tag,
+		}
+		tags = append(tags, tagInsert)
+	}
+
+	return &entity.ProductNew{
+		Product:          productInsert,
+		SizeMeasurements: sizeMeasurements,
+		Media:            media,
+		Tags:             tags,
 	}, nil
 }
 
-func ConvertProtoMediaArray(media []*common_pb.Media) []Media {
-	var dtoMedia []Media
-	for _, media := range media {
-		dtoMedia = append(dtoMedia, Media{
-			FullSize:   media.FullSize,
-			Thumbnail:  media.Thumbnail,
-			Compressed: media.Compressed,
+func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, error) {
+	if e == nil {
+		return nil, nil
+	}
+	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(e.Product.TargetGender))]
+	if !ok {
+		return nil, fmt.Errorf("bad target gender")
+	}
+
+	pbProductInsert := &pb_common.ProductInsert{
+		Preorder:        e.Product.Preorder.String,
+		Name:            e.Product.Name,
+		Brand:           e.Product.Brand,
+		Sku:             e.Product.SKU,
+		Color:           e.Product.Color,
+		ColorHex:        e.Product.ColorHex,
+		CountryOfOrigin: e.Product.CountryOfOrigin,
+		Thumbnail:       e.Product.Thumbnail,
+		Price:           e.Product.Price.String(),
+		SalePercentage:  e.Product.SalePercentage.Decimal.String(),
+		CategoryId:      int32(e.Product.CategoryID),
+		Description:     e.Product.Description,
+		Hidden:          e.Product.Hidden.Bool,
+		TargetGender:    pb_common.GenderEnum(tg),
+	}
+
+	pbProduct := &pb_common.Product{
+		Id:            int32(e.Product.ID),
+		CreatedAt:     timestamppb.New(e.Product.CreatedAt),
+		UpdatedAt:     timestamppb.New(e.Product.UpdatedAt),
+		ProductInsert: pbProductInsert,
+	}
+
+	var pbSizes []*pb_common.ProductSize
+	for _, size := range e.Sizes {
+		pbSizes = append(pbSizes, &pb_common.ProductSize{
+			Id:        int32(size.ID),
+			Quantity:  size.Quantity.String(),
+			ProductId: int32(size.ProductID),
+			SizeId:    int32(size.SizeID),
 		})
 	}
-	return dtoMedia
+
+	var pbMeasurements []*pb_common.ProductMeasurement
+	for _, measurement := range e.Measurements {
+		pbMeasurements = append(pbMeasurements, &pb_common.ProductMeasurement{
+			Id:                int32(measurement.ID),
+			ProductId:         int32(measurement.ProductID),
+			ProductSizeId:     int32(measurement.ProductSizeID),
+			MeasurementNameId: int32(measurement.MeasurementNameID),
+			MeasurementValue:  measurement.MeasurementValue.String(),
+		})
+	}
+
+	var pbMedia []*pb_common.ProductMedia
+	for _, media := range e.Media {
+
+		pbMedia = append(pbMedia, &pb_common.ProductMedia{
+			Id:        int32(media.ID),
+			CreatedAt: timestamppb.New(media.CreatedAt),
+			ProductId: int32(media.ProductID),
+			ProductMediaInsert: &pb_common.ProductMediaInsert{
+				FullSize:   media.FullSize,
+				Thumbnail:  media.Thumbnail,
+				Compressed: media.Compressed,
+			},
+		})
+	}
+
+	var pbTags []*pb_common.ProductTag
+	for _, tag := range e.Tags {
+		pbTags = append(pbTags, &pb_common.ProductTag{
+			Id: int32(tag.ID),
+			ProductTagInsert: &pb_common.ProductTagInsert{
+				Tag: tag.Tag,
+			},
+		})
+	}
+
+	return &pb_common.ProductFull{
+		Product:      pbProduct,
+		Sizes:        pbSizes,
+		Measurements: pbMeasurements,
+		Media:        pbMedia,
+		Tags:         pbTags,
+	}, nil
+}
+
+// ConvertEntityProductToPb converts entity.Product to pb_common.Product
+func ConvertEntityProductToPb(entityProduct *entity.Product) (*pb_common.Product, error) {
+	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(entityProduct.TargetGender))]
+	if !ok {
+		return nil, fmt.Errorf("bad target gender")
+	}
+	pbProduct := &pb_common.Product{
+		Id:        int32(entityProduct.ID),
+		CreatedAt: timestamppb.New(entityProduct.CreatedAt),
+		UpdatedAt: timestamppb.New(entityProduct.UpdatedAt),
+		ProductInsert: &pb_common.ProductInsert{
+			Preorder:        entityProduct.Preorder.String,
+			Name:            entityProduct.Name,
+			Brand:           entityProduct.Brand,
+			Sku:             entityProduct.SKU,
+			Color:           entityProduct.Color,
+			ColorHex:        entityProduct.ColorHex,
+			CountryOfOrigin: entityProduct.CountryOfOrigin,
+			Thumbnail:       entityProduct.Thumbnail,
+			Price:           entityProduct.Price.String(),
+			SalePercentage:  entityProduct.SalePercentage.Decimal.String(),
+			CategoryId:      int32(entityProduct.CategoryID),
+			Description:     entityProduct.Description,
+			Hidden:          entityProduct.Hidden.Bool,
+			TargetGender:    pb_common.GenderEnum(tg),
+		},
+	}
+
+	return pbProduct, nil
 }

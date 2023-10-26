@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
+	"golang.org/x/exp/slog"
 
 	_ "github.com/golang-migrate/migrate/v4/database/mysql"
 )
@@ -31,6 +31,8 @@ type MYSQLStore struct {
 	txDB  txDB
 	ts    time.Time
 	close context.CancelFunc
+
+	cache dependency.Cache
 }
 
 const maxRetries = 5
@@ -42,15 +44,9 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("couldn't open database : %v", err)
 	}
-	if cfg.Automigrate {
-		log.Default().Printf("applying migrations")
-		if err := Migrate(d.Unsafe().DB); err != nil {
-			return nil, err
-		}
-	}
 
 	if cfg.Automigrate {
-		log.Default().Printf("applying migrations")
+		slog.Default().InfoCtx(ctx, "applying migrations")
 		if err := Migrate(d.Unsafe().DB); err != nil {
 			return nil, err
 		}
@@ -61,6 +57,14 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		db:    d,
 		close: c,
 	}
+
+	// cache initialization
+	ca, err := ss.initCache(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("can't init cache: %w", err)
+	}
+	ss.cache = ca
+
 	go func() {
 		<-ctx.Done()
 		d.Close()
@@ -81,7 +85,10 @@ func Migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("db migrations have failed: %v", err)
 	}
-	log.Default().Printf("applied %d migrations", n)
+
+	slog.Default().Info("applied migrations",
+		slog.Int("count", n),
+	)
 	return nil
 }
 

@@ -3,12 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 )
 
@@ -23,780 +24,1104 @@ func (ms *MYSQLStore) Order() dependency.Order {
 	}
 }
 
-func (ms *MYSQLStore) CreateOrder(ctx context.Context, order *dto.Order) (*dto.Order, error) {
-	if !ms.InTx() {
-		return nil, fmt.Errorf("CreateOrder must be called from within transaction")
+func validateOrderItems(ctx context.Context, rep dependency.Repository, items []entity.OrderItem) error {
+	for _, item := range items {
+		query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
+		availableQuantity, err := QueryNamedOne[int](ctx, rep.DB(), query, map[string]interface{}{
+			"productId": item.ProductID,
+			"sizeId":    item.SizeID,
+		})
+		if err != nil {
+			return fmt.Errorf("error while getting available quantity: %w", err)
+		}
+
+		if availableQuantity < item.Quantity {
+			return fmt.Errorf("Insufficient quantity for Product ID %d, Size ID %d", item.ProductID, item.SizeID)
+		}
+	}
+	return nil
+}
+
+func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items []entity.OrderItem) (decimal.Decimal, error) {
+	var totalAmount decimal.Decimal
+
+	// Build the CASE WHEN part of the SQL query for each product to align the quantities
+	var caseStatements []string
+	for _, item := range items {
+		caseStatements = append(caseStatements, fmt.Sprintf("WHEN product.id = %d THEN %d", item.ProductID, item.Quantity))
 	}
 
-	baid, err := addAddress(ctx, ms, order.Buyer.BillingAddress)
-	if err != nil {
-		return nil, fmt.Errorf("addAddress billing  [%v]", err.Error())
-	}
-	order.Buyer.BillingAddress.ID = baid
+	caseSQL := strings.Join(caseStatements, " ")
 
-	said, err := addAddress(ctx, ms, order.Buyer.ShippingAddress)
+	// Build the SQL query
+	query := fmt.Sprintf(`
+		SELECT SUM((price * (1 - sale_percentage / 100)) * CASE %s END)
+		FROM product
+		WHERE id IN (%s)
+	`,
+		caseSQL,
+		strings.Join(strings.Fields(fmt.Sprint(items)), ","),
+	)
+	totalAmount, err := QueryNamedOne[decimal.Decimal](ctx, rep.DB(), query, map[string]interface{}{})
 	if err != nil {
-		return nil, fmt.Errorf("addAddress shipping [%v]", err.Error())
+		return decimal.Zero, fmt.Errorf("error while calculating total amount: %w", err)
 	}
-	order.Buyer.ShippingAddress.ID = said
 
-	pid, err := addPayment(ctx, ms, order.Payment)
-	if err != nil {
-		return nil, fmt.Errorf("addPayment [%v]", err.Error())
-	}
-	order.Payment.ID = pid
+	return totalAmount, nil
+}
 
-	bid, err := addBuyer(ctx, ms, order.Buyer)
-	if err != nil {
-		return nil, fmt.Errorf("addBuyer [%v]", err.Error())
-	}
-	order.Buyer.ID = bid
+func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAddress, billingAddress *entity.Address) (int, int, error) {
+	var shippingID, billingID int64
+	query := `
+		INSERT INTO address (street, house_number, apartment_number, city, state, country, postal_code) 
+		VALUES (:street, :house_number, :apartment_number, :city, :state, :country, :postal_code)`
 
-	sid, err := addShipment(ctx, ms, order.Shipment.Carrier)
-	if err != nil {
-		return nil, fmt.Errorf("addShipment [%v]", err.Error())
-	}
-	order.Shipment.ID = sid
+	if *shippingAddress == *billingAddress {
+		// If shipping and billing addresses are the same, insert only once
+		result, err := rep.DB().NamedExecContext(ctx, query, shippingAddress)
+		if err != nil {
+			return 0, 0, err
+		}
+		shippingID, err = result.LastInsertId()
+		if err != nil {
+			return 0, 0, err
+		}
+		billingID = shippingID
+	} else {
+		// If they are different, insert both
+		result, err := rep.DB().NamedExecContext(ctx, query, shippingAddress)
+		if err != nil {
+			return 0, 0, err
+		}
+		shippingID, err = result.LastInsertId()
+		if err != nil {
+			return 0, 0, err
+		}
 
-	err = addOrder(ctx, ms, order, bid, pid, sid)
-	if err != nil {
-		return nil, fmt.Errorf("addOrder [%v]", err.Error())
+		result, err = rep.DB().NamedExecContext(ctx, query, billingAddress)
+		if err != nil {
+			return 0, 0, err
+		}
+		billingID, err = result.LastInsertId()
+		if err != nil {
+			return 0, 0, err
+		}
 	}
+	return int(shippingID), int(billingID), nil
+}
+
+func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer) (int, error) {
+	var buyerID int
+	query := `
+	INSERT INTO buyer 
+	(first_name, last_name, email, phone, receive_promo_emails, billing_address_id, shipping_address_id)
+	VALUES (:first_name, :last_name, :email, :phone, :receive_promo_emails, :billing_address_id, :shipping_address_id)
+	`
+	result, err := rep.DB().NamedExecContext(ctx, query, b)
+	if err != nil {
+		return 0, err
+	}
+	lastID, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	buyerID = int(lastID)
+	return buyerID, nil
+}
+
+func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethod *entity.PaymentMethod) (int, error) {
+	// Check if the payment method ID exists
+	query :=
+		`SELECT EXISTS (SELECT 1 FROM payment_method WHERE id = :paymentMethodId)`
+
+	params := map[string]interface{}{
+		"paymentMethodId": paymentMethod.ID,
+	}
+
+	exists, err := QueryNamedOne[bool](ctx, rep.DB(), query, params)
+	if err != nil {
+		return 0, fmt.Errorf("can't get payment method by id: %w", err)
+	}
+	if !exists {
+		return 0, fmt.Errorf("payment method ID does not exist")
+	}
+
+	insertQuery := `
+		INSERT INTO payment (payment_method_id, transaction_amount, is_transaction_done)
+		VALUES (:paymentMethodId, 0, false);
+	`
+
+	paymentID, err := ExecNamedLastId(ctx, rep.DB(), insertQuery, params)
+	if err != nil {
+		return 0, fmt.Errorf("can't insert payment record: %w", err)
+	}
+
+	return paymentID, nil
+}
+
+func insertOrderItems(ctx context.Context, rep dependency.Repository, items []entity.OrderItem, orderID int) error {
+	if len(items) == 0 {
+		return fmt.Errorf("no order items to insert")
+	}
+	rows := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		row := map[string]any{
+			"order_id":   orderID,
+			"product_id": item.ProductID,
+			"quantity":   item.Quantity,
+			"size_id":    item.SizeID,
+		}
+		rows = append(rows, row)
+	}
+
+	return BulkInsert(ctx, rep.DB(), "order_item", rows)
+}
+
+func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.ShipmentCarrier) (int, error) {
+	query := `
+	INSERT INTO shipment (carrier_id)
+	VALUES (:carrierId)
+	`
+	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
+		"carrierId": sc.Carrier,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("can't insert shipment: %w", err)
+	}
+	return id, nil
+}
+
+func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.Order) (int, error) {
+	var err error
+	query := `
+	INSERT INTO order
+	 (buyer_id, placed, payment_id, shipment_id, total_price, order_status_id, promo_id)
+	 VALUES (:buyerId, :placed, :paymentId, :shipmentId, :totalPrice, :orderStatusId, :promoId)
+	 `
+	order.ID, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
+		"buyerId":       order.BuyerID,
+		"placed":        order.Placed,
+		"paymentId":     order.PaymentID,
+		"totalPrice":    order.TotalPrice,
+		"orderStatusId": order.OrderStatusID,
+		"promoId":       order.PromoID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("can't insert order: %w", err)
+	}
+	return order.ID, nil
+}
+
+// mergeOrderItems maps the order items by ProductID and SizeID
+func mergeOrderItems(items []entity.OrderItem) []entity.OrderItem {
+	// Create a map with a key as ProductID + SizeID and value as OrderItem
+	mappedItems := make(map[string]entity.OrderItem)
+
+	for _, item := range items {
+		// Create a unique key for each ProductID and SizeID combination
+		key := fmt.Sprintf("%d_%d", item.ProductID, item.SizeID)
+
+		// If this key exists, update the Quantity
+		if existingItem, exists := mappedItems[key]; exists {
+			existingItem.Quantity += item.Quantity
+			mappedItems[key] = existingItem
+		} else {
+			// Else add a new item to the map
+			mappedItems[key] = item
+		}
+	}
+
+	// Convert map values to a slice
+	var aggregatedItems []entity.OrderItem
+	for _, item := range mappedItems {
+		aggregatedItems = append(aggregatedItems, item)
+	}
+
+	return aggregatedItems
+}
+
+func (ms *MYSQLStore) CreateOrder(ctx context.Context,
+	items []entity.OrderItem,
+	shippingAddress *entity.Address,
+	billingAddress *entity.Address,
+	buyer *entity.Buyer,
+	paymentMethodId int,
+	shipmentCarrierId int,
+	promoCode string,
+) (*entity.Order, error) {
+
+	order := &entity.Order{}
+	ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
+		items = mergeOrderItems(items)
+
+		err := validateOrderItems(ctx, rep, items)
+		if err != nil {
+			return fmt.Errorf("error while validating order items: %w", err)
+		}
+
+		err = rep.Products().ReduceStockForProductSizes(ctx, items)
+		if err != nil {
+			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
+		}
+
+		prdIds := []int{}
+		for _, i := range items {
+			prdIds = append(prdIds, i.ProductID)
+		}
+
+		total, err := calculateTotalAmount(ctx, rep, items)
+		if err != nil {
+			return fmt.Errorf("error while calculating total amount: %w", err)
+		}
+
+		promo, ok := ms.cache.GetPromoByName(promoCode)
+		if !ok {
+			promo = entity.PromoCode{}
+		}
+		// check if promo is allowed and not expired
+		if !promo.Allowed && promo.Expiration < time.Now().Unix() {
+			promo = entity.PromoCode{}
+		}
+
+		shipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(shipmentCarrierId)
+		if !ok {
+			return fmt.Errorf("shipment carrier is not exists")
+		}
+
+		if !promo.FreeShipping {
+			total = total.Add(shipmentCarrier.Price)
+		}
+
+		shipmentId, err := insertShipment(ctx, rep, shipmentCarrier)
+		if err != nil {
+			return fmt.Errorf("error while inserting shipment: %w", err)
+		}
+
+		if !promo.Discount.Equals(decimal.Zero) {
+			total = total.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+		}
+
+		shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep, shippingAddress, billingAddress)
+		if err != nil {
+			return fmt.Errorf("error while inserting addresses: %w", err)
+		}
+
+		buyer.ShippingAddressID = shippingAddressId
+		buyer.BillingAddressID = billingAddressId
+		buyerID, err := insertBuyer(ctx, rep, buyer)
+		if err != nil {
+			return fmt.Errorf("error while inserting buyer: %w", err)
+		}
+
+		paymentMethod, ok := ms.cache.GetPaymentMethodByID(paymentMethodId)
+		if !ok {
+			return fmt.Errorf("payment method is not exists")
+		}
+
+		paymentID, err := insertPaymentRecord(ctx, rep, paymentMethod)
+		if err != nil {
+			return fmt.Errorf("error while inserting payment record: %w", err)
+		}
+
+		placed, _ := ms.cache.GetOrderStatusByName(entity.Placed)
+
+		order = &entity.Order{
+			BuyerID:       buyerID,
+			PaymentID:     paymentID,
+			TotalPrice:    total,
+			PromoID:       promo.ID,
+			ShipmentId:    shipmentId,
+			OrderStatusID: placed.ID,
+		}
+
+		orderId, err := insertOrder(ctx, rep, order)
+		if err != nil {
+			return fmt.Errorf("error while inserting final order: %w", err)
+		}
+		err = insertOrderItems(ctx, rep, items, orderId)
+		if err != nil {
+			return fmt.Errorf("error while inserting order items: %w", err)
+		}
+
+		return nil
+	})
 
 	return order, nil
 }
 
-func addPayment(ctx context.Context, rep dependency.Repository, payment *dto.Payment) (int64, error) {
-	if !rep.InTx() {
-		return 0, fmt.Errorf("addPayment must be called from within transaction")
-	}
-
-	// empty tx related fields
-	txid := ""
-	payer := ""
-	payee := ""
-	isTransactionDone := false
-
-	// Insert payment
-	res, err := rep.DB().ExecContext(ctx, `
-	INSERT INTO payment 
-	(
-		method_id,
-		currency_id,
-		currency_transaction_id,
-		transaction_amount,
-		payer,
-		payee,
-		is_transaction_done
-	) 
-    VALUES (
-		(SELECT id FROM payment_method WHERE method = ?), 
-		(SELECT id FROM payment_currency WHERE currency = ?),
-	 	?, ?, ?, ?, ?)`,
-		payment.Method, payment.Currency, txid, payment.TransactionAmount, payer, payee, isTransactionDone)
+func getOrderItems(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItem, error) {
+	query := `SELECT id, order_id, product_id, quantity, size_id FROM order_item WHERE order_id = :orderId`
+	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]any{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("can't get order items: %w", err)
 	}
-	paymentID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return paymentID, nil
+	return ois, nil
 }
 
-func addAddress(ctx context.Context, rep dependency.Repository, address *dto.Address) (int64, error) {
-	if !rep.InTx() {
-		return 0, fmt.Errorf("insertAddress must be called from within transaction")
-	}
-	res, err := rep.DB().ExecContext(ctx, `INSERT INTO address (street, house_number, apartment_number, city, state, country, postal_code) 
-	VALUES (?, ?, ?, ?, ?, ?, ?)`, address.Street, address.HouseNumber, address.ApartmentNumber, address.City, address.State, address.Country, address.PostalCode)
+func getOrderShipment(ctx context.Context, rep dependency.Repository, orderId int) (*entity.Shipment, error) {
+	query := `
+	SELECT 
+		s.id, s.created_at, s.updated_at, s.carrier_id, s.tracking_code, s.shipping_date, s.estimated_arrival_date 
+	FROM shipment s 
+	INNER JOIN customer_order co
+		ON s.id = o.shipment_id 
+	WHERE co.id = :orderId`
+
+	s, err := QueryNamedOne[entity.Shipment](ctx, rep.DB(), query, map[string]any{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("can't get order shipment: %w", err)
 	}
-	addressID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return addressID, nil
+	return &s, nil
 }
 
-func addBuyer(ctx context.Context, rep dependency.Repository, buyer *dto.Buyer) (int64, error) {
-	if !rep.InTx() {
-		return 0, fmt.Errorf("addBuyer must be called from within transaction")
-	}
-	res, err := rep.DB().ExecContext(ctx, `INSERT INTO buyer (first_name, last_name, email, phone, billing_address_id, shipping_address_id, receive_promo_emails) 
-	VALUES (?, ?, ?, ?, ?, ?, ?)`, buyer.FirstName, buyer.LastName, buyer.Email, buyer.Phone, buyer.BillingAddress.ID, buyer.ShippingAddress.ID, buyer.ReceivePromoEmails)
+func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, orderId int, promoId int) error {
+	query := `
+	UPDATE order
+	SET promo_id = :promoId,
+		total_price = :totalPrice
+	WHERE id = :orderId`
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("can't update order total promo: %w", err)
 	}
-	buyerID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return buyerID, nil
+	return nil
 }
 
-func addShipment(ctx context.Context, rep dependency.Repository, carrier string) (int64, error) {
-	if !rep.InTx() {
-		return 0, fmt.Errorf("addShipment must be called from within transaction")
-	}
-	res, err := rep.DB().ExecContext(ctx, `INSERT INTO shipment (carrier_id) 
-		VALUES ((SELECT id FROM shipment_carriers WHERE carrier = ?))`, carrier)
-	if err != nil {
-		return 0, err
-	}
+func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-	shipmentID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return shipmentID, nil
-}
-
-func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int32, promoCode string) error {
-	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		currency, err := rep.Order().GetOrderCurrency(ctx, orderId)
-		if err != nil {
-
-			return err
+		promo, ok := ms.cache.GetPromoByName(promoCode)
+		if !ok {
+			return fmt.Errorf("promo code is not valid")
 		}
-		promo, err := rep.Promo().GetPromoByCode(ctx, promoCode)
-		if err != nil {
-			// remove promo code from order if new promo code is invalid
-			_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderId, currency, nil)
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("failed to get promo code: %w", err)
+		if !promo.FreeShipping && promo.Discount.Equals(decimal.Zero) {
+			return fmt.Errorf("promo code is not valid")
 		}
 
-		if !promo.Allowed || promo.Expiration.Before(time.Now()) {
-			// remove promo code from order if new promo code is invalid
-			_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderId, currency, nil)
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("promo code is not allowed or expired")
-		}
-		res, err := rep.DB().ExecContext(ctx, `
-		UPDATE orders 
-		SET promo_id = ? 
-		WHERE id = ?`, promo.ID, orderId)
+		items, err := getOrderItems(ctx, rep, orderId)
 		if err != nil {
-			return err
-		}
-		rowsAffected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if rowsAffected == 0 {
-			return fmt.Errorf("no order found with id %d", orderId)
+			return fmt.Errorf("can't get order items: %w", err)
 		}
 
-		_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderId, currency, promo)
+		// total no promo
+		total, err := calculateTotalAmount(ctx, rep, items)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't get total order amount: %w", err)
+		}
+
+		shipment, err := getOrderShipment(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order shipment: %w", err)
+		}
+
+		shipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(shipment.CarrierID)
+		if err != nil {
+			return fmt.Errorf("error while getting shipment carrier by id: %w", err)
+		}
+
+		if !promo.FreeShipping {
+			total = total.Add(shipmentCarrier.Price)
+		}
+
+		total = total.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+
+		err = updateOrderTotalPromo(ctx, rep, int(orderId), promo.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order total promo: %w", err)
 		}
 
 		return nil
 	})
-}
-
-func (ms *MYSQLStore) GetOrderCurrency(ctx context.Context, orderId int32) (dto.PaymentCurrency, error) {
-	var currency string
-	err := ms.DB().QueryRowContext(ctx,
-		`SELECT pc.currency 
-			FROM orders o 
-			JOIN payment p 
-			ON o.payment_id = p.id 
-			JOIN payment_currency pc 
-			ON p.currency_id = pc.id 
-			WHERE o.id = ?`, orderId).Scan(&currency)
 	if err != nil {
-		return "", err
+		return decimal.Zero, fmt.Errorf("can't apply promo code: %w", err)
 	}
-	return dto.PaymentCurrency(currency), nil
-}
-
-func (ms *MYSQLStore) UpdateOrderTotalByCurrency(ctx context.Context,
-	orderId int32, pc dto.PaymentCurrency, promo *dto.PromoCode) (decimal.Decimal, error) {
-	if !ms.InTx() {
-		return decimal.Zero, fmt.Errorf("UpdateOrderTotalByCurrency must be called from within transaction")
-	}
-	if promo == nil {
-		promo = &dto.PromoCode{
-			Sale: decimal.Zero,
-		}
-	}
-
-	var itemsPrice decimal.Decimal
-	err := ms.DB().QueryRowContext(ctx, fmt.Sprintf(`
-	SELECT SUM(pp.%s * (100 - pp.sale) / 100 * oi.quantity)
-	FROM product_prices pp
-	JOIN order_item oi ON oi.product_id = pp.product_id
-	WHERE oi.order_id = ? AND pp.product_id IN (
-		SELECT product_id
-		FROM order_item
-		WHERE order_id = ?
-	)`, pc), orderId, orderId).Scan(&itemsPrice)
-	if err != nil {
-		return decimal.Zero, err
-	}
-
-	if !promo.Sale.IsZero() {
-		itemsPrice = itemsPrice.Mul(decimal.NewFromFloat(1).Sub(promo.Sale.Div(decimal.NewFromFloat(100))))
-	}
-
-	var shippingPrice decimal.Decimal
-	if !promo.FreeShipping {
-		err = ms.DB().QueryRowContext(ctx, `
-		SELECT 
-		CASE
-			WHEN pc.currency = 'USD' THEN sc.USD
-			WHEN pc.currency = 'EUR' THEN sc.EUR
-			WHEN pc.currency = 'USDC' THEN sc.USDC
-			WHEN pc.currency = 'ETH' THEN sc.ETH
-		END AS shipment_price
-		FROM 
-			orders o
-		JOIN 
-			payment p ON o.payment_id = p.id
-		JOIN 
-			payment_currency pc ON p.currency_id = pc.id
-		JOIN 
-			shipment s ON o.shipment_id = s.id
-		JOIN 
-			shipment_carriers sc ON s.carrier_id = sc.id
-		WHERE 
-			o.id = ?;`, orderId).Scan(&shippingPrice)
-
-		if err != nil {
-			return decimal.Zero, err
-		}
-	}
-
-	total := itemsPrice.Add(shippingPrice)
-
-	_, err = ms.DB().ExecContext(ctx, `
-			UPDATE orders
-			SET total_price = ?
-			WHERE id = ?`,
-		total, orderId)
-	if err != nil {
-		return decimal.Zero, err
-	}
-
 	return total, nil
-
 }
 
-func addOrder(ctx context.Context, rep dependency.Repository, order *dto.Order, bid, pid, sid int64) error {
-	if !rep.InTx() {
-		return fmt.Errorf("addOrder must be called from within transaction")
-	}
+func getOrderPromo(ctx context.Context, rep dependency.Repository, orderId int) (*entity.PromoCode, error) {
+	query := `
+	SELECT 
+		pc.id, pc.code, pc.free_shipping, pc.discount, pc.expiration, pc.allowed 
+	FROM promo_code AS pc 
+	INNER JOIN customer_order AS co ON 
+		co.promo_id = pc.id 
+	WHERE co.id = :orderId AND pc.expiration >= NOW() AND pc.allowed = 1`
 
-	// Insert the new order into the `order` table
-	res, err := rep.DB().ExecContext(ctx, `
-	INSERT INTO orders (buyer_id, placed, payment_id, shipment_id, total_price, status_id) 
-	VALUES (?, ?, ?, ?, ?, 
-		(SELECT id FROM order_status WHERE status = ?))`, bid, order.Placed, pid, sid, nil, string(dto.OrderPlaced))
+	promo, err := QueryNamedOne[entity.PromoCode](ctx, rep.DB(), query, map[string]interface{}{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	orderId, err := res.LastInsertId()
+
+	return &promo, nil
+}
+
+func getOrderShipmentCarrier(ctx context.Context, rep dependency.Repository, orderId int) (*entity.ShipmentCarrier, error) {
+	query := `
+	SELECT
+		sc.id, sc.carrier, sc.price, sc.allowed
+	FROM shipment_carrier AS sc
+	INNER JOIN shipment AS s ON	
+		s.carrier_id = sc.id
+	INNER JOIN customer_order AS co ON
+		co.shipment_id = s.id
+	WHERE co.id = :orderId`
+
+	carrier, err := QueryNamedOne[entity.ShipmentCarrier](ctx, rep.DB(), query, map[string]interface{}{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("can't get order shipment carrier: %w", err)
 	}
-	order.ID = int32(orderId)
-
-	// Prepare a batch insert for order_item
-	valueStrings := make([]string, 0, len(order.Items))
-	valueArgs := make([]interface{}, 0, len(order.Items)*4)
-	for _, item := range order.Items {
-		valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-		valueArgs = append(valueArgs, orderId, item.ID, item.Quantity, item.Size)
-	}
-
-	stmt := fmt.Sprintf("INSERT INTO order_item (order_id, product_id, quantity, size) VALUES %s",
-		strings.Join(valueStrings, ","))
-	_, err = rep.DB().ExecContext(ctx, stmt, valueArgs...)
-	if err != nil {
-		return err
-	}
-
-	// Update total_price in the order table by calculating it from the product_prices table
-	// and shipping price from the shipment_carriers table.
-	total, err := rep.Order().UpdateOrderTotalByCurrency(ctx, order.ID, order.Payment.Currency, nil)
-	if err != nil {
-		return err
-	}
-	order.TotalPrice = total
-
-	return nil
+	return &carrier, nil
 }
 
 // UpdateOrderItems update order items
-func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int32, items []dto.Item) error {
+func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItem) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		_, err := rep.DB().ExecContext(ctx, `DELETE FROM order_item WHERE order_id = ?`, orderId)
+
+		// TODO: ?? delete all order if len items == 0
+
+		items = mergeOrderItems(items)
+
+		query := `DELETE FROM order_item WHERE order_id = :orderId`
+		err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+			"orderId": orderId,
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("can't delete order items: %w", err)
 		}
 
-		// Prepare a batch insert for order_item
-		valueStrings := make([]string, 0, len(items))
-		valueArgs := make([]interface{}, 0, len(items)*4)
-		for _, item := range items {
-			valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-			valueArgs = append(valueArgs, orderId, item.ID, item.Quantity, item.Size)
+		err = insertOrderItems(ctx, rep, items, orderId)
+		if err != nil {
+			return fmt.Errorf("can't insert order items: %w", err)
 		}
 
-		stmt := fmt.Sprintf("INSERT INTO order_item (order_id, product_id, quantity, size) VALUES %s",
-			strings.Join(valueStrings, ","))
-		_, err = rep.DB().ExecContext(ctx, stmt, valueArgs...)
+		total, err := calculateTotalAmount(ctx, rep, items)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't get total order amount: %w", err)
 		}
 
-		cur, err := rep.Order().GetOrderCurrency(ctx, orderId)
+		promo, err := getOrderPromo(ctx, rep, orderId)
 		if err != nil {
-			return err
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("error while getting promo by code: %w", err)
+			}
+			promo = &entity.PromoCode{}
 		}
 
-		_, err = rep.Order().UpdateOrderTotalByCurrency(ctx, orderId, cur, nil)
+		shipmentCarrier, err := getOrderShipmentCarrier(ctx, rep, orderId)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't get order shipment: %w", err)
 		}
+
+		if !promo.FreeShipping {
+			total = total.Add(shipmentCarrier.Price)
+		}
+
+		if !promo.Discount.Equals(decimal.Zero) {
+			total = total.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+		}
+
+		err = updateOrderTotalPromo(ctx, rep, orderId, promo.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order total promo: %w", err)
+		}
+
 		return nil
 	})
 }
 
-// UpdateOrderStatus is used to update the status of an order.
-func (ms *MYSQLStore) UpdateOrderStatus(ctx context.Context, orderId int32, status dto.OrderStatus) error {
-	if !ms.InTx() {
-		return fmt.Errorf("UpdateOrderStatus must be called from within transaction")
-	}
-	_, err := ms.DB().ExecContext(ctx, `UPDATE orders 
-					SET status_id = (SELECT id FROM order_status WHERE status = ?) 
-					WHERE id = ?`, status, orderId)
+func getOrderTotalPrice(ctx context.Context, rep dependency.Repository, orderId int) (decimal.Decimal, error) {
+	query := `
+	SELECT total_price FROM customer_order WHERE id = :orderId`
+	total, err := QueryNamedOne[decimal.Decimal](ctx, rep.DB(), query, map[string]interface{}{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return err
+		return decimal.Zero, fmt.Errorf("can't get order total price: %w", err)
 	}
+	return total, nil
+}
 
+func updateOrderShipping(ctx context.Context, rep dependency.Repository, orderId int, newShipmentCarrier *entity.ShipmentCarrier) error {
+	query := `UPDATE shipment SET carrier_id = :carrierId WHERE id = (SELECT shipment_id FROM customer_order WHERE id = :orderId)`
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId":   orderId,
+		"carrierId": newShipmentCarrier.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order shipping: %w", err)
+	}
 	return nil
 }
 
-func (ms *MYSQLStore) updatePayment(ctx context.Context, orderId int32, payment *dto.Payment) error {
-	if !ms.InTx() {
-		return fmt.Errorf("updatePayment must be called from within transaction")
-	}
+// UpdateOrderShippingCarrier is used to update the shipping carrier of an order and total price if changed.
+func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) error {
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-	// Fetch order's total price
-	orderTotal, err := ms.UpdateOrderTotalByCurrency(ctx, orderId, payment.Currency, nil)
+		orderShipmentCarrier, err := getOrderShipmentCarrier(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order shipment: %w", err)
+		}
+		if orderShipmentCarrier.ID == shipmentCarrierId {
+			return nil
+		}
+
+		newShipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(shipmentCarrierId)
+		if !ok {
+			return fmt.Errorf("shipment carrier is not exists")
+		}
+
+		promo, err := getOrderPromo(ctx, rep, orderId)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("error while getting promo by code: %w", err)
+			}
+			promo = &entity.PromoCode{}
+		}
+
+		total, err := getOrderTotalPrice(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order total price: %w", err)
+		}
+
+		if !promo.FreeShipping {
+			total = total.Add(newShipmentCarrier.Price).Sub(orderShipmentCarrier.Price)
+		}
+
+		err = updateOrderShipping(ctx, rep, orderId, newShipmentCarrier)
+		if err != nil {
+			return fmt.Errorf("error while inserting shipment: %w", err)
+		}
+
+		err = updateOrderTotalPromo(ctx, rep, orderId, promo.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order total promo: %w", err)
+		}
+
+		return nil
+	})
+}
+
+func getOrderById(ctx context.Context, rep dependency.Repository, orderId int) (*entity.Order, error) {
+	query := `
+	SELECT * from customer_order WHERE id = :orderId`
+	order, err := QueryNamedOne[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"orderId": orderId,
+	})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("can't get order by id: %w", err)
 	}
+	return &order, nil
+}
 
-	// Check if payment.TransactionAmount is more or equal to order's total_price
-	if !payment.TransactionAmount.GreaterThanOrEqual(orderTotal) {
-		return fmt.Errorf("transaction amount is less than order total price")
+func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
+	query := `UPDATE order SET order_status_id = :orderStatusId WHERE id = :orderId`
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId":       orderId,
+		"orderStatusId": orderStatusId,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order status: %w", err)
 	}
+	return nil
+}
 
-	// Update payment
-	res, err := ms.DB().ExecContext(ctx, `
-	UPDATE payment SET
-		method_id = (SELECT id FROM payment_method WHERE method = ?), 
-		currency_id = (SELECT id FROM payment_currency WHERE currency = ?),
-		currency_transaction_id = ?,
-		transaction_amount = ?,
-		payer = ?,
-		payee = ?,
-		is_transaction_done = ?
-	WHERE id = (SELECT payment_id FROM orders WHERE id = ?)`,
-		payment.Method,
-		payment.Currency,
-		payment.TransactionID,
-		payment.TransactionAmount,
-		payment.Payer,
-		payment.Payee,
-		payment.IsTransactionDone,
-		orderId)
+func updateOrderPayment(ctx context.Context, rep dependency.Repository, paymentId int, payment *entity.Payment) error {
+	query := `
+	UPDATE payment 
+	SET transaction_amount = :transactionAmount,
+		transaction_id = :transactionId,
+		is_transaction_done = :isTransactionDone,
+		payment_method_id = :paymentMethodId,
+		payer = :payer,
+		payee = :payee
+	WHERE id = :paymentId`
+
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"transactionAmount": payment.TransactionAmount,
+		"transactionId":     payment.TransactionID,
+		"isTransactionDone": payment.IsTransactionDone,
+		"paymentMethodId":   payment.PaymentMethodID,
+		"payer":             payment.Payer,
+		"payee":             payment.Payee,
+	})
 
 	if err != nil {
-		return err
-	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return fmt.Errorf("no payment found with order id %d", orderId)
+		return fmt.Errorf("can't update order payment: %w", err)
 	}
 	return nil
 }
 
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int32, payment *dto.Payment) error {
-	if !ms.InTx() {
-		return fmt.Errorf("OrderPaymentDone must be called from within transaction")
-	}
-	// Change order status to 'Confirmed'.
-	err := ms.UpdateOrderStatus(ctx, orderId, dto.OrderConfirmed)
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment *entity.Payment) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
+		order, err := getOrderById(ctx, rep, orderId)
+		if err != nil {
+			return err
+		}
+		orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		}
+
+		if orderStatus.Name != entity.Placed {
+			return fmt.Errorf("order status is not placed: order status %s", orderStatus.Name)
+		}
+
+		if payment.TransactionAmount.LessThan(order.TotalPrice) {
+			return fmt.Errorf("payment amount is less than order total price: %s", payment.TransactionAmount.String())
+		}
+
+		_, ok = ms.cache.GetPaymentMethodByID(payment.PaymentMethodID)
+		if !ok {
+			return fmt.Errorf("payment method is not exists: payment method id %d", payment.PaymentMethodID)
+		}
+
+		statusPlaced, ok := ms.cache.GetOrderStatusByName(entity.Placed)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Placed)
+		}
+
+		err = updateOrderStatus(ctx, rep, orderId, statusPlaced.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		err = updateOrderPayment(ctx, rep, order.PaymentID, payment)
+		if err != nil {
+			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	// Add payment info to the order.
-	err = ms.updatePayment(ctx, orderId, payment)
-	if err != nil {
-		return err
+		return fmt.Errorf("can't update order payment: %w", err)
 	}
 
+	return nil
+}
+
+func updateOrderShipment(ctx context.Context, rep dependency.Repository, orderId int, shipment *entity.Shipment) error {
+	query := `
+	UPDATE shipment
+	SET 
+		tracking_code = :trackingCode,
+		shipping_date = :shippingDate,
+		estimated_arrival_date = :estimatedArrivalDate
+		carrier_id = :carrierId
+		shipping_date = :shippingDate
+	WHERE id = (SELECT shipment_id FROM customer_order WHERE id = :orderId)`
+
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId":              orderId,
+		"carrierId":            shipment.CarrierID,
+		"trackingCode":         shipment.TrackingCode,
+		"shippingDate":         shipment.ShippingDate,
+		"estimatedArrivalDate": shipment.EstimatedArrivalDate,
+	})
+	if err != nil {
+		return fmt.Errorf("can't get order shipment: %w", err)
+	}
 	return nil
 }
 
 // UpdateShippingStatus updates the shipping status of an order.
-func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context,
-	orderId int32, carrier string,
-	trackingCode string, shippingTime time.Time) error {
-	// Execute the query.
-	_, err := ms.DB().ExecContext(ctx, `
-		UPDATE shipment 
-		SET carrier = (SELECT id FROM shipment_carriers WHERE carrier = ?), 
-		tracking_code = ?, 
-		shipping_date = ?
-		WHERE id = (SELECT shipment_id FROM orders WHERE id = ?)
-	`, carrier, trackingCode, shippingTime, orderId)
-	if err != nil {
-		return err
-	}
-	return nil
-}
+func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// TODO: ?? check if order status is confirmed, shipped, delivered or refunded
+		// order, err := getOrderById(ctx, rep, orderId)
+		// if err != nil {
+		// 	return err
+		// }
 
-// GetOrderItems
-func (ms *MYSQLStore) GetOrderItems(ctx context.Context, orderId int32) ([]dto.Item, error) {
-	rows, err := ms.DB().QueryContext(ctx, `
-		SELECT product_id, quantity, size from order_item where order_id = 141;
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+		// orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		// if !ok {
+		// 	return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		// }
 
-	var items []dto.Item
-	for rows.Next() {
-		var item dto.Item
-		err = rows.Scan(&item.ID, &item.Quantity, &item.Size)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
+		// if orderStatus.Name != entity.Confirmed ||
+		// 	orderStatus.Name != entity.Shipped ||
+		// 	orderStatus.Name != entity.Delivered ||
+		// 	orderStatus.Name != entity.Refunded {
+		// 	return fmt.Errorf("order status is not confirmed, shipped, delivered or refunded: order status %s", orderStatus.Name)
+		// }
 
-// RefundOrder refunds an existing order TODO: can be refunded only if payed.
-func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int32) error {
-	ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// Change order status to 'Refunded'.
-		err := rep.Order().UpdateOrderStatus(ctx, orderId, dto.OrderRefunded)
-		if err != nil {
-			return err
+		_, ok := ms.cache.GetShipmentCarrierByID(shipment.CarrierID)
+		if !ok {
+			return fmt.Errorf("shipment carrier is not exists: shipment carrier id %d", shipment.CarrierID)
 		}
-		_, err = rep.DB().ExecContext(ctx, `
-		UPDATE payment 
-		SET is_transaction_done = false 
-		WHERE id = (SELECT payment_id FROM orders WHERE id = ?)
-		`, orderId)
+		err := updateOrderShipment(ctx, rep, orderId, shipment)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't update order shipment: %w", err)
 		}
+
+		statusShipped, ok := ms.cache.GetOrderStatusByName(entity.Shipped)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Shipped)
+		}
+
+		err = updateOrderStatus(ctx, rep, orderId, statusShipped.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
 		return nil
-
 	})
+	if err != nil {
+		return fmt.Errorf("can't update order payment: %w", err)
+	}
+
 	return nil
 }
 
-// OrdersByEmail retrieves all orders for a given email address.
-func (ms *MYSQLStore) OrdersByEmail(ctx context.Context, email string) ([]dto.Order, error) {
-	ordersQuery := `
-	SELECT 
-		o.id, 
-		o.placed, 
-		o.total_price, 
-		os.status, 
-		b.first_name, b.last_name, b.email, b.phone, b.receive_promo_emails,
-		pa.method, 
-		pc.currency,
-		p.id, p.currency_transaction_id, p.transaction_amount, p.payer, p.payee, p.is_transaction_done,
-		sc.carrier, sc.USD,	sc.EUR, sc.USDC, sc.ETH,
-		s.tracking_code, s.shipping_date, s.estimated_arrival_date
-	FROM 
-		orders o 
-	INNER JOIN 
-		order_status os ON o.status_id = os.id
-	INNER JOIN 
-		buyer b ON o.buyer_id = b.id
-	INNER JOIN 
-		payment p ON o.payment_id = p.id
-	INNER JOIN 
-		payment_method pa ON p.method_id = pa.id
-	INNER JOIN 
-		payment_currency pc ON p.currency_id = pc.id
-	INNER JOIN 
-		shipment s ON o.shipment_id = s.id
-	INNER JOIN 
-		shipment_carriers sc ON s.carrier_id = sc.id
-	WHERE 
-		b.email = ?
-	AND 
-		o.status_id != (SELECT id FROM order_status WHERE status = ?)
-	`
+func getPaymentById(ctx context.Context, rep dependency.Repository, paymentId int) (*entity.Payment, error) {
+	query := `
+	SELECT * FROM payment WHERE id = :paymentId`
+	payment, err := QueryNamedOne[entity.Payment](ctx, rep.DB(), query, map[string]interface{}{
+		"paymentId": paymentId,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get payment by id: %w", err)
+	}
+	return &payment, nil
+}
 
-	rows, err := ms.DB().QueryContext(ctx, ordersQuery, email, dto.OrderCancelled)
+func getBuyerById(ctx context.Context, rep dependency.Repository, buyerId int) (*entity.Buyer, error) {
+	query := `
+	SELECT * FROM buyer WHERE id = :buyerId`
+	buyer, err := QueryNamedOne[entity.Buyer](ctx, rep.DB(), query, map[string]interface{}{
+		"buyerId": buyerId,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get buyer by id: %w", err)
+	}
+	return &buyer, nil
+}
+
+func getAddressId(ctx context.Context, rep dependency.Repository, addressId int) (entity.Address, error) {
+	query := `
+	SELECT * FROM address WHERE id = :addressId`
+	address, err := QueryNamedOne[entity.Address](ctx, rep.DB(), query, map[string]interface{}{
+		"addressId": addressId,
+	})
+	if err != nil {
+		return entity.Address{}, fmt.Errorf("can't get address by id: %w", err)
+	}
+	return address, nil
+}
+
+func (ms *MYSQLStore) fetchOrderInfo(ctx context.Context, order *entity.Order) (*entity.OrderInfo, error) {
+	orderItems, err := getOrderItems(ctx, ms, order.ID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order items: %w", err)
+	}
+
+	payment, err := getPaymentById(ctx, ms, order.PaymentID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get payment by id: %w", err)
+	}
+
+	paymentMethod, ok := ms.cache.GetPaymentMethodByID(payment.PaymentMethodID)
+	if !ok {
+		return nil, fmt.Errorf("payment method is not exists")
+	}
+
+	shipment, err := getOrderShipment(ctx, ms, order.ID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order shipment: %w", err)
+	}
+	shipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(shipment.CarrierID)
+	if !ok {
+		return nil, fmt.Errorf("shipment carrier is not exists")
+	}
+
+	promo := &entity.PromoCode{}
+	if order.PromoID != 0 {
+		promo, ok = ms.cache.GetPromoByID(order.PromoID)
+		if !ok {
+			return nil, fmt.Errorf("promo code is not exists")
+		}
+	}
+
+	orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists")
+	}
+
+	buyer, err := getBuyerById(ctx, ms, order.BuyerID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get buyer by id: %w", err)
+	}
+
+	shippingAddress, err := getAddressId(ctx, ms, buyer.ShippingAddressID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get shipping address by id: %w", err)
+	}
+	billingAddress, err := getAddressId(ctx, ms, buyer.BillingAddressID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get billing address by id: %w", err)
+	}
+
+	orderInfo := entity.OrderInfo{
+		Order:           order,
+		OrderItems:      orderItems,
+		Payment:         payment,
+		PaymentMethod:   paymentMethod,
+		Shipment:        shipment,
+		ShipmentCarrier: shipmentCarrier,
+		PromoCode:       promo,
+		OrderStatus:     orderStatus,
+		Buyer:           buyer,
+		Billing:         &billingAddress,
+		Shipping:        &shippingAddress,
+		Placed:          order.Placed,
+		Modified:        order.Modified,
+		TotalPrice:      order.TotalPrice,
+	}
+
+	return &orderInfo, nil
+}
+
+// GetOrderItems retrieves all order items for a given order.
+func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.OrderInfo, error) {
+
+	order, err := getOrderById(ctx, ms, orderId)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var orders []dto.Order
+	return ms.fetchOrderInfo(ctx, order)
+}
 
-	for rows.Next() {
-		var order dto.Order
-		order.Buyer = &dto.Buyer{}
-		order.Payment = &dto.Payment{}
-		order.Shipment = &dto.Shipment{}
-		var trackingCode sql.NullString
-		var shippingDate sql.NullTime
-		var estimatedArrivalDate sql.NullTime
-		var USD, EUR, USDC, ETH decimal.Decimal
-
-		err = rows.Scan(
-			&order.ID,
-			&order.Placed,
-			&order.TotalPrice,
-			&order.Status,
-			&order.Buyer.FirstName,
-			&order.Buyer.LastName,
-			&order.Buyer.Email,
-			&order.Buyer.Phone,
-			&order.Buyer.ReceivePromoEmails,
-			&order.Payment.Method,
-			&order.Payment.Currency,
-			&order.Payment.ID,
-			&order.Payment.TransactionID,
-			&order.Payment.TransactionAmount,
-			&order.Payment.Payer,
-			&order.Payment.Payee,
-			&order.Payment.IsTransactionDone,
-			&order.Shipment.Carrier,
-			&USD,
-			&EUR,
-			&USDC,
-			&ETH,
-			&trackingCode,
-			&shippingDate,
-			&estimatedArrivalDate,
-		)
-
-		if err != nil {
-			return nil, err
-		}
-
-		if trackingCode.Valid {
-			order.Shipment.TrackingCode = trackingCode.String
-		}
-		if shippingDate.Valid {
-			order.Shipment.ShippingDate = shippingDate.Time
-		}
-		if estimatedArrivalDate.Valid {
-			order.Shipment.EstimatedArrivalDate = estimatedArrivalDate.Time
-		}
-		switch order.Payment.Currency {
-		case dto.USD:
-			order.Shipment.Cost = USD
-		case dto.EUR:
-			order.Shipment.Cost = EUR
-		case dto.USDCrypto:
-			order.Shipment.Cost = USDC
-		case dto.ETH:
-			order.Shipment.Cost = ETH
-		}
-
-		// Then fetch the items for this order
-		itemsQuery := `
-        SELECT 
-            oi.product_id, oi.quantity, oi.size
-        FROM 
-            order_item oi 
-        WHERE 
-            oi.order_id = ?
-        `
-
-		itemRows, err := ms.DB().QueryContext(ctx, itemsQuery, order.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		for itemRows.Next() {
-			var item dto.Item
-			err = itemRows.Scan(&item.ID, &item.Quantity, &item.Size)
-			if err != nil {
-				return nil, err
-			}
-			order.Items = append(order.Items, item)
-		}
-
-		if err = itemRows.Err(); err != nil {
-			return nil, err
-		}
-
-		orders = append(orders, order)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, err
+func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email string) ([]entity.Order, error) {
+	query := `
+	SELECT 
+		co.id,
+		co.buyer_id,
+		co.placed,
+		co.modified,
+		co.payment_id,
+		co.total_price,
+		co.order_status_id,
+		co.shipment_id,
+		co.promo_id
+	FROM buyer b 
+	INNER JOIN customer_order co 
+		ON b.id = co.buyer_id 
+	WHERE b.email = :email
+	`
+	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"email": email,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get orders by email: %w", err)
 	}
 
 	return orders, nil
 }
 
-// GetOrder retrieves an existing order by its ID.
-func (ms *MYSQLStore) GetOrder(ctx context.Context, orderId int32) (*dto.Order, error) {
-	orderQuery := `
-	SELECT 
-		o.id, 
-		o.placed, 
-		o.total_price, 
-		os.status, 
-		b.first_name, b.last_name, b.email, b.phone, b.receive_promo_emails,
-		pa.method, 
-		pc.currency,
-		p.id, p.currency_transaction_id, p.transaction_amount, p.payer, p.payee, p.is_transaction_done,
-		sc.carrier, sc.USD,	sc.EUR, sc.USDC, sc.ETH,
-		s.tracking_code, s.shipping_date, s.estimated_arrival_date
-	FROM 
-		orders o 
-	INNER JOIN 
-		order_status os ON o.status_id = os.id
-	INNER JOIN 
-		buyer b ON o.buyer_id = b.id
-	INNER JOIN 
-		payment p ON o.payment_id = p.id
-	INNER JOIN 
-		payment_method pa ON p.method_id = pa.id
-	INNER JOIN 
-		payment_currency pc ON p.currency_id = pc.id
-	INNER JOIN 
-		shipment s ON o.shipment_id = s.id
-	INNER JOIN 
-		shipment_carriers sc ON s.carrier_id = sc.id
-	WHERE 
-		o.id = ?
-	`
-
-	row := ms.DB().QueryRowContext(ctx, orderQuery, orderId)
-
-	var order dto.Order
-	order.Buyer = &dto.Buyer{}
-	order.Payment = &dto.Payment{}
-	order.Shipment = &dto.Shipment{}
-	var trackingCode sql.NullString
-	var shippingDate sql.NullTime
-	var estimatedArrivalDate sql.NullTime
-	var USD, EUR, USDC, ETH decimal.Decimal
-
-	err := row.Scan(
-		&order.ID,
-		&order.Placed,
-		&order.TotalPrice,
-		&order.Status,
-		&order.Buyer.FirstName,
-		&order.Buyer.LastName,
-		&order.Buyer.Email,
-		&order.Buyer.Phone,
-		&order.Buyer.ReceivePromoEmails,
-		&order.Payment.Method,
-		&order.Payment.Currency,
-		&order.Payment.ID,
-		&order.Payment.TransactionID,
-		&order.Payment.TransactionAmount,
-		&order.Payment.Payer,
-		&order.Payment.Payee,
-		&order.Payment.IsTransactionDone,
-		&order.Shipment.Carrier,
-		&USD,
-		&EUR,
-		&USDC,
-		&ETH,
-		&trackingCode,
-		&shippingDate,
-		&estimatedArrivalDate,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil // Return nil, nil if no row found
-		}
-		return nil, err
-	}
-
-	if trackingCode.Valid {
-		order.Shipment.TrackingCode = trackingCode.String
-	}
-	if shippingDate.Valid {
-		order.Shipment.ShippingDate = shippingDate.Time
-	}
-	if estimatedArrivalDate.Valid {
-		order.Shipment.EstimatedArrivalDate = estimatedArrivalDate.Time
-	}
-
-	switch order.Payment.Currency {
-	case dto.USD:
-		order.Shipment.Cost = USD
-	case dto.EUR:
-		order.Shipment.Cost = EUR
-	case dto.USDCrypto:
-		order.Shipment.Cost = USDC
-	case dto.ETH:
-		order.Shipment.Cost = ETH
-	}
-
-	// Then fetch the items for this order
-	itemsQuery := `
-	SELECT 
-		oi.product_id, oi.quantity, oi.size
-	FROM 
-		order_item oi 
-	WHERE 
-		oi.order_id = ?
-	`
-
-	itemRows, err := ms.DB().QueryContext(ctx, itemsQuery, order.ID)
+func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderInfo, error) {
+	orders, err := getOrdersByEmail(ctx, ms, email)
 	if err != nil {
 		return nil, err
 	}
-	defer itemRows.Close()
 
-	for itemRows.Next() {
-		var item dto.Item
-		err = itemRows.Scan(&item.ID, &item.Quantity, &item.Size)
+	var ordersInfo []entity.OrderInfo
+	for _, order := range orders {
+		orderInfo, err := ms.fetchOrderInfo(ctx, &order)
 		if err != nil {
 			return nil, err
 		}
-		order.Items = append(order.Items, item)
+		ordersInfo = append(ordersInfo, *orderInfo)
 	}
 
-	if err = itemRows.Err(); err != nil {
+	return ordersInfo, nil
+}
+
+func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStatusId int) ([]entity.Order, error) {
+	query := `
+	SELECT 
+		co.id,
+		co.buyer_id,
+		co.placed,
+		co.modified,
+		co.payment_id,
+		co.total_price,
+		co.order_status_id,
+		co.shipment_id,
+		co.promo_id
+	FROM customer_order co 
+	WHERE order_status_id = :status
+	`
+
+	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"status": orderStatusId,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get orders by status: %w", err)
+	}
+
+	return orders, nil
+}
+
+func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderInfo, error) {
+	os, ok := ms.cache.GetOrderStatusByName(status)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists: order status id %v", status)
+	}
+
+	orders, err := getOrdersByStatus(ctx, ms, os.ID)
+	if err != nil {
 		return nil, err
 	}
 
-	return &order, nil
+	var ordersInfo []entity.OrderInfo
+	for _, order := range orders {
+		orderInfo, err := ms.fetchOrderInfo(ctx, &order)
+		if err != nil {
+			return nil, err
+		}
+		ordersInfo = append(ordersInfo, *orderInfo)
+	}
+
+	return ordersInfo, nil
 }
 
-// TODO: implement
-func (ms *MYSQLStore) GetOrderByStatus(ctx context.Context, status dto.OrderStatus) ([]dto.Order, error) {
-	return nil, nil
+func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		//TODO: ?? check if status
+		// order, err := getOrderById(ctx, rep, orderId)
+		// if err != nil {
+		// 	return err
+		// }
+
+		// orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		// if !ok {
+		// 	return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		// }
+
+		// if orderStatus.Name != entity.Confirmed ||
+		// 	orderStatus.Name != entity.Shipped ||
+		// 	orderStatus.Name != entity.Delivered {
+		// 	return fmt.Errorf("order status is not confirmed, shipped or delivered: order status %s", orderStatus.Name)
+		// }
+
+		statusShipped, ok := ms.cache.GetOrderStatusByName(entity.Refunded)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Refunded)
+		}
+
+		err := updateOrderStatus(ctx, rep, orderId, statusShipped.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order payment: %w", err)
+	}
+
+	return nil
+}
+
+func (ms *MYSQLStore) DeliveredOrder(ctx context.Context, orderId int) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		//TODO: ?? check if status
+		// order, err := getOrderById(ctx, rep, orderId)
+		// if err != nil {
+		// 	return err
+		// }
+
+		// orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		// if !ok {
+		// 	return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		// }
+
+		// if orderStatus.Name != entity.Confirmed ||
+		// 	orderStatus.Name != entity.Shipped ||
+		// 	orderStatus.Name != entity.Delivered ||
+		// 	orderStatus.Name != entity.Refunded {
+		// 	return fmt.Errorf("order status is not confirmed, shipped or delivered: order status %s", orderStatus.Name)
+		// }
+
+		statusRefunded, ok := ms.cache.GetOrderStatusByName(entity.Refunded)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Refunded)
+		}
+
+		err := updateOrderStatus(ctx, rep, orderId, statusRefunded.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order payment: %w", err)
+	}
+
+	return nil
+}
+
+func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderId int) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// order, err := getOrderById(ctx, rep, orderId)
+		// if err != nil {
+		// 	return err
+		// }
+
+		// orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		// if !ok {
+		// 	return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		// }
+
+		// TODO: ?? check if status
+		// if orderStatus.Name != entity.Confirmed ||
+		// 	orderStatus.Name != entity.Shipped ||
+		// 	orderStatus.Name != entity.Delivered ||
+		// 	orderStatus.Name != entity.Cancelled ||
+		// 	orderStatus.Name != entity.Refunded {
+		// 	return fmt.Errorf("order status is not confirmed, shipped, delivered, cancelled or refunded: order status %s", orderStatus.Name)
+		// }
+
+		items, err := getOrderItems(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order items: %w", err)
+		}
+
+		err = rep.Products().RestoreStockForProductSizes(ctx, items)
+		if err != nil {
+			return fmt.Errorf("can't restore stock for product sizes: %w", err)
+		}
+
+		statusCancelled, ok := ms.cache.GetOrderStatusByName(entity.Cancelled)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Refunded)
+		}
+
+		err = updateOrderStatus(ctx, rep, orderId, statusCancelled.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order payment: %w", err)
+	}
+
+	return nil
 }

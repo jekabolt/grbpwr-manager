@@ -2,9 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 type subscribersStore struct {
@@ -18,69 +19,59 @@ func (ms *MYSQLStore) Subscribers() dependency.Subscribers {
 	}
 }
 
-func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]string, error) {
-	query := `SELECT email FROM buyer WHERE receive_promo_emails = TRUE`
-	rows, err := ms.DB().QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Buyer, error) {
 
-	var subs []string
-	for rows.Next() {
-		var email string
-		err := rows.Scan(&email)
-		if err != nil {
-			return nil, err
-		}
-		subs = append(subs, email)
+	query := `SELECT * FROM subscriber WHERE receive_promo_emails = 1`
+	subscribers, err := QueryListNamed[entity.Subscriber](ctx, ms.DB(), query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active subscribers: %v", err)
 	}
-	return subs, nil
+	subs := map[string]entity.Buyer{}
+	for _, s := range subscribers {
+		subs[s.Email] = entity.Buyer{
+			Email:     s.Email,
+			FirstName: s.Name,
+		}
+	}
+
+	query = `SELECT email FROM buyer WHERE receive_promo_emails = 1`
+	buyers, err := QueryListNamed[entity.Buyer](ctx, ms.DB(), query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active byers: %v", err)
+	}
+
+	for _, b := range buyers {
+		subs[b.Email] = b
+	}
+
+	var subsSlice []entity.Buyer
+	for _, v := range subs {
+		subsSlice = append(subsSlice, v)
+	}
+
+	return subsSlice, nil
 }
 
-func (ms *MYSQLStore) getTestAddressId(ctx context.Context) (int64, error) {
-	row := ms.DB().QueryRowContext(ctx, `select id from address where street = 'test' and postal_code = 'test'`)
-	var id int64
-	err := row.Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
-func (ms *MYSQLStore) Subscribe(ctx context.Context, email string) error {
-
-	return ms.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-		aid, err := ms.getTestAddressId(ctx)
-		if err != nil {
-			return err
-		}
-		_, err = addBuyer(ctx, store, &dto.Buyer{
-			FirstName: "",
-			LastName:  "",
-			Phone:     "",
-			Email:     email,
-			BillingAddress: &dto.Address{
-				ID: aid,
-			},
-			ShippingAddress: &dto.Address{
-				ID: aid,
-			},
-			ReceivePromoEmails: true,
-		})
-		return err
+func (ms *MYSQLStore) Subscribe(ctx context.Context, email, name string) error {
+	err := ExecNamed(ctx, ms.DB(), `INSERT INTO buyer (email, name, receive_promo_emails, country) VALUES
+		(:email, :name, :receivePromoEmails, :country)`, map[string]any{
+		"email":              email,
+		"name":               name,
+		"receivePromoEmails": true,
 	})
 
+	if err != nil {
+		return fmt.Errorf("failed to add subscriber: %w", err)
+	}
+	return nil
 }
 
 func (ms *MYSQLStore) Unsubscribe(ctx context.Context, email string) error {
-	_, err := ms.DB().ExecContext(ctx, `
-	UPDATE buyer
-	SET receive_promo_emails = FALSE
-	WHERE email = ?`, email)
-
+	err := ExecNamed(ctx, ms.DB(), `UPDATE buyer SET receive_promo_emails = false WHERE email = :email`, map[string]any{
+		"email": email,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to unsubscribe: %w", err)
 	}
 	return nil
 }
