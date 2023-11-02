@@ -86,8 +86,6 @@ type (
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) error
 		OrderPaymentDone(ctx context.Context, orderId int, payment *entity.PaymentInsert) error
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
-		// TODO: add buyer update
-		// TODO: add billing/shipping address update
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
 		GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error)
 		GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderFull, error)
