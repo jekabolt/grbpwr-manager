@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -20,11 +21,11 @@ type ShipmentCarrierInsert struct {
 
 // Shipment represents the shipment table
 type Shipment struct {
-	ID                   int       `db:"id"`
-	CreatedAt            time.Time `db:"created_at"`
-	UpdatedAt            time.Time `db:"updated_at"`
-	CarrierID            int       `db:"carrier_id"`
-	TrackingCode         string    `db:"tracking_code"`
-	ShippingDate         time.Time `db:"shipping_date"`
-	EstimatedArrivalDate time.Time `db:"estimated_arrival_date"`
+	ID                   int            `db:"id"`
+	CreatedAt            time.Time      `db:"created_at"`
+	UpdatedAt            time.Time      `db:"updated_at"`
+	CarrierID            int            `db:"carrier_id"`
+	TrackingCode         sql.NullString `db:"tracking_code"`
+	ShippingDate         sql.NullTime   `db:"shipping_date"`
+	EstimatedArrivalDate sql.NullTime   `db:"estimated_arrival_date"`
 }

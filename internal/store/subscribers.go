@@ -19,23 +19,23 @@ func (ms *MYSQLStore) Subscribers() dependency.Subscribers {
 	}
 }
 
-func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Buyer, error) {
+func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.BuyerInsert, error) {
 
 	query := `SELECT * FROM subscriber WHERE receive_promo_emails = 1`
 	subscribers, err := QueryListNamed[entity.Subscriber](ctx, ms.DB(), query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active subscribers: %v", err)
 	}
-	subs := map[string]entity.Buyer{}
+	subs := map[string]entity.BuyerInsert{}
 	for _, s := range subscribers {
-		subs[s.Email] = entity.Buyer{
+		subs[s.Email] = entity.BuyerInsert{
 			Email:     s.Email,
 			FirstName: s.Name,
 		}
 	}
 
 	query = `SELECT email FROM buyer WHERE receive_promo_emails = 1`
-	buyers, err := QueryListNamed[entity.Buyer](ctx, ms.DB(), query, map[string]any{})
+	buyers, err := QueryListNamed[entity.BuyerInsert](ctx, ms.DB(), query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active byers: %v", err)
 	}
@@ -44,7 +44,7 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Buyer,
 		subs[b.Email] = b
 	}
 
-	var subsSlice []entity.Buyer
+	var subsSlice []entity.BuyerInsert
 	for _, v := range subs {
 		subsSlice = append(subsSlice, v)
 	}

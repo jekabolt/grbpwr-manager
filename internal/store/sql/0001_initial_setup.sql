@@ -136,7 +136,6 @@ CREATE TABLE size_measurement (
     measurement_name_id INT NOT NULL,
     measurement_value DECIMAL(10, 2) NOT NULL,
     UNIQUE(product_id, product_size_id, measurement_name_id),
-    FOREIGN KEY(product_size_id) REFERENCES product_size(id) ON DELETE CASCADE,
     FOREIGN KEY(measurement_name_id) REFERENCES measurement_name(id) ON DELETE CASCADE
 );
 
@@ -176,9 +175,9 @@ CREATE TABLE payment (
     transaction_amount DECIMAL(10, 2) NOT NULL,
     payer VARCHAR(255),
     payee VARCHAR(255),
-    is_transaction_done BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_transaction_done BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY(payment_method_id) REFERENCES payment_method(id)
 );
 
@@ -202,7 +201,7 @@ CREATE TABLE buyer (
     ),
     phone VARCHAR(20) NOT NULL CHECK (
         phone REGEXP '^[0-9]+$'
-        AND LENGTH(phone) >= 10
+        AND LENGTH(phone) >= 7
         AND LENGTH(phone) <= 15
     ),
     receive_promo_emails BOOLEAN DEFAULT FALSE,

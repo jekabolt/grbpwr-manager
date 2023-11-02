@@ -1,6 +1,8 @@
 package entity
 
 import (
+	"time"
+
 	"github.com/shopspring/decimal"
 )
 
@@ -14,6 +16,6 @@ type PromoCodeInsert struct {
 	Code         string          `db:"code"`
 	FreeShipping bool            `db:"free_shipping"`
 	Discount     decimal.Decimal `db:"discount"`
-	Expiration   int64           `db:"expiration"`
+	Expiration   time.Time       `db:"expiration"`
 	Allowed      bool            `db:"allowed"`
 }

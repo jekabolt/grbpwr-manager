@@ -1,12 +1,23 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
 
-type OrderInfo struct {
+type OrderNew struct {
+	Items             []OrderItemInsert
+	ShippingAddress   *AddressInsert
+	BillingAddress    *AddressInsert
+	Buyer             *BuyerInsert
+	PaymentMethodId   int
+	ShipmentCarrierId int
+	PromoCode         string
+}
+
+type OrderFull struct {
 	Order           *Order
 	OrderItems      []OrderItem
 	Payment         *Payment
@@ -33,16 +44,33 @@ type Order struct {
 	TotalPrice    decimal.Decimal `db:"total_price"`
 	OrderStatusID int             `db:"order_status_id"`
 	ShipmentId    int             `db:"shipment_id"`
-	PromoID       int             `db:"promo_id"`
+	PromoID       sql.NullInt32   `db:"promo_id"`
+}
+
+type ProductInfoProvider interface {
+	GetProductID() int
+	GetQuantity() decimal.Decimal
 }
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	ID        int `db:"id"`
-	OrderID   int `db:"order_id"`
-	ProductID int `db:"product_id"`
-	Quantity  int `db:"quantity"`
-	SizeID    int `db:"size_id"`
+	ID      int `db:"id"`
+	OrderID int `db:"order_id"`
+	OrderItemInsert
+}
+
+type OrderItemInsert struct {
+	ProductID int             `db:"product_id"`
+	Quantity  decimal.Decimal `db:"quantity"`
+	SizeID    int             `db:"size_id"`
+}
+
+func (oii OrderItemInsert) GetProductID() int {
+	return oii.ProductID
+}
+
+func (oii OrderItemInsert) GetQuantity() decimal.Decimal {
+	return oii.Quantity
 }
 
 // OrderStatusName is the custom type to enforce enum-like behavior

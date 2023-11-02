@@ -9,8 +9,6 @@ init: clean install proto generate
 generate:
 	go generate ./...
 
-
-
 proto:
 	buf generate --path proto/common/buyer.proto && \
 	buf generate --path proto/common/dict.proto && \

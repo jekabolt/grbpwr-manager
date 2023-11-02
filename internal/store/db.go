@@ -85,6 +85,8 @@ func (ms *MYSQLStore) TxBegin(ctx context.Context) (dependency.Repository, error
 		db:   ltx{Tx: tx},
 		txDB: tx,
 		ts:   ms.Now(),
+
+		cache: ms.cache,
 	}, nil
 }
 
@@ -288,6 +290,7 @@ func ExecNamedLastId(
 	if argsErr != nil {
 		return 0, fmt.Errorf("sqlx In: %w", argsErr)
 	}
+
 	res, err := conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("ExecContext: %w", err)

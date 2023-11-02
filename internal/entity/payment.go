@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -8,15 +9,19 @@ import (
 
 // Payment represents the payment table
 type Payment struct {
-	ID                int             `db:"id"`
+	ID         int       `db:"id"`
+	CreatedAt  time.Time `db:"created_at"`
+	ModifiedAt time.Time `db:"modified_at"`
+	PaymentInsert
+}
+
+type PaymentInsert struct {
 	PaymentMethodID   int             `db:"payment_method_id"`
-	TransactionID     string          `db:"transaction_id"`
+	TransactionID     sql.NullString  `db:"transaction_id"`
 	TransactionAmount decimal.Decimal `db:"transaction_amount"`
-	Payer             string          `db:"payer"`
-	Payee             string          `db:"payee"`
+	Payer             sql.NullString  `db:"payer"`
+	Payee             sql.NullString  `db:"payee"`
 	IsTransactionDone bool            `db:"is_transaction_done"`
-	CreatedAt         time.Time       `db:"created_at"`
-	ModifiedAt        time.Time       `db:"modified_at"`
 }
 
 type PaymentMethodName string

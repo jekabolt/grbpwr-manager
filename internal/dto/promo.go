@@ -6,6 +6,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ConvertPbCommonToEntity converts a PromoCodeInsert object from pb_common to entity.
@@ -21,7 +22,7 @@ func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.P
 		Code:         pbPromo.Code,
 		FreeShipping: pbPromo.FreeShipping,
 		Discount:     discountDecimal,
-		Expiration:   pbPromo.Expiration,
+		Expiration:   pbPromo.Expiration.AsTime(),
 		Allowed:      pbPromo.Allowed,
 	}
 
@@ -38,7 +39,7 @@ func ConvertEntityPromoToPb(entityPromo *entity.PromoCode) *pb_common.PromoCode 
 		Code:         entityPromo.Code,
 		FreeShipping: entityPromo.FreeShipping,
 		Discount:     discountStr,
-		Expiration:   entityPromo.Expiration,
+		Expiration:   timestamppb.New(entityPromo.Expiration),
 		Allowed:      entityPromo.Allowed,
 	}
 
