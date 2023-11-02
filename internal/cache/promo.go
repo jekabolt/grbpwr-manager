@@ -33,9 +33,10 @@ func (c *PromoCache) GetPromoByID(id int) (*entity.PromoCode, bool) {
 
 	promo, found := c.Cache[id]
 
-	if promo.Expiration < time.Now().Unix() || !promo.Allowed {
+	if !promo.Allowed || promo.Expiration.Before(time.Now()) {
 		return &promo, false
 	}
+
 	return &promo, found
 }
 
@@ -44,18 +45,19 @@ func (c *PromoCache) GetPromoByName(category string) (entity.PromoCode, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 
-	m, found := c.IDCache[category]
+	promo, found := c.IDCache[category]
 
-	if m.Expiration < time.Now().Unix() || !m.Allowed {
-		return m, false
+	if !promo.Allowed || promo.Expiration.Before(time.Now()) {
+		return promo, false
 	}
 
-	return m, found
+	return promo, found
 }
 
-// GetAllPromos fetches all categories from cache
-func (c *PromoCache) GetAllPromos() map[int]entity.PromoCode {
-	c.Mutex.RLock()
-	defer c.Mutex.RUnlock()
-	return c.Cache
+func (c *PromoCache) AddPromo(promo entity.PromoCode) {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	c.IDCache[promo.Code] = promo
+	c.Cache[promo.ID] = promo
 }

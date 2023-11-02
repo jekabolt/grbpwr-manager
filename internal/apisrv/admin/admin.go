@@ -422,7 +422,7 @@ func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.R
 		return nil, err
 	}
 
-	items := make([]entity.OrderItem, 0, len(req.Items))
+	items := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, item := range req.Items {
 		items = append(items, dto.ConvertPbOrderItemToEntity(item))
 	}
@@ -449,7 +449,7 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 		return nil, err
 	}
 
-	items := make([]entity.OrderItem, 0, len(req.Items))
+	items := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, item := range req.Items {
 		items = append(items, dto.ConvertPbOrderItemToEntity(item))
 	}

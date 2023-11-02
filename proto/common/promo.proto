@@ -3,12 +3,14 @@ syntax = "proto3";
 package common;
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
+import "google/protobuf/timestamp.proto";
+
 // PromoCodeInsert represents the nested structure within PromoCode
 message PromoCodeInsert {
     string code = 1;
     bool free_shipping = 2;
-    string discount = 3;  // Using string as a workaround for decimal.Decimal
-    int64 expiration = 4;
+    string discount = 3; 
+    google.protobuf.Timestamp expiration = 4;
     bool allowed = 5;
   }
   

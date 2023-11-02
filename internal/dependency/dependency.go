@@ -32,9 +32,9 @@ type (
 		// SetSaleByID sets the sale percentage for a product by its ID.
 		SetSaleByID(ctx context.Context, id int, salePercent decimal.Decimal) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
-		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItem) error
+		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
-		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItem) error
+		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductPreorder updates the preorder status of a product.
 		UpdateProductPreorder(ctx context.Context, productID int, preorder string) error
 		// UpdateProductName updates the name of a product.
@@ -80,22 +80,24 @@ type (
 	// }
 
 	Order interface {
-		CreateOrder(ctx context.Context, items []entity.OrderItem, shippingAddress *entity.Address, billingAddress *entity.Address, buyer *entity.Buyer, paymentMethodId int, shipmentCarrierId int, promoCode string) (*entity.Order, error)
+		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
-		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItem) error
+		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) error
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) error
-		OrderPaymentDone(ctx context.Context, orderId int, payment *entity.Payment) error
+		OrderPaymentDone(ctx context.Context, orderId int, payment *entity.PaymentInsert) error
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
-		GetOrderById(ctx context.Context, orderId int) (*entity.OrderInfo, error)
-		GetOrdersByEmail(context.Context, string) ([]entity.OrderInfo, error)
-		GetOrdersByStatus(context.Context, entity.OrderStatusName) ([]entity.OrderInfo, error)
+		// TODO: add buyer update
+		// TODO: add billing/shipping address update
+		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
+		GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error)
+		GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderFull, error)
 		RefundOrder(ctx context.Context, orderId int) error
 		DeliveredOrder(ctx context.Context, orderId int) error
 		CancelOrder(ctx context.Context, orderId int) error
 	}
 
 	Subscribers interface {
-		GetActiveSubscribers(ctx context.Context) ([]entity.Buyer, error)
+		GetActiveSubscribers(ctx context.Context) ([]entity.BuyerInsert, error)
 		Subscribe(ctx context.Context, email, name string) error
 		Unsubscribe(ctx context.Context, email string) error
 	}
@@ -179,6 +181,7 @@ type (
 
 		GetPromoByID(id int) (*entity.PromoCode, bool)
 		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)
+		AddPromo(promo entity.PromoCode)
 
 		GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool)
 		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)

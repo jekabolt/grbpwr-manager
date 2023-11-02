@@ -129,6 +129,9 @@ func (c *Cache) GetPromoByID(id int) (*entity.PromoCode, bool) {
 func (c *Cache) GetPromoByName(paymentMethod string) (entity.PromoCode, bool) {
 	return c.Promo.GetPromoByName(paymentMethod)
 }
+func (c *Cache) AddPromo(promo entity.PromoCode) {
+	c.Promo.AddPromo(promo)
+}
 
 // shipment carrier
 func (c *Cache) GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool) {

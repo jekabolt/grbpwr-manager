@@ -86,6 +86,9 @@ func getRandomMeasurement(db *MYSQLStore) (*entity.MeasurementName, error) {
 	if !ok {
 		return nil, fmt.Errorf("measurement not found")
 	}
+	if m.Name == entity.Height {
+		return getRandomMeasurement(db)
+	}
 	return &m, nil
 }
 
@@ -334,21 +337,19 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "new description", pf.Product.Description)
 
-	// add new size measurement
-	sz, err := getRandomSize(db)
-	assert.NoError(t, err)
+	assert.True(t, len(pf.Sizes) > 0)
 
-	ms, err := getRandomMeasurement(db)
-	assert.NoError(t, err)
+	ms, ok := db.cache.GetMeasurementsByName(entity.Height)
+	assert.True(t, ok)
 
-	err = ps.AddProductMeasurement(ctx, newPrd.Product.ID, sz.ID, ms.ID, decimal.NewFromInt(12))
+	err = ps.AddProductMeasurement(ctx, newPrd.Product.ID, pf.Sizes[0].SizeID, ms.ID, decimal.NewFromInt(12))
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
 	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
-	ok := false
+	ok = false
 	for _, m := range pf.Measurements {
 		if m.MeasurementValue.Equal(decimal.NewFromInt(12)) {
 			ok = true
@@ -694,7 +695,9 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			fetchedPrds, err := ps.GetProductsPaged(ctx, tc.limit, tc.offset, tc.sortFactors, tc.orderFactor, tc.filterConditions, tc.showHidden)
-			assert.NoError(t, err)
+			if err != nil {
+				t.Fatalf("GetProductsPaged failed with error: %v", err)
+			}
 
 			// Assert that the number of fetched products is as expected
 			assert.Equal(t, tc.expectedCount, len(fetchedPrds))
@@ -741,30 +744,30 @@ func TestProductStore_StockTest(t *testing.T) {
 	prd, err := ps.AddProduct(ctx, np)
 	assert.NoError(t, err)
 
-	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItem{
+	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItemInsert{
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    xlSize.ID,
-			Quantity:  1,
+			Quantity:  decimal.NewFromInt32(1),
 		},
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    lSize.ID,
-			Quantity:  1,
+			Quantity:  decimal.NewFromInt32(1),
 		},
 	})
 	assert.NoError(t, err)
 
-	err = ps.RestoreStockForProductSizes(ctx, []entity.OrderItem{
+	err = ps.RestoreStockForProductSizes(ctx, []entity.OrderItemInsert{
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    xlSize.ID,
-			Quantity:  1,
+			Quantity:  decimal.NewFromInt32(1),
 		},
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    lSize.ID,
-			Quantity:  1,
+			Quantity:  decimal.NewFromInt32(1),
 		},
 	})
 	assert.NoError(t, err)
@@ -788,11 +791,11 @@ func TestProductStore_StockTest(t *testing.T) {
 	assert.True(t, hasXLSize)
 
 	// must fail because of insufficient stock
-	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItem{
+	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItemInsert{
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    xlSize.ID,
-			Quantity:  11,
+			Quantity:  decimal.NewFromInt32(11),
 		},
 	})
 	assert.Error(t, err)
@@ -800,11 +803,11 @@ func TestProductStore_StockTest(t *testing.T) {
 	err = ps.UpdateProductSizeStock(ctx, prd.Product.ID, xlSize.ID, 20)
 	assert.NoError(t, err)
 
-	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItem{
+	err = ps.ReduceStockForProductSizes(ctx, []entity.OrderItemInsert{
 		{
 			ProductID: prd.Product.ID,
 			SizeID:    xlSize.ID,
-			Quantity:  11,
+			Quantity:  decimal.NewFromInt32(11),
 		},
 	})
 	assert.NoError(t, err)

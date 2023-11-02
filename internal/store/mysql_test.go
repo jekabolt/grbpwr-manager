@@ -30,9 +30,6 @@ func newTestDB(t *testing.T) *MYSQLStore {
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM promo_code")
 	assert.NoError(t, err)
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM shipment_carrier")
-	assert.NoError(t, err)
-
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM size_measurement")
 	assert.NoError(t, err)
 

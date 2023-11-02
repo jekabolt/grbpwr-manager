@@ -1,287 +1,654 @@
 package store
 
-// import (
-// 	"context"
-// 	"fmt"
-// 	"math/rand"
-// 	"testing"
-// 	"time"
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"math/rand"
+	"testing"
+	"time"
 
-// 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-// 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-// 	"github.com/shopspring/decimal"
-// 	"github.com/stretchr/testify/assert"
-// )
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
+)
 
-// func getTestOrders(count int, prds []dto.Product) []*dto.Order {
-// 	orders := []*dto.Order{}
+func getRandomPaymentMethod(db *MYSQLStore) (*entity.PaymentMethod, error) {
+	pms := db.cache.GetDict().PaymentMethods
+	if len(pms) == 0 {
+		return nil, fmt.Errorf("no payment methods found")
+	}
 
-// 	for i := 0; i < count; i++ {
-// 		order := &dto.Order{
-// 			Buyer:   getTestBuyer(),
-// 			Placed:  time.Now(),
-// 			Items:   getTestItems(rand.Intn(len(prds))+1, prds),
-// 			Payment: getTestPayment(),
-// 			Shipment: &dto.Shipment{
-// 				Carrier:              "DHL",
-// 				TrackingCode:         fmt.Sprintf("TRACK-%d", i+1),
-// 				ShippingDate:         time.Now().AddDate(0, 0, 2),
-// 				EstimatedArrivalDate: time.Now().AddDate(0, 0, 5),
-// 			},
-// 			TotalPrice: decimal.NewFromFloat(0),
-// 			Status:     getRandomOrderStatus(),
-// 		}
-// 		orders = append(orders, order)
-// 	}
+	index := rand.Intn(len(pms))
+	pm := pms[index]
 
-// 	return orders
-// }
+	// Safe return by copying the struct before taking its address
+	copiedPM := pm
+	return &copiedPM, nil
+}
 
-// func getTestBuyer() *dto.Buyer {
-// 	return &dto.Buyer{
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		Email:     "john.doe@example.com",
-// 		Phone:     "+1234567890",
-// 		BillingAddress: &dto.Address{
-// 			Street:          "123 Billing St",
-// 			HouseNumber:     "Apt 4B",
-// 			City:            "New York",
-// 			State:           "NY",
-// 			Country:         "USA",
-// 			PostalCode:      "10001",
-// 			ApartmentNumber: "",
-// 		},
-// 		ShippingAddress: &dto.Address{
-// 			Street:          "456 Shipping St",
-// 			HouseNumber:     "",
-// 			City:            "New York",
-// 			State:           "NY",
-// 			Country:         "USA",
-// 			PostalCode:      "10002",
-// 			ApartmentNumber: "Suite 10",
-// 		},
-// 		ReceivePromoEmails: true,
-// 	}
-// }
+func getRandomShipmentCarrier(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
+	scs := db.cache.GetDict().ShipmentCarriers
+	if len(scs) == 0 {
+		return nil, fmt.Errorf("no shipment carriers found")
+	}
 
-// func getTestPayment() *dto.Payment {
-// 	return &dto.Payment{
-// 		Method:            dto.USDC,
-// 		Currency:          dto.USDCrypto,
-// 		TransactionID:     "12345",
-// 		TransactionAmount: decimal.NewFromFloat(100.0),
-// 		Payer:             "John Doe",
-// 		Payee:             "Example Store",
-// 		IsTransactionDone: true,
-// 	}
-// }
+	index := rand.Intn(len(scs))
+	sc := scs[index]
 
-// func getTestItems(count int, prds []dto.Product) []dto.Item {
+	// Safe return by copying the struct before taking its address
+	copiedSC := sc
+	return &copiedSC, nil
+}
 
-// 	items := []dto.Item{}
-// 	for i := 0; i < count; i++ {
-// 		// rand elem in prds
-// 		n := rand.Int() % len(prds)
-// 		item := dto.Item{
-// 			ID:       prds[n].ProductInfo.Id,
-// 			Quantity: count,
-// 			Size:     "M",
-// 		}
-// 		items = append(items, item)
-// 	}
-// 	return items
-// }
+func getShipmentCarrierFree(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
+	scs := db.cache.GetDict().ShipmentCarriers
+	for _, sc := range scs {
+		if sc.Allowed && sc.Price.Equal(decimal.NewFromInt(0)) {
+			return &sc, nil
+		}
+	}
+	return nil, fmt.Errorf("no free shipment carrier found")
+}
 
-// func getRandomOrderStatus() dto.OrderStatus {
-// 	statuses := []dto.OrderStatus{
-// 		dto.OrderPlaced,
-// 		dto.OrderConfirmed,
-// 		dto.OrderShipped,
-// 		dto.OrderDelivered,
-// 		dto.OrderCancelled,
-// 		dto.OrderRefunded,
-// 	}
+func getShipmentCarrierPaid(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
+	scs := db.cache.GetDict().ShipmentCarriers
+	for _, sc := range scs {
+		if sc.Allowed && !sc.Price.Equal(decimal.NewFromInt(0)) {
+			return &sc, nil
+		}
+	}
+	return nil, fmt.Errorf("no paid shipment carrier found")
+}
 
-// 	index := rand.Intn(len(statuses))
-// 	return statuses[index]
-// }
+func newOrder(ctx context.Context, db *MYSQLStore, items []entity.OrderItemInsert, promoCode string, i int) (*entity.OrderNew, *entity.ShipmentCarrier, error) {
+	addr := &entity.AddressInsert{
+		Street:          "123 Billing St",
+		HouseNumber:     "Apt 4B",
+		City:            "New York",
+		State:           "NY",
+		Country:         "USA",
+		PostalCode:      "10001",
+		ApartmentNumber: "",
+	}
 
-// func TestOrdersStore_CreateOrder(t *testing.T) {
-// 	db := newTestDB(t)
-// 	os := db.Order()
-// 	ps := db.Products()
-// 	ctx := context.Background()
+	buyer := &entity.BuyerInsert{
+		FirstName:          fmt.Sprintf("order-%d", i),
+		LastName:           "Doe",
+		Email:              fmt.Sprintf("%d_test@test.com", i),
+		Phone:              "1234567890",
+		ReceivePromoEmails: true,
+	}
 
-// 	prds := getTestProd(10)
-// 	for _, p := range prds {
-// 		categories := []string{}
-// 		for _, c := range p.Categories {
-// 			categories = append(categories, c.Category)
-// 		}
-// 		err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
-// 		assert.NoError(t, err)
-// 	}
+	pm, err := getRandomPaymentMethod(db)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	limit, offset := int32(10), int32(0)
-// 	sortFactors := []dto.SortFactor{}
-// 	filterConditions := []dto.FilterCondition{}
+	sc, err := getRandomShipmentCarrier(db)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
-// 	assert.NoError(t, err)
+	return &entity.OrderNew{
+		Items:             items,
+		ShippingAddress:   addr,
+		BillingAddress:    addr,
+		Buyer:             buyer,
+		PaymentMethodId:   pm.ID,
+		ShipmentCarrierId: sc.ID,
+		PromoCode:         promoCode,
+	}, sc, nil
 
-// 	orders := getTestOrders(10, products)
+}
 
-// 	for _, order := range orders {
-// 		_, err := os.CreateOrder(ctx, order)
-// 		assert.Error(t, err)
-// 		err = db.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-// 			_, err := store.Order().CreateOrder(ctx, order)
-// 			return err
-// 		})
-// 		assert.NoError(t, err)
-// 	}
+func TestCreateOrder(t *testing.T) {
+	// Initialize the product store
+	db := newTestDB(t)
+	ps := db.Products()
+	ctx := context.Background()
 
-// 	email := getTestBuyer().Email
+	np, err := randomProductInsert(db, 1)
+	assert.NoError(t, err)
 
-// 	ordersByEmail, err := os.OrdersByEmail(ctx, email)
-// 	assert.NoError(t, err)
+	xlSize, ok := db.cache.GetSizesByName(entity.XL)
+	assert.True(t, ok)
 
-// 	assert.Equal(t, len(ordersByEmail), len(orders))
+	lSize, ok := db.cache.GetSizesByName(entity.L)
+	assert.True(t, ok)
 
-// 	for i, o := range ordersByEmail {
-// 		assert.Equal(t, o.Items, orders[i].Items)
-// 	}
+	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(10),
+				SizeID:   xlSize.ID,
+			},
+		},
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(15),
+				SizeID:   lSize.ID,
+			},
+		},
+	}
 
-// 	o, err := os.GetOrder(ctx, ordersByEmail[0].ID)
-// 	assert.NoError(t, err)
-// 	assert.Equal(t, *o, ordersByEmail[0])
+	// Insert new product
+	prd, err := ps.AddProduct(ctx, np)
+	assert.NoError(t, err)
 
-// 	err = db.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-// 		return store.Order().UpdateOrderStatus(ctx, ordersByEmail[0].ID, dto.OrderCancelled)
-// 	})
-// 	assert.NoError(t, err)
+	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
 
-// 	// check if cancelled orders is not visible
-// 	ordersByEmail, err = os.OrdersByEmail(ctx, email)
-// 	assert.NoError(t, err)
-// 	assert.Equal(t, len(orders)-1, len(ordersByEmail))
+	// order store
+	os := db.Order()
 
-// 	o = &ordersByEmail[0]
-// 	p := &dto.Payment{
-// 		Method:            dto.CardPayment,
-// 		Currency:          dto.EUR,
-// 		TransactionID:     "txid",
-// 		TransactionAmount: decimal.NewFromFloat(0.5),
-// 		Payer:             "payer",
-// 		Payee:             "payee",
-// 		IsTransactionDone: true,
-// 	}
+	// creating new order with one product in xl size and quantity 1
+	items := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    xlSize.ID,
+		},
+	}
+	// new order without promo code
+	newOrder, sc, err := newOrder(ctx, db, items, "", 1)
+	assert.NoError(t, err)
 
-// 	// tx amount is less than order amount
-// 	err = db.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-// 		return store.Order().OrderPaymentDone(ctx, o.ID, p)
-// 	})
-// 	assert.Error(t, err)
+	order, err := os.CreateOrder(ctx, newOrder)
+	assert.NoError(t, err)
+	assert.True(t, order.TotalPrice.Equal(p.Product.Price.Add(sc.ShipmentCarrierInsert.Price)))
 
-// 	// tx amount is equal to order amount
-// 	p.TransactionAmount = o.TotalPrice
-// 	err = db.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-// 		return store.Order().OrderPaymentDone(ctx, o.ID, p)
-// 	})
-// 	assert.NoError(t, err)
+	// promo free shipping
 
-// 	o, err = os.GetOrder(ctx, o.ID)
-// 	assert.NoError(t, err)
+	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
+		Code:         "freeShip",
+		FreeShipping: true,
+		Discount:     decimal.NewFromInt(0),
+		Expiration:   time.Now().Add(time.Hour * 24),
+		Allowed:      true,
+	})
+	assert.NoError(t, err)
 
-// 	assert.Equal(t, p.Method, o.Payment.Method)
-// 	assert.Equal(t, p.Currency, o.Payment.Currency)
-// 	assert.Equal(t, p.TransactionID, o.Payment.TransactionID)
-// 	assert.True(t, p.TransactionAmount.Equal(o.Payment.TransactionAmount))
-// 	assert.Equal(t, p.Payer, o.Payment.Payer)
-// 	assert.Equal(t, p.Payee, o.Payment.Payee)
-// 	assert.Equal(t, p.IsTransactionDone, o.Payment.IsTransactionDone)
+	newTotal, err := os.ApplyPromoCode(ctx, order.ID, "freeShip")
+	assert.NoError(t, err)
+	assert.True(t, newTotal.Equal(p.Product.Price), newTotal.String())
 
-// 	newItems := o.Items[1:]
+	// promo 10% off + free shipping
 
-// 	err = os.UpdateOrderItems(ctx, o.ID, newItems)
-// 	assert.NoError(t, err)
+	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
+		Code:         "freeShip10off",
+		FreeShipping: true,
+		Discount:     decimal.NewFromInt(10),
+		Expiration:   time.Now().Add(time.Hour * 24),
+		Allowed:      true,
+	})
+	assert.NoError(t, err)
 
-// 	o, err = os.GetOrder(ctx, o.ID)
-// 	assert.NoError(t, err)
+	newTotal, err = os.ApplyPromoCode(ctx, order.ID, "freeShip10off")
+	assert.NoError(t, err)
+	assert.True(t, newTotal.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9))))
 
-// 	assert.Equal(t, newItems, o.Items)
+	// new order items with one product size and quantity 2
 
-// }
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    lSize.ID,
+		},
+	})
+	assert.NoError(t, err)
 
-// func TestOrdersStore_Promo(t *testing.T) {
-// 	db := newTestDB(t)
-// 	os := db.Order()
-// 	ps := db.Products()
-// 	prs := db.Promo()
-// 	ctx := context.Background()
+	orderFull, err := os.GetOrderById(ctx, order.ID)
+	assert.NoError(t, err)
 
-// 	p := getTestProd(1)[0]
-// 	categories := []string{}
-// 	for _, c := range p.Categories {
-// 		categories = append(categories, c.Category)
-// 	}
-// 	err := ps.AddProduct(ctx, p.ProductInfo.Name, p.ProductInfo.Description, p.ProductInfo.Preorder, p.AvailableSizes, p.Price, p.Media, categories)
-// 	assert.NoError(t, err)
+	assert.Equal(t, 1, len(orderFull.OrderItems))
+	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
+	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(2))))
 
-// 	limit, offset := int32(10), int32(0)
-// 	sortFactors := []dto.SortFactor{}
-// 	filterConditions := []dto.FilterCondition{}
+	// new order items with one product size but passed as two separate items
 
-// 	products, err := ps.GetProductsPaged(ctx, limit, offset, sortFactors, filterConditions, false)
-// 	assert.NoError(t, err)
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    lSize.ID,
+		},
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    lSize.ID,
+		},
+	})
+	assert.NoError(t, err)
 
-// 	orders := getTestOrders(1, products)
+	orderFull, err = os.GetOrderById(ctx, order.ID)
+	assert.NoError(t, err)
 
-// 	order := &dto.Order{}
-// 	err = db.Tx(ctx, func(ctx context.Context, store dependency.Repository) error {
-// 		order, err = store.Order().CreateOrder(ctx, orders[0])
-// 		return err
-// 	})
-// 	assert.NoError(t, err)
+	assert.Equal(t, 1, len(orderFull.OrderItems))
+	assert.Equal(t, 4, int(orderFull.OrderItems[0].Quantity.IntPart()))
+	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(4))))
 
-// 	order, err = os.GetOrder(ctx, order.ID)
-// 	assert.NoError(t, err)
-// 	// check wether order total price is equal to product price + shipment cost
-// 	assert.True(t, order.TotalPrice.Equal(p.Price.USDC.Add(order.Shipment.Cost)))
+	// new order items with two product sizes
 
-// 	// apply wrong promo code
-// 	err = os.ApplyPromoCode(ctx, order.ID, "fake promo")
-// 	assert.Error(t, err)
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    lSize.ID,
+		},
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    xlSize.ID,
+		},
+	})
 
-// 	// add promo code
+	assert.NoError(t, err)
 
-// 	err = prs.AddPromo(ctx, promoFreeShip)
-// 	assert.NoError(t, err)
-// 	err = prs.AddPromo(ctx, promoSale)
-// 	assert.NoError(t, err)
+	orderFull, err = os.GetOrderById(ctx, order.ID)
+	assert.NoError(t, err)
 
-// 	// apply existing promo code with free shipping
-// 	err = os.ApplyPromoCode(ctx, order.ID, promoFreeShip.Code)
-// 	assert.NoError(t, err)
+	assert.Equal(t, 2, len(orderFull.OrderItems))
+	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
+	assert.Equal(t, 2, int(orderFull.OrderItems[1].Quantity.IntPart()))
+	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(4))))
 
-// 	orderWPromo, err := os.GetOrder(ctx, order.ID)
-// 	assert.NoError(t, err)
+	// new order items with two product sizes with one size quantity 0
 
-// 	// check if original order total price - shipment cost == new total price
-// 	assert.True(t, order.TotalPrice.Sub(order.Shipment.Cost).Equal(orderWPromo.TotalPrice))
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(2),
+			SizeID:    lSize.ID,
+		},
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(0),
+			SizeID:    xlSize.ID,
+		},
+	})
 
-// 	// apply existing promo code with 10% off
-// 	err = os.ApplyPromoCode(ctx, order.ID, promoSale.Code)
-// 	assert.NoError(t, err)
+	assert.NoError(t, err)
 
-// 	orderWPromo, err = os.GetOrder(ctx, order.ID)
-// 	assert.NoError(t, err)
+	orderFull, err = os.GetOrderById(ctx, order.ID)
+	assert.NoError(t, err)
 
-// 	salePrice := order.TotalPrice.Sub(order.Shipment.Cost)
-// 	salePrice = salePrice.Mul(decimal.NewFromFloat(1).Sub(promoSale.Sale.Div(decimal.NewFromFloat(100))))
-// 	salePrice = salePrice.Add(order.Shipment.Cost)
+	assert.Equal(t, 1, len(orderFull.OrderItems))
+	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
+	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(2))))
 
-// 	// check if original order total price - shipment cost == new total price
-// 	assert.True(t, salePrice.Equal(orderWPromo.TotalPrice))
-// }
+	// update shipment carrier to paid, disable promo check
+	// if amount calculated correctly
+
+	paidSc, err := getShipmentCarrierPaid(db)
+	assert.NoError(t, err)
+
+	err = os.UpdateOrderShippingCarrier(ctx, order.ID, paidSc.ID)
+	assert.NoError(t, err)
+
+	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
+		Code:         "noPromo",
+		FreeShipping: false,
+		Discount:     decimal.NewFromInt(0),
+		Expiration:   time.Now().Add(time.Hour * 24),
+		Allowed:      true,
+	})
+
+	assert.NoError(t, err)
+
+	newTotal, err = os.ApplyPromoCode(ctx, order.ID, "noPromo")
+	assert.NoError(t, err)
+	assert.True(t, newTotal.Equal(p.Product.Price.Mul(decimal.NewFromInt32(2)).Add(paidSc.ShipmentCarrierInsert.Price)))
+
+	// new order items with two product sizes with both sizes quantity 0
+	// to trigger cancellation
+
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(0),
+			SizeID:    lSize.ID,
+		},
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(0),
+			SizeID:    xlSize.ID,
+		},
+	})
+
+	assert.NoError(t, err)
+
+	orderFull, err = os.GetOrderById(ctx, order.ID)
+	assert.NoError(t, err)
+
+	assert.True(t, orderFull.OrderStatus.Name == entity.Cancelled)
+
+	// new order items trigger error because of status cancelled
+
+	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(0),
+			SizeID:    lSize.ID,
+		},
+	})
+	assert.Error(t, err)
+}
+
+func TestPurchase(t *testing.T) {
+	// Initialize the product store
+	db := newTestDB(t)
+	ps := db.Products()
+	ctx := context.Background()
+
+	np, err := randomProductInsert(db, 1)
+	assert.NoError(t, err)
+
+	xlSize, ok := db.cache.GetSizesByName(entity.XL)
+	assert.True(t, ok)
+
+	lSize, ok := db.cache.GetSizesByName(entity.L)
+	assert.True(t, ok)
+
+	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(1),
+				SizeID:   xlSize.ID,
+			},
+		},
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(1),
+				SizeID:   lSize.ID,
+			},
+		},
+	}
+
+	// Insert new product
+	prd, err := ps.AddProduct(ctx, np)
+	assert.NoError(t, err)
+
+	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
+
+	// order store
+	os := db.Order()
+
+	// creating new order with one product in xl size and quantity 1
+	itemsXL := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    xlSize.ID,
+		},
+	}
+	itemsL := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    lSize.ID,
+		},
+	}
+
+	newOrderXL, scXL, err := newOrder(ctx, db, itemsXL, "", 1)
+	assert.NoError(t, err)
+
+	newOrderL, scL, err := newOrder(ctx, db, itemsL, "", 1)
+	assert.NoError(t, err)
+
+	orderXL, err := os.CreateOrder(ctx, newOrderXL)
+	assert.NoError(t, err)
+	assert.True(t, orderXL.TotalPrice.Equal(p.Product.Price.Add(scXL.ShipmentCarrierInsert.Price)))
+
+	statusPlaced, ok := db.cache.GetOrderStatusByName(entity.Placed)
+	assert.True(t, ok)
+	assert.Equal(t, orderXL.OrderStatusID, statusPlaced.ID)
+
+	orderL, err := os.CreateOrder(ctx, newOrderL)
+	assert.NoError(t, err)
+	assert.True(t, orderL.TotalPrice.Equal(p.Product.Price.Add(scL.ShipmentCarrierInsert.Price)))
+
+	// getting product by id to check if quantity is not updated
+
+	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
+	assert.True(t, len(p.Sizes) == 2)
+	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
+	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
+
+	// purchase order with xl size
+
+	pi := &entity.PaymentInsert{
+		TransactionID: sql.NullString{
+			String: "1234567890",
+			Valid:  true,
+		},
+		TransactionAmount: orderXL.TotalPrice,
+		Payer: sql.NullString{
+			String: "payer",
+			Valid:  true,
+		},
+		Payee: sql.NullString{
+			String: "payee",
+			Valid:  true,
+		},
+		IsTransactionDone: true,
+	}
+
+	pmXL, err := getRandomPaymentMethod(db)
+	assert.NoError(t, err)
+
+	pi.PaymentMethodID = pmXL.ID
+	pi.TransactionAmount = orderXL.TotalPrice
+
+	err = os.OrderPaymentDone(ctx, orderXL.ID, pi)
+	assert.NoError(t, err)
+
+	// purchase order with l size
+
+	pmL, err := getRandomPaymentMethod(db)
+	assert.NoError(t, err)
+
+	pi.PaymentMethodID = pmL.ID
+	pi.TransactionAmount = orderL.TotalPrice
+
+	err = os.OrderPaymentDone(ctx, orderL.ID, pi)
+	assert.NoError(t, err)
+
+	// now make sure that orders has status confirmed
+
+	// for xl
+	statusConfirmed, ok := db.cache.GetOrderStatusByName(entity.Confirmed)
+	assert.True(t, ok)
+
+	orderFullXL, err := os.GetOrderById(ctx, orderXL.ID)
+	assert.NoError(t, err)
+
+	assert.Equal(t, orderFullXL.OrderStatus.ID, statusConfirmed.ID)
+
+	// for l
+	orderFullL, err := os.GetOrderById(ctx, orderL.ID)
+	assert.NoError(t, err)
+
+	assert.Equal(t, orderFullL.OrderStatus.ID, statusConfirmed.ID)
+
+	// than make sure that product quantity is updated
+
+	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
+
+	assert.True(t, len(p.Sizes) == 2)
+	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(0)))
+	assert.True(t, p.Sizes[1].Quantity.Equal(decimal.NewFromInt(0)))
+
+	// try to create order with out of stock item to trigger error
+
+	itemsOutOfStock := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    lSize.ID,
+		},
+	}
+
+	newOrderOutOfStock, _, err := newOrder(ctx, db, itemsOutOfStock, "", 1)
+	assert.NoError(t, err)
+
+	_, err = os.CreateOrder(ctx, newOrderOutOfStock)
+	assert.Error(t, err)
+
+}
+
+func TestOrderOutOfStock(t *testing.T) {
+	// Initialize the product store
+	db := newTestDB(t)
+	ps := db.Products()
+	ctx := context.Background()
+
+	np, err := randomProductInsert(db, 1)
+	assert.NoError(t, err)
+
+	xlSize, ok := db.cache.GetSizesByName(entity.XL)
+	assert.True(t, ok)
+
+	lSize, ok := db.cache.GetSizesByName(entity.L)
+	assert.True(t, ok)
+
+	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(1),
+				SizeID:   xlSize.ID,
+			},
+		},
+		{
+			ProductSize: entity.ProductSizeInsert{
+				Quantity: decimal.NewFromInt(1),
+				SizeID:   lSize.ID,
+			},
+		},
+	}
+
+	// Insert new product
+	prd, err := ps.AddProduct(ctx, np)
+	assert.NoError(t, err)
+
+	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
+
+	// order store
+	os := db.Order()
+
+	// creating new order with one product in xl size and quantity 1
+	items := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    xlSize.ID,
+		},
+	}
+
+	itemsToClean := []entity.OrderItemInsert{
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    xlSize.ID,
+		},
+		{
+			ProductID: p.Product.ID,
+			Quantity:  decimal.NewFromInt32(1),
+			SizeID:    lSize.ID,
+		},
+	}
+
+	// ok order with would be fulfilled
+
+	newOrderOK, scOK, err := newOrder(ctx, db, items, "", 1)
+	assert.NoError(t, err)
+
+	orderOk, err := os.CreateOrder(ctx, newOrderOK)
+	assert.NoError(t, err)
+	assert.True(t, orderOk.TotalPrice.Equal(p.Product.Price.Add(scOK.ShipmentCarrierInsert.Price)))
+
+	// bad order with would not be fulfilled because of out of stock
+	newOrderBad, scBad, err := newOrder(ctx, db, items, "", 1)
+	assert.NoError(t, err)
+
+	orderBad, err := os.CreateOrder(ctx, newOrderBad)
+	assert.NoError(t, err)
+	assert.True(t, orderBad.TotalPrice.Equal(p.Product.Price.Add(scBad.ShipmentCarrierInsert.Price)))
+
+	// order to clean up
+	newOrderToClean, scClean, err := newOrder(ctx, db, itemsToClean, "", 1)
+	assert.NoError(t, err)
+
+	orderToClean, err := os.CreateOrder(ctx, newOrderToClean)
+	assert.NoError(t, err)
+	assert.True(t, orderToClean.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat32(2)).Add(scClean.ShipmentCarrierInsert.Price)))
+
+	// check that both orders has status placed
+	statusPlaced, ok := db.cache.GetOrderStatusByName(entity.Placed)
+	assert.True(t, ok)
+	assert.Equal(t, orderOk.OrderStatusID, statusPlaced.ID)
+	assert.Equal(t, orderBad.OrderStatusID, statusPlaced.ID)
+	assert.Equal(t, orderToClean.OrderStatusID, statusPlaced.ID)
+
+	// getting product by id to check if quantity is not updated
+	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	assert.NoError(t, err)
+	assert.True(t, len(p.Sizes) == 2, len(p.Sizes))
+	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
+
+	// purchase first order
+
+	pi := &entity.PaymentInsert{
+		TransactionID: sql.NullString{
+			String: "1234567890",
+			Valid:  true,
+		},
+		TransactionAmount: orderOk.TotalPrice,
+		Payer: sql.NullString{
+			String: "payer",
+			Valid:  true,
+		},
+		Payee: sql.NullString{
+			String: "payee",
+			Valid:  true,
+		},
+		IsTransactionDone: true,
+	}
+
+	pm, err := getRandomPaymentMethod(db)
+	assert.NoError(t, err)
+
+	pi.PaymentMethodID = pm.ID
+	pi.TransactionAmount = orderOk.TotalPrice
+
+	// try to pay for ok order
+	err = os.OrderPaymentDone(ctx, orderOk.ID, pi)
+	assert.NoError(t, err)
+
+	// try to pay for bad order where product is out of stock
+	// must trigger error and change status to cancelled
+	// cause every order item is out of stock
+	pi.TransactionAmount = orderBad.TotalPrice
+
+	err = os.OrderPaymentDone(ctx, orderBad.ID, pi)
+	assert.Error(t, err)
+
+	// try to pay for bad order where product is out of stock
+	// must trigger error and clean up order items
+	// i.e remove order items with quantity 0
+
+	pi.TransactionAmount = orderToClean.TotalPrice
+	err = os.OrderPaymentDone(ctx, orderToClean.ID, pi)
+	assert.Error(t, err)
+
+	// on second try order would be cleaned up and can be paid
+
+	err = os.OrderPaymentDone(ctx, orderToClean.ID, pi)
+	assert.NoError(t, err)
+
+}

@@ -256,9 +256,10 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		}
 	}
 
-	if orderFactor == "" {
-		orderFactor = entity.Ascending
-	}
+	// TODO:
+	// if orderFactor == "" {
+	// 	orderFactor = entity.Ascending
+	// }
 
 	// Initialize
 	baseQuery := "SELECT * FROM product"
@@ -325,6 +326,9 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	slog.Default().DebugCtx(ctx, "paged query",
 		slog.String("query", query),
 	)
+	slog.Default().DebugCtx(ctx, "paged argsSlice",
+		slog.Any("argsSlice", argsSlice),
+	)
 	// Execute query
 	return selectProducts(ctx, ms, query, argsSlice)
 }
@@ -336,10 +340,13 @@ func buildQuery(baseQuery string, sortFactors []entity.SortFactor, orderFactor e
 	}
 	if len(sortFactors) > 0 {
 		baseQuery += " ORDER BY " + strings.Join(entity.SortFactorsToSS(sortFactors), ", ")
+		if orderFactor != "" {
+			baseQuery += " " + string(orderFactor)
+		} else {
+			baseQuery += " " + string(entity.Ascending)
+		}
 	}
-	if orderFactor != "" {
-		baseQuery += " " + string(orderFactor)
-	}
+
 	baseQuery += " LIMIT :limit OFFSET :offset"
 
 	return baseQuery, nil
@@ -441,7 +448,7 @@ func (ms *MYSQLStore) SetSaleByID(ctx context.Context, id int, salePercent decim
 	})
 }
 
-func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItem) error {
+func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error {
 	for _, item := range items {
 
 		query := `SELECT * FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
@@ -453,7 +460,7 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 			return fmt.Errorf("error checking current quantity: %w", err)
 		}
 
-		if productSize.Quantity.Add(decimal.NewFromInt(int64(-item.Quantity))).LessThan(decimal.Zero) {
+		if productSize.Quantity.Add(item.Quantity.Neg()).LessThan(decimal.Zero) {
 			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductID, item.SizeID)
 		}
 
@@ -470,7 +477,7 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 	return nil
 }
 
-func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItem) error {
+func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error {
 	for _, item := range items {
 		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err := ExecNamed(ctx, ms.db, updateQuery, map[string]any{

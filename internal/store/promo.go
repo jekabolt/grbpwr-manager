@@ -20,7 +20,7 @@ func (ms *MYSQLStore) Promo() dependency.Promo {
 }
 
 func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
-	err := ExecNamed(ctx, ms.DB(), `INSERT INTO promo_codes (code, free_shipping, discount, expiration, allowed) VALUES
+	id, err := ExecNamedLastId(ctx, ms.DB(), `INSERT INTO promo_code (code, free_shipping, discount, expiration, allowed) VALUES
 		(:code, :freeShipping, :discount, :expiration, :allowed)`, map[string]any{
 		"code":         promo.Code,
 		"freeShipping": promo.FreeShipping,
@@ -31,12 +31,17 @@ func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInser
 	if err != nil {
 		return fmt.Errorf("failed to add promo code: %w", err)
 	}
+	ms.cache.AddPromo(entity.PromoCode{
+		ID:              id,
+		PromoCodeInsert: *promo,
+	})
+
 	return nil
 }
 
 func (ms *MYSQLStore) ListPromos(ctx context.Context) ([]entity.PromoCode, error) {
 	query := `
-	SELECT * FROM promo_codes`
+	SELECT * FROM promo_code`
 	promos, err := QueryListNamed[entity.PromoCode](ctx, ms.DB(), query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get PromoCode list: %w", err)
@@ -45,7 +50,7 @@ func (ms *MYSQLStore) ListPromos(ctx context.Context) ([]entity.PromoCode, error
 }
 
 func (ms *MYSQLStore) DeletePromoCode(ctx context.Context, code string) error {
-	err := ExecNamed(ctx, ms.DB(), `DELETE FROM promo_codes WHERE code = :code`, map[string]any{
+	err := ExecNamed(ctx, ms.DB(), `DELETE FROM promo_code WHERE code = :code`, map[string]any{
 		"code": code,
 	})
 	if err != nil {
@@ -55,7 +60,7 @@ func (ms *MYSQLStore) DeletePromoCode(ctx context.Context, code string) error {
 }
 
 func (ms *MYSQLStore) DisablePromoCode(ctx context.Context, code string) error {
-	err := ExecNamed(ctx, ms.DB(), `UPDATE promo_codes SET allowed = false WHERE code = :code`, map[string]any{
+	err := ExecNamed(ctx, ms.DB(), `UPDATE promo_code SET allowed = false WHERE code = :code`, map[string]any{
 		"code": code,
 	})
 	if err != nil {
