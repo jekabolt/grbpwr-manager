@@ -651,4 +651,23 @@ func TestOrderOutOfStock(t *testing.T) {
 	err = os.OrderPaymentDone(ctx, orderToClean.ID, pi)
 	assert.NoError(t, err)
 
+	// orders by status
+
+	// one cancelled - bad order
+	orders, err := os.GetOrdersByStatus(ctx, entity.Cancelled)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(orders))
+
+	email := orders[0].Buyer.Email
+
+	// two confirmed - ok order and order to clean up
+	orders, err = os.GetOrdersByStatus(ctx, entity.Confirmed)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(orders))
+
+	// by email 3 orders - ok order, order to clean up and bad order
+
+	orders, err = os.GetOrdersByEmail(ctx, email)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(orders))
 }
