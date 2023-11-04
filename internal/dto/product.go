@@ -33,10 +33,6 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 	if err != nil {
 		return nil, err
 	}
-	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(pbProductNew.Product.TargetGender))]
-	if !ok {
-		return nil, fmt.Errorf("bad target gender")
-	}
 
 	productInsert := &entity.ProductInsert{
 		Preorder:        sql.NullString{String: pbProductNew.Product.Preorder, Valid: pbProductNew.Product.Preorder != ""},
@@ -52,7 +48,7 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 		CategoryID:      int(pbProductNew.Product.CategoryId),
 		Description:     pbProductNew.Product.Description,
 		Hidden:          sql.NullBool{Bool: pbProductNew.Product.Hidden, Valid: true},
-		TargetGender:    entity.GenderEnum(tg),
+		TargetGender:    entity.GenderEnum(pbProductNew.Product.TargetGender.String()),
 	}
 
 	// Convert SizeMeasurements
