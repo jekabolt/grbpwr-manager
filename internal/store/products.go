@@ -194,7 +194,7 @@ func sizesAndMeasurements(sizesWithMeasurements []entity.SizeWithMeasurement) ([
 func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error) {
 
 	pi := &entity.ProductFull{}
-	ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
 		pi.Product, err = insertProduct(ctx, rep, prd.Product)
 		if err != nil {
@@ -218,6 +218,9 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 
 		return nil
 	})
+	if err != nil {
+		return nil, fmt.Errorf("can't add product: %w", err)
+	}
 
 	return pi, nil
 }
