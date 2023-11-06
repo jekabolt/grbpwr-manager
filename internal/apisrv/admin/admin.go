@@ -2,14 +2,16 @@ package admin
 
 import (
 	"context"
+	"fmt"
 
+	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/form"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,16 +36,6 @@ func New(r dependency.Repository, b dependency.FileStore) *Server {
 
 // UploadContentImage
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_common.Media, error) {
-	r := form.UploadContentImageRequest{
-		UploadContentImageRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, req.Folder, req.ImageName)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content image",
@@ -56,16 +48,6 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 
 // UploadContentVideo
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_common.Media, error) {
-	r := form.UploadContentVideoRequest{
-		UploadContentVideoRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content video",
@@ -78,16 +60,7 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
-	r := form.DeleteFromBucketRequest{
-		DeleteFromBucketRequest: req,
-	}
 	resp := &pb_admin.DeleteFromBucketResponse{}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return resp, err
-	}
 	err := s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
@@ -115,22 +88,21 @@ func (s *Server) ListObjects(ctx context.Context, req *pb_admin.ListObjectsReque
 // PRODUCT MANAGER
 
 func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest) (*pb_admin.AddProductResponse, error) {
-	r := form.AddProductRequest{
-		AddProductRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	prdNew, err := dto.ConvertFromPbToEntity(req.GetProduct())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert proto product to dto product",
+		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to dto product")
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product")
+	}
+
+	_, err = v.ValidateStruct(prdNew)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "validation add product request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %w", err).Error())
 	}
 
 	prd, err := s.repo.Products().AddProduct(ctx, prdNew)
@@ -143,10 +115,10 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 	pbPrd, err := dto.ConvertToPbProductFull(prd)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
+		slog.Default().ErrorCtx(ctx, "can't convert entity product to proto product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
+		return nil, status.Errorf(codes.Internal, "can't convert entity product to proto product")
 	}
 
 	return &pb_admin.AddProductResponse{
@@ -155,15 +127,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 }
 
 func (s *Server) AddProductMeasurement(ctx context.Context, req *pb_admin.AddProductMeasurementRequest) (*pb_admin.AddProductMeasurementResponse, error) {
-	r := form.AddProductMeasurementRequest{
-		AddProductMeasurementRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "validation request failed")
-	}
+
 	value, err := decimal.NewFromString(req.MeasurementValue)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert measurement value to decimal",
@@ -183,16 +147,6 @@ func (s *Server) AddProductMeasurement(ctx context.Context, req *pb_admin.AddPro
 }
 
 func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMediaRequest) (*pb_admin.AddProductMediaResponse, error) {
-	r := form.AddProductMediaRequest{
-		AddProductMediaRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().AddProductMedia(ctx, int(req.ProductId), req.FullSize, req.Thumbnail, req.Compressed)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't add product media",
@@ -204,16 +158,6 @@ func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMe
 }
 
 func (s *Server) AddProductTag(ctx context.Context, req *pb_admin.AddProductTagRequest) (*pb_admin.AddProductTagResponse, error) {
-	r := form.AddProductTagRequest{
-		AddProductTagRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().AddProductTag(ctx, int(req.ProductId), req.Tag)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't add product tag",
@@ -225,16 +169,6 @@ func (s *Server) AddProductTag(ctx context.Context, req *pb_admin.AddProductTagR
 }
 
 func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
-	r := form.DeleteProductByIDRequest{
-		DeleteProductByIDRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().DeleteProductByID(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete product",
@@ -246,16 +180,6 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 }
 
 func (s *Server) DeleteProductMeasurement(ctx context.Context, req *pb_admin.DeleteProductMeasurementRequest) (*pb_admin.DeleteProductMeasurementResponse, error) {
-	r := form.DeleteProductMeasurementRequest{
-		DeleteProductMeasurementRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().DeleteProductMeasurement(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete product measurement",
@@ -267,16 +191,6 @@ func (s *Server) DeleteProductMeasurement(ctx context.Context, req *pb_admin.Del
 }
 
 func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeleteProductMediaRequest) (*pb_admin.DeleteProductMediaResponse, error) {
-	r := form.DeleteProductMediaRequest{
-		DeleteProductMediaRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().DeleteProductMedia(ctx, int(req.ProductMediaId))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete product media",
@@ -288,16 +202,6 @@ func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeletePro
 }
 
 func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProductTagRequest) (*pb_admin.DeleteProductTagResponse, error) {
-	r := form.DeleteProductTagRequest{
-		DeleteProductTagRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().DeleteProductTag(ctx, int(req.ProductId), req.Tag)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete product tag",
@@ -309,15 +213,6 @@ func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProdu
 }
 
 func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
-	r := form.GetProductByIDRequest{
-		GetProductByIDRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	pf, err := s.repo.Products().GetProductByID(ctx, int(req.Id))
 	if err != nil {
@@ -342,24 +237,19 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 }
 
 func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProductsPagedRequest) (*pb_admin.GetProductsPagedResponse, error) {
-	r := form.GetProductsPagedRequest{
-		GetProductsPagedRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
-	slog.Default().DebugCtx(ctx, "HEHE",
-		slog.Any("req", req),
-	)
 
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
 		sfs = append(sfs, dto.ConvertPBCommonSortFactorToEntity(sf))
 	}
+
+	// Validate parameters
+	if req.Limit <= 0 || req.Offset <= 0 {
+		req.Limit, req.Offset = 15, 0
+	}
+
+	// remove duplicates
+	sfs = slices.Compact(sfs)
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
@@ -391,16 +281,6 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 }
 
 func (s *Server) HideProductByID(ctx context.Context, req *pb_admin.HideProductByIDRequest) (*pb_admin.HideProductByIDResponse, error) {
-	r := form.HideProductByIDRequest{
-		HideProductByIDRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().HideProductByID(ctx, int(req.Id), req.Hide)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't hide product by id",
@@ -412,14 +292,8 @@ func (s *Server) HideProductByID(ctx context.Context, req *pb_admin.HideProductB
 }
 
 func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.ReduceStockForProductSizesRequest) (*pb_admin.ReduceStockForProductSizesResponse, error) {
-	r := form.ReduceStockForProductSizesRequest{
-		ReduceStockForProductSizesRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if len(req.Items) == 0 {
+		return &pb_admin.ReduceStockForProductSizesResponse{}, nil
 	}
 
 	items := make([]entity.OrderItemInsert, 0, len(req.Items))
@@ -439,16 +313,9 @@ func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.R
 }
 
 func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.RestoreStockForProductSizesRequest) (*pb_admin.RestoreStockForProductSizesResponse, error) {
-	r := form.RestoreStockForProductSizesRequest{
-		RestoreStockForProductSizesRequest: req,
+	if len(req.Items) == 0 {
+		return &pb_admin.RestoreStockForProductSizesResponse{}, nil
 	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	items := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, item := range req.Items {
 		items = append(items, dto.ConvertPbOrderItemToEntity(item))
@@ -465,15 +332,6 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 }
 
 func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDRequest) (*pb_admin.SetSaleByIDResponse, error) {
-	r := form.SetSaleByIDRequest{
-		SetSaleByIDRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	sale, err := decimal.NewFromString(req.SalePercent)
 	if err != nil {
@@ -481,6 +339,10 @@ func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDReque
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert sale to decimal")
+	}
+
+	if sale.GreaterThan(decimal.NewFromInt(100)) || sale.LessThan(decimal.NewFromInt(0)) {
+		return nil, status.Errorf(codes.InvalidArgument, "sale must be between 0 and 100")
 	}
 
 	err = s.repo.Products().SetSaleByID(ctx, int(req.Id), sale)
@@ -494,16 +356,9 @@ func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDReque
 }
 
 func (s *Server) UpdateProductBrand(ctx context.Context, req *pb_admin.UpdateProductBrandRequest) (*pb_admin.UpdateProductBrandResponse, error) {
-	r := form.UpdateProductBrandRequest{
-		UpdateProductBrandRequest: req,
+	if req.Brand == "" {
+		return &pb_admin.UpdateProductBrandResponse{}, fmt.Errorf("brand is empty")
 	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().UpdateProductBrand(ctx, int(req.ProductID), req.Brand)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product brand",
@@ -515,15 +370,6 @@ func (s *Server) UpdateProductBrand(ctx context.Context, req *pb_admin.UpdatePro
 }
 
 func (s *Server) UpdateProductCategory(ctx context.Context, req *pb_admin.UpdateProductCategoryRequest) (*pb_admin.UpdateProductCategoryResponse, error) {
-	r := form.UpdateProductCategoryRequest{
-		UpdateProductCategoryRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 	err := s.repo.Products().UpdateProductCategory(ctx, int(req.ProductID), int(req.CategoryID))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product category",
@@ -535,14 +381,12 @@ func (s *Server) UpdateProductCategory(ctx context.Context, req *pb_admin.Update
 }
 
 func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admin.UpdateProductColorAndColorHexRequest) (*pb_admin.UpdateProductColorAndColorHexResponse, error) {
-	r := form.UpdateProductColorAndColorHexRequest{
-		UpdateProductColorAndColorHexRequest: req,
+	if req.Color == "" {
+		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color is empty")
 	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+
+	if v.IsHexcolor(req.ColorHex) {
+		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color hex is not valid")
 	}
 
 	err := s.repo.Products().UpdateProductColorAndColorHex(ctx, int(req.ProductID), req.Color, req.ColorHex)
@@ -556,16 +400,6 @@ func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admi
 }
 
 func (s *Server) UpdateProductCountryOfOrigin(ctx context.Context, req *pb_admin.UpdateProductCountryOfOriginRequest) (*pb_admin.UpdateProductCountryOfOriginResponse, error) {
-	r := form.UpdateProductCountryOfOriginRequest{
-		UpdateProductCountryOfOriginRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().UpdateProductCountryOfOrigin(ctx, int(req.ProductID), req.CountryOfOrigin)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product country of origin",
@@ -577,14 +411,8 @@ func (s *Server) UpdateProductCountryOfOrigin(ctx context.Context, req *pb_admin
 }
 
 func (s *Server) UpdateProductDescription(ctx context.Context, req *pb_admin.UpdateProductDescriptionRequest) (*pb_admin.UpdateProductDescriptionResponse, error) {
-	r := form.UpdateProductDescriptionRequest{
-		UpdateProductDescriptionRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if req.Description == "" {
+		return &pb_admin.UpdateProductDescriptionResponse{}, fmt.Errorf("description is empty")
 	}
 
 	err := s.repo.Products().UpdateProductDescription(ctx, int(req.ProductID), req.Description)
@@ -598,14 +426,8 @@ func (s *Server) UpdateProductDescription(ctx context.Context, req *pb_admin.Upd
 }
 
 func (s *Server) UpdateProductName(ctx context.Context, req *pb_admin.UpdateProductNameRequest) (*pb_admin.UpdateProductNameResponse, error) {
-	r := form.UpdateProductNameRequest{
-		UpdateProductNameRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if req.Name == "" {
+		return &pb_admin.UpdateProductNameResponse{}, fmt.Errorf("name is empty")
 	}
 
 	err := s.repo.Products().UpdateProductName(ctx, int(req.ProductID), req.Name)
@@ -619,16 +441,6 @@ func (s *Server) UpdateProductName(ctx context.Context, req *pb_admin.UpdateProd
 }
 
 func (s *Server) UpdateProductPreorder(ctx context.Context, req *pb_admin.UpdateProductPreorderRequest) (*pb_admin.UpdateProductPreorderResponse, error) {
-	r := form.UpdateProductPreorderRequest{
-		UpdateProductPreorderRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().UpdateProductPreorder(ctx, int(req.ProductID), req.Preorder)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product preorder",
@@ -640,15 +452,6 @@ func (s *Server) UpdateProductPreorder(ctx context.Context, req *pb_admin.Update
 }
 
 func (s *Server) UpdateProductPrice(ctx context.Context, req *pb_admin.UpdateProductPriceRequest) (*pb_admin.UpdateProductPriceResponse, error) {
-	r := form.UpdateProductPriceRequest{
-		UpdateProductPriceRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	price, err := decimal.NewFromString(req.Price)
 	if err != nil {
@@ -669,14 +472,8 @@ func (s *Server) UpdateProductPrice(ctx context.Context, req *pb_admin.UpdatePro
 }
 
 func (s *Server) UpdateProductSKU(ctx context.Context, req *pb_admin.UpdateProductSKURequest) (*pb_admin.UpdateProductSKUResponse, error) {
-	r := form.UpdateProductSKURequest{
-		UpdateProductSKURequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if req.Sku == "" {
+		return &pb_admin.UpdateProductSKUResponse{}, fmt.Errorf("sku is empty")
 	}
 
 	err := s.repo.Products().UpdateProductSKU(ctx, int(req.ProductID), req.Sku)
@@ -690,15 +487,6 @@ func (s *Server) UpdateProductSKU(ctx context.Context, req *pb_admin.UpdateProdu
 }
 
 func (s *Server) UpdateProductSale(ctx context.Context, req *pb_admin.UpdateProductSaleRequest) (*pb_admin.UpdateProductSaleResponse, error) {
-	r := form.UpdateProductSaleRequest{
-		UpdateProductSaleRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	sale, err := decimal.NewFromString(req.Sale)
 	if err != nil {
@@ -720,16 +508,6 @@ func (s *Server) UpdateProductSale(ctx context.Context, req *pb_admin.UpdateProd
 }
 
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
-	r := form.UpdateProductSizeStockRequest{
-		UpdateProductSizeStockRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().UpdateProductSizeStock(ctx, int(req.ProductId), int(req.SizeId), int(req.Quantity))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product size stock",
@@ -741,15 +519,6 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 }
 
 func (s *Server) UpdateProductTargetGender(ctx context.Context, req *pb_admin.UpdateProductTargetGenderRequest) (*pb_admin.UpdateProductTargetGenderResponse, error) {
-	r := form.UpdateProductTargetGenderRequest{
-		UpdateProductTargetGenderRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	tg, err := dto.ConvertPbGenderEnumToEntityGenderEnum(req.Gender)
 	if err != nil {
@@ -770,16 +539,9 @@ func (s *Server) UpdateProductTargetGender(ctx context.Context, req *pb_admin.Up
 }
 
 func (s *Server) UpdateProductThumbnail(ctx context.Context, req *pb_admin.UpdateProductThumbnailRequest) (*pb_admin.UpdateProductThumbnailResponse, error) {
-	r := form.UpdateProductThumbnailRequest{
-		UpdateProductThumbnailRequest: req,
+	if req.Thumbnail == "" {
+		return &pb_admin.UpdateProductThumbnailResponse{}, fmt.Errorf("thumbnail is empty")
 	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
 	err := s.repo.Products().UpdateProductThumbnail(ctx, int(req.ProductID), req.Thumbnail)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product thumbnail",
@@ -793,15 +555,6 @@ func (s *Server) UpdateProductThumbnail(ctx context.Context, req *pb_admin.Updat
 // PROMO MANAGER
 
 func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*pb_admin.AddPromoResponse, error) {
-	r := form.AddPromoRequest{
-		AddPromoRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
 
 	pi, err := dto.ConvertPbCommonPromoToEntity(req.Promo)
 	if err != nil {
@@ -823,14 +576,8 @@ func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*
 
 // delete_promo.go
 func (s *Server) DeletePromoCode(ctx context.Context, req *pb_admin.DeletePromoCodeRequest) (*pb_admin.DeletePromoCodeResponse, error) {
-	r := form.DeletePromoCodeRequest{
-		DeletePromoCodeRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if req.Code == "" {
+		return &pb_admin.DeletePromoCodeResponse{}, fmt.Errorf("code is empty")
 	}
 	err := s.repo.Promo().DeletePromoCode(ctx, req.Code)
 	if err != nil {
@@ -844,14 +591,8 @@ func (s *Server) DeletePromoCode(ctx context.Context, req *pb_admin.DeletePromoC
 
 // disable_promo.go
 func (s *Server) DisablePromoCode(ctx context.Context, req *pb_admin.DisablePromoCodeRequest) (*pb_admin.DisablePromoCodeResponse, error) {
-	r := form.DisablePromoCodeRequest{
-		DisablePromoCodeRequest: req,
-	}
-	if err := r.Validate(); err != nil {
-		slog.Default().ErrorCtx(ctx, "validation request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+	if req.Code == "" {
+		return &pb_admin.DisablePromoCodeResponse{}, fmt.Errorf("code is empty")
 	}
 
 	err := s.repo.Promo().DisablePromoCode(ctx, req.Code)
