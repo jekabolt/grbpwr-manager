@@ -29,6 +29,9 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 	if err != nil {
 		return nil, err
 	}
+	if pbProductNew.Product.SalePercentage == "" {
+		pbProductNew.Product.SalePercentage = "0"
+	}
 	salePercentage, err := decimal.NewFromString(pbProductNew.Product.SalePercentage)
 	if err != nil {
 		return nil, err

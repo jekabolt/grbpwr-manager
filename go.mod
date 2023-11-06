@@ -33,12 +33,17 @@ require (
 )
 
 require (
+	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.0-20210816181553-5444fa50b93d // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
 	github.com/getsentry/sentry-go v0.20.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.16.0 // indirect
 	github.com/goccy/go-json v0.9.11 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
@@ -48,6 +53,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
+	github.com/leodido/go-urn v1.2.4 // indirect
 	github.com/lestrrat-go/backoff/v2 v2.0.8 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.0 // indirect

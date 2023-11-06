@@ -246,11 +246,6 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 // GetProductsPaged rewritten to use go-namedParameterQuery
 func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error) {
 
-	// Validate parameters
-	if limit < 0 || offset < 0 {
-		limit, offset = 15, 0
-	}
-
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
