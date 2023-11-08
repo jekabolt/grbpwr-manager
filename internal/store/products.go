@@ -254,11 +254,6 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		}
 	}
 
-	// TODO:
-	// if orderFactor == "" {
-	// 	orderFactor = entity.Ascending
-	// }
-
 	// Initialize
 	baseQuery := "SELECT * FROM product"
 	var whereClauses []string

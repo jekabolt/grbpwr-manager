@@ -107,6 +107,15 @@ type (
 		DisablePromoCode(ctx context.Context, code string) error
 	}
 
+	Archive interface {
+		AddArchive(ctx context.Context, archiveNew *entity.ArchiveNew) (int, error)
+		AddArchiveItems(ctx context.Context, archiveId int, archiveItemNew []entity.ArchiveItemInsert) error
+		DeleteArchiveItem(ctx context.Context, archiveItemID int) error
+		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error)
+		GetArchiveByID(ctx context.Context, id int) (*entity.ArchiveFull, error)
+		DeleteArchiveByID(ctx context.Context, id int) error
+	}
+
 	Admin interface {
 		AddAdmin(ctx context.Context, un, pwHash string) error
 		DeleteAdmin(ctx context.Context, username string) error
@@ -121,6 +130,7 @@ type (
 		Order() Order
 		Promo() Promo
 		Admin() Admin
+		Archive() Archive
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error

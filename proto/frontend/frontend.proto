@@ -4,7 +4,6 @@ package frontend;
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/frontend;frontend";
 
 import "google/api/annotations.proto";
-// import "common/common.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
