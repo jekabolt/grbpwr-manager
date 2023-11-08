@@ -291,6 +291,24 @@ CREATE TABLE admins (
     password_hash VARCHAR(255) NOT NULL
 );
 
+CREATE TABLE archive (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL
+);
+
+CREATE TABLE archive_item (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    media VARCHAR(255) NOT NULL,
+    url VARCHAR(255),
+    title VARCHAR(255),
+    archive_id INT NOT NULL,
+    FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE
+)
+
+
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 
 CREATE INDEX idx_product_id_on_product_media ON product_media(product_id);
