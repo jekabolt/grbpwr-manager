@@ -56,6 +56,8 @@ func (ms *MYSQLStore) DeletePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete promo code: %w", err)
 	}
+	ms.cache.DeletePromo(code)
+
 	return nil
 }
 
@@ -66,5 +68,7 @@ func (ms *MYSQLStore) DisablePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to disable promo code: %w", err)
 	}
+	ms.cache.DisablePromo(code)
+
 	return nil
 }

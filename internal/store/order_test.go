@@ -41,16 +41,6 @@ func getRandomShipmentCarrier(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
 	return &copiedSC, nil
 }
 
-func getShipmentCarrierFree(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
-	scs := db.cache.GetDict().ShipmentCarriers
-	for _, sc := range scs {
-		if sc.Allowed && sc.Price.Equal(decimal.NewFromInt(0)) {
-			return &sc, nil
-		}
-	}
-	return nil, fmt.Errorf("no free shipment carrier found")
-}
-
 func getShipmentCarrierPaid(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
 	scs := db.cache.GetDict().ShipmentCarriers
 	for _, sc := range scs {

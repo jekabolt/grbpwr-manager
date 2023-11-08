@@ -190,6 +190,8 @@ type (
 		GetPromoByID(id int) (*entity.PromoCode, bool)
 		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)
 		AddPromo(promo entity.PromoCode)
+		DeletePromo(code string)
+		DisablePromo(code string)
 
 		GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool)
 		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)

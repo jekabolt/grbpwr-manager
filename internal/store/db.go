@@ -20,9 +20,7 @@ type ltx struct {
 }
 type Tx struct {
 	*sql.Tx
-	driverName string
-	unsafe     bool
-	Mapper     *reflectx.Mapper
+	Mapper *reflectx.Mapper
 }
 
 func (t ltx) BeginTxx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) {
