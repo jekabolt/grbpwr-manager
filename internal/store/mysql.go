@@ -35,9 +35,6 @@ type MYSQLStore struct {
 	cache dependency.Cache
 }
 
-const maxRetries = 5
-const retryInterval = 5 * time.Second
-
 // New connects to the database, applies migrations and returns a new MYSQLStore object
 func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	d, err := sqlx.Open("mysql", cfg.DSN)

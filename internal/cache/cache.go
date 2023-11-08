@@ -132,6 +132,12 @@ func (c *Cache) GetPromoByName(paymentMethod string) (entity.PromoCode, bool) {
 func (c *Cache) AddPromo(promo entity.PromoCode) {
 	c.Promo.AddPromo(promo)
 }
+func (c *Cache) DeletePromo(code string) {
+	c.Promo.DeletePromo(code)
+}
+func (c *Cache) DisablePromo(code string) {
+	c.Promo.DisablePromo(code)
+}
 
 // shipment carrier
 func (c *Cache) GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool) {

@@ -61,3 +61,31 @@ func (c *PromoCache) AddPromo(promo entity.PromoCode) {
 	c.IDCache[promo.Code] = promo
 	c.Cache[promo.ID] = promo
 }
+
+func (c *PromoCache) DeletePromo(code string) {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	delete(c.Cache, c.IDCache[code].ID)
+	delete(c.IDCache, code)
+}
+
+func (c *PromoCache) DisablePromo(code string) {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	codeNormal, ok := c.Cache[c.IDCache[code].ID]
+	if !ok {
+		return
+	}
+	codeNormal.Allowed = false
+	c.Cache[c.IDCache[code].ID] = codeNormal
+
+	codeIdc, ok := c.IDCache[code]
+	if !ok {
+		return
+	}
+	codeIdc.Allowed = false
+	c.IDCache[code] = codeIdc
+
+}
