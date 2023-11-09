@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -53,13 +55,12 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.BuyerI
 }
 
 func (ms *MYSQLStore) Subscribe(ctx context.Context, email, name string) error {
-	err := ExecNamed(ctx, ms.DB(), `INSERT INTO buyer (email, name, receive_promo_emails, country) VALUES
-		(:email, :name, :receivePromoEmails, :country)`, map[string]any{
+	err := ExecNamed(ctx, ms.DB(), `INSERT INTO subscriber (name, email, receive_promo_emails) VALUES
+		(:name, :email, :receivePromoEmails)`, map[string]any{
 		"email":              email,
 		"name":               name,
 		"receivePromoEmails": true,
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to add subscriber: %w", err)
 	}
@@ -71,7 +72,19 @@ func (ms *MYSQLStore) Unsubscribe(ctx context.Context, email string) error {
 		"email": email,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to unsubscribe: %w", err)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to unsubscribe buyer: %w", err)
+		}
 	}
+
+	err = ExecNamed(ctx, ms.DB(), `UPDATE subscriber SET receive_promo_emails = false WHERE email = :email`, map[string]any{
+		"email": email,
+	})
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to unsubscribe subscriber: %w", err)
+		}
+	}
+
 	return nil
 }
