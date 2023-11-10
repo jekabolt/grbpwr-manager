@@ -310,10 +310,11 @@ CREATE TABLE archive_item (
 
 CREATE TABLE media (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
     full_size VARCHAR(255) NOT NULL,
     thumbnail VARCHAR(255) NOT NULL,
-    compressed VARCHAR(255) NOT NULL,
-    finalized BOOLEAN DEFAULT FALSE
+    compressed VARCHAR(255) NOT NULL
 );
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);

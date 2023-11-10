@@ -17,7 +17,6 @@ func TestMediaCRUD(t *testing.T) {
 		FullSize:   "https://example.com/fullsize.jpg",
 		Thumbnail:  "https://example.com/thumb.jpg",
 		Compressed: "https://example.com/compressed.jpg",
-		Finalized:  false,
 	})
 	assert.NoError(t, err)
 
@@ -25,22 +24,11 @@ func TestMediaCRUD(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, mediaPage, 1)
 	assert.Equal(t, "https://example.com/fullsize.jpg", mediaPage[0].FullSize)
-	assert.Equal(t, false, mediaPage[0].Finalized)
-
-	err = ms.Finalize(ctx, mediaPage[0].FullSize)
-	assert.NoError(t, err)
-
-	mediaPage, err = ms.ListMediaPaged(ctx, 10, 0, entity.Ascending)
-	assert.NoError(t, err)
-	assert.Len(t, mediaPage, 1)
-	assert.Equal(t, "https://example.com/fullsize.jpg", mediaPage[0].FullSize)
-	assert.Equal(t, true, mediaPage[0].Finalized)
 
 	err = ms.AddMedia(ctx, &entity.MediaInsert{
 		FullSize:   "https://example2.com/fullsize.jpg",
 		Thumbnail:  "https://example2.com/thumb.jpg",
 		Compressed: "https://example2.com/compressed.jpg",
-		Finalized:  false,
 	})
 	assert.NoError(t, err)
 

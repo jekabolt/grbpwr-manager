@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 const (
@@ -36,7 +38,13 @@ func skipCI(t *testing.T) {
 	}
 }
 
-func BucketFromConst() (dependency.FileStore, error) {
+type testFileStore struct {
+	fs dependency.FileStore
+
+	mediaStoreMock *mocks.Media
+}
+
+func BucketFromConst(t *testing.T) (*testFileStore, error) {
 	c := &Config{
 		S3AccessKey:       S3AccessKey,
 		S3SecretAccessKey: S3SecretAccessKey,
@@ -47,7 +55,17 @@ func BucketFromConst() (dependency.FileStore, error) {
 		BaseFolder:        baseFolder,
 		SubdomainEndpoint: subdomainEndpoint,
 	}
-	return c.New()
+
+	mediaStoreMock := mocks.NewMedia(t)
+	fs, err := c.New(mediaStoreMock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
+	}
+
+	return &testFileStore{
+		fs:             fs,
+		mediaStoreMock: mediaStoreMock,
+	}, nil
 }
 
 func fileToB64ByPath(filePath string) (string, error) {
@@ -89,17 +107,19 @@ func TestUploadContentImage(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	b, err := BucketFromConst()
+	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
+
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
 
 	jpg, err := fileToB64ByPath(jpgFilePath)
 	assert.NoError(t, err)
 
-	i, err := b.UploadContentImage(ctx, jpg, "test", "test")
+	i, err := tb.fs.UploadContentImage(ctx, jpg, "test", "test")
 	assert.NoError(t, err)
 	t.Logf("%+v", i)
 
-	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)
 }
 
@@ -107,17 +127,19 @@ func TestUploadContentVideoMP4(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	b, err := BucketFromConst()
+	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
+
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
 
 	mp4, err := fileToBytes(mp4FilePath)
 	assert.NoError(t, err)
 
-	media, err := b.UploadContentVideo(ctx, mp4, "test", "test", contentTypeMP4)
+	media, err := tb.fs.UploadContentVideo(ctx, mp4, "test", "test", string(contentTypeMP4))
 	assert.NoError(t, err)
 	fmt.Printf("----- %+v", media)
 
-	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)
 }
 
@@ -125,17 +147,19 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	b, err := BucketFromConst()
+	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
+
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
 
 	mp4, err := fileToBytes(webmFilePath)
 	assert.NoError(t, err)
 
-	media, err := b.UploadContentVideo(ctx, mp4, "test", "test", contentTypeWEBM)
+	media, err := tb.fs.UploadContentVideo(ctx, mp4, "test", "test", string(contentTypeWEBM))
 	assert.NoError(t, err)
 	fmt.Printf("----- %+v", media)
 
-	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)
 }
 
@@ -143,17 +167,17 @@ func TestListObjects(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	b, err := BucketFromConst()
+	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
 
-	mediaList, err := b.ListObjects(ctx)
+	mediaList, err := tb.fs.ListObjects(ctx)
 	assert.NoError(t, err)
 
 	for _, m := range mediaList {
 		fmt.Println(m.Url)
 	}
 
-	// err = b.DeleteFromBucket(ctx, i.ObjectIds)
+	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)
 }
 

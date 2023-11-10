@@ -117,7 +117,6 @@ type (
 	}
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaInsert) error
-		Finalize(ctx context.Context, fsUrl string) error
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Media, error)
 	}

@@ -2,7 +2,6 @@ package bucket
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,15 +11,21 @@ import (
 	"time"
 )
 
+type ContentType string
+
+func (ct *ContentType) String() string {
+	return string(*ct)
+}
+
 const (
-	contentTypeJPEG = "image/jpeg"
-	contentTypePNG  = "image/png"
-	contentTypeJSON = "application/json"
-	contentTypeMP4  = "video/mp4"
-	contentTypeWEBM = "video/webm"
+	contentTypeJPEG ContentType = "image/jpeg"
+	contentTypePNG  ContentType = "image/png"
+	contentTypeJSON ContentType = "application/json"
+	contentTypeMP4  ContentType = "video/mp4"
+	contentTypeWEBM ContentType = "video/webm"
 )
 
-var mimeTypeToFileExtension = map[string]string{
+var mimeTypeToFileExtension = map[ContentType]string{
 	contentTypeJPEG: "jpg",
 	contentTypePNG:  "png",
 	contentTypeJSON: "json",
@@ -28,11 +33,11 @@ var mimeTypeToFileExtension = map[string]string{
 	contentTypeWEBM: "webm",
 }
 
-func fileExtensionFromContentType(contentType string) (string, error) {
+func fileExtensionFromContentType(contentType ContentType) (string, error) {
 	if ext, ok := mimeTypeToFileExtension[contentType]; ok {
 		return ext, nil
 	}
-	return "", errors.New("unsupported MIME type")
+	return "", fmt.Errorf("unsupported MIME type %s", contentType)
 }
 
 type FileType struct {
@@ -76,7 +81,8 @@ func GetExtensionFromB64String(b64 string) (string, error) {
 		return "", fmt.Errorf("GetExtensionFromB64String: bad b64 string: [%s]", b64)
 	}
 	mimeType := strings.Split(u.Path, ";")[0]
-	return fileExtensionFromContentType(mimeType)
+
+	return fileExtensionFromContentType(ContentType(mimeType))
 }
 
 // image URL to base64 string
@@ -97,7 +103,7 @@ func getMediaB64(url string) (*rawImage, error) {
 	}
 
 	mimeType := http.DetectContentType(body)
-	extension, err := fileExtensionFromContentType(mimeType)
+	extension, err := fileExtensionFromContentType(ContentType(mimeType))
 	if err != nil {
 		return nil, err
 	}

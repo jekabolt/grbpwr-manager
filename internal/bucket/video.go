@@ -4,17 +4,18 @@ import (
 	"bytes"
 	"context"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/exp/slog"
 )
 
-func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName, contentType string) (*pb_common.Media, error) {
+func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName string, contentType string) (*pb_common.Media, error) {
 
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
 
-	ext, err := fileExtensionFromContentType(contentType)
+	ext, err := fileExtensionFromContentType(ContentType(contentType))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't get extension from content type",
 			slog.String("err", err.Error()))
@@ -39,8 +40,21 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	}
 	url := b.getCDNURL(fp)
 
+	err = b.ms.AddMedia(ctx, &entity.MediaInsert{
+		FullSize:   url,
+		Compressed: url,
+		Thumbnail:  url,
+	})
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't add media to db",
+			slog.String("err", err.Error()))
+		return nil, err
+	}
+
 	return &pb_common.Media{
-		FullSize:  url,
-		ObjectIds: []string{ui.Key},
+		FullSize:   url,
+		Compressed: url,
+		Thumbnail:  url,
+		ObjectIds:  []string{ui.Key},
 	}, nil
 }
