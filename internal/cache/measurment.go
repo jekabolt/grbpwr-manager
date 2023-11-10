@@ -36,7 +36,7 @@ func newMeasurementCache(measurements []entity.MeasurementName) (*MeasurementCac
 	return c, nil
 }
 
-func (c *MeasurementCache) GetMeasurementByID(id int) (*entity.MeasurementName, bool) {
+func (c *MeasurementCache) GetMeasurementById(id int) (*entity.MeasurementName, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

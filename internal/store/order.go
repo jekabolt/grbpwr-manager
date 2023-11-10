@@ -305,12 +305,12 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		return nil, fmt.Errorf("buyer is required")
 	}
 
-	paymentMethod, ok := ms.cache.GetPaymentMethodByID(orderNew.PaymentMethodId)
+	paymentMethod, ok := ms.cache.GetPaymentMethodById(orderNew.PaymentMethodId)
 	if !ok {
 		return nil, fmt.Errorf("payment method is not exists")
 	}
 
-	shipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(orderNew.ShipmentCarrierId)
+	shipmentCarrier, ok := ms.cache.GetShipmentCarrierById(orderNew.ShipmentCarrierId)
 	if !ok {
 		return nil, fmt.Errorf("shipment carrier is not exists")
 	}
@@ -593,7 +593,7 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items [
 		return fmt.Errorf("can't get order by id: %w", err)
 	}
 
-	oStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+	oStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 	if !ok {
 		return fmt.Errorf("order status is not exists")
 	}
@@ -680,7 +680,7 @@ func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId in
 			return nil
 		}
 
-		newShipmentCarrier, ok := ms.cache.GetShipmentCarrierByID(shipmentCarrierId)
+		newShipmentCarrier, ok := ms.cache.GetShipmentCarrierById(shipmentCarrierId)
 		if !ok {
 			return fmt.Errorf("shipment carrier is not exists")
 		}
@@ -785,7 +785,7 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 		return fmt.Errorf("error while calculating total amount: %w", err)
 	}
 
-	promo, ok := rep.Cache().GetPromoByID(int(order.PromoID.Int32))
+	promo, ok := rep.Cache().GetPromoById(int(order.PromoID.Int32))
 	if !ok {
 		promo = &entity.PromoCode{}
 	}
@@ -800,7 +800,7 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 		if err != nil {
 			return fmt.Errorf("can't get order shipment: %w", err)
 		}
-		shipmentCarrier, ok := rep.Cache().GetShipmentCarrierByID(shipment.CarrierID)
+		shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
 		if !ok {
 			return fmt.Errorf("shipment carrier is not exists")
 		}
@@ -822,7 +822,7 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
 func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment *entity.PaymentInsert) error {
 
-	_, ok := ms.cache.GetPaymentMethodByID(payment.PaymentMethodID)
+	_, ok := ms.cache.GetPaymentMethodById(payment.PaymentMethodID)
 	if !ok {
 		return fmt.Errorf("payment method is not exists: payment method id %d", payment.PaymentMethodID)
 	}
@@ -832,7 +832,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 		return fmt.Errorf("can't get order by id: %w", err)
 	}
 
-	orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 	if !ok {
 		return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 	}
@@ -957,7 +957,7 @@ func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context, orderId int, shipm
 			return err
 		}
 
-		orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 		if !ok {
 			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 		}
@@ -966,7 +966,7 @@ func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context, orderId int, shipm
 			return fmt.Errorf("order status is not confirmed: order status %s", orderStatus.Name)
 		}
 
-		_, ok = ms.cache.GetShipmentCarrierByID(shipment.CarrierID)
+		_, ok = ms.cache.GetShipmentCarrierById(shipment.CarrierID)
 		if !ok {
 			return fmt.Errorf("shipment carrier is not exists: shipment carrier id %d", shipment.CarrierID)
 		}
@@ -1041,7 +1041,7 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, order *entit
 		return nil, fmt.Errorf("can't get payment by id: %w", err)
 	}
 
-	paymentMethod, ok := rep.Cache().GetPaymentMethodByID(payment.PaymentMethodID)
+	paymentMethod, ok := rep.Cache().GetPaymentMethodById(payment.PaymentMethodID)
 	if !ok {
 		return nil, fmt.Errorf("payment method is not exists")
 	}
@@ -1050,20 +1050,20 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, order *entit
 	if err != nil {
 		return nil, fmt.Errorf("can't get order shipment: %w", err)
 	}
-	shipmentCarrier, ok := rep.Cache().GetShipmentCarrierByID(shipment.CarrierID)
+	shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
 	if !ok {
 		return nil, fmt.Errorf("shipment carrier is not exists")
 	}
 
 	promo := &entity.PromoCode{}
 	if order.PromoID.Int32 != 0 && order.PromoID.Valid {
-		promo, ok = rep.Cache().GetPromoByID(int(order.PromoID.Int32))
+		promo, ok = rep.Cache().GetPromoById(int(order.PromoID.Int32))
 		if !ok {
 			return nil, fmt.Errorf("promo code is not exists")
 		}
 	}
 
-	orderStatus, ok := rep.Cache().GetOrderStatusByID(order.OrderStatusID)
+	orderStatus, ok := rep.Cache().GetOrderStatusById(order.OrderStatusID)
 	if !ok {
 		return nil, fmt.Errorf("order status is not exists")
 	}
@@ -1215,7 +1215,7 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int) error {
 			return err
 		}
 
-		orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 		if !ok {
 			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 		}
@@ -1272,7 +1272,7 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderId int) error {
 			return err
 		}
 
-		orderStatus, ok := ms.cache.GetOrderStatusByID(order.OrderStatusID)
+		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 		if !ok {
 			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 		}

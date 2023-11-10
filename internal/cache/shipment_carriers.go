@@ -27,8 +27,8 @@ func newShipmentCarrierCache(shipmentCarriers []entity.ShipmentCarrier) *Shipmen
 	return c
 }
 
-// GetShipmentCarrierByID fetches ShipmentCarrier by ID from ShipmentCarrierCache
-func (c *ShipmentCarrierCache) GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool) {
+// GetShipmentCarrierById fetches ShipmentCarrier by ID from ShipmentCarrierCache
+func (c *ShipmentCarrierCache) GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

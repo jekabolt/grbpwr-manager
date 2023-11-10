@@ -126,7 +126,7 @@ func TestCreateOrder(t *testing.T) {
 	prd, err := ps.AddProduct(ctx, np)
 	assert.NoError(t, err)
 
-	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	p, err := ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 
 	// order store
@@ -360,7 +360,7 @@ func TestPurchase(t *testing.T) {
 	prd, err := ps.AddProduct(ctx, np)
 	assert.NoError(t, err)
 
-	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	p, err := ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 
 	// order store
@@ -402,7 +402,7 @@ func TestPurchase(t *testing.T) {
 
 	// getting product by id to check if quantity is not updated
 
-	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	p, err = ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 	assert.True(t, len(p.Sizes) == 2)
 	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
@@ -466,7 +466,7 @@ func TestPurchase(t *testing.T) {
 
 	// than make sure that product quantity is updated
 
-	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	p, err = ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.True(t, len(p.Sizes) == 2)
@@ -525,7 +525,7 @@ func TestOrderOutOfStock(t *testing.T) {
 	prd, err := ps.AddProduct(ctx, np)
 	assert.NoError(t, err)
 
-	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	p, err := ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 
 	// order store
@@ -586,7 +586,7 @@ func TestOrderOutOfStock(t *testing.T) {
 	assert.Equal(t, orderToClean.OrderStatusID, statusPlaced.ID)
 
 	// getting product by id to check if quantity is not updated
-	p, err = ps.GetProductByID(ctx, prd.Product.ID)
+	p, err = ps.GetProductById(ctx, prd.Product.ID)
 	assert.NoError(t, err)
 	assert.True(t, len(p.Sizes) == 2, len(p.Sizes))
 	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))

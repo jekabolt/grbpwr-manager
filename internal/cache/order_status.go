@@ -39,8 +39,8 @@ func newOrderStatusCache(orderStatuses []entity.OrderStatus) (*OrderStatusCache,
 	return c, nil
 }
 
-// GetOrderStatusByID fetches OrderStatusName by ID from OrderStatusCache
-func (c *OrderStatusCache) GetOrderStatusByID(id int) (*entity.OrderStatus, bool) {
+// GetOrderStatusById fetches OrderStatusName by ID from OrderStatusCache
+func (c *OrderStatusCache) GetOrderStatusById(id int) (*entity.OrderStatus, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

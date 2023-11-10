@@ -27,7 +27,7 @@ func newPromoCache(categories []entity.PromoCode) *PromoCache {
 	return c
 }
 
-func (c *PromoCache) GetPromoByID(id int) (*entity.PromoCode, bool) {
+func (c *PromoCache) GetPromoById(id int) (*entity.PromoCode, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

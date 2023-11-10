@@ -36,7 +36,7 @@ func newSizeCache(sizes []entity.Size) (*SizeCache, error) {
 	return c, nil
 }
 
-func (c *SizeCache) GetSizeByID(id int) (*entity.Size, bool) {
+func (c *SizeCache) GetSizeById(id int) (*entity.Size, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

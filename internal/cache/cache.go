@@ -91,40 +91,40 @@ func (c *Cache) GetDict() *dto.Dict {
 }
 
 // category
-func (c *Cache) GetCategoryByID(id int) (*entity.Category, bool) {
-	return c.Category.GetCategoryByID(id)
+func (c *Cache) GetCategoryById(id int) (*entity.Category, bool) {
+	return c.Category.GetCategoryById(id)
 }
 func (c *Cache) GetCategoryByName(category entity.CategoryEnum) (entity.Category, bool) {
 	return c.Category.GetCategoryByName(category)
 }
 
 // measurement
-func (c *Cache) GetMeasurementByID(id int) (*entity.MeasurementName, bool) {
-	return c.Measurement.GetMeasurementByID(id)
+func (c *Cache) GetMeasurementById(id int) (*entity.MeasurementName, bool) {
+	return c.Measurement.GetMeasurementById(id)
 }
 func (c *Cache) GetMeasurementsByName(measurement entity.MeasurementNameEnum) (entity.MeasurementName, bool) {
 	return c.Measurement.GetMeasurementsByName(measurement)
 }
 
 // order status
-func (c *Cache) GetOrderStatusByID(id int) (*entity.OrderStatus, bool) {
-	return c.OrderStatus.GetOrderStatusByID(id)
+func (c *Cache) GetOrderStatusById(id int) (*entity.OrderStatus, bool) {
+	return c.OrderStatus.GetOrderStatusById(id)
 }
 func (c *Cache) GetOrderStatusByName(orderStatus entity.OrderStatusName) (entity.OrderStatus, bool) {
 	return c.OrderStatus.GetOrderStatusByName(orderStatus)
 }
 
 // payment method
-func (c *Cache) GetPaymentMethodByID(id int) (*entity.PaymentMethod, bool) {
-	return c.PaymentMethod.GetPaymentMethodByID(id)
+func (c *Cache) GetPaymentMethodById(id int) (*entity.PaymentMethod, bool) {
+	return c.PaymentMethod.GetPaymentMethodById(id)
 }
 func (c *Cache) GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool) {
 	return c.PaymentMethod.GetPaymentMethodsByName(paymentMethod)
 }
 
 // promo
-func (c *Cache) GetPromoByID(id int) (*entity.PromoCode, bool) {
-	return c.Promo.GetPromoByID(id)
+func (c *Cache) GetPromoById(id int) (*entity.PromoCode, bool) {
+	return c.Promo.GetPromoById(id)
 }
 func (c *Cache) GetPromoByName(paymentMethod string) (entity.PromoCode, bool) {
 	return c.Promo.GetPromoByName(paymentMethod)
@@ -140,16 +140,16 @@ func (c *Cache) DisablePromo(code string) {
 }
 
 // shipment carrier
-func (c *Cache) GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool) {
-	return c.ShipmentCarrier.GetShipmentCarrierByID(id)
+func (c *Cache) GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool) {
+	return c.ShipmentCarrier.GetShipmentCarrierById(id)
 }
 func (c *Cache) GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool) {
 	return c.ShipmentCarrier.GetShipmentCarriersByName(carrier)
 }
 
 // size
-func (c *Cache) GetSizeByID(id int) (*entity.Size, bool) {
-	return c.Size.GetSizeByID(id)
+func (c *Cache) GetSizeById(id int) (*entity.Size, bool) {
+	return c.Size.GetSizeById(id)
 }
 func (c *Cache) GetSizesByName(size entity.SizeEnum) (entity.Size, bool) {
 	return c.Size.GetSizesByName(size)
