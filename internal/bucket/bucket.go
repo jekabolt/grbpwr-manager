@@ -21,9 +21,10 @@ type Config struct {
 type Bucket struct {
 	*minio.Client
 	*Config
+	ms dependency.Media
 }
 
-func (c *Config) New() (dependency.FileStore, error) {
+func (c *Config) New(mediaStore dependency.Media) (dependency.FileStore, error) {
 	cli, err := minio.New(c.S3Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(c.S3AccessKey, c.S3SecretAccessKey, ""),
 		Secure: true,
@@ -34,5 +35,6 @@ func (c *Config) New() (dependency.FileStore, error) {
 	return &Bucket{
 		Client: cli,
 		Config: c,
+		ms:     mediaStore,
 	}, nil
 }

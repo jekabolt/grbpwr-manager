@@ -33,7 +33,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot create a repository %v %v", err.Error(), cfg.DB.DSN)
 	}
 
-	b, err := cfg.Bucket.New()
+	b, err := cfg.Bucket.New(repo.Media())
 	if err != nil {
 		return fmt.Errorf("cannot init bucket %v", err.Error())
 	}

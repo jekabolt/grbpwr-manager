@@ -8,8 +8,10 @@ import (
 	"io"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/minio/minio-go/v7"
+	"golang.org/x/image/draw"
 )
 
 type B64Image struct {
@@ -23,7 +25,7 @@ type uploadedMedia struct {
 }
 
 // upload image to bucket return url
-func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName, contentType string) (*uploadedMedia, error) {
+func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName string, contentType ContentType) (*uploadedMedia, error) {
 	ext, err := fileExtensionFromContentType(contentType)
 	if err != nil {
 		return nil, fmt.Errorf("can't get file extension")
@@ -41,7 +43,7 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 
 	ui, err := b.Client.PutObject(ctx, b.Config.S3BucketName, fp, r,
 		int64(r.Len()), minio.PutObjectOptions{
-			ContentType:  contentType,
+			ContentType:  contentType.String(),
 			CacheControl: cacheControl,
 			UserMetadata: userMetaData,
 		},
@@ -115,6 +117,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
 	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
+	thumbnailName := fmt.Sprintf("%s-%s", imageName, "thumb")
 
 	// Upload full size image
 	if um, err := b.uploadSingleImage(ctx, img, 100, folder, fullSizeName); err != nil {
@@ -132,5 +135,44 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		imgObj.ObjectIds = append(imgObj.ObjectIds, um.id)
 	}
 
+	if um, err := b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName); err != nil {
+		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
+	} else {
+		imgObj.Thumbnail = um.url
+		imgObj.ObjectIds = append(imgObj.ObjectIds, um.id)
+	}
+
+	err := b.ms.AddMedia(ctx, &entity.MediaInsert{
+		FullSize:   imgObj.FullSize,
+		Thumbnail:  imgObj.Thumbnail,
+		Compressed: imgObj.Compressed,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add media to db: %v", err)
+	}
+
 	return imgObj, nil
+}
+
+// resizeImage checks the height of the given image. If it's greater than minWidth in px,
+// it resizes the image to have a height of 'minWidth' while maintaining the aspect ratio.
+func resizeImage(img image.Image, minWidth int) image.Image {
+	bounds := img.Bounds()
+
+	// Check if the height is greater than 1080px
+	if bounds.Dy() > minWidth {
+		// Calculate new width to maintain aspect ratio
+		newWidth := minWidth * bounds.Dx() / bounds.Dy()
+
+		// Create a new image with the desired dimensions
+		newImg := image.NewRGBA(image.Rect(0, 0, newWidth, minWidth))
+
+		// Resize the image using high-quality resampling
+		draw.CatmullRom.Scale(newImg, newImg.Bounds(), img, bounds, draw.Over, nil)
+
+		return newImg
+	}
+
+	// Return the original image if no resizing is needed
+	return img
 }

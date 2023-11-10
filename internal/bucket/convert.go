@@ -10,7 +10,7 @@ import (
 	"io"
 )
 
-func decodeImageFromB64(b64Image []byte, contentType string) (image.Image, error) {
+func decodeImageFromB64(b64Image []byte, contentType ContentType) (image.Image, error) {
 	reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(b64Image))
 	switch contentType {
 	case contentTypeJPEG:
