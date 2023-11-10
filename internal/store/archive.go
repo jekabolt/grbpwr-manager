@@ -177,7 +177,7 @@ func flattenArchives(grouped map[int]entity.ArchiveFull) []entity.ArchiveFull {
 	return archives
 }
 
-func (ms *MYSQLStore) GetArchiveByID(ctx context.Context, id int) (*entity.ArchiveFull, error) {
+func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 	var archiveFull entity.ArchiveFull
 	var archive entity.Archive
 	var items []entity.ArchiveItem
@@ -208,7 +208,7 @@ func (ms *MYSQLStore) GetArchiveByID(ctx context.Context, id int) (*entity.Archi
 
 	return &archiveFull, nil
 }
-func (ms *MYSQLStore) DeleteArchiveByID(ctx context.Context, id int) error {
+func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `DELETE FROM archive WHERE id = :id`
 		res, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{

@@ -151,7 +151,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err := ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err := ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	// Assertions on Product fields except IDs
@@ -196,21 +196,21 @@ func TestProductStore_AddProduct(t *testing.T) {
 	}
 
 	// Hide the product
-	err = ps.HideProductByID(ctx, newPrd.Product.ID, true)
+	err = ps.HideProductById(ctx, newPrd.Product.ID, true)
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, sql.NullBool{Valid: true, Bool: true}, pf.Product.Hidden)
 
 	// Set sale percentage
-	err = ps.SetSaleByID(ctx, newPrd.Product.ID, decimal.NewFromInt(10))
+	err = ps.SetSaleById(ctx, newPrd.Product.ID, decimal.NewFromInt(10))
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.True(t, pf.Product.SalePercentage.Valid)
@@ -221,7 +221,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, sql.NullString{Valid: true, String: "preorder"}, pf.Product.Preorder)
@@ -230,7 +230,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "new name", pf.Product.Name)
@@ -239,7 +239,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "new sku", pf.Product.SKU)
@@ -253,7 +253,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "new color", pf.Product.Color)
@@ -264,7 +264,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "new country of origin", pf.Product.CountryOfOrigin)
@@ -274,7 +274,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "new brand", pf.Product.Brand)
@@ -283,7 +283,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.Equal(t, entity.Female, pf.Product.TargetGender)
@@ -293,7 +293,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "new thumbnail", pf.Product.Thumbnail)
 
@@ -302,7 +302,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.True(t, decimal.NewFromInt(1000).Equal(pf.Product.Price))
 
@@ -311,7 +311,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.True(t, pf.Product.SalePercentage.Valid)
@@ -324,7 +324,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, c.ID, pf.Product.CategoryID)
 
@@ -333,7 +333,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "new description", pf.Product.Description)
 
@@ -346,7 +346,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	ok = false
@@ -363,7 +363,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	}
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.True(t, len(pf.Measurements) == 0)
@@ -374,7 +374,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.True(t, len(pf.Tags) == 2)
 
@@ -384,7 +384,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	}
 
 	// Fetch the product by ID
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 	assert.True(t, len(pf.Tags) == 0)
 
@@ -393,7 +393,7 @@ func TestProductStore_AddProduct(t *testing.T) {
 	err = ps.AddProductMedia(ctx, newPrd.Product.ID, "full_size", "thumbnail", "compressed")
 	assert.NoError(t, err)
 
-	pf, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	pf, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	assert.True(t, len(pf.Media) == 2)
@@ -404,11 +404,11 @@ func TestProductStore_AddProduct(t *testing.T) {
 	}
 
 	// delete size product
-	err = ps.DeleteProductByID(ctx, newPrd.Product.ID)
+	err = ps.DeleteProductById(ctx, newPrd.Product.ID)
 	assert.NoError(t, err)
 
 	// Fetch the product by ID
-	_, err = ps.GetProductByID(ctx, newPrd.Product.ID)
+	_, err = ps.GetProductById(ctx, newPrd.Product.ID)
 	assert.Error(t, err)
 
 }
@@ -495,7 +495,7 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 			checkFunc: func(products []entity.Product) error {
 				// set sale for
 				for _, p := range products {
-					err := ps.SetSaleByID(ctx, p.ID, decimal.NewFromInt(10))
+					err := ps.SetSaleById(ctx, p.ID, decimal.NewFromInt(10))
 					assert.NoError(t, err)
 				}
 				return nil
@@ -625,12 +625,12 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 			expectedCount: 5,
 			checkFunc: func(products []entity.Product) error {
 				for _, product := range products {
-					prd, err := db.GetProductByID(ctx, product.ID)
+					prd, err := db.GetProductById(ctx, product.ID)
 					assert.NoError(t, err)
 
 					hasValidSize := false // Flag to check if the product has either "XL" or "L" sizes
 					for _, sz := range prd.Sizes {
-						s, ok := db.cache.GetSizeByID(sz.SizeID)
+						s, ok := db.cache.GetSizeById(sz.SizeID)
 						assert.True(t, ok)
 						if s.Name == entity.XL || s.Name == entity.L {
 							hasValidSize = true
@@ -674,7 +674,7 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 			checkFunc: func(products []entity.Product) error {
 				hasValidSize := false
 				for _, product := range products {
-					prd, err := db.GetProductByID(ctx, product.ID)
+					prd, err := db.GetProductById(ctx, product.ID)
 					assert.NoError(t, err)
 
 					for _, t := range prd.Tags {
@@ -772,7 +772,7 @@ func TestProductStore_StockTest(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	p, err := ps.GetProductByID(ctx, prd.Product.ID)
+	p, err := ps.GetProductById(ctx, prd.Product.ID)
 
 	assert.NoError(t, err)
 

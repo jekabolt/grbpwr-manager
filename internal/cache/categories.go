@@ -36,7 +36,7 @@ func newCategoryCache(categories []entity.Category) (*CategoryCache, error) {
 	return c, nil
 }
 
-func (c *CategoryCache) GetCategoryByID(id int) (*entity.Category, bool) {
+func (c *CategoryCache) GetCategoryById(id int) (*entity.Category, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

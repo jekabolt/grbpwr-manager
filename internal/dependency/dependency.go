@@ -23,14 +23,14 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error)
-		// GetProductByID retrieves a product by its ID.
-		GetProductByID(ctx context.Context, id int) (*entity.ProductFull, error)
-		// DeleteProductByID deletes a product by its ID.
-		DeleteProductByID(ctx context.Context, id int) error
-		// HideProductByID toggles the visibility of a product by its ID.
-		HideProductByID(ctx context.Context, id int, hide bool) error
-		// SetSaleByID sets the sale percentage for a product by its ID.
-		SetSaleByID(ctx context.Context, id int, salePercent decimal.Decimal) error
+		// GetProductById retrieves a product by its ID.
+		GetProductById(ctx context.Context, id int) (*entity.ProductFull, error)
+		// DeleteProductById deletes a product by its ID.
+		DeleteProductById(ctx context.Context, id int) error
+		// HideProductById toggles the visibility of a product by its ID.
+		HideProductById(ctx context.Context, id int, hide bool) error
+		// SetSaleById sets the sale percentage for a product by its ID.
+		SetSaleById(ctx context.Context, id int, salePercent decimal.Decimal) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
@@ -112,8 +112,14 @@ type (
 		AddArchiveItems(ctx context.Context, archiveId int, archiveItemNew []entity.ArchiveItemInsert) error
 		DeleteArchiveItem(ctx context.Context, archiveItemID int) error
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error)
-		GetArchiveByID(ctx context.Context, id int) (*entity.ArchiveFull, error)
-		DeleteArchiveByID(ctx context.Context, id int) error
+		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
+		DeleteArchiveById(ctx context.Context, id int) error
+	}
+	Media interface {
+		AddMedia(ctx context.Context, media *entity.MediaInsert) error
+		Finalize(ctx context.Context, fsUrl string) error
+		DeleteMediaById(ctx context.Context, id int) error
+		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Media, error)
 	}
 
 	Admin interface {
@@ -131,6 +137,7 @@ type (
 		Promo() Promo
 		Admin() Admin
 		Archive() Archive
+		Media() Media
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
@@ -175,28 +182,28 @@ type (
 	}
 
 	Cache interface {
-		GetCategoryByID(id int) (*entity.Category, bool)
+		GetCategoryById(id int) (*entity.Category, bool)
 		GetCategoryByName(category entity.CategoryEnum) (entity.Category, bool)
 
-		GetMeasurementByID(id int) (*entity.MeasurementName, bool)
+		GetMeasurementById(id int) (*entity.MeasurementName, bool)
 		GetMeasurementsByName(measurement entity.MeasurementNameEnum) (entity.MeasurementName, bool)
 
-		GetOrderStatusByID(id int) (*entity.OrderStatus, bool)
+		GetOrderStatusById(id int) (*entity.OrderStatus, bool)
 		GetOrderStatusByName(orderStatus entity.OrderStatusName) (entity.OrderStatus, bool)
 
-		GetPaymentMethodByID(id int) (*entity.PaymentMethod, bool)
+		GetPaymentMethodById(id int) (*entity.PaymentMethod, bool)
 		GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
 
-		GetPromoByID(id int) (*entity.PromoCode, bool)
+		GetPromoById(id int) (*entity.PromoCode, bool)
 		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)
 		AddPromo(promo entity.PromoCode)
 		DeletePromo(code string)
 		DisablePromo(code string)
 
-		GetShipmentCarrierByID(id int) (*entity.ShipmentCarrier, bool)
+		GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool)
 		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)
 
-		GetSizeByID(id int) (*entity.Size, bool)
+		GetSizeById(id int) (*entity.Size, bool)
 		GetSizesByName(size entity.SizeEnum) (entity.Size, bool)
 
 		GetDict() *dto.Dict

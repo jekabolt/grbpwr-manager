@@ -308,6 +308,13 @@ CREATE TABLE archive_item (
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE
 )
 
+CREATE TABLE media (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    full_size VARCHAR(255) NOT NULL,
+    thumbnail VARCHAR(255) NOT NULL,
+    compressed VARCHAR(255) NOT NULL,
+    finalized BOOLEAN DEFAULT FALSE
+);
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 

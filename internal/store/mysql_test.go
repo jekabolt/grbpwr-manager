@@ -63,6 +63,15 @@ func newTestDB(t *testing.T) *MYSQLStore {
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM admins")
 	assert.NoError(t, err)
 
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM archive")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM archive_item")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM media")
+	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 	assert.NoError(t, err)
 

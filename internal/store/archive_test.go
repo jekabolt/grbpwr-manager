@@ -62,7 +62,7 @@ func TestArchiveCRUD(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	archive, err := as.GetArchiveByID(ctx, aid)
+	archive, err := as.GetArchiveById(ctx, aid)
 	assert.NoError(t, err)
 	assert.Equal(t, "test", archive.Archive.Title)
 	assert.Len(t, archive.Items, 3)
@@ -70,7 +70,7 @@ func TestArchiveCRUD(t *testing.T) {
 	err = as.DeleteArchiveItem(ctx, archive.Items[0].ID)
 	assert.NoError(t, err)
 
-	archive, err = as.GetArchiveByID(ctx, aid)
+	archive, err = as.GetArchiveById(ctx, aid)
 	assert.NoError(t, err)
 	assert.Len(t, archive.Items, 2)
 
@@ -82,14 +82,14 @@ func TestArchiveCRUD(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, archives, 2)
 
-	err = as.DeleteArchiveByID(ctx, aidNew)
+	err = as.DeleteArchiveById(ctx, aidNew)
 	assert.NoError(t, err)
 
 	archives, err = as.GetArchivesPaged(ctx, 10, 0, entity.Ascending)
 	assert.NoError(t, err)
 	assert.Len(t, archives, 1)
 
-	err = as.DeleteArchiveByID(ctx, aid)
+	err = as.DeleteArchiveById(ctx, aid)
 	assert.NoError(t, err)
 
 }

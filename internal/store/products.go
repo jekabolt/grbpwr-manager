@@ -355,8 +355,8 @@ func selectProducts(ctx context.Context, rep dependency.Repository, query string
 	return products, nil
 }
 
-// GetProductByID returns a product by its ID.
-func (ms *MYSQLStore) GetProductByID(ctx context.Context, id int) (*entity.ProductFull, error) {
+// GetProductById returns a product by its ID.
+func (ms *MYSQLStore) GetProductById(ctx context.Context, id int) (*entity.ProductFull, error) {
 	var productInfo entity.ProductFull
 	var err error
 
@@ -415,16 +415,16 @@ func (ms *MYSQLStore) GetProductByID(ctx context.Context, id int) (*entity.Produ
 	return &productInfo, nil
 }
 
-// DeleteProductByID deletes a product by its ID.
-func (ms *MYSQLStore) DeleteProductByID(ctx context.Context, id int) error {
+// DeleteProductById deletes a product by its ID.
+func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
 	query := "DELETE FROM product WHERE id = :id"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
 		"id": id,
 	})
 }
 
-// HideProductByID hides/unhides a product by its ID.
-func (ms *MYSQLStore) HideProductByID(ctx context.Context, id int, hide bool) error {
+// HideProductById hides/unhides a product by its ID.
+func (ms *MYSQLStore) HideProductById(ctx context.Context, id int, hide bool) error {
 	query := "UPDATE product SET hidden = :hidden WHERE id = :id"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
 		"hidden": hide,
@@ -432,8 +432,8 @@ func (ms *MYSQLStore) HideProductByID(ctx context.Context, id int, hide bool) er
 	})
 }
 
-// SetSaleByID sets sale percentage for a product by its ID.
-func (ms *MYSQLStore) SetSaleByID(ctx context.Context, id int, salePercent decimal.Decimal) error {
+// SetSaleById sets sale percentage for a product by its ID.
+func (ms *MYSQLStore) SetSaleById(ctx context.Context, id int, salePercent decimal.Decimal) error {
 	query := "UPDATE product SET sale_percentage = :salePercentage WHERE id = :id"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
 		"salePercentage": salePercent,
@@ -571,7 +571,7 @@ func (ms *MYSQLStore) UpdateProductSale(ctx context.Context, productID int, sale
 }
 
 func (ms *MYSQLStore) UpdateProductCategory(ctx context.Context, productID int, categoryID int) error {
-	cat, ok := ms.cache.GetCategoryByID(categoryID)
+	cat, ok := ms.cache.GetCategoryById(categoryID)
 	if !ok {
 		return fmt.Errorf("can't get category by id: %d", categoryID)
 	}
@@ -599,12 +599,12 @@ func (ms *MYSQLStore) DeleteProductMeasurement(ctx context.Context, id int) erro
 
 func (ms *MYSQLStore) AddProductMeasurement(ctx context.Context, productId, sizeId, measurementNameId int, measurementValue decimal.Decimal) error {
 
-	measurement, ok := ms.cache.GetMeasurementByID(measurementNameId)
+	measurement, ok := ms.cache.GetMeasurementById(measurementNameId)
 	if !ok {
 		return fmt.Errorf("can't get measurement by name: %d", measurementNameId)
 	}
 
-	size, ok := ms.cache.GetSizeByID(sizeId)
+	size, ok := ms.cache.GetSizeById(sizeId)
 	if !ok {
 		return fmt.Errorf("can't get size by name: %d", sizeId)
 	}
@@ -633,7 +633,7 @@ func (ms *MYSQLStore) AddProductMeasurement(ctx context.Context, productId, size
 
 func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
 
-	sz, ok := ms.cache.GetSizeByID(sizeId)
+	sz, ok := ms.cache.GetSizeById(sizeId)
 	if !ok {
 		return fmt.Errorf("can't get size by id: %d", sizeId)
 	}

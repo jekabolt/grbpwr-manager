@@ -169,7 +169,7 @@ func (s *Server) AddProductTag(ctx context.Context, req *pb_admin.AddProductTagR
 }
 
 func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
-	err := s.repo.Products().DeleteProductByID(ctx, int(req.Id))
+	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete product",
 			slog.String("err", err.Error()),
@@ -214,7 +214,7 @@ func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProdu
 
 func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
 
-	pf, err := s.repo.Products().GetProductByID(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductById(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
@@ -281,7 +281,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 }
 
 func (s *Server) HideProductByID(ctx context.Context, req *pb_admin.HideProductByIDRequest) (*pb_admin.HideProductByIDResponse, error) {
-	err := s.repo.Products().HideProductByID(ctx, int(req.Id), req.Hide)
+	err := s.repo.Products().HideProductById(ctx, int(req.Id), req.Hide)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't hide product by id",
 			slog.String("err", err.Error()),
@@ -345,7 +345,7 @@ func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDReque
 		return nil, status.Errorf(codes.InvalidArgument, "sale must be between 0 and 100")
 	}
 
-	err = s.repo.Products().SetSaleByID(ctx, int(req.Id), sale)
+	err = s.repo.Products().SetSaleById(ctx, int(req.Id), sale)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't set sale by id",
 			slog.String("err", err.Error()),
