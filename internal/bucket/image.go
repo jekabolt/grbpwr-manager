@@ -19,29 +19,24 @@ type B64Image struct {
 	contentType string
 }
 
-type uploadedMedia struct {
-	url string
-	id  string
-}
-
 // upload image to bucket return url
-func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName string, contentType ContentType) (*uploadedMedia, error) {
+func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder, imageName string, contentType ContentType) (string, error) {
 	ext, err := fileExtensionFromContentType(contentType)
 	if err != nil {
-		return nil, fmt.Errorf("can't get file extension")
+		return "", fmt.Errorf("can't get file extension")
 	}
 	fp := b.constructFullPath(folder, imageName, ext)
 
 	data, err := io.ReadAll(img)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	r := bytes.NewReader(data)
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
 
-	ui, err := b.Client.PutObject(ctx, b.Config.S3BucketName, fp, r,
+	_, err = b.Client.PutObject(ctx, b.Config.S3BucketName, fp, r,
 		int64(r.Len()), minio.PutObjectOptions{
 			ContentType:  contentType.String(),
 			CacheControl: cacheControl,
@@ -50,13 +45,10 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("error putting object: %v", err)
+		return "", fmt.Errorf("error putting object: %v", err)
 	}
 
-	return &uploadedMedia{
-		url: b.getCDNURL(fp),
-		id:  ui.Key,
-	}, nil
+	return b.getCDNURL(fp), nil
 }
 
 // getB64ImageFromString extracts the content type and the byte content from a raw base64 image string.
@@ -94,18 +86,18 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 }
 
 // upload single image with defined quality and	prefix to bucket
-func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (*uploadedMedia, error) {
+func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (string, error) {
 	var buf bytes.Buffer
 
 	// Encode the image to JPEG format with given quality.
 	if err := encodeJPG(&buf, img, quality); err != nil {
-		return nil, fmt.Errorf("failed to encode JPG: %v", err)
+		return "", fmt.Errorf("failed to encode JPG: %v", err)
 	}
 
 	// Upload the JPEG data to S3 bucket.
 	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeJPEG)
 	if err != nil {
-		return nil, fmt.Errorf("failed to upload image to bucket: %v", err)
+		return "", fmt.Errorf("failed to upload image to bucket: %v", err)
 	}
 
 	return url, nil
@@ -113,36 +105,31 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 
 // compose internal image object (with FullSize & Compressed formats) and upload it to S3
 func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.Media, error) {
-	imgObj := &pb_common.Media{}
+	imgObj := &pb_common.MediaInsert{}
 
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
 	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
 	thumbnailName := fmt.Sprintf("%s-%s", imageName, "thumb")
+	var err error
 
 	// Upload full size image
-	if um, err := b.uploadSingleImage(ctx, img, 100, folder, fullSizeName); err != nil {
+	imgObj.FullSize, err = b.uploadSingleImage(ctx, img, 100, folder, fullSizeName)
+	if err != nil {
 		return nil, fmt.Errorf("failed to upload full-size image: %v", err)
-	} else {
-		imgObj.FullSize = um.url
-		imgObj.ObjectIds = append(imgObj.ObjectIds, um.id)
 	}
 
 	// Upload compressed image
-	if um, err := b.uploadSingleImage(ctx, img, 60, folder, compressedName); err != nil {
+	imgObj.Compressed, err = b.uploadSingleImage(ctx, img, 60, folder, compressedName)
+	if err != nil {
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
-	} else {
-		imgObj.Compressed = um.url
-		imgObj.ObjectIds = append(imgObj.ObjectIds, um.id)
 	}
 
-	if um, err := b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName); err != nil {
+	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName)
+	if err != nil {
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
-	} else {
-		imgObj.Thumbnail = um.url
-		imgObj.ObjectIds = append(imgObj.ObjectIds, um.id)
 	}
 
-	err := b.ms.AddMedia(ctx, &entity.MediaInsert{
+	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
 		FullSize:   imgObj.FullSize,
 		Thumbnail:  imgObj.Thumbnail,
 		Compressed: imgObj.Compressed,
@@ -151,7 +138,10 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		return nil, fmt.Errorf("failed to add media to db: %v", err)
 	}
 
-	return imgObj, nil
+	return &pb_common.Media{
+		Id:    int32(mediaId),
+		Media: imgObj,
+	}, nil
 }
 
 // resizeImage checks the height of the given image. If it's greater than minWidth in px,

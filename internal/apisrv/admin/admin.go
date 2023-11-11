@@ -61,7 +61,7 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}
-	err := s.bucket.DeleteFromBucket(ctx, req.ObjectKeys)
+	err := s.repo.Media().DeleteMediaById(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
@@ -72,16 +72,23 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 }
 
 // ListObjects
-func (s *Server) ListObjects(ctx context.Context, req *pb_admin.ListObjectsRequest) (*pb_admin.ListObjectsResponse, error) {
-	list, err := s.bucket.ListObjects(ctx)
+func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjectsPagedRequest) (*pb_admin.ListObjectsPagedResponse, error) {
+	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
+	list, err := s.repo.Media().ListMediaPaged(ctx, int(req.Limit), int(req.Offset), of)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't list objects from bucket",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
 	}
-	return &pb_admin.ListObjectsResponse{
-		Entities: list,
+
+	entities := make([]*pb_common.Media, 0, len(list))
+	for _, m := range list {
+		entities = append(entities, dto.ConvertEntityToCommonMedia(m))
+	}
+
+	return &pb_admin.ListObjectsPagedResponse{
+		List: entities,
 	}, err
 }
 

@@ -18,17 +18,17 @@ func (ms *MYSQLStore) Media() dependency.Media {
 	}
 }
 
-func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaInsert) error {
+func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error) {
 	query := `INSERT INTO media (full_size, compressed, thumbnail) VALUES (:fullSize, :compressed, :thumbnail)`
-	err := ExecNamed(ctx, ms.DB(), query, map[string]any{
+	id, err := ExecNamedLastId(ctx, ms.DB(), query, map[string]any{
 		"fullSize":   media.FullSize,
 		"compressed": media.Compressed,
 		"thumbnail":  media.Thumbnail,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to add media: %w", err)
+		return id, fmt.Errorf("failed to add media: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 func (ms *MYSQLStore) DeleteMediaById(ctx context.Context, id int) error {

@@ -110,7 +110,7 @@ func TestUploadContentImage(t *testing.T) {
 	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
 
-	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 
 	jpg, err := fileToB64ByPath(jpgFilePath)
 	assert.NoError(t, err)
@@ -130,7 +130,7 @@ func TestUploadContentVideoMP4(t *testing.T) {
 	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
 
-	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 
 	mp4, err := fileToBytes(mp4FilePath)
 	assert.NoError(t, err)
@@ -150,7 +150,7 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	tb, err := BucketFromConst(t)
 	assert.NoError(t, err)
 
-	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(nil)
+	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 
 	mp4, err := fileToBytes(webmFilePath)
 	assert.NoError(t, err)
@@ -158,24 +158,6 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	media, err := tb.fs.UploadContentVideo(ctx, mp4, "test", "test", string(contentTypeWEBM))
 	assert.NoError(t, err)
 	fmt.Printf("----- %+v", media)
-
-	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
-	assert.NoError(t, err)
-}
-
-func TestListObjects(t *testing.T) {
-	skipCI(t)
-	ctx := context.Background()
-
-	tb, err := BucketFromConst(t)
-	assert.NoError(t, err)
-
-	mediaList, err := tb.fs.ListObjects(ctx)
-	assert.NoError(t, err)
-
-	for _, m := range mediaList {
-		fmt.Println(m.Url)
-	}
 
 	// err = tb.fs.DeleteFromBucket(ctx, i.ObjectIds)
 	assert.NoError(t, err)

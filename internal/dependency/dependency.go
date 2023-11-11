@@ -116,7 +116,7 @@ type (
 		DeleteArchiveById(ctx context.Context, id int) error
 	}
 	Media interface {
-		AddMedia(ctx context.Context, media *entity.MediaInsert) error
+		AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Media, error)
 	}
@@ -170,10 +170,6 @@ type (
 		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Media, error)
 		// UploadContentVideo uploads mp4 video to bucket
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
-		// DeleteFromBucket deletes an object from the specified bucket.
-		DeleteFromBucket(ctx context.Context, objectKeys []string) error
-		// ListObjects list all objects in base folder
-		ListObjects(ctx context.Context) ([]*pb_common.ListEntityMedia, error)
 	}
 
 	Rates interface {
