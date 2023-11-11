@@ -26,7 +26,7 @@ service AdminService {
       };
     }
   
-    // bucket manager 
+    // BUCKET MANAGER
 
     // UploadContentImage uploads an image to a specific folder with a specified name.
     rpc UploadContentImage(UploadContentImageRequest) returns (common.Media) {
@@ -51,15 +51,15 @@ service AdminService {
       };
     }
     
-    // ListObjects lists all objects in the base folder.
-    rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) {
+    // ListObjectsPaged lists all objects in the base folder.
+    rpc ListObjectsPaged(ListObjectsPagedRequest) returns (ListObjectsPagedResponse) {
       option (google.api.http) = {
         get: "/api/admin/content"
       };
     }
 
 
-    // proucts manager
+    // PRODUCTS MANAGER
 
     rpc AddProduct (AddProductRequest) returns (AddProductResponse) {
         option (google.api.http) = {
@@ -302,16 +302,19 @@ message UploadContentVideoRequest {
 }
 
 
-message ListObjectsRequest {
+message ListObjectsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor orderFactor = 4;
 }
 
-message ListObjectsResponse {
-  repeated common.ListEntityMedia entities = 1;
+message ListObjectsPagedResponse {
+  repeated common.Media list = 1;
 }
 
 
 message DeleteFromBucketRequest {
-  repeated string object_keys = 1;
+  int32 id = 1;
 }
 
 message DeleteFromBucketResponse {

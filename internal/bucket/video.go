@@ -25,7 +25,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 
 	r := bytes.NewReader(mp4Data)
 
-	ui, err := b.Client.PutObject(ctx, b.S3BucketName, fp,
+	_, err = b.Client.PutObject(ctx, b.S3BucketName, fp,
 		r, int64(r.Len()),
 		minio.PutObjectOptions{
 			ContentType:     contentType,
@@ -40,7 +40,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	}
 	url := b.getCDNURL(fp)
 
-	err = b.ms.AddMedia(ctx, &entity.MediaInsert{
+	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
 		FullSize:   url,
 		Compressed: url,
 		Thumbnail:  url,
@@ -51,10 +51,14 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		return nil, err
 	}
 
-	return &pb_common.Media{
+	mi := &pb_common.MediaInsert{
 		FullSize:   url,
 		Compressed: url,
 		Thumbnail:  url,
-		ObjectIds:  []string{ui.Key},
+	}
+
+	return &pb_common.Media{
+		Id:    int32(mediaId),
+		Media: mi,
 	}, nil
 }
