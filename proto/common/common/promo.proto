@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// PromoCodeInsert represents the nested structure within PromoCode
+message PromoCodeInsert {
+  string code = 1;
+  bool free_shipping = 2;
+  google.type.Decimal discount = 3;
+  google.protobuf.Timestamp expiration = 4;
+  bool allowed = 5;
+}
+
+// PromoCode represents the promo_code table
+message PromoCode {
+  int32 id = 1;
+  PromoCodeInsert promo_code_insert = 2;
+}

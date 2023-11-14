@@ -35,7 +35,7 @@ func New(r dependency.Repository, b dependency.FileStore) *Server {
 // CONTENT MANAGER
 
 // UploadContentImage
-func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_common.Media, error) {
+func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, req.Folder, req.ImageName)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content image",
@@ -43,11 +43,13 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 		)
 		return nil, err
 	}
-	return m, err
+	return &pb_admin.UploadContentImageResponse{
+		Media: m,
+	}, err
 }
 
 // UploadContentVideo
-func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_common.Media, error) {
+func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_admin.UploadContentVideoResponse, error) {
 	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content video",
@@ -55,7 +57,9 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 		)
 		return nil, err
 	}
-	return media, nil
+	return &pb_admin.UploadContentVideoResponse{
+		Media: media,
+	}, nil
 }
 
 // DeleteFromBucket
@@ -135,7 +139,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 func (s *Server) AddProductMeasurement(ctx context.Context, req *pb_admin.AddProductMeasurementRequest) (*pb_admin.AddProductMeasurementResponse, error) {
 
-	value, err := decimal.NewFromString(req.MeasurementValue)
+	value, err := decimal.NewFromString(req.MeasurementValue.String())
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert measurement value to decimal",
 			slog.String("err", err.Error()),
@@ -366,7 +370,7 @@ func (s *Server) UpdateProductBrand(ctx context.Context, req *pb_admin.UpdatePro
 	if req.Brand == "" {
 		return &pb_admin.UpdateProductBrandResponse{}, fmt.Errorf("brand is empty")
 	}
-	err := s.repo.Products().UpdateProductBrand(ctx, int(req.ProductID), req.Brand)
+	err := s.repo.Products().UpdateProductBrand(ctx, int(req.ProductId), req.Brand)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product brand",
 			slog.String("err", err.Error()),
@@ -377,7 +381,7 @@ func (s *Server) UpdateProductBrand(ctx context.Context, req *pb_admin.UpdatePro
 }
 
 func (s *Server) UpdateProductCategory(ctx context.Context, req *pb_admin.UpdateProductCategoryRequest) (*pb_admin.UpdateProductCategoryResponse, error) {
-	err := s.repo.Products().UpdateProductCategory(ctx, int(req.ProductID), int(req.CategoryID))
+	err := s.repo.Products().UpdateProductCategory(ctx, int(req.ProductId), int(req.CategoryId))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product category",
 			slog.String("err", err.Error()),
@@ -396,7 +400,7 @@ func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admi
 		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color hex is not valid")
 	}
 
-	err := s.repo.Products().UpdateProductColorAndColorHex(ctx, int(req.ProductID), req.Color, req.ColorHex)
+	err := s.repo.Products().UpdateProductColorAndColorHex(ctx, int(req.ProductId), req.Color, req.ColorHex)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product color and color hex",
 			slog.String("err", err.Error()),
@@ -407,7 +411,7 @@ func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admi
 }
 
 func (s *Server) UpdateProductCountryOfOrigin(ctx context.Context, req *pb_admin.UpdateProductCountryOfOriginRequest) (*pb_admin.UpdateProductCountryOfOriginResponse, error) {
-	err := s.repo.Products().UpdateProductCountryOfOrigin(ctx, int(req.ProductID), req.CountryOfOrigin)
+	err := s.repo.Products().UpdateProductCountryOfOrigin(ctx, int(req.ProductId), req.CountryOfOrigin)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product country of origin",
 			slog.String("err", err.Error()),
@@ -422,7 +426,7 @@ func (s *Server) UpdateProductDescription(ctx context.Context, req *pb_admin.Upd
 		return &pb_admin.UpdateProductDescriptionResponse{}, fmt.Errorf("description is empty")
 	}
 
-	err := s.repo.Products().UpdateProductDescription(ctx, int(req.ProductID), req.Description)
+	err := s.repo.Products().UpdateProductDescription(ctx, int(req.ProductId), req.Description)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product description",
 			slog.String("err", err.Error()),
@@ -437,7 +441,7 @@ func (s *Server) UpdateProductName(ctx context.Context, req *pb_admin.UpdateProd
 		return &pb_admin.UpdateProductNameResponse{}, fmt.Errorf("name is empty")
 	}
 
-	err := s.repo.Products().UpdateProductName(ctx, int(req.ProductID), req.Name)
+	err := s.repo.Products().UpdateProductName(ctx, int(req.ProductId), req.Name)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product name",
 			slog.String("err", err.Error()),
@@ -448,7 +452,7 @@ func (s *Server) UpdateProductName(ctx context.Context, req *pb_admin.UpdateProd
 }
 
 func (s *Server) UpdateProductPreorder(ctx context.Context, req *pb_admin.UpdateProductPreorderRequest) (*pb_admin.UpdateProductPreorderResponse, error) {
-	err := s.repo.Products().UpdateProductPreorder(ctx, int(req.ProductID), req.Preorder)
+	err := s.repo.Products().UpdateProductPreorder(ctx, int(req.ProductId), req.Preorder)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product preorder",
 			slog.String("err", err.Error()),
@@ -468,7 +472,7 @@ func (s *Server) UpdateProductPrice(ctx context.Context, req *pb_admin.UpdatePro
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert price to decimal")
 	}
 
-	err = s.repo.Products().UpdateProductPrice(ctx, int(req.ProductID), price)
+	err = s.repo.Products().UpdateProductPrice(ctx, int(req.ProductId), price)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product price",
 			slog.String("err", err.Error()),
@@ -483,7 +487,7 @@ func (s *Server) UpdateProductSKU(ctx context.Context, req *pb_admin.UpdateProdu
 		return &pb_admin.UpdateProductSKUResponse{}, fmt.Errorf("sku is empty")
 	}
 
-	err := s.repo.Products().UpdateProductSKU(ctx, int(req.ProductID), req.Sku)
+	err := s.repo.Products().UpdateProductSKU(ctx, int(req.ProductId), req.Sku)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product sku",
 			slog.String("err", err.Error()),
@@ -503,7 +507,7 @@ func (s *Server) UpdateProductSale(ctx context.Context, req *pb_admin.UpdateProd
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert sale to decimal")
 	}
 
-	err = s.repo.Products().UpdateProductSale(ctx, int(req.ProductID), sale)
+	err = s.repo.Products().UpdateProductSale(ctx, int(req.ProductId), sale)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product sale",
 			slog.String("err", err.Error()),
@@ -535,7 +539,7 @@ func (s *Server) UpdateProductTargetGender(ctx context.Context, req *pb_admin.Up
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert gender")
 	}
 
-	err = s.repo.Products().UpdateProductTargetGender(ctx, int(req.ProductID), tg)
+	err = s.repo.Products().UpdateProductTargetGender(ctx, int(req.ProductId), tg)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product target gender",
 			slog.String("err", err.Error()),
@@ -549,7 +553,7 @@ func (s *Server) UpdateProductThumbnail(ctx context.Context, req *pb_admin.Updat
 	if req.Thumbnail == "" {
 		return &pb_admin.UpdateProductThumbnailResponse{}, fmt.Errorf("thumbnail is empty")
 	}
-	err := s.repo.Products().UpdateProductThumbnail(ctx, int(req.ProductID), req.Thumbnail)
+	err := s.repo.Products().UpdateProductThumbnail(ctx, int(req.ProductId), req.Thumbnail)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update product thumbnail",
 			slog.String("err", err.Error()),

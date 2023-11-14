@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package common;
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+message Address {
+  int32 id = 1;
+  AddressInsert address_insert = 2;
+}
+
+message AddressInsert {
+  string street = 1;
+  string house_number = 2;
+  string apartment_number = 3;
+  string city = 4;
+  string state = 5;
+  string country = 6;
+  string postal_code = 7;
+}
+
+message Buyer {
+  int32 id = 1;
+  int32 billing_address_id = 2;
+  int32 shipping_address_id = 3;
+  BuyerInsert buyer_insert = 4;
+}
+
+message BuyerInsert {
+  string first_name = 1;
+  string last_name = 2;
+  string email = 3;
+  string phone = 4;
+  bool receive_promo_emails = 5;
+}

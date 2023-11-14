@@ -171,7 +171,7 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 		},
 	))
 
-	err := pb_auth.RegisterAuthHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
+	err := pb_auth.RegisterAuthServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (s *Server) Start(ctx context.Context,
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
 	pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
-	pb_auth.RegisterAuthServer(s.gs, authServer)
+	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
 
 	var clientHTTPHandler http.Handler
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

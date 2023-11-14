@@ -1,0 +1,698 @@
+syntax = "proto3";
+
+package admin;
+
+import "common/dict.proto";
+import "common/filter.proto";
+import "common/media.proto";
+import "common/order.proto";
+import "common/product.proto";
+import "common/promo.proto";
+import "google/api/annotations.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
+
+service AdminService {
+  // KEY VALUE DICTIONARY
+
+  rpc GetDictionary(GetDictionaryRequest) returns (GetDictionaryResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionary"};
+  }
+
+  // BUCKET MANAGER
+
+  // UploadContentImage uploads an image to a specific folder with a specified name.
+  rpc UploadContentImage(UploadContentImageRequest) returns (UploadContentImageResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/image"
+      body: "*"
+    };
+  }
+
+  // UploadContentVideo uploads a video to a specific folder with a specified name.
+  rpc UploadContentVideo(UploadContentVideoRequest) returns (UploadContentVideoResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/video"
+      body: "*"
+    };
+  }
+
+  // DeleteFromBucket deletes objects specified by their keys.
+  rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
+    option (google.api.http) = {delete: "/api/admin/content"};
+  }
+
+  // ListObjectsPaged lists all objects in the base folder.
+  rpc ListObjectsPaged(ListObjectsPagedRequest) returns (ListObjectsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/content"};
+  }
+
+  // PRODUCTS MANAGER
+
+  rpc AddProduct(AddProductRequest) returns (AddProductResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/add"
+      body: "*"
+    };
+  }
+
+  rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/product/paged/{limit}/{offset}/{order_factor}"};
+  }
+
+  rpc GetProductByID(GetProductByIDRequest) returns (GetProductByIDResponse) {
+    option (google.api.http) = {get: "/api/admin/product/{id}"};
+  }
+
+  rpc DeleteProductByID(DeleteProductByIDRequest) returns (DeleteProductByIDResponse) {
+    option (google.api.http) = {delete: "/api/admin/product/{id}"};
+  }
+
+  rpc HideProductByID(HideProductByIDRequest) returns (HideProductByIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{id}/hide"
+      body: "*"
+    };
+  }
+
+  rpc SetSaleByID(SetSaleByIDRequest) returns (SetSaleByIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{id}/set/sale"
+      body: "*"
+    };
+  }
+
+  rpc ReduceStockForProductSizes(ReduceStockForProductSizesRequest) returns (ReduceStockForProductSizesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/reducestock"
+      body: "*"
+    };
+  }
+
+  rpc RestoreStockForProductSizes(RestoreStockForProductSizesRequest) returns (RestoreStockForProductSizesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/restorestock"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductPreorder(UpdateProductPreorderRequest) returns (UpdateProductPreorderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatepreorder"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductName(UpdateProductNameRequest) returns (UpdateProductNameResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatename"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductSKU(UpdateProductSKURequest) returns (UpdateProductSKUResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updateSKU"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductColorAndColorHex(UpdateProductColorAndColorHexRequest) returns (UpdateProductColorAndColorHexResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatecolor"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductCountryOfOrigin(UpdateProductCountryOfOriginRequest) returns (UpdateProductCountryOfOriginResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatecountry"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductBrand(UpdateProductBrandRequest) returns (UpdateProductBrandResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatebrand"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductTargetGender(UpdateProductTargetGenderRequest) returns (UpdateProductTargetGenderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updategender"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductThumbnail(UpdateProductThumbnailRequest) returns (UpdateProductThumbnailResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatethumbnail"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductPrice(UpdateProductPriceRequest) returns (UpdateProductPriceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updateprice"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductSale(UpdateProductSaleRequest) returns (UpdateProductSaleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatesale"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductCategory(UpdateProductCategoryRequest) returns (UpdateProductCategoryResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatecategory"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductDescription(UpdateProductDescriptionRequest) returns (UpdateProductDescriptionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/updatedescription"
+      body: "*"
+    };
+  }
+
+  rpc DeleteProductMeasurement(DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
+    option (google.api.http) = {delete: "/api/admin/product/measurement/{id}/delete"};
+  }
+
+  rpc AddProductMeasurement(AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/measurement/add"
+      body: "*"
+    };
+  }
+
+  rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/size/{size_id}/updatestock"
+      body: "*"
+    };
+  }
+
+  rpc DeleteProductMedia(DeleteProductMediaRequest) returns (DeleteProductMediaResponse) {
+    option (google.api.http) = {delete: "/api/admin/product/media/{product_media_id}/delete"};
+  }
+
+  rpc AddProductMedia(AddProductMediaRequest) returns (AddProductMediaResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/media/add"
+      body: "*"
+    };
+  }
+
+  rpc AddProductTag(AddProductTagRequest) returns (AddProductTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/tag/add"
+      body: "*"
+    };
+  }
+
+  rpc DeleteProductTag(DeleteProductTagRequest) returns (DeleteProductTagResponse) {
+    option (google.api.http) = {delete: "/api/admin/product/{product_id}/tag/{tag}/delete"};
+  }
+
+  // PROMO MANAGER
+
+  rpc AddPromo(AddPromoRequest) returns (AddPromoResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/promo/add"
+      body: "*"
+    };
+  }
+
+  rpc ListPromos(ListPromosRequest) returns (ListPromosResponse) {
+    option (google.api.http) = {get: "/api/admin/promo/list"};
+  }
+
+  rpc DeletePromoCode(DeletePromoCodeRequest) returns (DeletePromoCodeResponse) {
+    option (google.api.http) = {delete: "/api/admin/promo/{code}/delete"};
+  }
+
+  rpc DisablePromoCode(DisablePromoCodeRequest) returns (DisablePromoCodeResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/promo/{code}/disable"
+      body: "*"
+    };
+  }
+
+  // ORDER MANAGER
+
+  // rpc CreateOrder (CreateOrderRequest) returns (CreateOrderResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/create"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc ApplyPromoCode (ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/apply-promo"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc UpdateOrderItems (UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/update-items"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc UpdateOrderShippingCarrier (UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/update-shipping-carrier"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc OrderPaymentDone (OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/payment-done"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc UpdateShippingInfo (UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/update-shipping-info"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc GetOrderById (GetOrderByIdRequest) returns (GetOrderByIdResponse) {
+  //   option (google.api.http) = {
+  //     get: "/api/api/admin/orders/{order_id}"
+  //   };
+  // }
+
+  // rpc GetOrdersByEmail (GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
+  //   option (google.api.http) = {
+  //     get: "/api/api/admin/orders/by-email/{email}"
+  //   };
+  // }
+
+  // rpc GetOrdersByStatus (GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
+  //   option (google.api.http) = {
+  //     get: "/api/api/admin/orders/by-status/{status}"
+  //   };
+  // }
+
+  // rpc RefundOrder (RefundOrderRequest) returns (RefundOrderResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/refund"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc DeliveredOrder (DeliveredOrderRequest) returns (DeliveredOrderResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/delivered"
+  //     body: "*"
+  //   };
+  // }
+
+  // rpc CancelOrder (CancelOrderRequest) returns (CancelOrderResponse) {
+  //   option (google.api.http) = {
+  //     post: "/api/api/admin/orders/{order_id}/cancel"
+  //     body: "*"
+  //   };
+  // }
+}
+
+// DICITONARY
+
+message GetDictionaryRequest {}
+
+message GetDictionaryResponse {
+  common.Dictionary dictionary = 1;
+}
+
+// MEDIA MANAGER
+
+message UploadContentImageRequest {
+  string raw_b64_image = 1;
+  string folder = 2;
+  string image_name = 3;
+}
+
+message UploadContentImageResponse {
+  common.Media media = 1;
+}
+
+message UploadContentVideoRequest {
+  bytes raw = 1;
+  string folder = 2;
+  string video_name = 3;
+  string content_type = 4;
+}
+
+message UploadContentVideoResponse {
+  common.Media media = 1;
+}
+
+message ListObjectsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 4;
+}
+
+message ListObjectsPagedResponse {
+  repeated common.Media list = 1;
+}
+
+message DeleteFromBucketRequest {
+  int32 id = 1;
+}
+
+message DeleteFromBucketResponse {}
+
+// PRODUCTS MANAGER
+
+message AddProductRequest {
+  common.ProductNew product = 1;
+}
+
+message AddProductResponse {
+  common.ProductFull product = 1;
+}
+
+message GetProductsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  repeated common.SortFactor sort_factors = 3;
+  common.OrderFactor order_factor = 4;
+  common.FilterConditions filter_conditions = 5;
+  bool show_hidden = 6;
+}
+
+message GetProductsPagedResponse {
+  repeated common.Product products = 1;
+}
+
+message GetProductByIDRequest {
+  int32 id = 1;
+}
+
+message GetProductByIDResponse {
+  common.ProductFull product = 1;
+}
+
+message DeleteProductByIDRequest {
+  int32 id = 1;
+}
+
+message DeleteProductByIDResponse {}
+
+message HideProductByIDRequest {
+  int32 id = 1;
+  bool hide = 2;
+}
+
+message HideProductByIDResponse {}
+
+message SetSaleByIDRequest {
+  int32 id = 1;
+  string sale_percent = 2;
+}
+
+message SetSaleByIDResponse {}
+
+message ReduceStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
+}
+
+message ReduceStockForProductSizesResponse {}
+
+message RestoreStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
+}
+
+message RestoreStockForProductSizesResponse {}
+
+message UpdateProductPreorderRequest {
+  int32 product_id = 1;
+  string preorder = 2;
+}
+
+message UpdateProductPreorderResponse {}
+
+message UpdateProductNameRequest {
+  int32 product_id = 1;
+  string name = 2;
+}
+
+message UpdateProductNameResponse {}
+
+message UpdateProductSKURequest {
+  int32 product_id = 1;
+  string sku = 2;
+}
+
+message UpdateProductSKUResponse {}
+
+message UpdateProductColorAndColorHexRequest {
+  int32 product_id = 1;
+  string color = 2;
+  string color_hex = 3;
+}
+
+message UpdateProductColorAndColorHexResponse {}
+
+message UpdateProductCountryOfOriginRequest {
+  int32 product_id = 1;
+  string country_of_origin = 2;
+}
+
+message UpdateProductCountryOfOriginResponse {}
+
+message UpdateProductBrandRequest {
+  int32 product_id = 1;
+  string brand = 2;
+}
+
+message UpdateProductBrandResponse {}
+
+message UpdateProductTargetGenderRequest {
+  int32 product_id = 1;
+  common.GenderEnum gender = 2;
+}
+
+message UpdateProductTargetGenderResponse {}
+
+message UpdateProductThumbnailRequest {
+  int32 product_id = 1;
+  string thumbnail = 2;
+}
+
+message UpdateProductThumbnailResponse {}
+
+message UpdateProductPriceRequest {
+  int32 product_id = 1;
+  string price = 2;
+}
+
+message UpdateProductPriceResponse {}
+
+message UpdateProductSaleRequest {
+  int32 product_id = 1;
+  string sale = 2;
+}
+
+message UpdateProductSaleResponse {}
+
+message UpdateProductCategoryRequest {
+  int32 product_id = 1;
+  int32 category_id = 2;
+}
+
+message UpdateProductCategoryResponse {}
+
+message UpdateProductDescriptionRequest {
+  int32 product_id = 1;
+  string description = 2;
+}
+
+message UpdateProductDescriptionResponse {}
+
+message DeleteProductMeasurementRequest {
+  int32 id = 1;
+}
+
+message DeleteProductMeasurementResponse {}
+
+message AddProductMeasurementRequest {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  int32 measurement_name_id = 3;
+  google.type.Decimal measurement_value = 4;
+}
+
+message AddProductMeasurementResponse {}
+
+message UpdateProductSizeStockRequest {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  int32 quantity = 3;
+}
+
+message UpdateProductSizeStockResponse {}
+
+message DeleteProductMediaRequest {
+  int32 product_media_id = 1;
+}
+
+message DeleteProductMediaResponse {}
+
+message AddProductMediaRequest {
+  int32 product_id = 1;
+  string full_size = 2;
+  string thumbnail = 3;
+  string compressed = 4;
+}
+
+message AddProductMediaResponse {}
+
+message AddProductTagRequest {
+  int32 product_id = 1;
+  string tag = 2;
+}
+
+message AddProductTagResponse {}
+
+message DeleteProductTagRequest {
+  int32 product_id = 1;
+  string tag = 2;
+}
+
+message DeleteProductTagResponse {}
+
+// PROMO MANAGER
+
+message AddPromoRequest {
+  common.PromoCodeInsert promo = 1;
+}
+message AddPromoResponse {}
+
+message ListPromosRequest {}
+message ListPromosResponse {
+  repeated common.PromoCode promo_codes = 1;
+}
+
+message DeletePromoCodeRequest {
+  string code = 1;
+}
+message DeletePromoCodeResponse {}
+
+message DisablePromoCodeRequest {
+  string code = 1;
+}
+message DisablePromoCodeResponse {}
+
+// ORDER MANAGER
+
+message CreateOrderRequest {
+  common.OrderNew order = 1;
+}
+
+message CreateOrderResponse {
+  common.Order order = 1;
+}
+
+message ApplyPromoCodeRequest {
+  int32 order_id = 1;
+  string promo_code = 2;
+}
+
+message ApplyPromoCodeResponse {
+  // Fields go here
+}
+
+message UpdateOrderItemsRequest {
+  // Fields go here
+}
+
+message UpdateOrderItemsResponse {
+  // Fields go here
+}
+
+message UpdateOrderShippingCarrierRequest {
+  // Fields go here
+}
+
+message UpdateOrderShippingCarrierResponse {
+  // Fields go here
+}
+
+message OrderPaymentDoneRequest {
+  // Fields go here
+}
+
+message OrderPaymentDoneResponse {
+  // Fields go here
+}
+
+message UpdateShippingInfoRequest {
+  // Fields go here
+}
+
+message UpdateShippingInfoResponse {
+  // Fields go here
+}
+
+message GetOrderByIdRequest {
+  // Fields go here
+}
+
+message GetOrderByIdResponse {
+  // Fields go here
+}
+
+message GetOrdersByEmailRequest {
+  // Fields go here
+}
+
+message GetOrdersByEmailResponse {
+  // Fields go here
+}
+
+message GetOrdersByStatusRequest {
+  // Fields go here
+}
+
+message GetOrdersByStatusResponse {
+  // Fields go here
+}
+
+message RefundOrderRequest {
+  // Fields go here
+}
+
+message RefundOrderResponse {
+  // Fields go here
+}
+
+message DeliveredOrderRequest {
+  // Fields go here
+}
+
+message DeliveredOrderResponse {
+  // Fields go here
+}
+
+message CancelOrderRequest {
+  // Fields go here
+}
+
+message CancelOrderResponse {
+  // Fields go here
+}

@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+import "google/type/decimal.proto";
+
+// Payment represents the payment table
+message Payment {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp modified_at = 3;
+  PaymentInsert payment_insert = 4;
+}
+
+message PaymentInsert {
+  int32 payment_method_id = 1;
+  string transaction_id = 2;
+  google.type.Decimal transaction_amount = 3;
+  string payer = 4;
+  string payee = 5;
+  bool is_transaction_done = 6;
+}
+
+enum PaymentMethodNameEnum {
+  PAYMENT_METHOD_NAME_ENUM_UNKNOWN = 0;
+  PAYMENT_METHOD_NAME_ENUM_CARD = 1;
+  PAYMENT_METHOD_NAME_ENUM_ETH = 2;
+  PAYMENT_METHOD_NAME_ENUM_USDC = 3;
+  PAYMENT_METHOD_NAME_ENUM_USDT = 4;
+}
+
+// PaymentMethod represents the payment_method table
+message PaymentMethod {
+  int32 id = 1;
+  PaymentMethodNameEnum name = 2;
+}

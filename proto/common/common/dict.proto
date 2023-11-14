@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package common;
+
+import "common/order.proto";
+import "common/payment.proto";
+import "common/product.proto";
+import "common/shipment.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+message Dictionary {
+  repeated Category categories = 1;
+  repeated MeasurementName measurements = 2;
+  repeated OrderStatus order_statuses = 3;
+  repeated PaymentMethod payment_methods = 4;
+  repeated ShipmentCarrier shipment_carriers = 5;
+  repeated Size sizes = 6;
+}

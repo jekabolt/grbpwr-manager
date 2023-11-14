@@ -43,7 +43,7 @@ func TestAuth(t *testing.T) {
 
 	as.EXPECT().AddAdmin(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-	_, err = authsrv.Create(ctx, &pb_auth.CreateUserRequest{
+	_, err = authsrv.Create(ctx, &pb_auth.CreateRequest{
 		MasterPassword: masterPassword,
 		User: &pb_auth.User{
 			Username: username,
@@ -96,7 +96,7 @@ func TestAuth(t *testing.T) {
 	assert.Equal(t, rec.Code, http.StatusUnauthorized)
 
 	as.EXPECT().DeleteAdmin(mock.Anything, mock.Anything).Return(nil)
-	_, err = authsrv.Delete(ctx, &pb_auth.DeleteUserRequest{
+	_, err = authsrv.Delete(ctx, &pb_auth.DeleteRequest{
 		Username:       username,
 		MasterPassword: c.MasterPassword,
 	})

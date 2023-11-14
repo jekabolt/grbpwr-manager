@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package common;
+
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+enum OrderFactor {
+  ORDER_FACTOR_UNKNOWN = 0;
+  ORDER_FACTOR_ASC = 1;
+  ORDER_FACTOR_DESC = 2;
+}
+
+enum SortFactor {
+  SORT_FACTOR_UNKNOWN = 0;
+  SORT_FACTOR_CREATED_AT = 1;
+  SORT_FACTOR_UPDATED_AT = 2;
+  SORT_FACTOR_NAME = 3;
+  SORT_FACTOR_PRICE = 4;
+}
+
+message PriceFromTo {
+  google.type.Decimal from = 1;
+  google.type.Decimal to = 2;
+}
+
+message FilterConditions {
+  PriceFromTo price_from_to = 1;
+  bool on_sale = 2;
+  string color = 3;
+  int32 category_id = 4;
+  repeated int32 sizes_ids = 5;
+  bool preorder = 6;
+  string by_tag = 7;
+}
