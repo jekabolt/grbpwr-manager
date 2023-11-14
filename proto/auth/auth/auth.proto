@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package auth;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth";
+
+service AuthService {
+  // Authenticate a user. Returns a JWT token if the user is authenticated.
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/login"
+      body: "*"
+    };
+  }
+  // Create a new user account. Can be used only with admin privileges.
+  rpc Create(CreateRequest) returns (CreateResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/create"
+      body: "*"
+    };
+  }
+  // Delete user account. Can be used only with admin privileges.
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {
+    option (google.api.http) = {delete: "/api/auth/delete/{username}"};
+  }
+  // ChangePassword changes the password for the user. Can be updated by user or admin.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (google.api.http) = {
+      put: "/api/auth/change-password"
+      body: "*"
+    };
+  }
+}
+
+// LoginRequest is the request message for the Login RPC.
+message LoginRequest {
+  // username is the username of the user.
+  string username = 1;
+  // password is the password of the user.
+  string password = 2;
+}
+
+message LoginResponse {
+  // token is the JWT token for the user.
+  string auth_token = 1;
+}
+
+// User is the user account. used for creating new users.
+message User {
+  string username = 1;
+  string password = 2;
+}
+
+message CreateRequest {
+  // User to add.
+  User user = 1;
+  // Admin password.
+  string master_password = 2;
+}
+
+message CreateResponse {
+  // aurt_token is the JWT token for the user.
+  string auth_token = 1;
+}
+
+message DeleteRequest {
+  // username is the username of the user to delete.
+  string username = 1;
+  // adminPassword is the admin password.
+  string master_password = 2;
+}
+
+message DeleteResponse {}
+
+message ChangePasswordRequest {
+  // username is the username of the user.
+  string username = 1;
+  // current_password is the current password of the user.
+  string current_password = 2;
+  // new password
+  string new_password = 3;
+}
+
+// ChangePasswordResponse is the response message for the ChangePassword RPC.
+message ChangePasswordResponse {
+  // auth_token is the JWT token for the user.
+  string auth_token = 1;
+}

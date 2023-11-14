@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package common;
+
+import "common/buyer.proto";
+import "common/payment.proto";
+import "common/promo.proto";
+import "common/shipment.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+message OrderNew {
+  repeated OrderItemInsert items = 1;
+  AddressInsert shipping_address = 2;
+  AddressInsert billing_address = 3;
+  BuyerInsert buyer = 4;
+  int32 payment_method_id = 5;
+  int32 shipment_carrier_id = 6;
+  string promo_code = 7;
+}
+
+message OrderFull {
+  Order order = 1;
+  repeated OrderItem order_items = 2;
+  Payment payment = 3;
+  PaymentMethod payment_method = 4;
+  Shipment shipment = 5;
+  ShipmentCarrier shipment_carrier = 6;
+  PromoCode promo_code = 7;
+  OrderStatus order_status = 8;
+  Buyer buyer = 9;
+  Address billing = 10;
+  Address shipping = 11;
+  google.protobuf.Timestamp placed = 12;
+  google.protobuf.Timestamp modified = 13;
+  google.type.Decimal total_price = 14;
+}
+
+message Order {
+  int32 id = 1;
+  int32 buyer_id = 2;
+  google.protobuf.Timestamp placed = 3;
+  google.protobuf.Timestamp modified = 4;
+  int32 payment_id = 5;
+  google.type.Decimal total_price = 6;
+  int32 order_status_id = 7;
+  int32 shipment_id = 8;
+  int32 promo_id = 9;
+}
+
+message OrderItem {
+  int32 id = 1;
+  int32 order_id = 2;
+  OrderItemInsert order_item = 3;
+}
+
+message OrderItemInsert {
+  int32 product_id = 1;
+  int32 quantity = 2;
+  int32 size_id = 3;
+}
+
+enum OrderStatusEnum {
+  ORDER_STATUS_ENUM_UNKNOWN = 0;
+  ORDER_STATUS_ENUM_PLACED = 1;
+  ORDER_STATUS_ENUM_CONFIRMED = 2;
+  ORDER_STATUS_ENUM_SHIPPED = 3;
+  ORDER_STATUS_ENUM_DELIVERED = 4;
+  ORDER_STATUS_ENUM_CANCELLED = 5;
+  ORDER_STATUS_ENUM_REFUNDED = 6;
+}
+
+message OrderStatus {
+  int32 id = 1;
+  OrderStatusEnum name = 2;
+}

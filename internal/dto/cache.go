@@ -5,6 +5,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 type Dict struct {
@@ -57,11 +58,14 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 	}
 
 	for _, s := range dict.ShipmentCarriers {
+
 		commonDict.ShipmentCarriers = append(commonDict.ShipmentCarriers, &pb_common.ShipmentCarrier{
 			Id: int32(s.ID),
 			Insert: &pb_common.ShipmentCarrierInsert{
 				Carrier: s.Carrier,
-				Price:   s.Price.String(),
+				Price: &pb_decimal.Decimal{
+					Value: s.Price.String(),
+				},
 				Allowed: s.Allowed,
 			},
 		})

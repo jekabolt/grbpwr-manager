@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+
+enum CategoryEnum {
+  CATEGORY_ENUM_UNKNOWN = 0;
+  CATEGORY_ENUM_T_SHIRT = 1;
+  CATEGORY_ENUM_JEANS = 2;
+  CATEGORY_ENUM_DRESS = 3;
+  CATEGORY_ENUM_JACKET = 4;
+  CATEGORY_ENUM_SWEATER = 5;
+  CATEGORY_ENUM_PANT = 6;
+  CATEGORY_ENUM_SKIRT = 7;
+  CATEGORY_ENUM_SHORT = 8;
+  CATEGORY_ENUM_BLAZER = 9;
+  CATEGORY_ENUM_COAT = 10;
+  CATEGORY_ENUM_SOCKS = 11;
+  CATEGORY_ENUM_UNDERWEAR = 12;
+  CATEGORY_ENUM_BRA = 13;
+  CATEGORY_ENUM_HAT = 14;
+  CATEGORY_ENUM_SCARF = 15;
+  CATEGORY_ENUM_GLOVES = 16;
+  CATEGORY_ENUM_SHOES = 17;
+  CATEGORY_ENUM_BELT = 18;
+  CATEGORY_ENUM_OTHER = 19;
+}
+
+message Category {
+  int32 id = 1;
+  CategoryEnum name = 2;
+}
+
+enum SizeEnum {
+  SIZE_ENUM_UNKNOWN = 0;
+  SIZE_ENUM_XXS = 1;
+  SIZE_ENUM_XS = 2;
+  SIZE_ENUM_S = 3;
+  SIZE_ENUM_M = 4;
+  SIZE_ENUM_L = 5;
+  SIZE_ENUM_XL = 6;
+  SIZE_ENUM_XXL = 7;
+  SIZE_ENUM_OS = 8;
+}
+
+message Size {
+  int32 id = 1;
+  SizeEnum name = 2;
+}
+
+enum MeasurementNameEnum {
+  MEASUREMENT_NAME_ENUM_UNKNOWN = 0;
+  MEASUREMENT_NAME_ENUM_WAIST = 1;
+  MEASUREMENT_NAME_ENUM_INSEAM = 2;
+  MEASUREMENT_NAME_ENUM_LENGTH = 3;
+  MEASUREMENT_NAME_ENUM_RISE = 4;
+  MEASUREMENT_NAME_ENUM_HIPS = 5;
+  MEASUREMENT_NAME_ENUM_SHOULDERS = 6;
+  MEASUREMENT_NAME_ENUM_BUST = 7;
+  MEASUREMENT_NAME_ENUM_SLEEVE = 8;
+  MEASUREMENT_NAME_ENUM_WIDTH = 9;
+  MEASUREMENT_NAME_ENUM_HEIGHT = 10;
+}
+
+message MeasurementName {
+  int32 id = 1;
+  MeasurementNameEnum name = 2;
+}
+
+enum GenderEnum {
+  GENDER_ENUM_UNKNOWN = 0;
+  GENDER_ENUM_MALE = 1;
+  GENDER_ENUM_FEMALE = 2;
+  GENDER_ENUM_UNISEX = 3;
+}
+
+message ProductNew {
+  ProductInsert product = 1;
+  repeated SizeWithMeasurementInsert size_measurements = 2;
+  repeated ProductMediaInsert media = 3;
+  repeated ProductTagInsert tags = 4;
+}
+
+message ProductFull {
+  Product product = 1;
+  repeated ProductSize sizes = 2;
+  repeated ProductMeasurement measurements = 3;
+  repeated ProductMedia media = 4;
+  repeated ProductTag tags = 5;
+}
+
+message Product {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  ProductInsert product_insert = 4;
+}
+
+message ProductInsert {
+  string preorder = 1;
+  string name = 2;
+  string brand = 3;
+  string sku = 4;
+  string color = 5;
+  string color_hex = 6;
+  string country_of_origin = 7;
+  string thumbnail = 8;
+  google.type.Decimal price = 9;
+  string sale_percentage = 10;
+  int32 category_id = 11;
+  string description = 12;
+  bool hidden = 13;
+  GenderEnum target_gender = 14;
+}
+
+message SizeWithMeasurementInsert {
+  ProductSizeInsert product_size = 1;
+  repeated ProductMeasurementInsert measurements = 2;
+}
+
+message SizeWithMeasurement {
+  ProductSize product_size = 1;
+  repeated ProductMeasurement measurements = 2;
+}
+
+message ProductSize {
+  int32 id = 1;
+  google.type.Decimal quantity = 2;
+  int32 product_id = 3;
+  int32 size_id = 4;
+}
+
+message ProductSizeInsert {
+  google.type.Decimal quantity = 1;
+  int32 size_id = 2;
+}
+
+message ProductMeasurement {
+  int32 id = 1;
+  int32 product_id = 2;
+  int32 product_size_id = 3;
+  int32 measurement_name_id = 4;
+  google.type.Decimal measurement_value = 5;
+}
+
+message ProductMeasurementInsert {
+  int32 measurement_name_id = 1;
+  google.type.Decimal measurement_value = 2;
+}
+
+message ProductMedia {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  int32 product_id = 3;
+  ProductMediaInsert product_media_insert = 4;
+}
+
+message ProductMediaInsert {
+  string full_size = 1;
+  string thumbnail = 2;
+  string compressed = 3;
+}
+
+message ProductTag {
+  int32 id = 1;
+  int32 product_id = 2;
+  ProductTagInsert product_tag_insert = 3;
+}
+
+message ProductTagInsert {
+  string tag = 1;
+}

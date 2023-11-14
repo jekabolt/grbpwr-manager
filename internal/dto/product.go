@@ -8,6 +8,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -25,7 +26,7 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 	}
 
 	// Convert ProductInsert
-	price, err := decimal.NewFromString(pbProductNew.Product.Price)
+	price, err := decimal.NewFromString(pbProductNew.Product.Price.String())
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 	// Convert SizeMeasurements
 	var sizeMeasurements []entity.SizeWithMeasurementInsert
 	for _, pbSizeMeasurement := range pbProductNew.SizeMeasurements {
-		quantity, err := decimal.NewFromString(pbSizeMeasurement.ProductSize.Quantity)
+		quantity, err := decimal.NewFromString(pbSizeMeasurement.ProductSize.Quantity.String())
 		if err != nil {
 			return nil, err
 		}
@@ -69,7 +70,7 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 
 		var measurements []entity.ProductMeasurementInsert
 		for _, pbMeasurement := range pbSizeMeasurement.Measurements {
-			measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue)
+			measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue.String())
 			if err != nil {
 				return nil, err
 			}
@@ -136,7 +137,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		ColorHex:        e.Product.ColorHex,
 		CountryOfOrigin: e.Product.CountryOfOrigin,
 		Thumbnail:       e.Product.Thumbnail,
-		Price:           e.Product.Price.String(),
+		Price:           &pb_decimal.Decimal{Value: e.Product.Price.String()},
 		SalePercentage:  e.Product.SalePercentage.Decimal.String(),
 		CategoryId:      int32(e.Product.CategoryID),
 		Description:     e.Product.Description,
@@ -154,8 +155,10 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	var pbSizes []*pb_common.ProductSize
 	for _, size := range e.Sizes {
 		pbSizes = append(pbSizes, &pb_common.ProductSize{
-			Id:        int32(size.ID),
-			Quantity:  size.Quantity.String(),
+			Id: int32(size.ID),
+			Quantity: &pb_decimal.Decimal{
+				Value: size.Quantity.String(),
+			},
 			ProductId: int32(size.ProductID),
 			SizeId:    int32(size.SizeID),
 		})
@@ -168,7 +171,9 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 			ProductId:         int32(measurement.ProductID),
 			ProductSizeId:     int32(measurement.ProductSizeID),
 			MeasurementNameId: int32(measurement.MeasurementNameID),
-			MeasurementValue:  measurement.MeasurementValue.String(),
+			MeasurementValue: &pb_decimal.Decimal{
+				Value: measurement.MeasurementValue.String(),
+			},
 		})
 	}
 
@@ -225,12 +230,14 @@ func ConvertEntityProductToPb(entityProduct *entity.Product) (*pb_common.Product
 			ColorHex:        entityProduct.ColorHex,
 			CountryOfOrigin: entityProduct.CountryOfOrigin,
 			Thumbnail:       entityProduct.Thumbnail,
-			Price:           entityProduct.Price.String(),
-			SalePercentage:  entityProduct.SalePercentage.Decimal.String(),
-			CategoryId:      int32(entityProduct.CategoryID),
-			Description:     entityProduct.Description,
-			Hidden:          entityProduct.Hidden.Bool,
-			TargetGender:    pb_common.GenderEnum(tg),
+			Price: &pb_decimal.Decimal{
+				Value: entityProduct.Price.String(),
+			},
+			SalePercentage: entityProduct.SalePercentage.Decimal.String(),
+			CategoryId:     int32(entityProduct.CategoryID),
+			Description:    entityProduct.Description,
+			Hidden:         entityProduct.Hidden.Bool,
+			TargetGender:   pb_common.GenderEnum(tg),
 		},
 	}
 

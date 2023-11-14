@@ -10,8 +10,8 @@ import (
 // ConvertPbOrderItemToEntity converts a protobuf OrderItem to an entity OrderItem
 func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) entity.OrderItemInsert {
 	return entity.OrderItemInsert{
-		ProductID: int(pbOrderItem.ProductId),
-		Quantity:  decimal.NewFromInt32(pbOrderItem.Quantity),
-		SizeID:    int(pbOrderItem.SizeId),
+		ProductID: int(pbOrderItem.OrderItem.ProductId),
+		Quantity:  decimal.NewFromInt32(pbOrderItem.OrderItem.Quantity),
+		SizeID:    int(pbOrderItem.OrderItem.SizeId),
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
@@ -25,7 +24,7 @@ const (
 
 // Server implements the heartbeat service.
 type Server struct {
-	auth.UnimplementedAuthServer
+	auth.UnimplementedAuthServiceServer
 	adminRepository dependency.Admin
 	pwhash          *pwhash.PasswordHasher
 	JwtAuth         *jwtauth.JWTAuth
@@ -100,7 +99,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 }
 
 // Create creates a new user requires an admin password.
-func (s *Server) Create(ctx context.Context, req *auth.CreateUserRequest) (*auth.CreateUserResponse, error) {
+func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.CreateResponse, error) {
 
 	err := s.pwhash.Validate(s.c.MasterPassword, s.masterHash)
 	if err != nil {
@@ -123,14 +122,14 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateUserRequest) (*auth
 	if err != nil {
 		return nil, err
 	}
-	return &auth.CreateUserResponse{
+	return &auth.CreateResponse{
 		AuthToken: token,
 	}, nil
 
 }
 
 // Delete deletes a user.
-func (s *Server) Delete(ctx context.Context, req *auth.DeleteUserRequest) (*emptypb.Empty, error) {
+func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.DeleteResponse, error) {
 	err := s.pwhash.Validate(req.MasterPassword, s.masterHash)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, "not authenticated")
@@ -140,7 +139,7 @@ func (s *Server) Delete(ctx context.Context, req *auth.DeleteUserRequest) (*empt
 	if err != nil {
 		return nil, err
 	}
-	return &emptypb.Empty{}, nil
+	return &auth.DeleteResponse{}, nil
 }
 
 // ChangePassword changes the password of the user. It requires the old password or admin password provided.

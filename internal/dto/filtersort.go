@@ -4,13 +4,18 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // ConvertEntityPriceFromToToPBCommon converts PriceFromTo from entity to pb_common
 func ConvertEntityPriceFromToToPBCommon(pft entity.PriceFromTo) *pb_common.PriceFromTo {
 	return &pb_common.PriceFromTo{
-		From: pft.From.String(),
-		To:   pft.To.String(),
+		From: &pb_decimal.Decimal{
+			Value: pft.From.String(),
+		},
+		To: &pb_decimal.Decimal{
+			Value: pft.To.String(),
+		},
 	}
 }
 
@@ -35,9 +40,9 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 // ConvertPBCommonOrderFactorToEntity converts OrderFactor from pb_common to entity
 func ConvertPBCommonOrderFactorToEntity(of pb_common.OrderFactor) entity.OrderFactor {
 	switch of {
-	case pb_common.OrderFactor_ASC:
+	case pb_common.OrderFactor_ORDER_FACTOR_ASC:
 		return entity.Ascending
-	case pb_common.OrderFactor_DESC:
+	case pb_common.OrderFactor_ORDER_FACTOR_DESC:
 		return entity.Descending
 	default:
 		return entity.Ascending // default value
@@ -47,13 +52,13 @@ func ConvertPBCommonOrderFactorToEntity(of pb_common.OrderFactor) entity.OrderFa
 // ConvertPBCommonSortFactorToEntity converts SortFactor from pb_common to entity
 func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFactor {
 	switch sf {
-	case pb_common.SortFactor_CREATED_AT:
+	case pb_common.SortFactor_SORT_FACTOR_CREATED_AT:
 		return entity.CreatedAt
-	case pb_common.SortFactor_UPDATED_AT:
+	case pb_common.SortFactor_SORT_FACTOR_UPDATED_AT:
 		return entity.UpdatedAt
-	case pb_common.SortFactor_NAME:
+	case pb_common.SortFactor_SORT_FACTOR_NAME:
 		return entity.Name
-	case pb_common.SortFactor_PRICE:
+	case pb_common.SortFactor_SORT_FACTOR_PRICE:
 		return entity.Price
 	default:
 		return entity.CreatedAt // default value
@@ -62,11 +67,11 @@ func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFacto
 
 // ConvertPBCommonPriceFromToToEntity converts PriceFromTo from pb_common to entity
 func ConvertPBCommonPriceFromToToEntity(pft *pb_common.PriceFromTo) entity.PriceFromTo {
-	from, err := decimal.NewFromString(pft.From)
+	from, err := decimal.NewFromString(pft.From.String())
 	if err != nil {
 		from = decimal.Zero
 	}
-	to, err := decimal.NewFromString(pft.To)
+	to, err := decimal.NewFromString(pft.To.String())
 	if err != nil {
 		to = decimal.Zero
 	}

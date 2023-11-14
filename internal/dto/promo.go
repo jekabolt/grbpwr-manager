@@ -6,13 +6,14 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ConvertPbCommonToEntity converts a PromoCodeInsert object from pb_common to entity.
 func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.PromoCodeInsert, error) {
 	// Convert the Discount field from string to decimal.Decimal
-	discountDecimal, err := decimal.NewFromString(pbPromo.Discount)
+	discountDecimal, err := decimal.NewFromString(pbPromo.Discount.String())
 	if err != nil {
 		return nil, fmt.Errorf("error converting discount to decimal: %v", err)
 	}
@@ -38,7 +39,7 @@ func ConvertEntityPromoToPb(entityPromo *entity.PromoCode) *pb_common.PromoCode 
 	pbPromoInsert := &pb_common.PromoCodeInsert{
 		Code:         entityPromo.Code,
 		FreeShipping: entityPromo.FreeShipping,
-		Discount:     discountStr,
+		Discount:     &pb_decimal.Decimal{Value: discountStr},
 		Expiration:   timestamppb.New(entityPromo.Expiration),
 		Allowed:      entityPromo.Allowed,
 	}
