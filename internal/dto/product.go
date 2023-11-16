@@ -3,7 +3,6 @@ package dto
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -12,12 +11,33 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func ConvertPbGenderEnumToEntityGenderEnum(pbGenderEnum pb_common.GenderEnum) (entity.GenderEnum, error) {
-	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(pbGenderEnum))]
-	if !ok {
-		return "", fmt.Errorf("bad target gender")
+var (
+	genderEntityPbMap = map[entity.GenderEnum]pb_common.GenderEnum{
+		entity.Male:   pb_common.GenderEnum_GENDER_ENUM_MALE,
+		entity.Female: pb_common.GenderEnum_GENDER_ENUM_FEMALE,
+		entity.Unisex: pb_common.GenderEnum_GENDER_ENUM_UNISEX,
 	}
-	return entity.GenderEnum(tg), nil
+	genderPbEntityMap = map[pb_common.GenderEnum]entity.GenderEnum{
+		pb_common.GenderEnum_GENDER_ENUM_MALE:   entity.Male,
+		pb_common.GenderEnum_GENDER_ENUM_FEMALE: entity.Female,
+		pb_common.GenderEnum_GENDER_ENUM_UNISEX: entity.Unisex,
+	}
+)
+
+func ConvertPbGenderEnumToEntityGenderEnum(pbGenderEnum pb_common.GenderEnum) (entity.GenderEnum, error) {
+	g, ok := genderPbEntityMap[pbGenderEnum]
+	if !ok {
+		return entity.GenderEnum(""), fmt.Errorf("bad pb target gender %v", pbGenderEnum)
+	}
+	return g, nil
+}
+
+func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_common.GenderEnum, error) {
+	g, ok := genderEntityPbMap[entityGenderEnum]
+	if !ok {
+		return pb_common.GenderEnum(0), fmt.Errorf("bad entity target gender %v", g)
+	}
+	return g, nil
 }
 
 func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
@@ -26,14 +46,19 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 	}
 
 	// Convert ProductInsert
-	price, err := decimal.NewFromString(pbProductNew.Product.Price.String())
+	price, err := decimal.NewFromString(pbProductNew.Product.Price.Value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to convert product price: %w", err)
 	}
-	if pbProductNew.Product.SalePercentage == "" {
-		pbProductNew.Product.SalePercentage = "0"
+	salePercentage, err := decimal.NewFromString(pbProductNew.Product.SalePercentage.Value)
+	if err != nil {
+		if pbProductNew.Product.SalePercentage.Value == "" {
+			salePercentage = decimal.Zero
+		} else {
+			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+		}
 	}
-	salePercentage, err := decimal.NewFromString(pbProductNew.Product.SalePercentage)
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.Product.TargetGender)
 	if err != nil {
 		return nil, err
 	}
@@ -48,19 +73,19 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 		CountryOfOrigin: pbProductNew.Product.CountryOfOrigin,
 		Thumbnail:       pbProductNew.Product.Thumbnail,
 		Price:           price,
-		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.Product.SalePercentage != ""},
+		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.Product.SalePercentage.Value != ""},
 		CategoryID:      int(pbProductNew.Product.CategoryId),
 		Description:     pbProductNew.Product.Description,
 		Hidden:          sql.NullBool{Bool: pbProductNew.Product.Hidden, Valid: true},
-		TargetGender:    entity.GenderEnum(pbProductNew.Product.TargetGender.String()),
+		TargetGender:    targetGender,
 	}
 
 	// Convert SizeMeasurements
 	var sizeMeasurements []entity.SizeWithMeasurementInsert
 	for _, pbSizeMeasurement := range pbProductNew.SizeMeasurements {
-		quantity, err := decimal.NewFromString(pbSizeMeasurement.ProductSize.Quantity.String())
+		quantity, err := decimal.NewFromString(pbSizeMeasurement.ProductSize.Quantity.Value)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to convert product size quantity: %w for size id  %v", err, pbSizeMeasurement.ProductSize.SizeId)
 		}
 
 		productSize := &entity.ProductSizeInsert{
@@ -70,9 +95,9 @@ func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductN
 
 		var measurements []entity.ProductMeasurementInsert
 		for _, pbMeasurement := range pbSizeMeasurement.Measurements {
-			measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue.String())
+			measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue.Value)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to convert product measurement value: %w for measurement name id %v", err, pbMeasurement.MeasurementNameId)
 			}
 
 			measurement := entity.ProductMeasurementInsert{
@@ -123,9 +148,9 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	if e == nil {
 		return nil, nil
 	}
-	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(e.Product.TargetGender))]
-	if !ok {
-		return nil, fmt.Errorf("bad target gender")
+	tg, err := ConvertEntityGenderToPbGenderEnum(e.Product.TargetGender)
+	if err != nil {
+		return nil, err
 	}
 
 	pbProductInsert := &pb_common.ProductInsert{
@@ -138,11 +163,11 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		CountryOfOrigin: e.Product.CountryOfOrigin,
 		Thumbnail:       e.Product.Thumbnail,
 		Price:           &pb_decimal.Decimal{Value: e.Product.Price.String()},
-		SalePercentage:  e.Product.SalePercentage.Decimal.String(),
+		SalePercentage:  &pb_decimal.Decimal{Value: e.Product.SalePercentage.Decimal.String()},
 		CategoryId:      int32(e.Product.CategoryID),
 		Description:     e.Product.Description,
 		Hidden:          e.Product.Hidden.Bool,
-		TargetGender:    pb_common.GenderEnum(tg),
+		TargetGender:    tg,
 	}
 
 	pbProduct := &pb_common.Product{
@@ -213,9 +238,9 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 
 // ConvertEntityProductToPb converts entity.Product to pb_common.Product
 func ConvertEntityProductToPb(entityProduct *entity.Product) (*pb_common.Product, error) {
-	tg, ok := pb_common.GenderEnum_value[strings.ToUpper(string(entityProduct.TargetGender))]
-	if !ok {
-		return nil, fmt.Errorf("bad target gender")
+	tg, err := ConvertEntityGenderToPbGenderEnum(entityProduct.TargetGender)
+	if err != nil {
+		return nil, err
 	}
 	pbProduct := &pb_common.Product{
 		Id:        int32(entityProduct.ID),
@@ -233,11 +258,11 @@ func ConvertEntityProductToPb(entityProduct *entity.Product) (*pb_common.Product
 			Price: &pb_decimal.Decimal{
 				Value: entityProduct.Price.String(),
 			},
-			SalePercentage: entityProduct.SalePercentage.Decimal.String(),
+			SalePercentage: &pb_decimal.Decimal{Value: entityProduct.SalePercentage.Decimal.String()},
 			CategoryId:     int32(entityProduct.CategoryID),
 			Description:    entityProduct.Description,
 			Hidden:         entityProduct.Hidden.Bool,
-			TargetGender:   pb_common.GenderEnum(tg),
+			TargetGender:   tg,
 		},
 	}
 

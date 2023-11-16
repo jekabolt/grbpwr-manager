@@ -32,7 +32,9 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "path to configuration file (optional)")
 	rootCmd.AddCommand(versionCmd)
 	if err := rootCmd.Execute(); err != nil {
-		slog.Default().With(err).Error("can't start the service ")
+		slog.Default().Error("can't start the service",
+			slog.String("err", err.Error()),
+		)
 		os.Exit(-1)
 	}
 }

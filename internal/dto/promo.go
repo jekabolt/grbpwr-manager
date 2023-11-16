@@ -13,7 +13,7 @@ import (
 // ConvertPbCommonToEntity converts a PromoCodeInsert object from pb_common to entity.
 func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.PromoCodeInsert, error) {
 	// Convert the Discount field from string to decimal.Decimal
-	discountDecimal, err := decimal.NewFromString(pbPromo.Discount.String())
+	discountDecimal, err := decimal.NewFromString(pbPromo.Discount.Value)
 	if err != nil {
 		return nil, fmt.Errorf("error converting discount to decimal: %v", err)
 	}

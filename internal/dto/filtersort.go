@@ -67,11 +67,11 @@ func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFacto
 
 // ConvertPBCommonPriceFromToToEntity converts PriceFromTo from pb_common to entity
 func ConvertPBCommonPriceFromToToEntity(pft *pb_common.PriceFromTo) entity.PriceFromTo {
-	from, err := decimal.NewFromString(pft.From.String())
+	from, err := decimal.NewFromString(pft.From.Value)
 	if err != nil {
 		from = decimal.Zero
 	}
-	to, err := decimal.NewFromString(pft.To.String())
+	to, err := decimal.NewFromString(pft.To.Value)
 	if err != nil {
 		to = decimal.Zero
 	}

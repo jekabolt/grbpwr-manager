@@ -7,7 +7,6 @@ import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-
 enum CategoryEnum {
   CATEGORY_ENUM_UNKNOWN = 0;
   CATEGORY_ENUM_T_SHIRT = 1;
@@ -111,7 +110,7 @@ message ProductInsert {
   string country_of_origin = 7;
   string thumbnail = 8;
   google.type.Decimal price = 9;
-  string sale_percentage = 10;
+  google.type.Decimal sale_percentage = 10;
   int32 category_id = 11;
   string description = 12;
   bool hidden = 13;
