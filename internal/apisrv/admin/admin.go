@@ -105,7 +105,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product")
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product: %v", err)
 	}
 
 	_, err = v.ValidateStruct(prdNew)
@@ -113,7 +113,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 		slog.Default().ErrorCtx(ctx, "validation add product request failed",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %w", err).Error())
+		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %v", err).Error())
 	}
 
 	prd, err := s.repo.Products().AddProduct(ctx, prdNew)
@@ -129,7 +129,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 		slog.Default().ErrorCtx(ctx, "can't convert entity product to proto product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity product to proto product")
+		return nil, status.Errorf(codes.Internal, "can't convert entity product to proto product: %v", err)
 	}
 
 	return &pb_admin.AddProductResponse{
@@ -139,7 +139,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 func (s *Server) AddProductMeasurement(ctx context.Context, req *pb_admin.AddProductMeasurementRequest) (*pb_admin.AddProductMeasurementResponse, error) {
 
-	value, err := decimal.NewFromString(req.MeasurementValue.String())
+	value, err := decimal.NewFromString(req.MeasurementValue.Value)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert measurement value to decimal",
 			slog.String("err", err.Error()),
@@ -344,7 +344,7 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 
 func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDRequest) (*pb_admin.SetSaleByIDResponse, error) {
 
-	sale, err := decimal.NewFromString(req.SalePercent)
+	sale, err := decimal.NewFromString(req.SalePercent.Value)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert sale to decimal",
 			slog.String("err", err.Error()),
@@ -464,7 +464,7 @@ func (s *Server) UpdateProductPreorder(ctx context.Context, req *pb_admin.Update
 
 func (s *Server) UpdateProductPrice(ctx context.Context, req *pb_admin.UpdateProductPriceRequest) (*pb_admin.UpdateProductPriceResponse, error) {
 
-	price, err := decimal.NewFromString(req.Price)
+	price, err := decimal.NewFromString(req.Price.Value)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert price to decimal",
 			slog.String("err", err.Error()),
@@ -499,7 +499,7 @@ func (s *Server) UpdateProductSKU(ctx context.Context, req *pb_admin.UpdateProdu
 
 func (s *Server) UpdateProductSale(ctx context.Context, req *pb_admin.UpdateProductSaleRequest) (*pb_admin.UpdateProductSaleResponse, error) {
 
-	sale, err := decimal.NewFromString(req.Sale)
+	sale, err := decimal.NewFromString(req.Sale.Value)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert sale to decimal",
 			slog.String("err", err.Error()),
@@ -641,4 +641,44 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
 	}, nil
+}
+
+func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderRequest) (*pb_admin.CreateOrderResponse, error) {
+	// order := dto.ConvertCommonOrderNewToEntity(req.Order)
+	// // TODO: validate order
+	// s.repo.Order().CreateOrder(ctx)
+	return nil, nil
+}
+func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplyPromoCode not implemented")
+}
+func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrderItemsRequest) (*pb_admin.UpdateOrderItemsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateOrderItems not implemented")
+}
+func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateOrderShippingCarrier not implemented")
+}
+func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymentDoneRequest) (*pb_admin.OrderPaymentDoneResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OrderPaymentDone not implemented")
+}
+func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateShippingInfo not implemented")
+}
+func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdRequest) (*pb_admin.GetOrderByIdResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOrderById not implemented")
+}
+func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersByEmailRequest) (*pb_admin.GetOrdersByEmailResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOrdersByEmail not implemented")
+}
+func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersByStatusRequest) (*pb_admin.GetOrdersByStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOrdersByStatus not implemented")
+}
+func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefundOrder not implemented")
+}
+func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeliveredOrder not implemented")
+}
+func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderRequest) (*pb_admin.CancelOrderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelOrder not implemented")
 }

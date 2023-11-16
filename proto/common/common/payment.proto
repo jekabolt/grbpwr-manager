@@ -3,9 +3,9 @@ syntax = "proto3";
 package common;
 
 import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
-import "google/type/decimal.proto";
 
 // Payment represents the payment table
 message Payment {

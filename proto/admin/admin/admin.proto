@@ -6,8 +6,10 @@ import "common/dict.proto";
 import "common/filter.proto";
 import "common/media.proto";
 import "common/order.proto";
+import "common/payment.proto";
 import "common/product.proto";
 import "common/promo.proto";
+import "common/shipment.proto";
 import "google/api/annotations.proto";
 import "google/type/decimal.proto";
 
@@ -247,86 +249,80 @@ service AdminService {
 
   // ORDER MANAGER
 
-  // rpc CreateOrder (CreateOrderRequest) returns (CreateOrderResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/create"
-  //     body: "*"
-  //   };
-  // }
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/create"
+      body: "*"
+    };
+  }
 
-  // rpc ApplyPromoCode (ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/apply-promo"
-  //     body: "*"
-  //   };
-  // }
+  rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/apply-promo"
+      body: "*"
+    };
+  }
 
-  // rpc UpdateOrderItems (UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/update-items"
-  //     body: "*"
-  //   };
-  // }
+  rpc UpdateOrderItems(UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/update-items"
+      body: "*"
+    };
+  }
 
-  // rpc UpdateOrderShippingCarrier (UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/update-shipping-carrier"
-  //     body: "*"
-  //   };
-  // }
+  rpc UpdateOrderShippingCarrier(UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/update-shipping-carrier"
+      body: "*"
+    };
+  }
 
-  // rpc OrderPaymentDone (OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/payment-done"
-  //     body: "*"
-  //   };
-  // }
+  rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/payment-done"
+      body: "*"
+    };
+  }
 
-  // rpc UpdateShippingInfo (UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/update-shipping-info"
-  //     body: "*"
-  //   };
-  // }
+  rpc UpdateShippingInfo(UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/update-shipping-info"
+      body: "*"
+    };
+  }
 
-  // rpc GetOrderById (GetOrderByIdRequest) returns (GetOrderByIdResponse) {
-  //   option (google.api.http) = {
-  //     get: "/api/api/admin/orders/{order_id}"
-  //   };
-  // }
+  rpc GetOrderById(GetOrderByIdRequest) returns (GetOrderByIdResponse) {
+    option (google.api.http) = {get: "/api/api/admin/orders/{order_id}"};
+  }
 
-  // rpc GetOrdersByEmail (GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
-  //   option (google.api.http) = {
-  //     get: "/api/api/admin/orders/by-email/{email}"
-  //   };
-  // }
+  rpc GetOrdersByEmail(GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
+    option (google.api.http) = {get: "/api/api/admin/orders/by-email/{email}"};
+  }
 
-  // rpc GetOrdersByStatus (GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
-  //   option (google.api.http) = {
-  //     get: "/api/api/admin/orders/by-status/{status}"
-  //   };
-  // }
+  rpc GetOrdersByStatus(GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
+    option (google.api.http) = {get: "/api/api/admin/orders/by-status/{status}"};
+  }
 
-  // rpc RefundOrder (RefundOrderRequest) returns (RefundOrderResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/refund"
-  //     body: "*"
-  //   };
-  // }
+  rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/refund"
+      body: "*"
+    };
+  }
 
-  // rpc DeliveredOrder (DeliveredOrderRequest) returns (DeliveredOrderResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/delivered"
-  //     body: "*"
-  //   };
-  // }
+  rpc DeliveredOrder(DeliveredOrderRequest) returns (DeliveredOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/delivered"
+      body: "*"
+    };
+  }
 
-  // rpc CancelOrder (CancelOrderRequest) returns (CancelOrderResponse) {
-  //   option (google.api.http) = {
-  //     post: "/api/api/admin/orders/{order_id}/cancel"
-  //     body: "*"
-  //   };
-  // }
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/api/admin/orders/{order_id}/cancel"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -422,7 +418,7 @@ message HideProductByIDResponse {}
 
 message SetSaleByIDRequest {
   int32 id = 1;
-  string sale_percent = 2;
+  google.type.Decimal sale_percent = 2;
 }
 
 message SetSaleByIDResponse {}
@@ -498,14 +494,14 @@ message UpdateProductThumbnailResponse {}
 
 message UpdateProductPriceRequest {
   int32 product_id = 1;
-  string price = 2;
+  google.type.Decimal price = 2;
 }
 
 message UpdateProductPriceResponse {}
 
 message UpdateProductSaleRequest {
   int32 product_id = 1;
-  string sale = 2;
+  google.type.Decimal sale = 2;
 }
 
 message UpdateProductSaleResponse {}
@@ -614,85 +610,75 @@ message ApplyPromoCodeRequest {
 }
 
 message ApplyPromoCodeResponse {
-  // Fields go here
+  google.type.Decimal total = 1;
 }
 
 message UpdateOrderItemsRequest {
-  // Fields go here
+  int32 order_id = 1;
+  repeated common.OrderItemInsert items = 2;
 }
 
-message UpdateOrderItemsResponse {
-  // Fields go here
-}
+message UpdateOrderItemsResponse {}
 
 message UpdateOrderShippingCarrierRequest {
-  // Fields go here
+  int32 order_id = 1;
+  int32 shipping_carrier_id = 2;
 }
 
-message UpdateOrderShippingCarrierResponse {
-  // Fields go here
-}
+message UpdateOrderShippingCarrierResponse {}
 
 message OrderPaymentDoneRequest {
-  // Fields go here
+  int32 order_id = 1;
+  common.PaymentInsert payment = 2;
 }
 
-message OrderPaymentDoneResponse {
-  // Fields go here
-}
+message OrderPaymentDoneResponse {}
 
 message UpdateShippingInfoRequest {
-  // Fields go here
+  int32 order_id = 1;
+  common.Shipment shipping_info = 2;
 }
 
-message UpdateShippingInfoResponse {
-  // Fields go here
-}
+message UpdateShippingInfoResponse {}
 
 message GetOrderByIdRequest {
-  // Fields go here
+  int32 order_id = 1;
 }
 
 message GetOrderByIdResponse {
-  // Fields go here
+  common.OrderFull order = 1;
 }
 
 message GetOrdersByEmailRequest {
-  // Fields go here
+  string email = 1;
 }
 
 message GetOrdersByEmailResponse {
-  // Fields go here
+  repeated common.OrderFull order = 1;
 }
 
 message GetOrdersByStatusRequest {
-  // Fields go here
+  common.OrderStatusEnum status = 1;
 }
 
 message GetOrdersByStatusResponse {
-  // Fields go here
+  repeated common.OrderFull order = 1;
 }
 
 message RefundOrderRequest {
-  // Fields go here
+  int32 order_id = 1;
 }
 
-message RefundOrderResponse {
-  // Fields go here
-}
+message RefundOrderResponse {}
 
 message DeliveredOrderRequest {
-  // Fields go here
+  int32 order_id = 1;
 }
 
-message DeliveredOrderResponse {
-  // Fields go here
-}
+message DeliveredOrderResponse {}
 
 message CancelOrderRequest {
-  // Fields go here
+  int32 order_id = 1;
 }
 
-message CancelOrderResponse {
-  // Fields go here
-}
+message CancelOrderResponse {}

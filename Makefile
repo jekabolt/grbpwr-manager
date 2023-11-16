@@ -9,7 +9,7 @@ init: clean install proto generate
 generate:
 	go generate ./...
 
-proto:
+proto: format-proto
 	buf generate 
 
 format-proto:
