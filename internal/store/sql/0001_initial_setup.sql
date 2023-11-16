@@ -306,7 +306,7 @@ CREATE TABLE archive_item (
     title VARCHAR(255),
     archive_id INT NOT NULL,
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE
-)
+);
 
 CREATE TABLE media (
     id INT PRIMARY KEY AUTO_INCREMENT,
