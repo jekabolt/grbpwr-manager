@@ -618,14 +618,18 @@ message UpdateOrderItemsRequest {
   repeated common.OrderItemInsert items = 2;
 }
 
-message UpdateOrderItemsResponse {}
+message UpdateOrderItemsResponse {
+  google.type.Decimal total = 1;
+}
 
 message UpdateOrderShippingCarrierRequest {
   int32 order_id = 1;
   int32 shipping_carrier_id = 2;
 }
 
-message UpdateOrderShippingCarrierResponse {}
+message UpdateOrderShippingCarrierResponse {
+  google.type.Decimal total = 1;
+}
 
 message OrderPaymentDoneRequest {
   int32 order_id = 1;
@@ -654,7 +658,7 @@ message GetOrdersByEmailRequest {
 }
 
 message GetOrdersByEmailResponse {
-  repeated common.OrderFull order = 1;
+  repeated common.OrderFull orders = 1;
 }
 
 message GetOrdersByStatusRequest {
@@ -662,7 +666,7 @@ message GetOrdersByStatusRequest {
 }
 
 message GetOrdersByStatusResponse {
-  repeated common.OrderFull order = 1;
+  repeated common.OrderFull orders = 1;
 }
 
 message RefundOrderRequest {

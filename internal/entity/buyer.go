@@ -7,13 +7,13 @@ type Address struct {
 }
 
 type AddressInsert struct {
-	Street          string `db:"street"`
-	HouseNumber     string `db:"house_number"`
-	ApartmentNumber string `db:"apartment_number"`
-	City            string `db:"city"`
-	State           string `db:"state"`
-	Country         string `db:"country"`
-	PostalCode      string `db:"postal_code"`
+	Street          string `db:"street" valid:"required"`
+	HouseNumber     string `db:"house_number" valid:"required"`
+	ApartmentNumber string `db:"apartment_number" valid:"-"`
+	City            string `db:"city" valid:"required"`
+	State           string `db:"state" valid:"required"`
+	Country         string `db:"country" valid:"required"`
+	PostalCode      string `db:"postal_code" valid:"required"`
 }
 
 // Buyer represents the buyer table
@@ -25,9 +25,9 @@ type Buyer struct {
 }
 
 type BuyerInsert struct {
-	FirstName          string `db:"first_name"`
-	LastName           string `db:"last_name"`
-	Email              string `db:"email"`
-	Phone              string `db:"phone"`
+	FirstName          string `db:"first_name" valid:"required"`
+	LastName           string `db:"last_name" valid:"required"`
+	Email              string `db:"email" valid:"required,email"`
+	Phone              string `db:"phone" valid:"required"`
 	ReceivePromoEmails bool   `db:"receive_promo_emails"`
 }

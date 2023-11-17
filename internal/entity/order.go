@@ -8,13 +8,13 @@ import (
 )
 
 type OrderNew struct {
-	Items             []OrderItemInsert
-	ShippingAddress   *AddressInsert
-	BillingAddress    *AddressInsert
-	Buyer             *BuyerInsert
-	PaymentMethodId   int
-	ShipmentCarrierId int
-	PromoCode         string
+	Items             []OrderItemInsert `valid:"required"`
+	ShippingAddress   *AddressInsert    `valid:"required"`
+	BillingAddress    *AddressInsert    `valid:"required"`
+	Buyer             *BuyerInsert      `valid:"required"`
+	PaymentMethodId   int               `valid:"required"`
+	ShipmentCarrierId int               `valid:"required"`
+	PromoCode         string            `valid:"-"`
 }
 
 type OrderFull struct {
@@ -60,9 +60,9 @@ type OrderItem struct {
 }
 
 type OrderItemInsert struct {
-	ProductID int             `db:"product_id"`
-	Quantity  decimal.Decimal `db:"quantity"`
-	SizeID    int             `db:"size_id"`
+	ProductID int             `db:"product_id" valid:"required"`
+	Quantity  decimal.Decimal `db:"quantity" valid:"required"`
+	SizeID    int             `db:"size_id" valid:"required"`
 }
 
 func (oii OrderItemInsert) GetProductID() int {

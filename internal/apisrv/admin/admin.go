@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -644,41 +645,243 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 }
 
 func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderRequest) (*pb_admin.CreateOrderResponse, error) {
-	// order := dto.ConvertCommonOrderNewToEntity(req.Order)
-	// // TODO: validate order
-	// s.repo.Order().CreateOrder(ctx)
-	return nil, nil
+	orderNew := dto.ConvertCommonOrderNewToEntity(req.Order)
+
+	_, err := v.ValidateStruct(orderNew)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "validation order create request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
+	}
+
+	order, err := s.repo.Order().CreateOrder(ctx, orderNew)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't create order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't create order")
+	}
+
+	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
+
+	return &pb_admin.CreateOrderResponse{
+		Order: o,
+	}, nil
 }
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ApplyPromoCode not implemented")
+	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't apply promo code",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't apply promo code")
+	}
+	return &pb_admin.ApplyPromoCodeResponse{
+		Total: &pb_decimal.Decimal{
+			Value: newAmt.String(),
+		},
+	}, nil
 }
 func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrderItemsRequest) (*pb_admin.UpdateOrderItemsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method UpdateOrderItems not implemented")
+	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
+	for _, i := range req.Items {
+		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
+		}
+		itemsToInsert = append(itemsToInsert, *oii)
+	}
+
+	newTotal, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't update order items",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update order items")
+	}
+	return &pb_admin.UpdateOrderItemsResponse{
+		Total: &pb_decimal.Decimal{
+			Value: newTotal.String(),
+		},
+	}, nil
 }
 func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method UpdateOrderShippingCarrier not implemented")
+	newTotal, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't update order shipping carrier",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
+	}
+	return &pb_admin.UpdateOrderShippingCarrierResponse{
+		Total: &pb_decimal.Decimal{
+			Value: newTotal.String(),
+		},
+	}, nil
 }
 func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymentDoneRequest) (*pb_admin.OrderPaymentDoneResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method OrderPaymentDone not implemented")
+	pi, err := dto.ConvertToEntityPaymentInsert(req.Payment)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert payment to entity payment insert",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert payment to entity payment insert")
+	}
+	if pi.IsTransactionDone == false {
+		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
+		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
+	}
+	if pi.TransactionAmount.IsZero() {
+		slog.Default().ErrorCtx(ctx, "payment transaction amount is zero")
+		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
+	}
+
+	err = s.repo.Order().OrderPaymentDone(ctx, int(req.OrderId), pi)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't mark order as paid")
+	}
+	return &pb_admin.OrderPaymentDoneResponse{}, nil
 }
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method UpdateShippingInfo not implemented")
+	sh := dto.ConvertPbShipmentToEntityShipment(req.ShippingInfo)
+	if sh.TrackingCode.String == "" {
+		slog.Default().ErrorCtx(ctx, "tracking code is empty")
+		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
+	}
+
+	_, ok := s.repo.Cache().GetShipmentCarrierById(int(sh.CarrierID))
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't find shipment carrier by id")
+		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
+	}
+
+	err := s.repo.Order().UpdateShippingInfo(ctx, int(req.OrderId), sh)
+
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't update shipping info",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update shipping info")
+	}
+	return &pb_admin.UpdateShippingInfoResponse{}, nil
 }
+
 func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdRequest) (*pb_admin.GetOrderByIdResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetOrderById not implemented")
+	order, err := s.repo.Order().GetOrderById(ctx, int(req.OrderId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get order by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get order by id")
+	}
+	o, err := dto.ConvertEntityOrderFullToPbOrderFull(order)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order full to pb order full",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
+	}
+
+	return &pb_admin.GetOrderByIdResponse{
+		Order: o,
+	}, nil
 }
+
 func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersByEmailRequest) (*pb_admin.GetOrdersByEmailResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetOrdersByEmail not implemented")
+	orders, err := s.repo.Order().GetOrdersByEmail(ctx, req.Email)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get orders by email",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get orders by email")
+	}
+	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
+	for _, order := range orders {
+		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		}
+		ordersPb = append(ordersPb, o)
+	}
+	return &pb_admin.GetOrdersByEmailResponse{
+		Orders: ordersPb,
+	}, nil
 }
+
 func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersByStatusRequest) (*pb_admin.GetOrdersByStatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetOrdersByStatus not implemented")
+	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
+	}
+	orders, err := s.repo.Order().GetOrdersByStatus(ctx, st)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get orders by status",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get orders by status")
+	}
+	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
+	for _, order := range orders {
+		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		}
+		ordersPb = append(ordersPb, o)
+	}
+	return &pb_admin.GetOrdersByStatusResponse{
+		Orders: ordersPb,
+	}, nil
 }
+
 func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RefundOrder not implemented")
+	err := s.repo.Order().RefundOrder(ctx, int(req.OrderId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't refund order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't refund order")
+	}
+	return &pb_admin.RefundOrderResponse{}, nil
 }
+
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DeliveredOrder not implemented")
+	err := s.repo.Order().DeliveredOrder(ctx, int(req.OrderId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't mark order as delivered",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't mark order as delivered")
+	}
+	return &pb_admin.DeliveredOrderResponse{}, nil
 }
+
 func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderRequest) (*pb_admin.CancelOrderResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CancelOrder not implemented")
+	err := s.repo.Order().CancelOrder(ctx, int(req.OrderId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't cancel order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't cancel order")
+	}
+	return &pb_admin.CancelOrderResponse{}, nil
 }
