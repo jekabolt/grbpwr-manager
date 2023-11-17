@@ -2,8 +2,13 @@ name: Build and run docker image on remote
 
 on:
   push:
+    branches:
+      - master
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+(-staging)?'
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - 'releases/**'
 
 jobs:
   push:
@@ -50,10 +55,10 @@ jobs:
           cache-from: type=local,src=/tmp/.docker
           cache-to: type=local,dest=/tmp/.docker
 
-deploy:
-    if: endsWith(github.ref, '-staging')
-    runs-on: ubuntu-latest
+  deploy:
+    if: github.event_name == 'pull_request' && startsWith(github.ref, 'refs/heads/releases/')
     needs: push
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
