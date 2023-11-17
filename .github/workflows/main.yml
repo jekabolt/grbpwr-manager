@@ -38,12 +38,24 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Extract branch name and short commit hash
+        id: prep
+        run: |
+          echo "BRANCH_NAME=$(echo ${GITHUB_REF##*/} | sed 's/[^a-zA-Z0-9._-]/-/g')" >> $GITHUB_ENV
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
             jekabolt/grbpwr-manager
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=long
+            type=env,env=BRANCH_NAME,enable=${{ github.ref_type == 'branch' && github.ref_name != 'master' }}
+            type=env,env=SHORT_SHA,enable=${{ github.ref_type == 'branch' && github.ref_name != 'master' }}
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
