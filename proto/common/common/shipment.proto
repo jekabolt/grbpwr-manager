@@ -15,7 +15,7 @@ message ShipmentCarrierInsert {
 
 message ShipmentCarrier {
   int32 id = 1;
-  ShipmentCarrierInsert insert = 2;
+  ShipmentCarrierInsert shipment_carrier = 2;
 }
 
 // Shipment represents the shipment table

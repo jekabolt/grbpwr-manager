@@ -533,7 +533,7 @@ func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int, promoCode
 			Valid: true,
 		}
 
-		err = updateTotalAmount(ctx, rep, validItems, order)
+		total, err = updateTotalAmount(ctx, rep, validItems, order)
 		if err != nil {
 			return fmt.Errorf("error while updating total amount: %w", err)
 		}
@@ -586,20 +586,21 @@ func getOrderShipmentCarrier(ctx context.Context, rep dependency.Repository, ord
 }
 
 // UpdateOrderItems update order items
-func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) error {
+func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (decimal.Decimal, error) {
+	total := decimal.Zero
 
 	order, err := getOrderById(ctx, ms, orderId)
 	if err != nil {
-		return fmt.Errorf("can't get order by id: %w", err)
+		return total, fmt.Errorf("can't get order by id: %w", err)
 	}
 
 	oStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 	if !ok {
-		return fmt.Errorf("order status is not exists")
+		return total, fmt.Errorf("order status is not exists")
 	}
 
 	if oStatus.Name != entity.Placed {
-		return fmt.Errorf("bad order status for updating items must be placed got: %s", oStatus.Name)
+		return total, fmt.Errorf("bad order status for updating items must be placed got: %s", oStatus.Name)
 	}
 
 	items = mergeOrderItems(items)
@@ -607,13 +608,13 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items [
 	if len(items) == 0 {
 		err := ms.CancelOrder(ctx, orderId)
 		if err != nil {
-			return fmt.Errorf("can't cancel order while update items is: %w", err)
+			return total, fmt.Errorf("can't cancel order while update items is: %w", err)
 		}
-		// early return if no items
-		return nil
+		// early return  if no items
+		return total, nil
 	}
 
-	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		validItems, err := validateOrderItems(ctx, rep, items)
 		if err != nil {
@@ -637,13 +638,18 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderId int, items [
 			return fmt.Errorf("error while updating order items: %w", err)
 		}
 
-		err = updateTotalAmount(ctx, rep, validItems, order)
+		total, err = updateTotalAmount(ctx, rep, validItems, order)
 		if err != nil {
 			return fmt.Errorf("error while updating total amount: %w", err)
 		}
 
 		return nil
 	})
+	if err != nil {
+		return total, fmt.Errorf("can't update order items: %w", err)
+	}
+
+	return total, err
 }
 
 func getOrderTotalPrice(ctx context.Context, rep dependency.Repository, orderId int) (decimal.Decimal, error) {
@@ -669,8 +675,9 @@ func updateOrderShipping(ctx context.Context, rep dependency.Repository, orderId
 }
 
 // UpdateOrderShippingCarrier is used to update the shipping carrier of an order and total price if changed.
-func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) error {
-	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (decimal.Decimal, error) {
+	total := decimal.Zero
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		orderShipmentCarrier, err := getOrderShipmentCarrier(ctx, rep, orderId)
 		if err != nil {
@@ -693,7 +700,7 @@ func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId in
 			promo = &entity.PromoCode{}
 		}
 
-		total, err := getOrderTotalPrice(ctx, rep, orderId)
+		total, err = getOrderTotalPrice(ctx, rep, orderId)
 		if err != nil {
 			return fmt.Errorf("can't get order total price: %w", err)
 		}
@@ -714,6 +721,10 @@ func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderId in
 
 		return nil
 	})
+	if err != nil {
+		return total, fmt.Errorf("can't update order shipping carrier: %w", err)
+	}
+	return total, nil
 }
 
 func getOrderById(ctx context.Context, rep dependency.Repository, orderId int) (*entity.Order, error) {
@@ -778,11 +789,11 @@ func updateOrderItems(ctx context.Context, rep dependency.Repository, validItems
 	return nil
 }
 
-func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItems []entity.OrderItemInsert, order *entity.Order) error {
+func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItems []entity.OrderItemInsert, order *entity.Order) (decimal.Decimal, error) {
 	// total no promo no shipment costs no promo discount
 	total, err := calculateTotalAmount(ctx, rep, validItems)
 	if err != nil {
-		return fmt.Errorf("error while calculating total amount: %w", err)
+		return total, fmt.Errorf("error while calculating total amount: %w", err)
 	}
 
 	promo, ok := rep.Cache().GetPromoById(int(order.PromoID.Int32))
@@ -798,11 +809,11 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 	if !promo.FreeShipping {
 		shipment, err := getOrderShipment(ctx, rep, order.ID)
 		if err != nil {
-			return fmt.Errorf("can't get order shipment: %w", err)
+			return total, fmt.Errorf("can't get order shipment: %w", err)
 		}
 		shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
 		if !ok {
-			return fmt.Errorf("shipment carrier is not exists")
+			return total, fmt.Errorf("shipment carrier is not exists")
 		}
 		total = total.Add(shipmentCarrier.Price)
 	}
@@ -813,10 +824,10 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 
 	err = updateOrderTotalPromo(ctx, rep, order.ID, promo.ID, total)
 	if err != nil {
-		return fmt.Errorf("can't update order total promo: %w", err)
+		return total, fmt.Errorf("can't update order total promo: %w", err)
 	}
 
-	return nil
+	return total, nil
 }
 
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
@@ -888,7 +899,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
 
-			err = updateTotalAmount(ctx, rep, validItems, order)
+			_, err = updateTotalAmount(ctx, rep, validItems, order)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}

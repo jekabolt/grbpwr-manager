@@ -180,7 +180,7 @@ func TestCreateOrder(t *testing.T) {
 
 	// new order items with one product size and quantity 2
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(2),
@@ -198,7 +198,7 @@ func TestCreateOrder(t *testing.T) {
 
 	// new order items with one product size but passed as two separate items
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(2),
@@ -221,7 +221,7 @@ func TestCreateOrder(t *testing.T) {
 
 	// new order items with two product sizes
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(2),
@@ -246,7 +246,7 @@ func TestCreateOrder(t *testing.T) {
 
 	// new order items with two product sizes with one size quantity 0
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(2),
@@ -274,7 +274,7 @@ func TestCreateOrder(t *testing.T) {
 	paidSc, err := getShipmentCarrierPaid(db)
 	assert.NoError(t, err)
 
-	err = os.UpdateOrderShippingCarrier(ctx, order.ID, paidSc.ID)
+	_, err = os.UpdateOrderShippingCarrier(ctx, order.ID, paidSc.ID)
 	assert.NoError(t, err)
 
 	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
@@ -294,7 +294,7 @@ func TestCreateOrder(t *testing.T) {
 	// new order items with two product sizes with both sizes quantity 0
 	// to trigger cancellation
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(0),
@@ -316,7 +316,7 @@ func TestCreateOrder(t *testing.T) {
 
 	// new order items trigger error because of status cancelled
 
-	err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
+	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
 		{
 			ProductID: p.Product.ID,
 			Quantity:  decimal.NewFromInt32(0),

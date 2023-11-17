@@ -264,7 +264,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 	for _, s := range dict.ShipmentCarriers {
 		commonDict.ShipmentCarriers = append(commonDict.ShipmentCarriers, &pb_common.ShipmentCarrier{
 			Id: int32(s.ID),
-			Insert: &pb_common.ShipmentCarrierInsert{
+			ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
 				Carrier: s.Carrier,
 				Price: &pb_decimal.Decimal{
 					Value: s.Price.String(),
