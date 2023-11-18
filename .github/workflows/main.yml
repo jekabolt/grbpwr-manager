@@ -40,12 +40,12 @@ jobs:
 
       - name: Prepare Docker Tag
         run: |
-          if [[ "${{ github.ref_name }}" == "master" ]] || [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            echo "CUSTOM_TAG=${GITHUB_SHA}" >> $GITHUB_ENV
-          else
-            BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9._-]/-/g')
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            echo "CUSTOM_TAG=${BRANCH_NAME}-${SHORT_SHA}" >> $GITHUB_ENV
+          if [[ "${{ github.ref_name }}" == "master" ]]; then
+            SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+            echo "CUSTOM_TAG=${SHORT_SHA}" >> $GITHUB_ENV
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+            echo "CUSTOM_TAG=v${TAG_NAME}" >> $GITHUB_ENV
           fi
 
       - name: Extract metadata (tags, labels) for Docker
@@ -68,7 +68,7 @@ jobs:
           cache-to: type=local,dest=/tmp/.docker
 
   deploy:
-    if: github.event_name == 'pull_request' && startsWith(github.ref, 'refs/heads/releases/')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: push
     runs-on: ubuntu-latest
     steps:
