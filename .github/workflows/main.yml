@@ -84,12 +84,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.ID_RSA }}
           script: |
-            docker pull jekabolt/grbpwr-manager:${{ env.CUSTOM_TAG }} || exit 1
+            docker pull jekabolt/grbpwr-manager:latest || exit 1
             docker stop grbpwr-manager || true
             docker rm grbpwr-manager || true
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
               --publish 8001:8001 \
-              --mount src=/usr/local/config:target=/config,type=tmpfs \
-            jekabolt/grbpwr-manager:${{ env.CUSTOM_TAG }}
-            
+              --mount src=/usr/local/config,target=/config,type=tmpfs \
+              jekabolt/grbpwr-manager:latest
