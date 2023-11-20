@@ -48,12 +48,6 @@ jobs:
             echo "CUSTOM_TAG=${TAG_NAME}" >> $GITHUB_ENV
           fi
 
-      - name: Upload Docker Tag as Artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: docker-tag
-          path: ${{ env.GITHUB_ENV }}
-
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -81,15 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Docker Tag Artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: docker-tag
-
-      - name: Set env from Artifact
-        run: |
-          source docker-tag
-          echo "CUSTOM_TAG=${CUSTOM_TAG}" >> $GITHUB_ENV
+      - name: Set env
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
       - name: Executing remote SSH commands using SSH key
         uses: appleboy/ssh-action@v1.0.0
@@ -98,11 +85,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.ID_RSA }}
           script: |
-            docker pull jekabolt/grbpwr-manager:${{ env.CUSTOM_TAG }} || exit 1
+            docker pull jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }} || exit 1
             docker stop grbpwr-manager || true
             docker rm grbpwr-manager || true
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
               --publish 8001:8001 \
               --mount src=/usr/local/config,target=/config,type=bind \
-              jekabolt/grbpwr-manager:${{ env.CUSTOM_TAG }}
+              jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
