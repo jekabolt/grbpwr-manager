@@ -90,6 +90,6 @@ jobs:
             docker rm grbpwr-manager || true
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
-              --publish 8001:8001 \
+              --publish 8081:8081 \
               --mount src=/usr/local/config,target=/config,type=bind \
               jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
