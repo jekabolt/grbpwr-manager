@@ -74,10 +74,10 @@ type (
 		// DeleteProductTag deletes a tag for a product.
 		DeleteProductTag(ctx context.Context, productId int, tag string) error
 	}
-	// Hero interface {
-	// 	SetHero(ctx context.Context, left, right dto.HeroElement) error
-	// 	GetHero(ctx context.Context) (*dto.Hero, error)
-	// }
+	Hero interface {
+		SetHero(ctx context.Context, hero entity.HeroInsert, productIds []int) error
+		GetHero(ctx context.Context) (*entity.HeroFull, error)
+	}
 
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)

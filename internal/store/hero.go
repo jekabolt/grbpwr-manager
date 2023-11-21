@@ -1,64 +1,100 @@
 package store
 
-// import (
-// 	"context"
-// 	"database/sql"
-// 	"fmt"
+import (
+	"context"
+	"database/sql"
+	"fmt"
 
-// 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-// 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-// )
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+)
 
-// type heroStore struct {
-// 	*MYSQLStore
-// }
+type heroStore struct {
+	*MYSQLStore
+}
 
-// // ParticipateStore returns an object implementing participate interface
-// func (ms *MYSQLStore) Hero() dependency.Hero {
-// 	return &heroStore{
-// 		MYSQLStore: ms,
-// 	}
-// }
+// ParticipateStore returns an object implementing participate interface
+func (ms *MYSQLStore) Hero() dependency.Hero {
+	return &heroStore{
+		MYSQLStore: ms,
+	}
+}
 
-// func (ms *MYSQLStore) SetHero(ctx context.Context, left, right dto.HeroElement) error {
-// 	query := `
-//     INSERT INTO hero
-//         (time_changed, content_link_left, content_type_left, explore_link_left, explore_text_left,
-//          content_link_right, content_type_right, explore_link_right, explore_text_right)
-//     VALUES
-//         (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`
+func (ms *MYSQLStore) SetHero(ctx context.Context, hero entity.HeroInsert, productIds []int) error {
 
-// 	_, err := ms.DB().ExecContext(ctx, query,
-// 		left.ContentLink, left.ContentType, left.ExploreLink, left.ExploreText,
-// 		right.ContentLink, right.ContentType, right.ExploreLink, right.ExploreText)
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		query := `
+		INSERT INTO 
+		hero (content_link, content_type, explore_link, explore_text) 
+		VALUES (:contentLink, :contentType, :exploreLink, :exploreText)`
 
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+		heroId, err := ExecNamedLastId(ctx, ms.db, query, map[string]any{
+			"contentLink": hero.ContentLink,
+			"contentType": hero.ContentType,
+			"exploreLink": hero.ExploreLink,
+			"exploreText": hero.ExploreText,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to add hero: %w", err)
+		}
 
-// func (ms *MYSQLStore) GetHero(ctx context.Context) (*dto.Hero, error) {
-// 	query := `
-//     SELECT
-//         time_changed,
-//         content_link_left, content_type_left, explore_link_left, explore_text_left,
-//         content_link_right, content_type_right, explore_link_right, explore_text_right
-//     FROM hero ORDER BY time_changed DESC LIMIT 1`
+		query = `
+		INSERT INTO 
+		hero_product (hero_id, product_id, sequence_number) 
+		VALUES (:heroId, :productId, :sequence)`
+		for i, productId := range productIds {
+			err = ExecNamed(ctx, ms.db, query, map[string]any{
+				"heroId":    heroId,
+				"productId": productId,
+				"sequence":  i,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to add hero product: %w", err)
+			}
+		}
 
-// 	row := ms.DB().QueryRowContext(ctx, query)
+		return nil
 
-// 	hero := dto.Hero{}
-// 	err := row.Scan(
-// 		&hero.TimeChanged,
-// 		&hero.HeroLeft.ContentLink, &hero.HeroLeft.ContentType, &hero.HeroLeft.ExploreLink, &hero.HeroLeft.ExploreText,
-// 		&hero.HeroRight.ContentLink, &hero.HeroRight.ContentType, &hero.HeroRight.ExploreLink, &hero.HeroRight.ExploreText)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add hero: %w", err)
+	}
 
-// 	if err != nil {
-// 		if err == sql.ErrNoRows {
-// 			return nil, fmt.Errorf("hero not found")
-// 		}
-// 		return nil, err
-// 	}
-// 	return &hero, nil
-// }
+	return nil
+}
+
+func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
+	// Query to get the latest hero entry
+	query := `
+	SELECT id, created_at, content_link, content_type, explore_link, explore_text
+	FROM hero
+	ORDER BY id DESC	
+	LIMIT 1`
+
+	hero, err := QueryNamedOne[entity.HeroFull](ctx, ms.db, query, map[string]any{})
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no hero found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to query hero: %w", err)
+	}
+
+	// Query to get the associated products
+	productQuery := `
+	SELECT p.*
+	FROM product AS p
+	INNER JOIN hero_product AS hp ON p.id = hp.product_id
+	WHERE hp.hero_id = :heroId`
+
+	products, err := QueryListNamed[entity.Product](ctx, ms.db, productQuery, map[string]any{
+		"heroId": hero.Id,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query hero products: %w", err)
+	}
+
+	hero.ProductsFeatured = products
+
+	return &hero, nil
+}

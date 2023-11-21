@@ -1,44 +1,64 @@
 package store
 
-// import (
-// 	"context"
-// 	"testing"
+import (
+	"context"
+	"testing"
 
-// 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-// 	"github.com/stretchr/testify/assert"
-// )
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/stretchr/testify/assert"
+)
 
-// func TestSetHero(t *testing.T) {
-// 	db := newTestDB(t)
-// 	defer db.Close()
+func TestSetHero(t *testing.T) {
+	db := newTestDB(t)
 
-// 	left := dto.HeroElement{
-// 		ContentLink: "example.com/content-left",
-// 		ContentType: "text/html",
-// 		ExploreLink: "example.com/explore-left",
-// 		ExploreText: "Explore more on left",
-// 	}
+	ps := db.Products()
+	hs := db.Hero()
+	ctx := context.Background()
 
-// 	right := dto.HeroElement{
-// 		ContentLink: "example.com/content-right",
-// 		ContentType: "text/html",
-// 		ExploreLink: "example.com/explore-right",
-// 		ExploreText: "Explore more on right",
-// 	}
+	hi := entity.HeroInsert{
+		ContentLink: "example.com/content-left",
+		ContentType: "text/html",
+		ExploreLink: "example.com/explore-left",
+		ExploreText: "Explore more on left",
+	}
 
-// 	err := db.SetHero(context.Background(), left, right)
-// 	assert.NoError(t, err)
+	np, err := randomProductInsert(db, 1)
+	assert.NoError(t, err)
 
-// 	hero, err := db.GetHero(context.Background())
-// 	assert.NoError(t, err)
+	// Insert new product
+	newPrd, err := ps.AddProduct(ctx, np)
+	assert.NoError(t, err)
 
-// 	assert.Equal(t, left.ContentLink, hero.HeroLeft.ContentLink)
-// 	assert.Equal(t, left.ContentType, hero.HeroLeft.ContentType)
-// 	assert.Equal(t, left.ExploreLink, hero.HeroLeft.ExploreLink)
-// 	assert.Equal(t, left.ExploreText, hero.HeroLeft.ExploreText)
+	err = hs.SetHero(ctx, hi, []int{newPrd.Product.ID})
+	assert.NoError(t, err)
 
-// 	assert.Equal(t, right.ContentLink, hero.HeroRight.ContentLink)
-// 	assert.Equal(t, right.ContentType, hero.HeroRight.ContentType)
-// 	assert.Equal(t, right.ExploreLink, hero.HeroRight.ExploreLink)
-// 	assert.Equal(t, right.ExploreText, hero.HeroRight.ExploreText)
-// }
+	hero, err := db.GetHero(ctx)
+	assert.NoError(t, err)
+
+	assert.Equal(t, hi.ContentLink, hero.ContentLink)
+	assert.Equal(t, hi.ContentType, hero.ContentType)
+	assert.Equal(t, hi.ExploreLink, hero.ExploreLink)
+	assert.Equal(t, hi.ExploreText, hero.ExploreText)
+
+	assert.Len(t, hero.ProductsFeatured, 1)
+
+	prdIds := []int{newPrd.Product.ID}
+	for i := 0; i < 10; i++ {
+		np, err := randomProductInsert(db, i)
+		assert.NoError(t, err)
+
+		// Insert new product
+		newPrd, err := ps.AddProduct(ctx, np)
+		assert.NoError(t, err)
+
+		prdIds = append(prdIds, newPrd.Product.ID)
+	}
+
+	err = hs.SetHero(ctx, hi, prdIds)
+	assert.NoError(t, err)
+
+	hero, err = db.GetHero(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, hero.ProductsFeatured, 11)
+
+}

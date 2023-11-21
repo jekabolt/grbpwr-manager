@@ -617,7 +617,7 @@ func (ms *MYSQLStore) AddProductMeasurement(ctx context.Context, productId, size
 	ON DUPLICATE KEY UPDATE 
    		measurement_value = VALUES(measurement_value);
 	`
-	err := ExecNamed(context.Background(), ms.db, query, map[string]any{
+	err := ExecNamed(ctx, ms.db, query, map[string]any{
 		"productId":         productId,
 		"productSizeId":     size.ID,
 		"measurementNameId": measurement.ID,

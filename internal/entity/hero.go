@@ -2,15 +2,16 @@ package entity
 
 import "time"
 
-// Hero represents the hero table
-type Hero struct {
-	TimeChanged      time.Time `db:"time_changed"`
-	ContentLinkLeft  string    `db:"content_link_left"`
-	ContentTypeLeft  string    `db:"content_type_left"`
-	ExploreLinkLeft  string    `db:"explore_link_left"`
-	ExploreTextLeft  string    `db:"explore_text_left"`
-	ContentLinkRight string    `db:"content_link_right"`
-	ContentTypeRight string    `db:"content_type_right"`
-	ExploreLinkRight string    `db:"explore_link_right"`
-	ExploreTextRight string    `db:"explore_text_right"`
+type HeroInsert struct {
+	ContentLink string `db:"content_link" valid:"required,url"`
+	ContentType string `db:"content_type" valid:"required"`
+	ExploreLink string `db:"explore_link" valid:"required,url"`
+	ExploreText string `db:"explore_text" valid:"required"`
+}
+
+type HeroFull struct {
+	Id               int       `db:"id"`
+	CreatedAt        time.Time `db:"created_at"`
+	HeroInsert       `valid:"required"`
+	ProductsFeatured []Product
 }

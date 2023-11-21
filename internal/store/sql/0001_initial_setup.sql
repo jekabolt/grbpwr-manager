@@ -317,6 +317,24 @@ CREATE TABLE media (
     compressed VARCHAR(255) NOT NULL
 );
 
+CREATE TABLE hero (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    content_link VARCHAR(255),
+    content_type VARCHAR(255),
+    explore_link VARCHAR(255),
+    explore_text VARCHAR(255)
+);
+
+CREATE TABLE hero_product (
+    hero_id INT NOT NULL,
+    product_id INT NOT NULL,
+    sequence_number INT NOT NULL DEFAULT 0,
+    FOREIGN KEY (hero_id) REFERENCES hero(id),
+    FOREIGN KEY (product_id) REFERENCES product(id),
+    PRIMARY KEY (hero_id, product_id)
+);
+
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 
 CREATE INDEX idx_product_id_on_product_media ON product_media(product_id);
