@@ -737,7 +737,7 @@ func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymen
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert payment to entity payment insert")
 	}
-	if pi.IsTransactionDone == false {
+	if !pi.IsTransactionDone {
 		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
 		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
 	}
