@@ -15,11 +15,26 @@ func TestSetHero(t *testing.T) {
 	hs := db.Hero()
 	ctx := context.Background()
 
-	hi := entity.HeroInsert{
+	main := entity.HeroInsert{
 		ContentLink: "example.com/content-left",
 		ContentType: "text/html",
 		ExploreLink: "example.com/explore-left",
 		ExploreText: "Explore more on left",
+	}
+
+	ads := []entity.HeroInsert{
+		{
+			ContentLink: "example.com/content-1",
+			ContentType: "text/html",
+			ExploreLink: "example.com/explore-1",
+			ExploreText: "Explore more on 1",
+		},
+		{
+			ContentLink: "example.com/content-2",
+			ContentType: "text/html",
+			ExploreLink: "example.com/explore-2",
+			ExploreText: "Explore more on 2",
+		},
 	}
 
 	np, err := randomProductInsert(db, 1)
@@ -29,16 +44,16 @@ func TestSetHero(t *testing.T) {
 	newPrd, err := ps.AddProduct(ctx, np)
 	assert.NoError(t, err)
 
-	err = hs.SetHero(ctx, hi, []int{newPrd.Product.ID})
+	err = hs.SetHero(ctx, main, ads, []int{newPrd.Product.ID})
 	assert.NoError(t, err)
 
 	hero, err := db.GetHero(ctx)
 	assert.NoError(t, err)
 
-	assert.Equal(t, hi.ContentLink, hero.ContentLink)
-	assert.Equal(t, hi.ContentType, hero.ContentType)
-	assert.Equal(t, hi.ExploreLink, hero.ExploreLink)
-	assert.Equal(t, hi.ExploreText, hero.ExploreText)
+	assert.Equal(t, hero.Main.ContentLink, main.ContentLink)
+	assert.Equal(t, hero.Main.ContentType, main.ContentType)
+	assert.Equal(t, hero.Main.ExploreLink, main.ExploreLink)
+	assert.Equal(t, hero.Main.ExploreText, main.ExploreText)
 
 	assert.Len(t, hero.ProductsFeatured, 1)
 
@@ -54,7 +69,7 @@ func TestSetHero(t *testing.T) {
 		prdIds = append(prdIds, newPrd.Product.ID)
 	}
 
-	err = hs.SetHero(ctx, hi, prdIds)
+	err = hs.SetHero(ctx, main, ads, prdIds)
 	assert.NoError(t, err)
 
 	hero, err = db.GetHero(ctx)
