@@ -75,7 +75,7 @@ type (
 		DeleteProductTag(ctx context.Context, productId int, tag string) error
 	}
 	Hero interface {
-		SetHero(ctx context.Context, hero entity.HeroInsert, productIds []int) error
+		SetHero(ctx context.Context, main entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}
 

@@ -156,17 +156,6 @@ CREATE TABLE product_tag (
     FOREIGN KEY(product_id) REFERENCES product(id) ON DELETE CASCADE
 );
 
-CREATE TABLE hero (
-    time_changed TIMESTAMP PRIMARY KEY,
-    content_link_left VARCHAR(255) NOT NULL,
-    content_type_left VARCHAR(255) NOT NULL,
-    explore_link_left VARCHAR(255) NOT NULL,
-    explore_text_left VARCHAR(255) NOT NULL,
-    content_link_right VARCHAR(255) NOT NULL,
-    content_type_right VARCHAR(255) NOT NULL,
-    explore_link_right VARCHAR(255) NOT NULL,
-    explore_text_right VARCHAR(255) NOT NULL
-);
 
 CREATE TABLE payment (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -333,6 +322,15 @@ CREATE TABLE hero_product (
     FOREIGN KEY (hero_id) REFERENCES hero(id),
     FOREIGN KEY (product_id) REFERENCES product(id),
     PRIMARY KEY (hero_id, product_id)
+);
+
+CREATE TABLE hero_ads (
+    hero_id INT NOT NULL,
+    content_link VARCHAR(255),
+    content_type VARCHAR(255),
+    explore_link VARCHAR(255),
+    explore_text VARCHAR(255),
+    FOREIGN KEY (hero_id) REFERENCES hero(id)
 );
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);

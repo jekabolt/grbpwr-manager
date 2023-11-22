@@ -10,8 +10,9 @@ type HeroInsert struct {
 }
 
 type HeroFull struct {
-	Id               int       `db:"id"`
-	CreatedAt        time.Time `db:"created_at"`
-	HeroInsert       `valid:"required"`
+	Id               int          `db:"id"`
+	CreatedAt        time.Time    `db:"created_at"`
+	Main             HeroInsert   `valid:"required"`
+	Ads              []HeroInsert `valid:"required"`
 	ProductsFeatured []Product
 }
