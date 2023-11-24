@@ -106,7 +106,7 @@ type heroRaw struct {
 
 func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	hf := ms.cache.GetHero()
-	if hf != nil {
+	if !hf.CreatedAt.IsZero() {
 		// early return if hero is cached
 		return hf, nil
 	}
