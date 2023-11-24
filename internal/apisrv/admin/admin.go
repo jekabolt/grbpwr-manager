@@ -101,7 +101,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 
 func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest) (*pb_admin.AddProductResponse, error) {
 
-	prdNew, err := dto.ConvertFromPbToEntity(req.GetProduct())
+	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
@@ -277,7 +277,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 
 	prdsPb := make([]*pb_common.Product, 0, len(prds))
 	for _, prd := range prds {
-		pbPrd, err := dto.ConvertEntityProductToPb(&prd)
+		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {
 			slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
 				slog.String("err", err.Error()),
@@ -884,4 +884,46 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 		return nil, status.Errorf(codes.Internal, "can't cancel order")
 	}
 	return &pb_admin.CancelOrderResponse{}, nil
+}
+
+func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb_admin.AddHeroResponse, error) {
+	main := dto.ConvertCommonHeroInsertToEntity(req.Main)
+
+	ads := make([]entity.HeroInsert, 0, len(req.Ads))
+	for _, ad := range req.Ads {
+		ads = append(ads, dto.ConvertCommonHeroInsertToEntity(ad))
+	}
+
+	prdIds := make([]int, 0, len(req.ProductIds))
+	for _, id := range req.ProductIds {
+		prdIds = append(prdIds, int(id))
+	}
+
+	err := s.repo.Hero().SetHero(ctx, main, ads, prdIds)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't add hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't add hero")
+	}
+	return &pb_admin.AddHeroResponse{}, nil
+}
+func (s *Server) GetHero(ctx context.Context, req *pb_admin.GetHeroRequest) (*pb_admin.GetHeroResponse, error) {
+	hero, err := s.repo.Hero().GetHero(ctx)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get hero")
+	}
+	h, err := dto.ConvertEntityHeroFullToCommon(hero)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity hero to pb hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity hero to pb hero")
+	}
+	return &pb_admin.GetHeroResponse{
+		Hero: h,
+	}, nil
 }

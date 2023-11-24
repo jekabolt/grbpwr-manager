@@ -15,6 +15,7 @@ type Cache struct {
 	Promo           *PromoCache
 	ShipmentCarrier *ShipmentCarrierCache
 	Size            *SizeCache
+	Hero            *HeroCache
 	Dict            *dto.Dict
 }
 
@@ -74,6 +75,7 @@ func NewCache(
 		Promo:           newPromoCache(promos),
 		ShipmentCarrier: newShipmentCarrierCache(shipmentCarriers),
 		Size:            sc,
+		Hero:            newHeroCache(&entity.HeroFull{}),
 		Dict: &dto.Dict{
 			Categories:       categories,
 			Measurements:     measurements,
@@ -153,4 +155,14 @@ func (c *Cache) GetSizeById(id int) (*entity.Size, bool) {
 }
 func (c *Cache) GetSizesByName(size entity.SizeEnum) (entity.Size, bool) {
 	return c.Size.GetSizesByName(size)
+}
+
+// hero
+
+func (c *Cache) GetHero() *entity.HeroFull {
+	return c.Hero.GetHero()
+}
+
+func (c *Cache) UpdateHero(hf *entity.HeroFull) {
+	c.Hero.UpdateHero(hf)
 }

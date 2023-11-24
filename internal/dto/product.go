@@ -40,7 +40,7 @@ func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_c
 	return g, nil
 }
 
-func ConvertFromPbToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
+func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
@@ -236,8 +236,8 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}, nil
 }
 
-// ConvertEntityProductToPb converts entity.Product to pb_common.Product
-func ConvertEntityProductToPb(entityProduct *entity.Product) (*pb_common.Product, error) {
+// ConvertEntityProductToCommon converts entity.Product to pb_common.Product
+func ConvertEntityProductToCommon(entityProduct *entity.Product) (*pb_common.Product, error) {
 	tg, err := ConvertEntityGenderToPbGenderEnum(entityProduct.TargetGender)
 	if err != nil {
 		return nil, err
