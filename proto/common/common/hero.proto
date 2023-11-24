@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package common;
+
+import "common/product.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+message HeroInsert {
+  string content_link = 1;
+  string content_type = 2;
+  string explore_link = 3;
+  string explore_text = 4;
+}
+
+message HeroFull {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  HeroInsert main = 3;
+  repeated HeroInsert ads = 4;
+  repeated Product products_featured = 5;
+}

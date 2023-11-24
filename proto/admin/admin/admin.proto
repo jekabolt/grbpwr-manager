@@ -4,6 +4,7 @@ package admin;
 
 import "common/dict.proto";
 import "common/filter.proto";
+import "common/hero.proto";
 import "common/media.proto";
 import "common/order.proto";
 import "common/payment.proto";
@@ -322,6 +323,19 @@ service AdminService {
       post: "/api/api/admin/orders/{order_id}/cancel"
       body: "*"
     };
+  }
+
+  // HERO MANAGER
+
+  rpc AddHero(AddHeroRequest) returns (AddHeroResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/hero/add"
+      body: "*"
+    };
+  }
+
+  rpc GetHero(GetHeroRequest) returns (GetHeroResponse) {
+    option (google.api.http) = {get: "/api/admin/hero"};
   }
 }
 
@@ -686,3 +700,19 @@ message CancelOrderRequest {
 }
 
 message CancelOrderResponse {}
+
+// HERO MANAGER
+
+message AddHeroRequest {
+  common.HeroInsert main = 1;
+  repeated common.HeroInsert ads = 2;
+  repeated int32 product_ids = 3;
+}
+
+message AddHeroResponse {}
+
+message GetHeroRequest {}
+
+message GetHeroResponse {
+  common.HeroFull hero = 1;
+}

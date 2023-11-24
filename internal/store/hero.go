@@ -49,6 +49,12 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, main entity.HeroInsert, ads [
 			return fmt.Errorf("failed to add hero ads: %w", err)
 		}
 
+		hf, err := rep.Hero().GetHero(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get inserted hero: %w", err)
+		}
+		ms.cache.UpdateHero(hf)
+
 		return nil
 
 	})
@@ -99,6 +105,12 @@ type heroRaw struct {
 }
 
 func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
+	hf := ms.cache.GetHero()
+	if hf != nil {
+		// early return if hero is cached
+		return hf, nil
+	}
+
 	// Query to get the latest hero entry
 	query := `
 	SELECT id, created_at, content_link, content_type, explore_link, explore_text
@@ -143,6 +155,8 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query hero ads: %w", err)
 	}
+
+	ms.cache.UpdateHero(&hero)
 
 	return &hero, nil
 }

@@ -131,7 +131,7 @@ type (
 
 	Repository interface {
 		Products() Products
-		// Hero() Hero
+		Hero() Hero
 		Order() Order
 		Promo() Promo
 		Admin() Admin
@@ -200,6 +200,9 @@ type (
 
 		GetSizeById(id int) (*entity.Size, bool)
 		GetSizesByName(size entity.SizeEnum) (entity.Size, bool)
+
+		GetHero() *entity.HeroFull
+		UpdateHero(hf *entity.HeroFull)
 
 		GetDict() *dto.Dict
 	}
