@@ -319,8 +319,8 @@ CREATE TABLE hero_product (
     hero_id INT NOT NULL,
     product_id INT NOT NULL,
     sequence_number INT NOT NULL DEFAULT 0,
-    FOREIGN KEY (hero_id) REFERENCES hero(id),
-    FOREIGN KEY (product_id) REFERENCES product(id),
+    FOREIGN KEY (hero_id) REFERENCES hero(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE,
     PRIMARY KEY (hero_id, product_id)
 );
 
@@ -330,7 +330,7 @@ CREATE TABLE hero_ads (
     content_type VARCHAR(255),
     explore_link VARCHAR(255),
     explore_text VARCHAR(255),
-    FOREIGN KEY (hero_id) REFERENCES hero(id)
+    FOREIGN KEY (hero_id) REFERENCES hero(id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);

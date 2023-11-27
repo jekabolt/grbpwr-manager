@@ -4,7 +4,6 @@ admin-client
 .env
 *.db
 bin
-bunt
 .env-local
 **/mocks
 
