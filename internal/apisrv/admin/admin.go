@@ -225,8 +225,7 @@ func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProdu
 }
 
 func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
-
-	pf, err := s.repo.Products().GetProductById(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
