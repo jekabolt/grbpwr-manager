@@ -23,8 +23,14 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error)
-		// GetProductById retrieves a product by its ID.
-		GetProductById(ctx context.Context, id int) (*entity.ProductFull, error)
+		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
+		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		// GetProductByNameShowHidden returns a product by its name no matter hidden they or not.
+		GetProductByNameShowHidden(ctx context.Context, name string) (*entity.ProductFull, error)
+		// GetProductById returns a product by its ID if it is not hidden.
+		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		// GetProductByName returns a product by its name if it is not hidden.
+		GetProductByNameNoHidden(ctx context.Context, name string) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// HideProductById toggles the visibility of a product by its ID.
@@ -136,6 +142,7 @@ type (
 		Promo() Promo
 		Admin() Admin
 		Archive() Archive
+		Subscribers() Subscribers
 		Media() Media
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)

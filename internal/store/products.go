@@ -355,28 +355,51 @@ func selectProducts(ctx context.Context, rep dependency.Repository, query string
 	return products, nil
 }
 
-// GetProductById returns a product by its ID.
-func (ms *MYSQLStore) GetProductById(ctx context.Context, id int) (*entity.ProductFull, error) {
+// GetProductByIdShowHidden returns a product by its ID, including hidden products.
+func (ms *MYSQLStore) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
+	return ms.getProductDetails(ctx, "id", id, true)
+}
+
+// GetProductByNameShowHidden returns a product by its name, including hidden products.
+func (ms *MYSQLStore) GetProductByNameShowHidden(ctx context.Context, name string) (*entity.ProductFull, error) {
+	return ms.getProductDetails(ctx, "name", name, true)
+}
+
+// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
+func (ms *MYSQLStore) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
+	return ms.getProductDetails(ctx, "id", id, false)
+}
+
+// GetProductByNameNoHidden returns a product by its name, excluding hidden products.
+func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, name string) (*entity.ProductFull, error) {
+	return ms.getProductDetails(ctx, "name", name, false)
+}
+
+// getProductDetails fetches product details based on a specific field and value.
+func (ms *MYSQLStore) getProductDetails(ctx context.Context, field string, value any, showHidden bool) (*entity.ProductFull, error) {
 	var productInfo entity.ProductFull
 	var err error
 
 	// Fetch Product
-	query := `SELECT * FROM product WHERE id = :id`
+	query := fmt.Sprintf("SELECT * FROM product WHERE %s = :value", field)
 
+	// Include or exclude hidden products based on the showHidden flag
+	if !showHidden {
+		query += " AND hidden = false"
+	}
 	prd, err := QueryNamedOne[entity.Product](ctx, ms.db, query, map[string]any{
-		"id": id,
+		"value": value,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)
 	}
-
 	productInfo.Product = &prd
 
 	// fetch sizes
 	query = `SELECT * FROM product_size WHERE product_id = :id`
 
 	sizes, err := QueryListNamed[entity.ProductSize](ctx, ms.db, query, map[string]any{
-		"id": id,
+		"id": prd.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get sizes: %w", err)
@@ -387,7 +410,7 @@ func (ms *MYSQLStore) GetProductById(ctx context.Context, id int) (*entity.Produ
 	query = `SELECT * FROM size_measurement	WHERE product_id = :id`
 
 	measurements, err := QueryListNamed[entity.ProductMeasurement](ctx, ms.db, query, map[string]any{
-		"id": id,
+		"id": prd.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get measurements: %w", err)
@@ -397,7 +420,7 @@ func (ms *MYSQLStore) GetProductById(ctx context.Context, id int) (*entity.Produ
 	// Fetch Media
 	query = "SELECT * FROM product_media WHERE product_id = :id"
 	productInfo.Media, err = QueryListNamed[entity.ProductMedia](ctx, ms.db, query, map[string]interface{}{
-		"id": id,
+		"id": prd.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get media: %w", err)
@@ -406,12 +429,11 @@ func (ms *MYSQLStore) GetProductById(ctx context.Context, id int) (*entity.Produ
 	// Fetch Tags
 	query = "SELECT * FROM product_tag WHERE product_id = :id"
 	productInfo.Tags, err = QueryListNamed[entity.ProductTag](ctx, ms.db, query, map[string]interface{}{
-		"id": id,
+		"id": prd.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get tags: %w", err)
 	}
-
 	return &productInfo, nil
 }
 

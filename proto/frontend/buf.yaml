@@ -2,6 +2,7 @@ version: v1
 name: buf.build/jekabolt/grbpwr-manager-frontend
 deps:
   - buf.build/googleapis/googleapis
+  - buf.build/jekabolt/grbpwr-manager-common
 breaking:
   use:
     - FILE
