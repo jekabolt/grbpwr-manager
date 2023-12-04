@@ -19,6 +19,7 @@ option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;adm
 service AdminService {
   // KEY VALUE DICTIONARY
 
+  // Retrieves a key-value dictionary.
   rpc GetDictionary(GetDictionaryRequest) returns (GetDictionaryResponse) {
     option (google.api.http) = {get: "/api/admin/dictionary"};
   }
@@ -53,6 +54,7 @@ service AdminService {
 
   // PRODUCTS MANAGER
 
+  // Adds a new product.
   rpc AddProduct(AddProductRequest) returns (AddProductResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/add"
@@ -60,18 +62,22 @@ service AdminService {
     };
   }
 
+  // Retrieves a paginated list of products.
   rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/product/paged/{limit}/{offset}/{order_factor}"};
+    option (google.api.http) = {get: "/api/admin/product/paged"};
   }
 
+  // Gets a product by its ID.
   rpc GetProductByID(GetProductByIDRequest) returns (GetProductByIDResponse) {
     option (google.api.http) = {get: "/api/admin/product/{id}"};
   }
 
+  // Deletes a product by its ID.
   rpc DeleteProductByID(DeleteProductByIDRequest) returns (DeleteProductByIDResponse) {
     option (google.api.http) = {delete: "/api/admin/product/{id}"};
   }
 
+  // Hides a product by its ID.
   rpc HideProductByID(HideProductByIDRequest) returns (HideProductByIDResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{id}/hide"
@@ -79,6 +85,7 @@ service AdminService {
     };
   }
 
+  // Sets a sale for a product by ID.
   rpc SetSaleByID(SetSaleByIDRequest) returns (SetSaleByIDResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{id}/set/sale"
@@ -86,6 +93,7 @@ service AdminService {
     };
   }
 
+  // Reduces stock for specific product sizes.
   rpc ReduceStockForProductSizes(ReduceStockForProductSizesRequest) returns (ReduceStockForProductSizesResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/reducestock"
@@ -93,6 +101,7 @@ service AdminService {
     };
   }
 
+  // Restores stock for specific product sizes.
   rpc RestoreStockForProductSizes(RestoreStockForProductSizesRequest) returns (RestoreStockForProductSizesResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/restorestock"
@@ -100,6 +109,7 @@ service AdminService {
     };
   }
 
+  // Updates the preorder status for a product.
   rpc UpdateProductPreorder(UpdateProductPreorderRequest) returns (UpdateProductPreorderResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatepreorder"
@@ -107,6 +117,7 @@ service AdminService {
     };
   }
 
+  // Updates the name of a product.
   rpc UpdateProductName(UpdateProductNameRequest) returns (UpdateProductNameResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatename"
@@ -114,6 +125,7 @@ service AdminService {
     };
   }
 
+  // Updates the SKU of a product.
   rpc UpdateProductSKU(UpdateProductSKURequest) returns (UpdateProductSKUResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updateSKU"
@@ -121,6 +133,7 @@ service AdminService {
     };
   }
 
+  // Updates the color and hex value of a product.
   rpc UpdateProductColorAndColorHex(UpdateProductColorAndColorHexRequest) returns (UpdateProductColorAndColorHexResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatecolor"
@@ -128,6 +141,7 @@ service AdminService {
     };
   }
 
+  // Updates the country of origin for a product.
   rpc UpdateProductCountryOfOrigin(UpdateProductCountryOfOriginRequest) returns (UpdateProductCountryOfOriginResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatecountry"
@@ -135,6 +149,7 @@ service AdminService {
     };
   }
 
+  // Updates the brand of a product.
   rpc UpdateProductBrand(UpdateProductBrandRequest) returns (UpdateProductBrandResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatebrand"
@@ -142,6 +157,7 @@ service AdminService {
     };
   }
 
+  // Updates the target gender for a product.
   rpc UpdateProductTargetGender(UpdateProductTargetGenderRequest) returns (UpdateProductTargetGenderResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updategender"
@@ -149,6 +165,7 @@ service AdminService {
     };
   }
 
+  // Updates the thumbnail of a product.
   rpc UpdateProductThumbnail(UpdateProductThumbnailRequest) returns (UpdateProductThumbnailResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatethumbnail"
@@ -156,6 +173,7 @@ service AdminService {
     };
   }
 
+  // Updates the price of a product.
   rpc UpdateProductPrice(UpdateProductPriceRequest) returns (UpdateProductPriceResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updateprice"
@@ -163,6 +181,7 @@ service AdminService {
     };
   }
 
+  // Updates the sale information of a product.
   rpc UpdateProductSale(UpdateProductSaleRequest) returns (UpdateProductSaleResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatesale"
@@ -170,6 +189,7 @@ service AdminService {
     };
   }
 
+  // Updates the category of a product.
   rpc UpdateProductCategory(UpdateProductCategoryRequest) returns (UpdateProductCategoryResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatecategory"
@@ -177,6 +197,7 @@ service AdminService {
     };
   }
 
+  // Updates the description of a product.
   rpc UpdateProductDescription(UpdateProductDescriptionRequest) returns (UpdateProductDescriptionResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/updatedescription"
@@ -184,10 +205,12 @@ service AdminService {
     };
   }
 
+  // Deletes a product's measurement.
   rpc DeleteProductMeasurement(DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
     option (google.api.http) = {delete: "/api/admin/product/measurement/{id}/delete"};
   }
 
+  // Adds a new measurement to a product.
   rpc AddProductMeasurement(AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/measurement/add"
@@ -195,6 +218,7 @@ service AdminService {
     };
   }
 
+  // Updates the stock for a specific product size.
   rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/size/{size_id}/updatestock"
@@ -202,10 +226,12 @@ service AdminService {
     };
   }
 
+  // Deletes media associated with a product.
   rpc DeleteProductMedia(DeleteProductMediaRequest) returns (DeleteProductMediaResponse) {
     option (google.api.http) = {delete: "/api/admin/product/media/{product_media_id}/delete"};
   }
 
+  // Adds media to a product.
   rpc AddProductMedia(AddProductMediaRequest) returns (AddProductMediaResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/media/add"
@@ -213,6 +239,7 @@ service AdminService {
     };
   }
 
+  // Adds a tag to a product.
   rpc AddProductTag(AddProductTagRequest) returns (AddProductTagResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/tag/add"
@@ -220,12 +247,14 @@ service AdminService {
     };
   }
 
+  // Deletes a tag from a product.
   rpc DeleteProductTag(DeleteProductTagRequest) returns (DeleteProductTagResponse) {
     option (google.api.http) = {delete: "/api/admin/product/{product_id}/tag/{tag}/delete"};
   }
 
   // PROMO MANAGER
 
+  // Adds a new promotional code
   rpc AddPromo(AddPromoRequest) returns (AddPromoResponse) {
     option (google.api.http) = {
       post: "/api/admin/promo/add"
@@ -233,14 +262,17 @@ service AdminService {
     };
   }
 
+  // Lists all promotional codes
   rpc ListPromos(ListPromosRequest) returns (ListPromosResponse) {
     option (google.api.http) = {get: "/api/admin/promo/list"};
   }
 
+  // Deletes a specific promotional code
   rpc DeletePromoCode(DeletePromoCodeRequest) returns (DeletePromoCodeResponse) {
     option (google.api.http) = {delete: "/api/admin/promo/{code}/delete"};
   }
 
+  // Disables a specific promotional code
   rpc DisablePromoCode(DisablePromoCodeRequest) returns (DisablePromoCodeResponse) {
     option (google.api.http) = {
       post: "/api/admin/promo/{code}/disable"
@@ -250,83 +282,96 @@ service AdminService {
 
   // ORDER MANAGER
 
+  // Creates a new order
   rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/create"
+      post: "/api/admin/orders/create"
       body: "*"
     };
   }
 
+  // Applies a promo code to an order
   rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/apply-promo"
+      post: "/api/admin/orders/{order_id}/apply-promo"
       body: "*"
     };
   }
 
+  // Updates items in an existing order
   rpc UpdateOrderItems(UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/update-items"
+      post: "/api/admin/orders/{order_id}/update-items"
       body: "*"
     };
   }
 
+  // Updates the shipping carrier for an order
   rpc UpdateOrderShippingCarrier(UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/update-shipping-carrier"
+      post: "/api/admin/orders/{order_id}/update-shipping-carrier"
       body: "*"
     };
   }
 
+  // Marks order payment as complete
   rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/payment-done"
+      post: "/api/admin/orders/{order_id}/payment-done"
       body: "*"
     };
   }
 
+  // Updates shipping information for an order
   rpc UpdateShippingInfo(UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/update-shipping-info"
+      post: "/api/admin/orders/{order_id}/update-shipping-info"
       body: "*"
     };
   }
 
+  // Retrieves an order by its ID
   rpc GetOrderById(GetOrderByIdRequest) returns (GetOrderByIdResponse) {
-    option (google.api.http) = {get: "/api/api/admin/orders/{order_id}"};
+    option (google.api.http) = {get: "/api/admin/orders/{order_id}"};
   }
 
+  // Retrieves orders by the customer's email
   rpc GetOrdersByEmail(GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
-    option (google.api.http) = {get: "/api/api/admin/orders/by-email/{email}"};
+    option (google.api.http) = {get: "/api/admin/orders/by-email/{email}"};
   }
 
+  // Retrieves orders by their status
   rpc GetOrdersByStatus(GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
-    option (google.api.http) = {get: "/api/api/admin/orders/by-status/{status}"};
+    option (google.api.http) = {get: "/api/admin/orders/by-status/{status}"};
   }
 
+  // Processes a refund for an order
   rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/refund"
+      post: "/api/admin/orders/{order_id}/refund"
       body: "*"
     };
   }
 
+  // Marks an order as delivered
   rpc DeliveredOrder(DeliveredOrderRequest) returns (DeliveredOrderResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/delivered"
+      post: "/api/admin/orders/{order_id}/delivered"
       body: "*"
     };
   }
 
+  // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
-      post: "/api/api/admin/orders/{order_id}/cancel"
+      post: "/api/admin/orders/{order_id}/cancel"
       body: "*"
     };
   }
 
   // HERO MANAGER
 
+  // Adds a new hero
   rpc AddHero(AddHeroRequest) returns (AddHeroResponse) {
     option (google.api.http) = {
       post: "/api/admin/hero/add"
@@ -334,6 +379,7 @@ service AdminService {
     };
   }
 
+  // Retrieves hero information
   rpc GetHero(GetHeroRequest) returns (GetHeroResponse) {
     option (google.api.http) = {get: "/api/admin/hero"};
   }
