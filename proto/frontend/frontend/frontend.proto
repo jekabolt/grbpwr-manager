@@ -24,7 +24,7 @@ service FrontendService {
 
   // Get paged products
   rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
-    option (google.api.http) = {get: "/api/frontend/products/paged/{limit}/{offset}/{order_factor}"};
+    option (google.api.http) = {get: "/api/frontend/products/paged"};
   }
 
   // Submit an order

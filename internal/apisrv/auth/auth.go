@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -219,15 +220,30 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 	}, nil
 }
 
+// Error message struct
+type errorMessage struct {
+	Error string `json:"error"`
+}
+
 // WithAuth middleware checks if the user is authenticated.
+
 func (s *Server) WithAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
 		_, err := jwt.VerifyToken(s.JwtAuth, token)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid token %v", err.Error()), http.StatusUnauthorized)
+			// Create a new error message
+			errMsg := errorMessage{Error: err.Error()}
+
+			// Set content type to JSON
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+
+			// Write the JSON error message
+			json.NewEncoder(w).Encode(errMsg)
 			return
 		}
+
 		next.ServeHTTP(w, r)
 	})
 }
