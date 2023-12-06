@@ -183,6 +183,14 @@ type (
 		GetExchangeRate(targetCurrency string) (float64, error)
 	}
 
+	Mailer interface {
+		SendNewSubscriber(to string) error
+		SendOrderConfirmation(to string, orderDetails *dto.OrderConfirmed) error
+		SendOrderCancellation(to string, orderDetails *dto.OrderCancelled) error
+		SendOrderShipped(to string, shipmentDetails *dto.OrderShipment) error
+		SendPromoCode(to string, promoDetails *dto.PromoCodeDetails) error
+	}
+
 	Cache interface {
 		GetCategoryById(id int) (*entity.Category, bool)
 		GetCategoryByName(category entity.CategoryEnum) (entity.Category, bool)
