@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Order Confirmation</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .container { width: 100%; }
+        }
+        body { font-family: Arial, sans-serif; }
+        .container { width: 80%; margin: auto; padding: 20px; }
+        .header { background-color: #f8f8f8; padding: 10px; text-align: center; }
+        .content { margin-top: 20px; }
+        .footer { margin-top: 30px; font-size: small; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>GRBPWR</h1>
+        </header>
+        <main class="content">
+            <p>Hello {{.Name}},</p>
+            <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order{{.OrderID}}" style="text-decoration: none;">#{{.OrderID}}</a></b> has been placed successfully.</p>
+            <h2>Order Details:</h2>
+            <p><b>Date:</b> {{.OrderDate}}</p>
+            <p><b>Total Amount:</b> {{.PaymentCurrency}} {{.TotalAmount}}</p>
+            <p><b>Payment Method:</b> {{.PaymentMethod}}</p>
+            <p>Our team will process and ship your order as soon as possible. We will send you another email once your order is on its way.</p>
+        </main>
+        <footer class="footer">
+            <p>Thank you for choosing GRBPWR!</p>
+            <p>If you have any questions, please contact us at <a href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
+        </footer>
+    </div>
+</body>
+</html>

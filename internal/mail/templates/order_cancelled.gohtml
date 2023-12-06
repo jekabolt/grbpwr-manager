@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Order Cancellation</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .container { width: 100%; }
+        }
+        body { font-family: Arial, sans-serif; }
+        .container { width: 80%; margin: auto; padding: 20px; }
+        .header { background-color: #f8f8f8; padding: 10px; text-align: center; }
+        .content { margin-top: 20px; }
+        .footer { margin-top: 30px; font-size: small; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>GRBPWR</h1>
+        </header>
+        <main class="content">
+            <p>Hello {{.Name}},</p>
+            <p>We are sorry to inform you that your order <b><a href="https://grbpwr.com/order{{.OrderID}}" style="text-decoration: none;">#{{.OrderID}}</a></b> has been cancelled as per your request.</p>
+            <h2>Cancellation Details:</h2>
+            <p><b>Date of Cancellation:</b> {{.CancellationDate}}</p>
+            <p><b>Total Refund Amount:</b> {{.PaymentCurrency}} {{.RefundAmount}}</p>
+            <p><b>Payment Method:</b> {{.PaymentMethod}}</p>
+            <p>Your refund will be processed and credited to your original method of payment ({{.PaymentMethod}}) within a certain number of days, depending on your bank's policies.</p>
+        </main>
+        <footer class="footer">
+            <p>We're sorry that you had to cancel your order.</p>
+            <p>If you have any further questions or if there was an issue with your order, please contact us at <a href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
+        </footer>
+    </div>
+</body>
+</html>

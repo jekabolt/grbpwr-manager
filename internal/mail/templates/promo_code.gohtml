@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Special Offer For You!</title>
+    <style>
+        /* Styles omitted for brevity */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Exclusive Offer from Our Store!</h1>
+        </header>
+        <main class="content">
+            <p>Hello,</p>
+            <p>We're excited to offer you a special promotion as our valued customer:</p>
+
+            {{if .HasFreeShipping}}
+                <p><strong>Enjoy Free Shipping on Your Next Order!</strong></p>
+                {{/* Ensure .DiscountAmount is of a type comparable with integer */}}
+                {{if gt (.DiscountAmount) 0}}
+                    <p>Plus, get an additional discount of <strong>{{.DiscountAmount}}%</strong> on your purchase!</p>
+                {{end}}
+            {{else if gt (.DiscountAmount) 0}}
+                <p>Get an exclusive <strong>{{.DiscountAmount}}% discount</strong> on your next purchase!</p>
+            {{end}}
+
+            <h2>Your Promo Code:</h2>
+            <p style="font-size: larger; font-weight: bold;">{{.PromoCode}}</p>
+            <p>Use this code at checkout to avail the offer.</p>
+
+            {{if .ExpirationDate}}
+                <p><strong>Offer Expires on: {{.ExpirationDate}}</strong></p>
+            {{end}}
+
+            <p>Don't forget, this offer is valid for a limited time only. Make sure to take advantage before it expires!</p>
+        </main>
+        <footer class="footer">
+            <p>If you have any questions or need assistance, feel free to contact us at <a href="mailto:support@ourstore.com">support@ourstore.com</a>.</p>
+            <p>Thank you for shopping with us!</p>
+        </footer>
+    </div>
+</body>
+</html>
