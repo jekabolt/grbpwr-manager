@@ -37,17 +37,13 @@ func SortFactorsToSS(factors []SortFactor) []string {
 	return ss
 }
 
-type PriceFromTo struct {
-	From decimal.Decimal
-	To   decimal.Decimal
-}
-
 type FilterConditions struct {
-	PriceFromTo PriceFromTo
-	OnSale      bool
-	Color       string
-	CategoryId  int
-	SizesIds    []int
-	Preorder    bool
-	ByTag       string
+	From       decimal.Decimal
+	To         decimal.Decimal
+	OnSale     bool
+	Color      string
+	CategoryId int
+	SizesIds   []int
+	Preorder   bool
+	ByTag      string
 }

@@ -333,6 +333,18 @@ CREATE TABLE hero_ads (
     FOREIGN KEY (hero_id) REFERENCES hero(id) ON DELETE CASCADE
 );
 
+CREATE TABLE send_email_request (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    from_email VARCHAR(255) NOT NULL,
+    to_email VARCHAR(255) NOT NULL,
+    html TEXT NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    reply_to VARCHAR(255),
+    sent BOOLEAN DEFAULT FALSE,
+    sent_at DATETIME NULL DEFAULT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 
 CREATE INDEX idx_product_id_on_product_media ON product_media(product_id);

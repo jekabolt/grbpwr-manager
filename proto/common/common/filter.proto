@@ -20,17 +20,13 @@ enum SortFactor {
   SORT_FACTOR_PRICE = 4;
 }
 
-message PriceFromTo {
+message FilterConditions {
   google.type.Decimal from = 1;
   google.type.Decimal to = 2;
-}
-
-message FilterConditions {
-  PriceFromTo price_from_to = 1;
-  bool on_sale = 2;
-  string color = 3;
-  int32 category_id = 4;
-  repeated int32 sizes_ids = 5;
-  bool preorder = 6;
-  string by_tag = 7;
+  bool on_sale = 3;
+  string color = 4;
+  int32 category_id = 5;
+  repeated int32 sizes_ids = 6;
+  bool preorder = 7;
+  string by_tag = 8;
 }

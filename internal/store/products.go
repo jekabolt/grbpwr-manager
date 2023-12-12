@@ -18,7 +18,7 @@ type productStore struct {
 	*MYSQLStore
 }
 
-// ParticipateStore returns an object implementing participate interface
+// Products returns an object implementing product interface
 func (ms *MYSQLStore) Products() dependency.Products {
 	return &productStore{
 		MYSQLStore: ms,
@@ -267,10 +267,14 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 
 	// Handle filters
 	if filterConditions != nil {
-		if filterConditions.PriceFromTo.From.IsPositive() || filterConditions.PriceFromTo.To.IsPositive() {
+		if filterConditions.To.GreaterThan(decimal.Zero) && filterConditions.From.LessThanOrEqual(filterConditions.To) &&
+			filterConditions.From.GreaterThanOrEqual(decimal.Zero) {
+			fmt.Println("priceFrom", filterConditions.From)
+			fmt.Println("priceTo", filterConditions.To)
 			whereClauses = append(whereClauses, "price BETWEEN :priceFrom AND :priceTo")
-			args["priceFrom"] = filterConditions.PriceFromTo.From
-			args["priceTo"] = filterConditions.PriceFromTo.To
+			args["priceFrom"] = filterConditions.From
+			args["priceTo"] = filterConditions.To
+
 		}
 		if filterConditions.OnSale {
 			whereClauses = append(whereClauses, "sale_percentage > 0")

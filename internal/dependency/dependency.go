@@ -85,6 +85,12 @@ type (
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}
 
+	Mail interface {
+		AddMail(ctx context.Context, ser *entity.SendEmailRequest) error
+		GetAllUnsent(ctx context.Context) ([]entity.SendEmailRequest, error)
+		UpdateSent(ctx context.Context, id int) error
+	}
+
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
@@ -141,6 +147,7 @@ type (
 		Order() Order
 		Promo() Promo
 		Admin() Admin
+		Mail() Mail
 		Archive() Archive
 		Subscribers() Subscribers
 		Media() Media
@@ -184,11 +191,11 @@ type (
 	}
 
 	Mailer interface {
-		SendNewSubscriber(to string) error
-		SendOrderConfirmation(to string, orderDetails *dto.OrderConfirmed) error
-		SendOrderCancellation(to string, orderDetails *dto.OrderCancelled) error
-		SendOrderShipped(to string, shipmentDetails *dto.OrderShipment) error
-		SendPromoCode(to string, promoDetails *dto.PromoCodeDetails) error
+		SendNewSubscriber(ctx context.Context, to string) (*entity.SendEmailRequest, error)
+		SendOrderConfirmation(ctx context.Context, to string, orderDetails *dto.OrderConfirmed) (*entity.SendEmailRequest, error)
+		SendOrderCancellation(ctx context.Context, to string, orderDetails *dto.OrderCancelled) (*entity.SendEmailRequest, error)
+		SendOrderShipped(ctx context.Context, to string, shipmentDetails *dto.OrderShipment) (*entity.SendEmailRequest, error)
+		SendPromoCode(ctx context.Context, to string, promoDetails *dto.PromoCodeDetails) (*entity.SendEmailRequest, error)
 	}
 
 	Cache interface {

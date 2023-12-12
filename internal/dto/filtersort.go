@@ -7,18 +7,6 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
-// ConvertEntityPriceFromToToPBCommon converts PriceFromTo from entity to pb_common
-func ConvertEntityPriceFromToToPBCommon(pft entity.PriceFromTo) *pb_common.PriceFromTo {
-	return &pb_common.PriceFromTo{
-		From: &pb_decimal.Decimal{
-			Value: pft.From.String(),
-		},
-		To: &pb_decimal.Decimal{
-			Value: pft.To.String(),
-		},
-	}
-}
-
 // ConvertEntityFilterConditionsToPBCommon converts FilterConditions from entity to pb_common
 func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_common.FilterConditions {
 	sizes := make([]int32, len(fc.SizesIds))
@@ -27,13 +15,18 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 	}
 
 	return &pb_common.FilterConditions{
-		PriceFromTo: ConvertEntityPriceFromToToPBCommon(fc.PriceFromTo),
-		OnSale:      fc.OnSale,
-		Color:       fc.Color,
-		CategoryId:  int32(fc.CategoryId),
-		SizesIds:    sizes,
-		Preorder:    fc.Preorder,
-		ByTag:       fc.ByTag,
+		From: &pb_decimal.Decimal{
+			Value: fc.From.String(),
+		},
+		To: &pb_decimal.Decimal{
+			Value: fc.To.String(),
+		},
+		OnSale:     fc.OnSale,
+		Color:      fc.Color,
+		CategoryId: int32(fc.CategoryId),
+		SizesIds:   sizes,
+		Preorder:   fc.Preorder,
+		ByTag:      fc.ByTag,
 	}
 }
 
@@ -65,22 +58,6 @@ func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFacto
 	}
 }
 
-// ConvertPBCommonPriceFromToToEntity converts PriceFromTo from pb_common to entity
-func ConvertPBCommonPriceFromToToEntity(pft *pb_common.PriceFromTo) entity.PriceFromTo {
-	from, err := decimal.NewFromString(pft.From.Value)
-	if err != nil {
-		from = decimal.Zero
-	}
-	to, err := decimal.NewFromString(pft.To.Value)
-	if err != nil {
-		to = decimal.Zero
-	}
-	return entity.PriceFromTo{
-		From: from,
-		To:   to,
-	}
-}
-
 // ConvertPBCommonFilterConditionsToEntity converts FilterConditions from pb_common to entity
 func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *entity.FilterConditions {
 	if fc == nil {
@@ -93,12 +70,13 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	}
 
 	return &entity.FilterConditions{
-		PriceFromTo: ConvertPBCommonPriceFromToToEntity(fc.PriceFromTo),
-		OnSale:      fc.OnSale,
-		Color:       fc.Color,
-		CategoryId:  int(fc.CategoryId),
-		SizesIds:    sizes,
-		Preorder:    fc.Preorder,
-		ByTag:       fc.ByTag,
+		From:       decimal.RequireFromString(fc.From.Value),
+		To:         decimal.RequireFromString(fc.To.Value),
+		OnSale:     fc.OnSale,
+		Color:      fc.Color,
+		CategoryId: int(fc.CategoryId),
+		SizesIds:   sizes,
+		Preorder:   fc.Preorder,
+		ByTag:      fc.ByTag,
 	}
 }

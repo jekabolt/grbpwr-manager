@@ -1,9 +1,11 @@
 package mail
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 const (
@@ -24,38 +26,38 @@ var templateSubjects = map[string]string{
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.
-func (m *Mailer) SendNewSubscriber(to string) error {
-	return m.send(to, NewSubscriber, struct{}{})
+func (m *Mailer) SendNewSubscriber(ctx context.Context, to string) (*entity.SendEmailRequest, error) {
+	return m.send(ctx, to, NewSubscriber, struct{}{})
 }
 
 // SendOrderConfirmation sends an order confirmation email.
-func (m *Mailer) SendOrderConfirmation(to string, orderDetails *dto.OrderConfirmed) error {
+func (m *Mailer) SendOrderConfirmation(ctx context.Context, to string, orderDetails *dto.OrderConfirmed) (*entity.SendEmailRequest, error) {
 	if orderDetails.OrderID == "" || orderDetails.Name == "" {
-		return fmt.Errorf("incomplete order details: %+v", orderDetails)
+		return nil, fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
-	return m.send(to, OrderPlaced, orderDetails) // Added validation for OrderDetails fields.
+	return m.send(ctx, to, OrderPlaced, orderDetails) // Added validation for OrderDetails fields.
 }
 
 // SendOrderConfirmation sends an order cancellation email.
-func (m *Mailer) SendOrderCancellation(to string, orderDetails *dto.OrderCancelled) error {
+func (m *Mailer) SendOrderCancellation(ctx context.Context, to string, orderDetails *dto.OrderCancelled) (*entity.SendEmailRequest, error) {
 	if orderDetails.OrderID == "" || orderDetails.Name == "" {
-		return fmt.Errorf("incomplete order details: %+v", orderDetails)
+		return nil, fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
-	return m.send(to, OrderCancelled, orderDetails)
+	return m.send(ctx, to, OrderCancelled, orderDetails)
 }
 
 // SendOrderShipped sends an order shipped email.
-func (m *Mailer) SendOrderShipped(to string, shipmentDetails *dto.OrderShipment) error {
+func (m *Mailer) SendOrderShipped(ctx context.Context, to string, shipmentDetails *dto.OrderShipment) (*entity.SendEmailRequest, error) {
 	if shipmentDetails.OrderID == "" || shipmentDetails.TrackingNumber == "" {
-		return fmt.Errorf("incomplete shipment details: %+v", shipmentDetails)
+		return nil, fmt.Errorf("incomplete shipment details: %+v", shipmentDetails)
 	}
-	return m.send(to, OrderShipped, shipmentDetails)
+	return m.send(ctx, to, OrderShipped, shipmentDetails)
 }
 
 // SendPromoCode sends a promo code email.
-func (m *Mailer) SendPromoCode(to string, promoDetails *dto.PromoCodeDetails) error {
+func (m *Mailer) SendPromoCode(ctx context.Context, to string, promoDetails *dto.PromoCodeDetails) (*entity.SendEmailRequest, error) {
 	if promoDetails.PromoCode == "" {
-		return fmt.Errorf("incomplete promo code details: %+v", promoDetails)
+		return nil, fmt.Errorf("incomplete promo code details: %+v", promoDetails)
 	}
-	return m.send(to, PromoCode, promoDetails)
+	return m.send(ctx, to, PromoCode, promoDetails)
 }
