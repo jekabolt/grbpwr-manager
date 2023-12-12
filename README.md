@@ -1,3 +1,4 @@
+[![Build](https://github.com/jekabolt/grbpwr-manager/actions/workflows/main.yml/badge.svg)](https://github.com/jekabolt/grbpwr-manager/actions/workflows/main.yml)
 # grbpwr-manager
 
 service for upload and manage stock products [grbpwr.com](https://grbpwr.com)
