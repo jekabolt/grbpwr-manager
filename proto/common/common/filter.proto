@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package common;
 
-import "google/type/decimal.proto";
-
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
 enum OrderFactor {
@@ -21,8 +19,8 @@ enum SortFactor {
 }
 
 message FilterConditions {
-  google.type.Decimal from = 1;
-  google.type.Decimal to = 2;
+  string from = 1;
+  string to = 2;
   bool on_sale = 3;
   string color = 4;
   int32 category_id = 5;
