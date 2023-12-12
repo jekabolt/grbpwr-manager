@@ -41,13 +41,13 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.db, err = store.New(ctx, a.c.DB)
 	if err != nil {
-		slog.Default().With(err).ErrorCtx(ctx, "couldn't connect to mysql")
+		slog.Default().ErrorCtx(ctx, "couldn't connect to mysql")
 		return err
 	}
 
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
 	if err != nil {
-		slog.Default().With(err).ErrorCtx(ctx, "couldn't connect to mailer")
+		slog.Default().ErrorCtx(ctx, "couldn't connect to mailer")
 		return err
 	}
 
@@ -58,7 +58,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
 	if err != nil {
-		slog.Default().With(err).ErrorCtx(ctx, "failed create new auth server")
+		slog.Default().ErrorCtx(ctx, "failed create new auth server")
 		return err
 	}
 
@@ -69,7 +69,7 @@ func (a *App) Start(ctx context.Context) error {
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
-		slog.Default().With(err).ErrorCtx(ctx, "cannot start http server")
+		slog.Default().ErrorCtx(ctx, "cannot start http server")
 		return err
 	}
 
