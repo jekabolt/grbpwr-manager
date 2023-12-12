@@ -4,7 +4,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // ConvertEntityFilterConditionsToPBCommon converts FilterConditions from entity to pb_common
@@ -15,12 +14,8 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 	}
 
 	return &pb_common.FilterConditions{
-		From: &pb_decimal.Decimal{
-			Value: fc.From.String(),
-		},
-		To: &pb_decimal.Decimal{
-			Value: fc.To.String(),
-		},
+		From:       fc.From.String(),
+		To:         fc.To.String(),
 		OnSale:     fc.OnSale,
 		Color:      fc.Color,
 		CategoryId: int32(fc.CategoryId),
@@ -68,10 +63,18 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	for i, v := range fc.SizesIds {
 		sizes[i] = int(v)
 	}
+	from, err := decimal.NewFromString(fc.From)
+	if err != nil {
+		from = decimal.Zero
+	}
+	to, err := decimal.NewFromString(fc.To)
+	if err != nil {
+		to = decimal.Zero
+	}
 
 	return &entity.FilterConditions{
-		From:       decimal.RequireFromString(fc.From.Value),
-		To:         decimal.RequireFromString(fc.To.Value),
+		From:       from,
+		To:         to,
 		OnSale:     fc.OnSale,
 		Color:      fc.Color,
 		CategoryId: int(fc.CategoryId),
