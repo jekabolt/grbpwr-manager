@@ -8,6 +8,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	gerrors "github.com/jekabolt/grbpwr-manager/internal/errors"
 )
 
 type subscribersStore struct {
@@ -55,8 +56,29 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.BuyerI
 }
 
 func (ms *MYSQLStore) Subscribe(ctx context.Context, email, name string) error {
-	err := ExecNamed(ctx, ms.DB(), `INSERT INTO subscriber (name, email, receive_promo_emails) VALUES
-		(:name, :email, :receivePromoEmails)`, map[string]any{
+	// Check if the email already exists
+	var subscriber struct {
+		ID                 int
+		ReceivePromoEmails bool
+	}
+	err := ms.DB().GetContext(ctx, &subscriber, "SELECT id, receive_promo_emails FROM subscriber WHERE email = ?", email)
+	if err == nil {
+		if subscriber.ReceivePromoEmails {
+			return gerrors.ErrAlreadySubscribed
+		} else {
+			// Update receive_promo_emails to true
+			_, err := ms.DB().ExecContext(ctx, "UPDATE subscriber SET receive_promo_emails = ? WHERE id = ?", true, subscriber.ID)
+			if err != nil {
+				return fmt.Errorf("failed to update subscriber: %w", err)
+			}
+			return nil
+		}
+	} else if err != sql.ErrNoRows {
+		return fmt.Errorf("failed to check subscriber: %w", err)
+	}
+
+	// Email does not exist, add it to the database
+	err = ExecNamed(ctx, ms.DB(), `INSERT INTO subscriber (name, email, receive_promo_emails) VALUES (:name, :email, :receivePromoEmails)`, map[string]any{
 		"email":              email,
 		"name":               name,
 		"receivePromoEmails": true,

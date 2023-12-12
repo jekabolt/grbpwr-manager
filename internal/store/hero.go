@@ -14,7 +14,7 @@ type heroStore struct {
 	*MYSQLStore
 }
 
-// ParticipateStore returns an object implementing participate interface
+// Hero returns an object implementing hero interface
 func (ms *MYSQLStore) Hero() dependency.Hero {
 	return &heroStore{
 		MYSQLStore: ms,

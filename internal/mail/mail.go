@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"text/template"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/resendlabs/resend-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 )
@@ -19,22 +22,25 @@ type Config struct {
 	APIKey    string `mapstructure:"sendgrid_api_key"`
 	FromEmail string `mapstructure:"from_email"`
 	FromName  string `mapstructure:"from_email_name"`
+	ReplyTo   string `mapstructure:"reply_to"`
 }
 
 type Mailer struct {
 	cli       *resend.Client
+	db        dependency.Mail
 	from      *mail.Email
 	c         *Config
 	templates map[string]*template.Template
 }
 
-func New(c *Config) (dependency.Mailer, error) {
+func New(c *Config, db dependency.Mail) (dependency.Mailer, error) {
 	if c.APIKey == "" || c.FromEmail == "" || c.FromName == "" {
 		return nil, fmt.Errorf("incomplete config: %+v", c)
 	}
 
 	m := &Mailer{
 		cli:       resend.NewClient(c.APIKey),
+		db:        db,
 		from:      mail.NewEmail(c.FromName, c.FromEmail),
 		c:         c,
 		templates: make(map[string]*template.Template),
@@ -73,40 +79,40 @@ func (m *Mailer) parseTemplates() error {
 			return fmt.Errorf("error parsing template '%s': %w", entry.Name(), err)
 		}
 
-		// Use the base filename (like 'new_subscriber.gohtml') as the key
 		m.templates[entry.Name()] = tmpl
 	}
 
 	return nil
 }
 
-func (m *Mailer) send(to, templateName string, data interface{}) error {
+func (m *Mailer) send(ctx context.Context, to, templateName string, data interface{}) (*entity.SendEmailRequest, error) {
 	tmpl, ok := m.templates[templateName]
 	if !ok {
-		return fmt.Errorf("template not found: %v", templateName)
+		return nil, fmt.Errorf("template not found: %v", templateName)
 	}
 
 	subject, ok := templateSubjects[templateName]
 	if !ok {
-		return fmt.Errorf("subject not found for template: %v", templateName)
+		return nil, fmt.Errorf("subject not found for template: %v", templateName)
 	}
 
 	body := new(strings.Builder)
 	if err := tmpl.Execute(body, data); err != nil {
-		return fmt.Errorf("error executing template: %w", err)
+		return nil, fmt.Errorf("error executing template: %w", err)
 	}
 
-	params := &resend.SendEmailRequest{
-		From:    fmt.Sprintf("grbpwr info <%s>", m.c.FromEmail),
+	sr := &resend.SendEmailRequest{
+		From:    fmt.Sprintf("%s <%s>", m.c.FromName, m.c.FromEmail),
 		To:      []string{to},
 		Html:    body.String(),
 		Subject: subject,
 		ReplyTo: m.c.FromEmail,
 	}
-
-	_, err := m.cli.Emails.Send(params)
+	esr := dto.ResendSendEmailRequestToEntity(sr, to)
+	_, err := m.cli.Emails.Send(sr)
 	if err != nil {
-		return fmt.Errorf("error sending email: %w", err)
+		return esr, fmt.Errorf("error sending email: %w", err)
 	}
-	return nil
+
+	return esr, nil
 }

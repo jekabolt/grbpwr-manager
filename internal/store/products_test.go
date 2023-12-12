@@ -506,10 +506,8 @@ func TestProductStore_GetProductsPaged(t *testing.T) {
 			limit:  5,
 			offset: 0,
 			filterConditions: &entity.FilterConditions{
-				PriceFromTo: entity.PriceFromTo{
-					From: decimal.NewFromInt(1),
-					To:   decimal.NewFromInt(50),
-				},
+				From: decimal.NewFromInt(1),
+				To:   decimal.NewFromInt(50),
 			},
 			expectedCount: 5,
 			checkFunc: func(products []entity.Product) error {

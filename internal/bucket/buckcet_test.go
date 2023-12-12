@@ -57,7 +57,7 @@ func BucketFromConst(t *testing.T) (*testFileStore, error) {
 	}
 
 	mediaStoreMock := mocks.NewMedia(t)
-	fs, err := c.New(mediaStoreMock)
+	fs, err := New(c, mediaStoreMock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
 	}

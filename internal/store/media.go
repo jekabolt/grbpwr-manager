@@ -12,6 +12,7 @@ type mediaStore struct {
 	*MYSQLStore
 }
 
+// Media returns an object implementing media interface
 func (ms *MYSQLStore) Media() dependency.Media {
 	return &mediaStore{
 		MYSQLStore: ms,

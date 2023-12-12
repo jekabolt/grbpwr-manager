@@ -9,7 +9,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/app"
 	"github.com/jekabolt/grbpwr-manager/config"
-	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/slog"
 )
@@ -28,17 +27,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}))
 	slog.SetDefault(logger)
 
-	repo, err := store.New(ctx, cfg.DB)
-	if err != nil {
-		return fmt.Errorf("cannot create a repository %v %v", err.Error(), cfg.DB.DSN)
-	}
-
-	b, err := cfg.Bucket.New(repo.Media())
-	if err != nil {
-		return fmt.Errorf("cannot init bucket %v", err.Error())
-	}
-
-	a := app.New(cfg, repo, b)
+	a := app.New(cfg)
 	if err := a.Start(ctx); err != nil {
 		return fmt.Errorf("cannot start the application %v", err.Error())
 	}

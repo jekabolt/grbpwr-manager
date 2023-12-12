@@ -14,6 +14,7 @@ type archiveStore struct {
 	*MYSQLStore
 }
 
+// Archive returns an object implementing archive interface
 func (ms *MYSQLStore) Archive() dependency.Archive {
 	return &archiveStore{
 		MYSQLStore: ms,

@@ -20,13 +20,15 @@ import (
 // Server implements handlers for frontend requests.
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
-	repo dependency.Repository
+	repo   dependency.Repository
+	mailer dependency.Mailer
 }
 
 // New creates a new server with frontend handlers.
-func New(r dependency.Repository) *Server {
+func New(r dependency.Repository, m dependency.Mailer) *Server {
 	return &Server{
-		repo: r,
+		repo:   r,
+		mailer: m,
 	}
 }
 
@@ -49,6 +51,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 		Hero: h,
 	}, nil
 }
+
 func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProductByNameRequest) (*pb_frontend.GetProductByNameResponse, error) {
 	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, req.Name)
 	if err != nil {
@@ -70,6 +73,7 @@ func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProdu
 		Product: pbPrd,
 	}, nil
 }
+
 func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProductsPagedRequest) (*pb_frontend.GetProductsPagedResponse, error) {
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
@@ -112,6 +116,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 		Products: prdsPb,
 	}, nil
 }
+
 func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRequest) (*pb_frontend.SubmitOrderResponse, error) {
 	orderNew := dto.ConvertCommonOrderNewToEntity(req.Order)
 
@@ -143,6 +148,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		Order: o,
 	}, nil
 }
+
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
 	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
@@ -157,6 +163,7 @@ func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromo
 		},
 	}, nil
 }
+
 func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOrderItemsRequest) (*pb_frontend.UpdateOrderItemsResponse, error) {
 	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, i := range req.Items {
@@ -183,16 +190,38 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 		},
 	}, nil
 }
+
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
+	// Subscribe the user.
 	err := s.repo.Subscribers().Subscribe(ctx, req.Email, req.Name)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't subscribe",
-			slog.String("err", err.Error()),
-		)
+		slog.Default().ErrorCtx(ctx, "can't subscribe", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't subscribe")
 	}
+
+	// Send new subscriber mail.
+	sr, err := s.mailer.SendNewSubscriber(ctx, req.Email)
+	if sr == nil {
+		slog.Default().ErrorCtx(ctx, "send new subscriber mail returned nil sr", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.InvalidArgument, "send new subscriber mail error")
+	}
+
+	// Update sr based on the error from SendNewSubscriber.
+	if err != nil {
+		sr.Sent = false
+	} else {
+		sr.Sent = true
+	}
+
+	err = s.repo.Mail().AddMail(ctx, sr)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't add mail to the database", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't add mail to the database")
+	}
+
 	return &pb_frontend.SubscribeNewsletterResponse{}, nil
 }
+
 func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.UnsubscribeNewsletterRequest) (*pb_frontend.UnsubscribeNewsletterResponse, error) {
 	err := s.repo.Subscribers().Unsubscribe(ctx, req.Email)
 	if err != nil {

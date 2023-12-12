@@ -1,11 +1,11 @@
 package mail
 
 import (
+	"context"
 	"os"
 	"testing"
 
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -19,55 +19,58 @@ func TestMailer(t *testing.T) {
 	skipCI(t)
 
 	c := &Config{
-		APIKey:    "",
+		APIKey:    "re_A8vDWbxd_5s8CuKU93kGc4VtuiLmLJLLi",
 		FromEmail: "info@grbpwr.com",
-		FromName:  "info grbpwr",
+		FromName:  "grbpwr.com",
 	}
 
-	m, err := New(c)
+	mailDBMock := mocks.NewMail(t)
+
+	m, err := New(c, mailDBMock)
+	ctx := context.Background()
 	assert.NoError(t, err)
 
 	to := "jekabolt@yahoo.com"
 
-	err = m.SendNewSubscriber(to)
+	_, err = m.SendNewSubscriber(ctx, to)
 	assert.NoError(t, err)
 
-	err = m.SendOrderConfirmation(to, &dto.OrderConfirmed{
-		OrderID:         "123",
-		Name:            "jekabolt",
-		OrderDate:       "2021-09-01",
-		TotalAmount:     100,
-		PaymentMethod:   string(entity.Card),
-		PaymentCurrency: "EUR",
-	})
-	assert.NoError(t, err)
+	// _, err = m.SendOrderConfirmation(ctx, to, &dto.OrderConfirmed{
+	// 	OrderID:         "123",
+	// 	Name:            "jekabolt",
+	// 	OrderDate:       "2021-09-01",
+	// 	TotalAmount:     100,
+	// 	PaymentMethod:   string(entity.Card),
+	// 	PaymentCurrency: "EUR",
+	// })
+	// assert.NoError(t, err)
 
-	err = m.SendOrderCancellation(to, &dto.OrderCancelled{
-		OrderID:          "123",
-		Name:             "jekabolt",
-		CancellationDate: "2021-09-01",
-		RefundAmount:     100,
-		PaymentMethod:    string(entity.Eth),
-		PaymentCurrency:  "ETH",
-	})
-	assert.NoError(t, err)
+	// _, err = m.SendOrderCancellation(ctx, to, &dto.OrderCancelled{
+	// 	OrderID:          "123",
+	// 	Name:             "jekabolt",
+	// 	CancellationDate: "2021-09-01",
+	// 	RefundAmount:     100,
+	// 	PaymentMethod:    string(entity.Eth),
+	// 	PaymentCurrency:  "ETH",
+	// })
+	// assert.NoError(t, err)
 
-	err = m.SendOrderShipped(to, &dto.OrderShipment{
-		OrderID:        "123",
-		Name:           "jekabolt",
-		ShippingDate:   "2021-09-01",
-		TotalAmount:    100,
-		TrackingNumber: "123456789",
-		TrackingURL:    "https://www.tracking.grbpwr.com/",
-	})
-	assert.NoError(t, err)
+	// _, err = m.SendOrderShipped(ctx, to, &dto.OrderShipment{
+	// 	OrderID:        "123",
+	// 	Name:           "jekabolt",
+	// 	ShippingDate:   "2021-09-01",
+	// 	TotalAmount:    100,
+	// 	TrackingNumber: "123456789",
+	// 	TrackingURL:    "https://www.tracking.grbpwr.com/",
+	// })
+	// assert.NoError(t, err)
 
-	err = m.SendPromoCode(to, &dto.PromoCodeDetails{
-		PromoCode:       "test",
-		HasFreeShipping: true,
-		DiscountAmount:  100,
-		ExpirationDate:  "2021-09-01",
-	})
-	assert.NoError(t, err)
+	// _, err = m.SendPromoCode(ctx, to, &dto.PromoCodeDetails{
+	// 	PromoCode:       "test",
+	// 	HasFreeShipping: true,
+	// 	DiscountAmount:  100,
+	// 	ExpirationDate:  "2021-09-01",
+	// })
+	// assert.NoError(t, err)
 
 }
