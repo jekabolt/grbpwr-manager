@@ -58,8 +58,8 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.BuyerI
 func (ms *MYSQLStore) Subscribe(ctx context.Context, email, name string) error {
 	// Check if the email already exists
 	var subscriber struct {
-		ID                 int
-		ReceivePromoEmails bool
+		ID                 int  `db:"id"`
+		ReceivePromoEmails bool `db:"receive_promo_emails"`
 	}
 	err := ms.DB().GetContext(ctx, &subscriber, "SELECT id, receive_promo_emails FROM subscriber WHERE email = ?", email)
 	if err == nil {

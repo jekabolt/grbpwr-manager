@@ -74,11 +74,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	if err != nil {
 		return nil, err
 	}
-	// TODO:
-	// frontendHandler, err := s.frontendJSONGateway(ctx)
-	// if err != nil {
-	// 	return nil, err
-	// }
+	frontendHandler, err := s.frontendJSONGateway(ctx)
+	if err != nil {
+		return nil, err
+	}
 	authHandler, err := s.authJSONGateway(ctx)
 	if err != nil {
 		return nil, err
@@ -105,7 +104,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	})
 
 	r.Mount("/api/admin", auth.WithAuth(adminHandler))
-	// r.Mount("/api/frontend", frontendHandler)
+	r.Mount("/api/frontend", frontendHandler)
 	r.Mount("/api/auth", authHandler)
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
@@ -136,25 +135,23 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 
 // TODO:
 func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) {
-	// // dial options for the grpc-gateway
-	// grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	// dial options for the grpc-gateway
+	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
-	// apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
+	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	// mux := runtime.NewServeMux(runtime.WithMarshalerOption(
-	// 	runtime.MIMEWildcard,
-	// 	&runtime.JSONPb{
-	// 		EnumsAsInts:  false,
-	// 		EmitDefaults: false,
-	// 	},
-	// ))
-	// // TODO:
-	// err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// return mux, nil
-	return nil, nil
+	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
+		runtime.MIMEWildcard,
+		&runtime.JSONPb{
+			EnumsAsInts:  false,
+			EmitDefaults: false,
+		},
+	))
+	err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
+	if err != nil {
+		return nil, err
+	}
+	return mux, nil
 }
 
 func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
