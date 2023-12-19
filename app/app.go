@@ -50,6 +50,11 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Default().ErrorCtx(ctx, "couldn't connect to mailer")
 		return err
 	}
+	err = a.ma.Start(ctx)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "couldn't start mailer worker")
+		return err
+	}
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {

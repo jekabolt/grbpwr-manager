@@ -10,6 +10,7 @@ bin
 *.swagger.json
 *.pb.go
 *.gw.go
+*.gen.go
 config.toml
 
 *coverage*
