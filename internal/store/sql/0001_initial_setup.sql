@@ -342,7 +342,8 @@ CREATE TABLE send_email_request (
     reply_to VARCHAR(255),
     sent BOOLEAN DEFAULT FALSE,
     sent_at DATETIME NULL DEFAULT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    error_msg VARCHAR(255) DEFAULT NULL
 );
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);

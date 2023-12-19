@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/resendlabs/resend-go"
+	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 )
 
 type OrderConfirmed struct {
@@ -44,9 +44,9 @@ func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest, to string) *ent
 	return &entity.SendEmailRequest{
 		From:    mr.From,
 		To:      to,
-		Html:    mr.Html,
+		Html:    *mr.Html,
 		Subject: mr.Subject,
-		ReplyTo: mr.ReplyTo,
+		ReplyTo: *mr.ReplyTo,
 	}
 }
 
@@ -57,8 +57,8 @@ func EntitySendEmailRequestToResend(mr *entity.SendEmailRequest) (*resend.SendEm
 	return &resend.SendEmailRequest{
 		From:    mr.From,
 		To:      []string{mr.To},
-		Html:    mr.Html,
+		Html:    &mr.Html,
 		Subject: mr.Subject,
-		ReplyTo: mr.ReplyTo,
+		ReplyTo: &mr.ReplyTo,
 	}, nil
 }

@@ -53,13 +53,14 @@ golangci-lint:
 	docker run --rm -v $$(pwd):/app -v ~/.netrc:/root/.netrc -w /app golangci/golangci-lint:$(GO_LINT_VERSION) golangci-lint run ./...
 
 install:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway@latest
-	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest
-	go install golang.org/x/text/cmd/gotext@latest
-	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
-	go install github.com/vektra/mockery/v2@latest 
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest || exit 1
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway@latest || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest || exit 1
+	go install golang.org/x/text/cmd/gotext@latest || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest || exit 1
+	go install github.com/vektra/mockery/v2@latest || exit 1 
+	go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest || exit 1
 
 
 REGISTRY=grbpwr
@@ -75,3 +76,12 @@ image-run:
 		-v ${PWD}/config:/config \
 		-p 8081:8081 \
 		grbpwr/grbpwr-pm:master
+
+RESEND_OPENAPI_PATH = openapi/resend/openapi.yaml
+RESEND_GENERATED_CODE_PATH = openapi/gen/resend
+
+# Generate setings client code from OpenAPI yaml
+generate-resend-client:
+	@echo "Generating code in: $(RESEND_GENERATED_CODE_PATH)" 
+	@mkdir -p $(RESEND_GENERATED_CODE_PATH)
+	@oapi-codegen -package resend -generate types,client -o $(RESEND_GENERATED_CODE_PATH)/resend.gen.go $(RESEND_OPENAPI_PATH)

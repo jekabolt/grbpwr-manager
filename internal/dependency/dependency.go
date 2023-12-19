@@ -3,10 +3,12 @@ package dependency
 import (
 	"context"
 	"database/sql"
+	"net/http"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
@@ -87,8 +89,9 @@ type (
 
 	Mail interface {
 		AddMail(ctx context.Context, ser *entity.SendEmailRequest) error
-		GetAllUnsent(ctx context.Context) ([]entity.SendEmailRequest, error)
+		GetAllUnsent(ctx context.Context, withError bool) ([]entity.SendEmailRequest, error)
 		UpdateSent(ctx context.Context, id int) error
+		AddError(ctx context.Context, id int, errMsg string) error
 	}
 
 	Order interface {
@@ -196,6 +199,12 @@ type (
 		SendOrderCancellation(ctx context.Context, to string, orderDetails *dto.OrderCancelled) (*entity.SendEmailRequest, error)
 		SendOrderShipped(ctx context.Context, to string, shipmentDetails *dto.OrderShipment) (*entity.SendEmailRequest, error)
 		SendPromoCode(ctx context.Context, to string, promoDetails *dto.PromoCodeDetails) (*entity.SendEmailRequest, error)
+		Start(ctx context.Context) error
+		Stop() error
+	}
+
+	Sender interface {
+		PostEmails(ctx context.Context, body resend.SendEmailRequest, reqEditors ...resend.RequestEditorFn) (*http.Response, error)
 	}
 
 	Cache interface {

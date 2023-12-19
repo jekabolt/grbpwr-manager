@@ -4,48 +4,78 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/resendlabs/resend-go"
+	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
+	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 )
 
 //go:embed templates/*.gohtml
 var templatesFS embed.FS
 
+const (
+	resendAPIBaseURL = "https://api.resend.com/"
+)
+
 type Config struct {
-	APIKey    string `mapstructure:"sendgrid_api_key"`
-	FromEmail string `mapstructure:"from_email"`
-	FromName  string `mapstructure:"from_email_name"`
-	ReplyTo   string `mapstructure:"reply_to"`
+	APIKey         string        `mapstructure:"sendgrid_api_key"`
+	FromEmail      string        `mapstructure:"from_email"`
+	FromName       string        `mapstructure:"from_email_name"`
+	ReplyTo        string        `mapstructure:"reply_to"`
+	WorkerInterval time.Duration `mapstructure:"worker_interval"`
 }
 
 type Mailer struct {
-	cli       *resend.Client
+	cli       dependency.Sender
 	db        dependency.Mail
 	from      *mail.Email
 	c         *Config
+	ctx       context.Context
+	cancel    context.CancelFunc
 	templates map[string]*template.Template
 }
 
-func New(c *Config, db dependency.Mail) (dependency.Mailer, error) {
+// addAuthHeader is a custom RequestEditorFn that adds an authorization header to the request
+func addAuthHeader(token string) resend.RequestEditorFn {
+	return func(ctx context.Context, req *http.Request) error {
+		req.Header.Add("Authorization", "Bearer "+token)
+		return nil
+	}
+}
+
+func New(c *Config, db dependency.Mail) (*Mailer, error) {
+	// Validate the configuration
 	if c.APIKey == "" || c.FromEmail == "" || c.FromName == "" {
 		return nil, fmt.Errorf("incomplete config: %+v", c)
 	}
 
+	// Initialize the resend client
+	cli, err := resend.NewClient(resendAPIBaseURL, resend.ClientOption(func(rc *resend.Client) error {
+		rc.RequestEditors = append(rc.RequestEditors, addAuthHeader(c.APIKey))
+		return nil
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("error creating resend client: %w", err)
+	}
+
+	// Initialize the Mailer struct
 	m := &Mailer{
-		cli:       resend.NewClient(c.APIKey),
+		cli:       cli,
 		db:        db,
 		from:      mail.NewEmail(c.FromName, c.FromEmail),
 		c:         c,
 		templates: make(map[string]*template.Template),
 	}
 
+	// Parse email templates
 	if err := m.parseTemplates(); err != nil {
 		return nil, fmt.Errorf("error parsing templates: %w", err)
 	}
@@ -101,18 +131,41 @@ func (m *Mailer) send(ctx context.Context, to, templateName string, data interfa
 		return nil, fmt.Errorf("error executing template: %w", err)
 	}
 
-	sr := &resend.SendEmailRequest{
+	html := body.String()
+	sr := resend.SendEmailRequest{
 		From:    fmt.Sprintf("%s <%s>", m.c.FromName, m.c.FromEmail),
 		To:      []string{to},
-		Html:    body.String(),
+		Html:    &html,
 		Subject: subject,
-		ReplyTo: m.c.FromEmail,
+		ReplyTo: &m.c.FromEmail,
 	}
-	esr := dto.ResendSendEmailRequestToEntity(sr, to)
-	_, err := m.cli.Emails.Send(sr)
+	esr := dto.ResendSendEmailRequestToEntity(&sr, to)
+	resp, err := m.cli.PostEmails(ctx, sr)
 	if err != nil {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return esr, gerr.MailApiLimitReached
+		}
 		return esr, fmt.Errorf("error sending email: %w", err)
 	}
 
 	return esr, nil
+}
+
+func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
+	req, err := dto.EntitySendEmailRequestToResend(ser)
+	if err != nil {
+		return gerr.BadMailRequest
+	}
+	resp, err := m.cli.PostEmails(ctx, *req)
+	if err != nil {
+		return fmt.Errorf("error sending email: %w", err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return gerr.MailApiLimitReached
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("error sending email bad status code: %s, status code: %d", resp.Body, resp.StatusCode)
+	}
+
+	return nil
 }

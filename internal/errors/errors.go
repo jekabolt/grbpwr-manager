@@ -7,4 +7,6 @@ import (
 
 var (
 	ErrAlreadySubscribed = status.Error(codes.AlreadyExists, "submitted email already subscribed")
+	BadMailRequest       = status.Error(codes.DataLoss, "bad mail request")
+	MailApiLimitReached  = status.Error(codes.ResourceExhausted, "mail api limit reached")
 )
