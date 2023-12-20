@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "common/filter.proto";
 import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
@@ -16,4 +17,22 @@ message Dictionary {
   repeated PaymentMethod payment_methods = 4;
   repeated ShipmentCarrier shipment_carriers = 5;
   repeated Size sizes = 6;
+  repeated Genders genders = 7;
+  repeated OrderFactors order_factors = 8;
+  repeated SortFactors sort_factors = 9;
+}
+
+message Genders {
+  GenderEnum id = 1;
+  string name = 2;
+}
+
+message OrderFactors {
+  OrderFactor id = 1;
+  string name = 2;
+}
+
+message SortFactors {
+  SortFactor id = 1;
+  string name = 2;
 }

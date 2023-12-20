@@ -14,7 +14,60 @@ type Dict struct {
 	Promos           []entity.PromoCode
 	ShipmentCarriers []entity.ShipmentCarrier
 	Sizes            []entity.Size
+	Genders          []pb_common.Genders
+	SortFactors      []pb_common.SortFactors
+	OrderFactors     []pb_common.OrderFactors
 }
+
+var (
+	genders []*pb_common.Genders = []*pb_common.Genders{
+		{
+			Name: string(entity.Male),
+			Id:   pb_common.GenderEnum_GENDER_ENUM_MALE,
+		},
+		{
+			Name: string(entity.Female),
+			Id:   pb_common.GenderEnum_GENDER_ENUM_FEMALE,
+		},
+		{
+			Name: string(entity.Unisex),
+			Id:   pb_common.GenderEnum_GENDER_ENUM_UNISEX,
+		},
+	}
+
+	sortFactors []*pb_common.SortFactors = []*pb_common.SortFactors{
+		{
+			Name: string(entity.CreatedAt),
+			Id:   pb_common.SortFactor_SORT_FACTOR_CREATED_AT,
+		},
+
+		{
+			Name: string(entity.UpdatedAt),
+			Id:   pb_common.SortFactor_SORT_FACTOR_UPDATED_AT,
+		},
+
+		{
+			Name: string(entity.Name),
+			Id:   pb_common.SortFactor_SORT_FACTOR_NAME,
+		},
+
+		{
+			Name: string(entity.Price),
+			Id:   pb_common.SortFactor_SORT_FACTOR_PRICE,
+		},
+	}
+
+	orderFactors []*pb_common.OrderFactors = []*pb_common.OrderFactors{
+		{
+			Name: string(entity.Ascending),
+			Id:   pb_common.OrderFactor_ORDER_FACTOR_ASC,
+		},
+		{
+			Name: string(entity.Descending),
+			Id:   pb_common.OrderFactor_ORDER_FACTOR_DESC,
+		},
+	}
+)
 
 var (
 	categoryEntityPbMap = map[entity.CategoryEnum]pb_common.CategoryEnum{
@@ -282,6 +335,10 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 				Name: *pb_common.SizeEnum(name).Enum(),
 			})
 	}
+
+	commonDict.Genders = genders
+	commonDict.SortFactors = sortFactors
+	commonDict.OrderFactors = orderFactors
 
 	return commonDict
 }
