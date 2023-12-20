@@ -133,7 +133,6 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 	return mux, nil
 }
 
-// TODO:
 func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) {
 	// dial options for the grpc-gateway
 	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
