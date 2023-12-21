@@ -396,7 +396,7 @@ func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admi
 		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color is empty")
 	}
 
-	if v.IsHexcolor(req.ColorHex) {
+	if !v.IsHexcolor(req.ColorHex) {
 		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color hex is not valid")
 	}
 
