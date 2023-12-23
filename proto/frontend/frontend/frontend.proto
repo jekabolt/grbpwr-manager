@@ -5,6 +5,7 @@ package frontend;
 import "common/filter.proto";
 import "common/hero.proto";
 import "common/order.proto";
+import "common/payment.proto";
 import "common/product.proto";
 import "google/api/annotations.proto";
 import "google/type/decimal.proto";
@@ -31,6 +32,14 @@ service FrontendService {
   rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse) {
     option (google.api.http) = {
       post: "/api/frontend/order/new"
+      body: "*"
+    };
+  }
+
+  // Marks order payment as complete
+  rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/{order_id}/payment-done"
       body: "*"
     };
   }
@@ -101,6 +110,13 @@ message SubmitOrderRequest {
 message SubmitOrderResponse {
   common.Order order = 1;
 }
+
+message OrderPaymentDoneRequest {
+  int32 order_id = 1;
+  common.PaymentInsert payment = 2;
+}
+
+message OrderPaymentDoneResponse {}
 
 message ApplyPromoCodeRequest {
   int32 order_id = 1;

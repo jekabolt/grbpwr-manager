@@ -149,6 +149,33 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}, nil
 }
 
+func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_frontend.OrderPaymentDoneRequest) (*pb_frontend.OrderPaymentDoneResponse, error) {
+	pi, err := dto.ConvertToEntityPaymentInsert(req.Payment)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert payment to entity payment insert",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert payment to entity payment insert")
+	}
+	if !pi.IsTransactionDone {
+		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
+		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
+	}
+	if pi.TransactionAmount.IsZero() {
+		slog.Default().ErrorCtx(ctx, "payment transaction amount is zero")
+		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
+	}
+
+	err = s.repo.Order().OrderPaymentDone(ctx, int(req.OrderId), pi)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't mark order as paid")
+	}
+	return &pb_frontend.OrderPaymentDoneResponse{}, nil
+}
+
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
 	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
