@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package frontend;
 
+import "common/dict.proto";
 import "common/filter.proto";
 import "common/hero.proto";
 import "common/order.proto";
@@ -36,10 +37,15 @@ service FrontendService {
     };
   }
 
+  // Retrieves an order by its ID
+  rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/{uuid}"};
+  }
+
   // Marks order payment as complete
   rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
     option (google.api.http) = {
-      post: "/api/frontend/order/{order_id}/payment-done"
+      post: "/api/frontend/order/{order_uuid}/payment-done"
       body: "*"
     };
   }
@@ -80,6 +86,8 @@ service FrontendService {
 message GetHeroRequest {}
 message GetHeroResponse {
   common.HeroFull hero = 1;
+  common.Dictionary dictionary = 2;
+  common.CurrencyMap rates = 3;
 }
 
 message GetProductByNameRequest {
@@ -111,8 +119,16 @@ message SubmitOrderResponse {
   common.Order order = 1;
 }
 
+message GetOrderByUUIDRequest {
+  string uuid = 1;
+}
+
+message GetOrderByUUIDResponse {
+  common.OrderFull order = 1;
+}
+
 message OrderPaymentDoneRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   common.PaymentInsert payment = 2;
 }
 

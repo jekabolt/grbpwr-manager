@@ -192,6 +192,9 @@ func TestCreateOrder(t *testing.T) {
 	orderFull, err := os.GetOrderById(ctx, order.ID)
 	assert.NoError(t, err)
 
+	orderFull, err = os.GetOrderByUUID(ctx, orderFull.Order.UUID)
+	assert.NoError(t, err)
+
 	assert.Equal(t, 1, len(orderFull.OrderItems))
 	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
 	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(2))))
@@ -433,7 +436,7 @@ func TestPurchase(t *testing.T) {
 	pi.PaymentMethodID = pmXL.ID
 	pi.TransactionAmount = orderXL.TotalPrice
 
-	err = os.OrderPaymentDone(ctx, orderXL.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderXL.UUID, pi)
 	assert.NoError(t, err)
 
 	// purchase order with l size
@@ -444,7 +447,7 @@ func TestPurchase(t *testing.T) {
 	pi.PaymentMethodID = pmL.ID
 	pi.TransactionAmount = orderL.TotalPrice
 
-	err = os.OrderPaymentDone(ctx, orderL.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderL.UUID, pi)
 	assert.NoError(t, err)
 
 	// now make sure that orders has status confirmed
@@ -617,7 +620,7 @@ func TestOrderOutOfStock(t *testing.T) {
 	pi.TransactionAmount = orderOk.TotalPrice
 
 	// try to pay for ok order
-	err = os.OrderPaymentDone(ctx, orderOk.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderOk.UUID, pi)
 	assert.NoError(t, err)
 
 	// try to pay for bad order where product is out of stock
@@ -625,7 +628,7 @@ func TestOrderOutOfStock(t *testing.T) {
 	// cause every order item is out of stock
 	pi.TransactionAmount = orderBad.TotalPrice
 
-	err = os.OrderPaymentDone(ctx, orderBad.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderBad.UUID, pi)
 	assert.Error(t, err)
 
 	// try to pay for bad order where product is out of stock
@@ -633,12 +636,12 @@ func TestOrderOutOfStock(t *testing.T) {
 	// i.e remove order items with quantity 0
 
 	pi.TransactionAmount = orderToClean.TotalPrice
-	err = os.OrderPaymentDone(ctx, orderToClean.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderToClean.UUID, pi)
 	assert.Error(t, err)
 
 	// on second try order would be cleaned up and can be paid
 
-	err = os.OrderPaymentDone(ctx, orderToClean.ID, pi)
+	err = os.OrderPaymentDone(ctx, orderToClean.UUID, pi)
 	assert.NoError(t, err)
 
 	// orders by status

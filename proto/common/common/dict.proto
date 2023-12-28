@@ -7,6 +7,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/shipment.proto";
+import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
@@ -35,4 +36,15 @@ message OrderFactors {
 message SortFactors {
   SortFactor id = 1;
   string name = 2;
+}
+
+// CurrencyRate represents the rate of a currency with a description.
+message CurrencyRate {
+  string description = 1;
+  google.type.Decimal rate = 2; // using string to represent decimal.Decimal
+}
+
+// CurrencyMap represents a map of currency codes to their rates.
+message CurrencyMap {
+  map<string, CurrencyRate> currencies = 1;
 }

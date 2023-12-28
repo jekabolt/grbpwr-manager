@@ -246,7 +246,7 @@ func ConvertEntityToPbPayment(p *entity.Payment) (*pb_common.Payment, error) {
 		CreatedAt:  timestamppb.New(p.CreatedAt),
 		ModifiedAt: timestamppb.New(p.ModifiedAt),
 		PaymentInsert: &pb_common.PaymentInsert{
-			PaymentMethodId:   int32(p.PaymentMethodID),
+			PaymentMethod:     pb_common.PaymentMethodNameEnum(p.PaymentMethodID),
 			TransactionId:     p.TransactionID.String,
 			TransactionAmount: &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
 			Payer:             p.Payer.String,

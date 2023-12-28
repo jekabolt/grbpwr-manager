@@ -16,7 +16,7 @@ message Payment {
 }
 
 message PaymentInsert {
-  int32 payment_method_id = 1;
+  PaymentMethodNameEnum payment_method = 1;
   string transaction_id = 2;
   google.type.Decimal transaction_amount = 3;
   string payer = 4;

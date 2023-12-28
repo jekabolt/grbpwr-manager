@@ -38,6 +38,7 @@ func TestSetHero(t *testing.T) {
 	}
 
 	np, err := randomProductInsert(db, 1)
+	np.Product.Name = "first product"
 	assert.NoError(t, err)
 
 	// Insert new product

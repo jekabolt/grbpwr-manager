@@ -745,7 +745,7 @@ func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymen
 		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
 	}
 
-	err = s.repo.Order().OrderPaymentDone(ctx, int(req.OrderId), pi)
+	err = s.repo.Order().OrderPaymentDone(ctx, req.OrderUuid, pi)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
 			slog.String("err", err.Error()),
@@ -754,6 +754,7 @@ func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymen
 	}
 	return &pb_admin.OrderPaymentDoneResponse{}, nil
 }
+
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
 	sh := dto.ConvertPbShipmentToEntityShipment(req.ShippingInfo)
 	if sh.TrackingCode.String == "" {

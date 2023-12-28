@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/shopspring/decimal"
 )
 
@@ -19,12 +20,7 @@ var (
 	baseCurrency = "EUR"
 )
 
-type CurrencyRate struct {
-	Description string
-	Rate        decimal.Decimal
-}
-
-var currencyMap = map[string]CurrencyRate{
+var currencyMap = map[string]dto.CurrencyRate{
 	"BTC": {
 		Description: "Bitcoin",
 	},
@@ -99,7 +95,7 @@ type Client struct {
 	c      *Config
 	cli    *resty.Client
 	crypto *resty.Client
-	rates  map[string]CurrencyRate
+	rates  map[string]dto.CurrencyRate
 	mu     sync.RWMutex
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -123,7 +119,7 @@ func New(c *Config) *Client {
 		cli:    cli,
 		crypto: cryptoCli,
 		c:      c,
-		rates:  make(map[string]CurrencyRate),
+		rates:  make(map[string]dto.CurrencyRate),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 		ctx:    ctx,
@@ -159,7 +155,7 @@ func (cli *Client) Stop() {
 	<-cli.doneCh // wait for the goroutine to stop
 }
 
-func (cli *Client) GetRates() map[string]CurrencyRate {
+func (cli *Client) GetRates() map[string]dto.CurrencyRate {
 	cli.mu.RLock() // Read lock
 	defer cli.mu.RUnlock()
 	return cli.rates
@@ -219,9 +215,6 @@ func (client *Client) getCryptoRates(fsym string, tsyms []string) (map[string]de
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println("----- resp cr: ", resp.String())
-
 	var rates map[string]float64
 	if err := json.Unmarshal(resp.Body(), &rates); err != nil {
 		return nil, fmt.Errorf("could not unmarshal response crypto: %w : body: %v", err, resp.String())
@@ -239,8 +232,8 @@ func floatMapToDecimal(m map[string]float64) map[string]decimal.Decimal {
 }
 
 // update currencyMap with rates from the API
-func mergeMaps(maps ...map[string]decimal.Decimal) map[string]CurrencyRate {
-	res := make(map[string]CurrencyRate)
+func mergeMaps(maps ...map[string]decimal.Decimal) map[string]dto.CurrencyRate {
+	res := make(map[string]dto.CurrencyRate)
 	for _, m := range maps {
 		for k, v := range m {
 			if cr, ok := currencyMap[k]; ok {

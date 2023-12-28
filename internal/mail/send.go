@@ -32,7 +32,7 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, to string) (*entity.Send
 
 // SendOrderConfirmation sends an order confirmation email.
 func (m *Mailer) SendOrderConfirmation(ctx context.Context, to string, orderDetails *dto.OrderConfirmed) (*entity.SendEmailRequest, error) {
-	if orderDetails.OrderID == "" || orderDetails.Name == "" {
+	if orderDetails.OrderUUID == "" || orderDetails.Name == "" {
 		return nil, fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 	return m.send(ctx, to, OrderPlaced, orderDetails) // Added validation for OrderDetails fields.

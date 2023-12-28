@@ -49,11 +49,18 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, main entity.HeroInsert, ads [
 			return fmt.Errorf("failed to add hero ads: %w", err)
 		}
 
-		hf, err := rep.Hero().GetHero(ctx)
+		prds, err := getProductsByHeroId(ctx, rep, int(heroId))
 		if err != nil {
-			return fmt.Errorf("failed to get inserted hero: %w", err)
+			return err
 		}
-		ms.cache.UpdateHero(hf)
+
+		ms.cache.UpdateHero(&entity.HeroFull{
+			Id:               int(heroId),
+			CreatedAt:        time.Now(),
+			Main:             main,
+			Ads:              ads,
+			ProductsFeatured: prds,
+		})
 
 		return nil
 
@@ -133,18 +140,9 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 		ProductsFeatured: []entity.Product{},
 	}
 
-	// Query to get the associated products
-	query = `
-	SELECT p.*
-	FROM product AS p
-	INNER JOIN hero_product AS hp ON p.id = hp.product_id
-	WHERE hp.hero_id = :heroId`
-
-	hero.ProductsFeatured, err = QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
-		"heroId": hero.Id,
-	})
+	hero.ProductsFeatured, err = getProductsByHeroId(ctx, ms, hero.Id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query hero products: %w", err)
+		return nil, err
 	}
 
 	// Query to get the associated products
@@ -159,4 +157,21 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	ms.cache.UpdateHero(&hero)
 
 	return &hero, nil
+}
+
+func getProductsByHeroId(ctx context.Context, rep dependency.Repository, heroId int) ([]entity.Product, error) {
+	// Query to get the associated products
+	query := `
+		SELECT p.*
+		FROM product AS p
+		INNER JOIN hero_product AS hp ON p.id = hp.product_id
+		WHERE hp.hero_id = :heroId`
+
+	prds, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]any{
+		"heroId": heroId,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query hero products: %w", err)
+	}
+	return prds, nil
 }

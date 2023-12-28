@@ -317,7 +317,7 @@ service AdminService {
   // Marks order payment as complete
   rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/payment-done"
+      post: "/api/admin/orders/{order_uuid}/payment-done"
       body: "*"
     };
   }
@@ -391,6 +391,7 @@ message GetDictionaryRequest {}
 
 message GetDictionaryResponse {
   common.Dictionary dictionary = 1;
+  common.CurrencyMap rates = 2;
 }
 
 // MEDIA MANAGER
@@ -692,7 +693,7 @@ message UpdateOrderShippingCarrierResponse {
 }
 
 message OrderPaymentDoneRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   common.PaymentInsert payment = 2;
 }
 
