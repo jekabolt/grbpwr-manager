@@ -37,6 +37,7 @@ type OrderFull struct {
 // Orders represents the orders table
 type Order struct {
 	ID            int             `db:"id"`
+	UUID          string          `db:"uuid"`
 	BuyerID       int             `db:"buyer_id"`
 	Placed        time.Time       `db:"placed"`
 	Modified      time.Time       `db:"modified"`

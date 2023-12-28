@@ -2,6 +2,7 @@ package dto
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -9,9 +10,9 @@ import (
 
 type OrderConfirmed struct {
 	Name            string
-	OrderID         string
-	OrderDate       string
-	TotalAmount     float64
+	OrderUUID       string
+	OrderDate       time.Time
+	TotalAmount     string
 	PaymentMethod   string
 	PaymentCurrency string
 }

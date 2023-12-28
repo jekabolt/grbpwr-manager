@@ -7,6 +7,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
@@ -20,6 +21,7 @@ type Config struct {
 	Auth   auth.Config    `mapstructure:"auth"`
 	Bucket bucket.Config  `mapstructure:"bucket"`
 	Mailer mail.Config    `mapstructure:"mailer"`
+	Rates  rates.Config   `mapstructure:"rates"`
 }
 
 // LoadConfig loads the configuration from a file.

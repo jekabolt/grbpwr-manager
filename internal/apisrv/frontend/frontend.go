@@ -2,6 +2,8 @@ package frontend
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"golang.org/x/exp/slog"
@@ -22,13 +25,15 @@ type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
 	repo   dependency.Repository
 	mailer dependency.Mailer
+	rates  dependency.Rates
 }
 
 // New creates a new server with frontend handlers.
-func New(r dependency.Repository, m dependency.Mailer) *Server {
+func New(r dependency.Repository, m dependency.Mailer, ra dependency.Rates) *Server {
 	return &Server{
 		repo:   r,
 		mailer: m,
+		rates:  ra,
 	}
 }
 
@@ -38,7 +43,9 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 		slog.Default().ErrorCtx(ctx, "can't get hero",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get hero")
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.Internal, "can't get hero")
+		}
 	}
 	h, err := dto.ConvertEntityHeroFullToCommon(hero)
 	if err != nil {
@@ -47,8 +54,11 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity hero to pb hero")
 	}
+
 	return &pb_frontend.GetHeroResponse{
-		Hero: h,
+		Hero:       h,
+		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
+		Rates:      dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
 }
 
@@ -149,14 +159,40 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}, nil
 }
 
+func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
+	o, err := s.repo.Order().GetOrderByUUID(ctx, req.Uuid)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get order by uuid",
+			slog.String("err", err.Error()),
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, gerr.OrderNotFound
+		}
+		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
+	}
+
+	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order full to pb order full",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
+	}
+
+	return &pb_frontend.GetOrderByUUIDResponse{
+		Order: oPb,
+	}, nil
+}
+
 func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_frontend.OrderPaymentDoneRequest) (*pb_frontend.OrderPaymentDoneResponse, error) {
 	pi, err := dto.ConvertToEntityPaymentInsert(req.Payment)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't convert payment to entity payment insert",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't convert payment to entity payment insert")
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert payment to entity payment insert")
 	}
+
 	if !pi.IsTransactionDone {
 		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
 		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
@@ -166,13 +202,31 @@ func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_frontend.OrderPay
 		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
 	}
 
-	err = s.repo.Order().OrderPaymentDone(ctx, int(req.OrderId), pi)
+	err = s.repo.Order().OrderPaymentDone(ctx, req.OrderUuid, pi)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't mark order as paid")
 	}
+
+	o, err := s.repo.Order().GetOrderByUUID(ctx, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get order by uuid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
+	}
+
+	s.mailer.SendOrderConfirmation(ctx, o.Buyer.Email, &dto.OrderConfirmed{
+		Name:            fmt.Sprintf("%s %s", o.Buyer.FirstName, o.Buyer.LastName),
+		OrderUUID:       req.OrderUuid,
+		OrderDate:       o.Order.Placed,
+		TotalAmount:     o.Order.TotalPrice.String(),
+		PaymentMethod:   req.Payment.PaymentMethod.String(),
+		PaymentCurrency: dto.ConvertPaymentMethodToCurrency(req.Payment.PaymentMethod),
+	})
+
 	return &pb_frontend.OrderPaymentDoneResponse{}, nil
 }
 

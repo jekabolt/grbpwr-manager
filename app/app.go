@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"golang.org/x/exp/slog"
 )
@@ -22,6 +23,7 @@ type App struct {
 	db   dependency.Repository
 	b    dependency.FileStore
 	ma   dependency.Mailer
+	r    dependency.Rates
 	c    *config.Config
 	done chan struct{}
 }
@@ -56,6 +58,13 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	a.r = rates.New(&a.c.Rates)
+	err = a.r.Start()
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "couldn't start rates worker")
+		return err
+	}
+
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
 		return fmt.Errorf("cannot init bucket %v", err.Error())
@@ -69,7 +78,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	adminS := admin.New(a.db, a.b)
 
-	frontendS := frontend.New(a.db, a.ma)
+	frontendS := frontend.New(a.db, a.ma, a.r)
 
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)

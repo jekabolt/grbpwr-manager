@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -243,15 +244,17 @@ func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.S
 	return id, nil
 }
 
-func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.Order) (int, error) {
+func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.Order) (int, string, error) {
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (buyer_id, payment_id, shipment_id, total_price, order_status_id, promo_id)
-	 VALUES (:buyerId, :paymentId, :shipmentId, :totalPrice, :orderStatusId, :promoId)
+	 (uuid, buyer_id, payment_id, shipment_id, total_price, order_status_id, promo_id)
+	 VALUES (:uuid, :buyerId, :paymentId, :shipmentId, :totalPrice, :orderStatusId, :promoId)
 	 `
 
+	uuid := uuid.New().String()
 	order.ID, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
+		"uuid":          uuid,
 		"buyerId":       order.BuyerID,
 		"paymentId":     order.PaymentID,
 		"shipmentId":    order.ShipmentId,
@@ -260,9 +263,9 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		"promoId":       order.PromoID,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("can't insert order: %w", err)
+		return 0, "", fmt.Errorf("can't insert order: %w", err)
 	}
-	return order.ID, nil
+	return order.ID, uuid, nil
 }
 
 // mergeOrderItems maps the order items by ProductID and SizeID
@@ -392,11 +395,12 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			OrderStatusID: placed.ID,
 		}
 
-		orderId, err := insertOrder(ctx, rep, order)
+		orderId, uuid, err := insertOrder(ctx, rep, order)
 		if err != nil {
 			return fmt.Errorf("error while inserting final order: %w", err)
 		}
 		order.ID = orderId
+		order.UUID = uuid
 
 		err = insertOrderItems(ctx, rep, validItems, orderId)
 		if err != nil {
@@ -524,6 +528,7 @@ func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int, promoCode
 			}
 		}
 
+		fmt.Println("------ oid ", orderId)
 		order, err := getOrderById(ctx, ms, orderId)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)
@@ -739,6 +744,18 @@ func getOrderById(ctx context.Context, rep dependency.Repository, orderId int) (
 	return &order, nil
 }
 
+func getOrderByUUID(ctx context.Context, rep dependency.Repository, uuid string) (*entity.Order, error) {
+	query := `
+	SELECT * from customer_order WHERE uuid = :uuid`
+	order, err := QueryNamedOne[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"uuid": uuid,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
 func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
 	query := `UPDATE customer_order SET order_status_id = :orderStatusId WHERE id = :orderId`
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
@@ -831,16 +848,16 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 }
 
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment *entity.PaymentInsert) error {
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error {
 
 	_, ok := ms.cache.GetPaymentMethodById(payment.PaymentMethodID)
 	if !ok {
 		return fmt.Errorf("payment method is not exists: payment method id %d", payment.PaymentMethodID)
 	}
 
-	order, err := getOrderById(ctx, ms, orderId)
+	order, err := getOrderByUUID(ctx, ms, orderUUID)
 	if err != nil {
-		return fmt.Errorf("can't get order by id: %w", err)
+		return fmt.Errorf("can't get order by uuid %s: %w", orderUUID, err)
 	}
 
 	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
@@ -865,7 +882,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		orderItems, err := getOrderItemsInsert(ctx, rep, orderId)
+		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
 		if err != nil {
 			return fmt.Errorf("can't get order items: %w", err)
 		}
@@ -880,7 +897,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 			if !ok {
 				return fmt.Errorf("order status is not exists: order status name %s", entity.Cancelled)
 			}
-			err := updateOrderStatus(ctx, rep, orderId, statusCanceled.ID)
+			err := updateOrderStatus(ctx, rep, order.ID, statusCanceled.ID)
 			if err != nil {
 				return fmt.Errorf("can't update order status: %w", err)
 			}
@@ -894,7 +911,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items and total amount
-			err = updateOrderItems(ctx, rep, validItems, orderId)
+			err = updateOrderItems(ctx, rep, validItems, order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
@@ -914,7 +931,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, payment
 			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
 		}
 
-		err = updateOrderStatus(ctx, rep, orderId, statusConfirmed.ID)
+		err = updateOrderStatus(ctx, rep, order.ID, statusConfirmed.ID)
 		if err != nil {
 			return fmt.Errorf("can't update order status: %w", err)
 		}
@@ -1121,6 +1138,14 @@ func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.Or
 		return nil, err
 	}
 
+	return fetchOrderInfo(ctx, ms, order)
+}
+
+func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
+	order, err := getOrderByUUID(ctx, ms, uuid)
+	if err != nil {
+		return nil, err
+	}
 	return fetchOrderInfo(ctx, ms, order)
 }
 
