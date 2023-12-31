@@ -209,6 +209,7 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 
 	return &archiveFull, nil
 }
+
 func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `DELETE FROM archive WHERE id = :id`
