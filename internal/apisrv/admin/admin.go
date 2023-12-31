@@ -927,3 +927,98 @@ func (s *Server) GetHero(ctx context.Context, req *pb_admin.GetHeroRequest) (*pb
 		Hero: h,
 	}, nil
 }
+
+// ARCHIVE MANAGER
+
+func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest) (*pb_admin.AddArchiveResponse, error) {
+	an := dto.ConvertPbArchiveNewToEntity(req.ArchiveNew)
+
+	archiveId, err := s.repo.Archive().AddArchive(ctx, an)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't add archive",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't add archive")
+	}
+
+	return &pb_admin.AddArchiveResponse{
+		Id: int32(archiveId),
+	}, nil
+}
+
+func (s *Server) AddArchiveItems(ctx context.Context, req *pb_admin.AddArchiveItemsRequest) (*pb_admin.AddArchiveItemsResponse, error) {
+	items := make([]entity.ArchiveItemInsert, 0, len(req.Items))
+	for _, i := range req.Items {
+		ai := dto.ConvertPbArchiveItemInsertToEntity(i)
+		items = append(items, *ai)
+	}
+
+	err := s.repo.Archive().AddArchiveItems(ctx, int(req.ArchiveId), items)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't add archive items",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't add archive items")
+	}
+
+	return &pb_admin.AddArchiveItemsResponse{}, nil
+}
+
+func (s *Server) DeleteArchiveItem(ctx context.Context, req *pb_admin.DeleteArchiveItemRequest) (*pb_admin.DeleteArchiveItemResponse, error) {
+	err := s.repo.Archive().DeleteArchiveItem(ctx, int(req.ItemId))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't delete archive items",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.DeleteArchiveItemResponse{}, nil
+}
+func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchivesPagedRequest) (*pb_admin.GetArchivesPagedResponse, error) {
+	afs, err := s.repo.Archive().GetArchivesPaged(ctx,
+		int(req.Limit),
+		int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get archives paged",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	pbAfs := make([]*pb_common.ArchiveFull, len(afs))
+
+	for _, af := range afs {
+		pbAfs = append(pbAfs, dto.ConvertArchiveFullEntityToPb(&af))
+	}
+
+	return &pb_admin.GetArchivesPagedResponse{
+		Archives: pbAfs,
+	}, nil
+
+}
+func (s *Server) GetArchiveById(ctx context.Context, req *pb_admin.GetArchiveByIdRequest) (*pb_admin.GetArchiveByIdResponse, error) {
+	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get archive by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.GetArchiveByIdResponse{
+		Archive: dto.ConvertArchiveFullEntityToPb(af),
+	}, nil
+}
+
+func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArchiveByIdRequest) (*pb_admin.DeleteArchiveByIdResponse, error) {
+	err := s.repo.Archive().DeleteArchiveById(ctx, int(req.Id))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't delete archive by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	return &pb_admin.DeleteArchiveByIdResponse{}, nil
+}

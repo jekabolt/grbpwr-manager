@@ -313,3 +313,40 @@ func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.Uns
 	}
 	return &pb_frontend.UnsubscribeNewsletterResponse{}, nil
 }
+
+func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchivesPagedRequest) (*pb_frontend.GetArchivesPagedResponse, error) {
+	afs, err := s.repo.Archive().GetArchivesPaged(ctx,
+		int(req.Limit),
+		int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get archives paged",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	pbAfs := make([]*pb_common.ArchiveFull, len(afs))
+
+	for _, af := range afs {
+		pbAfs = append(pbAfs, dto.ConvertArchiveFullEntityToPb(&af))
+	}
+
+	return &pb_frontend.GetArchivesPagedResponse{
+		Archives: pbAfs,
+	}, nil
+
+}
+func (s *Server) GetArchiveById(ctx context.Context, req *pb_frontend.GetArchiveByIdRequest) (*pb_frontend.GetArchiveByIdResponse, error) {
+	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get archive by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_frontend.GetArchiveByIdResponse{
+		Archive: dto.ConvertArchiveFullEntityToPb(af),
+	}, nil
+}

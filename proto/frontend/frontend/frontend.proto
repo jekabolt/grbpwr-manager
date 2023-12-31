@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package frontend;
 
+import "common/archive.proto";
 import "common/dict.proto";
 import "common/filter.proto";
 import "common/hero.proto";
@@ -36,10 +37,9 @@ service FrontendService {
       body: "*"
     };
   }
-
   // Retrieves an order by its ID
   rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/{uuid}"};
+    option (google.api.http) = {get: "/api/frontend/orders/{uuid}"};
   }
 
   // Marks order payment as complete
@@ -80,6 +80,16 @@ service FrontendService {
       post: "/api/frontend/newsletter/unsubscribe"
       body: "*"
     };
+  }
+
+  // GetArchivesPaged retrieves paged archives.
+  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
+    option (google.api.http) = {get: "/api/frontend/archive/paged"};
+  }
+
+  // GetArchiveById retrieves an archive by ID.
+  rpc GetArchiveById(GetArchiveByIdRequest) returns (GetArchiveByIdResponse) {
+    option (google.api.http) = {get: "/api/frontend/archive/{id}"};
   }
 }
 
@@ -164,3 +174,21 @@ message UnsubscribeNewsletterRequest {
 }
 
 message UnsubscribeNewsletterResponse {}
+
+message GetArchivesPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+}
+
+message GetArchivesPagedResponse {
+  repeated common.ArchiveFull archives = 1;
+}
+
+message GetArchiveByIdRequest {
+  int32 id = 1;
+}
+
+message GetArchiveByIdResponse {
+  common.ArchiveFull archive = 1;
+}

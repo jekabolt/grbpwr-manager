@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// ArchiveFull represents a full archive with items.
+message ArchiveFull {
+  Archive archive = 1;
+  repeated ArchiveItem items = 2;
+}
+
+// ArchiveNew represents a new archive with items for insertion.
+message ArchiveNew {
+  ArchiveInsert archive = 1;
+  repeated ArchiveItemInsert items = 2;
+}
+
+// Archive represents an archive entity.
+message Archive {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  ArchiveInsert archive_insert = 4;
+}
+
+// ArchiveInsert represents the insertable fields of an archive.
+message ArchiveInsert {
+  string title = 1;
+  string description = 2;
+}
+
+// ArchiveItem represents an item within an archive.
+message ArchiveItem {
+  int32 id = 1;
+  int32 archive_id = 2;
+  ArchiveItemInsert archive_item_insert = 3;
+}
+
+// ArchiveItemInsert represents the insertable fields of an archive item.
+message ArchiveItemInsert {
+  string media = 1;
+  string url = 2;
+  string title = 3;
+}
