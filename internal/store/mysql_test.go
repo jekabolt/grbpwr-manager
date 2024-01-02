@@ -2,17 +2,45 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
+func loadConfig(cfgFile string) (*Config, error) {
+	viper.SetConfigType("toml")
+	viper.SetConfigFile(cfgFile)
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.AddConfigPath("../../config")
+		viper.AddConfigPath("/usr/local/config")
+	}
+
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config: %v", err)
+	}
+
+	var config Config
+
+	err := viper.UnmarshalKey("mysql", &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
+	}
+
+	fmt.Printf("conf---- %+v", config)
+	return &config, nil
+}
+
 func newTestDB(t *testing.T) *MYSQLStore {
-	db, err := New(context.Background(), Config{
-		// TODO: use test database
-		DSN:         "user:pass@(localhost:3306)/grbpwr?charset=utf8&parseTime=true",
-		Automigrate: true,
-	})
+
+	cfg, err := loadConfig("")
+	assert.NoError(t, err)
+
+	db, err := New(context.Background(), *cfg)
 	assert.NoError(t, err)
 
 	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0")
@@ -58,6 +86,9 @@ func newTestDB(t *testing.T) *MYSQLStore {
 	assert.NoError(t, err)
 
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero")
+	assert.NoError(t, err)
+
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM send_email_request")
 	assert.NoError(t, err)
 
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero_product")
