@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -9,9 +10,36 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
+
+func loadConfig(cfgFile string) (*Config, error) {
+	viper.SetConfigType("toml")
+	viper.SetConfigFile(cfgFile)
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.AddConfigPath("../../config")
+		viper.AddConfigPath("/usr/local/config")
+	}
+
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config: %v", err)
+	}
+
+	var config Config
+
+	err := viper.UnmarshalKey("mailer", &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
+	}
+
+	fmt.Printf("conf---- %+v", config)
+	return &config, nil
+}
 
 func skipCI(t *testing.T) {
 	if os.Getenv("CI") != "" {
@@ -19,16 +47,11 @@ func skipCI(t *testing.T) {
 	}
 }
 
-var conf *Config = &Config{
-	APIKey:         "re_A8vDWbxd_5s8CuKU93kGc4VtuiLmLJLLi",
-	FromEmail:      "info@grbpwr.com",
-	FromName:       "grbpwr.com",
-	ReplyTo:        "info@grbpwr.com",
-	WorkerInterval: time.Millisecond * 50,
-}
-
 func TestMailer(t *testing.T) {
 	skipCI(t)
+
+	conf, err := loadConfig("")
+	assert.NoError(t, err)
 
 	mailDBMock := mocks.NewMail(t)
 
@@ -86,8 +109,9 @@ func TestMailerStartStop(t *testing.T) {
 	mailDBMock := mocks.NewMail(t)
 
 	ctx := context.Background()
-	// // Setup the mock to return immediately
-	// mailDBMock.EXPECT().GetAllUnsent(ctx, false).Return([]entity.SendEmailRequest{}, nil)
+
+	conf, err := loadConfig("")
+	assert.NoError(t, err)
 
 	// Create a new Mailer instance
 	mailer, err := New(conf, mailDBMock)
@@ -115,6 +139,10 @@ func TestMailerLimit(t *testing.T) {
 	// Mock the MailDB and Sender dependencies
 	mailDBMock := mocks.NewMail(t)
 	senderMock := mocks.NewSender(t)
+
+	conf, err := loadConfig("")
+	assert.NoError(t, err)
+	conf.WorkerInterval = time.Millisecond * 50
 
 	ctx := context.Background()
 	ser := entity.SendEmailRequest{
@@ -156,6 +184,10 @@ func TestMailerSuccess(t *testing.T) {
 	// Mock the MailDB and Sender dependencies
 	mailDBMock := mocks.NewMail(t)
 	senderMock := mocks.NewSender(t)
+
+	conf, err := loadConfig("")
+	assert.NoError(t, err)
+	conf.WorkerInterval = time.Millisecond * 50
 
 	ctx := context.Background()
 	ser := entity.SendEmailRequest{
@@ -199,6 +231,10 @@ func TestMailerError(t *testing.T) {
 	// Mock the MailDB and Sender dependencies
 	mailDBMock := mocks.NewMail(t)
 	senderMock := mocks.NewSender(t)
+
+	conf, err := loadConfig("")
+	assert.NoError(t, err)
+	conf.WorkerInterval = time.Millisecond * 50
 
 	ctx := context.Background()
 	ser := entity.SendEmailRequest{

@@ -528,7 +528,6 @@ func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderId int, promoCode
 			}
 		}
 
-		fmt.Println("------ oid ", orderId)
 		order, err := getOrderById(ctx, ms, orderId)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)

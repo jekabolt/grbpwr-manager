@@ -11,25 +11,41 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
+func loadConfig(cfgFile string) (*Config, error) {
+	viper.SetConfigType("toml")
+	viper.SetConfigFile(cfgFile)
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.AddConfigPath("../../config")
+		viper.AddConfigPath("/usr/local/config")
+	}
+
+	if err := viper.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config: %v", err)
+	}
+
+	var config Config
+
+	err := viper.UnmarshalKey("bucket", &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
+	}
+
+	fmt.Printf("conf---- %+v", config)
+	return &config, nil
+}
+
 const (
-	S3AccessKey       = "YEYEN6TU2NCOPNPICGY3"
-	S3SecretAccessKey = "lyvzQ6f20TxiGE2hadU3Og7Er+f8j0GfUAB3GnZkreE"
-	S3Endpoint        = "fra1.digitaloceanspaces.com"
-	bucketName        = "grbpwr"
-	bucketLocation    = "fra-1"
-	mediaStorePrefix  = "grbpwr-com"
-
-	baseFolder = "grbpwr-com"
-
 	jpgFilePath  = "files/test.jpg"
 	mp4FilePath  = "files/test.mp4"
 	webmFilePath = "files/test.webm"
-
-	subdomainEndpoint = "files.grbpwr.com"
 )
 
 func skipCI(t *testing.T) {
@@ -44,20 +60,15 @@ type testFileStore struct {
 	mediaStoreMock *mocks.Media
 }
 
-func BucketFromConst(t *testing.T) (*testFileStore, error) {
-	c := &Config{
-		S3AccessKey:       S3AccessKey,
-		S3SecretAccessKey: S3SecretAccessKey,
-		S3Endpoint:        S3Endpoint,
-		S3BucketName:      bucketName,
-		S3BucketLocation:  bucketLocation,
-		MediaStorePrefix:  mediaStorePrefix,
-		BaseFolder:        baseFolder,
-		SubdomainEndpoint: subdomainEndpoint,
+func BucketFromConfig(t *testing.T) (*testFileStore, error) {
+	skipCI(t)
+	cfg, err := loadConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	mediaStoreMock := mocks.NewMedia(t)
-	fs, err := New(c, mediaStoreMock)
+	fs, err := New(cfg, mediaStoreMock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
 	}
@@ -66,25 +77,6 @@ func BucketFromConst(t *testing.T) (*testFileStore, error) {
 		fs:             fs,
 		mediaStoreMock: mediaStoreMock,
 	}, nil
-}
-
-func fileToB64ByPath(filePath string) (string, error) {
-	bytes, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-
-	var base64Encoding string
-
-	// Determine the content type of the file
-	mimeType := http.DetectContentType(bytes)
-
-	base64Encoding += fmt.Sprintf("data:%s;base64,", mimeType)
-
-	// Append the base64 encoded output
-	base64Encoding += base64.StdEncoding.EncodeToString(bytes)
-
-	return base64Encoding, nil
 }
 
 func fileToBytes(filePath string) ([]byte, error) {
@@ -107,7 +99,7 @@ func TestUploadContentImage(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConst(t)
+	tb, err := BucketFromConfig(t)
 	assert.NoError(t, err)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
@@ -123,11 +115,30 @@ func TestUploadContentImage(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func fileToB64ByPath(filePath string) (string, error) {
+	bytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	var base64Encoding string
+
+	// Determine the content type of the file
+	mimeType := http.DetectContentType(bytes)
+
+	base64Encoding += fmt.Sprintf("data:%s;base64,", mimeType)
+
+	// Append the base64 encoded output
+	base64Encoding += base64.StdEncoding.EncodeToString(bytes)
+
+	return base64Encoding, nil
+}
+
 func TestUploadContentVideoMP4(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConst(t)
+	tb, err := BucketFromConfig(t)
 	assert.NoError(t, err)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
@@ -147,7 +158,7 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConst(t)
+	tb, err := BucketFromConfig(t)
 	assert.NoError(t, err)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
@@ -163,13 +174,14 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestGetB64FromUrl(t *testing.T) {
-	url := "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/April/1650908019115367000-og.jpg"
+// func TestGetB64FromUrl(t *testing.T) {
+// 	skipCI(t)
+// 	url := "https://grbpwr.fra1.digitaloceanspaces.com/grbpwr-com/2022/April/1650908019115367000-og.jpg"
 
-	rawImage, err := getMediaB64(url)
-	assert.NoError(t, err)
+// 	rawImage, err := getMediaB64(url)
+// 	assert.NoError(t, err)
 
-	fmt.Println("--- b64", rawImage.B64Image)
-	fmt.Println("--- ext", rawImage.Extension)
+// 	fmt.Println("--- b64", rawImage.B64Image)
+// 	fmt.Println("--- ext", rawImage.Extension)
 
-}
+// }

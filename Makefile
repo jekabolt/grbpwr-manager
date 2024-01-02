@@ -43,10 +43,16 @@ lint:
 	golangci-lint run ./internal/...
 
 cov:
-	go test -cover -coverprofile coverage.out -coverpkg ./internal/... ./...
-	# IMPORTANT: required coverage can only be increased
-	go tool cover -func coverage.out | \
-		awk 'END { print "Coverage: " $$3; if ($$3+0 < 0) { print "Insufficient coverage"; exit 1; } }'
+	@echo "Running tests with coverage..."
+	@PKG_LIST=$$(go list ./... | grep -v /gen/ | grep -v /proto/ | grep -v /dependency/); \
+	if [ -z "$$PKG_LIST" ]; then \
+		echo "No Go files to test"; \
+	else \
+		go test -cover -coverprofile coverage.out -coverpkg ./internal/... $$PKG_LIST; \
+		echo "Generating coverage report..."; \
+		go tool cover -func coverage.out | awk 'END { print "Coverage: " $$3; if ($$3+0 < 0) { print "Insufficient coverage"; exit 1; } }'; \
+	fi
+
 
 golangci-lint:
 	docker pull golangci/golangci-lint:$(GO_LINT_VERSION)
