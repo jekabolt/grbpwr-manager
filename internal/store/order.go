@@ -940,6 +940,11 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, pa
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
+		err = rep.Promo().DisableVoucher(ctx, order.PromoID)
+		if err != nil {
+			return fmt.Errorf("can't disable voucher: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {

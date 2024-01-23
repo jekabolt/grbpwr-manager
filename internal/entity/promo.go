@@ -17,5 +17,6 @@ type PromoCodeInsert struct {
 	FreeShipping bool            `db:"free_shipping"`
 	Discount     decimal.Decimal `db:"discount"`
 	Expiration   time.Time       `db:"expiration"`
+	Voucher      bool            `db:"voucher"`
 	Allowed      bool            `db:"allowed"`
 }

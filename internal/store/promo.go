@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -20,12 +21,13 @@ func (ms *MYSQLStore) Promo() dependency.Promo {
 }
 
 func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
-	id, err := ExecNamedLastId(ctx, ms.DB(), `INSERT INTO promo_code (code, free_shipping, discount, expiration, allowed) VALUES
-		(:code, :freeShipping, :discount, :expiration, :allowed)`, map[string]any{
+	id, err := ExecNamedLastId(ctx, ms.DB(), `INSERT INTO promo_code (code, free_shipping, discount, expiration, voucher, allowed) VALUES
+		(:code, :freeShipping, :discount, :expiration, :voucher, :allowed)`, map[string]any{
 		"code":         promo.Code,
 		"freeShipping": promo.FreeShipping,
 		"discount":     promo.Discount,
 		"expiration":   promo.Expiration,
+		"voucher":      promo.Voucher,
 		"allowed":      promo.Allowed,
 	})
 	if err != nil {
@@ -69,6 +71,27 @@ func (ms *MYSQLStore) DisablePromoCode(ctx context.Context, code string) error {
 		return fmt.Errorf("failed to disable promo code: %w", err)
 	}
 	ms.cache.DisablePromo(code)
+
+	return nil
+}
+
+func (ms *MYSQLStore) DisableVoucher(ctx context.Context, promoID sql.NullInt32) error {
+	if !promoID.Valid || promoID.Int32 == 0 {
+		return nil
+	}
+
+	promo, ok := ms.cache.GetPromoById(int(promoID.Int32))
+	if !ok {
+		return nil
+	}
+	if promo.Voucher {
+		err := ms.DisablePromoCode(ctx, promo.Code)
+		if err != nil {
+			return fmt.Errorf("failed to disable voucher: %w", err)
+		}
+	}
+
+	ms.cache.DisablePromo(promo.Code)
 
 	return nil
 }

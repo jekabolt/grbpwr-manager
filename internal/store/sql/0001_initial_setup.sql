@@ -243,6 +243,7 @@ CREATE TABLE promo_code (
     free_shipping BOOLEAN DEFAULT FALSE,
     discount DECIMAL(10, 2) DEFAULT 0,
     expiration TIMESTAMP,
+    voucher BOOLEAN DEFAULT FALSE,
     allowed BOOLEAN DEFAULT FALSE
 );
 

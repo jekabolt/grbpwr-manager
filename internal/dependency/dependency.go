@@ -121,6 +121,7 @@ type (
 		ListPromos(ctx context.Context) ([]entity.PromoCode, error)
 		DeletePromoCode(ctx context.Context, code string) error
 		DisablePromoCode(ctx context.Context, code string) error
+		DisableVoucher(ctx context.Context, promoID sql.NullInt32) error
 	}
 
 	Archive interface {
