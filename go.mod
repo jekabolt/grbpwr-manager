@@ -5,6 +5,7 @@ go 1.20
 require (
 	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2
+	github.com/ethereum/go-ethereum v1.13.8
 	github.com/go-chi/chi v1.5.4
 	github.com/go-chi/jwtauth/v5 v5.0.2
 	github.com/go-resty/resty/v2 v2.8.0
@@ -19,6 +20,7 @@ require (
 	github.com/johnbellone/grpc-middleware-sentry v0.3.0
 	github.com/lib/pq v1.10.7
 	github.com/minio/minio-go/v7 v7.0.62
+	github.com/mr-tron/base58 v1.2.0
 	github.com/oapi-codegen/runtime v1.1.0
 	github.com/rubenv/sql-migrate v1.4.0
 	github.com/sendgrid/sendgrid-go v3.14.0+incompatible
@@ -26,10 +28,11 @@ require (
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/viper v1.8.1
 	github.com/stretchr/testify v1.8.4
-	golang.org/x/crypto v0.14.0
-	golang.org/x/exp v0.0.0-20230510235704-dd950f8aeaea
+	github.com/tyler-smith/go-bip39 v1.1.0
+	golang.org/x/crypto v0.17.0
+	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa
 	golang.org/x/image v0.14.0
-	golang.org/x/net v0.17.0
+	golang.org/x/net v0.18.0
 	google.golang.org/genproto v0.0.0-20230815205213-6bfd019c3878
 	google.golang.org/genproto/googleapis/api v0.0.0-20230815205213-6bfd019c3878
 	google.golang.org/grpc v1.57.0
@@ -38,16 +41,18 @@ require (
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.0-20210816181553-5444fa50b93d // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.4.9 // indirect
+	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/getsentry/sentry-go v0.20.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
+	github.com/holiman/uint256 v1.2.4 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
@@ -76,7 +81,7 @@ require (
 	github.com/stretchr/objx v0.5.0 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
-	golang.org/x/sys v0.13.0 // indirect
+	golang.org/x/sys v0.15.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230815205213-6bfd019c3878 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
