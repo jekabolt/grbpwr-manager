@@ -25,6 +25,7 @@ func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.P
 		Discount:     discountDecimal,
 		Expiration:   pbPromo.Expiration.AsTime(),
 		Allowed:      pbPromo.Allowed,
+		Voucher:      pbPromo.Voucher,
 	}
 
 	return entityPromo, nil
