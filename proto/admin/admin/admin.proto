@@ -395,6 +395,13 @@ service AdminService {
     };
   }
 
+  rpc UpdateArchive(UpdateArchiveRequest) returns (UpdateArchiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/archive/update"
+      body: "*"
+    };
+  }
+
   // AddArchiveItems adds items to an existing archive.
   rpc AddArchiveItems(AddArchiveItemsRequest) returns (AddArchiveItemsResponse) {
     option (google.api.http) = {
@@ -812,6 +819,13 @@ message AddArchiveRequest {
 message AddArchiveResponse {
   int32 id = 1;
 }
+
+message UpdateArchiveRequest {
+  int32 id = 1;
+  common.ArchiveInsert archive = 2;
+}
+
+message UpdateArchiveResponse {}
 
 message AddArchiveItemsRequest {
   int32 archive_id = 1;

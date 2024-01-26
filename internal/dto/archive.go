@@ -14,7 +14,7 @@ func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.Arc
 	}
 
 	archiveInsert := &entity.ArchiveInsert{
-		Title:       pbArchiveNew.Archive.Title,
+		Title:       pbArchiveNew.Archive.Heading,
 		Description: pbArchiveNew.Archive.Description,
 	}
 
@@ -54,7 +54,7 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		CreatedAt: timestamppb.New(af.Archive.CreatedAt),
 		UpdatedAt: timestamppb.New(af.Archive.UpdatedAt),
 		ArchiveInsert: &pb_common.ArchiveInsert{
-			Title:       af.Archive.Title,
+			Heading:     af.Archive.Title,
 			Description: af.Archive.Description,
 		},
 	}

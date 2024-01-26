@@ -26,6 +26,9 @@ func New(c *Config, rep dependency.Repository) *Processor {
 
 func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.Payment, error) {
 
+
+	p.rep.Payment().
+
 	return &entity.Payment{}, nil
 }
 

@@ -846,6 +846,101 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 	return total, nil
 }
 
+// InsertOrderPayment inserts order payment info for invoice
+func (ms *MYSQLStore) InsertOrderPayment(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error {
+
+	_, ok := ms.cache.GetPaymentMethodById(payment.PaymentMethodID)
+	if !ok {
+		return fmt.Errorf("payment method is not exists: payment method id %d", payment.PaymentMethodID)
+	}
+
+	order, err := getOrderByUUID(ctx, ms, orderUUID)
+	if err != nil {
+		return fmt.Errorf("can't get order by uuid %s: %w", orderUUID, err)
+	}
+
+	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
+	if !ok {
+		return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+	}
+
+	if orderStatus.Name != entity.Placed {
+		return fmt.Errorf("order status is not placed: order status %s", orderStatus.Name)
+	}
+
+	if payment.TransactionAmount.LessThan(order.TotalPrice) {
+		return fmt.Errorf("payment amount is less than order total price: %s", payment.TransactionAmount.String())
+	}
+
+	var customErr error
+
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
+		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
+		if err != nil {
+			return fmt.Errorf("can't get order items: %w", err)
+		}
+
+		validItems, err := validateOrderItems(ctx, rep, orderItems)
+		if err != nil {
+			return fmt.Errorf("error while validating order items: %w", err)
+		}
+		if len(validItems) == 0 {
+			// no valid items we have to set order status to canceled
+			statusCanceled, ok := ms.cache.GetOrderStatusByName(entity.Cancelled)
+			if !ok {
+				return fmt.Errorf("order status is not exists: order status name %s", entity.Cancelled)
+			}
+			err := updateOrderStatus(ctx, rep, order.ID, statusCanceled.ID)
+			if err != nil {
+				return fmt.Errorf("can't update order status: %w", err)
+			}
+
+			// early return if no valid items
+			customErr = fmt.Errorf("order items are not valid")
+			return nil
+		}
+
+		ok := compareItems(orderItems, validItems)
+		if !ok {
+			// valid items not equal to order items
+			// we have to update current order items and total amount
+			err = updateOrderItems(ctx, rep, validItems, order.ID)
+			if err != nil {
+				return fmt.Errorf("error while updating order items: %w", err)
+			}
+
+			_, err = updateTotalAmount(ctx, rep, validItems, order)
+			if err != nil {
+				return fmt.Errorf("error while updating total amount: %w", err)
+			}
+
+			// early return if items updated
+			customErr = fmt.Errorf("order items are not valid and were updated")
+			return nil
+		}
+
+		// this made for only setting 'invoice' for order assuming that payment is can't be done until
+		// we set 'invoice' for order
+		payment.IsTransactionDone = false
+
+		err = updateOrderPayment(ctx, rep, order.PaymentID, payment)
+		if err != nil {
+			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if customErr != nil {
+		return customErr
+	}
+
+	return nil
+}
+
 // OrderPaymentDone updates the payment status of an order and adds payment info to order.
 func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error {
 

@@ -28,7 +28,7 @@ message Archive {
 
 // ArchiveInsert represents the insertable fields of an archive.
 message ArchiveInsert {
-  string title = 1;
+  string heading = 1;
   string description = 2;
 }
 

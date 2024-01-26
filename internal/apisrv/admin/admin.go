@@ -946,6 +946,23 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 	}, nil
 }
 
+func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveRequest) (*pb_admin.UpdateArchiveResponse, error) {
+	err := s.repo.Archive().UpdateArchive(ctx,
+		int(req.Id),
+		&entity.ArchiveInsert{
+			Title:       req.Archive.Heading,
+			Description: req.Archive.Description,
+		})
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't update archive",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update archive")
+	}
+
+	return &pb_admin.UpdateArchiveResponse{}, nil
+}
+
 func (s *Server) AddArchiveItems(ctx context.Context, req *pb_admin.AddArchiveItemsRequest) (*pb_admin.AddArchiveItemsResponse, error) {
 	items := make([]entity.ArchiveItemInsert, 0, len(req.Items))
 	for _, i := range req.Items {
