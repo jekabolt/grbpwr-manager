@@ -55,6 +55,20 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, archiveNew *entity.Archive
 	return archiveID, nil
 }
 
+func (ms *MYSQLStore) UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveInsert) error {
+	query := `UPDATE archive SET title = :title, description = :description WHERE id = :id`
+	_, err := ms.DB().NamedExecContext(ctx, query, map[string]any{
+		"id":          id,
+		"title":       archiveUpd.Title,
+		"description": archiveUpd.Description,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update archive: %w", err)
+	}
+
+	return nil
+}
+
 // AddArchiveItems adds new items to an existing archive.
 func (ms *MYSQLStore) AddArchiveItems(ctx context.Context, archiveId int, archiveItemNew []entity.ArchiveItemInsert) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
