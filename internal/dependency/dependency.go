@@ -99,12 +99,14 @@ type (
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
 		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (decimal.Decimal, error)
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (decimal.Decimal, error)
+		InsertOrderInvoice(ctx context.Context, orderUUID string, pAddress string, pMethodId int) (*entity.PaymentInsert, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error)
 		GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderFull, error)
+		GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error)
 		RefundOrder(ctx context.Context, orderId int) error
 		DeliveredOrder(ctx context.Context, orderId int) error
 		CancelOrder(ctx context.Context, orderId int) error

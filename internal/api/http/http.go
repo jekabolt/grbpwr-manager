@@ -19,7 +19,6 @@ import (
 
 	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
-	grpcSentry "github.com/johnbellone/grpc-middleware-sentry"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -183,7 +182,7 @@ func (s *Server) Start(ctx context.Context,
 ) error {
 
 	opts := []grpcSlog.Option{
-		grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall, grpcSlog.PayloadSent, grpcSlog.PayloadReceived),
+		// grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall, grpcSlog.PayloadSent, grpcSlog.PayloadReceived),
 		// Add any other option (check functions starting with logging.With).
 	}
 
@@ -191,12 +190,10 @@ func (s *Server) Start(ctx context.Context,
 		grpc.ChainUnaryInterceptor(
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			grpcRecovery.UnaryServerInterceptor(),
-			grpcSentry.UnaryServerInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			grpcRecovery.StreamServerInterceptor(),
-			grpcSentry.StreamServerInterceptor(),
 		),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
