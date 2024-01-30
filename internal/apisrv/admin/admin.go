@@ -1004,7 +1004,11 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchives
 		return nil, err
 	}
 
-	pbAfs := make([]*pb_common.ArchiveFull, len(afs))
+	for _, af := range afs {
+		fmt.Println("--- ", af.Archive.ID)
+	}
+
+	pbAfs := []*pb_common.ArchiveFull{}
 
 	for _, af := range afs {
 		pbAfs = append(pbAfs, dto.ConvertArchiveFullEntityToPb(&af))

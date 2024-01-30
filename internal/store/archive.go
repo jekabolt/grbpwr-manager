@@ -120,10 +120,14 @@ type archiveJoin struct {
 	ItemTitle sql.NullString `db:"item_title"`
 }
 
-// GetArchivesPaged retrieves a paginated list of archives with sorting based on an order factor.
 func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error) {
 	if limit <= 0 || offset < 0 {
 		return nil, errors.New("invalid pagination parameters")
+	}
+
+	// Validate orderFactor to prevent SQL injection
+	if orderFactor != entity.Ascending && orderFactor != entity.Descending {
+		return nil, errors.New("invalid order factor")
 	}
 
 	// Prepare the query with dynamic ordering and pagination placeholders
@@ -132,8 +136,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
            ai.id AS item_id, ai.media, ai.url, ai.title AS item_title
     FROM archive a
     LEFT JOIN archive_item ai ON a.id = ai.archive_id
-    ORDER BY a.created_at %s LIMIT ? OFFSET ?`
-	query = fmt.Sprintf(query, orderFactor)
+    ORDER BY a.created_at ` + string(orderFactor) + ` LIMIT ? OFFSET ?`
 
 	// Slice to store the joined data from the query
 	var archiveData []archiveJoin
@@ -152,19 +155,29 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 
 // groupArchives groups the flat join data by archive ID, creating structured archive entities.
 func groupArchives(data []archiveJoin) map[int]entity.ArchiveFull {
-	// Map to hold grouped archives
 	grouped := make(map[int]entity.ArchiveFull)
+
 	for _, d := range data {
-		// Check if the archive is already in the map
-		archive, ok := grouped[d.ID]
-		if !ok {
-			// If not, initialize it
-			archive = entity.ArchiveFull{Archive: &d.Archive}
+		// Retrieve the current ArchiveFull, or create a new one if it doesn't exist
+		archiveFull, exists := grouped[d.ID]
+		if !exists {
+			archiveFull = entity.ArchiveFull{
+				Archive: &entity.Archive{
+					ID:        d.ID,
+					CreatedAt: d.CreatedAt,
+					UpdatedAt: d.UpdatedAt,
+					ArchiveInsert: entity.ArchiveInsert{
+						Title:       d.Title,
+						Description: d.Description,
+					},
+				},
+				Items: []entity.ArchiveItem{},
+			}
 		}
 
-		// If an item is present, add it to the archive's items
+		// Add the item to the archive's items if it exists
 		if d.ItemID != 0 {
-			archive.Items = append(archive.Items, entity.ArchiveItem{
+			archiveItem := entity.ArchiveItem{
 				ID:        d.ItemID,
 				ArchiveID: d.ID,
 				ArchiveItemInsert: entity.ArchiveItemInsert{
@@ -172,12 +185,14 @@ func groupArchives(data []archiveJoin) map[int]entity.ArchiveFull {
 					URL:   d.ItemURL,
 					Title: d.ItemTitle,
 				},
-			})
+			}
+			archiveFull.Items = append(archiveFull.Items, archiveItem)
 		}
 
-		// Update the map with the newly added or modified archive
-		grouped[d.ID] = archive
+		// Update or add the archive in the map
+		grouped[d.ID] = archiveFull
 	}
+
 	return grouped
 }
 

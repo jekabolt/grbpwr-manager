@@ -45,5 +45,6 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
 	}
+
 	return &config, nil
 }
