@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestStartStop(t *testing.T) {
@@ -30,11 +33,16 @@ func TestStartStop(t *testing.T) {
 	exchangeRatesBaseURL = server.URL
 	cryptoCompareBaseURL = server.URL
 
+	rs := mocks.NewRates(t)
+
+	rs.EXPECT().GetLatestRates(mock.Anything).Return([]entity.CurrencyRate{}, nil)
+	rs.EXPECT().BulkUpdateRates(mock.Anything, mock.Anything).Return(nil)
+
 	// Initialize the Service with the mocked server
 	cli := New(&Config{
 		ExchangeAPIKey:    "fake_api_key",
 		RatesUpdatePeriod: time.Second,
-	})
+	}, rs)
 
 	err := cli.Start()
 	assert.NoError(t, err)

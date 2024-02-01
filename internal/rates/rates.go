@@ -9,8 +9,11 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+	"golang.org/x/exp/slog"
 )
 
 var (
@@ -92,18 +95,19 @@ type Config struct {
 }
 
 type Client struct {
-	c      *Config
-	cli    *resty.Client
-	crypto *resty.Client
-	rates  map[string]dto.CurrencyRate
-	mu     sync.RWMutex
-	stopCh chan struct{}
-	doneCh chan struct{}
-	ctx    context.Context
-	cancel context.CancelFunc
+	c          *Config
+	cli        *resty.Client
+	crypto     *resty.Client
+	rates      map[string]dto.CurrencyRate
+	ratesStore dependency.Rates
+	mu         sync.RWMutex
+	stopCh     chan struct{}
+	doneCh     chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
-func New(c *Config) *Client {
+func New(c *Config, ratesStore dependency.Rates) *Client {
 	cli := resty.New()
 	cli.SetQueryParam("access_key", c.ExchangeAPIKey)
 	cli.SetBaseURL(exchangeRatesBaseURL)
@@ -116,21 +120,49 @@ func New(c *Config) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Client{
-		cli:    cli,
-		crypto: cryptoCli,
-		c:      c,
-		rates:  make(map[string]dto.CurrencyRate),
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
-		ctx:    ctx,
-		cancel: cancel,
+		cli:        cli,
+		crypto:     cryptoCli,
+		c:          c,
+		rates:      make(map[string]dto.CurrencyRate),
+		ratesStore: ratesStore,
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
-func (cli *Client) Start() error {
-	if err := cli.updateRates(); err != nil {
-		return err
+func (cli *Client) initLatest() error {
+	curRates, err := cli.ratesStore.GetLatestRates(cli.ctx)
+	if err != nil {
+		return fmt.Errorf("could not get latest rates: %w", err)
 	}
+	if len(curRates) == 0 {
+		return nil
+	}
+
+	cli.rates = make(map[string]dto.CurrencyRate, len(curRates))
+	for _, cr := range curRates {
+		rate := cli.rates[cr.CurrencyCode]
+		rate.Rate = cr.Rate
+		cli.rates[cr.CurrencyCode] = rate
+	}
+	return nil
+}
+
+func (cli *Client) Start() error {
+
+	err := cli.initLatest()
+	if err != nil {
+		return fmt.Errorf("could not init latest rates: %w", err)
+	}
+
+	if len(cli.rates) == 0 {
+		if err := cli.updateRates(); err != nil {
+			slog.Default().ErrorCtx(cli.ctx, "could not update rates", "err", err)
+		}
+	}
+
 	go func() {
 		ticker := time.NewTicker(cli.c.RatesUpdatePeriod)
 		defer ticker.Stop()
@@ -173,6 +205,20 @@ func (cli *Client) updateRates() error {
 	cli.mu.Lock()
 	defer cli.mu.Unlock()
 	cli.rates = mergeMaps(frm, crm)
+
+	crs := make([]entity.CurrencyRate, 0, len(cli.rates))
+	for currencyCode, cr := range cli.rates {
+		crs = append(crs, entity.CurrencyRate{
+			CurrencyCode: currencyCode,
+			Rate:         cr.Rate,
+		})
+	}
+
+	err = cli.ratesStore.BulkUpdateRates(cli.ctx, crs)
+	if err != nil {
+		return fmt.Errorf("could not update rates: %w", err)
+	}
+
 	return nil
 }
 

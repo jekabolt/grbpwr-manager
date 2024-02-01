@@ -348,6 +348,13 @@ CREATE TABLE send_email_request (
     error_msg VARCHAR(255) DEFAULT NULL
 );
 
+CREATE TABLE currency_rate (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    currency_code VARCHAR(255) NOT NULL,
+    rate DECIMAL(10, 2) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL
+)
+
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 
 CREATE INDEX idx_product_id_on_product_media ON product_media(product_id);
