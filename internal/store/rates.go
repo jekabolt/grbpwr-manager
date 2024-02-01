@@ -35,9 +35,21 @@ func (ms *MYSQLStore) BulkUpdateRates(ctx context.Context, rates []entity.Curren
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		for _, rate := range rates {
 			query := `UPDATE currency_rate SET rate = ?, updated_at = NOW() WHERE currency_code = ?`
-			_, err := rep.DB().ExecContext(ctx, query, rate.Rate, rate.CurrencyCode)
+			res, err := rep.DB().ExecContext(ctx, query, rate.Rate, rate.CurrencyCode)
 			if err != nil {
 				return fmt.Errorf("failed to update rate for currency_code %s: %w", rate.CurrencyCode, err)
+			}
+			ra, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("failed to get rows affected: %w", err)
+			}
+			if ra == 0 {
+				query := `INSERT INTO currency_rate (currency_code, rate) VALUES (?, ?)`
+				_, err := rep.DB().ExecContext(ctx, query, rate.CurrencyCode,
+					rate.Rate)
+				if err != nil {
+					return fmt.Errorf("failed to insert rate for currency_code %s: %w", rate.CurrencyCode, err)
+				}
 			}
 		}
 		return nil
