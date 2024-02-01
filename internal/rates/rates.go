@@ -151,13 +151,13 @@ func (cli *Client) initLatest() error {
 }
 
 func (cli *Client) Start() error {
-
 	err := cli.initLatest()
 	if err != nil {
 		return fmt.Errorf("could not init latest rates: %w", err)
 	}
 
 	if len(cli.rates) == 0 {
+		slog.Default().InfoCtx(cli.ctx, "no rates in db, will update")
 		if err := cli.updateRates(); err != nil {
 			slog.Default().ErrorCtx(cli.ctx, "could not update rates", "err", err)
 		}
@@ -193,10 +193,13 @@ func (cli *Client) GetRates() map[string]dto.CurrencyRate {
 	return cli.rates
 }
 func (cli *Client) updateRates() error {
+	slog.Default().InfoCtx(cli.ctx, "updating fiat rates")
 	frm, err := cli.getFiatRates(baseCurrency)
 	if err != nil {
 		return fmt.Errorf("could not get fiat rates: %w", err)
 	}
+
+	slog.Default().InfoCtx(cli.ctx, "updating crypto rates")
 	crm, err := cli.getCryptoRates(baseCurrency, []string{"BTC", "ETH"})
 	if err != nil {
 		return fmt.Errorf("could not get crypto rates: %w", err)
