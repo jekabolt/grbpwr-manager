@@ -106,6 +106,9 @@ func newTestDB(t *testing.T) *MYSQLStore {
 	_, err = db.db.ExecContext(context.Background(), "DELETE FROM media")
 	assert.NoError(t, err)
 
+	_, err = db.db.ExecContext(context.Background(), "DELETE FROM currency_rate")
+	assert.NoError(t, err)
+
 	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 	assert.NoError(t, err)
 
