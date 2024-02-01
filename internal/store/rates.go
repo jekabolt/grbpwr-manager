@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -25,6 +27,9 @@ func (ms *MYSQLStore) GetLatestRates(ctx context.Context) ([]entity.CurrencyRate
 	query := `SELECT id, currency_code, rate, updated_at FROM currency_rate`
 	err := ms.DB().SelectContext(ctx, &rates, query)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.CurrencyRate{}, nil
+		}
 		return nil, fmt.Errorf("failed to get latest currency rates: %w", err)
 	}
 	return rates, nil
