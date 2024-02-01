@@ -25,11 +25,11 @@ type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
 	repo   dependency.Repository
 	mailer dependency.Mailer
-	rates  dependency.Rates
+	rates  dependency.RatesService
 }
 
 // New creates a new server with frontend handlers.
-func New(r dependency.Repository, m dependency.Mailer, ra dependency.Rates) *Server {
+func New(r dependency.Repository, m dependency.Mailer, ra dependency.RatesService) *Server {
 	return &Server{
 		repo:   r,
 		mailer: m,

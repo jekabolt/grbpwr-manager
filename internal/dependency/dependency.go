@@ -126,6 +126,11 @@ type (
 		DisableVoucher(ctx context.Context, promoID sql.NullInt32) error
 	}
 
+	Rates interface {
+		GetLatestRates(ctx context.Context) ([]entity.CurrencyRate, error)
+		BulkUpdateRates(ctx context.Context, rates []entity.CurrencyRate) error
+	}
+
 	Archive interface {
 		AddArchive(ctx context.Context, archiveNew *entity.ArchiveNew) (int, error)
 		UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveInsert) error
@@ -154,6 +159,7 @@ type (
 		Hero() Hero
 		Order() Order
 		Promo() Promo
+		Rates() Rates
 		Admin() Admin
 		Mail() Mail
 		Archive() Archive
@@ -194,7 +200,7 @@ type (
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
 	}
 
-	Rates interface {
+	RatesService interface {
 		Start() error
 		GetRates() map[string]dto.CurrencyRate
 	}
