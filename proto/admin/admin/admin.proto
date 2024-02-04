@@ -448,7 +448,7 @@ service AdminService {
 
   rpc SetPaymentMethodAllowance(SetPaymentMethodAllowanceRequest) returns (SetPaymentMethodAllowanceResponse) {
     option (google.api.http) = {
-      post: "/api/admin/settings/payment-method-allowance"
+      post: "/api/admin/settings/payment-method-allowance/{payment_method}"
       body: "*"
     };
   }
@@ -912,7 +912,7 @@ message SetShipmentCarrierPriceRequest {
 message SetShipmentCarrierPriceResponse {}
 
 message SetPaymentMethodAllowanceRequest {
-  string method = 1;
+  common.PaymentMethodNameEnum payment_method = 1;
   bool allow = 2;
 }
 message SetPaymentMethodAllowanceResponse {}
