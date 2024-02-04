@@ -43,6 +43,7 @@ var ValidPaymentMethodNames = map[PaymentMethodName]bool{
 
 // PaymentMethod represents the payment_method table
 type PaymentMethod struct {
-	ID   int               `db:"id"`
-	Name PaymentMethodName `db:"name"`
+	ID      int               `db:"id"`
+	Name    PaymentMethodName `db:"name"`
+	Allowed bool              `db:"allowed"`
 }

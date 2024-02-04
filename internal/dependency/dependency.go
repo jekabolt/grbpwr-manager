@@ -154,6 +154,13 @@ type (
 		GetAdminByUsername(ctx context.Context, username string) (*dto.Admin, error)
 	}
 
+	Settings interface {
+		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
+		SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error
+		SetPaymentMethodAllowance(ctx context.Context, paymentMethod string, allowance bool) error
+		SetSiteAvailability(ctx context.Context, allowance bool) error
+	}
+
 	Repository interface {
 		Products() Products
 		Hero() Hero
@@ -165,6 +172,7 @@ type (
 		Archive() Archive
 		Subscribers() Subscribers
 		Media() Media
+		Settings() Settings
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
@@ -231,6 +239,7 @@ type (
 
 		GetPaymentMethodById(id int) (*entity.PaymentMethod, bool)
 		GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
+		UpdatePaymentMethodAllowance(pm string, allowance bool) error
 
 		GetPromoById(id int) (*entity.PromoCode, bool)
 		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)
@@ -240,6 +249,8 @@ type (
 
 		GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool)
 		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)
+		UpdateShipmentCarrierAllowance(carrier string, allowance bool) error
+		UpdateShipmentCarrierCost(carrier string, cost decimal.Decimal) error
 
 		GetSizeById(id int) (*entity.Size, bool)
 		GetSizesByName(size entity.SizeEnum) (entity.Size, bool)
@@ -248,5 +259,7 @@ type (
 		UpdateHero(hf *entity.HeroFull)
 
 		GetDict() *dto.Dict
+
+		SetSiteAvailability(available bool)
 	}
 )

@@ -17,6 +17,7 @@ type Dict struct {
 	Genders          []pb_common.Genders
 	SortFactors      []pb_common.SortFactors
 	OrderFactors     []pb_common.OrderFactors
+	SiteEnabled      bool
 }
 
 var (
@@ -339,6 +340,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 	commonDict.Genders = genders
 	commonDict.SortFactors = sortFactors
 	commonDict.OrderFactors = orderFactors
+	commonDict.SiteEnabled = dict.SiteEnabled
 
 	return commonDict
 }

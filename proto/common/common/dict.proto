@@ -21,6 +21,7 @@ message Dictionary {
   repeated Genders genders = 7;
   repeated OrderFactors order_factors = 8;
   repeated SortFactors sort_factors = 9;
+  bool site_enabled = 10;
 }
 
 message Genders {

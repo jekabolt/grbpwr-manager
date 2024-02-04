@@ -36,4 +36,5 @@ enum PaymentMethodNameEnum {
 message PaymentMethod {
   int32 id = 1;
   PaymentMethodNameEnum name = 2;
+  bool allowed = 3;
 }

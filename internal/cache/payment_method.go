@@ -57,6 +57,20 @@ func (c *PaymentMethodCache) GetPaymentMethodsByName(paymentMethod entity.Paymen
 	return pm, found
 }
 
+func (c *PaymentMethodCache) UpdatePaymentMethodAllowance(pm string, allowance bool) error {
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
+
+	paymentMethod, found := c.IDCache[entity.PaymentMethodName(pm)]
+	if !found {
+		return fmt.Errorf("payment method not found")
+	}
+	paymentMethod.Allowed = allowance
+	c.IDCache[entity.PaymentMethodName(pm)] = paymentMethod
+	c.Cache[paymentMethod.ID] = paymentMethod
+	return nil
+}
+
 // GetAllPaymentMethods fetches all PaymentMethods from PaymentMethodCache
 func (c *PaymentMethodCache) GetAllPaymentMethods() map[int]entity.PaymentMethod {
 	c.Mutex.RLock()
