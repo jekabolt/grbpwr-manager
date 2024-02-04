@@ -1004,10 +1004,6 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchives
 		return nil, err
 	}
 
-	for _, af := range afs {
-		fmt.Println("--- ", af.Archive.ID)
-	}
-
 	pbAfs := []*pb_common.ArchiveFull{}
 
 	for _, af := range afs {
@@ -1042,4 +1038,57 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 	}
 
 	return &pb_admin.DeleteArchiveByIdResponse{}, nil
+}
+
+// SETTINGS MANAGER
+
+func (s *Server) SetShipmentCarrierAllowance(ctx context.Context, req *pb_admin.SetShipmentCarrierAllowanceRequest) (*pb_admin.SetShipmentCarrierAllowanceResponse, error) {
+	err := s.repo.Settings().SetShipmentCarrierAllowance(ctx, req.Carrier, req.Allow)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't set shipment carrier allowance",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.SetShipmentCarrierAllowanceResponse{}, nil
+}
+func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetShipmentCarrierPriceRequest) (*pb_admin.SetShipmentCarrierPriceResponse, error) {
+	price, err := decimal.NewFromString(req.Price.Value)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert price to decimal",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert price to decimal")
+	}
+
+	err = s.repo.Settings().SetShipmentCarrierPrice(ctx, req.Carrier, price)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't set shipment carrier price",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.SetShipmentCarrierPriceResponse{}, nil
+
+}
+func (s *Server) SetPaymentMethodAllowance(ctx context.Context, req *pb_admin.SetPaymentMethodAllowanceRequest) (*pb_admin.SetPaymentMethodAllowanceResponse, error) {
+	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, req.Method, req.Allow)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.SetPaymentMethodAllowanceResponse{}, nil
+}
+
+func (s *Server) SetSiteAvailability(ctx context.Context, req *pb_admin.SetSiteAvailabilityRequest) (*pb_admin.SetSiteAvailabilityResponse, error) {
+	err := s.repo.Settings().SetSiteAvailability(ctx, req.Available)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't set site availability",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.SetSiteAvailabilityResponse{}, nil
 }

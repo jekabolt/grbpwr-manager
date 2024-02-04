@@ -1,9 +1,12 @@
 package cache
 
 import (
+	"fmt"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slog"
 )
 
@@ -84,11 +87,13 @@ func NewCache(
 			Promos:           promos,
 			ShipmentCarriers: shipmentCarriers,
 			Sizes:            sizes,
+			SiteEnabled:      true,
 		},
 	}, nil
 }
 
 func (c *Cache) GetDict() *dto.Dict {
+	fmt.Printf("\n\n\n ------- %+v \n\n", c.Dict)
 	return c.Dict
 }
 
@@ -124,6 +129,21 @@ func (c *Cache) GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) 
 	return c.PaymentMethod.GetPaymentMethodsByName(paymentMethod)
 }
 
+func (c *Cache) UpdatePaymentMethodAllowance(pm string, allowance bool) error {
+	err := c.PaymentMethod.UpdatePaymentMethodAllowance(pm, allowance)
+	if err != nil {
+		return fmt.Errorf("failed to update payment method allowance: %w", err)
+	}
+	pms := []entity.PaymentMethod{}
+	pmm := c.PaymentMethod.GetAllPaymentMethods()
+	for id, pmv := range pmm {
+		pmv.ID = id
+		pms = append(pms, pmv)
+	}
+	c.Dict.PaymentMethods = pms
+	return nil
+}
+
 // promo
 func (c *Cache) GetPromoById(id int) (*entity.PromoCode, bool) {
 	return c.Promo.GetPromoById(id)
@@ -148,6 +168,34 @@ func (c *Cache) GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool) {
 func (c *Cache) GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool) {
 	return c.ShipmentCarrier.GetShipmentCarriersByName(carrier)
 }
+func (c *Cache) UpdateShipmentCarrierAllowance(carrier string, allowance bool) error {
+	err := c.ShipmentCarrier.UpdateShipmentCarrierAllowance(carrier, allowance)
+	if err != nil {
+		return fmt.Errorf("failed to update shipment carrier allowance: %w", err)
+	}
+	scs := []entity.ShipmentCarrier{}
+	scsm := c.ShipmentCarrier.GetAllShipmentCarriers()
+	for id, scsv := range scsm {
+		scsv.ID = id
+		scs = append(scs, scsv)
+	}
+	c.Dict.ShipmentCarriers = scs
+	return nil
+}
+func (c *Cache) UpdateShipmentCarrierCost(carrier string, cost decimal.Decimal) error {
+	err := c.ShipmentCarrier.UpdateShipmentCarrierCost(carrier, cost)
+	if err != nil {
+		return fmt.Errorf("failed to update shipment carrier price: %w", err)
+	}
+	scs := []entity.ShipmentCarrier{}
+	scsm := c.ShipmentCarrier.GetAllShipmentCarriers()
+	for id, scsv := range scsm {
+		scsv.ID = id
+		scs = append(scs, scsv)
+	}
+	c.Dict.ShipmentCarriers = scs
+	return nil
+}
 
 // size
 func (c *Cache) GetSizeById(id int) (*entity.Size, bool) {
@@ -165,4 +213,8 @@ func (c *Cache) GetHero() *entity.HeroFull {
 
 func (c *Cache) UpdateHero(hf *entity.HeroFull) {
 	c.Hero.UpdateHero(hf)
+}
+
+func (c *Cache) SetSiteAvailability(available bool) {
+	c.Dict.SiteEnabled = available
 }

@@ -429,6 +429,36 @@ service AdminService {
   rpc DeleteArchiveById(DeleteArchiveByIdRequest) returns (DeleteArchiveByIdResponse) {
     option (google.api.http) = {delete: "/api/admin/archive/{id}"};
   }
+
+  // SETTINGS
+
+  rpc SetShipmentCarrierAllowance(SetShipmentCarrierAllowanceRequest) returns (SetShipmentCarrierAllowanceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/shipment-carrier-allowance"
+      body: "*"
+    };
+  }
+
+  rpc SetShipmentCarrierPrice(SetShipmentCarrierPriceRequest) returns (SetShipmentCarrierPriceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/shipment-carrier-price"
+      body: "*"
+    };
+  }
+
+  rpc SetPaymentMethodAllowance(SetPaymentMethodAllowanceRequest) returns (SetPaymentMethodAllowanceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/payment-method-allowance"
+      body: "*"
+    };
+  }
+
+  rpc SetSiteAvailability(SetSiteAvailabilityRequest) returns (SetSiteAvailabilityResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/site-availability"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -867,3 +897,27 @@ message DeleteArchiveByIdRequest {
 message DeleteArchiveByIdResponse {
   string message = 1;
 }
+
+message SetShipmentCarrierAllowanceRequest {
+  string carrier = 1;
+  bool allow = 2;
+}
+
+message SetShipmentCarrierAllowanceResponse {}
+
+message SetShipmentCarrierPriceRequest {
+  string carrier = 1;
+  google.type.Decimal price = 2;
+}
+message SetShipmentCarrierPriceResponse {}
+
+message SetPaymentMethodAllowanceRequest {
+  string method = 1;
+  bool allow = 2;
+}
+message SetPaymentMethodAllowanceResponse {}
+
+message SetSiteAvailabilityRequest {
+  bool available = 1;
+}
+message SetSiteAvailabilityResponse {}

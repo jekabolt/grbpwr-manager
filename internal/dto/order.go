@@ -145,9 +145,11 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting payment method: %v", e.PaymentMethod.Name)
 	}
 
+	//TODO:
 	pbPaymentMethod := &pb_common.PaymentMethod{
-		Id:   int32(e.PaymentMethod.ID),
-		Name: pbPaymentMethodEnum,
+		Id:      int32(e.PaymentMethod.ID),
+		Name:    pbPaymentMethodEnum,
+		Allowed: e.PaymentMethod.Allowed,
 	}
 
 	pbShipment, err := ConvertEntityShipmentToPbShipment(e.Shipment)
