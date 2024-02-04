@@ -310,8 +310,9 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 		name, _ := ConvertEntityToPbPaymentMethod(p.Name)
 		commonDict.PaymentMethods = append(commonDict.PaymentMethods,
 			&pb_common.PaymentMethod{
-				Id:   int32(p.ID),
-				Name: *pb_common.PaymentMethodNameEnum(name).Enum(),
+				Id:      int32(p.ID),
+				Name:    *pb_common.PaymentMethodNameEnum(name).Enum(),
+				Allowed: p.Allowed,
 			})
 	}
 

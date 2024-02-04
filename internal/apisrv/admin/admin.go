@@ -1072,7 +1072,7 @@ func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetS
 
 }
 func (s *Server) SetPaymentMethodAllowance(ctx context.Context, req *pb_admin.SetPaymentMethodAllowanceRequest) (*pb_admin.SetPaymentMethodAllowanceResponse, error) {
-	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, req.Method, req.Allow)
+	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod), req.Allow)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
 			slog.String("err", err.Error()),

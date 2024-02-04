@@ -32,6 +32,17 @@ var paymentMethodToCurrency = map[pb_common.PaymentMethodNameEnum]string{
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT: "USDT",
 }
 
+var pbPaymentMethodToEntity = map[pb_common.PaymentMethodNameEnum]string{
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD: "card",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:  "eth",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDC: "usdc",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT: "usdt",
+}
+
 func ConvertPaymentMethodToCurrency(pbPaymentMethod pb_common.PaymentMethodNameEnum) string {
 	return paymentMethodToCurrency[pbPaymentMethod]
+}
+
+func ConvertPbPaymentMethodToEntity(pbPaymentMethod pb_common.PaymentMethodNameEnum) string {
+	return pbPaymentMethodToEntity[pbPaymentMethod]
 }
