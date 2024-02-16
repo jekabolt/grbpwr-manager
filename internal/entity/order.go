@@ -77,23 +77,29 @@ func (oii OrderItemInsert) GetQuantity() decimal.Decimal {
 // OrderStatusName is the custom type to enforce enum-like behavior
 type OrderStatusName string
 
+func (osn *OrderStatusName) String() string {
+	return string(*osn)
+}
+
 const (
-	Placed    OrderStatusName = "placed"
-	Confirmed OrderStatusName = "confirmed"
-	Shipped   OrderStatusName = "shipped"
-	Delivered OrderStatusName = "delivered"
-	Cancelled OrderStatusName = "cancelled"
-	Refunded  OrderStatusName = "refunded"
+	Placed          OrderStatusName = "placed"
+	AwaitingPayment OrderStatusName = "awaiting_payment"
+	Confirmed       OrderStatusName = "confirmed"
+	Shipped         OrderStatusName = "shipped"
+	Delivered       OrderStatusName = "delivered"
+	Cancelled       OrderStatusName = "cancelled"
+	Refunded        OrderStatusName = "refunded"
 )
 
 // ValidOrderStatusNames is a set of valid order status names
 var ValidOrderStatusNames = map[OrderStatusName]bool{
-	Placed:    true,
-	Confirmed: true,
-	Shipped:   true,
-	Delivered: true,
-	Cancelled: true,
-	Refunded:  true,
+	Placed:          true,
+	AwaitingPayment: true,
+	Confirmed:       true,
+	Shipped:         true,
+	Delivered:       true,
+	Cancelled:       true,
+	Refunded:        true,
 }
 
 // OrderStatus represents the order_status table

@@ -13,6 +13,7 @@ import "common/product.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
@@ -315,10 +316,10 @@ service AdminService {
     };
   }
 
-  // Marks order payment as complete
-  rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
+  // Retrieves an invoice for an order
+  rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_uuid}/payment-done"
+      post: "/api/admin/order/{order_id}/{payment_method}/invoice"
       body: "*"
     };
   }
@@ -768,12 +769,15 @@ message UpdateOrderShippingCarrierResponse {
   google.type.Decimal total = 1;
 }
 
-message OrderPaymentDoneRequest {
-  string order_uuid = 1;
-  common.PaymentInsert payment = 2;
+message GetOrderInvoiceRequest {
+  int32 order_id = 1;
+  common.PaymentMethodNameEnum payment_method = 2;
 }
 
-message OrderPaymentDoneResponse {}
+message GetOrderInvoiceResponse {
+  google.protobuf.Timestamp expired_at = 1;
+  common.PaymentInsert payment = 2;
+}
 
 message UpdateShippingInfoRequest {
   int32 order_id = 1;

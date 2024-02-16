@@ -99,17 +99,27 @@ type (
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
 		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (decimal.Decimal, error)
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (decimal.Decimal, error)
-		InsertOrderInvoice(ctx context.Context, orderUUID string, pAddress string, pMethodId int) (*entity.PaymentInsert, error)
-		OrderPaymentDone(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error
+		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.Payment, error)
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
+		GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error)
 		GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderFull, error)
 		GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error)
+		ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error
+		OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) error
 		RefundOrder(ctx context.Context, orderId int) error
 		DeliveredOrder(ctx context.Context, orderId int) error
 		CancelOrder(ctx context.Context, orderId int) error
+	}
+
+	CryptoInvoice interface {
+		GetOrderInvoice(ctx context.Context, orderId int) (*entity.PaymentInsert, time.Time, error)
+	}
+
+	Trongrid interface {
+		GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error)
 	}
 
 	Subscribers interface {
@@ -157,7 +167,7 @@ type (
 	Settings interface {
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
 		SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error
-		SetPaymentMethodAllowance(ctx context.Context, paymentMethod string, allowance bool) error
+		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 	}
 
@@ -239,7 +249,7 @@ type (
 
 		GetPaymentMethodById(id int) (*entity.PaymentMethod, bool)
 		GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
-		UpdatePaymentMethodAllowance(pm string, allowance bool) error
+		UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error
 
 		GetPromoById(id int) (*entity.PromoCode, bool)
 		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)

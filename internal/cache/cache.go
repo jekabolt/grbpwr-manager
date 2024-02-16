@@ -93,7 +93,6 @@ func NewCache(
 }
 
 func (c *Cache) GetDict() *dto.Dict {
-	fmt.Printf("\n\n\n ------- %+v \n\n", c.Dict)
 	return c.Dict
 }
 
@@ -129,7 +128,7 @@ func (c *Cache) GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) 
 	return c.PaymentMethod.GetPaymentMethodsByName(paymentMethod)
 }
 
-func (c *Cache) UpdatePaymentMethodAllowance(pm string, allowance bool) error {
+func (c *Cache) UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error {
 	err := c.PaymentMethod.UpdatePaymentMethodAllowance(pm, allowance)
 	if err != nil {
 		return fmt.Errorf("failed to update payment method allowance: %w", err)

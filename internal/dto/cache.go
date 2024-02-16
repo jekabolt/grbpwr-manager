@@ -142,21 +142,23 @@ var (
 	}
 
 	orderStatusEntityPbMap = map[entity.OrderStatusName]pb_common.OrderStatusEnum{
-		entity.Placed:    pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
-		entity.Confirmed: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
-		entity.Shipped:   pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
-		entity.Delivered: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
-		entity.Cancelled: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
-		entity.Refunded:  pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
+		entity.Placed:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
+		entity.AwaitingPayment: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
+		entity.Confirmed:       pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
+		entity.Shipped:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
+		entity.Delivered:       pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
+		entity.Cancelled:       pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
+		entity.Refunded:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
 	}
 
 	orderStatusPbEntityMap = map[pb_common.OrderStatusEnum]entity.OrderStatusName{
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED:    entity.Placed,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED: entity.Confirmed,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED:   entity.Shipped,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED: entity.Delivered,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED: entity.Cancelled,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:  entity.Refunded,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED:           entity.Placed,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT: entity.AwaitingPayment,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED:        entity.Confirmed,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED:          entity.Shipped,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED:        entity.Delivered,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED:        entity.Cancelled,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:         entity.Refunded,
 	}
 
 	paymentMethodEntityPbMap = map[entity.PaymentMethodName]pb_common.PaymentMethodNameEnum{
