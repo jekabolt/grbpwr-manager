@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+	"golang.org/x/exp/slog"
 )
 
 type orderStore struct {
@@ -785,6 +786,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, paymentI
 		"paymentMethodId":   payment.PaymentMethodID,
 		"payer":             payment.Payer,
 		"payee":             payment.Payee,
+		"paymentId":         paymentId,
 	})
 
 	if err != nil {
@@ -847,20 +849,20 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 }
 
 // InsertOrderPayment inserts order payment info for invoice
-func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, pAddress string, pMethodId int) (*entity.PaymentInsert, error) {
+func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.Payment, error) {
 
-	_, ok := ms.cache.GetPaymentMethodById(pMethodId)
+	pm, ok := ms.cache.GetPaymentMethodById(pm.ID)
 	if !ok {
-		return nil, fmt.Errorf("payment method is not exists: payment method id %d", pMethodId)
+		return nil, fmt.Errorf("payment method is not exists: payment method id %v", pm)
 	}
 
-	pi := &entity.PaymentInsert{
-		PaymentMethodID: pMethodId,
+	if !pm.Allowed {
+		return nil, fmt.Errorf("payment method is not allowed: payment method %v", pm)
 	}
 
-	order, err := getOrderByUUID(ctx, ms, orderUUID)
+	order, err := getOrderById(ctx, ms, orderId)
 	if err != nil {
-		return nil, fmt.Errorf("can't get order by uuid %s: %w", orderUUID, err)
+		return nil, fmt.Errorf("can't get order by uuid %d: %w", orderId, err)
 	}
 
 	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
@@ -873,7 +875,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 	}
 
 	var customErr error
-
+	var p *entity.Payment
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
@@ -920,141 +922,46 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			return nil
 		}
 
-		// this made for only setting 'invoice' for order assuming that payment is can't be done until
-		// we set 'invoice' for order
-		pi.IsTransactionDone = false
-		pi.TransactionAmount = order.TotalPrice
-		pi.Payee = sql.NullString{
-			String: pAddress,
-			Valid:  true,
-		}
-
-		err = updateOrderPayment(ctx, rep, order.PaymentID, pi)
-		if err != nil {
-			return fmt.Errorf("can't update order payment: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return pi, err
-	}
-	if customErr != nil {
-		return pi, customErr
-	}
-
-	return pi, nil
-}
-
-// OrderPaymentDone updates the payment status of an order and adds payment info to order.
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, payment *entity.PaymentInsert) error {
-
-	_, ok := ms.cache.GetPaymentMethodById(payment.PaymentMethodID)
-	if !ok {
-		return fmt.Errorf("payment method is not exists: payment method id %d", payment.PaymentMethodID)
-	}
-
-	order, err := getOrderByUUID(ctx, ms, orderUUID)
-	if err != nil {
-		return fmt.Errorf("can't get order by uuid %s: %w", orderUUID, err)
-	}
-
-	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
-	if !ok {
-		return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
-	}
-
-	if orderStatus.Name != entity.Placed {
-		return fmt.Errorf("order status is not placed: order status %s", orderStatus.Name)
-	}
-
-	if payment.TransactionAmount.LessThan(order.TotalPrice) {
-		return fmt.Errorf("payment amount is less than order total price: %s", payment.TransactionAmount.String())
-	}
-
-	statusConfirmed, ok := ms.Cache().GetOrderStatusByName(entity.Confirmed)
-	if !ok {
-		return fmt.Errorf("order status is not exists: order status name %s", entity.Confirmed)
-	}
-
-	var customErr error
-
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-
-		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
-		if err != nil {
-			return fmt.Errorf("can't get order items: %w", err)
-		}
-
-		validItems, err := validateOrderItems(ctx, rep, orderItems)
-		if err != nil {
-			return fmt.Errorf("error while validating order items: %w", err)
-		}
-		if len(validItems) == 0 {
-			// no valid items we have to set order status to canceled
-			statusCanceled, ok := ms.cache.GetOrderStatusByName(entity.Cancelled)
-			if !ok {
-				return fmt.Errorf("order status is not exists: order status name %s", entity.Cancelled)
-			}
-			err := updateOrderStatus(ctx, rep, order.ID, statusCanceled.ID)
-			if err != nil {
-				return fmt.Errorf("can't update order status: %w", err)
-			}
-
-			// early return if no valid items
-			customErr = fmt.Errorf("order items are not valid")
-			return nil
-		}
-
-		ok := compareItems(orderItems, validItems)
-		if !ok {
-			// valid items not equal to order items
-			// we have to update current order items and total amount
-			err = updateOrderItems(ctx, rep, validItems, order.ID)
-			if err != nil {
-				return fmt.Errorf("error while updating order items: %w", err)
-			}
-
-			_, err = updateTotalAmount(ctx, rep, validItems, order)
-			if err != nil {
-				return fmt.Errorf("error while updating total amount: %w", err)
-			}
-
-			// early return if items updated
-			customErr = fmt.Errorf("order items are not valid and were updated")
-			return nil
-		}
-
 		err = rep.Products().ReduceStockForProductSizes(ctx, validItems)
 		if err != nil {
 			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
 		}
 
-		err = updateOrderStatus(ctx, rep, order.ID, statusConfirmed.ID)
+		p, err = getPaymentById(ctx, rep, order.PaymentID)
 		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
+			return fmt.Errorf("can't get payment by id: %w", err)
 		}
 
-		err = updateOrderPayment(ctx, rep, order.PaymentID, payment)
+		p.PaymentMethodID = pm.ID
+		p.IsTransactionDone = false
+		p.TransactionAmount = order.TotalPrice
+		p.Payee = sql.NullString{
+			String: addr,
+			Valid:  true,
+		}
+
+		err = updateOrderPayment(ctx, rep, order.PaymentID, &p.PaymentInsert)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
-		err = rep.Promo().DisableVoucher(ctx, order.PromoID)
+		newStatus, _ := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
+
+		err = updateOrderStatus(ctx, rep, order.ID, newStatus.ID)
 		if err != nil {
-			return fmt.Errorf("can't disable voucher: %w", err)
+			return fmt.Errorf("can't update order status: %w", err)
 		}
 
 		return nil
 	})
 	if err != nil {
-		return err
+		return p, err
 	}
 	if customErr != nil {
-		return customErr
+		return p, customErr
 	}
 
-	return nil
+	return p, nil
 }
 
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, orderId int, shipment *entity.Shipment) error {
@@ -1234,6 +1141,18 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, order *entit
 	return &orderInfo, nil
 }
 
+func (ms *MYSQLStore) GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error) {
+	query := `
+	SELECT * FROM payment WHERE id = (SELECT payment_id FROM customer_order WHERE id = :orderId)`
+	payment, err := QueryNamedOne[entity.Payment](ctx, ms.DB(), query, map[string]interface{}{
+		"orderId": orderId,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get payment by order id: %w", err)
+	}
+	return &payment, nil
+}
+
 // GetOrderItems retrieves all order items for a given order.
 func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error) {
 
@@ -1369,6 +1288,9 @@ func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository,
 		"paymentMethod": paymentMethodId,
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.Order{}, nil
+		}
 		return nil, fmt.Errorf("can't get orders by status and payment method: %w", err)
 	}
 
@@ -1401,6 +1323,108 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, statu
 	}
 
 	return ordersInfo, nil
+}
+
+func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error {
+
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		o, err := getOrderById(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		os, ok := ms.cache.GetOrderStatusById(o.OrderStatusID)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status id %d", o.OrderStatusID)
+		}
+
+		// if order status is not awaiting payment we can't expire payment
+		// because payment is already done, canceled,
+		// refunded, delivered or already expired and got status placed
+		if os.Name != entity.AwaitingPayment {
+			slog.DebugCtx(ctx, "trying to expire order status is not awaiting payment: order status",
+				slog.String("order_status", os.Name.String()),
+			)
+			return nil
+		}
+
+		orderItems, err := getOrderItemsInsert(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order items: %w", err)
+		}
+
+		err = rep.Products().RestoreStockForProductSizes(ctx, orderItems)
+		if err != nil {
+			return fmt.Errorf("can't restore stock for product sizes: %w", err)
+		}
+
+		statusPlaced, _ := ms.cache.GetOrderStatusByName(entity.Placed)
+
+		err = updateOrderStatus(ctx, rep, orderId, statusPlaced.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		// set payment to initial state
+		pi := &entity.PaymentInsert{
+			TransactionID:     sql.NullString{Valid: true},
+			Payer:             sql.NullString{Valid: true},
+			Payee:             sql.NullString{Valid: true},
+			IsTransactionDone: false,
+		}
+
+		err = updateOrderPayment(ctx, rep, paymentId, pi)
+		if err != nil {
+			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
+		o, err := getOrderById(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		os, ok := ms.cache.GetOrderStatusById(o.OrderStatusID)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status id %d", o.OrderStatusID)
+		}
+
+		if os.Name != entity.AwaitingPayment {
+			return nil
+		}
+
+		statusConfirmed, _ := ms.cache.GetOrderStatusByName(entity.Confirmed)
+
+		err = updateOrderStatus(ctx, rep, orderId, statusConfirmed.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		p.PaymentInsert.IsTransactionDone = true
+
+		err = updateOrderPayment(ctx, rep, p.ID, &p.PaymentInsert)
+		if err != nil {
+			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int) error {

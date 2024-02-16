@@ -16,20 +16,23 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo   dependency.Repository
-	bucket dependency.FileStore
+	repo           dependency.Repository
+	bucket         dependency.FileStore
+	cryptoInvoicer dependency.CryptoInvoice
 }
 
 // New creates a new server with admin handlers.
-func New(r dependency.Repository, b dependency.FileStore) *Server {
+func New(r dependency.Repository, b dependency.FileStore, ci dependency.CryptoInvoice) *Server {
 	return &Server{
-		repo:   r,
-		bucket: b,
+		repo:           r,
+		bucket:         b,
+		cryptoInvoicer: ci,
 	}
 }
 
@@ -728,31 +731,38 @@ func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.U
 		},
 	}, nil
 }
-func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_admin.OrderPaymentDoneRequest) (*pb_admin.OrderPaymentDoneResponse, error) {
-	pi, err := dto.ConvertToEntityPaymentInsert(req.Payment)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert payment to entity payment insert",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert payment to entity payment insert")
-	}
-	if !pi.IsTransactionDone {
-		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
-		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
-	}
-	if pi.TransactionAmount.IsZero() {
-		slog.Default().ErrorCtx(ctx, "payment transaction amount is zero")
-		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
+func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvoiceRequest) (*pb_admin.GetOrderInvoiceResponse, error) {
+
+	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
+
+	switch pm {
+	case entity.Usdt:
+		pi, expire, err := s.cryptoInvoicer.GetOrderInvoice(ctx, int(req.OrderId))
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		}
+
+		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+		}
+
+		return &pb_admin.GetOrderInvoiceResponse{
+			Payment:   pbPi,
+			ExpiredAt: timestamppb.New(expire),
+		}, nil
+
+	default:
+		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
+		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
 
-	err = s.repo.Order().OrderPaymentDone(ctx, req.OrderUuid, pi)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't mark order as paid")
-	}
-	return &pb_admin.OrderPaymentDoneResponse{}, nil
 }
 
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
@@ -1072,7 +1082,8 @@ func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetS
 
 }
 func (s *Server) SetPaymentMethodAllowance(ctx context.Context, req *pb_admin.SetPaymentMethodAllowanceRequest) (*pb_admin.SetPaymentMethodAllowanceResponse, error) {
-	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod), req.Allow)
+	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
+	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, pm, req.Allow)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
 			slog.String("err", err.Error()),

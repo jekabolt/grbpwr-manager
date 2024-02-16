@@ -2,66 +2,248 @@ package usdt
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
+	"golang.org/x/exp/slog"
 )
 
 type Config struct {
-	Addresses []string `mapstructure:"addresses"`
-	Node      string   `mapstructure:"node"`
+	Addresses               []string      `mapstructure:"addresses"`
+	Node                    string        `mapstructure:"node"`
+	InvoiceExpiration       time.Duration `mapstructure:"invoice_expiration"`
+	CheckIncomingTxInterval time.Duration `mapstructure:"check_incoming_tx_interval"`
 }
 
 type Processor struct {
 	c     *Config
 	pm    *entity.PaymentMethod
-	addrs map[string]bool
+	addrs map[string]decimal.Decimal
 	mu    sync.Mutex
 	rep   dependency.Repository
+	tg    dependency.Trongrid
 }
 
-func New(c *Config, rep dependency.Repository) *Processor {
+func New(ctx context.Context, c *Config, rep dependency.Repository) (dependency.CryptoInvoice, error) {
 	pm, _ := rep.Cache().GetPaymentMethodsByName(entity.Usdt)
 
-	addrs := make(map[string]bool, len(c.Addresses))
+	addrs := make(map[string]decimal.Decimal, len(c.Addresses))
 	for _, addr := range c.Addresses {
-		addrs[addr] = true // Initialize all addresses as free
+		addrs[addr] = decimal.Zero
 	}
 
-	return &Processor{
+	p := &Processor{
 		c:     c,
 		pm:    &pm,
 		rep:   rep,
 		addrs: addrs,
 	}
+
+	err := p.initAddressesFromUnpaidOrders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("can't init addresses from unpaid orders: %w", err)
+	}
+
+	return p, nil
+
+}
+
+func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ofs, err := p.rep.Order().GetOrdersByStatusAndPaymentType(ctx, entity.AwaitingPayment, entity.Usdt)
+	if err != nil {
+		return fmt.Errorf("can't get unpaid orders: %w", err)
+	}
+
+	for _, of := range ofs {
+		p.addrs[of.Payment.Payee.String] = of.Payment.TransactionAmount
+		go p.monitorPayment(ctx, of.Order.ID, of.Payment)
+	}
+
+	return nil
+}
+
+// address is our address on which the payment should be made
+func (p *Processor) expireOrderPayment(ctx context.Context, orderId, paymentId int, address string) error {
+	err := p.rep.Order().ExpireOrderPayment(ctx, orderId, paymentId)
+	if err != nil {
+		return fmt.Errorf("can't update orders status: %w", err)
+	}
+
+	err = p.freeAddress(address)
+	if err != nil {
+		return fmt.Errorf("can't free address: %w", err)
+	}
+
+	return nil
 }
 
 func (p *Processor) getFreeAddress() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for addr, free := range p.addrs {
-		if free {
-			p.addrs[addr] = false
+	for addr, amount := range p.addrs {
+		if amount.IsZero() {
 			return addr, nil
 		}
 	}
-	return "", fmt.Errorf("no free addresses available")
+	return "", fmt.Errorf("no free address")
 }
 
-func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, error) {
+func (p *Processor) setAddressAmount(addr string, amt decimal.Decimal) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	pAddr, err := p.getFreeAddress()
-	if err != nil {
-		return nil, fmt.Errorf("can't get free address: %w", err)
+	if _, ok := p.addrs[addr]; !ok {
+		return fmt.Errorf("address not found")
+	}
+	p.addrs[addr] = amt
+	return nil
+}
+
+func (p *Processor) freeAddress(addr string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, ok := p.addrs[addr]; !ok {
+		return fmt.Errorf("address not found")
+	}
+	p.addrs[addr] = decimal.Zero
+	return nil
+}
+
+// GetOrderInvoice returns the payment details for the given order and expiration date.
+func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.PaymentInsert, time.Time, error) {
+
+	var payment *entity.Payment
+	expiration := time.Now()
+	var err error
+	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		payment, err = rep.Order().GetPaymentByOrderId(ctx, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get payment by order id: %w", err)
+		}
+
+		// If the payment is already done, return it immediately.
+		if payment.IsTransactionDone {
+			expiration = payment.ModifiedAt
+			return nil
+		}
+
+		// Order has unexpired invoice, return it.
+		if payment.Payee.Valid && payment.Payee.String != "" {
+			expiration = payment.ModifiedAt.Add(p.c.InvoiceExpiration)
+			return nil
+		}
+
+		// If the payment is not done and the address is not set, generate a new invoice.
+		pAddr, err := p.getFreeAddress()
+		if err != nil {
+			return fmt.Errorf("can't get free address: %w", err)
+		}
+
+		payment, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
+		if err != nil {
+			return fmt.Errorf("can't insert order invoice: %w", err)
+		}
+
+		err = p.setAddressAmount(pAddr, payment.TransactionAmount)
+		if err != nil {
+			return fmt.Errorf("can't set address amount: %w", err)
+		}
+
+		go p.monitorPayment(ctx, orderId, payment)
+
+		return nil
+	})
+
+	return &payment.PaymentInsert, expiration, err
+}
+
+func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *entity.Payment) {
+	// Immediately check for transactions at least once before entering the loop.
+	if err := p.checkForTransactions(ctx, orderId, payment); err != nil {
+		slog.Default().ErrorCtx(ctx, "Error during initial transaction check",
+			slog.String("err", err.Error()),
+			slog.Int("orderId", orderId),
+			slog.String("address", payment.Payee.String),
+		)
 	}
 
-	pi, err := p.rep.Order().InsertOrderInvoice(ctx, orderUUID, pAddr, p.pm.ID)
+	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
+	expirationDuration := time.Until(payment.ModifiedAt.Add(p.c.InvoiceExpiration))
+
+	ticker := time.NewTicker(p.c.CheckIncomingTxInterval)
+	defer ticker.Stop()
+
+	expirationTimer := time.NewTimer(expirationDuration)
+	defer expirationTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Default().DebugCtx(ctx, "Context cancelled, stopping payment monitoring")
+			return
+		case <-ticker.C:
+			if err := p.checkForTransactions(ctx, orderId, payment); err != nil {
+				slog.Default().ErrorCtx(ctx, "Error during transaction check", slog.String("err", err.Error()))
+			}
+		case <-expirationTimer.C:
+			// Attempt to expire the order payment only if it's not already done.
+			if !payment.IsTransactionDone {
+				if err := p.expireOrderPayment(ctx, orderId, payment.ID, payment.Payee.String); err != nil {
+					slog.Default().ErrorCtx(ctx, "can't expire order payment", slog.String("err", err.Error()))
+				}
+			}
+			return // Exit the loop once the payment has expired.
+		}
+	}
+}
+
+func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payment *entity.Payment) error {
+	transactions, err := p.tg.GetAddressTransactions(payment.Payee.String)
 	if err != nil {
-		return nil, fmt.Errorf("can't insert order invoice: %w", err)
+		return fmt.Errorf("can't get address transactions: %w", err)
 	}
 
-	return pi, nil
+	for _, tx := range transactions.Data {
+		//TODO: check timezones
+		txTime := time.Unix(tx.BlockTimestamp, 0)
+		if txTime.After(payment.ModifiedAt) {
+			amount, err := decimal.NewFromString(tx.Value)
+			if err != nil {
+				continue // Skip this transaction if the amount cannot be parsed.
+			}
+
+			// Convert payment.TransactionAmount to the same scale as blockchain amount
+			// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
+			paymentAmountInBlockchainFormat := payment.TransactionAmount.Mul(decimal.NewFromInt(1000000))
+
+			if amount.Equal(paymentAmountInBlockchainFormat) {
+				payment.TransactionID = sql.NullString{
+					String: tx.TransactionID,
+					Valid:  true,
+				}
+				payment.IsTransactionDone = true
+				err := p.rep.Order().OrderPaymentDone(ctx, orderId, payment)
+				if err != nil {
+					return fmt.Errorf("can't update order payment done: %w", err)
+				} else {
+					slog.Default().InfoCtx(ctx, "Order marked as paid", slog.Int("orderId", orderId))
+				}
+				p.freeAddress(payment.Payee.String)
+
+				return nil // Exit as the payment is successfully processed.
+			}
+		}
+	}
+
+	return nil // Return nil if no suitable transaction was found.
 }

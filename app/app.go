@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/usdt"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"golang.org/x/exp/slog"
@@ -76,9 +77,15 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db, a.b)
+	usdtTron, err := usdt.New(ctx, &a.c.USDTTronPayment, a.db)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
+		return err
+	}
 
-	frontendS := frontend.New(a.db, a.ma, a.r)
+	adminS := admin.New(a.db, a.b, usdtTron)
+
+	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron)
 
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)

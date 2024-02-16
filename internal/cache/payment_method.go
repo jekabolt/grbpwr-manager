@@ -57,16 +57,16 @@ func (c *PaymentMethodCache) GetPaymentMethodsByName(paymentMethod entity.Paymen
 	return pm, found
 }
 
-func (c *PaymentMethodCache) UpdatePaymentMethodAllowance(pm string, allowance bool) error {
+func (c *PaymentMethodCache) UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	paymentMethod, found := c.IDCache[entity.PaymentMethodName(pm)]
+	paymentMethod, found := c.IDCache[pm]
 	if !found {
 		return fmt.Errorf("payment method not found")
 	}
 	paymentMethod.Allowed = allowance
-	c.IDCache[entity.PaymentMethodName(pm)] = paymentMethod
+	c.IDCache[pm] = paymentMethod
 	c.Cache[paymentMethod.ID] = paymentMethod
 	return nil
 }

@@ -18,22 +18,25 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server implements handlers for frontend requests.
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
-	repo   dependency.Repository
-	mailer dependency.Mailer
-	rates  dependency.RatesService
+	repo           dependency.Repository
+	mailer         dependency.Mailer
+	rates          dependency.RatesService
+	cryptoInvoicer dependency.CryptoInvoice
 }
 
 // New creates a new server with frontend handlers.
-func New(r dependency.Repository, m dependency.Mailer, ra dependency.RatesService) *Server {
+func New(r dependency.Repository, m dependency.Mailer, ra dependency.RatesService, ci dependency.CryptoInvoice) *Server {
 	return &Server{
-		repo:   r,
-		mailer: m,
-		rates:  ra,
+		repo:           r,
+		mailer:         m,
+		rates:          ra,
+		cryptoInvoicer: ci,
 	}
 }
 
@@ -184,50 +187,38 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 	}, nil
 }
 
-func (s *Server) OrderPaymentDone(ctx context.Context, req *pb_frontend.OrderPaymentDoneRequest) (*pb_frontend.OrderPaymentDoneResponse, error) {
-	pi, err := dto.ConvertToEntityPaymentInsert(req.Payment)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert payment to entity payment insert",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert payment to entity payment insert")
+func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderInvoiceRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
+
+	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
+
+	switch pm {
+	case entity.Usdt:
+		pi, expire, err := s.cryptoInvoicer.GetOrderInvoice(ctx, int(req.OrderId))
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		}
+
+		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+		}
+
+		return &pb_frontend.GetOrderInvoiceResponse{
+			Payment:   pbPi,
+			ExpiredAt: timestamppb.New(expire),
+		}, nil
+
+	default:
+		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
+		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
 
-	if !pi.IsTransactionDone {
-		slog.Default().ErrorCtx(ctx, "payment transaction is not done")
-		return nil, status.Errorf(codes.InvalidArgument, "payment transaction is not done")
-	}
-	if pi.TransactionAmount.IsZero() {
-		slog.Default().ErrorCtx(ctx, "payment transaction amount is zero")
-		return nil, status.Errorf(codes.InvalidArgument, "payment transaction amount is zero")
-	}
-
-	err = s.repo.Order().OrderPaymentDone(ctx, req.OrderUuid, pi)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't mark order as paid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't mark order as paid")
-	}
-
-	o, err := s.repo.Order().GetOrderByUUID(ctx, req.OrderUuid)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get order by uuid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
-	}
-
-	s.mailer.SendOrderConfirmation(ctx, o.Buyer.Email, &dto.OrderConfirmed{
-		Name:            fmt.Sprintf("%s %s", o.Buyer.FirstName, o.Buyer.LastName),
-		OrderUUID:       req.OrderUuid,
-		OrderDate:       o.Order.Placed,
-		TotalAmount:     o.Order.TotalPrice.String(),
-		PaymentMethod:   req.Payment.PaymentMethod.String(),
-		PaymentCurrency: dto.ConvertPaymentMethodToCurrency(req.Payment.PaymentMethod),
-	})
-
-	return &pb_frontend.OrderPaymentDoneResponse{}, nil
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {

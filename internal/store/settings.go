@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 )
 
@@ -64,13 +65,13 @@ func (ms *MYSQLStore) SetShipmentCarrierPrice(ctx context.Context, carrier strin
 	}
 	return nil
 }
-func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMethod string, allowance bool) error {
+func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		err := ms.cache.UpdatePaymentMethodAllowance(paymentMethod, allowance)
 		if err != nil {
 			return fmt.Errorf("failed to update payment method allowance: %w", err)
 		}
-		query := `UPDATE payment_method SET allowed = :allowed WHERE method = :method`
+		query := `UPDATE payment_method SET allowed = :allowed WHERE name = :method`
 		err = ExecNamed(ctx, ms.DB(), query, map[string]any{
 			"method":  paymentMethod,
 			"allowed": allowance,

@@ -258,6 +258,21 @@ func ConvertEntityToPbPayment(p *entity.Payment) (*pb_common.Payment, error) {
 	}, nil
 }
 
+func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.PaymentInsert, error) {
+	if p == nil {
+		return nil, fmt.Errorf("empty entity.Payment")
+	}
+
+	return &pb_common.PaymentInsert{
+		PaymentMethod:     pb_common.PaymentMethodNameEnum(p.PaymentMethodID),
+		TransactionId:     p.TransactionID.String,
+		TransactionAmount: &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
+		Payer:             p.Payer.String,
+		Payee:             p.Payee.String,
+		IsTransactionDone: p.IsTransactionDone,
+	}, nil
+}
+
 func ConvertEntityShipmentToPbShipment(s *entity.Shipment) (*pb_common.Shipment, error) {
 	if s == nil {
 		return nil, fmt.Errorf("empty entity.Shipment")

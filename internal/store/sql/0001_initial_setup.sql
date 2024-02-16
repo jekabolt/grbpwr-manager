@@ -86,6 +86,7 @@ INSERT INTO
     order_status (name)
 VALUES
     ('placed'),
+    ('awaiting_payment'),
     ('confirmed'),
     ('shipped'),
     ('delivered'),
@@ -355,6 +356,7 @@ CREATE TABLE currency_rate (
     rate DECIMAL(10, 2) NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL
 );
+
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 

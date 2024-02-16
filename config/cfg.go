@@ -7,6 +7,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/usdt"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/log"
@@ -15,13 +16,14 @@ import (
 
 // Config represents the global configuration for the service.
 type Config struct {
-	DB     store.Config   `mapstructure:"mysql"`
-	Logger log.Config     `mapstructure:"logger"`
-	HTTP   httpapi.Config `mapstructure:"http"`
-	Auth   auth.Config    `mapstructure:"auth"`
-	Bucket bucket.Config  `mapstructure:"bucket"`
-	Mailer mail.Config    `mapstructure:"mailer"`
-	Rates  rates.Config   `mapstructure:"rates"`
+	DB              store.Config   `mapstructure:"mysql"`
+	Logger          log.Config     `mapstructure:"logger"`
+	HTTP            httpapi.Config `mapstructure:"http"`
+	Auth            auth.Config    `mapstructure:"auth"`
+	Bucket          bucket.Config  `mapstructure:"bucket"`
+	Mailer          mail.Config    `mapstructure:"mailer"`
+	Rates           rates.Config   `mapstructure:"rates"`
+	USDTTronPayment usdt.Config    `mapstructure:"usdt_tron_payment"`
 }
 
 // LoadConfig loads the configuration from a file.

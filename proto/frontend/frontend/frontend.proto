@@ -10,6 +10,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/frontend;frontend";
@@ -43,9 +44,9 @@ service FrontendService {
   }
 
   // Marks order payment as complete
-  rpc OrderPaymentDone(OrderPaymentDoneRequest) returns (OrderPaymentDoneResponse) {
+  rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
     option (google.api.http) = {
-      post: "/api/frontend/order/{order_uuid}/payment-done"
+      post: "/api/frontend/order/{order_id}/{payment_method}/invoice"
       body: "*"
     };
   }
@@ -137,12 +138,15 @@ message GetOrderByUUIDResponse {
   common.OrderFull order = 1;
 }
 
-message OrderPaymentDoneRequest {
-  string order_uuid = 1;
-  common.PaymentInsert payment = 2;
+message GetOrderInvoiceRequest {
+  int32 order_id = 1;
+  common.PaymentMethodNameEnum payment_method = 2;
 }
 
-message OrderPaymentDoneResponse {}
+message GetOrderInvoiceResponse {
+  google.protobuf.Timestamp expired_at = 1;
+  common.PaymentInsert payment = 2;
+}
 
 message ApplyPromoCodeRequest {
   int32 order_id = 1;
