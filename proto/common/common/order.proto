@@ -54,7 +54,8 @@ message Order {
 message OrderItem {
   int32 id = 1;
   int32 order_id = 2;
-  OrderItemInsert order_item = 3;
+  string thumbnail = 3;
+  OrderItemInsert order_item = 4;
 }
 
 message OrderItemInsert {

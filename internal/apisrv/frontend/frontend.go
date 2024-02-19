@@ -191,8 +191,15 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
+	pme, _ := s.repo.Cache().GetPaymentMethodsByName(pm)
+	if !pme.Allowed {
+		slog.Default().ErrorCtx(ctx, "payment method not allowed")
+		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
+	}
+
 	switch pm {
 	case entity.Usdt:
+
 		pi, expire, err := s.cryptoInvoicer.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
 			slog.Default().ErrorCtx(ctx, "can't get order invoice",

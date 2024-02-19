@@ -415,7 +415,12 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 }
 
 func getOrderItems(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItem, error) {
-	query := `SELECT id, order_id, product_id, quantity, size_id FROM order_item WHERE order_id = :orderId`
+	query := `
+		SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
+		FROM order_item oi
+		JOIN product p ON oi.product_id = p.id
+		WHERE oi.order_id = :orderId
+	`
 	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]any{
 		"orderId": orderId,
 	})
