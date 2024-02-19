@@ -16,6 +16,8 @@ const (
 	Mainnet       = "https://api.trongrid.io"
 	ShastaTestnet = "https://api.shasta.trongrid.io"
 	NileTestnet   = "https://nile.trongrid.io"
+
+	TypeTransfer = "Transfer"
 )
 
 // APIKeyHeader represents the header name for the API key.

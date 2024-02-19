@@ -55,8 +55,9 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	ID      int `db:"id"`
-	OrderID int `db:"order_id"`
+	ID        int    `db:"id"`
+	OrderID   int    `db:"order_id"`
+	Thumbnail string `db:"thumbnail"`
 	OrderItemInsert
 }
 

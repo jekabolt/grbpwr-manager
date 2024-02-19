@@ -222,8 +222,9 @@ func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem) ([]*pb_comm
 func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 	// Replace the following with actual conversion logic based on the structure of entity.OrderItem
 	return &pb_common.OrderItem{
-		Id:      int32(e.ID),
-		OrderId: int32(e.OrderID),
+		Id:        int32(e.ID),
+		OrderId:   int32(e.OrderID),
+		Thumbnail: e.Thumbnail,
 		// Assuming OrderItem has a nested struct or fields that can be mapped to OrderItemInsert
 		OrderItem: convertOrderItemInsert(e.OrderItemInsert),
 	}

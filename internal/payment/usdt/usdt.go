@@ -217,6 +217,10 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 		//TODO: check timezones
 		txTime := time.Unix(tx.BlockTimestamp, 0)
 		if txTime.After(payment.ModifiedAt) {
+
+			// TODO make sure that this is usdt transaction
+			// to config
+			// tx.
 			amount, err := decimal.NewFromString(tx.Value)
 			if err != nil {
 				continue // Skip this transaction if the amount cannot be parsed.
