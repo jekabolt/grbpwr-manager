@@ -1222,8 +1222,9 @@ func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string) ([]ent
 	return ordersInfo, nil
 }
 
-func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStatusId int) ([]entity.Order, error) {
-	query := `
+// getOrdersByStatus retrieves a paginated list of orders based on their status and sort order.
+func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStatusId int, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.Order, error) {
+	query := fmt.Sprintf(`
 	SELECT 
 		co.id,
 		co.buyer_id,
@@ -1235,12 +1236,21 @@ func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStat
 		co.shipment_id,
 		co.promo_id
 	FROM customer_order co 
-	WHERE order_status_id = :status
-	`
+	WHERE co.order_status_id = :status
+	ORDER BY co.modified %s
+	LIMIT :limit
+	OFFSET :offset
+	`, orderFactor.String()) // Safely include orderFactor in the query
 
-	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+	// Prepare parameters for the query including the pagination parameters
+	params := map[string]interface{}{
 		"status": orderStatusId,
-	})
+		"limit":  limit,
+		"offset": offset,
+	}
+
+	// Execute the query with pagination parameters
+	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get orders by status: %w", err)
 	}
@@ -1248,13 +1258,58 @@ func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStat
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, status entity.OrderStatusName) ([]entity.OrderFull, error) {
+// getOrdersByStatusAndPayment retrieves a paginated list of orders based on their status, payment method, and sort order.
+func getOrdersByStatusAndPaymentPaged(ctx context.Context, rep dependency.Repository, orderStatusId, paymentMethodId int, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.Order, error) {
+	query := fmt.Sprintf(`
+    SELECT 
+        co.id,
+        co.buyer_id,
+        co.placed,
+        co.modified,
+        co.payment_id,
+        co.total_price,
+        co.order_status_id,
+        co.shipment_id,
+        co.promo_id
+    FROM customer_order co 
+    JOIN payment p ON co.payment_id = p.id
+    WHERE co.order_status_id = :status AND p.payment_method_id = :paymentMethod
+    ORDER BY co.modified %s
+    LIMIT :limit
+    OFFSET :offset
+    `, orderFactor) // Include orderFactor in the query string safely
+
+	params := map[string]interface{}{
+		"status":        orderStatusId,
+		"paymentMethod": paymentMethodId,
+		"limit":         limit,
+		"offset":        offset,
+	}
+
+	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, params)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.Order{}, nil
+		}
+		return nil, fmt.Errorf("can't get orders by status and payment method: %w", err)
+	}
+
+	return orders, nil
+}
+
+func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error) {
+
+	pm, ok := ms.cache.GetPaymentMethodsByName(pMethod)
+	if !ok {
+		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pMethod)
+	}
+
 	os, ok := ms.cache.GetOrderStatusByName(status)
 	if !ok {
 		return nil, fmt.Errorf("order status is not exists: order status id %v", status)
 	}
 
-	orders, err := getOrdersByStatus(ctx, ms, os.ID)
+	orders, err := getOrdersByStatusAndPaymentPaged(ctx, ms, os.ID, pm.ID, lim, off, of)
 	if err != nil {
 		return nil, err
 	}
@@ -1301,8 +1356,8 @@ func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository,
 
 	return orders, nil
 }
-func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error) {
 
+func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error) {
 	pm, ok := ms.cache.GetPaymentMethodsByName(pMethod)
 	if !ok {
 		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pMethod)
@@ -1328,6 +1383,30 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, statu
 	}
 
 	return ordersInfo, nil
+}
+
+func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, st entity.OrderStatusName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error) {
+	os, ok := ms.cache.GetOrderStatusByName(st)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists: order status name %v", st)
+	}
+
+	orders, err := getOrdersByStatus(ctx, ms, os.ID, lim, off, of)
+	if err != nil {
+		return nil, err
+	}
+
+	var ordersInfo []entity.OrderFull
+	for _, order := range orders {
+		orderInfo, err := fetchOrderInfo(ctx, ms, &order)
+		if err != nil {
+			return nil, err
+		}
+		ordersInfo = append(ordersInfo, *orderInfo)
+	}
+
+	return ordersInfo, nil
+
 }
 
 func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error {

@@ -9,6 +9,16 @@ const (
 	Descending OrderFactor = "DESC"
 )
 
+func (of *OrderFactor) String() string {
+	if of != nil {
+		if *of == Ascending {
+			return "ASC"
+		}
+		return "DESC"
+	}
+	return "ASC"
+}
+
 type SortFactor string
 
 const (
