@@ -840,13 +840,18 @@ func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersB
 		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
 	}
-	orders, err := s.repo.Order().GetOrdersByStatus(ctx, st)
+	orders, err := s.repo.Order().GetOrdersByStatus(ctx,
+		st, int(req.Limit),
+		int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't get orders by status",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get orders by status")
 	}
+
 	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
 	for _, order := range orders {
 		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
@@ -859,6 +864,48 @@ func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersB
 		ordersPb = append(ordersPb, o)
 	}
 	return &pb_admin.GetOrdersByStatusResponse{
+		Orders: ordersPb,
+	}, nil
+}
+
+func (s *Server) GetOrdersByStatusAndPaymentMethod(ctx context.Context, req *pb_admin.GetOrdersByStatusAndPaymentMethodRequest) (*pb_admin.GetOrdersByStatusAndPaymentMethodResponse, error) {
+	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
+	}
+	pm, ok := dto.ConvertPbToEntityPaymentMethod(req.PaymentMethod)
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't convert pb payment method to entity payment method %v ", req.PaymentMethod)
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb payment method to entity payment method")
+	}
+
+	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
+		st,
+		pm,
+		int(req.Limit),
+		int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get orders by status",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get orders by status")
+	}
+
+	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
+	for _, order := range orders {
+		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		}
+		ordersPb = append(ordersPb, o)
+	}
+	return &pb_admin.GetOrdersByStatusAndPaymentMethodResponse{
 		Orders: ordersPb,
 	}, nil
 }

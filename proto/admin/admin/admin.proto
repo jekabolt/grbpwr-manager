@@ -347,6 +347,10 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/orders/by-status/{status}"};
   }
 
+  // Retrieves orders by their status
+  rpc GetOrdersByStatusAndPaymentMethod(GetOrdersByStatusAndPaymentMethodRequest) returns (GetOrdersByStatusAndPaymentMethodResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/by-status/{status}/{payment_method}"};
+  }
   // Processes a refund for an order
   rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
     option (google.api.http) = {
@@ -804,9 +808,24 @@ message GetOrdersByEmailResponse {
 
 message GetOrdersByStatusRequest {
   common.OrderStatusEnum status = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+  common.OrderFactor order_factor = 4;
 }
 
 message GetOrdersByStatusResponse {
+  repeated common.OrderFull orders = 1;
+}
+
+message GetOrdersByStatusAndPaymentMethodRequest {
+  common.OrderStatusEnum status = 1;
+  common.PaymentMethodNameEnum payment_method = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+  common.OrderFactor order_factor = 5;
+}
+
+message GetOrdersByStatusAndPaymentMethodResponse {
   repeated common.OrderFull orders = 1;
 }
 
