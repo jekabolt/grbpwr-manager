@@ -18,20 +18,14 @@ type OrderNew struct {
 }
 
 type OrderFull struct {
-	Order           *Order
-	OrderItems      []OrderItem
-	Payment         *Payment
-	PaymentMethod   *PaymentMethod
-	Shipment        *Shipment
-	ShipmentCarrier *ShipmentCarrier
-	PromoCode       *PromoCode
-	OrderStatus     *OrderStatus
-	Buyer           *Buyer
-	Billing         *Address
-	Shipping        *Address
-	Placed          time.Time
-	Modified        time.Time
-	TotalPrice      decimal.Decimal
+	Order      *Order
+	OrderItems []OrderItem
+	Payment    *Payment
+	Shipment   *Shipment
+	PromoCode  *PromoCode
+	Buyer      *Buyer
+	Billing    *Address
+	Shipping   *Address
 }
 
 // Orders represents the orders table

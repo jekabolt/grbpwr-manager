@@ -140,6 +140,16 @@ func (ms *MYSQLStore) IsErrUniqueViolation(err error) bool {
 	return false
 }
 
+func MakeQuery(query string, params map[string]any) (string, []any, error) {
+	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
+	queryNamed.SetValuesFromMap(params)
+	query, args, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+	if err != nil {
+		return "", nil, fmt.Errorf("in: %w", err)
+	}
+	return query, args, nil
+}
+
 func QueryListNamed[T any](
 	ctx context.Context,
 	conn dependency.DB,
