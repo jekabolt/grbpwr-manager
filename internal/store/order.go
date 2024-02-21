@@ -414,20 +414,52 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 	return order, err
 }
 
-func getOrderItems(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItem, error) {
+// func getOrderItems(ctx context.Context, rep dependency.Repository, orderIds []int) ([]entity.OrderItem, error) {
+// 	query := `
+// 		SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
+// 		FROM order_item oi
+// 		JOIN product p ON oi.product_id = p.id
+// 		WHERE oi.order_id = :orderId
+// 	`
+// 	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]any{
+// 		"orderIds": orderIds,
+// 	})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return ois, nil
+// }
+
+func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int][]entity.OrderItem, error) {
+	// Check if there are no order IDs provided
+	if len(orderIds) == 0 {
+		return map[int][]entity.OrderItem{}, nil
+	}
+
 	query := `
-		SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
-		FROM order_item oi
-		JOIN product p ON oi.product_id = p.id
-		WHERE oi.order_id = :orderId
-	`
-	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]any{
-		"orderId": orderId,
+        SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
+        FROM order_item oi
+        JOIN product p ON oi.product_id = p.id
+        WHERE oi.order_id IN (:orderIds)
+    `
+
+	// Execute the query with named parameters
+	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]interface{}{
+		"orderIds": orderIds,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return ois, nil
+
+	// Initialize a map to store the order items grouped by order ID
+	orderItemsMap := make(map[int][]entity.OrderItem)
+
+	// Group order items by order ID
+	for _, oi := range ois {
+		orderItemsMap[oi.OrderID] = append(orderItemsMap[oi.OrderID], oi)
+	}
+
+	return orderItemsMap, nil
 }
 func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
 	query := `SELECT product_id, quantity, size_id FROM order_item WHERE order_id = :orderId`
@@ -456,6 +488,78 @@ func getOrderShipment(ctx context.Context, rep dependency.Repository, orderId in
 		return nil, err
 	}
 	return &s, nil
+}
+
+func shipmentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]*entity.Shipment, error) {
+	if len(orderIds) == 0 {
+		return map[int]*entity.Shipment{}, nil
+	}
+
+	query := `
+	SELECT 
+		customer_order.id as order_id,
+		shipment.id,
+		shipment.created_at,
+		shipment.updated_at,
+		shipment.carrier_id,
+		shipment.tracking_code,
+		shipment.shipping_date,
+		shipment.estimated_arrival_date
+	FROM shipment
+	JOIN customer_order ON shipment.id = customer_order.shipment_id
+	WHERE customer_order.id IN (:orderIds)`
+
+	query, params, err := MakeQuery(query, map[string]interface{}{
+		"orderIds": orderIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't make query: %w", err)
+	}
+
+	rows, err := rep.DB().QueryxContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("can't get shipments by order ID: %w", err)
+	}
+	defer rows.Close()
+
+	shipments := make(map[int]*entity.Shipment)
+
+	for rows.Next() {
+		var shipment entity.Shipment
+		var orderId int
+
+		err := rows.Scan(
+			&orderId,
+			&shipment.ID,
+			&shipment.CreatedAt,
+			&shipment.UpdatedAt,
+			&shipment.CarrierID,
+			&shipment.TrackingCode,
+			&shipment.ShippingDate,
+			&shipment.EstimatedArrivalDate,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		shipments[orderId] = &shipment
+	}
+
+	// Check for any errors during iteration
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Check if all order IDs were found
+	if len(shipments) != len(orderIds) {
+		return nil, errors.New("not all order IDs were found")
+	}
+
+	return shipments, nil
 }
 
 func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, orderId int, promoId int, totalPrice decimal.Decimal) error {
@@ -1050,6 +1154,82 @@ func getPaymentById(ctx context.Context, rep dependency.Repository, paymentId in
 	return &payment, nil
 }
 
+func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]*entity.Payment, error) {
+	if len(orderIds) == 0 {
+		return map[int]*entity.Payment{}, nil
+	}
+
+	query := `
+	SELECT 
+		customer_order.id as order_id,
+		payment.id, 
+		payment.payment_method_id,
+		payment.transaction_id, 
+		payment.transaction_amount, 
+		payment.payer, 
+		payment.payee, 
+		payment.is_transaction_done,
+		payment.created_at,
+		payment.modified_at
+	FROM payment
+	JOIN customer_order ON payment.id = customer_order.payment_id
+	WHERE customer_order.id IN (:orderIds)`
+
+	query, params, err := MakeQuery(query, map[string]interface{}{
+		"orderIds": orderIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't make query: %w", err)
+	}
+
+	// Execute the query
+	rows, err := rep.DB().QueryxContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("can't get payments by order ids: %w", err)
+	}
+	defer rows.Close()
+
+	payments := make(map[int]*entity.Payment)
+
+	// Iterate over the rows
+	for rows.Next() {
+		var orderId int
+		var payment entity.Payment
+
+		// Scan the values into variables
+		err := rows.Scan(
+			&orderId,
+			&payment.ID,
+			&payment.PaymentMethodID,
+			&payment.TransactionID,
+			&payment.TransactionAmount,
+			&payment.Payer,
+			&payment.Payee,
+			&payment.IsTransactionDone,
+			&payment.CreatedAt,
+			&payment.ModifiedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Populate the map
+		payments[orderId] = &payment
+	}
+
+	// Check for any errors during iteration
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Check if all order IDs were found
+	if len(payments) != len(orderIds) {
+		return nil, errors.New("not all order IDs were found")
+	}
+
+	return payments, nil
+}
+
 func getBuyerById(ctx context.Context, rep dependency.Repository, buyerId int) (*entity.Buyer, error) {
 	query := `
 	SELECT * FROM buyer WHERE id = :buyerId`
@@ -1062,88 +1242,309 @@ func getBuyerById(ctx context.Context, rep dependency.Repository, buyerId int) (
 	return &buyer, nil
 }
 
-func getAddressId(ctx context.Context, rep dependency.Repository, addressId int) (entity.Address, error) {
+func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]*entity.Buyer, error) {
+
+	if len(orderIds) == 0 {
+		return map[int]*entity.Buyer{}, nil
+	}
+
 	query := `
-	SELECT * FROM address WHERE id = :addressId`
-	address, err := QueryNamedOne[entity.Address](ctx, rep.DB(), query, map[string]interface{}{
-		"addressId": addressId,
+	SELECT 
+		customer_order.id as order_id,
+		buyer.id,
+		buyer.first_name,
+		buyer.last_name,
+		buyer.email,
+		buyer.phone,
+		buyer.receive_promo_emails,
+		buyer.billing_address_id,
+		buyer.shipping_address_id
+	FROM buyer
+	JOIN customer_order ON buyer.id = customer_order.buyer_id
+	WHERE customer_order.id IN (:orderIds)`
+
+	query, params, err := MakeQuery(query, map[string]interface{}{
+		"orderIds": orderIds,
 	})
 	if err != nil {
-		return entity.Address{}, fmt.Errorf("can't get address by id: %w", err)
+		return nil, fmt.Errorf("can't make query: %w", err)
 	}
-	return address, nil
+
+	rows, err := rep.DB().QueryxContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("can't get buyers by order ID: %w", err)
+	}
+	defer rows.Close()
+
+	buyers := make(map[int]*entity.Buyer)
+
+	for rows.Next() {
+		var buyer entity.Buyer
+		var orderId int
+
+		err := rows.Scan(
+			&orderId,
+			&buyer.ID,
+			&buyer.FirstName,
+			&buyer.LastName,
+			&buyer.Email,
+			&buyer.Phone,
+			&buyer.ReceivePromoEmails,
+			&buyer.BillingAddressID,
+			&buyer.ShippingAddressID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		buyers[orderId] = &buyer
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(buyers) != len(orderIds) {
+		return nil, errors.New("not all order IDs were found")
+	}
+
+	return buyers, nil
+
 }
 
-func fetchOrderInfo(ctx context.Context, rep dependency.Repository, order *entity.Order) (*entity.OrderFull, error) {
-	orderItems, err := getOrderItems(ctx, rep, order.ID)
+type addressFull struct {
+	shipping *entity.Address
+	billing  *entity.Address
+}
+
+func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]addressFull, error) {
+
+	if len(orderIds) == 0 {
+		return map[int]addressFull{}, nil
+	}
+
+	query := `
+	SELECT 
+		co.id AS order_id,
+		billing.street AS billing_street,
+		billing.house_number AS billing_house_number,
+		billing.apartment_number AS billing_apartment_number,
+		billing.city AS billing_city,
+		billing.state AS billing_state,
+		billing.country AS billing_country,
+		billing.postal_code AS billing_postal_code,
+		shipping.street AS shipping_street,
+		shipping.house_number AS shipping_house_number,
+		shipping.apartment_number AS shipping_apartment_number,
+		shipping.city AS shipping_city,
+		shipping.state AS shipping_state,
+		shipping.country AS shipping_country,
+		shipping.postal_code AS shipping_postal_code
+	FROM 
+		customer_order co
+	INNER JOIN 
+		buyer b ON co.buyer_id = b.id
+	INNER JOIN 
+		address billing ON b.billing_address_id = billing.id
+	INNER JOIN 
+		address shipping ON b.shipping_address_id = shipping.id
+	WHERE 
+		co.id IN (:orderIds)`
+
+	query, params, err := MakeQuery(query, map[string]interface{}{
+		"orderIds": orderIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't make query: %w", err)
+	}
+
+	rows, err := rep.DB().QueryxContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("can't get addresses by order ID: %w", err)
+	}
+	defer rows.Close()
+
+	addresses := make(map[int]addressFull)
+
+	for rows.Next() {
+		var shipping entity.Address
+		var billing entity.Address
+		var orderId int
+
+		err := rows.Scan(
+			&orderId,
+			&billing.Street,
+			&billing.HouseNumber,
+			&billing.ApartmentNumber,
+			&billing.City,
+			&billing.State,
+			&billing.Country,
+			&billing.PostalCode,
+			&shipping.Street,
+			&shipping.HouseNumber,
+			&shipping.ApartmentNumber,
+			&shipping.City,
+			&shipping.State,
+			&shipping.Country,
+			&shipping.PostalCode,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		addresses[orderId] = addressFull{
+			shipping: &shipping,
+			billing:  &billing,
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// slog.Default().ErrorCtx(ctx, "---addrs---", slog.Any("addrs", addresses))
+
+	if len(addresses) != len(orderIds) {
+		return nil, errors.New("not all order IDs were found")
+	}
+
+	return addresses, nil
+
+}
+
+func getOrderIds(orders []entity.Order) []int {
+	var orderIds []int
+	for _, order := range orders {
+		orderIds = append(orderIds, order.ID)
+	}
+	return orderIds
+}
+
+func promosByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]*entity.PromoCode, error) {
+	if len(orderIds) == 0 {
+		return map[int]*entity.PromoCode{}, nil
+	}
+
+	query := `
+    SELECT 
+		customer_order.id as order_id,
+        promo_code.id, 
+        promo_code.code, 
+        promo_code.free_shipping, 
+        promo_code.discount, 
+        promo_code.expiration, 
+        promo_code.voucher, 
+        promo_code.allowed
+    FROM promo_code
+    JOIN customer_order ON promo_code.id = customer_order.promo_id
+    WHERE customer_order.id IN (:orderIds)`
+
+	query, params, err := MakeQuery(query, map[string]interface{}{
+		"orderIds": orderIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't make query: %w", err)
+	}
+
+	// Execute the query
+	rows, err := rep.DB().QueryxContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("can't get promos by order ids: %w", err)
+	}
+	defer rows.Close()
+
+	promos := make(map[int]*entity.PromoCode)
+
+	// Iterate over the rows
+	for rows.Next() {
+		var orderId int
+		var promo entity.PromoCode
+
+		// Scan the values into variables
+		err := rows.Scan(
+			&orderId,
+			&promo.ID,
+			&promo.Code,
+			&promo.FreeShipping,
+			&promo.Discount,
+			&promo.Expiration,
+			&promo.Voucher,
+			&promo.Allowed,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Populate the map
+		promos[orderId] = &promo
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return promos, nil
+}
+
+func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []entity.Order) ([]entity.OrderFull, error) {
+
+	ids := getOrderIds(orders)
+
+	orderItems, err := getOrdersItems(ctx, rep, ids)
 	if err != nil {
 		return nil, fmt.Errorf("can't get order items: %w", err)
 	}
 
-	payment, err := getPaymentById(ctx, rep, order.PaymentID)
+	payments, err := paymentsByOrderIds(ctx, rep, ids)
 	if err != nil {
 		return nil, fmt.Errorf("can't get payment by id: %w", err)
 	}
 
-	paymentMethod, ok := rep.Cache().GetPaymentMethodById(payment.PaymentMethodID)
-	if !ok {
-		return nil, fmt.Errorf("payment method is not exists")
-	}
-
-	shipment, err := getOrderShipment(ctx, rep, order.ID)
+	shipments, err := shipmentsByOrderIds(ctx, rep, ids)
 	if err != nil {
 		return nil, fmt.Errorf("can't get order shipment: %w", err)
 	}
-	shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
-	if !ok {
-		return nil, fmt.Errorf("shipment carrier is not exists")
+
+	promos, err := promosByOrderIds(ctx, rep, ids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order promos: %w", err)
 	}
 
-	promo := &entity.PromoCode{}
-	if order.PromoID.Int32 != 0 && order.PromoID.Valid {
-		promo, ok = rep.Cache().GetPromoById(int(order.PromoID.Int32))
-		if !ok {
-			return nil, fmt.Errorf("promo code is not exists")
-		}
-	}
-
-	orderStatus, ok := rep.Cache().GetOrderStatusById(order.OrderStatusID)
-	if !ok {
-		return nil, fmt.Errorf("order status is not exists")
-	}
-
-	buyer, err := getBuyerById(ctx, rep, order.BuyerID)
+	buyers, err := buyersByOrderIds(ctx, rep, ids)
 	if err != nil {
 		return nil, fmt.Errorf("can't get buyer by id: %w", err)
 	}
 
-	shippingAddress, err := getAddressId(ctx, rep, buyer.ShippingAddressID)
+	addressesFull, err := addressesByOrderIds(ctx, rep, ids)
 	if err != nil {
-		return nil, fmt.Errorf("can't get shipping address by id: %w", err)
-	}
-	billingAddress, err := getAddressId(ctx, rep, buyer.BillingAddressID)
-	if err != nil {
-		return nil, fmt.Errorf("can't get billing address by id: %w", err)
+		return nil, fmt.Errorf("can't get addresses by id: %w", err)
 	}
 
-	orderInfo := entity.OrderFull{
-		Order:           order,
-		OrderItems:      orderItems,
-		Payment:         payment,
-		PaymentMethod:   paymentMethod,
-		Shipment:        shipment,
-		ShipmentCarrier: shipmentCarrier,
-		PromoCode:       promo,
-		OrderStatus:     orderStatus,
-		Buyer:           buyer,
-		Billing:         &billingAddress,
-		Shipping:        &shippingAddress,
-		Placed:          order.Placed,
-		Modified:        order.Modified,
-		TotalPrice:      order.TotalPrice,
+	ofs := []entity.OrderFull{}
+
+	for _, order := range orders {
+
+		if _, ok := promos[order.ID]; !ok {
+			promos[order.ID] = &entity.PromoCode{}
+		}
+		addrs := addressesFull[order.ID]
+
+		orderIn := order
+		of := entity.OrderFull{
+			Order:      &orderIn,
+			OrderItems: orderItems[order.ID],
+			Payment:    payments[order.ID],
+			Shipment:   shipments[order.ID],
+			Buyer:      buyers[order.ID],
+			PromoCode:  promos[order.ID],
+			Billing:    addrs.billing,
+			Shipping:   addrs.shipping,
+		}
+		ofs = append(ofs, of)
+
 	}
 
-	return &orderInfo, nil
+	return ofs, nil
 }
 
 func (ms *MYSQLStore) GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error) {
@@ -1165,8 +1566,15 @@ func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.Or
 	if err != nil {
 		return nil, err
 	}
+	ofs, err := fetchOrderInfo(ctx, ms, []entity.Order{*order})
+	if err != nil {
+		return nil, fmt.Errorf("can't fetch order info: %w", err)
+	}
+	if len(ofs) == 0 {
+		return nil, fmt.Errorf("order is not found")
+	}
 
-	return fetchOrderInfo(ctx, ms, order)
+	return &ofs[0], nil
 }
 
 func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
@@ -1174,7 +1582,15 @@ func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.
 	if err != nil {
 		return nil, err
 	}
-	return fetchOrderInfo(ctx, ms, order)
+	ofs, err := fetchOrderInfo(ctx, ms, []entity.Order{*order})
+	if err != nil {
+		return nil, fmt.Errorf("can't fetch order info: %w", err)
+	}
+	if len(ofs) == 0 {
+		return nil, fmt.Errorf("order is not found")
+	}
+
+	return &ofs[0], nil
 }
 
 func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email string) ([]entity.Order, error) {
@@ -1210,23 +1626,15 @@ func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string) ([]ent
 		return nil, err
 	}
 
-	var ordersInfo []entity.OrderFull
-	for _, order := range orders {
-		orderInfo, err := fetchOrderInfo(ctx, ms, &order)
-		if err != nil {
-			return nil, err
-		}
-		ordersInfo = append(ordersInfo, *orderInfo)
-	}
-
-	return ordersInfo, nil
+	return fetchOrderInfo(ctx, ms, orders)
 }
 
 // getOrdersByStatus retrieves a paginated list of orders based on their status and sort order.
 func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStatusId int, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.Order, error) {
 	query := fmt.Sprintf(`
-	SELECT 
+	SELECT
 		co.id,
+		co.uuid,
 		co.buyer_id,
 		co.placed,
 		co.modified,
@@ -1235,7 +1643,7 @@ func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStat
 		co.order_status_id,
 		co.shipment_id,
 		co.promo_id
-	FROM customer_order co 
+	FROM customer_order co
 	WHERE co.order_status_id = :status
 	ORDER BY co.modified %s
 	LIMIT :limit
@@ -1314,16 +1722,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, 
 		return nil, err
 	}
 
-	var ordersInfo []entity.OrderFull
-	for _, order := range orders {
-		orderInfo, err := fetchOrderInfo(ctx, ms, &order)
-		if err != nil {
-			return nil, err
-		}
-		ordersInfo = append(ordersInfo, *orderInfo)
-	}
-
-	return ordersInfo, nil
+	return fetchOrderInfo(ctx, ms, orders)
 }
 
 func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository, orderStatusId, paymentMethodId int) ([]entity.Order, error) {
@@ -1373,16 +1772,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, statu
 		return nil, err
 	}
 
-	var ordersInfo []entity.OrderFull
-	for _, order := range orders {
-		orderInfo, err := fetchOrderInfo(ctx, ms, &order)
-		if err != nil {
-			return nil, err
-		}
-		ordersInfo = append(ordersInfo, *orderInfo)
-	}
-
-	return ordersInfo, nil
+	return fetchOrderInfo(ctx, ms, orders)
 }
 
 func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, st entity.OrderStatusName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error) {
@@ -1396,16 +1786,7 @@ func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, st entity.OrderStat
 		return nil, err
 	}
 
-	var ordersInfo []entity.OrderFull
-	for _, order := range orders {
-		orderInfo, err := fetchOrderInfo(ctx, ms, &order)
-		if err != nil {
-			return nil, err
-		}
-		ordersInfo = append(ordersInfo, *orderInfo)
-	}
-
-	return ordersInfo, nil
+	return fetchOrderInfo(ctx, ms, orders)
 
 }
 

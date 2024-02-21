@@ -140,38 +140,12 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting payment: %w", err)
 	}
 
-	pbPaymentMethodEnum, ok := ConvertEntityToPbPaymentMethod(e.PaymentMethod.Name)
-	if !ok {
-		return nil, fmt.Errorf("error converting payment method: %v", e.PaymentMethod.Name)
-	}
-
-	//TODO:
-	pbPaymentMethod := &pb_common.PaymentMethod{
-		Id:      int32(e.PaymentMethod.ID),
-		Name:    pbPaymentMethodEnum,
-		Allowed: e.PaymentMethod.Allowed,
-	}
-
 	pbShipment, err := ConvertEntityShipmentToPbShipment(e.Shipment)
 	if err != nil {
 		return nil, fmt.Errorf("error converting shipment: %w", err)
 	}
 
-	pbShipmentCarrier, err := ConvertEntityShipmentCarrierToPbShipmentCarrier(e.ShipmentCarrier)
-	if err != nil {
-		return nil, fmt.Errorf("error converting shipment carrier: %w", err)
-	}
-
 	pbPromoCode := ConvertEntityPromoToPb(e.PromoCode)
-
-	pbOrderStatusEnum, ok := ConvertEntityToPbOrderStatus(e.OrderStatus.Name)
-	if !ok {
-		return nil, fmt.Errorf("error converting order status: %v", e.OrderStatus)
-	}
-	pbOrderStatus := &pb_common.OrderStatus{
-		Id:   int32(e.OrderStatus.ID),
-		Name: pbOrderStatusEnum,
-	}
 
 	pbBuyer, err := ConvertEntityBuyerToPbBuyer(e.Buyer)
 	if err != nil {
@@ -188,20 +162,14 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 	}
 
 	return &pb_common.OrderFull{
-		Order:           pbOrder,
-		OrderItems:      pbOrderItems,
-		Payment:         pbPayment,
-		PaymentMethod:   pbPaymentMethod,
-		Shipment:        pbShipment,
-		ShipmentCarrier: pbShipmentCarrier,
-		PromoCode:       pbPromoCode,
-		OrderStatus:     pbOrderStatus,
-		Buyer:           pbBuyer,
-		Billing:         pbBilling,
-		Shipping:        pbShipping,
-		Placed:          timestamppb.New(e.Placed),
-		Modified:        timestamppb.New(e.Modified),
-		TotalPrice:      &pb_decimal.Decimal{Value: e.TotalPrice.String()},
+		Order:      pbOrder,
+		OrderItems: pbOrderItems,
+		Payment:    pbPayment,
+		Shipment:   pbShipment,
+		PromoCode:  pbPromoCode,
+		Buyer:      pbBuyer,
+		Billing:    pbBilling,
+		Shipping:   pbShipping,
 	}, nil
 }
 
