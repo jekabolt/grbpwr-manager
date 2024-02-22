@@ -1685,7 +1685,7 @@ func getOrdersByStatusAndPaymentPaged(ctx context.Context, rep dependency.Reposi
     ORDER BY co.modified %s
     LIMIT :limit
     OFFSET :offset
-    `, orderFactor) // Include orderFactor in the query string safely
+    `, orderFactor.String())
 
 	params := map[string]interface{}{
 		"status":        orderStatusId,
@@ -1931,12 +1931,26 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderId int) error {
 func (ms *MYSQLStore) DeliveredOrder(ctx context.Context, orderId int) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		statusRefunded, ok := ms.cache.GetOrderStatusByName(entity.Refunded)
+		order, err := getOrderById(ctx, rep, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		}
+
+		if orderStatus.Name != entity.Shipped && orderStatus.Name != entity.Confirmed {
+			return fmt.Errorf("order status can be only in (Confirmed, Shipped): order status %s", orderStatus.Name)
+		}
+
+		statusDelivered, ok := ms.cache.GetOrderStatusByName(entity.Delivered)
 		if !ok {
 			return fmt.Errorf("order status is not exists: order status name %s", entity.Refunded)
 		}
 
-		err := updateOrderStatus(ctx, rep, orderId, statusRefunded.ID)
+		err = updateOrderStatus(ctx, rep, orderId, statusDelivered.ID)
 		if err != nil {
 			return fmt.Errorf("can't update order status: %w", err)
 		}
@@ -1962,7 +1976,7 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderId int) error {
 			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 		}
 
-		if orderStatus.Name != entity.Placed {
+		if orderStatus.Name != entity.Placed && orderStatus.Name != entity.AwaitingPayment {
 			return fmt.Errorf("order status can be only in (Placed): order status %s", orderStatus.Name)
 		}
 

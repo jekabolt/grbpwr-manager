@@ -43,6 +43,7 @@ func ConvertEntityPromoToPb(entityPromo *entity.PromoCode) *pb_common.PromoCode 
 		Discount:     &pb_decimal.Decimal{Value: discountStr},
 		Expiration:   timestamppb.New(entityPromo.Expiration),
 		Allowed:      entityPromo.Allowed,
+		Voucher:      entityPromo.Voucher,
 	}
 
 	// Create pb_common.PromoCode
