@@ -47,7 +47,7 @@ func (ms *MYSQLStore) ListMediaPaged(ctx context.Context, limit, offset int, ord
 		return nil, fmt.Errorf("invalid pagination parameters")
 	}
 
-	query := `SELECT * FROM media ORDER BY id ` + string(orderFactor) + ` LIMIT :limit OFFSET :offset`
+	query := fmt.Sprintf(`SELECT * FROM media ORDER BY id %s LIMIT :limit OFFSET :offset`, orderFactor.String())
 	mediaPage, err := QueryListNamed[entity.Media](ctx, ms.DB(), query, map[string]any{
 		"limit":  limit,
 		"offset": offset,

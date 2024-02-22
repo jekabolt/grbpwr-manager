@@ -17,9 +17,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
+	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
+
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
@@ -177,20 +181,20 @@ func (s *Server) Start(ctx context.Context,
 	authServer *auth.Server,
 ) error {
 
-	// opts := []grpcSlog.Option{
-	// 	// grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall, grpcSlog.PayloadSent, grpcSlog.PayloadReceived),
-	// 	// Add any other option (check functions starting with logging.With).
-	// }
+	opts := []grpcSlog.Option{
+		grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall, grpcSlog.PayloadSent, grpcSlog.PayloadReceived),
+		// Add any other option (check functions starting with logging.With).
+	}
 
 	s.gs = grpc.NewServer(
-	// grpc.ChainUnaryInterceptor(
-	// 	grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
-	// 	grpcRecovery.UnaryServerInterceptor(),
-	// ),
-	// grpc.ChainStreamInterceptor(
-	// 	grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
-	// 	grpcRecovery.StreamServerInterceptor(),
-	// ),
+		grpc.ChainUnaryInterceptor(
+			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
+			grpcRecovery.UnaryServerInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
+			grpcRecovery.StreamServerInterceptor(),
+		),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
 	pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)

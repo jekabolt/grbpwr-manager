@@ -131,12 +131,12 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	}
 
 	// Prepare the query with dynamic ordering and pagination placeholders
-	query := `
+	query := fmt.Sprintf(`
     SELECT a.id, a.created_at, a.updated_at, a.title, a.description,
            ai.id AS item_id, ai.media, ai.url, ai.title AS item_title
     FROM archive a
     LEFT JOIN archive_item ai ON a.id = ai.archive_id
-    ORDER BY a.created_at ` + string(orderFactor) + ` LIMIT ? OFFSET ?`
+    ORDER BY a.created_at %s LIMIT ? OFFSET ?`, orderFactor.String())
 
 	// Slice to store the joined data from the query
 	var archiveData []archiveJoin
