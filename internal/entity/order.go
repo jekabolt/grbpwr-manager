@@ -49,16 +49,21 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	ID        int    `db:"id"`
-	OrderID   int    `db:"order_id"`
-	Thumbnail string `db:"thumbnail"`
+	ID           int    `db:"id"`
+	OrderID      int    `db:"order_id"`
+	Thumbnail    string `db:"thumbnail"`
+	ProductName  string `db:"product_name"`
+	ProductBrand string `db:"product_brand"`
+	CategoryID   int    `db:"category_id"`
 	OrderItemInsert
 }
 
 type OrderItemInsert struct {
-	ProductID int             `db:"product_id" valid:"required"`
-	Quantity  decimal.Decimal `db:"quantity" valid:"required"`
-	SizeID    int             `db:"size_id" valid:"required"`
+	ProductID             int             `db:"product_id" valid:"required"`
+	ProductPrice          decimal.Decimal `db:"product_price"`
+	ProductSalePercentage decimal.Decimal `db:"product_sale_percentage"`
+	Quantity              decimal.Decimal `db:"quantity" valid:"required"`
+	SizeID                int             `db:"size_id" valid:"required"`
 }
 
 func (oii OrderItemInsert) GetProductID() int {

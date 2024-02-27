@@ -23,32 +23,36 @@ const (
 // APIKeyHeader represents the header name for the API key.
 const APIKeyHeader = "TRON-PRO-API-KEY"
 
+type Config struct {
+	APIKey  string        `mapstructure:"api_key"`
+	BaseURL string        `mapstructure:"base_url"`
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
 // Client represents a client for the TronGrid API.
 type Client struct {
 	httpClient *http.Client
-	apiKey     string
-	baseURL    string
+	c          *Config
 }
 
 // NewClient creates a new TronGrid API client.
-func New(apiKey, baseURL string, timeout time.Duration) dependency.Trongrid {
+func New(c *Config) dependency.Trongrid {
 	return &Client{
-		httpClient: &http.Client{Timeout: timeout},
-		apiKey:     apiKey,
-		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: c.Timeout},
+		c:          c,
 	}
 }
 
 // GetAddressTransactions retrieves TRC-20 token transactions for a given address.
 func (c *Client) GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error) {
-	url := fmt.Sprintf("%s/v1/accounts/%s/transactions/trc20?limit=20", c.baseURL, address)
+	url := fmt.Sprintf("%s/v1/accounts/%s/transactions/trc20?limit=20", c.c.BaseURL, address)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Add(APIKeyHeader, c.apiKey)
+	req.Header.Add(APIKeyHeader, c.c.APIKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

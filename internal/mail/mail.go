@@ -51,7 +51,11 @@ func addAuthHeader(token string) resend.RequestEditorFn {
 	}
 }
 
-func New(c *Config, db dependency.Mail) (*Mailer, error) {
+func New(c *Config, db dependency.Mail) (dependency.Mailer, error) {
+	return new(c, db)
+}
+
+func new(c *Config, db dependency.Mail) (*Mailer, error) {
 	// Validate the configuration
 	if c.APIKey == "" || c.FromEmail == "" || c.FromName == "" {
 		return nil, fmt.Errorf("incomplete config: %+v", c)
@@ -126,7 +130,7 @@ func (m *Mailer) send(ctx context.Context, to, templateName string, data interfa
 		return nil, fmt.Errorf("subject not found for template: %v", templateName)
 	}
 
-	body := new(strings.Builder)
+	body := &strings.Builder{}
 	if err := tmpl.Execute(body, data); err != nil {
 		return nil, fmt.Errorf("error executing template: %w", err)
 	}

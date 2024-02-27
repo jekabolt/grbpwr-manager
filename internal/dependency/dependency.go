@@ -99,7 +99,7 @@ type (
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
 		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (decimal.Decimal, error)
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (decimal.Decimal, error)
-		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.Payment, error)
+		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
 		GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error)
@@ -262,9 +262,11 @@ type (
 		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)
 		UpdateShipmentCarrierAllowance(carrier string, allowance bool) error
 		UpdateShipmentCarrierCost(carrier string, cost decimal.Decimal) error
+		GetAllShipmentCarriers() map[int]entity.ShipmentCarrier
 
 		GetSizeById(id int) (*entity.Size, bool)
 		GetSizesByName(size entity.SizeEnum) (entity.Size, bool)
+		GetAllSizes() map[int]entity.Size
 
 		GetHero() *entity.HeroFull
 		UpdateHero(hf *entity.HeroFull)
