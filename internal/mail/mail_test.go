@@ -165,7 +165,7 @@ func TestMailerLimit(t *testing.T) {
 
 	// Act
 	// Create a new Mailer instance
-	mailer, err := New(conf, mailDBMock)
+	mailer, err := new(conf, mailDBMock)
 	assert.NoError(t, err, "Failed to create Mailer instance")
 	mailer.cli = senderMock
 
@@ -212,7 +212,7 @@ func TestMailerSuccess(t *testing.T) {
 
 	// Act
 	// Create a new Mailer instance
-	mailer, err := New(conf, mailDBMock)
+	mailer, err := new(conf, mailDBMock)
 	assert.NoError(t, err, "Failed to create Mailer instance")
 	mailer.cli = senderMock
 
@@ -259,7 +259,7 @@ func TestMailerError(t *testing.T) {
 
 	// Act
 	// Create a new Mailer instance
-	mailer, err := New(conf, mailDBMock)
+	mailer, err := new(conf, mailDBMock)
 	assert.NoError(t, err, "Failed to create Mailer instance")
 	mailer.cli = senderMock
 

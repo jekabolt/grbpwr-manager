@@ -196,12 +196,20 @@ func (c *Cache) UpdateShipmentCarrierCost(carrier string, cost decimal.Decimal) 
 	return nil
 }
 
+func (c *Cache) GetAllShipmentCarriers() map[int]entity.ShipmentCarrier {
+	return c.ShipmentCarrier.GetAllShipmentCarriers()
+}
+
 // size
 func (c *Cache) GetSizeById(id int) (*entity.Size, bool) {
 	return c.Size.GetSizeById(id)
 }
 func (c *Cache) GetSizesByName(size entity.SizeEnum) (entity.Size, bool) {
 	return c.Size.GetSizesByName(size)
+}
+
+func (c *Cache) GetAllSizes() map[int]entity.Size {
+	return c.Size.GetAllSizes()
 }
 
 // hero

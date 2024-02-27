@@ -28,7 +28,11 @@ type Server struct {
 }
 
 // New creates a new server with admin handlers.
-func New(r dependency.Repository, b dependency.FileStore, ci dependency.CryptoInvoice) *Server {
+func New(
+	r dependency.Repository,
+	b dependency.FileStore,
+	ci dependency.CryptoInvoice,
+) *Server {
 	return &Server{
 		repo:           r,
 		bucket:         b,
@@ -677,6 +681,7 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 		Order: o,
 	}, nil
 }
+
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
 	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
@@ -691,6 +696,7 @@ func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCod
 		},
 	}, nil
 }
+
 func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrderItemsRequest) (*pb_admin.UpdateOrderItemsResponse, error) {
 	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, i := range req.Items {
@@ -717,6 +723,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 		},
 	}, nil
 }
+
 func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
 	newTotal, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
 	if err != nil {
@@ -731,6 +738,7 @@ func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.U
 		},
 	}, nil
 }
+
 func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvoiceRequest) (*pb_admin.GetOrderInvoiceResponse, error) {
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
@@ -762,7 +770,6 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
-
 }
 
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
@@ -943,6 +950,8 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 	return &pb_admin.CancelOrderResponse{}, nil
 }
 
+// HERO MANAGER
+
 func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb_admin.AddHeroResponse, error) {
 	main := dto.ConvertCommonHeroInsertToEntity(req.Main)
 
@@ -965,6 +974,7 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 	}
 	return &pb_admin.AddHeroResponse{}, nil
 }
+
 func (s *Server) GetHero(ctx context.Context, req *pb_admin.GetHeroRequest) (*pb_admin.GetHeroResponse, error) {
 	hero, err := s.repo.Hero().GetHero(ctx)
 	if err != nil {
@@ -1048,6 +1058,7 @@ func (s *Server) DeleteArchiveItem(ctx context.Context, req *pb_admin.DeleteArch
 	}
 	return &pb_admin.DeleteArchiveItemResponse{}, nil
 }
+
 func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchivesPagedRequest) (*pb_admin.GetArchivesPagedResponse, error) {
 	afs, err := s.repo.Archive().GetArchivesPaged(ctx,
 		int(req.Limit),
@@ -1072,6 +1083,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchives
 	}, nil
 
 }
+
 func (s *Server) GetArchiveById(ctx context.Context, req *pb_admin.GetArchiveByIdRequest) (*pb_admin.GetArchiveByIdResponse, error) {
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
@@ -1109,6 +1121,7 @@ func (s *Server) SetShipmentCarrierAllowance(ctx context.Context, req *pb_admin.
 	}
 	return &pb_admin.SetShipmentCarrierAllowanceResponse{}, nil
 }
+
 func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetShipmentCarrierPriceRequest) (*pb_admin.SetShipmentCarrierPriceResponse, error) {
 	price, err := decimal.NewFromString(req.Price.Value)
 	if err != nil {
@@ -1128,6 +1141,7 @@ func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetS
 	return &pb_admin.SetShipmentCarrierPriceResponse{}, nil
 
 }
+
 func (s *Server) SetPaymentMethodAllowance(ctx context.Context, req *pb_admin.SetPaymentMethodAllowanceRequest) (*pb_admin.SetPaymentMethodAllowanceResponse, error) {
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, pm, req.Allow)

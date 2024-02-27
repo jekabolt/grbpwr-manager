@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/usdt"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -77,7 +78,9 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	usdtTron, err := usdt.New(ctx, &a.c.USDTTronPayment, a.db)
+	tg := trongrid.New(&a.c.Trongrid)
+
+	usdtTron, err := usdt.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
 		return err

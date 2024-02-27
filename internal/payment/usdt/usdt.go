@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slog"
@@ -21,27 +22,30 @@ type Config struct {
 }
 
 type Processor struct {
-	c     *Config
-	pm    *entity.PaymentMethod
-	addrs map[string]decimal.Decimal
-	mu    sync.Mutex
-	rep   dependency.Repository
-	tg    dependency.Trongrid
+	c      *Config
+	pm     *entity.PaymentMethod
+	addrs  map[string]*entity.OrderFull
+	mu     sync.Mutex
+	rep    dependency.Repository
+	tg     dependency.Trongrid
+	mailer dependency.Mailer
 }
 
-func New(ctx context.Context, c *Config, rep dependency.Repository) (dependency.CryptoInvoice, error) {
+func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid) (dependency.CryptoInvoice, error) {
 	pm, _ := rep.Cache().GetPaymentMethodsByName(entity.Usdt)
 
-	addrs := make(map[string]decimal.Decimal, len(c.Addresses))
+	addrs := make(map[string]*entity.OrderFull, len(c.Addresses))
 	for _, addr := range c.Addresses {
-		addrs[addr] = decimal.Zero
+		addrs[addr] = &entity.OrderFull{}
 	}
 
 	p := &Processor{
-		c:     c,
-		pm:    &pm,
-		rep:   rep,
-		addrs: addrs,
+		c:      c,
+		pm:     &pm,
+		rep:    rep,
+		addrs:  addrs,
+		mailer: m,
+		tg:     tg,
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -63,7 +67,8 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 	}
 
 	for _, of := range ofs {
-		p.addrs[of.Payment.Payee.String] = of.Payment.TransactionAmount
+		ofC := of
+		p.addrs[of.Payment.Payee.String] = &ofC
 		go p.monitorPayment(ctx, of.Order.ID, of.Payment)
 	}
 
@@ -77,7 +82,7 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderId, paymentId i
 		return fmt.Errorf("can't update orders status: %w", err)
 	}
 
-	err = p.freeAddress(address)
+	_, err = p.freeAddress(address)
 	if err != nil {
 		return fmt.Errorf("can't free address: %w", err)
 	}
@@ -89,34 +94,35 @@ func (p *Processor) getFreeAddress() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for addr, amount := range p.addrs {
-		if amount.IsZero() {
+	for addr, order := range p.addrs {
+		if order == nil || order.Order.ID == 0 {
 			return addr, nil
 		}
 	}
 	return "", fmt.Errorf("no free address")
 }
 
-func (p *Processor) setAddressAmount(addr string, amt decimal.Decimal) error {
+func (p *Processor) setAddressOrder(addr string, of *entity.OrderFull) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if _, ok := p.addrs[addr]; !ok {
 		return fmt.Errorf("address not found")
 	}
-	p.addrs[addr] = amt
+	p.addrs[addr] = of
 	return nil
 }
 
-func (p *Processor) freeAddress(addr string) error {
+func (p *Processor) freeAddress(addr string) (*entity.OrderFull, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, ok := p.addrs[addr]; !ok {
-		return fmt.Errorf("address not found")
+	of, ok := p.addrs[addr]
+	if !ok {
+		return nil, fmt.Errorf("address not found")
 	}
-	p.addrs[addr] = decimal.Zero
-	return nil
+	p.addrs[addr] = nil
+	return of, nil
 }
 
 // GetOrderInvoice returns the payment details for the given order and expiration date.
@@ -149,12 +155,12 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 			return fmt.Errorf("can't get free address: %w", err)
 		}
 
-		payment, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
+		orderFull, err := p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
 		if err != nil {
 			return fmt.Errorf("can't insert order invoice: %w", err)
 		}
 
-		err = p.setAddressAmount(pAddr, payment.TransactionAmount)
+		err = p.setAddressOrder(pAddr, orderFull)
 		if err != nil {
 			return fmt.Errorf("can't set address amount: %w", err)
 		}
@@ -218,7 +224,7 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 		txTime := time.Unix(tx.BlockTimestamp, 0)
 		if txTime.After(payment.ModifiedAt) {
 
-			// TODO make sure that this is usdt transaction
+			// TODO: make sure that this is usdt transaction
 			// to config
 			// tx.
 			amount, err := decimal.NewFromString(tx.Value)
@@ -231,6 +237,7 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 			paymentAmountInBlockchainFormat := payment.TransactionAmount.Mul(decimal.NewFromInt(1000000))
 
 			if amount.Equal(paymentAmountInBlockchainFormat) {
+				// TODO: in transaction OrderPaymentDone + freeAddress
 				payment.TransactionID = sql.NullString{
 					String: tx.TransactionID,
 					Valid:  true,
@@ -242,7 +249,16 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 				} else {
 					slog.Default().InfoCtx(ctx, "Order marked as paid", slog.Int("orderId", orderId))
 				}
-				p.freeAddress(payment.Payee.String)
+				orderFull, err := p.freeAddress(payment.Payee.String)
+				if err != nil {
+					return fmt.Errorf("can't free address: %w", err)
+				}
+
+				orderDetails := dto.OrderFullToOrderConfirmed(orderFull, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
+				_, err = p.mailer.SendOrderConfirmation(ctx, orderFull.Buyer.Email, orderDetails)
+				if err != nil {
+					return fmt.Errorf("can't send order confirmation: %w", err)
+				}
 
 				return nil // Exit as the payment is successfully processed.
 			}

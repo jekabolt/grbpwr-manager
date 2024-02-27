@@ -271,6 +271,11 @@ CREATE TABLE order_item (
     id INT PRIMARY KEY AUTO_INCREMENT,
     order_id INT NOT NULL,
     product_id INT NOT NULL,
+    product_price DECIMAL(10, 2) NOT NULL CHECK (product_price >= 0),
+    product_sale_percentage DECIMAL(5, 2) DEFAULT 0 CHECK (
+        product_sale_percentage >= 0
+        AND product_sale_percentage <= 100
+    )
     quantity INT NOT NULL CHECK (quantity > 0),
     size_id INT NOT NULL,
     FOREIGN KEY (order_id) REFERENCES customer_order(id) ON DELETE CASCADE,

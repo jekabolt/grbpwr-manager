@@ -11,7 +11,7 @@ import (
 const (
 	NewSubscriber  = "new_subscriber.gohtml"
 	OrderCancelled = "order_cancelled.gohtml"
-	OrderPlaced    = "order_placed.gohtml"
+	OrderConfirmed = "order_confirmed.gohtml"
 	OrderShipped   = "order_shipped.gohtml"
 	PromoCode      = "promo_code.gohtml"
 )
@@ -20,7 +20,7 @@ const (
 var templateSubjects = map[string]string{
 	NewSubscriber:  "Welcome to GRBPWR",
 	OrderCancelled: "Your order has been cancelled",
-	OrderPlaced:    "Your order has been placed",
+	OrderConfirmed: "Your order has been confirmed",
 	OrderShipped:   "Your order has been shipped",
 	PromoCode:      "Your promo code",
 }
@@ -32,10 +32,10 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, to string) (*entity.Send
 
 // SendOrderConfirmation sends an order confirmation email.
 func (m *Mailer) SendOrderConfirmation(ctx context.Context, to string, orderDetails *dto.OrderConfirmed) (*entity.SendEmailRequest, error) {
-	if orderDetails.OrderUUID == "" || orderDetails.Name == "" {
+	if orderDetails.OrderUUID == "" || orderDetails.FullName == "" {
 		return nil, fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
-	return m.send(ctx, to, OrderPlaced, orderDetails) // Added validation for OrderDetails fields.
+	return m.send(ctx, to, OrderConfirmed, orderDetails)
 }
 
 // SendOrderConfirmation sends an order cancellation email.

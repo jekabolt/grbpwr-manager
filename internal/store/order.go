@@ -26,32 +26,125 @@ func (ms *MYSQLStore) Order() dependency.Order {
 	}
 }
 
-// validateOrderItems returns a slice of order items that are available in stock
-func validateOrderItems(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, error) {
-	oii := []entity.OrderItemInsert{}
-	for _, item := range items {
-		query := `SELECT * FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
-		ps, err := QueryNamedOne[entity.ProductSize](ctx, rep.DB(), query, map[string]interface{}{
-			"productId": item.ProductID,
-			"sizeId":    item.SizeID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("error while getting available quantity: %w", err)
-		}
+func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds []int) ([]entity.Product, error) {
+	if len(productIds) == 0 {
+		return []entity.Product{}, nil
+	}
+	query := `
+	SELECT * FROM product WHERE id IN (:productIds)`
 
-		// if the quantity is greater than or equal to the available quantity, add it to the slice
-		if ps.Quantity.GreaterThanOrEqual(item.Quantity) {
-			oii = append(oii, item)
-			continue
+	products, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]interface{}{
+		"productIds": productIds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return products, nil
+}
+
+func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+	if len(items) == 0 {
+		return []entity.ProductSize{}, nil
+	}
+
+	var productSizeParams []interface{}
+	productSizeQuery := "SELECT * FROM product_size WHERE "
+
+	productSizeConditions := []string{}
+	for _, item := range items {
+		productSizeConditions = append(productSizeConditions, "(product_id = ? AND size_id = ?)")
+		productSizeParams = append(productSizeParams, item.ProductID, item.SizeID)
+	}
+
+	productSizeQuery += strings.Join(productSizeConditions, " OR ")
+
+	var productSizes []entity.ProductSize
+
+	rows, err := rep.DB().QueryxContext(ctx, productSizeQuery, productSizeParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ps entity.ProductSize
+		err := rows.StructScan(&ps)
+		if err != nil {
+			return nil, err
 		}
-		// if the quantity is less than the available quantity, add the item with the available quantity to the slice
-		if !ps.Quantity.IsZero() && ps.Quantity.LessThan(item.Quantity) {
-			item.Quantity = ps.Quantity
-			oii = append(oii, item)
+		productSizes = append(productSizes, ps)
+	}
+
+	// Check for errors encountered during iteration over rows.
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return productSizes, nil
+}
+
+func getProductIdsFromItems(items []entity.OrderItemInsert) []int {
+	ids := make([]int, len(items))
+	for i, item := range items {
+		ids[i] = item.ProductID
+	}
+	return ids
+}
+
+func validateOrderItems(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, error) {
+	// Check if there are no items provided
+	if len(items) == 0 {
+		return nil, errors.New("no items to validate")
+	}
+
+	// Get product IDs from items
+	prdIds := getProductIdsFromItems(items)
+
+	// Get product details by IDs
+	prds, err := getProductsByIds(ctx, rep, prdIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get products by ids: %w", err)
+	}
+
+	// Get product sizes (stock) details by item details
+	prdSizes, err := getProductsSizesByIds(ctx, rep, items)
+	if err != nil {
+		return nil, fmt.Errorf("can't get products sizes by ids: %w", err)
+	}
+
+	// Initialize a slice to store the valid order items
+	validItems := make([]entity.OrderItemInsert, 0, len(items))
+
+	for _, item := range items {
+		for _, prdSize := range prdSizes {
+			if item.ProductID == prdSize.ProductID && item.SizeID == prdSize.SizeID {
+				if prdSize.Quantity.GreaterThan(decimal.Zero) {
+					// Adjust quantity if necessary
+					if item.Quantity.GreaterThan(prdSize.Quantity) {
+						item.Quantity = prdSize.Quantity
+					}
+
+					// Set price and sale percentage from product details only if item is valid
+					for _, prd := range prds {
+						if item.ProductID == prd.ID {
+							item.ProductPrice = prd.Price
+							if prd.SalePercentage.Valid {
+								item.ProductSalePercentage = prd.SalePercentage.Decimal
+							}
+							break // Found matching product, no need to continue the loop
+						}
+					}
+
+					// Add item to valid list as it passed all checks
+					validItems = append(validItems, item)
+					break // Item is valid and processed, no need to check further
+				}
+				break // Item does not have sufficient stock, no need to set price or add to valid items
+			}
 		}
 	}
 
-	return oii, nil
+	return validItems, nil
 }
 
 // compareItems return true if items are equal
@@ -414,22 +507,6 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 	return order, err
 }
 
-// func getOrderItems(ctx context.Context, rep dependency.Repository, orderIds []int) ([]entity.OrderItem, error) {
-// 	query := `
-// 		SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
-// 		FROM order_item oi
-// 		JOIN product p ON oi.product_id = p.id
-// 		WHERE oi.order_id = :orderId
-// 	`
-// 	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]any{
-// 		"orderIds": orderIds,
-// 	})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return ois, nil
-// }
-
 func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int][]entity.OrderItem, error) {
 	// Check if there are no order IDs provided
 	if len(orderIds) == 0 {
@@ -437,7 +514,18 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 	}
 
 	query := `
-        SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.size_id, p.thumbnail
+        SELECT 
+			oi.id,
+			oi.order_id,
+			oi.product_id,
+			oi.quantity,
+			oi.size_id,
+			oi.product_price,
+			oi.product_sale_percentage,
+			p.thumbnail,
+			p.name AS product_name,
+			p.brand AS product_brand,
+			p.category_id AS category_id 
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
         WHERE oi.order_id IN (:orderIds)
@@ -928,6 +1016,8 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 		promo = &entity.PromoCode{}
 	}
 
+	// TODO: if promo is expired remove it from order
+
 	// check if promo is allowed and not expired
 	if !promo.Allowed || promo.Expiration.Before(time.Now()) {
 		promo = &entity.PromoCode{}
@@ -957,8 +1047,20 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, validItem
 	return total, nil
 }
 
+func orderItemsToInsert(items []entity.OrderItem) []entity.OrderItemInsert {
+	orderItems := make([]entity.OrderItemInsert, 0, len(items))
+	for _, item := range items {
+		orderItems = append(orderItems, entity.OrderItemInsert{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			SizeID:    item.SizeID,
+		})
+	}
+	return orderItems
+}
+
 // InsertOrderPayment inserts order payment info for invoice
-func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.Payment, error) {
+func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error) {
 
 	pm, ok := ms.cache.GetPaymentMethodById(pm.ID)
 	if !ok {
@@ -969,30 +1071,27 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 		return nil, fmt.Errorf("payment method is not allowed: payment method %v", pm)
 	}
 
-	order, err := getOrderById(ctx, ms, orderId)
+	orderFull, err := ms.GetOrderById(ctx, orderId)
 	if err != nil {
 		return nil, fmt.Errorf("can't get order by uuid %d: %w", orderId, err)
 	}
 
-	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
+	orderStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
 	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+		return nil, fmt.Errorf("order status is not exists: order status id %d", orderFull.Order.OrderStatusID)
 	}
 
-	if orderStatus.Name != entity.Placed {
+	if orderStatus.Name != entity.Placed && orderStatus.Name != entity.Cancelled {
 		return nil, fmt.Errorf("order status is not placed: order status %s", orderStatus.Name)
 	}
 
+	orderItemsInsert := orderItemsToInsert(orderFull.OrderItems)
+
 	var customErr error
-	var p *entity.Payment
+	// var p *entity.Payment
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
-		if err != nil {
-			return fmt.Errorf("can't get order items: %w", err)
-		}
-
-		validItems, err := validateOrderItems(ctx, rep, orderItems)
+		validItems, err := validateOrderItems(ctx, rep, orderItemsInsert)
 		if err != nil {
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
@@ -1002,26 +1101,25 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 			if !ok {
 				return fmt.Errorf("order status is not exists: order status name %s", entity.Cancelled)
 			}
-			err := updateOrderStatus(ctx, rep, order.ID, statusCanceled.ID)
+			err := updateOrderStatus(ctx, rep, orderFull.Order.ID, statusCanceled.ID)
 			if err != nil {
 				return fmt.Errorf("can't update order status: %w", err)
 			}
-
 			// early return if no valid items
 			customErr = fmt.Errorf("order items are not valid")
 			return nil
 		}
 
-		ok := compareItems(orderItems, validItems)
+		ok := compareItems(orderItemsInsert, validItems)
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items and total amount
-			err = updateOrderItems(ctx, rep, validItems, order.ID)
+			err = updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
 
-			order.TotalPrice, err = updateTotalAmount(ctx, rep, validItems, order)
+			orderFull.Order.TotalPrice, err = updateTotalAmount(ctx, rep, validItems, orderFull.Order)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}
@@ -1036,27 +1134,22 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
 		}
 
-		p, err = getPaymentById(ctx, rep, order.PaymentID)
-		if err != nil {
-			return fmt.Errorf("can't get payment by id: %w", err)
-		}
-
-		p.PaymentMethodID = pm.ID
-		p.IsTransactionDone = false
-		p.TransactionAmount = order.TotalPrice
-		p.Payee = sql.NullString{
+		orderFull.Payment.PaymentMethodID = pm.ID
+		orderFull.Payment.IsTransactionDone = false
+		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPrice
+		orderFull.Payment.Payee = sql.NullString{
 			String: addr,
 			Valid:  true,
 		}
 
-		err = updateOrderPayment(ctx, rep, order.PaymentID, &p.PaymentInsert)
+		err = updateOrderPayment(ctx, rep, orderFull.Order.PaymentID, &orderFull.Payment.PaymentInsert)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
 		newStatus, _ := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
 
-		err = updateOrderStatus(ctx, rep, order.ID, newStatus.ID)
+		err = updateOrderStatus(ctx, rep, orderFull.Order.ID, newStatus.ID)
 		if err != nil {
 			return fmt.Errorf("can't update order status: %w", err)
 		}
@@ -1064,13 +1157,13 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 		return nil
 	})
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	if customErr != nil {
-		return p, customErr
+		return nil, customErr
 	}
 
-	return p, nil
+	return orderFull, nil
 }
 
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, orderId int, shipment *entity.Shipment) error {
