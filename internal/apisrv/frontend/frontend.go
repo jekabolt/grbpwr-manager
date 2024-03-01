@@ -15,7 +15,6 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"golang.org/x/exp/slog"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -229,17 +228,23 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
-	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
+	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't apply promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't apply promo code")
 	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
 	return &pb_frontend.ApplyPromoCodeResponse{
-		Total: &pb_decimal.Decimal{
-			Value: newAmt.String(),
-		},
+		Order: of,
 	}, nil
 }
 
@@ -256,17 +261,22 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
-	newTotal, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
+	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order items")
 	}
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
 	return &pb_frontend.UpdateOrderItemsResponse{
-		Total: &pb_decimal.Decimal{
-			Value: newTotal.String(),
-		},
+		Order: of,
 	}, nil
 }
 

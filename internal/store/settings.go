@@ -87,8 +87,12 @@ func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMeth
 	return nil
 }
 
-// TODO:
 func (ms *MYSQLStore) SetSiteAvailability(ctx context.Context, available bool) error {
 	ms.cache.SetSiteAvailability(available)
+	return nil
+}
+
+func (ms *MYSQLStore) SetMaxOrderItems(ctx context.Context, count int) error {
+	ms.cache.SetMaxOrderItems(count)
 	return nil
 }

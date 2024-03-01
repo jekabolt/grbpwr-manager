@@ -44,7 +44,10 @@ type Order struct {
 
 type ProductInfoProvider interface {
 	GetProductID() int
+	GetProductPrice() decimal.Decimal
+	GetProductSalePercentage() decimal.Decimal
 	GetQuantity() decimal.Decimal
+	GetSizeId() int
 }
 
 // OrderItem represents the order_item table
@@ -66,12 +69,39 @@ type OrderItemInsert struct {
 	SizeID                int             `db:"size_id" valid:"required"`
 }
 
-func (oii OrderItemInsert) GetProductID() int {
+func ConvertOrderItemInsertsToProductInfoProviders(items []OrderItemInsert) []ProductInfoProvider {
+	providers := make([]ProductInfoProvider, len(items))
+	for i, item := range items {
+		providers[i] = &item
+	}
+	return providers
+}
+
+func ConvertOrderItemToOrderItemInsert(items []OrderItem) []OrderItemInsert {
+	inserts := make([]OrderItemInsert, len(items))
+	for i, item := range items {
+		inserts[i] = item.OrderItemInsert
+	}
+	return inserts
+}
+
+func (oii *OrderItemInsert) GetProductID() int {
 	return oii.ProductID
 }
 
-func (oii OrderItemInsert) GetQuantity() decimal.Decimal {
+func (oii *OrderItemInsert) GetProductPrice() decimal.Decimal {
+	return oii.ProductPrice
+}
+
+func (oii *OrderItemInsert) GetProductSalePercentage() decimal.Decimal {
+	return oii.ProductSalePercentage
+}
+
+func (oii *OrderItemInsert) GetQuantity() decimal.Decimal {
 	return oii.Quantity
+}
+func (oii *OrderItemInsert) GetSizeId() int {
+	return oii.SizeID
 }
 
 // OrderStatusName is the custom type to enforce enum-like behavior

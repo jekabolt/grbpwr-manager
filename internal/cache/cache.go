@@ -10,6 +10,11 @@ import (
 	"golang.org/x/exp/slog"
 )
 
+const (
+	// maxOrderItems is the maximum number of item size quantity in an order
+	maxOrderItems = 3
+)
+
 type Cache struct {
 	Category        *CategoryCache
 	Measurement     *MeasurementCache
@@ -88,6 +93,7 @@ func NewCache(
 			ShipmentCarriers: shipmentCarriers,
 			Sizes:            sizes,
 			SiteEnabled:      true,
+			MaxOrderItems:    maxOrderItems,
 		},
 	}, nil
 }
@@ -224,4 +230,8 @@ func (c *Cache) UpdateHero(hf *entity.HeroFull) {
 
 func (c *Cache) SetSiteAvailability(available bool) {
 	c.Dict.SiteEnabled = available
+}
+
+func (c *Cache) SetMaxOrderItems(count int) {
+	c.Dict.MaxOrderItems = count
 }

@@ -325,6 +325,14 @@ service AdminService {
   }
 
   // Updates shipping information for an order
+  rpc SetTrackingNumber(SetTrackingNumberRequest) returns (SetTrackingNumberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/{order_id}/set-tracking-number"
+      body: "*"
+    };
+  }
+
+  // Updates shipping information for an order
   rpc UpdateShippingInfo(UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
     option (google.api.http) = {
       post: "/api/admin/orders/{order_id}/update-shipping-info"
@@ -461,6 +469,13 @@ service AdminService {
   rpc SetSiteAvailability(SetSiteAvailabilityRequest) returns (SetSiteAvailabilityResponse) {
     option (google.api.http) = {
       post: "/api/admin/settings/site-availability"
+      body: "*"
+    };
+  }
+
+  rpc SetMaxOrderItems(SetMaxOrderItemsRequest) returns (SetMaxOrderItemsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/max-order-items"
       body: "*"
     };
   }
@@ -752,7 +767,7 @@ message ApplyPromoCodeRequest {
 }
 
 message ApplyPromoCodeResponse {
-  google.type.Decimal total = 1;
+  common.OrderFull order = 1;
 }
 
 message UpdateOrderItemsRequest {
@@ -761,7 +776,7 @@ message UpdateOrderItemsRequest {
 }
 
 message UpdateOrderItemsResponse {
-  google.type.Decimal total = 1;
+  common.OrderFull order = 1;
 }
 
 message UpdateOrderShippingCarrierRequest {
@@ -770,7 +785,7 @@ message UpdateOrderShippingCarrierRequest {
 }
 
 message UpdateOrderShippingCarrierResponse {
-  google.type.Decimal total = 1;
+  common.OrderFull order = 1;
 }
 
 message GetOrderInvoiceRequest {
@@ -789,6 +804,13 @@ message UpdateShippingInfoRequest {
 }
 
 message UpdateShippingInfoResponse {}
+
+message SetTrackingNumberRequest {
+  int32 order_id = 1;
+  string tracking_code = 2;
+}
+
+message SetTrackingNumberResponse {}
 
 message GetOrderByIdRequest {
   int32 order_id = 1;
@@ -944,3 +966,8 @@ message SetSiteAvailabilityRequest {
   bool available = 1;
 }
 message SetSiteAvailabilityResponse {}
+
+message SetMaxOrderItemsRequest {
+  int32 max_order_items = 1;
+}
+message SetMaxOrderItemsResponse {}

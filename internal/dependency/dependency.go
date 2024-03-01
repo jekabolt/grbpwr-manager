@@ -96,11 +96,13 @@ type (
 
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
-		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (decimal.Decimal, error)
-		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (decimal.Decimal, error)
-		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (decimal.Decimal, error)
+		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error)
+		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (*entity.OrderFull, error)
+		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (*entity.OrderFull, error)
+		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
+		SetTrackingNumber(ctx context.Context, orderId int, trackingNumber string) error
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
 		GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
@@ -170,6 +172,7 @@ type (
 		SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
+		SetMaxOrderItems(ctx context.Context, count int) error
 	}
 
 	Repository interface {
@@ -274,5 +277,6 @@ type (
 		GetDict() *dto.Dict
 
 		SetSiteAvailability(available bool)
+		SetMaxOrderItems(count int)
 	}
 )

@@ -18,6 +18,7 @@ type Dict struct {
 	SortFactors      []pb_common.SortFactors
 	OrderFactors     []pb_common.OrderFactors
 	SiteEnabled      bool
+	MaxOrderItems    int
 }
 
 var (
@@ -344,6 +345,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 	commonDict.SortFactors = sortFactors
 	commonDict.OrderFactors = orderFactors
 	commonDict.SiteEnabled = dict.SiteEnabled
+	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 
 	return commonDict
 }
