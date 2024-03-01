@@ -275,7 +275,7 @@ CREATE TABLE order_item (
     product_sale_percentage DECIMAL(5, 2) DEFAULT 0 CHECK (
         product_sale_percentage >= 0
         AND product_sale_percentage <= 100
-    )
+    ),
     quantity INT NOT NULL CHECK (quantity > 0),
     size_id INT NOT NULL,
     FOREIGN KEY (order_id) REFERENCES customer_order(id) ON DELETE CASCADE,
