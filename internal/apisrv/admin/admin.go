@@ -13,7 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -683,17 +682,23 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
-	newAmt, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
+	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't apply promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't apply promo code")
 	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
 	return &pb_admin.ApplyPromoCodeResponse{
-		Total: &pb_decimal.Decimal{
-			Value: newAmt.String(),
-		},
+		Order: of,
 	}, nil
 }
 
@@ -710,32 +715,44 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
-	newTotal, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
+	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order items")
 	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
 	return &pb_admin.UpdateOrderItemsResponse{
-		Total: &pb_decimal.Decimal{
-			Value: newTotal.String(),
-		},
+		Order: of,
 	}, nil
 }
 
 func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
-	newTotal, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
+	orderFull, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update order shipping carrier",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
 	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
 	return &pb_admin.UpdateOrderShippingCarrierResponse{
-		Total: &pb_decimal.Decimal{
-			Value: newTotal.String(),
-		},
+		Order: of,
 	}, nil
 }
 
@@ -794,6 +811,22 @@ func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShi
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
 	}
 	return &pb_admin.UpdateShippingInfoResponse{}, nil
+}
+
+func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackingNumberRequest) (*pb_admin.SetTrackingNumberResponse, error) {
+	if req.TrackingCode == "" {
+		slog.Default().ErrorCtx(ctx, "tracking code is empty")
+		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
+	}
+
+	err := s.repo.Order().SetTrackingNumber(ctx, int(req.OrderId), req.TrackingCode)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't update tracking number info",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update shipping info")
+	}
+	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
 
 func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdRequest) (*pb_admin.GetOrderByIdResponse, error) {
@@ -1163,4 +1196,15 @@ func (s *Server) SetSiteAvailability(ctx context.Context, req *pb_admin.SetSiteA
 		return nil, err
 	}
 	return &pb_admin.SetSiteAvailabilityResponse{}, nil
+}
+
+func (s *Server) SetMaxOrderItems(ctx context.Context, req *pb_admin.SetMaxOrderItemsRequest) (*pb_admin.SetMaxOrderItemsResponse, error) {
+	err := s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't set max order items",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.SetMaxOrderItemsResponse{}, nil
 }

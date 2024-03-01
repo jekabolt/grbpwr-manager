@@ -1,3 +1,4 @@
+{{define "orderConfirmation"}}
 <!DOCTYPE html>
 <html>
 <head>
@@ -19,12 +20,21 @@
             <h1>GRBPWR</h1>
         </header>
         <main class="content">
-            <p>Hello {{.Name}},</p>
-            <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been placed successfully.</p>
+            <p>Hello {{.FullName}},</p>
+            <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been placed successfully.</p>
             <h2>Order Details:</h2>
-            <p><b>Date:</b> {{.OrderDate}}</p>
-            <p><b>Total Amount:</b> {{.PaymentCurrency}} {{.TotalAmount}}</p>
-            <p><b>Payment Method:</b> {{.PaymentMethod}}</p>
+            {{range .OrderItems}}
+            <div>
+                <p><b>Item:</b> {{.Name}} - Size: {{.Size}}, Quantity: {{.Quantity}}, Price: {{.Price}} {{if ne .SalePercent "0"}}({{.SalePercent}}% off){{end}}</p>
+                <p><img src="{{.Thumbnail}}" alt="{{.Name}}" style="width:100px; height:auto;"></p>
+            </div>
+            {{end}}
+            <p><b>Total Amount:</b> {{.TotalPrice}}</p>
+            {{if .PromoExist}}
+            <p><b>Promo Discount:</b> {{.PromoDiscountAmount}}</p>
+            {{end}}
+            <p><b>Shipping Price:</b> {{if .HasFreeShipping}}Free{{else}}{{.ShippingPrice}}{{end}}</p>
+            <p><b>Shipment Carrier:</b> {{.ShipmentCarrier}}</p>
             <p>Our team will process and ship your order as soon as possible. We will send you another email once your order is on its way.</p>
         </main>
         <footer class="footer">
@@ -34,3 +44,4 @@
     </div>
 </body>
 </html>
+{{end}}

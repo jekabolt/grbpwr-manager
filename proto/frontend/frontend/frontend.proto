@@ -154,7 +154,7 @@ message ApplyPromoCodeRequest {
 }
 
 message ApplyPromoCodeResponse {
-  google.type.Decimal total = 1;
+  common.OrderFull order = 1;
 }
 
 message UpdateOrderItemsRequest {
@@ -163,7 +163,7 @@ message UpdateOrderItemsRequest {
 }
 
 message UpdateOrderItemsResponse {
-  google.type.Decimal total = 1;
+  common.OrderFull order = 1;
 }
 
 message SubscribeNewsletterRequest {
