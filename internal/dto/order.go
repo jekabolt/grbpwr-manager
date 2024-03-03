@@ -120,6 +120,14 @@ func ConvertPbOrderItemInsertToEntity(pbOrderItem *pb_common.OrderItemInsert) (*
 	}, nil
 }
 
+func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_common.OrderItemInsert {
+	return &pb_common.OrderItemInsert{
+		ProductId: int32(orderItem.ProductID),
+		Quantity:  int32(orderItem.Quantity.IntPart()),
+		SizeId:    int32(orderItem.SizeID),
+	}
+}
+
 func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderFull, error) {
 	if e == nil {
 		return nil, fmt.Errorf("entity.OrderFull is nil")

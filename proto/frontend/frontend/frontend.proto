@@ -43,6 +43,20 @@ service FrontendService {
     option (google.api.http) = {get: "/api/frontend/orders/{uuid}"};
   }
 
+  rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/validate-items"
+      body: "*"
+    };
+  }
+
+  rpc ValidateOrderByUUID(ValidateOrderByUUIDRequest) returns (ValidateOrderByUUIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/validate/{uuid}"
+      body: "*"
+    };
+  }
+
   // Marks order payment as complete
   rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
     option (google.api.http) = {
@@ -135,6 +149,23 @@ message GetOrderByUUIDRequest {
 }
 
 message GetOrderByUUIDResponse {
+  common.OrderFull order = 1;
+}
+
+message ValidateOrderItemsInsertRequest {
+  repeated common.OrderItemInsert items = 1;
+}
+
+message ValidateOrderItemsInsertResponse {
+  repeated common.OrderItemInsert items = 1;
+  google.type.Decimal subtotal = 2;
+}
+
+message ValidateOrderByUUIDRequest {
+  string uuid = 1;
+}
+
+message ValidateOrderByUUIDResponse {
   common.OrderFull order = 1;
 }
 

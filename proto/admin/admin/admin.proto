@@ -777,6 +777,7 @@ message ValidateOrderItemsInsertRequest {
 
 message ValidateOrderItemsInsertResponse {
   repeated common.OrderItemInsert items = 1;
+  google.type.Decimal subtotal = 2;
 }
 
 message ValidateOrderByUUIDRequest {
