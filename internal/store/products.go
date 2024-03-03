@@ -11,7 +11,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/slog"
 )
 
 type productStore struct {
@@ -317,15 +316,8 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	// Parse query and prepare args
 	query, argsSlice, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
 	if err != nil {
-		return nil, fmt.Errorf("sqlx in: %w", err)
+		return nil, fmt.Errorf("can't parse query: %w", err)
 	}
-
-	slog.Default().DebugCtx(ctx, "paged query",
-		slog.String("query", query),
-	)
-	slog.Default().DebugCtx(ctx, "paged argsSlice",
-		slog.Any("argsSlice", argsSlice),
-	)
 	// Execute query
 	return selectProducts(ctx, ms, query, argsSlice)
 }

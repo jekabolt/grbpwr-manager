@@ -300,10 +300,12 @@ func insertOrderItems(ctx context.Context, rep dependency.Repository, items []en
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		row := map[string]any{
-			"order_id":   orderID,
-			"product_id": item.ProductID,
-			"quantity":   item.Quantity,
-			"size_id":    item.SizeID,
+			"order_id":                orderID,
+			"product_id":              item.ProductID,
+			"product_price":           item.ProductPrice,
+			"product_sale_percentage": item.ProductSalePercentage,
+			"quantity":                item.Quantity,
+			"size_id":                 item.SizeID,
 		}
 		rows = append(rows, row)
 	}

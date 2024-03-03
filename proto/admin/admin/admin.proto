@@ -292,6 +292,20 @@ service AdminService {
     };
   }
 
+  rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/validate-items"
+      body: "*"
+    };
+  }
+
+  rpc ValidateOrderByUUID(ValidateOrderByUUIDRequest) returns (ValidateOrderByUUIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/validate/{uuid}"
+      body: "*"
+    };
+  }
+
   // Applies a promo code to an order
   rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
     option (google.api.http) = {
@@ -759,6 +773,22 @@ message CreateOrderRequest {
 
 message CreateOrderResponse {
   common.Order order = 1;
+}
+
+message ValidateOrderItemsInsertRequest {
+  repeated common.OrderItemInsert items = 1;
+}
+
+message ValidateOrderItemsInsertResponse {
+  repeated common.OrderItemInsert items = 1;
+}
+
+message ValidateOrderByUUIDRequest {
+  string uuid = 1;
+}
+
+message ValidateOrderByUUIDResponse {
+  common.OrderFull order = 1;
 }
 
 message ApplyPromoCodeRequest {
