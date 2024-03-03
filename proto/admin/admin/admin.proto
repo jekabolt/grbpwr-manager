@@ -508,8 +508,6 @@ message GetDictionaryResponse {
 
 message UploadContentImageRequest {
   string raw_b64_image = 1;
-  string folder = 2;
-  string image_name = 3;
 }
 
 message UploadContentImageResponse {
@@ -518,8 +516,6 @@ message UploadContentImageResponse {
 
 message UploadContentVideoRequest {
   bytes raw = 1;
-  string folder = 2;
-  string video_name = 3;
   string content_type = 4;
 }
 

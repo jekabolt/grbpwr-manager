@@ -2,6 +2,7 @@ package bucket
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/minio/minio-go/v7"
@@ -37,4 +38,21 @@ func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
 		Config: c,
 		ms:     mediaStore,
 	}, nil
+}
+
+func (b *Bucket) GetBaseFolder() string {
+	return b.BaseFolder
+}
+
+// getMediaName generates a file name based on a high-precision current timestamp
+// It follows the convention: yyyyMMddHHmmssSSS
+// Where SSS is milliseconds, ensuring uniqueness even within high-frequency upload scenarios
+func GetMediaName() string {
+	// Current time with milliseconds precision
+	currentTime := time.Now().Format("20060102150405.000")
+
+	// Remove the decimal point from the milliseconds for a compact representation
+	currentTime = currentTime[:14] + currentTime[15:]
+
+	return currentTime
 }

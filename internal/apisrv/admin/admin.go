@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	v "github.com/asaskevich/govalidator"
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -43,7 +44,7 @@ func New(
 
 // UploadContentImage
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
-	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, req.Folder, req.ImageName)
+	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content image",
 			slog.String("err", err.Error()),
@@ -57,7 +58,7 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 
 // UploadContentVideo
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_admin.UploadContentVideoResponse, error) {
-	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), req.Folder, req.VideoName, req.ContentType)
+	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), s.bucket.GetBaseFolder(), bucket.GetMediaName(), req.ContentType)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't upload content video",
 			slog.String("err", err.Error()),
