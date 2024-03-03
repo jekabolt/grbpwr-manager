@@ -220,6 +220,8 @@ type (
 		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Media, error)
 		// UploadContentVideo uploads mp4 video to bucket
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
+		// GetBaseFolder returns the base folder for the bucket
+		GetBaseFolder() string
 	}
 
 	RatesService interface {
