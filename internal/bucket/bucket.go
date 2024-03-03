@@ -44,7 +44,7 @@ func (b *Bucket) GetBaseFolder() string {
 	return b.BaseFolder
 }
 
-// getMediaName generates a file name based on a high-precision current timestamp
+// GetMediaName generates a file name based on a high-precision current timestamp
 // It follows the convention: yyyyMMddHHmmssSSS
 // Where SSS is milliseconds, ensuring uniqueness even within high-frequency upload scenarios
 func GetMediaName() string {

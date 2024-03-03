@@ -447,29 +447,66 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	return validItems, total, nil
 }
 
-// TODO:
-// TODO:
-// TODO:
-// func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) ([]entity.OrderItemInsert, decimal.Decimal, error) {
-// 	var err error
+func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
+	var err error
 
-// 	orderFull, err := ms.GetOrderByUUID(ctx, uuid)
-// 	if err != nil {
-// 		return nil, decimal.Zero, fmt.Errorf("error while getting order by uuid: %w", err)
-// 	}
+	orderFull, err := ms.GetOrderByUUID(ctx, uuid)
+	if err != nil {
+		return nil, fmt.Errorf("error while getting order by uuid: %w", err)
+	}
 
-// ok = compareItems(items, validItems)
-// 		if !ok {
-// 			// valid items not equal to order items
-// 			// we have to update current order items
-// 			err := updateOrderItems(ctx, rep, validItems, orderId)
-// 			if err != nil {
-// 				return fmt.Errorf("error while updating order items: %w", err)
-// 			}
-// 		}
+	oStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists")
+	}
 
-// 	return validItems, total, nil
-// }
+	if oStatus.Name != entity.Placed {
+		return orderFull, nil
+	}
+
+	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
+
+	var customErr error
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
+		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
+		if err != nil {
+			err := cancelOrder(ctx, rep, orderFull)
+			if err != nil {
+				return fmt.Errorf("can't cancel order while applying promo code: %w", err)
+			}
+			return fmt.Errorf("error while validating order items: %w", err)
+		}
+
+		ok = compareItems(items, validItems)
+		if !ok {
+			// valid items not equal to order items
+			// we have to update current order items
+			err := updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+			if err != nil {
+				return fmt.Errorf("error while updating order items: %w", err)
+			}
+			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, subtotal, orderFull.PromoCode, orderFull.Shipment)
+			if err != nil {
+				return fmt.Errorf("error while updating total amount: %w", err)
+			}
+			customErr = fmt.Errorf("order items are not valid and were updated")
+			return nil
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	if customErr != nil {
+		return nil, customErr
+	}
+
+	return orderFull, nil
+
+}
 
 func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error) {
 

@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -679,6 +680,59 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 
 	return &pb_admin.CreateOrderResponse{
 		Order: o,
+	}, nil
+}
+
+func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_admin.ValidateOrderItemsInsertRequest) (*pb_admin.ValidateOrderItemsInsertResponse, error) {
+	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
+	for _, i := range req.Items {
+		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
+		}
+		itemsToInsert = append(itemsToInsert, *oii)
+	}
+
+	oii, subtotal, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't validate order items insert",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
+	}
+
+	pbOii := make([]*pb_common.OrderItemInsert, 0, len(oii))
+	for _, i := range oii {
+		pbOii = append(pbOii, dto.ConvertEntityOrderItemInsertToPb(&i))
+	}
+
+	return &pb_admin.ValidateOrderItemsInsertResponse{
+		Items:    pbOii,
+		Subtotal: &pb_decimal.Decimal{Value: subtotal.String()},
+	}, nil
+
+}
+func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_admin.ValidateOrderByUUIDRequest) (*pb_admin.ValidateOrderByUUIDResponse, error) {
+	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.Uuid)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't validate order by uuid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't validate order by uuid")
+	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
+	return &pb_admin.ValidateOrderByUUIDResponse{
+		Order: of,
 	}, nil
 }
 

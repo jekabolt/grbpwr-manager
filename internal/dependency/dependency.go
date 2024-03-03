@@ -97,6 +97,7 @@ type (
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error)
+		ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (*entity.OrderFull, error)
 		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (*entity.OrderFull, error)
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (*entity.OrderFull, error)
