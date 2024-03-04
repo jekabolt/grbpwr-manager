@@ -137,3 +137,9 @@ type OrderStatus struct {
 	ID   int             `db:"id"`
 	Name OrderStatusName `db:"name"`
 }
+
+type OrderBuyerShipment struct {
+	Order    *Order
+	Buyer    *Buyer
+	Shipment *Shipment
+}

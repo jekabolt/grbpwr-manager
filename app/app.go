@@ -86,7 +86,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db, a.b, usdtTron)
+	adminS := admin.New(a.db, a.b, a.ma, usdtTron)
 
 	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron)
 

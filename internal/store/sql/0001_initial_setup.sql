@@ -215,18 +215,19 @@ CREATE TABLE shipment_carrier (
     id INT PRIMARY KEY AUTO_INCREMENT,
     carrier VARCHAR(255) NOT NULL UNIQUE,
     price DECIMAL(10, 2) NOT NULL,
+    tracking_url VARCHAR(255) NOT NULL,
     allowed BOOLEAN DEFAULT FALSE
 );
 
 INSERT INTO
-    shipment_carrier (carrier, price, allowed)
+    shipment_carrier (carrier, price, tracking_url, allowed)
 VALUES
-    ('DHL', 10.99, TRUE);
+    ('DHL', 10.99, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE);
 
 INSERT INTO
-    shipment_carrier (carrier, price, allowed)
+    shipment_carrier (carrier, price, tracking_url, allowed)
 VALUES
-    ('FREE', 0, TRUE);
+    ('FREE', 0, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE);
 
 CREATE TABLE shipment (
     id INT PRIMARY KEY AUTO_INCREMENT,
