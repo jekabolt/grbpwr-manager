@@ -1306,31 +1306,38 @@ func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context, orderId int, shipm
 	return nil
 }
 
-func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, trackingCode string) error {
-	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderById(ctx, rep, orderId)
-		if err != nil {
-			return err
-		}
+// SetTrackingNumber sets the tracking number for an order, returns the shipment and the order UUID.
+func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, trackingCode string) (*entity.OrderBuyerShipment, error) {
+	order, err := getOrderById(ctx, ms, orderId)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order by id: %w", err)
+	}
 
-		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
-		if !ok {
-			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
-		}
+	orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+	}
 
-		if orderStatus.Name != entity.Confirmed {
-			return fmt.Errorf("order status is not confirmed: order status %s", orderStatus.Name)
-		}
+	if orderStatus.Name != entity.Confirmed {
+		return nil, fmt.Errorf("bad order status for setting tracking number must be confirmed got: %s", orderStatus.Name)
+	}
 
-		shipment, err := getOrderShipment(ctx, rep, orderId)
-		if err != nil {
-			return fmt.Errorf("can't get order shipment: %w", err)
-		}
+	shipment, err := getOrderShipment(ctx, ms, orderId)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order shipment: %w", err)
+	}
 
-		shipment.TrackingCode = sql.NullString{
-			String: trackingCode,
-			Valid:  true,
-		}
+	shipment.TrackingCode = sql.NullString{
+		String: trackingCode,
+		Valid:  true,
+	}
+
+	buyer, err := getBuyerById(ctx, ms, order.BuyerID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get buyer by id: %w", err)
+	}
+
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		err = updateOrderShipment(ctx, rep, orderId, shipment)
 		if err != nil {
 			return fmt.Errorf("can't update order shipment: %w", err)
@@ -1339,10 +1346,13 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, tracki
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("can't set tracking number: %w", err)
+		return nil, fmt.Errorf("can't set tracking number: %w", err)
 	}
-	return nil
-
+	return &entity.OrderBuyerShipment{
+		Order:    order,
+		Buyer:    buyer,
+		Shipment: shipment,
+	}, nil
 }
 
 func getPaymentById(ctx context.Context, rep dependency.Repository, paymentId int) (*entity.Payment, error) {

@@ -86,9 +86,8 @@ type OrderCancelled struct {
 
 type OrderShipment struct {
 	Name           string
-	OrderID        string
+	OrderUUID      string
 	ShippingDate   string
-	TotalAmount    float64
 	TrackingNumber string
 	TrackingURL    string
 }

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
@@ -26,18 +27,21 @@ type Server struct {
 	repo           dependency.Repository
 	bucket         dependency.FileStore
 	cryptoInvoicer dependency.CryptoInvoice
+	mailer         dependency.Mailer
 }
 
 // New creates a new server with admin handlers.
 func New(
 	r dependency.Repository,
 	b dependency.FileStore,
+	m dependency.Mailer,
 	ci dependency.CryptoInvoice,
 ) *Server {
 	return &Server{
 		repo:           r,
 		bucket:         b,
 		cryptoInvoicer: ci,
+		mailer:         m,
 	}
 }
 
@@ -874,13 +878,30 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
 
-	err := s.repo.Order().SetTrackingNumber(ctx, int(req.OrderId), req.TrackingCode)
+	obs, err := s.repo.Order().SetTrackingNumber(ctx, int(req.OrderId), req.TrackingCode)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't update tracking number info",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
 	}
+
+	sc, ok := s.repo.Cache().GetShipmentCarrierById(int(obs.Shipment.CarrierID))
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't find shipment carrier by id")
+		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
+	}
+
+	trackingUrlFull := fmt.Sprintf(sc.ShipmentCarrierInsert.TrackingURL, req.TrackingCode)
+
+	s.mailer.SendOrderShipped(ctx, obs.Buyer.Email, &dto.OrderShipment{
+		Name:           fmt.Sprintf("%s %s", obs.Buyer.FirstName, obs.Buyer.LastName),
+		OrderUUID:      obs.Order.UUID,
+		ShippingDate:   time.Now().Format("2006-01-02"),
+		TrackingNumber: req.TrackingCode,
+		TrackingURL:    trackingUrlFull,
+	})
+
 	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
 

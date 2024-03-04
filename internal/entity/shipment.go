@@ -14,9 +14,10 @@ type ShipmentCarrier struct {
 }
 
 type ShipmentCarrierInsert struct {
-	Carrier string          `db:"carrier"`
-	Price   decimal.Decimal `db:"price"`
-	Allowed bool            `db:"allowed"`
+	Carrier     string          `db:"carrier"`
+	Price       decimal.Decimal `db:"price"`
+	TrackingURL string          `db:"tracking_url"`
+	Allowed     bool            `db:"allowed"`
 }
 
 // Shipment represents the shipment table

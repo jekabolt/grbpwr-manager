@@ -20,11 +20,11 @@
         </header>
         <main class="content">
             <p>Hello {{.Name}},</p>
-            <p>Great news! Your order <b><a href="https://grbpwr.com/order{{.OrderID}}" style="text-decoration: none;">#{{.OrderID}}</a></b> has been shipped.</p>
+            <p>Great news! Your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been shipped.</p>
             <h2>Shipping Details:</h2>
             <p><b>Date Shipped:</b> {{.ShippingDate}}</p>
-            <p><b>Total Amount:</b> ${{.TotalAmount}}</p>
-            <p><b>Tracking Number:</b> <a href="{{.TrackingURL}}{{.TrackingNumber}}" style="text-decoration: none;">{{.TrackingNumber}}</a></p>
+            <p><b>Carrier:</b> {{.ShippingCarrier}}</p>
+            <p><b>Tracking Number:</b> <a href="{{.TrackingURL}}" style="text-decoration: none;">{{.TrackingNumber}}</a></p>
             <p>You can track your shipment by clicking on the tracking number or visiting the courier's website. We hope your order arrives soon!</p>
         </main>
         <footer class="footer">

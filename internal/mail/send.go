@@ -48,9 +48,6 @@ func (m *Mailer) SendOrderCancellation(ctx context.Context, to string, orderDeta
 
 // SendOrderShipped sends an order shipped email.
 func (m *Mailer) SendOrderShipped(ctx context.Context, to string, shipmentDetails *dto.OrderShipment) (*entity.SendEmailRequest, error) {
-	if shipmentDetails.OrderID == "" || shipmentDetails.TrackingNumber == "" {
-		return nil, fmt.Errorf("incomplete shipment details: %+v", shipmentDetails)
-	}
 	return m.send(ctx, to, OrderShipped, shipmentDetails)
 }
 

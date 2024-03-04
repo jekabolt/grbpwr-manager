@@ -103,7 +103,7 @@ type (
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
-		SetTrackingNumber(ctx context.Context, orderId int, trackingNumber string) error
+		SetTrackingNumber(ctx context.Context, orderId int, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
 		GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
