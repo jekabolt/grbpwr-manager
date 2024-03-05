@@ -287,12 +287,16 @@ func (s *Server) Start(ctx context.Context,
 
 func cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set the "Access-Control-Allow-Origin" header to allow any origin.
+		origin := r.Header.Get("Origin")
+		slog.Default().Debug("Origin", slog.String("origin", origin))
+		// Allow any origin.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		// Set headers to allow CORS requests with specified methods and headers.
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
+		// Allow any method.
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+
+		// Allow any header.
+		w.Header().Set("Access-Control-Allow-Headers", "*")
 
 		// If the request is an OPTIONS request (pre-flight request), return OK status and stop processing.
 		if r.Method == http.MethodOptions {
