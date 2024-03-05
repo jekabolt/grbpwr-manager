@@ -92,5 +92,10 @@ jobs:
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
               --publish 8081:8081 \
+              --label "traefik.enable=true" \
+              --label "traefik.http.routers.grbpwr-manager.rule=Host(`backend.grbpwr.com`)" \
+              --label "traefik.http.routers.grbpwr-manager.entrypoints=websecure" \
+              --label "traefik.http.routers.grbpwr-manager.tls.certresolver=myresolver" \
+              --label "traefik.http.services.grbpwr-manager.loadbalancer.server.port=8081" \
               --mount src=/usr/local/config,target=/config,type=bind \
               jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
