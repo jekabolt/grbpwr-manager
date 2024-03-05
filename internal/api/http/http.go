@@ -254,10 +254,35 @@ func (s *Server) Start(ctx context.Context,
 func cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" {
+
+		//TODO: to config
+		// Define a list of explicitly allowed origins
+		allowedOrigins := map[string]bool{
+			"https://mikevelko.github.io": true,
+			"https://jekabolt.github.io":  true,
+			"https://0101oak.github.io":   true,
+		}
+
+		// Function to check if the origin is allowed
+		isOriginAllowed := func(origin string) bool {
+			if _, ok := allowedOrigins[origin]; ok {
+				return true // Explicitly allowed origin
+			}
+
+			// Allow any localhost origin
+			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") {
+				return true
+			}
+			return false
+		}
+
+		// Check if the origin is allowed
+		if isOriginAllowed(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
+		} else {
+			// Handle disallowed origins here. You could choose to do nothing, log a message, or even return an error response.
 		}
 
 		if r.Method == http.MethodOptions {
