@@ -251,36 +251,56 @@ func (s *Server) Start(ctx context.Context,
 // cors is a middleware that implements Cross Origin Resource Sharing.
 // It adds CORS headers to each response.
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+// func cors(h http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		origin := r.Header.Get("Origin")
+
+// 		if origin == "" {
+// 			// If there's no origin, it's not a CORS request, so just pass it through.
+// 			slog.Default().Debug("Origin", slog.String("origin", origin))
+// 			h.ServeHTTP(w, r)
+// 			return
+// 		}
+
+// 		if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") ||
+// 			origin == "https://mikevelko.github.io" ||
+// 			origin == "https://jekabolt.github.io" ||
+// 			origin == "https://0101oak.github.io" {
+// 			w.Header().Set("Access-Control-Allow-Origin", origin)
+// 		} else {
+// 			slog.Default().Error("Origin not allowed", slog.String("origin", origin))
+// 			http.Error(w, "Origin not allowed", http.StatusForbidden)
+// 			return
+// 		}
+
+// 		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
+// 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
+
+// 		if r.Method == http.MethodOptions {
+// 			w.WriteHeader(http.StatusOK)
+// 			return
+// 		}
+
+// 		h.ServeHTTP(w, r)
+// 	})
+// }
+
 func cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
+		// Set the "Access-Control-Allow-Origin" header to allow any origin.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		if origin == "" {
-			// If there's no origin, it's not a CORS request, so just pass it through.
-			slog.Default().Debug("Origin", slog.String("origin", origin))
-			h.ServeHTTP(w, r)
-			return
-		}
-
-		if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") ||
-			origin == "https://mikevelko.github.io" ||
-			origin == "https://jekabolt.github.io" ||
-			origin == "https://0101oak.github.io" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-		} else {
-			slog.Default().Error("Origin not allowed", slog.String("origin", origin))
-			http.Error(w, "Origin not allowed", http.StatusForbidden)
-			return
-		}
-
+		// Set headers to allow CORS requests with specified methods and headers.
 		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
 
+		// If the request is an OPTIONS request (pre-flight request), return OK status and stop processing.
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
+		// For all other requests, pass the request to the original handler.
 		h.ServeHTTP(w, r)
 	})
 }
