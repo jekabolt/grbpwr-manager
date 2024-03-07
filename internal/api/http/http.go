@@ -225,7 +225,7 @@ func (s *Server) Start(ctx context.Context,
 	listenerAddr := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 	s.hs = &http.Server{
 		Addr:    listenerAddr,
-		Handler: cors(h2c.NewHandler(handler, &http2.Server{})),
+		Handler: s.cors(h2c.NewHandler(handler, &http2.Server{})),
 	}
 
 	go func() {
