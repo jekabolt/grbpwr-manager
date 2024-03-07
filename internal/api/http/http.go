@@ -40,8 +40,9 @@ var (
 
 // Config is the configuration for the http server
 type Config struct {
-	Port    string `mapstructure:"port"`
-	Address string `mapstructure:"address"`
+	Port           string   `mapstructure:"port"`
+	Address        string   `mapstructure:"address"`
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
 // Server is the http server
@@ -251,60 +252,53 @@ func (s *Server) Start(ctx context.Context,
 // cors is a middleware that implements Cross Origin Resource Sharing.
 // It adds CORS headers to each response.
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-// func cors(h http.Handler) http.Handler {
-// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 		origin := r.Header.Get("Origin")
 
-// 		if origin == "" {
-// 			// If there's no origin, it's not a CORS request, so just pass it through.
-// 			slog.Default().Debug("Origin", slog.String("origin", origin))
-// 			h.ServeHTTP(w, r)
-// 			return
-// 		}
-
-// 		if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") ||
-// 			origin == "https://mikevelko.github.io" ||
-// 			origin == "https://jekabolt.github.io" ||
-// 			origin == "https://0101oak.github.io" {
-// 			w.Header().Set("Access-Control-Allow-Origin", origin)
-// 		} else {
-// 			slog.Default().Error("Origin not allowed", slog.String("origin", origin))
-// 			http.Error(w, "Origin not allowed", http.StatusForbidden)
-// 			return
-// 		}
-
-// 		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
-// 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
-
-// 		if r.Method == http.MethodOptions {
-// 			w.WriteHeader(http.StatusOK)
-// 			return
-// 		}
-
-// 		h.ServeHTTP(w, r)
-// 	})
-// }
-
-func cors(h http.Handler) http.Handler {
+func (s *Server) cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		slog.Default().Debug("Origin", slog.String("origin", origin))
-		// Allow any origin.
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		// Allow any method.
-		w.Header().Set("Access-Control-Allow-Methods", "*")
+		if origin == "" {
+			// If there's no origin, it's not a CORS request, so just pass it through.
+			slog.Default().InfoCtx(r.Context(), "no origin header")
+			h.ServeHTTP(w, r)
+			return
+		}
 
-		// Allow any header.
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		// Check if the origin is from localhost or in the allowed origins list
+		if isOriginAllowed(origin, s.c.AllowedOrigins) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			slog.Default().InfoCtx(r.Context(), "origin not allowed",
+				slog.String("origin", origin),
+			)
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+			return
+		}
 
-		// If the request is an OPTIONS request (pre-flight request), return OK status and stop processing.
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// For all other requests, pass the request to the original handler.
 		h.ServeHTTP(w, r)
 	})
+}
+
+func isOriginAllowed(origin string, allowedOrigins []string) bool {
+	// Always allow localhost origins
+	if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") {
+		return true
+	}
+
+	// Check if origin is in the list of allowed origins
+	for _, allowedOrigin := range allowedOrigins {
+		if origin == allowedOrigin {
+			return true
+		}
+	}
+
+	return false
 }
