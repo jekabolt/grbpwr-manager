@@ -312,7 +312,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 }
 
-func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
+func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.CheckCryptoPaymentResponse, error) {
 	// TODO: implement
 	return nil, status.Errorf(codes.Unimplemented, "unimplemented")
 }
