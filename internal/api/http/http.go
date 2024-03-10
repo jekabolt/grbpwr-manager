@@ -122,7 +122,7 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
 			EnumsAsInts:  false,
-			EmitDefaults: false,
+			EmitDefaults: true,
 		},
 	))
 
@@ -143,7 +143,7 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
 			EnumsAsInts:  false,
-			EmitDefaults: false,
+			EmitDefaults: true,
 		},
 	))
 	err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
@@ -163,7 +163,7 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
 			EnumsAsInts:  false,
-			EmitDefaults: false,
+			EmitDefaults: true,
 		},
 	))
 

@@ -25,7 +25,7 @@ func newPaymentMethodCache(paymentMethods []entity.PaymentMethod) (*PaymentMetho
 	// Check that all methods are from the enum
 	for _, paymentMethod := range paymentMethods {
 		if !entity.ValidPaymentMethodNames[entity.PaymentMethodName(paymentMethod.Name)] {
-			return nil, fmt.Errorf("invalid payment method name")
+			return nil, fmt.Errorf("invalid payment method name %s", paymentMethod.Name)
 		}
 		c.Cache[paymentMethod.ID] = paymentMethod
 		c.IDCache[paymentMethod.Name] = paymentMethod

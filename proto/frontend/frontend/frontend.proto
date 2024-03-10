@@ -57,10 +57,18 @@ service FrontendService {
     };
   }
 
-  // Marks order payment as complete
+  // Generate an invoice for the order or return the existing one
   rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
     option (google.api.http) = {
       post: "/api/frontend/order/{order_id}/{payment_method}/invoice"
+      body: "*"
+    };
+  }
+
+  // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
+  rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/check/{order_id}"
       body: "*"
     };
   }
@@ -177,6 +185,15 @@ message GetOrderInvoiceRequest {
 message GetOrderInvoiceResponse {
   google.protobuf.Timestamp expired_at = 1;
   common.PaymentInsert payment = 2;
+}
+
+message CheckCryptoPaymentRequest {
+  int32 order_id = 1;
+  common.PaymentMethodNameEnum payment_method = 2;
+}
+
+message CheckCryptoPaymentResponse {
+  common.OrderFull order = 1;
 }
 
 message ApplyPromoCodeRequest {

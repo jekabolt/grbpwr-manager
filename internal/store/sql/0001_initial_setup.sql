@@ -74,7 +74,7 @@ INSERT INTO
 VALUES
     ('card'),
     ('eth'),
-    ('usdt-tron');
+    ('usdt-tron'),
     ('usdt-shasta');
 
 CREATE TABLE order_status (
