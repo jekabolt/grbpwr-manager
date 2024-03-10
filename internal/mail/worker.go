@@ -51,7 +51,7 @@ func (m *Mailer) worker(ctx context.Context) {
 }
 
 func (m *Mailer) handleUnsent(ctx context.Context) error {
-	unsentEmails, err := m.db.GetAllUnsent(ctx, false)
+	unsentEmails, err := m.mailRepository.GetAllUnsent(ctx, false)
 	if err != nil {
 		return fmt.Errorf("can't get unsent mails: %w", err)
 	}
@@ -72,13 +72,13 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 				return nil // Stop sending mails if API limit is reached
 			}
 
-			if err := m.db.AddError(ctx, email.Id, err.Error()); err != nil {
+			if err := m.mailRepository.AddError(ctx, email.Id, err.Error()); err != nil {
 				return fmt.Errorf("can't log error for email %v: %w", email.Id, err)
 			}
 
 		} else {
 			// Update the database to mark the email as sent
-			if err := m.db.UpdateSent(ctx, email.Id); err != nil {
+			if err := m.mailRepository.UpdateSent(ctx, email.Id); err != nil {
 				return fmt.Errorf("can't update sent status for email %v: %w", email.Id, err)
 			}
 		}

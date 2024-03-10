@@ -24,19 +24,27 @@ import (
 // Server implements handlers for frontend requests.
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
-	repo           dependency.Repository
-	mailer         dependency.Mailer
-	rates          dependency.RatesService
-	cryptoInvoicer dependency.CryptoInvoice
+	repo            dependency.Repository
+	rates           dependency.RatesService
+	mailer          dependency.Mailer
+	usdtTron        dependency.CryptoInvoice
+	usdtTronTestnet dependency.CryptoInvoice
 }
 
 // New creates a new server with frontend handlers.
-func New(r dependency.Repository, m dependency.Mailer, ra dependency.RatesService, ci dependency.CryptoInvoice) *Server {
+func New(
+	r dependency.Repository,
+	m dependency.Mailer,
+	ra dependency.RatesService,
+	usdtTron dependency.CryptoInvoice,
+	usdtTronTestnet dependency.CryptoInvoice,
+) *Server {
 	return &Server{
-		repo:           r,
-		mailer:         m,
-		rates:          ra,
-		cryptoInvoicer: ci,
+		repo:            r,
+		mailer:          m,
+		rates:           ra,
+		usdtTron:        usdtTron,
+		usdtTronTestnet: usdtTronTestnet,
 	}
 }
 
@@ -251,9 +259,32 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 	}
 
 	switch pm {
-	case entity.Usdt:
+	case entity.USDT_TRON:
 
-		pi, expire, err := s.cryptoInvoicer.GetOrderInvoice(ctx, int(req.OrderId))
+		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		}
+
+		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+		}
+
+		return &pb_frontend.GetOrderInvoiceResponse{
+			Payment:   pbPi,
+			ExpiredAt: timestamppb.New(expire),
+		}, nil
+
+	case entity.USDT_TRON_TEST:
+
+		pi, expire, err := s.usdtTronTestnet.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
 			slog.Default().ErrorCtx(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),

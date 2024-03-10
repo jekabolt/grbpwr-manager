@@ -24,10 +24,11 @@ import (
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo           dependency.Repository
-	bucket         dependency.FileStore
-	cryptoInvoicer dependency.CryptoInvoice
-	mailer         dependency.Mailer
+	repo            dependency.Repository
+	bucket          dependency.FileStore
+	mailer          dependency.Mailer
+	usdtTron        dependency.CryptoInvoice
+	usdtTronTestnet dependency.CryptoInvoice
 }
 
 // New creates a new server with admin handlers.
@@ -35,13 +36,15 @@ func New(
 	r dependency.Repository,
 	b dependency.FileStore,
 	m dependency.Mailer,
-	ci dependency.CryptoInvoice,
+	usdtTron dependency.CryptoInvoice,
+	usdtTronTestnet dependency.CryptoInvoice,
 ) *Server {
 	return &Server{
-		repo:           r,
-		bucket:         b,
-		cryptoInvoicer: ci,
-		mailer:         m,
+		repo:            r,
+		bucket:          b,
+		mailer:          m,
+		usdtTron:        usdtTron,
+		usdtTronTestnet: usdtTronTestnet,
 	}
 }
 
@@ -820,8 +823,8 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
 	switch pm {
-	case entity.Usdt:
-		pi, expire, err := s.cryptoInvoicer.GetOrderInvoice(ctx, int(req.OrderId))
+	case entity.USDT_TRON:
+		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
 			slog.Default().ErrorCtx(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
@@ -841,7 +844,27 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 			Payment:   pbPi,
 			ExpiredAt: timestamppb.New(expire),
 		}, nil
+	case entity.USDT_TRON_TEST:
+		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		}
 
+		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+		}
+
+		return &pb_admin.GetOrderInvoiceResponse{
+			Payment:   pbPi,
+			ExpiredAt: timestamppb.New(expire),
+		}, nil
 	default:
 		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")

@@ -27,18 +27,18 @@ type PaymentInsert struct {
 type PaymentMethodName string
 
 const (
-	Card PaymentMethodName = "card"
-	Eth  PaymentMethodName = "eth"
-	Usdc PaymentMethodName = "usdc"
-	Usdt PaymentMethodName = "usdt"
+	CARD           PaymentMethodName = "card"
+	ETH            PaymentMethodName = "eth"
+	USDT_TRON      PaymentMethodName = "usdt"
+	USDT_TRON_TEST PaymentMethodName = "usdt_testnet"
 )
 
 // ValidPaymentMethodNames is a set of valid payment method names
 var ValidPaymentMethodNames = map[PaymentMethodName]bool{
-	Card: true,
-	Eth:  true,
-	Usdc: true,
-	Usdt: true,
+	CARD:           true,
+	ETH:            true,
+	USDT_TRON:      true,
+	USDT_TRON_TEST: true,
 }
 
 // PaymentMethod represents the payment_method table

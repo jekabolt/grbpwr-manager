@@ -45,7 +45,7 @@ func New(c *Config) dependency.Trongrid {
 
 // GetAddressTransactions retrieves TRC-20 token transactions for a given address.
 func (c *Client) GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error) {
-	url := fmt.Sprintf("%s/v1/accounts/%s/transactions/trc20?limit=20", c.c.BaseURL, address)
+	url := fmt.Sprintf("%s/v1/accounts/%s/transactions/trc20?limit=10", c.c.BaseURL, address)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
