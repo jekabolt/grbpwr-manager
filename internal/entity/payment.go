@@ -29,8 +29,8 @@ type PaymentMethodName string
 const (
 	CARD           PaymentMethodName = "card"
 	ETH            PaymentMethodName = "eth"
-	USDT_TRON      PaymentMethodName = "usdt"
-	USDT_TRON_TEST PaymentMethodName = "usdt_testnet"
+	USDT_TRON      PaymentMethodName = "usdt-tron"
+	USDT_TRON_TEST PaymentMethodName = "usdt-shasta"
 )
 
 // ValidPaymentMethodNames is a set of valid payment method names
