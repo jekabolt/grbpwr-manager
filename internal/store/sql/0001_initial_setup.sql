@@ -74,8 +74,8 @@ INSERT INTO
 VALUES
     ('card'),
     ('eth'),
-    ('usdc'),
-    ('usdt');
+    ('usdt-tron');
+    ('usdt-shasta');
 
 CREATE TABLE order_status (
     id INT PRIMARY KEY AUTO_INCREMENT,

@@ -1,4 +1,4 @@
-package usdt
+package tron
 
 import (
 	"context"
@@ -19,6 +19,7 @@ type Config struct {
 	Node                    string        `mapstructure:"node"`
 	InvoiceExpiration       time.Duration `mapstructure:"invoice_expiration"`
 	CheckIncomingTxInterval time.Duration `mapstructure:"check_incoming_tx_interval"`
+	ContractAddress         string        `mapstructure:"contract_address"`
 }
 
 type Processor struct {
@@ -31,8 +32,11 @@ type Processor struct {
 	mailer dependency.Mailer
 }
 
-func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid) (dependency.CryptoInvoice, error) {
-	pm, _ := rep.Cache().GetPaymentMethodsByName(entity.Usdt)
+func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
+	pm, ok := rep.Cache().GetPaymentMethodsByName(pmn)
+	if !ok {
+		return nil, fmt.Errorf("payment method not found")
+	}
 
 	addrs := make(map[string]*entity.OrderFull, len(c.Addresses))
 	for _, addr := range c.Addresses {
@@ -61,7 +65,7 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	ofs, err := p.rep.Order().GetOrdersByStatusAndPaymentType(ctx, entity.AwaitingPayment, entity.Usdt)
+	ofs, err := p.rep.Order().GetOrdersByStatusAndPaymentType(ctx, entity.AwaitingPayment, p.pm.Name)
 	if err != nil {
 		return fmt.Errorf("can't get unpaid orders: %w", err)
 	}
@@ -220,13 +224,15 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 	}
 
 	for _, tx := range transactions.Data {
-		//TODO: check timezones
-		txTime := time.Unix(tx.BlockTimestamp, 0)
-		if txTime.After(payment.ModifiedAt) {
 
-			// TODO: make sure that this is usdt transaction
-			// to config
-			// tx.
+		blockTimestamp := time.Unix(0, tx.BlockTimestamp*int64(time.Millisecond)).UTC()
+
+		if blockTimestamp.After(payment.ModifiedAt) {
+
+			if tx.TokenInfo.Address != p.c.ContractAddress {
+				continue // Skip this transaction if it's not a selected coin transaction.
+			}
+
 			amount, err := decimal.NewFromString(tx.Value)
 			if err != nil {
 				continue // Skip this transaction if the amount cannot be parsed.
@@ -234,7 +240,7 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 
 			// Convert payment.TransactionAmount to the same scale as blockchain amount
 			// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
-			paymentAmountInBlockchainFormat := payment.TransactionAmount.Mul(decimal.NewFromInt(1000000))
+			paymentAmountInBlockchainFormat := convertToBlockchainFormat(payment.TransactionAmount, tx.TokenInfo.Decimals)
 
 			if amount.Equal(paymentAmountInBlockchainFormat) {
 				// TODO: in transaction OrderPaymentDone + freeAddress
@@ -266,4 +272,12 @@ func (p *Processor) checkForTransactions(ctx context.Context, orderId int, payme
 	}
 
 	return nil // Return nil if no suitable transaction was found.
+}
+
+func convertToBlockchainFormat(amount decimal.Decimal, decimals int) decimal.Decimal {
+	// Create a new Decimal representing the scale factor (10^decimals).
+	scaleFactor := decimal.NewFromInt(10).Pow(decimal.NewFromInt(int64(decimals)))
+
+	// Multiply the transaction amount by the scale factor to get the amount in blockchain format.
+	return amount.Mul(scaleFactor)
 }

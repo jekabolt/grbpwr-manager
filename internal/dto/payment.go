@@ -26,17 +26,17 @@ func ConvertToEntityPaymentInsert(pbPayment *pb_common.PaymentInsert) (*entity.P
 }
 
 var paymentMethodToCurrency = map[pb_common.PaymentMethodNameEnum]string{
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD: "EUR",
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:  "ETH",
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDC: "USDC",
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT: "USDT",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        "EUR",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         "ETH",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   "USDT",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: "USDT_TESTNET",
 }
 
 var pbPaymentMethodToEntity = map[pb_common.PaymentMethodNameEnum]entity.PaymentMethodName{
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD: entity.Card,
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:  entity.Eth,
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDC: entity.Usdc,
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT: entity.Usdc,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        entity.CARD,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         entity.ETH,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   entity.USDT_TRON,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: entity.USDT_TRON_TEST,
 }
 
 func ConvertPaymentMethodToCurrency(pbPaymentMethod pb_common.PaymentMethodNameEnum) string {

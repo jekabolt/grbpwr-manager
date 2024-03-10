@@ -34,13 +34,13 @@ type Config struct {
 }
 
 type Mailer struct {
-	cli       dependency.Sender
-	db        dependency.Mail
-	from      *mail.Email
-	c         *Config
-	ctx       context.Context
-	cancel    context.CancelFunc
-	templates map[string]*template.Template
+	cli            dependency.Sender
+	mailRepository dependency.Mail
+	from           *mail.Email
+	c              *Config
+	ctx            context.Context
+	cancel         context.CancelFunc
+	templates      map[string]*template.Template
 }
 
 // addAuthHeader is a custom RequestEditorFn that adds an authorization header to the request
@@ -51,11 +51,11 @@ func addAuthHeader(token string) resend.RequestEditorFn {
 	}
 }
 
-func New(c *Config, db dependency.Mail) (dependency.Mailer, error) {
-	return new(c, db)
+func New(c *Config, mailRepository dependency.Mail) (dependency.Mailer, error) {
+	return new(c, mailRepository)
 }
 
-func new(c *Config, db dependency.Mail) (*Mailer, error) {
+func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 	// Validate the configuration
 	if c.APIKey == "" || c.FromEmail == "" || c.FromName == "" {
 		return nil, fmt.Errorf("incomplete config: %+v", c)
@@ -72,11 +72,11 @@ func new(c *Config, db dependency.Mail) (*Mailer, error) {
 
 	// Initialize the Mailer struct
 	m := &Mailer{
-		cli:       cli,
-		db:        db,
-		from:      mail.NewEmail(c.FromName, c.FromEmail),
-		c:         c,
-		templates: make(map[string]*template.Template),
+		cli:            cli,
+		mailRepository: mailRepository,
+		from:           mail.NewEmail(c.FromName, c.FromEmail),
+		c:              c,
+		templates:      make(map[string]*template.Template),
 	}
 
 	// Parse email templates

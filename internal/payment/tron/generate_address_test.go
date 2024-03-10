@@ -1,4 +1,4 @@
-package usdt
+package tron
 
 import (
 	"crypto/ecdsa"
@@ -13,8 +13,14 @@ import (
 	"github.com/tyler-smith/go-bip39"
 )
 
-func TestGenerateTronAddressFromMnemonic(t *testing.T) {
+const (
+	// TronAddressPrefix is the prefix for TRON addresses
+	TronAddressPrefix   = 0x41
+	NileAddressPrefix   = 0xa0
+	ShastaAddressPrefix = 0x41
+)
 
+func TestGenerateTronAddressFromMnemonic(t *testing.T) {
 	// Generate a mnemonic for a new wallet
 	entropy, err := bip39.NewEntropy(128) // You can choose entropy size: 128, 160, 192, 224, or 256 bits
 	if err != nil {
@@ -53,7 +59,7 @@ func TestGenerateTronAddressFromMnemonic(t *testing.T) {
 	address := pubKeyHash[len(pubKeyHash)-20:]
 
 	// Add the TRON prefix (0x41) to the address
-	tronAddress := append([]byte{0x41}, address...)
+	tronAddress := append([]byte{ShastaAddressPrefix}, address...)
 
 	// Perform double SHA-256 hashing on the TRON address
 	sha256Hash := sha256.Sum256(tronAddress)

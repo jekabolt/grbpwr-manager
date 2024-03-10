@@ -17,7 +17,6 @@ require (
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.0.0-rc.5
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/jmoiron/sqlx v1.3.5
-	github.com/johnbellone/grpc-middleware-sentry v0.3.0
 	github.com/lib/pq v1.10.7
 	github.com/minio/minio-go/v7 v7.0.62
 	github.com/mr-tron/base58 v1.2.0
@@ -46,7 +45,6 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
-	github.com/getsentry/sentry-go v0.20.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
