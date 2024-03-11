@@ -171,7 +171,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 }
 
 func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
-	o, err := s.repo.Order().GetOrderByUUID(ctx, req.Uuid)
+	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.Uuid)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't get order by uuid",
 			slog.String("err", err.Error()),
@@ -313,8 +313,56 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 }
 
 func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.CheckCryptoPaymentResponse, error) {
-	// TODO: implement
-	return nil, status.Errorf(codes.Unimplemented, "unimplemented")
+
+	p, o, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't check payment pending by uuid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't check payment pending by uuid")
+	}
+
+	pm, ok := s.repo.Cache().GetPaymentMethodById(p.PaymentMethodID)
+	if !ok {
+		slog.Default().ErrorCtx(ctx, "can't get payment method by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
+	}
+
+	checker := s.usdtTron
+	switch pm.Name {
+	case entity.USDT_TRON:
+		checker = s.usdtTron
+	case entity.USDT_TRON_TEST:
+		checker = s.usdtTronTestnet
+	default:
+		slog.Default().ErrorCtx(ctx, "payment method is not allowed",
+			slog.Any("paymentMethod", pm),
+		)
+		return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
+	}
+
+	p, err = checker.CheckForTransactions(ctx, int(o.ID), p)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't check for transactions",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't check for transactions")
+	}
+
+	pbPayment, err := dto.ConvertEntityToPbPayment(p)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't convert entity payment to pb payment",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity payment to pb payment")
+	}
+
+	return &pb_frontend.CheckCryptoPaymentResponse{
+		Payment: pbPayment,
+	}, nil
+
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
