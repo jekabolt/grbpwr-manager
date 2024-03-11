@@ -68,7 +68,7 @@ service FrontendService {
   // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
   rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
     option (google.api.http) = {
-      post: "/api/frontend/order/check/{order_id}"
+      post: "/api/frontend/order/check/{order_uuid}"
       body: "*"
     };
   }
@@ -188,12 +188,11 @@ message GetOrderInvoiceResponse {
 }
 
 message CheckCryptoPaymentRequest {
-  int32 order_id = 1;
-  common.PaymentMethodNameEnum payment_method = 2;
+  string order_uuid = 1;
 }
 
 message CheckCryptoPaymentResponse {
-  common.OrderFull order = 1;
+  common.Payment payment = 1;
 }
 
 message ApplyPromoCodeRequest {

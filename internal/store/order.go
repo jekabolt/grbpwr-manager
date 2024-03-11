@@ -13,6 +13,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type orderStore struct {
@@ -450,7 +452,7 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
 	var err error
 
-	orderFull, err := ms.GetOrderByUUID(ctx, uuid)
+	orderFull, err := ms.GetOrderFullByUUID(ctx, uuid)
 	if err != nil {
 		return nil, fmt.Errorf("error while getting order by uuid: %w", err)
 	}
@@ -1035,6 +1037,36 @@ func getOrderByUUID(ctx context.Context, rep dependency.Repository, uuid string)
 		return nil, err
 	}
 	return &order, nil
+}
+
+func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error) {
+	return getOrderByUUID(ctx, ms, uuid)
+}
+
+func (ms *MYSQLStore) CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error) {
+	o, err := ms.GetOrderByUUID(ctx, uuid)
+	if err != nil {
+		return nil, o, fmt.Errorf("can't get order by uuid: %w", err)
+	}
+
+	os, ok := ms.cache.GetOrderStatusById(o.OrderStatusID)
+	if !ok {
+		return nil, o, fmt.Errorf("order status is not exists by id: %d", o.OrderStatusID)
+	}
+
+	if os.Name != entity.AwaitingPayment {
+		return nil, o, fmt.Errorf("bad order status for checking payment pending must be awaiting payment got: %s", os.Name)
+	}
+
+	p, err := ms.GetPaymentByOrderId(ctx, o.ID)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get payment by order id",
+			slog.String("err", err.Error()),
+		)
+		return nil, o, status.Errorf(codes.Internal, "can't get payment by order id")
+	}
+
+	return p, o, nil
 }
 
 func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
@@ -1790,7 +1822,7 @@ func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.Or
 	return &ofs[0], nil
 }
 
-func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
+func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
 	order, err := getOrderByUUID(ctx, ms, uuid)
 	if err != nil {
 		return nil, err
@@ -2066,7 +2098,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId
 }
 
 // TODO:
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) error {
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) (*entity.Payment, error) {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		o, err := getOrderById(ctx, rep, orderId)
@@ -2100,10 +2132,10 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderId int, p *enti
 		return nil
 	})
 	if err != nil {
-		return err
+		return p, err
 	}
 
-	return nil
+	return p, nil
 }
 
 // TODO:
