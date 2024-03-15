@@ -30,9 +30,10 @@ type Processor struct {
 	rep    dependency.Repository
 	tg     dependency.Trongrid
 	mailer dependency.Mailer
+	rates  dependency.RatesService
 }
 
-func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
+func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, r dependency.RatesService, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
 	pm, ok := rep.Cache().GetPaymentMethodsByName(pmn)
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
@@ -50,6 +51,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 		addrs:  addrs,
 		mailer: m,
 		tg:     tg,
+		rates:  r,
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -136,6 +138,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 	expiration := time.Now()
 	var err error
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+
 		payment, err = rep.Order().GetPaymentByOrderId(ctx, orderId)
 		if err != nil {
 			return fmt.Errorf("can't get payment by order id: %w", err)
@@ -162,6 +165,17 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 		orderFull, err := p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
 		if err != nil {
 			return fmt.Errorf("can't insert order invoice: %w", err)
+		}
+
+		// convert base currency to payment currency in this case to USD
+		totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, payment.TransactionAmount)
+		if err != nil {
+			return fmt.Errorf("can't convert to base currency: %w", err)
+		}
+
+		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderId, totalUSD)
+		if err != nil {
+			return fmt.Errorf("can't update total payment currency: %w", err)
 		}
 
 		err = p.setAddressOrder(pAddr, orderFull)

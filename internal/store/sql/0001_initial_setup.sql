@@ -164,6 +164,7 @@ CREATE TABLE payment (
     payment_method_id INT NOT NULL,
     transaction_id VARCHAR(255) UNIQUE,
     transaction_amount DECIMAL(10, 2) NOT NULL,
+    transaction_amount_payment_currency DECIMAL(10, 2) NOT NULL,
     payer VARCHAR(255),
     payee VARCHAR(255),
     is_transaction_done BOOLEAN NOT NULL DEFAULT FALSE,

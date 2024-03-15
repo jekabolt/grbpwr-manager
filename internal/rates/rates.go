@@ -19,277 +19,282 @@ import (
 var (
 	exchangeRatesBaseURL = "http://api.exchangeratesapi.io/v1/"
 	cryptoCompareBaseURL = "https://min-api.cryptocompare.com/data/"
-
-	baseCurrency = "EUR"
+	defaultTimeout       = 10 * time.Second
 )
-
-var currencyMap = map[string]dto.CurrencyRate{
-	"BTC": {
-		Description: "Bitcoin",
-	},
-	"CHF": {
-		Description: "Swiss Franc",
-	},
-	"CNY": {
-		Description: "Chinese Yuan",
-	},
-	"CZK": {
-		Description: "Czech Republic Koruna",
-	},
-	"DKK": {
-		Description: "Danish Krone",
-	},
-	"EUR": {
-		Description: "Euro",
-	},
-	"ETH": {
-		Description: "Ethereum",
-	},
-	"GBP": {
-		Description: "British Pound Sterling",
-	},
-	"GEL": {
-		Description: "Georgian Lari",
-	},
-	"HKD": {
-		Description: "Hong Kong Dollar",
-	},
-	"HUF": {
-		Description: "Hungarian Forint",
-	},
-	"ILS": {
-		Description: "Israeli New Sheqel",
-	},
-	"JPY": {
-		Description: "Japanese Yen",
-	},
-	"NOK": {
-		Description: "Norwegian Krone",
-	},
-	"PLN": {
-		Description: "Polish Zloty",
-	},
-	"RUB": {
-		Description: "Russian Ruble",
-	},
-	"SEK": {
-		Description: "Swedish Krona",
-	},
-	"SGD": {
-		Description: "Singapore Dollar",
-	},
-	"TRY": {
-		Description: "Turkish Lira",
-	},
-	"UAH": {
-		Description: "Ukrainian Hryvnia",
-	},
-	"USD": {
-		Description: "United States Dollar",
-	},
-}
 
 type Config struct {
 	ExchangeAPIKey    string        `mapstructure:"api_key"`
 	RatesUpdatePeriod time.Duration `mapstructure:"rates_update_period"`
+	BaseCurrency      string        `mapstructure:"base_currency"`
+}
+
+var currencyDescriptions = map[dto.CurrencyTicker]string{
+	dto.BTC: "Bitcoin",
+	dto.ETH: "Ethereum",
+	dto.CHF: "Swiss Franc",
+	dto.CNY: "Chinese Yuan",
+	dto.CZK: "Czech Republic Koruna",
+	dto.DKK: "Danish Krone",
+	dto.EUR: "Euro",
+	dto.GBP: "British Pound Sterling",
+	dto.GEL: "Georgian Lari",
+	dto.HKD: "Hong Kong Dollar",
+	dto.HUF: "Hungarian Forint",
+	dto.ILS: "Israeli New Sheqel",
+	dto.JPY: "Japanese Yen",
+	dto.NOK: "Norwegian Krone",
+	dto.PLN: "Polish Zloty",
+	dto.RUB: "Russian Ruble",
+	dto.SEK: "Swedish Krona",
+	dto.SGD: "Singapore Dollar",
+	dto.TRY: "Turkish Lira",
+	dto.UAH: "Ukrainian Hryvnia",
+	dto.USD: "United States Dollar",
 }
 
 type Client struct {
-	c          *Config
-	cli        *resty.Client
-	crypto     *resty.Client
-	rates      map[string]dto.CurrencyRate
-	ratesStore dependency.Rates
-	mu         sync.RWMutex
-	stopCh     chan struct{}
-	doneCh     chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
+	config       *Config
+	fiatClient   *resty.Client
+	cryptoClient *resty.Client
+	rates        sync.Map // thread-safe storage for currency rates
+	ratesStore   dependency.Rates
+	ctx          context.Context
+	cancel       context.CancelFunc
+	baseCurrency dto.CurrencyTicker
 }
 
-func New(c *Config, ratesStore dependency.Rates) *Client {
-	cli := resty.New()
-	cli.SetQueryParam("access_key", c.ExchangeAPIKey)
-	cli.SetBaseURL(exchangeRatesBaseURL)
-	cli.SetTimeout(10 * time.Second)
+func New(config *Config, ratesStore dependency.Rates) (dependency.RatesService, error) {
+	if _, exists := currencyDescriptions[dto.CurrencyTicker(strings.ToUpper(config.BaseCurrency))]; !exists {
+		return nil, fmt.Errorf("unsupported base currency: %s", config.BaseCurrency)
+	}
 
-	cryptoCli := resty.New()
-	cryptoCli.SetBaseURL(cryptoCompareBaseURL)
-	cryptoCli.SetTimeout(10 * time.Second)
+	fiatClient := resty.New().SetTimeout(defaultTimeout).SetBaseURL(exchangeRatesBaseURL).SetQueryParam("access_key", config.ExchangeAPIKey)
+	cryptoClient := resty.New().SetTimeout(defaultTimeout).SetBaseURL(cryptoCompareBaseURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Client{
-		cli:        cli,
-		crypto:     cryptoCli,
-		c:          c,
-		rates:      make(map[string]dto.CurrencyRate),
-		ratesStore: ratesStore,
-		stopCh:     make(chan struct{}),
-		doneCh:     make(chan struct{}),
-		ctx:        ctx,
-		cancel:     cancel,
-	}
+		config:       config,
+		fiatClient:   fiatClient,
+		cryptoClient: cryptoClient,
+		ratesStore:   ratesStore,
+		ctx:          ctx,
+		cancel:       cancel,
+		baseCurrency: dto.CurrencyTicker(strings.ToUpper(config.BaseCurrency)),
+	}, nil
 }
 
-func (cli *Client) initLatest() error {
-	curRates, err := cli.ratesStore.GetLatestRates(cli.ctx)
-	if err != nil {
-		return fmt.Errorf("could not get latest rates: %w", err)
-	}
-	if len(curRates) == 0 {
-		return nil
+// Start initializes and starts the rates update process.
+func (c *Client) Start() {
+	if err := c.loadLatestRates(); err != nil {
+		slog.Error("Failed to load latest rates", slog.String("error", err.Error()))
 	}
 
-	cli.rates = make(map[string]dto.CurrencyRate, len(curRates))
-	for _, cr := range curRates {
-		rate := cli.rates[cr.CurrencyCode]
-		rate.Rate = cr.Rate
-		cli.rates[cr.CurrencyCode] = rate
-	}
-	return nil
+	go c.scheduleRateUpdates()
 }
 
-func (cli *Client) Start() error {
-	err := cli.initLatest()
-	if err != nil {
-		return fmt.Errorf("could not init latest rates: %w", err)
+// Stop signals the update process to stop.
+func (c *Client) Stop() {
+	c.cancel()
+}
+
+func (c *Client) GetBaseCurrency() dto.CurrencyTicker {
+	return c.baseCurrency
+}
+
+// ConvertToBaseCurrency converts the given amount from the given currency to the base currency.
+func (c *Client) ConvertToBaseCurrency(currencyFrom dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error) {
+	if currencyFrom == c.baseCurrency {
+		return amount, nil
 	}
 
-	if len(cli.rates) == 0 {
-		slog.Default().InfoCtx(cli.ctx, "no rates in db, will update")
-		if err := cli.updateRates(); err != nil {
-			slog.Default().ErrorCtx(cli.ctx, "could not update rates", "err", err)
+	rate, ok := c.GetRates()[currencyFrom]
+	if !ok {
+		return decimal.Zero, fmt.Errorf("unsupported currency: %s", currencyFrom)
+	}
+	return amount.Div(rate.Rate), nil
+}
+
+// ConvertFromBaseCurrency converts the given amount from the base currency to the given currency.
+func (c *Client) ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error) {
+	if currencyTo == c.baseCurrency {
+		return amount, nil
+	}
+
+	rate, ok := c.GetRates()[currencyTo]
+	if !ok {
+		return decimal.Zero, fmt.Errorf("unsupported currency: %s", currencyTo)
+	}
+	return amount.Mul(rate.Rate), nil
+}
+
+// GetRates returns the current rates.
+func (c *Client) GetRates() map[dto.CurrencyTicker]dto.CurrencyRate {
+	rates := make(map[dto.CurrencyTicker]dto.CurrencyRate)
+	c.rates.Range(func(key, value interface{}) bool {
+		ticker, ok := key.(string)
+		if !ok {
+			slog.Error("Invalid currency ticker type", slog.String("type", fmt.Sprintf("%T", key)))
+			return true
 		}
-	}
-
-	go func() {
-		ticker := time.NewTicker(cli.c.RatesUpdatePeriod)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if err := cli.updateRates(); err != nil {
-					fmt.Printf("could not update rates: %v", err)
-				}
-			case <-cli.ctx.Done():
-				close(cli.doneCh)
-				return
-			}
-		}
-	}()
-	return nil
+		rates[dto.CurrencyTicker(ticker)] = value.(dto.CurrencyRate)
+		return true
+	})
+	return rates
 }
 
-func (cli *Client) Stop() {
-	cli.cancel()
-	<-cli.doneCh // wait for the goroutine to stop
-}
-
-func (cli *Client) GetRates() map[string]dto.CurrencyRate {
-	cli.mu.RLock() // Read lock
-	defer cli.mu.RUnlock()
-	return cli.rates
-}
-func (cli *Client) updateRates() error {
-	slog.Default().InfoCtx(cli.ctx, "updating fiat rates")
-	frm, err := cli.getFiatRates(baseCurrency)
+func (c *Client) loadLatestRates() error {
+	latestRates, err := c.ratesStore.GetLatestRates(c.ctx)
 	if err != nil {
-		return fmt.Errorf("could not get fiat rates: %w", err)
+		return fmt.Errorf("failed to get latest rates: %w", err)
 	}
 
-	slog.Default().InfoCtx(cli.ctx, "updating crypto rates")
-	crm, err := cli.getCryptoRates(baseCurrency, []string{"BTC", "ETH"})
-	if err != nil {
-		return fmt.Errorf("could not get crypto rates: %w", err)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	cli.rates = mergeMaps(frm, crm)
-
-	crs := make([]entity.CurrencyRate, 0, len(cli.rates))
-	for currencyCode, cr := range cli.rates {
-		crs = append(crs, entity.CurrencyRate{
-			CurrencyCode: currencyCode,
-			Rate:         cr.Rate,
+	for _, rate := range latestRates {
+		c.rates.Store(dto.CurrencyTicker(rate.CurrencyCode), dto.CurrencyRate{
+			Description: currencyDescriptions[dto.CurrencyTicker(rate.CurrencyCode)],
+			Rate:        rate.Rate,
 		})
 	}
 
-	err = cli.ratesStore.BulkUpdateRates(cli.ctx, crs)
+	return nil
+}
+
+func (c *Client) scheduleRateUpdates() {
+	ticker := time.NewTicker(c.config.RatesUpdatePeriod)
+	defer ticker.Stop()
+
+	err := c.updateRates()
 	if err != nil {
-		return fmt.Errorf("could not update rates: %w", err)
+		slog.Default().Error("Failed to update rates", slog.String("error", err.Error()))
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			err := c.updateRates()
+			if err != nil {
+				slog.Default().Error("Failed to update rates", slog.String("error", err.Error()))
+			}
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+func (c *Client) updateRates() error {
+	fiatRates, err := c.fetchFiatRates()
+	if err != nil {
+		return err
+	}
+
+	cryptoRates, err := c.fetchCryptoRates()
+	if err != nil {
+		return err
+	}
+
+	// Update fiat rates in the map.
+	for k, v := range fiatRates {
+		// Ensure keys are of type CurrencyTicker.
+		ticker, ok := currencyDescriptions[dto.CurrencyTicker(k)]
+		if ok {
+			c.rates.Store(ticker, v)
+		} else {
+			slog.Error("Unsupported currency ticker for fiat rate",
+				slog.String("ticker", k))
+		}
+	}
+
+	// Update crypto rates in the map.
+	for k, v := range cryptoRates {
+		// Ensure keys are of type CurrencyTicker.
+		ticker, ok := currencyDescriptions[dto.CurrencyTicker(k)]
+		if ok {
+			c.rates.Store(ticker, v)
+		} else {
+			slog.Error("Unsupported currency ticker for crypto rate",
+				slog.String("ticker", k))
+		}
+	}
+
+	crs := []entity.CurrencyRate{}
+	rates := c.GetRates()
+	for k, v := range rates {
+		crs = append(crs, entity.CurrencyRate{
+			CurrencyCode: k.String(),
+			Rate:         v.Rate,
+		})
+	}
+
+	err = c.ratesStore.BulkUpdateRates(c.ctx, crs)
+	if err != nil {
+		return fmt.Errorf("failed to bulk update rates: %w", err)
 	}
 
 	return nil
 }
 
-type GetLatestRatesResponse struct {
-	Success   bool               `json:"success"`
-	Timestamp int64              `json:"timestamp"`
-	Base      string             `json:"base"`
-	Date      string             `json:"date"`
-	Rates     map[string]float64 `json:"rates"`
-}
+// fetchFiatRates fetches the latest fiat currency rates from the exchange rates API.
+func (c *Client) fetchFiatRates() (map[string]dto.CurrencyRate, error) {
+	type response struct {
+		Success bool               `json:"success"`
+		Rates   map[string]float64 `json:"rates"`
+	}
 
-func (client *Client) getFiatRates(baseCurrency string) (map[string]decimal.Decimal, error) {
-	var currencies []string
-	for currency := range currencyMap {
-		currencies = append(currencies, currency)
+	// Construct the URL with the base currency and symbols.
+	currencies := make([]string, 0, len(currencyDescriptions))
+	for k := range currencyDescriptions {
+		currencies = append(currencies, k.String())
 	}
 	symbols := strings.Join(currencies, ",")
+	url := fmt.Sprintf("latest?base=%s&symbols=%s", c.baseCurrency, symbols)
 
-	url := fmt.Sprintf("latest?base=%s&symbols=%s", baseCurrency, symbols)
-	resp, err := client.cli.R().Get(url)
+	// Make the request.
+	resp, err := c.fiatClient.R().Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch fiat rates: %w", err)
 	}
-
-	var res GetLatestRatesResponse
-	if err := json.Unmarshal(resp.Body(), &res); err != nil {
-		return nil, fmt.Errorf("could not unmarshal response fiat: %w : body: %v", err, resp.String())
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("failed to fetch fiat rates: status %d body %v", resp.StatusCode(), resp.String())
 	}
+	r := response{}
+	json.Unmarshal(resp.Body(), &r)
 
-	if !res.Success {
-		return nil, fmt.Errorf("fiat api request failed: %v", resp.String())
-	}
-
-	return floatMapToDecimal(res.Rates), nil
-}
-
-func (client *Client) getCryptoRates(fsym string, tsyms []string) (map[string]decimal.Decimal, error) {
-	url := fmt.Sprintf("price?fsym=%s&tsyms=%s", fsym, strings.Join(tsyms, ","))
-	resp, err := client.crypto.R().Get(url)
-	if err != nil {
-		return nil, err
-	}
-	var rates map[string]float64
-	if err := json.Unmarshal(resp.Body(), &rates); err != nil {
-		return nil, fmt.Errorf("could not unmarshal response crypto: %w : body: %v", err, resp.String())
-	}
-
-	return floatMapToDecimal(rates), nil
-}
-
-func floatMapToDecimal(m map[string]float64) map[string]decimal.Decimal {
-	res := make(map[string]decimal.Decimal)
-	for k, v := range m {
-		res[k] = decimal.NewFromFloat(v)
-	}
-	return res
-}
-
-// update currencyMap with rates from the API
-func mergeMaps(maps ...map[string]decimal.Decimal) map[string]dto.CurrencyRate {
-	res := make(map[string]dto.CurrencyRate)
-	for _, m := range maps {
-		for k, v := range m {
-			if cr, ok := currencyMap[k]; ok {
-				cr.Rate = v
-				res[k] = cr
-			}
+	// Convert fetched rates into dto.CurrencyRate map.
+	rates := make(map[string]dto.CurrencyRate)
+	for k, v := range r.Rates {
+		rates[k] = dto.CurrencyRate{
+			Description: currencyDescriptions[dto.CurrencyTicker(k)],
+			Rate:        decimal.NewFromFloat(v),
 		}
 	}
-	return res
+
+	return rates, nil
+}
+
+// fetchCryptoRates fetches the latest cryptocurrency rates from the crypto compare API.
+func (c *Client) fetchCryptoRates() (map[string]dto.CurrencyRate, error) {
+	rates := make(map[string]float64)
+	// Specify the cryptocurrencies you are interested in.
+	cryptoCurrencies := []string{"BTC", "ETH"} // Example cryptocurrencies
+	url := fmt.Sprintf("price?fsym=%s&tsyms=%s", c.baseCurrency, strings.Join(cryptoCurrencies, ","))
+
+	// Make the request and directly check the error without storing the response object.
+	resp, err := c.cryptoClient.R().SetResult(&rates).Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch crypto rates: %w", err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("error fetching crypto rates: status %s, body %s", resp.Status(), resp.String())
+	}
+
+	// Convert fetched rates into dto.CurrencyRate map.
+	cryptoRates := make(map[string]dto.CurrencyRate)
+	for k, v := range rates {
+		cryptoRates[k] = dto.CurrencyRate{
+			Description: currencyDescriptions[dto.CurrencyTicker(k)],
+			Rate:        decimal.NewFromFloat(v),
+		}
+	}
+
+	return cryptoRates, nil
 }

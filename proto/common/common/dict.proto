@@ -23,6 +23,7 @@ message Dictionary {
   repeated SortFactors sort_factors = 9;
   bool site_enabled = 10;
   int32 max_order_items = 11;
+  string base_currency = 12;
 }
 
 message Genders {

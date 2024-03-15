@@ -235,3 +235,7 @@ func (c *Cache) SetSiteAvailability(available bool) {
 func (c *Cache) SetMaxOrderItems(count int) {
 	c.Dict.MaxOrderItems = count
 }
+
+func (c *Cache) SetDefaultCurrency(cur dto.CurrencyTicker) {
+	c.Dict.BaseCurrency = cur.String()
+}

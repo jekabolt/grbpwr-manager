@@ -19,9 +19,10 @@ message PaymentInsert {
   PaymentMethodNameEnum payment_method = 1;
   string transaction_id = 2;
   google.type.Decimal transaction_amount = 3;
-  string payer = 4;
-  string payee = 5;
-  bool is_transaction_done = 6;
+  google.type.Decimal transaction_amount_payment_currency = 4;
+  string payer = 5;
+  string payee = 6;
+  bool is_transaction_done = 7;
 }
 
 enum PaymentMethodNameEnum {

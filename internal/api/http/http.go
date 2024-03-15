@@ -183,7 +183,7 @@ func (s *Server) Start(ctx context.Context,
 ) error {
 
 	opts := []grpcSlog.Option{
-		grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall, grpcSlog.PayloadSent, grpcSlog.PayloadReceived),
+		grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall),
 		// Add any other option (check functions starting with logging.With).
 	}
 
