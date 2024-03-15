@@ -61,12 +61,15 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.r = rates.New(&a.c.Rates, a.db.Rates())
-	err = a.r.Start()
+	a.r, err = rates.New(&a.c.Rates, a.db.Rates())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "couldn't start rates worker")
+		slog.Default().ErrorCtx(ctx, "couldn't create rates worker",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
+	a.r.Start()
+	a.db.Cache().SetDefaultCurrency(a.r.GetBaseCurrency())
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
@@ -81,7 +84,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	tg := trongrid.New(&a.c.Trongrid)
 
-	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, entity.USDT_TRON)
+	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, a.r, entity.USDT_TRON)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
 		return err
@@ -89,7 +92,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	tgShasta := trongrid.New(&a.c.Trongrid)
 
-	usdtTronTestnet, err := tron.New(ctx, &a.c.USDTTronShastaTestnetPayment, a.db, a.ma, tgShasta, entity.USDT_TRON_TEST)
+	usdtTronTestnet, err := tron.New(ctx, &a.c.USDTTronShastaTestnetPayment, a.db, a.ma, tgShasta, a.r, entity.USDT_TRON_TEST)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
 		return err

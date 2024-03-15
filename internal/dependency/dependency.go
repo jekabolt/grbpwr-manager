@@ -102,6 +102,7 @@ type (
 		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (*entity.OrderFull, error)
 		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
+		UpdateTotalPaymentCurrency(ctx context.Context, paymentId int, tapc decimal.Decimal) error
 		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
 		SetTrackingNumber(ctx context.Context, orderId int, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
@@ -229,8 +230,12 @@ type (
 	}
 
 	RatesService interface {
-		Start() error
-		GetRates() map[string]dto.CurrencyRate
+		Start()
+		Stop()
+		GetRates() map[dto.CurrencyTicker]dto.CurrencyRate
+		GetBaseCurrency() dto.CurrencyTicker
+		ConvertToBaseCurrency(currencyFrom dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error)
+		ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error)
 	}
 
 	Mailer interface {
@@ -284,5 +289,6 @@ type (
 
 		SetSiteAvailability(available bool)
 		SetMaxOrderItems(count int)
+		SetDefaultCurrency(cur dto.CurrencyTicker)
 	}
 )

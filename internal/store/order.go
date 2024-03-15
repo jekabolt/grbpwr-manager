@@ -281,8 +281,8 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethod *entity.PaymentMethod) (int, error) {
 
 	insertQuery := `
-		INSERT INTO payment (payment_method_id, transaction_amount, is_transaction_done)
-		VALUES (:paymentMethodId, 0, false);
+		INSERT INTO payment (payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done)
+		VALUES (:paymentMethodId, 0, 0, false);
 	`
 
 	paymentID, err := ExecNamedLastId(ctx, rep.DB(), insertQuery, map[string]interface{}{
@@ -1085,6 +1085,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, paymentI
 	query := `
 	UPDATE payment 
 	SET transaction_amount = :transactionAmount,
+		transaction_amount_payment_currency = :transactionAmountPaymentCurrency,
 		transaction_id = :transactionId,
 		is_transaction_done = :isTransactionDone,
 		payment_method_id = :paymentMethodId,
@@ -1093,17 +1094,30 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, paymentI
 	WHERE id = :paymentId`
 
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"transactionAmount": payment.TransactionAmount,
-		"transactionId":     payment.TransactionID,
-		"isTransactionDone": payment.IsTransactionDone,
-		"paymentMethodId":   payment.PaymentMethodID,
-		"payer":             payment.Payer,
-		"payee":             payment.Payee,
-		"paymentId":         paymentId,
+		"transactionAmount":                payment.TransactionAmount,
+		"transactionAmountPaymentCurrency": payment.TransactionAmountPaymentCurrency,
+		"transactionId":                    payment.TransactionID,
+		"isTransactionDone":                payment.IsTransactionDone,
+		"paymentMethodId":                  payment.PaymentMethodID,
+		"payer":                            payment.Payer,
+		"payee":                            payment.Payee,
+		"paymentId":                        paymentId,
 	})
 
 	if err != nil {
 		return fmt.Errorf("can't update order payment: %w", err)
+	}
+	return nil
+}
+
+func (ms *MYSQLStore) UpdateTotalPaymentCurrency(ctx context.Context, paymentId int, tapc decimal.Decimal) error {
+	query := `UPDATE payment SET transaction_amount_payment_currency = :tapc WHERE id = :paymentId`
+	err := ExecNamed(ctx, ms.db, query, map[string]any{
+		"tapc":      tapc,
+		"paymentId": paymentId,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update total payment currency: %w", err)
 	}
 	return nil
 }
@@ -1240,10 +1254,18 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 		orderFull.Payment.PaymentMethodID = pm.ID
 		orderFull.Payment.IsTransactionDone = false
 		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPrice
+		orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPrice
 		orderFull.Payment.Payee = sql.NullString{
 			String: addr,
 			Valid:  true,
 		}
+
+		// TODO:
+		// // convert base currency to payment currency in this case to USD
+		// totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, payment.TransactionAmount)
+		// if err != nil {
+		// 	return fmt.Errorf("can't convert to base currency: %w", err)
+		// }
 
 		err = updateOrderPayment(ctx, rep, orderFull.Order.PaymentID, &orderFull.Payment.PaymentInsert)
 		if err != nil {
@@ -1411,6 +1433,7 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 		payment.payment_method_id,
 		payment.transaction_id, 
 		payment.transaction_amount, 
+		payment.transaction_amount_payment_currency,
 		payment.payer, 
 		payment.payee, 
 		payment.is_transaction_done,

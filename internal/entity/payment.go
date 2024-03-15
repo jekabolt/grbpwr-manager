@@ -16,12 +16,13 @@ type Payment struct {
 }
 
 type PaymentInsert struct {
-	PaymentMethodID   int             `db:"payment_method_id"`
-	TransactionID     sql.NullString  `db:"transaction_id"`
-	TransactionAmount decimal.Decimal `db:"transaction_amount"`
-	Payer             sql.NullString  `db:"payer"`
-	Payee             sql.NullString  `db:"payee"`
-	IsTransactionDone bool            `db:"is_transaction_done"`
+	PaymentMethodID                  int             `db:"payment_method_id"`
+	TransactionID                    sql.NullString  `db:"transaction_id"`
+	TransactionAmount                decimal.Decimal `db:"transaction_amount"`
+	TransactionAmountPaymentCurrency decimal.Decimal `db:"transaction_amount_payment_currency"`
+	Payer                            sql.NullString  `db:"payer"`
+	Payee                            sql.NullString  `db:"payee"`
+	IsTransactionDone                bool            `db:"is_transaction_done"`
 }
 
 type PaymentMethodName string
