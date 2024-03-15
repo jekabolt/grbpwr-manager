@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	exchangeRatesBaseURL = "http://api.exchangeratesapi.io/v1/"
+	exchangeRatesBaseURL = "https://v6.exchangerate-api.com/v6/"
 	cryptoCompareBaseURL = "https://min-api.cryptocompare.com/data/"
 	defaultTimeout       = 10 * time.Second
 )
@@ -56,7 +56,7 @@ type Client struct {
 	config       *Config
 	fiatClient   *resty.Client
 	cryptoClient *resty.Client
-	rates        sync.Map // thread-safe storage for currency rates
+	rates        sync.Map
 	ratesStore   dependency.Rates
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -68,7 +68,7 @@ func New(config *Config, ratesStore dependency.Rates) (dependency.RatesService, 
 		return nil, fmt.Errorf("unsupported base currency: %s", config.BaseCurrency)
 	}
 
-	fiatClient := resty.New().SetTimeout(defaultTimeout).SetBaseURL(exchangeRatesBaseURL).SetQueryParam("access_key", config.ExchangeAPIKey)
+	fiatClient := resty.New().SetTimeout(defaultTimeout).SetBaseURL(exchangeRatesBaseURL)
 	cryptoClient := resty.New().SetTimeout(defaultTimeout).SetBaseURL(cryptoCompareBaseURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -236,17 +236,11 @@ func (c *Client) updateRates() error {
 // fetchFiatRates fetches the latest fiat currency rates from the exchange rates API.
 func (c *Client) fetchFiatRates() (map[string]dto.CurrencyRate, error) {
 	type response struct {
-		Success bool               `json:"success"`
-		Rates   map[string]float64 `json:"rates"`
+		Success string             `json:"success"`
+		Rates   map[string]float64 `json:"conversion_rates"`
 	}
 
-	// Construct the URL with the base currency and symbols.
-	currencies := make([]string, 0, len(currencyDescriptions))
-	for k := range currencyDescriptions {
-		currencies = append(currencies, k.String())
-	}
-	symbols := strings.Join(currencies, ",")
-	url := fmt.Sprintf("latest?base=%s&symbols=%s", c.baseCurrency, symbols)
+	url := fmt.Sprintf("%s/latest/%s", c.config.ExchangeAPIKey, c.baseCurrency)
 
 	// Make the request.
 	resp, err := c.fiatClient.R().Get(url)
@@ -261,10 +255,14 @@ func (c *Client) fetchFiatRates() (map[string]dto.CurrencyRate, error) {
 
 	// Convert fetched rates into dto.CurrencyRate map.
 	rates := make(map[string]dto.CurrencyRate)
-	for k, v := range r.Rates {
-		rates[k] = dto.CurrencyRate{
-			Description: currencyDescriptions[dto.CurrencyTicker(k)],
-			Rate:        decimal.NewFromFloat(v),
+	for ticker, rate := range r.Rates {
+		description, exists := currencyDescriptions[dto.CurrencyTicker(strings.ToUpper(ticker))]
+		if !exists {
+			continue
+		}
+		rates[ticker] = dto.CurrencyRate{
+			Description: description,
+			Rate:        decimal.NewFromFloat(rate),
 		}
 	}
 
