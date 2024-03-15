@@ -27,6 +27,7 @@ type Server struct {
 	repo            dependency.Repository
 	bucket          dependency.FileStore
 	mailer          dependency.Mailer
+	rates           dependency.RatesService
 	usdtTron        dependency.CryptoInvoice
 	usdtTronTestnet dependency.CryptoInvoice
 }
@@ -36,6 +37,7 @@ func New(
 	r dependency.Repository,
 	b dependency.FileStore,
 	m dependency.Mailer,
+	rates dependency.RatesService,
 	usdtTron dependency.CryptoInvoice,
 	usdtTronTestnet dependency.CryptoInvoice,
 ) *Server {
@@ -43,6 +45,7 @@ func New(
 		repo:            r,
 		bucket:          b,
 		mailer:          m,
+		rates:           rates,
 		usdtTron:        usdtTron,
 		usdtTronTestnet: usdtTronTestnet,
 	}
@@ -655,6 +658,7 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
+		Rates:      dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
 }
 
