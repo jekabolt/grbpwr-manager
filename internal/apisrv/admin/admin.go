@@ -921,7 +921,8 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 
 	trackingUrlFull := fmt.Sprintf(sc.ShipmentCarrierInsert.TrackingURL, req.TrackingCode)
 
-	s.mailer.SendOrderShipped(ctx, obs.Buyer.Email, &dto.OrderShipment{
+	// TODO: in tx
+	s.mailer.SendOrderShipped(ctx, s.repo, obs.Buyer.Email, &dto.OrderShipment{
 		Name:           fmt.Sprintf("%s %s", obs.Buyer.FirstName, obs.Buyer.LastName),
 		OrderUUID:      obs.Order.UUID,
 		ShippingDate:   time.Now().Format("2006-01-02"),

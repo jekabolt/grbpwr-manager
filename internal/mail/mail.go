@@ -10,6 +10,8 @@ import (
 	"text/template"
 	"time"
 
+	"golang.org/x/exp/slog"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -40,13 +42,13 @@ type Mailer struct {
 	c              *Config
 	ctx            context.Context
 	cancel         context.CancelFunc
-	templates      map[string]*template.Template
+	templates      map[templateName]*template.Template
 }
 
 // addAuthHeader is a custom RequestEditorFn that adds an authorization header to the request
 func addAuthHeader(token string) resend.RequestEditorFn {
 	return func(ctx context.Context, req *http.Request) error {
-		req.Header.Add("Authorization", "Bearer "+token)
+		req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
 		return nil
 	}
 }
@@ -76,7 +78,7 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		mailRepository: mailRepository,
 		from:           mail.NewEmail(c.FromName, c.FromEmail),
 		c:              c,
-		templates:      make(map[string]*template.Template),
+		templates:      make(map[templateName]*template.Template),
 	}
 
 	// Parse email templates
@@ -113,21 +115,21 @@ func (m *Mailer) parseTemplates() error {
 			return fmt.Errorf("error parsing template '%s': %w", entry.Name(), err)
 		}
 
-		m.templates[entry.Name()] = tmpl
+		m.templates[templateName(entry.Name())] = tmpl
 	}
 
 	return nil
 }
 
-func (m *Mailer) send(ctx context.Context, to, templateName string, data interface{}) (*entity.SendEmailRequest, error) {
-	tmpl, ok := m.templates[templateName]
+func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface{}) (*resend.SendEmailRequest, error) {
+	tmpl, ok := m.templates[tn]
 	if !ok {
-		return nil, fmt.Errorf("template not found: %v", templateName)
+		return nil, fmt.Errorf("template not found: %v", tn)
 	}
 
-	subject, ok := templateSubjects[templateName]
+	subject, ok := templateSubjects[tn]
 	if !ok {
-		return nil, fmt.Errorf("subject not found for template: %v", templateName)
+		return nil, fmt.Errorf("subject not found for template: %v", tn)
 	}
 
 	body := &strings.Builder{}
@@ -143,16 +145,22 @@ func (m *Mailer) send(ctx context.Context, to, templateName string, data interfa
 		Subject: subject,
 		ReplyTo: &m.c.FromEmail,
 	}
-	esr := dto.ResendSendEmailRequestToEntity(&sr, to)
-	resp, err := m.cli.PostEmails(ctx, sr)
+
+	return &sr, nil
+
+}
+
+func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
+
+	resp, err := m.cli.PostEmails(ctx, *ser)
 	if err != nil {
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return esr, gerr.MailApiLimitReached
+			return gerr.MailApiLimitReached
 		}
-		return esr, fmt.Errorf("error sending email: %w", err)
+		return fmt.Errorf("error sending email: %w", err)
 	}
 
-	return esr, nil
+	return nil
 }
 
 func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
@@ -169,6 +177,35 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("error sending email bad status code: %s, status code: %d", resp.Body, resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, ser *resend.SendEmailRequest) error {
+
+	eser, err := dto.ResendSendEmailRequestToEntity(ser)
+	if err != nil {
+		return fmt.Errorf("error converting email: %w", err)
+	}
+
+	id, err := rep.Mail().AddMail(ctx, eser)
+	if err != nil {
+		return fmt.Errorf("error inserting email: %w", err)
+	}
+
+	err = m.send(ctx, ser)
+	if err != nil {
+		// mail send failed, it will be retried by the worker
+		slog.Default().ErrorCtx(ctx, "can't send mail",
+			slog.String("err", err.Error()),
+		)
+		return nil
+	}
+
+	err = rep.Mail().UpdateSent(ctx, id)
+	if err != nil {
+		return fmt.Errorf("error updating email: %w", err)
 	}
 
 	return nil

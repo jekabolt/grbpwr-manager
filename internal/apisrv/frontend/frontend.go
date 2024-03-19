@@ -427,23 +427,13 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 	}
 
 	// Send new subscriber mail.
-	sr, err := s.mailer.SendNewSubscriber(ctx, req.Email)
-	if sr == nil {
-		slog.Default().ErrorCtx(ctx, "send new subscriber mail returned nil sr", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.InvalidArgument, "send new subscriber mail error")
-	}
-
-	// Update sr based on the error from SendNewSubscriber.
+	// TODO: in tx
+	err = s.mailer.SendNewSubscriber(ctx, s.repo, req.Email)
 	if err != nil {
-		sr.Sent = false
-	} else {
-		sr.Sent = true
-	}
-
-	err = s.repo.Mail().AddMail(ctx, sr)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add mail to the database", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "can't add mail to the database")
+		slog.Default().ErrorCtx(ctx, "can't send new subscriber mail",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't send new subscriber mail")
 	}
 
 	return &pb_frontend.SubscribeNewsletterResponse{}, nil

@@ -88,7 +88,7 @@ type (
 	}
 
 	Mail interface {
-		AddMail(ctx context.Context, ser *entity.SendEmailRequest) error
+		AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error)
 		GetAllUnsent(ctx context.Context, withError bool) ([]entity.SendEmailRequest, error)
 		UpdateSent(ctx context.Context, id int) error
 		AddError(ctx context.Context, id int, errMsg string) error
@@ -239,11 +239,11 @@ type (
 	}
 
 	Mailer interface {
-		SendNewSubscriber(ctx context.Context, to string) (*entity.SendEmailRequest, error)
-		SendOrderConfirmation(ctx context.Context, to string, orderDetails *dto.OrderConfirmed) (*entity.SendEmailRequest, error)
-		SendOrderCancellation(ctx context.Context, to string, orderDetails *dto.OrderCancelled) (*entity.SendEmailRequest, error)
-		SendOrderShipped(ctx context.Context, to string, shipmentDetails *dto.OrderShipment) (*entity.SendEmailRequest, error)
-		SendPromoCode(ctx context.Context, to string, promoDetails *dto.PromoCodeDetails) (*entity.SendEmailRequest, error)
+		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
+		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
+		SendOrderCancellation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderCancelled) error
+		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error
+		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error
 		Start(ctx context.Context) error
 		Stop() error
 	}

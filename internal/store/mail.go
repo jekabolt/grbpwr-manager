@@ -21,7 +21,7 @@ func (ms *MYSQLStore) Mail() dependency.Mail {
 	}
 }
 
-func (ms *MYSQLStore) AddMail(ctx context.Context, ser *entity.SendEmailRequest) error {
+func (ms *MYSQLStore) AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error) {
 	query := `
 	INSERT INTO 
 	send_email_request 
@@ -43,12 +43,12 @@ func (ms *MYSQLStore) AddMail(ctx context.Context, ser *entity.SendEmailRequest)
 		params["sentAt"] = sql.NullTime{Time: time.Now(), Valid: false}
 	}
 
-	err := ExecNamed(ctx, ms.DB(), query, params)
+	id, err := ExecNamedLastId(ctx, ms.DB(), query, params)
 	if err != nil {
-		return fmt.Errorf("failed to add mail: %w", err)
+		return 0, fmt.Errorf("failed to add mail: %w", err)
 	}
 
-	return nil
+	return id, nil
 }
 
 func (ms *MYSQLStore) GetAllUnsent(ctx context.Context, withError bool) ([]entity.SendEmailRequest, error) {
