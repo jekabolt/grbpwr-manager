@@ -40,6 +40,48 @@ func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_c
 	return g, nil
 }
 
+func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ProductInsert, error) {
+	if pbProductNew == nil {
+		return nil, fmt.Errorf("input pbProductNew is nil")
+	}
+
+	// Convert ProductInsert
+	price, err := decimal.NewFromString(pbProductNew.Price.Value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert product price: %w", err)
+	}
+	salePercentage, err := decimal.NewFromString(pbProductNew.SalePercentage.Value)
+	if err != nil {
+		if pbProductNew.SalePercentage.Value == "" {
+			salePercentage = decimal.Zero
+		} else {
+			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+		}
+	}
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.TargetGender)
+	if err != nil {
+		return nil, err
+	}
+
+	return &entity.ProductInsert{
+		Preorder:        sql.NullString{String: pbProductNew.Preorder, Valid: pbProductNew.Preorder != ""},
+		Name:            pbProductNew.Name,
+		Brand:           pbProductNew.Brand,
+		SKU:             pbProductNew.Sku,
+		Color:           pbProductNew.Color,
+		ColorHex:        pbProductNew.ColorHex,
+		CountryOfOrigin: pbProductNew.CountryOfOrigin,
+		Thumbnail:       pbProductNew.Thumbnail,
+		Price:           price,
+		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.SalePercentage.Value != ""},
+		CategoryID:      int(pbProductNew.CategoryId),
+		Description:     pbProductNew.Description,
+		Hidden:          sql.NullBool{Bool: pbProductNew.Hidden, Valid: true},
+		TargetGender:    targetGender,
+	}, nil
+
+}
+
 func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")

@@ -79,18 +79,23 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/product/{id}"};
   }
 
-  // Hides a product by its ID.
-  rpc HideProductByID(HideProductByIDRequest) returns (HideProductByIDResponse) {
+  // Reduces stock for specific product sizes.
+  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/{id}/hide"
+      post: "/api/admin/product/update/{id}"
       body: "*"
     };
   }
 
-  // Sets a sale for a product by ID.
-  rpc SetSaleByID(SetSaleByIDRequest) returns (SetSaleByIDResponse) {
+  // Deletes a product's measurement.
+  rpc DeleteProductMeasurement(DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
+    option (google.api.http) = {delete: "/api/admin/product/measurement/{id}/delete"};
+  }
+
+  // Adds a new measurement to a product.
+  rpc AddProductMeasurement(AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/{id}/set/sale"
+      post: "/api/admin/product/measurement/add"
       body: "*"
     };
   }
@@ -107,115 +112,6 @@ service AdminService {
   rpc RestoreStockForProductSizes(RestoreStockForProductSizesRequest) returns (RestoreStockForProductSizesResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/restorestock"
-      body: "*"
-    };
-  }
-
-  // Updates the preorder status for a product.
-  rpc UpdateProductPreorder(UpdateProductPreorderRequest) returns (UpdateProductPreorderResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatepreorder"
-      body: "*"
-    };
-  }
-
-  // Updates the name of a product.
-  rpc UpdateProductName(UpdateProductNameRequest) returns (UpdateProductNameResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatename"
-      body: "*"
-    };
-  }
-
-  // Updates the SKU of a product.
-  rpc UpdateProductSKU(UpdateProductSKURequest) returns (UpdateProductSKUResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updateSKU"
-      body: "*"
-    };
-  }
-
-  // Updates the color and hex value of a product.
-  rpc UpdateProductColorAndColorHex(UpdateProductColorAndColorHexRequest) returns (UpdateProductColorAndColorHexResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatecolor"
-      body: "*"
-    };
-  }
-
-  // Updates the country of origin for a product.
-  rpc UpdateProductCountryOfOrigin(UpdateProductCountryOfOriginRequest) returns (UpdateProductCountryOfOriginResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatecountry"
-      body: "*"
-    };
-  }
-
-  // Updates the brand of a product.
-  rpc UpdateProductBrand(UpdateProductBrandRequest) returns (UpdateProductBrandResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatebrand"
-      body: "*"
-    };
-  }
-
-  // Updates the target gender for a product.
-  rpc UpdateProductTargetGender(UpdateProductTargetGenderRequest) returns (UpdateProductTargetGenderResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updategender"
-      body: "*"
-    };
-  }
-
-  // Updates the thumbnail of a product.
-  rpc UpdateProductThumbnail(UpdateProductThumbnailRequest) returns (UpdateProductThumbnailResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatethumbnail"
-      body: "*"
-    };
-  }
-
-  // Updates the price of a product.
-  rpc UpdateProductPrice(UpdateProductPriceRequest) returns (UpdateProductPriceResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updateprice"
-      body: "*"
-    };
-  }
-
-  // Updates the sale information of a product.
-  rpc UpdateProductSale(UpdateProductSaleRequest) returns (UpdateProductSaleResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatesale"
-      body: "*"
-    };
-  }
-
-  // Updates the category of a product.
-  rpc UpdateProductCategory(UpdateProductCategoryRequest) returns (UpdateProductCategoryResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatecategory"
-      body: "*"
-    };
-  }
-
-  // Updates the description of a product.
-  rpc UpdateProductDescription(UpdateProductDescriptionRequest) returns (UpdateProductDescriptionResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/updatedescription"
-      body: "*"
-    };
-  }
-
-  // Deletes a product's measurement.
-  rpc DeleteProductMeasurement(DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/measurement/{id}/delete"};
-  }
-
-  // Adds a new measurement to a product.
-  rpc AddProductMeasurement(AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/measurement/add"
       body: "*"
     };
   }
@@ -576,116 +472,12 @@ message DeleteProductByIDRequest {
 
 message DeleteProductByIDResponse {}
 
-message HideProductByIDRequest {
+message UpdateProductRequest {
   int32 id = 1;
-  bool hide = 2;
+  common.ProductInsert product = 2;
 }
 
-message HideProductByIDResponse {}
-
-message SetSaleByIDRequest {
-  int32 id = 1;
-  google.type.Decimal sale_percent = 2;
-}
-
-message SetSaleByIDResponse {}
-
-message ReduceStockForProductSizesRequest {
-  repeated common.OrderItem items = 1;
-}
-
-message ReduceStockForProductSizesResponse {}
-
-message RestoreStockForProductSizesRequest {
-  repeated common.OrderItem items = 1;
-}
-
-message RestoreStockForProductSizesResponse {}
-
-message UpdateProductPreorderRequest {
-  int32 product_id = 1;
-  string preorder = 2;
-}
-
-message UpdateProductPreorderResponse {}
-
-message UpdateProductNameRequest {
-  int32 product_id = 1;
-  string name = 2;
-}
-
-message UpdateProductNameResponse {}
-
-message UpdateProductSKURequest {
-  int32 product_id = 1;
-  string sku = 2;
-}
-
-message UpdateProductSKUResponse {}
-
-message UpdateProductColorAndColorHexRequest {
-  int32 product_id = 1;
-  string color = 2;
-  string color_hex = 3;
-}
-
-message UpdateProductColorAndColorHexResponse {}
-
-message UpdateProductCountryOfOriginRequest {
-  int32 product_id = 1;
-  string country_of_origin = 2;
-}
-
-message UpdateProductCountryOfOriginResponse {}
-
-message UpdateProductBrandRequest {
-  int32 product_id = 1;
-  string brand = 2;
-}
-
-message UpdateProductBrandResponse {}
-
-message UpdateProductTargetGenderRequest {
-  int32 product_id = 1;
-  common.GenderEnum gender = 2;
-}
-
-message UpdateProductTargetGenderResponse {}
-
-message UpdateProductThumbnailRequest {
-  int32 product_id = 1;
-  string thumbnail = 2;
-}
-
-message UpdateProductThumbnailResponse {}
-
-message UpdateProductPriceRequest {
-  int32 product_id = 1;
-  google.type.Decimal price = 2;
-}
-
-message UpdateProductPriceResponse {}
-
-message UpdateProductSaleRequest {
-  int32 product_id = 1;
-  google.type.Decimal sale = 2;
-}
-
-message UpdateProductSaleResponse {}
-
-message UpdateProductCategoryRequest {
-  int32 product_id = 1;
-  int32 category_id = 2;
-}
-
-message UpdateProductCategoryResponse {}
-
-message UpdateProductDescriptionRequest {
-  int32 product_id = 1;
-  string description = 2;
-}
-
-message UpdateProductDescriptionResponse {}
+message UpdateProductResponse {}
 
 message DeleteProductMeasurementRequest {
   int32 id = 1;
@@ -701,6 +493,18 @@ message AddProductMeasurementRequest {
 }
 
 message AddProductMeasurementResponse {}
+
+message ReduceStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
+}
+
+message ReduceStockForProductSizesResponse {}
+
+message RestoreStockForProductSizesRequest {
+  repeated common.OrderItem items = 1;
+}
+
+message RestoreStockForProductSizesResponse {}
 
 message UpdateProductSizeStockRequest {
   int32 product_id = 1;

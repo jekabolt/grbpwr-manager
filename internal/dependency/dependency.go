@@ -23,6 +23,8 @@ type (
 		ContextStore
 		// AddProduct adds a new product along with its associated data.
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error)
+		// AddProduct adds a new product along with its associated data.
+		UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
@@ -35,38 +37,10 @@ type (
 		GetProductByNameNoHidden(ctx context.Context, name string) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
-		// HideProductById toggles the visibility of a product by its ID.
-		HideProductById(ctx context.Context, id int, hide bool) error
-		// SetSaleById sets the sale percentage for a product by its ID.
-		SetSaleById(ctx context.Context, id int, salePercent decimal.Decimal) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
-		// UpdateProductPreorder updates the preorder status of a product.
-		UpdateProductPreorder(ctx context.Context, productID int, preorder string) error
-		// UpdateProductName updates the name of a product.
-		UpdateProductName(ctx context.Context, productID int, name string) error
-		// UpdateProductSKU updates the vendor code of a product.
-		UpdateProductSKU(ctx context.Context, productID int, sku string) error
-		// UpdateProductColorAndColorHex updates the color and colorHex of a product.
-		UpdateProductColorAndColorHex(ctx context.Context, productID int, color, colorHex string) error
-		// UpdateProductCountryOfOrigin updates the country of origin of a product.
-		UpdateProductCountryOfOrigin(ctx context.Context, productID int, countryOfOrigin string) error
-		// UpdateProductBrand updates the brand of a product.
-		UpdateProductBrand(ctx context.Context, productID int, brand string) error
-		// UpdateProductTargetGender updates target gender of a product.
-		UpdateProductTargetGender(ctx context.Context, productID int, gender entity.GenderEnum) error
-		// UpdateProductThumbnail updates the thumbnail of a product.
-		UpdateProductThumbnail(ctx context.Context, productID int, thumbnail string) error
-		// UpdateProductPrice updates the price of a product.
-		UpdateProductPrice(ctx context.Context, productID int, price decimal.Decimal) error
-		// UpdateProductSale updates the sale percentage of a product.
-		UpdateProductSale(ctx context.Context, productID int, sale decimal.Decimal) error
-		// UpdateProductCategory updates the category of a product.
-		UpdateProductCategory(ctx context.Context, productID int, categoryID int) error
-		// UpdateProductDescription updates the description of a product.
-		UpdateProductDescription(ctx context.Context, productID int, description string) error
 		// DeleteProductMeasurement deletes a size measurement for a product.
 		DeleteProductMeasurement(ctx context.Context, id int) error
 		// AddProductMeasurement adds a new size measurement for a product.

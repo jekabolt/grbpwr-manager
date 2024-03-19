@@ -149,6 +149,11 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
+func IsValidTargetGender(g GenderEnum) bool {
+	_, ok := ValidProductTargetGenders[g]
+	return ok
+}
+
 // ValidMeasurementNames is a map containing all the valid measurement names.
 var ValidProductTargetGenders = map[GenderEnum]bool{
 	Male:   true,
