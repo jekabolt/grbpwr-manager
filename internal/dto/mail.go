@@ -98,14 +98,17 @@ type PromoCodeDetails struct {
 	ExpirationDate  string
 }
 
-func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest, to string) *entity.SendEmailRequest {
+func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest) (*entity.SendEmailRequest, error) {
+	if mr.To == nil || len(mr.To) == 0 {
+		return nil, fmt.Errorf("mail req 'to' is empty")
+	}
 	return &entity.SendEmailRequest{
 		From:    mr.From,
-		To:      to,
+		To:      mr.To[0],
 		Html:    *mr.Html,
 		Subject: mr.Subject,
 		ReplyTo: *mr.ReplyTo,
-	}
+	}, nil
 }
 
 func EntitySendEmailRequestToResend(mr *entity.SendEmailRequest) (*resend.SendEmailRequest, error) {

@@ -293,7 +293,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 				}
 
 				orderDetails := dto.OrderFullToOrderConfirmed(orderFull, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
-				_, err = p.mailer.SendOrderConfirmation(ctx, orderFull.Buyer.Email, orderDetails)
+				err = p.mailer.SendOrderConfirmation(ctx, p.rep, orderFull.Buyer.Email, orderDetails)
 				if err != nil {
 					return nil, fmt.Errorf("can't send order confirmation: %w", err)
 				}
