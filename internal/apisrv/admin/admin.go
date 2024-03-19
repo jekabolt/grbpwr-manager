@@ -309,17 +309,6 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 	}, nil
 }
 
-func (s *Server) HideProductByID(ctx context.Context, req *pb_admin.HideProductByIDRequest) (*pb_admin.HideProductByIDResponse, error) {
-	err := s.repo.Products().HideProductById(ctx, int(req.Id), req.Hide)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't hide product by id",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't hide product by id")
-	}
-	return &pb_admin.HideProductByIDResponse{}, nil
-}
-
 func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.ReduceStockForProductSizesRequest) (*pb_admin.ReduceStockForProductSizesResponse, error) {
 	if len(req.Items) == 0 {
 		return &pb_admin.ReduceStockForProductSizesResponse{}, nil
@@ -360,180 +349,53 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 	return &pb_admin.RestoreStockForProductSizesResponse{}, nil
 }
 
-func (s *Server) SetSaleByID(ctx context.Context, req *pb_admin.SetSaleByIDRequest) (*pb_admin.SetSaleByIDResponse, error) {
-
-	sale, err := decimal.NewFromString(req.SalePercent.Value)
+func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductRequest) (*pb_admin.UpdateProductResponse, error) {
+	prdInsert, err := dto.ConvertPbProductInsertToEntity(req.Product)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert sale to decimal",
+		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert sale to decimal")
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product")
 	}
 
-	if sale.GreaterThan(decimal.NewFromInt(100)) || sale.LessThan(decimal.NewFromInt(0)) {
+	_, err = v.ValidateStruct(prdInsert)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "validation update product request failed",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation update product request failed: %v", err).Error())
+	}
+
+	if prdInsert.Price.LessThanOrEqual(decimal.Zero) {
+		return nil, status.Errorf(codes.InvalidArgument, "price must be greater than 0")
+	}
+
+	if prdInsert.SalePercentage.Valid &&
+		(prdInsert.SalePercentage.Decimal.GreaterThan(decimal.NewFromInt(100)) ||
+			prdInsert.SalePercentage.Decimal.LessThan(decimal.NewFromInt(0))) {
 		return nil, status.Errorf(codes.InvalidArgument, "sale must be between 0 and 100")
 	}
 
-	err = s.repo.Products().SetSaleById(ctx, int(req.Id), sale)
+	if prdInsert.CategoryID == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "category id is invalid")
+	}
+
+	if !v.IsHexcolor(prdInsert.ColorHex) {
+		return nil, status.Errorf(codes.InvalidArgument, "color hex is not valid")
+	}
+
+	if !entity.IsValidTargetGender(prdInsert.TargetGender) {
+		return nil, status.Errorf(codes.InvalidArgument, "gender not valid")
+	}
+
+	err = s.repo.Products().UpdateProduct(ctx, prdInsert, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set sale by id",
+		slog.Default().ErrorCtx(ctx, "can't update product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't set sale by id")
+		return nil, status.Errorf(codes.Internal, "can't update product")
 	}
-	return &pb_admin.SetSaleByIDResponse{}, nil
-}
-
-func (s *Server) UpdateProductBrand(ctx context.Context, req *pb_admin.UpdateProductBrandRequest) (*pb_admin.UpdateProductBrandResponse, error) {
-	if req.Brand == "" {
-		return &pb_admin.UpdateProductBrandResponse{}, fmt.Errorf("brand is empty")
-	}
-	err := s.repo.Products().UpdateProductBrand(ctx, int(req.ProductId), req.Brand)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product brand",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product brand")
-	}
-	return &pb_admin.UpdateProductBrandResponse{}, nil
-}
-
-func (s *Server) UpdateProductCategory(ctx context.Context, req *pb_admin.UpdateProductCategoryRequest) (*pb_admin.UpdateProductCategoryResponse, error) {
-	err := s.repo.Products().UpdateProductCategory(ctx, int(req.ProductId), int(req.CategoryId))
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product category",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product category")
-	}
-	return &pb_admin.UpdateProductCategoryResponse{}, nil
-}
-
-func (s *Server) UpdateProductColorAndColorHex(ctx context.Context, req *pb_admin.UpdateProductColorAndColorHexRequest) (*pb_admin.UpdateProductColorAndColorHexResponse, error) {
-	if req.Color == "" {
-		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color is empty")
-	}
-
-	if !v.IsHexcolor(req.ColorHex) {
-		return &pb_admin.UpdateProductColorAndColorHexResponse{}, fmt.Errorf("color hex is not valid")
-	}
-
-	err := s.repo.Products().UpdateProductColorAndColorHex(ctx, int(req.ProductId), req.Color, req.ColorHex)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product color and color hex",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product color and color hex")
-	}
-	return &pb_admin.UpdateProductColorAndColorHexResponse{}, nil
-}
-
-func (s *Server) UpdateProductCountryOfOrigin(ctx context.Context, req *pb_admin.UpdateProductCountryOfOriginRequest) (*pb_admin.UpdateProductCountryOfOriginResponse, error) {
-	err := s.repo.Products().UpdateProductCountryOfOrigin(ctx, int(req.ProductId), req.CountryOfOrigin)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product country of origin",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product country of origin")
-	}
-	return &pb_admin.UpdateProductCountryOfOriginResponse{}, nil
-}
-
-func (s *Server) UpdateProductDescription(ctx context.Context, req *pb_admin.UpdateProductDescriptionRequest) (*pb_admin.UpdateProductDescriptionResponse, error) {
-	if req.Description == "" {
-		return &pb_admin.UpdateProductDescriptionResponse{}, fmt.Errorf("description is empty")
-	}
-
-	err := s.repo.Products().UpdateProductDescription(ctx, int(req.ProductId), req.Description)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product description",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product description")
-	}
-	return &pb_admin.UpdateProductDescriptionResponse{}, nil
-}
-
-func (s *Server) UpdateProductName(ctx context.Context, req *pb_admin.UpdateProductNameRequest) (*pb_admin.UpdateProductNameResponse, error) {
-	if req.Name == "" {
-		return &pb_admin.UpdateProductNameResponse{}, fmt.Errorf("name is empty")
-	}
-
-	err := s.repo.Products().UpdateProductName(ctx, int(req.ProductId), req.Name)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product name",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product name")
-	}
-	return &pb_admin.UpdateProductNameResponse{}, nil
-}
-
-func (s *Server) UpdateProductPreorder(ctx context.Context, req *pb_admin.UpdateProductPreorderRequest) (*pb_admin.UpdateProductPreorderResponse, error) {
-	err := s.repo.Products().UpdateProductPreorder(ctx, int(req.ProductId), req.Preorder)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product preorder",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product preorder")
-	}
-	return &pb_admin.UpdateProductPreorderResponse{}, nil
-}
-
-func (s *Server) UpdateProductPrice(ctx context.Context, req *pb_admin.UpdateProductPriceRequest) (*pb_admin.UpdateProductPriceResponse, error) {
-
-	price, err := decimal.NewFromString(req.Price.Value)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert price to decimal",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert price to decimal")
-	}
-
-	err = s.repo.Products().UpdateProductPrice(ctx, int(req.ProductId), price)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product price",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product price")
-	}
-	return &pb_admin.UpdateProductPriceResponse{}, nil
-}
-
-func (s *Server) UpdateProductSKU(ctx context.Context, req *pb_admin.UpdateProductSKURequest) (*pb_admin.UpdateProductSKUResponse, error) {
-	if req.Sku == "" {
-		return &pb_admin.UpdateProductSKUResponse{}, fmt.Errorf("sku is empty")
-	}
-
-	err := s.repo.Products().UpdateProductSKU(ctx, int(req.ProductId), req.Sku)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product sku",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product sku")
-	}
-	return &pb_admin.UpdateProductSKUResponse{}, nil
-}
-
-func (s *Server) UpdateProductSale(ctx context.Context, req *pb_admin.UpdateProductSaleRequest) (*pb_admin.UpdateProductSaleResponse, error) {
-
-	sale, err := decimal.NewFromString(req.Sale.Value)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert sale to decimal",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert sale to decimal")
-	}
-
-	err = s.repo.Products().UpdateProductSale(ctx, int(req.ProductId), sale)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product sale",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product sale")
-	}
-	return &pb_admin.UpdateProductSaleResponse{}, nil
-
+	return &pb_admin.UpdateProductResponse{}, nil
 }
 
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
@@ -545,40 +407,6 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
 	}
 	return &pb_admin.UpdateProductSizeStockResponse{}, nil
-}
-
-func (s *Server) UpdateProductTargetGender(ctx context.Context, req *pb_admin.UpdateProductTargetGenderRequest) (*pb_admin.UpdateProductTargetGenderResponse, error) {
-
-	tg, err := dto.ConvertPbGenderEnumToEntityGenderEnum(req.Gender)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert gender",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert gender")
-	}
-
-	err = s.repo.Products().UpdateProductTargetGender(ctx, int(req.ProductId), tg)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product target gender",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product target gender")
-	}
-	return &pb_admin.UpdateProductTargetGenderResponse{}, nil
-}
-
-func (s *Server) UpdateProductThumbnail(ctx context.Context, req *pb_admin.UpdateProductThumbnailRequest) (*pb_admin.UpdateProductThumbnailResponse, error) {
-	if req.Thumbnail == "" {
-		return &pb_admin.UpdateProductThumbnailResponse{}, fmt.Errorf("thumbnail is empty")
-	}
-	err := s.repo.Products().UpdateProductThumbnail(ctx, int(req.ProductId), req.Thumbnail)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product thumbnail",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product thumbnail")
-	}
-	return &pb_admin.UpdateProductThumbnailResponse{}, nil
 }
 
 // PROMO MANAGER

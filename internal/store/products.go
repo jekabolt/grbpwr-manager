@@ -224,6 +224,41 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 	return pi, nil
 }
 
+func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error {
+	query := `
+	UPDATE product 
+	SET 
+		preorder = :preorder, 
+		name = :name, 
+		brand = :brand, 
+		sku = :sku, 
+		color = :color, 
+		color_hex = :colorHex, 
+		country_of_origin = :countryOfOrigin, 
+		thumbnail = :thumbnail, 
+		price = :price, 
+		category_id = :categoryId, 
+		description = :description, 
+		hidden = :hidden
+	WHERE id = :id
+	`
+	return ExecNamed(ctx, ms.db, query, map[string]any{
+		"preorder":        prd.Preorder,
+		"name":            prd.Name,
+		"brand":           prd.Brand,
+		"sku":             prd.SKU,
+		"color":           prd.Color,
+		"colorHex":        prd.ColorHex,
+		"countryOfOrigin": prd.CountryOfOrigin,
+		"thumbnail":       prd.Thumbnail,
+		"price":           prd.Price,
+		"categoryId":      prd.CategoryID,
+		"description":     prd.Description,
+		"hidden":          prd.Hidden,
+		"id":              id,
+	})
+}
+
 // GetProductsPaged
 // Parameters:
 //   - limit: The maximum number of products per page.
@@ -441,24 +476,6 @@ func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
 	})
 }
 
-// HideProductById hides/unhides a product by its ID.
-func (ms *MYSQLStore) HideProductById(ctx context.Context, id int, hide bool) error {
-	query := "UPDATE product SET hidden = :hidden WHERE id = :id"
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"hidden": hide,
-		"id":     id,
-	})
-}
-
-// SetSaleById sets sale percentage for a product by its ID.
-func (ms *MYSQLStore) SetSaleById(ctx context.Context, id int, salePercent decimal.Decimal) error {
-	query := "UPDATE product SET sale_percentage = :salePercentage WHERE id = :id"
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"salePercentage": salePercent,
-		"id":             id,
-	})
-}
-
 func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error {
 	for _, item := range items {
 
@@ -501,111 +518,6 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		}
 	}
 	return nil
-}
-
-func (ms *MYSQLStore) UpdateProductPreorder(ctx context.Context, productID int, preorder string) error {
-	query := `UPDATE product SET preorder = :preorder WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"preorder": preorder,
-		"id":       productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductName(ctx context.Context, productID int, name string) error {
-	query := `UPDATE product SET name = :name WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"name": name,
-		"id":   productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductSKU(ctx context.Context, productID int, sku string) error {
-	query := `UPDATE product SET sku = :sku WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"sku": sku,
-		"id":  productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductColorAndColorHex(ctx context.Context, productID int, color, colorHex string) error {
-	query := `UPDATE product SET color = :color, color_hex = :colorHex WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"color":    color,
-		"colorHex": colorHex,
-		"id":       productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductCountryOfOrigin(ctx context.Context, productID int, countryOfOrigin string) error {
-	query := `UPDATE product SET country_of_origin = :countryOfOrigin WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"countryOfOrigin": countryOfOrigin,
-		"id":              productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductTargetGender(ctx context.Context, productID int, gender entity.GenderEnum) error {
-	ok := entity.ValidProductTargetGenders[gender]
-	if !ok {
-		return fmt.Errorf("invalid gender")
-	}
-	query := `UPDATE product SET target_gender = :targetGender WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"targetGender": gender,
-		"id":           productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductBrand(ctx context.Context, productID int, brand string) error {
-	query := `UPDATE product SET brand = :brand WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"brand": brand,
-		"id":    productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductThumbnail(ctx context.Context, productID int, thumbnail string) error {
-	query := `UPDATE product SET thumbnail = :thumbnail WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"thumbnail": thumbnail,
-		"id":        productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductPrice(ctx context.Context, productID int, price decimal.Decimal) error {
-	query := `UPDATE product SET price = :price WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"price": price,
-		"id":    productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductSale(ctx context.Context, productID int, sale decimal.Decimal) error {
-	query := `UPDATE product SET sale_percentage = :salePercentage WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"salePercentage": sale,
-		"id":             productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductCategory(ctx context.Context, productID int, categoryID int) error {
-	cat, ok := ms.cache.GetCategoryById(categoryID)
-	if !ok {
-		return fmt.Errorf("can't get category by id: %d", categoryID)
-	}
-	query := `UPDATE product SET category_id = :categoryId WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"categoryId": cat.ID,
-		"id":         productID,
-	})
-}
-
-func (ms *MYSQLStore) UpdateProductDescription(ctx context.Context, productID int, description string) error {
-	query := `UPDATE product SET description = :description WHERE id = :id`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"description": description,
-		"id":          productID,
-	})
 }
 
 func (ms *MYSQLStore) DeleteProductMeasurement(ctx context.Context, id int) error {
