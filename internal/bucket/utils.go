@@ -86,33 +86,25 @@ func GetExtensionFromB64String(b64 string) (string, error) {
 }
 
 // image URL to base64 string
-func getMediaB64(url string) (*rawImage, error) {
+func getMediaB64(url string) (string, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("url: [%s] statusCode: [%d]", url, resp.StatusCode)
+		return "", fmt.Errorf("url: [%s] statusCode: [%d]", url, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	mimeType := http.DetectContentType(body)
-	extension, err := fileExtensionFromContentType(ContentType(mimeType))
-	if err != nil {
-		return nil, err
-	}
 
 	base64Encoding := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(body))
 
-	return &rawImage{
-		B64Image:  base64Encoding,
-		MIMEType:  mimeType,
-		Extension: extension,
-	}, nil
+	return base64Encoding, nil
 }

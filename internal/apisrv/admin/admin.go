@@ -81,6 +81,19 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 	}, nil
 }
 
+func (s *Server) UploadContentMediaLink(ctx context.Context, req *pb_admin.UploadContentMediaLinkRequest) (*pb_admin.UploadContentMediaLinkResponse, error) {
+	media, err := s.bucket.UploadContentImageFromUrl(ctx, req.Url, s.bucket.GetBaseFolder(), bucket.GetMediaName())
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't upload content media link",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+	return &pb_admin.UploadContentMediaLinkResponse{
+		Media: media,
+	}, nil
+}
+
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}
