@@ -86,12 +86,12 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 	var buf bytes.Buffer
 
 	// Encode the image to JPEG format with given quality.
-	if err := encodeJPG(&buf, img, quality); err != nil {
+	if err := encodeWEBP(&buf, img, quality); err != nil {
 		return "", fmt.Errorf("failed to encode JPG: %v", err)
 	}
 
 	// Upload the JPEG data to S3 bucket.
-	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeJPEG)
+	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeWEBP)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload image to bucket: %v", err)
 	}
