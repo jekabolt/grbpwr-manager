@@ -8,6 +8,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+
+	"golang.org/x/image/webp"
 )
 
 func decodeImageFromB64(b64Image []byte, contentType ContentType) (image.Image, error) {
@@ -17,6 +19,8 @@ func decodeImageFromB64(b64Image []byte, contentType ContentType) (image.Image, 
 		return jpeg.Decode(reader)
 	case contentTypePNG:
 		return png.Decode(reader)
+	case contentTypeWEBP:
+		return webp.Decode(reader)
 	default:
 		return nil, fmt.Errorf("unsupported content type: %s", contentType)
 	}

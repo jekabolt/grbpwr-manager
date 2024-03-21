@@ -16,7 +16,7 @@ import (
 
 type B64Image struct {
 	content     []byte
-	contentType string
+	contentType ContentType
 }
 
 // upload image to bucket return url
@@ -61,28 +61,24 @@ func getB64ImageFromString(rawB64Image string) (*B64Image, error) {
 		return nil, fmt.Errorf("invalid base64 image format: expected 'data:[mediatype];base64,[data]'")
 	}
 
+	imgContentType := strings.Split(parts[0], ":")
+	if len(imgContentType) != 2 {
+		return nil, fmt.Errorf("invalid base64 image format: expected 'data:[mediatype];base64,[data]'")
+	}
+
 	return &B64Image{
-		contentType: parts[0],
+		contentType: ContentType(imgContentType[1]),
 		content:     []byte(parts[1]),
 	}, nil
 }
 
-func (b64Img *B64Image) b64ToImage() (image.Image, error) {
-	switch b64Img.contentType {
-	case "data:image/jpeg":
-		return decodeImageFromB64(b64Img.content, contentTypeJPEG)
-	case "data:image/png":
-		return decodeImageFromB64(b64Img.content, contentTypePNG)
-	default:
-		return nil, fmt.Errorf("b64ToImage: File type is not supported [%s]", b64Img.contentType)
-	}
-}
 func imageFromString(rawB64Image string) (image.Image, error) {
 	b64Img, err := getB64ImageFromString(rawB64Image)
 	if err != nil {
 		return nil, err
 	}
-	return b64Img.b64ToImage()
+
+	return decodeImageFromB64(b64Img.content, b64Img.contentType)
 }
 
 // upload single image with defined quality and	prefix to bucket

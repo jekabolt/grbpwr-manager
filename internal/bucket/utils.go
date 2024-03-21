@@ -20,6 +20,7 @@ func (ct *ContentType) String() string {
 const (
 	contentTypeJPEG ContentType = "image/jpeg"
 	contentTypePNG  ContentType = "image/png"
+	contentTypeWEBP ContentType = "image/webp"
 	contentTypeJSON ContentType = "application/json"
 	contentTypeMP4  ContentType = "video/mp4"
 	contentTypeWEBM ContentType = "video/webm"
