@@ -44,6 +44,14 @@ service AdminService {
     };
   }
 
+  // UploadContentImage uploads an image to a specific folder with a specified name.
+  rpc UploadContentMediaLink(UploadContentMediaLinkRequest) returns (UploadContentMediaLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/link"
+      body: "*"
+    };
+  }
+
   // DeleteFromBucket deletes objects specified by their keys.
   rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
     option (google.api.http) = {delete: "/api/admin/content"};
@@ -407,6 +415,14 @@ message UploadContentImageRequest {
 }
 
 message UploadContentImageResponse {
+  common.Media media = 1;
+}
+
+message UploadContentMediaLinkRequest {
+  string url = 1;
+}
+
+message UploadContentMediaLinkResponse {
   common.Media media = 1;
 }
 
