@@ -9,6 +9,8 @@ import (
 	"image/png"
 	"io"
 
+	"github.com/kolesa-team/go-webp/encoder"
+	webpenc "github.com/kolesa-team/go-webp/webp"
 	"golang.org/x/image/webp"
 )
 
@@ -41,4 +43,14 @@ func encodeJPG(w io.Writer, img image.Image, quality int) error {
 		return jpeg.Encode(w, rgba, opts)
 	}
 	return jpeg.Encode(w, img, opts)
+}
+
+func encodeWEBP(w io.Writer, img image.Image, quality int) error {
+	options, err := encoder.NewLossyEncoderOptions(encoder.PresetPhoto, float32(quality))
+	if err != nil {
+		return err
+	}
+
+	// Use the Encode function from the kolesa-team go-webp encoder package
+	return webpenc.Encode(w, img, options)
 }

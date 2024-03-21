@@ -32,6 +32,7 @@ var mimeTypeToFileExtension = map[ContentType]string{
 	contentTypeJSON: "json",
 	contentTypeMP4:  "mp4",
 	contentTypeWEBM: "webm",
+	contentTypeWEBP: "webp",
 }
 
 func fileExtensionFromContentType(contentType ContentType) (string, error) {
