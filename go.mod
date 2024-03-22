@@ -1,6 +1,6 @@
 module github.com/jekabolt/grbpwr-manager
 
-go 1.20
+go 1.21
 
 require (
 	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
@@ -17,6 +17,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.0.0-rc.5
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/jmoiron/sqlx v1.3.5
+	github.com/kolesa-team/go-webp v1.0.4
 	github.com/lib/pq v1.10.7
 	github.com/minio/minio-go/v7 v7.0.62
 	github.com/mr-tron/base58 v1.2.0
@@ -55,7 +56,6 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
-	github.com/kolesa-team/go-webp v1.0.4 // indirect
 	github.com/lestrrat-go/backoff/v2 v2.0.8 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.0 // indirect

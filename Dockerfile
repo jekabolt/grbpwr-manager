@@ -1,6 +1,6 @@
-FROM golang:1.21rc4-alpine3.18
+FROM golang:1.21rc4-alpine3.18 as builder
 
-RUN apk add --no-cache git libgit2-dev alpine-sdk
+RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
 
 COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
@@ -10,7 +10,7 @@ WORKDIR /grbpwr-manager
 
 COPY go.mod .
 COPY go.sum .
-# install dependencies
+
 RUN go mod download
 
 COPY ./ ./
@@ -19,9 +19,9 @@ RUN make init
 
 RUN make build
 
-FROM alpine:latest
+FROM alpine:latest 
 
-COPY --from=0 /grbpwr-manager/bin/ /grbpwr-manager/bin/
+COPY --from=builder /grbpwr-manager/bin/ /grbpwr-manager/bin/
 
 EXPOSE 8081
 
