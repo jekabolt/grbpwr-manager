@@ -1,6 +1,9 @@
+
 FROM golang:1.21rc4-alpine3.18 as builder
 
 RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
+
+RUN find /usr/lib /lib -name "libwebp.so.7" -exec dirname {} \; > /libwebpdir
 
 COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
@@ -19,7 +22,11 @@ RUN make init
 
 RUN make build
 
-FROM alpine:latest 
+FROM alpine:latest
+
+RUN apk add --no-cache libstdc++
+
+COPY --from=builder /libwebpdir/libwebp.so.7 /usr/lib/
 
 COPY --from=builder /grbpwr-manager/bin/ /grbpwr-manager/bin/
 
