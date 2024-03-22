@@ -29,10 +29,12 @@ FROM alpine:latest
 
 RUN apk add --no-cache libstdc++
 
+# COPY other necessary libwebp related shared libraries from the builder stage
 COPY --from=builder /usr/lib/libwebp.so.7 /usr/lib/
 COPY --from=builder /usr/lib/libwebp*.so* /usr/lib/
-# Adjust this line according to the actual location of libsharpyuv.so.0
-COPY --from=builder /path/to/libsharpyuv.so.0 /usr/lib/
+# Correctly copy libsharpyuv.so.0 from the builder stage to the final stage
+COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
+
 COPY --from=builder /grbpwr-manager/bin/ /grbpwr-manager/bin/
 
 EXPOSE 8081
