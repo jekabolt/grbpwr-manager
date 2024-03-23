@@ -5,10 +5,10 @@ on:
     branches:
       - master
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   pull_request:
     branches:
-      - 'releases/**'
+      - "releases/**"
 
 jobs:
   push:
@@ -86,9 +86,6 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.ID_RSA }}
           script: |
-            docker pull jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }} || exit 1
-            docker stop grbpwr-manager || true
-            docker rm grbpwr-manager || true
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
               --publish 8081:8081 \
@@ -97,6 +94,15 @@ jobs:
               --label 'traefik.http.routers.grbpwr-manager.entrypoints=websecure' \
               --label 'traefik.http.routers.grbpwr-manager.tls.certresolver=myresolver' \
               --label 'traefik.http.services.grbpwr-manager.loadbalancer.server.port=8081' \
+              --label 'traefik.http.middlewares.rate-limit.rateLimit.average=100' \
+              --label 'traefik.http.middlewares.rate-limit.rateLimit.burst=50' \
+              --label 'traefik.http.routers.grbpwr-manager.middlewares=rate-limit@docker' \
+              --label 'traefik.http.middlewares.security-headers.headers.customrequestheaders.X-Frame-Options=SAMEORIGIN' \
+              --label 'traefik.http.middlewares.security-headers.headers.customrequestheaders.X-XSS-Protection=1; mode=block' \
+              --label 'traefik.http.middlewares.security-headers.headers.customrequestheaders.X-Content-Type-Options=nosniff' \
+              --label 'traefik.http.middlewares.security-headers.headers.customresponseheaders.Strict-Transport-Security=max-age=63072000; includeSubDomains; preload' \
+              --label 'traefik.http.middlewares.security-headers.headers.customresponseheaders.Referrer-Policy=no-referrer-when-downgrade' \
+              --label 'traefik.http.routers.grbpwr-manager.middlewares=rate-limit@docker,security-headers@docker' \
               --mount src=/usr/local/config,target=/config,type=bind \
               --network=web \
               jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }}
