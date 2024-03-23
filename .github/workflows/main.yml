@@ -86,6 +86,9 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.ID_RSA }}
           script: |
+            docker pull jekabolt/grbpwr-manager:${{ env.RELEASE_VERSION }} || exit 1
+            docker stop grbpwr-manager || true
+            docker rm grbpwr-manager || true
             docker run --name=grbpwr-manager -d \
               --restart=unless-stopped \
               --publish 8081:8081 \
