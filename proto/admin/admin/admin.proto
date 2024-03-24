@@ -95,15 +95,10 @@ service AdminService {
     };
   }
 
-  // Deletes a product's measurement.
-  rpc DeleteProductMeasurement(DeleteProductMeasurementRequest) returns (DeleteProductMeasurementResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/measurement/{id}/delete"};
-  }
-
-  // Adds a new measurement to a product.
-  rpc AddProductMeasurement(AddProductMeasurementRequest) returns (AddProductMeasurementResponse) {
+  // Updates a product's measurements.
+  rpc UpdateProductMeasurements(UpdateProductMeasurementsRequest) returns (UpdateProductMeasurementsResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/measurement/add"
+      post: "/api/admin/product/measurement/update"
       body: "*"
     };
   }
@@ -473,14 +468,12 @@ message DeleteProductMeasurementRequest {
 
 message DeleteProductMeasurementResponse {}
 
-message AddProductMeasurementRequest {
+message UpdateProductMeasurementsRequest {
   int32 product_id = 1;
-  int32 size_id = 2;
-  int32 measurement_name_id = 3;
-  google.type.Decimal measurement_value = 4;
+  repeated common.ProductMeasurementUpdate measurements = 2;
 }
 
-message AddProductMeasurementResponse {}
+message UpdateProductMeasurementsResponse {}
 
 message ReduceStockForProductSizesRequest {
   repeated common.OrderItem items = 1;

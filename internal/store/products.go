@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
+	"golang.org/x/exp/slog"
 )
 
 type productStore struct {
@@ -524,44 +525,58 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 	return nil
 }
 
-func (ms *MYSQLStore) DeleteProductMeasurement(ctx context.Context, id int) error {
-	query := `DELETE FROM size_measurement WHERE id = :id`
+func (ms *MYSQLStore) deleteProductMeasurement(ctx context.Context, mUpd entity.ProductMeasurementUpdate) error {
+	query := "DELETE FROM size_measurement WHERE product_size_id = :productSizeId AND measurement_name_id = :measurementNameId"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"id": id,
+		"productSizeId":     mUpd.SizeId,
+		"measurementNameId": mUpd.MeasurementNameId,
 	})
 }
 
-func (ms *MYSQLStore) AddProductMeasurement(ctx context.Context, productId, sizeId, measurementNameId int, measurementValue decimal.Decimal) error {
+func (ms *MYSQLStore) UpdateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error {
+	for _, mu := range mUpd {
+		if mu.MeasurementValue.LessThan(decimal.Zero) {
+			slog.Default().ErrorCtx(ctx, "can't update product measurements: negative value",
+				slog.Int("product_id", productId),
+				slog.Int("size_id", mu.SizeId),
+				slog.Int("measurement_name_id", mu.MeasurementNameId),
+				slog.String("measurement_value", mu.MeasurementValue.String()),
+			)
+			continue
+		}
 
-	measurement, ok := ms.cache.GetMeasurementById(measurementNameId)
-	if !ok {
-		return fmt.Errorf("can't get measurement by name: %d", measurementNameId)
+		if mu.MeasurementValue.Equal(decimal.Zero) {
+			err := ms.deleteProductMeasurement(ctx, mu)
+			if err != nil {
+				slog.Default().ErrorCtx(ctx, "can't delete product measurement",
+					slog.Int("product_id", productId),
+					slog.Int("size_id", mu.SizeId),
+					slog.Int("measurement_name_id", mu.MeasurementNameId),
+					slog.String("measurement_value", mu.MeasurementValue.String()),
+					slog.String("err", err.Error()),
+				)
+			}
+			continue
+		}
+
+		query := `
+		INSERT INTO size_measurement 
+			(product_id, product_size_id, measurement_name_id, measurement_value) 
+		VALUES 
+			(:productId, :productSizeId, :measurementNameId, :measurementValue) 
+		ON DUPLICATE KEY UPDATE 
+			measurement_value = VALUES(measurement_value);
+		`
+		err := ExecNamed(ctx, ms.db, query, map[string]any{
+			"productId":         productId,
+			"productSizeId":     mu.SizeId,
+			"measurementNameId": mu.MeasurementNameId,
+			"measurementValue":  mu.MeasurementValue,
+		})
+		if err != nil {
+			return fmt.Errorf("can't update product measurements: %w", err)
+		}
 	}
-
-	size, ok := ms.cache.GetSizeById(sizeId)
-	if !ok {
-		return fmt.Errorf("can't get size by name: %d", sizeId)
-	}
-
-	query := `
-	INSERT INTO size_measurement 
-    	(product_id, product_size_id, measurement_name_id, measurement_value) 
-	VALUES
-   		(:productId, :productSizeId, :measurementNameId, :measurementValue) 
-	ON DUPLICATE KEY UPDATE 
-   		measurement_value = VALUES(measurement_value);
-	`
-	err := ExecNamed(ctx, ms.db, query, map[string]any{
-		"productId":         productId,
-		"productSizeId":     size.ID,
-		"measurementNameId": measurement.ID,
-		"measurementValue":  measurementValue,
-	})
-
-	if err != nil {
-		return fmt.Errorf("can't insert product measurement: %w", err)
-	}
-
 	return nil
 }
 

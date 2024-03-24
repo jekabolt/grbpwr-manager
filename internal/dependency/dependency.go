@@ -41,10 +41,8 @@ type (
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
-		// DeleteProductMeasurement deletes a size measurement for a product.
-		DeleteProductMeasurement(ctx context.Context, id int) error
 		// AddProductMeasurement adds a new size measurement for a product.
-		AddProductMeasurement(ctx context.Context, productId, sizeId, measurementNameId int, measurementValue decimal.Decimal) error
+		UpdateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// DeleteProductMedia deletes media for a product.

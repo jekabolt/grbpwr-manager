@@ -82,6 +82,31 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 
 }
 
+func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpdate) ([]entity.ProductMeasurementUpdate, error) {
+	if mUpd == nil {
+		return nil, fmt.Errorf("input pbProductMeasurementUpdate is nil")
+	}
+
+	var measurements []entity.ProductMeasurementUpdate
+
+	for _, pbMeasurement := range mUpd {
+		measurementValue, err := decimal.NewFromString(pbMeasurement.MeasurementValue.Value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert product measurement value: %w", err)
+		}
+
+		measurement := entity.ProductMeasurementUpdate{
+			SizeId:            int(pbMeasurement.SizeId),
+			MeasurementNameId: int(pbMeasurement.MeasurementNameId),
+			MeasurementValue:  measurementValue,
+		}
+
+		measurements = append(measurements, measurement)
+	}
+
+	return measurements, nil
+}
+
 func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")

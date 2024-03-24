@@ -186,6 +186,12 @@ type ProductInsert struct {
 	TargetGender    GenderEnum          `db:"target_gender"`
 }
 
+type ProductMeasurementUpdate struct {
+	SizeId            int             `db:"size_id"`
+	MeasurementNameId int             `db:"measurement_name_id"`
+	MeasurementValue  decimal.Decimal `db:"measurement_value"`
+}
+
 type SizeWithMeasurementInsert struct {
 	ProductSize  ProductSizeInsert
 	Measurements []ProductMeasurementInsert
