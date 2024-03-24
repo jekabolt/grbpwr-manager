@@ -169,24 +169,24 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 	}, nil
 }
 
-func (s *Server) AddProductMeasurement(ctx context.Context, req *pb_admin.AddProductMeasurementRequest) (*pb_admin.AddProductMeasurementResponse, error) {
+func (s *Server) UpdateProductMeasurements(ctx context.Context, req *pb_admin.UpdateProductMeasurementsRequest) (*pb_admin.UpdateProductMeasurementsResponse, error) {
 
-	value, err := decimal.NewFromString(req.MeasurementValue.Value)
+	mUpd, err := dto.ConvertPbMeasurementsUpdateToEntity(req.Measurements)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert measurement value to decimal",
+		slog.Default().ErrorCtx(ctx, "can't convert proto measurements to entity measurements",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert measurement value to decimal")
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto measurements to entity measurements")
 	}
 
-	s.repo.Products().AddProductMeasurement(ctx, int(req.ProductId), int(req.SizeId), int(req.MeasurementNameId), value)
+	err = s.repo.Products().UpdateProductMeasurements(ctx, int(req.ProductId), mUpd)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't add product measurement",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add product measurement")
 	}
-	return &pb_admin.AddProductMeasurementResponse{}, nil
+	return &pb_admin.UpdateProductMeasurementsResponse{}, nil
 }
 
 func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMediaRequest) (*pb_admin.AddProductMediaResponse, error) {
@@ -220,17 +220,6 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 		return nil, status.Errorf(codes.Internal, "can't delete product")
 	}
 	return &pb_admin.DeleteProductByIDResponse{}, nil
-}
-
-func (s *Server) DeleteProductMeasurement(ctx context.Context, req *pb_admin.DeleteProductMeasurementRequest) (*pb_admin.DeleteProductMeasurementResponse, error) {
-	err := s.repo.Products().DeleteProductMeasurement(ctx, int(req.Id))
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete product measurement",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't delete product measurement")
-	}
-	return &pb_admin.DeleteProductMeasurementResponse{}, nil
 }
 
 func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeleteProductMediaRequest) (*pb_admin.DeleteProductMediaResponse, error) {
