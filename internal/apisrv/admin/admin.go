@@ -1089,67 +1089,61 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 
 // SETTINGS MANAGER
 
-func (s *Server) SetShipmentCarrierAllowance(ctx context.Context, req *pb_admin.SetShipmentCarrierAllowanceRequest) (*pb_admin.SetShipmentCarrierAllowanceResponse, error) {
-	err := s.repo.Settings().SetShipmentCarrierAllowance(ctx, req.Carrier, req.Allow)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set shipment carrier allowance",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
+// UpdateSettings updates settings
+func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSettingsRequest) (*pb_admin.UpdateSettingsResponse, error) {
+	for _, sc := range req.ShipmentCarriers {
+		err := s.repo.Settings().SetShipmentCarrierAllowance(ctx, sc.Carrier, sc.Allow)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't set shipment carrier allowance",
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
+
+		price, err := decimal.NewFromString(sc.Price.Value)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert string to decimal",
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
+
+		err = s.repo.Settings().SetShipmentCarrierPrice(ctx, sc.Carrier, price)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't set shipment carrier price",
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
 	}
-	return &pb_admin.SetShipmentCarrierAllowanceResponse{}, nil
-}
 
-func (s *Server) SetShipmentCarrierPrice(ctx context.Context, req *pb_admin.SetShipmentCarrierPriceRequest) (*pb_admin.SetShipmentCarrierPriceResponse, error) {
-	price, err := decimal.NewFromString(req.Price.Value)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert price to decimal",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert price to decimal")
+	for _, pm := range req.PaymentMethods {
+		pme := dto.ConvertPbPaymentMethodToEntity(pm.PaymentMethod)
+		err := s.repo.Settings().SetPaymentMethodAllowance(ctx, pme, pm.Allow)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
 	}
 
-	err = s.repo.Settings().SetShipmentCarrierPrice(ctx, req.Carrier, price)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set shipment carrier price",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-	return &pb_admin.SetShipmentCarrierPriceResponse{}, nil
-
-}
-
-func (s *Server) SetPaymentMethodAllowance(ctx context.Context, req *pb_admin.SetPaymentMethodAllowanceRequest) (*pb_admin.SetPaymentMethodAllowanceResponse, error) {
-	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
-	err := s.repo.Settings().SetPaymentMethodAllowance(ctx, pm, req.Allow)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-	return &pb_admin.SetPaymentMethodAllowanceResponse{}, nil
-}
-
-func (s *Server) SetSiteAvailability(ctx context.Context, req *pb_admin.SetSiteAvailabilityRequest) (*pb_admin.SetSiteAvailabilityResponse, error) {
-	err := s.repo.Settings().SetSiteAvailability(ctx, req.Available)
+	err := s.repo.Settings().SetSiteAvailability(ctx, req.SiteAvailable)
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't set site availability",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
 	}
-	return &pb_admin.SetSiteAvailabilityResponse{}, nil
-}
 
-func (s *Server) SetMaxOrderItems(ctx context.Context, req *pb_admin.SetMaxOrderItemsRequest) (*pb_admin.SetMaxOrderItemsResponse, error) {
-	err := s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
+	err = s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
 	if err != nil {
 		slog.Default().ErrorCtx(ctx, "can't set max order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
 	}
-	return &pb_admin.SetMaxOrderItemsResponse{}, nil
+
+	return &pb_admin.UpdateSettingsResponse{}, nil
+
 }

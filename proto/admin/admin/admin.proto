@@ -363,37 +363,9 @@ service AdminService {
 
   // SETTINGS
 
-  rpc SetShipmentCarrierAllowance(SetShipmentCarrierAllowanceRequest) returns (SetShipmentCarrierAllowanceResponse) {
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse) {
     option (google.api.http) = {
-      post: "/api/admin/settings/shipment-carrier-allowance"
-      body: "*"
-    };
-  }
-
-  rpc SetShipmentCarrierPrice(SetShipmentCarrierPriceRequest) returns (SetShipmentCarrierPriceResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/settings/shipment-carrier-price"
-      body: "*"
-    };
-  }
-
-  rpc SetPaymentMethodAllowance(SetPaymentMethodAllowanceRequest) returns (SetPaymentMethodAllowanceResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/settings/payment-method-allowance/{payment_method}"
-      body: "*"
-    };
-  }
-
-  rpc SetSiteAvailability(SetSiteAvailabilityRequest) returns (SetSiteAvailabilityResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/settings/site-availability"
-      body: "*"
-    };
-  }
-
-  rpc SetMaxOrderItems(SetMaxOrderItemsRequest) returns (SetMaxOrderItemsResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/settings/max-order-items"
+      post: "/api/admin/settings/update"
       body: "*"
     };
   }
@@ -790,31 +762,24 @@ message DeleteArchiveByIdResponse {
   string message = 1;
 }
 
-message SetShipmentCarrierAllowanceRequest {
+// SETTINGS
+
+message UpdateSettingsRequest {
+  repeated ShipmentCarrierAllowancePrice shipment_carriers = 1;
+  repeated PaymentMethodAllowance payment_methods = 2;
+  bool site_available = 3;
+  int32 max_order_items = 4;
+}
+
+message UpdateSettingsResponse {}
+
+message ShipmentCarrierAllowancePrice {
   string carrier = 1;
   bool allow = 2;
+  google.type.Decimal price = 3;
 }
 
-message SetShipmentCarrierAllowanceResponse {}
-
-message SetShipmentCarrierPriceRequest {
-  string carrier = 1;
-  google.type.Decimal price = 2;
-}
-message SetShipmentCarrierPriceResponse {}
-
-message SetPaymentMethodAllowanceRequest {
+message PaymentMethodAllowance {
   common.PaymentMethodNameEnum payment_method = 1;
   bool allow = 2;
 }
-message SetPaymentMethodAllowanceResponse {}
-
-message SetSiteAvailabilityRequest {
-  bool available = 1;
-}
-message SetSiteAvailabilityResponse {}
-
-message SetMaxOrderItemsRequest {
-  int32 max_order_items = 1;
-}
-message SetMaxOrderItemsResponse {}
