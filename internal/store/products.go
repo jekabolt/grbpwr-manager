@@ -237,9 +237,11 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 		country_of_origin = :countryOfOrigin, 
 		thumbnail = :thumbnail, 
 		price = :price, 
+		sale_percentage = :salePercentage,
 		category_id = :categoryId, 
 		description = :description, 
 		hidden = :hidden
+		target_gender = :targetGender
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, ms.db, query, map[string]any{
@@ -252,9 +254,11 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 		"countryOfOrigin": prd.CountryOfOrigin,
 		"thumbnail":       prd.Thumbnail,
 		"price":           prd.Price,
+		"salePercentage":  prd.SalePercentage,
 		"categoryId":      prd.CategoryID,
 		"description":     prd.Description,
 		"hidden":          prd.Hidden,
+		"targetGender":    prd.TargetGender,
 		"id":              id,
 	})
 }
