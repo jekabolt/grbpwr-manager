@@ -240,7 +240,7 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 		sale_percentage = :salePercentage,
 		category_id = :categoryId, 
 		description = :description, 
-		hidden = :hidden
+		hidden = :hidden,
 		target_gender = :targetGender
 	WHERE id = :id
 	`
