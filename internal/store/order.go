@@ -1471,6 +1471,7 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 			&payment.PaymentMethodID,
 			&payment.TransactionID,
 			&payment.TransactionAmount,
+			&payment.TransactionAmountPaymentCurrency,
 			&payment.Payer,
 			&payment.Payee,
 			&payment.IsTransactionDone,
