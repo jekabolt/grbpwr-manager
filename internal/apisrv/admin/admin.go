@@ -275,7 +275,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 	}
 
 	// Validate parameters
-	if req.Limit <= 0 || req.Offset <= 0 {
+	if req.Limit <= 0 || req.Offset < 0 {
 		req.Limit, req.Offset = 15, 0
 	}
 
