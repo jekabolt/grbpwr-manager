@@ -3,21 +3,27 @@
 <head>
     <title>Welcome to GRBPWR Mailing List</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+        body { font-family: 'Space Mono', monospace; text-transform: lowercase; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .container { width: 80%; padding: 30%; display: grid; align-items: center; gap: 30px }
+        .header { text-align: start; width: 353px;}
+        .header-title {font-size: 30px;}
+        .content { border-bottom: 2px dashed #666; padding-bottom: 30px; }
+        .footer { font-size: small; text-align: start; opacity: 0.3; }
+        a.unsubscribe { color: #666; font-size: small; }
+        a.mail { color: #666; font-size: small; }
+        .img {width: 60px;}
+        
         @media screen and (max-width: 600px) {
-            .container { width: 100%; }
+            .container { padding: 5%;}
         }
-        body { font-family: Arial, sans-serif; }
-        .container { width: 80%; margin: auto; padding: 20px; }
-        .header { background-color: #f8f8f8; padding: 10px; text-align: center; }
-        .content { margin-top: 20px; }
-        .footer { margin-top: 30px; font-size: small; text-align: center; }
-        a.unsubscribe { color: #666; font-size: small; } /* Style for unsubscribe link */
     </style>
 </head>
 <body>
     <div class="container">
+        <div><img src='https://files.grbpwr.com/grbpwr-com/mail/grbpwr-mail-thumb.svg' class='img' /></div>
         <header class="header">
-            <h1>Welcome to GRBPWR Mailing List !</h1>
+            <p class='header-title'>Welcome to GRBPWR Mailing List</p>
         </header>
         <main class="content">
             <p>Hello,</p>
@@ -26,7 +32,7 @@
         </main>
         <footer class="footer">
             <p>Should you wish to unsubscribe at any time, you can do so by <a href="YOUR_UNSUBSCRIBE_LINK_HERE" class="unsubscribe">clicking here</a>.</p>
-            <p>If you have any questions or feedback, please feel free to contact us at <a href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
+            <p>If you have any questions or feedback, please feel free to contact us at <a class='mail' href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
         </footer>
     </div>
 </body>
