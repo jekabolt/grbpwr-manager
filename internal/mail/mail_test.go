@@ -55,13 +55,15 @@ func TestMailer(t *testing.T) {
 
 	mailDBMock := mocks.NewMail(t)
 
+	repMock := mocks.NewRepository(t)
+
 	m, err := New(conf, mailDBMock)
 	ctx := context.Background()
 	assert.NoError(t, err)
 
 	to := "jekabolt@yahoo.com"
 
-	err = m.SendNewSubscriber(ctx, to)
+	err = m.SendNewSubscriber(ctx, repMock, to)
 	assert.NoError(t, err)
 
 	// _, err = m.SendOrderConfirmation(ctx, to, &dto.OrderConfirmed{

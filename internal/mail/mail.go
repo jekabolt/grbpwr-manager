@@ -184,17 +184,17 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 
 func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, ser *resend.SendEmailRequest) error {
 
-	eser, err := dto.ResendSendEmailRequestToEntity(ser)
-	if err != nil {
-		return fmt.Errorf("error converting email: %w", err)
-	}
+	// eser, err := dto.ResendSendEmailRequestToEntity(ser)
+	// if err != nil {
+	// 	return fmt.Errorf("error converting email: %w", err)
+	// }
 
-	id, err := rep.Mail().AddMail(ctx, eser)
-	if err != nil {
-		return fmt.Errorf("error inserting email: %w", err)
-	}
+	// id, err := rep.Mail().AddMail(ctx, eser)
+	// if err != nil {
+	// 	return fmt.Errorf("error inserting email: %w", err)
+	// }
 
-	err = m.send(ctx, ser)
+	err := m.send(ctx, ser)
 	if err != nil {
 		// mail send failed, it will be retried by the worker
 		slog.Default().ErrorCtx(ctx, "can't send mail",
@@ -203,10 +203,10 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 		return nil
 	}
 
-	err = rep.Mail().UpdateSent(ctx, id)
-	if err != nil {
-		return fmt.Errorf("error updating email: %w", err)
-	}
+	// err = rep.Mail().UpdateSent(ctx, id)
+	// if err != nil {
+	// 	return fmt.Errorf("error updating email: %w", err)
+	// }
 
 	return nil
 }
