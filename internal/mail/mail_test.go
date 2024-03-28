@@ -61,7 +61,7 @@ func TestMailer(t *testing.T) {
 
 	to := "jekabolt@yahoo.com"
 
-	_, err = m.SendNewSubscriber(ctx, to)
+	err = m.SendNewSubscriber(ctx, to)
 	assert.NoError(t, err)
 
 	// _, err = m.SendOrderConfirmation(ctx, to, &dto.OrderConfirmed{
