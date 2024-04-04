@@ -1671,8 +1671,6 @@ func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 		return nil, err
 	}
 
-	// slog.Default().ErrorCtx(ctx, "---addrs---", slog.Any("addrs", addresses))
-
 	if len(addresses) != len(orderIds) {
 		return nil, errors.New("not all order IDs were found")
 	}
@@ -1830,19 +1828,17 @@ func (ms *MYSQLStore) GetPaymentByOrderId(ctx context.Context, orderId int) (*en
 
 // GetOrderItems retrieves all order items for a given order.
 func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error) {
-
 	order, err := getOrderById(ctx, ms, orderId)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("order is not found")
+		}
+		return nil, fmt.Errorf("can't get order by id: %w", err)
 	}
 	ofs, err := fetchOrderInfo(ctx, ms, []entity.Order{*order})
 	if err != nil {
 		return nil, fmt.Errorf("can't fetch order info: %w", err)
 	}
-	if len(ofs) == 0 {
-		return nil, fmt.Errorf("order is not found")
-	}
-
 	return &ofs[0], nil
 }
 
@@ -1862,23 +1858,17 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 	return &ofs[0], nil
 }
 
-func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email string) ([]entity.Order, error) {
+func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email string, of entity.OrderFactor) ([]entity.Order, error) {
+
 	query := `
 	SELECT 
-		co.id,
-		co.buyer_id,
-		co.placed,
-		co.modified,
-		co.payment_id,
-		co.total_price,
-		co.order_status_id,
-		co.shipment_id,
-		co.promo_id
+		co.*
 	FROM buyer b 
 	INNER JOIN customer_order co 
 		ON b.id = co.buyer_id 
 	WHERE b.email = :email
-	`
+	ORDER BY co.modified ` + of.String()
+
 	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
 		"email": email,
 	})
@@ -1889,65 +1879,39 @@ func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email stri
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error) {
-	orders, err := getOrdersByEmail(ctx, ms, email)
-	if err != nil {
-		return nil, err
+func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
+	ctx context.Context,
+	st entity.OrderStatusName,
+	pm entity.PaymentMethodName,
+	lim int,
+	off int,
+	of entity.OrderFactor,
+) ([]entity.Order, error) {
+	os, ok := ms.cache.GetOrderStatusByName(st)
+	if !ok {
+		return nil, fmt.Errorf("order status is not exists: order status name %v", st)
+	}
+	paymentMethod, ok := ms.cache.GetPaymentMethodsByName(pm)
+	if !ok {
+		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pm)
 	}
 
-	return fetchOrderInfo(ctx, ms, orders)
-}
-
-// getOrdersByStatus retrieves a paginated list of orders based on their status and sort order.
-func getOrdersByStatus(ctx context.Context, rep dependency.Repository, orderStatusId int, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.Order, error) {
-	query := fmt.Sprintf(`
-	SELECT
-		co.id,
-		co.uuid,
-		co.buyer_id,
-		co.placed,
-		co.modified,
-		co.payment_id,
-		co.total_price,
-		co.order_status_id,
-		co.shipment_id,
-		co.promo_id
-	FROM customer_order co
-	WHERE co.order_status_id = :status
-	ORDER BY co.modified %s
-	LIMIT :limit
-	OFFSET :offset
-	`, orderFactor.String()) // Safely include orderFactor in the query
-
-	// Prepare parameters for the query including the pagination parameters
-	params := map[string]interface{}{
-		"status": orderStatusId,
-		"limit":  limit,
-		"offset": offset,
-	}
-
-	// Execute the query with pagination parameters
-	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, params)
-	if err != nil {
-		return nil, fmt.Errorf("can't get orders by status: %w", err)
-	}
-
-	return orders, nil
+	return getOrdersByStatusAndPaymentPaged(ctx, ms, os.ID, paymentMethod.ID, lim, off, of)
 }
 
 // getOrdersByStatusAndPayment retrieves a paginated list of orders based on their status, payment method, and sort order.
-func getOrdersByStatusAndPaymentPaged(ctx context.Context, rep dependency.Repository, orderStatusId, paymentMethodId int, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.Order, error) {
+func getOrdersByStatusAndPaymentPaged(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderStatusId,
+	paymentMethodId int,
+	limit int,
+	offset int,
+	orderFactor entity.OrderFactor,
+) ([]entity.Order, error) {
 	query := fmt.Sprintf(`
     SELECT 
-        co.id,
-        co.buyer_id,
-        co.placed,
-        co.modified,
-        co.payment_id,
-        co.total_price,
-        co.order_status_id,
-        co.shipment_id,
-        co.promo_id
+        co.*
     FROM customer_order co 
     JOIN payment p ON co.payment_id = p.id
     WHERE co.order_status_id = :status AND p.payment_method_id = :paymentMethod
@@ -1974,38 +1938,15 @@ func getOrdersByStatusAndPaymentPaged(ctx context.Context, rep dependency.Reposi
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error) {
-
-	pm, ok := ms.cache.GetPaymentMethodsByName(pMethod)
-	if !ok {
-		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pMethod)
-	}
-
-	os, ok := ms.cache.GetOrderStatusByName(status)
-	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status id %v", status)
-	}
-
-	orders, err := getOrdersByStatusAndPaymentPaged(ctx, ms, os.ID, pm.ID, lim, off, of)
-	if err != nil {
-		return nil, err
-	}
-
-	return fetchOrderInfo(ctx, ms, orders)
+func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string, of entity.OrderFactor) ([]entity.Order, error) {
+	return getOrdersByEmail(ctx, ms, email, of)
 }
 
+// TODO: reuse getOrdersByStatusPaymentAndEmailPaged
 func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository, orderStatusId, paymentMethodId int) ([]entity.Order, error) {
 	query := `
     SELECT 
-        co.id,
-        co.buyer_id,
-        co.placed,
-        co.modified,
-        co.payment_id,
-        co.total_price,
-        co.order_status_id,
-        co.shipment_id,
-        co.promo_id
+        co.*
     FROM customer_order co 
     JOIN payment p ON co.payment_id = p.id
     WHERE co.order_status_id = :status AND p.payment_method_id = :paymentMethod
@@ -2025,15 +1966,15 @@ func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository,
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error) {
+func (ms *MYSQLStore) GetAwaitingOrdersByPaymentType(ctx context.Context, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error) {
 	pm, ok := ms.cache.GetPaymentMethodsByName(pMethod)
 	if !ok {
 		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pMethod)
 	}
 
-	os, ok := ms.cache.GetOrderStatusByName(status)
+	os, ok := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
 	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status id %v", status)
+		return nil, fmt.Errorf("order status is not exists: order status id %v", entity.AwaitingPayment)
 	}
 
 	orders, err := getOrdersByStatusAndPayment(ctx, ms, os.ID, pm.ID)
@@ -2042,21 +1983,6 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentType(ctx context.Context, statu
 	}
 
 	return fetchOrderInfo(ctx, ms, orders)
-}
-
-func (ms *MYSQLStore) GetOrdersByStatus(ctx context.Context, st entity.OrderStatusName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error) {
-	os, ok := ms.cache.GetOrderStatusByName(st)
-	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status name %v", st)
-	}
-
-	orders, err := getOrdersByStatus(ctx, ms, os.ID, lim, off, of)
-	if err != nil {
-		return nil, err
-	}
-
-	return fetchOrderInfo(ctx, ms, orders)
-
 }
 
 func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error {

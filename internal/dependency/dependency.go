@@ -82,10 +82,9 @@ type (
 		GetOrderFullByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error)
 		CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error)
-		GetOrdersByEmail(ctx context.Context, email string) ([]entity.OrderFull, error)
-		GetOrdersByStatusAndPaymentType(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error)
-		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, status entity.OrderStatusName, pMethod entity.PaymentMethodName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error)
-		GetOrdersByStatus(ctx context.Context, st entity.OrderStatusName, lim int, off int, of entity.OrderFactor) ([]entity.OrderFull, error)
+		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, st entity.OrderStatusName, pm entity.PaymentMethodName, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
+		GetOrdersByEmail(ctx context.Context, email string, of entity.OrderFactor) ([]entity.Order, error)
+		GetAwaitingOrdersByPaymentType(ctx context.Context, pm entity.PaymentMethodName) ([]entity.OrderFull, error)
 		ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error
 		OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) (*entity.Payment, error)
 		RefundOrder(ctx context.Context, orderId int) error
