@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"log/slog"
+
 	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
-	"golang.org/x/exp/slog"
 )
 
 // Start starts the worker
@@ -40,7 +41,7 @@ func (m *Mailer) worker(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			if err := m.handleUnsent(ctx); err != nil {
-				slog.Default().ErrorCtx(ctx, "can't handle unsent mails",
+				slog.Default().ErrorContext(ctx, "can't handle unsent mails",
 					slog.String("err", err.Error()),
 				)
 			}
@@ -63,7 +64,7 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 		}
 
 		if err := m.sendRaw(ctx, &email); err != nil {
-			slog.Default().ErrorCtx(ctx, "can't send mail",
+			slog.Default().ErrorContext(ctx, "can't send mail",
 				slog.String("err", err.Error()),
 				slog.Any("mail", email),
 			)

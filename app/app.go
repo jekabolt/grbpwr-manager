@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"log/slog"
+
 	"github.com/jekabolt/grbpwr-manager/config"
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
@@ -17,7 +19,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
-	"golang.org/x/exp/slog"
 )
 
 // App is the main application
@@ -42,28 +43,28 @@ func New(c *config.Config) *App {
 // Start starts the app
 func (a *App) Start(ctx context.Context) error {
 	var err error
-	slog.Default().InfoCtx(ctx, "starting product manager")
+	slog.Default().InfoContext(ctx, "starting product manager")
 
 	a.db, err = store.New(ctx, a.c.DB)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "couldn't connect to mysql")
+		slog.Default().ErrorContext(ctx, "couldn't connect to mysql")
 		return err
 	}
 
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "couldn't connect to mailer")
+		slog.Default().ErrorContext(ctx, "couldn't connect to mailer")
 		return err
 	}
 	err = a.ma.Start(ctx)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "couldn't start mailer worker")
+		slog.Default().ErrorContext(ctx, "couldn't start mailer worker")
 		return err
 	}
 
 	a.r, err = rates.New(&a.c.Rates, a.db.Rates())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "couldn't create rates worker",
+		slog.Default().ErrorContext(ctx, "couldn't create rates worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -78,7 +79,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed create new auth server")
+		slog.Default().ErrorContext(ctx, "failed create new auth server")
 		return err
 	}
 
@@ -86,7 +87,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, a.r, entity.USDT_TRON)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
+		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor")
 		return err
 	}
 
@@ -94,7 +95,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	usdtTronTestnet, err := tron.New(ctx, &a.c.USDTTronShastaTestnetPayment, a.db, a.ma, tgShasta, a.r, entity.USDT_TRON_TEST)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed create new usdt tron processor")
+		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor")
 		return err
 	}
 
@@ -105,7 +106,7 @@ func (a *App) Start(ctx context.Context) error {
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
-		slog.Default().ErrorCtx(ctx, "cannot start http server")
+		slog.Default().ErrorContext(ctx, "cannot start http server")
 		return err
 	}
 

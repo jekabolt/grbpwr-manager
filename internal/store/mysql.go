@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	"log/slog"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
-	"golang.org/x/exp/slog"
 
 	_ "github.com/golang-migrate/migrate/v4/database/mysql"
 )
@@ -43,7 +44,7 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	}
 
 	if cfg.Automigrate {
-		slog.Default().InfoCtx(ctx, "applying migrations")
+		slog.Default().InfoContext(ctx, "applying migrations")
 		if err := Migrate(d.Unsafe().DB); err != nil {
 			return nil, err
 		}

@@ -10,7 +10,7 @@ import (
 	"text/template"
 	"time"
 
-	"golang.org/x/exp/slog"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -197,7 +197,7 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 	err = m.send(ctx, ser)
 	if err != nil {
 		// mail send failed, it will be retried by the worker
-		slog.Default().ErrorCtx(ctx, "can't send mail",
+		slog.Default().ErrorContext(ctx, "can't send mail",
 			slog.String("err", err.Error()),
 		)
 		return nil

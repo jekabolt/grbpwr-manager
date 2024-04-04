@@ -7,11 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/slog"
 )
 
 type Config struct {
@@ -195,7 +196,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 	// Immediately check for transactions at least once before entering the loop.
 	payment, err := p.CheckForTransactions(ctx, orderId, payment)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "Error during initial transaction check",
+		slog.Default().ErrorContext(ctx, "Error during initial transaction check",
 			slog.String("err", err.Error()),
 			slog.Int("orderId", orderId),
 			slog.String("address", payment.Payee.String),
@@ -218,12 +219,12 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Default().DebugCtx(ctx, "Context cancelled, stopping payment monitoring")
+			slog.Default().DebugContext(ctx, "Context cancelled, stopping payment monitoring")
 			return
 		case <-ticker.C:
 			payment, err := p.CheckForTransactions(ctx, orderId, payment)
 			if err != nil {
-				slog.Default().ErrorCtx(ctx, "Error during transaction check", slog.String("err", err.Error()))
+				slog.Default().ErrorContext(ctx, "Error during transaction check", slog.String("err", err.Error()))
 			}
 			if payment.IsTransactionDone {
 				return // Exit the loop once the payment is done.
@@ -232,7 +233,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 			// Attempt to expire the order payment only if it's not already done.
 			if !payment.IsTransactionDone {
 				if err := p.expireOrderPayment(ctx, orderId, payment.ID, payment.Payee.String); err != nil {
-					slog.Default().ErrorCtx(ctx, "can't expire order payment", slog.String("err", err.Error()))
+					slog.Default().ErrorContext(ctx, "can't expire order payment", slog.String("err", err.Error()))
 				}
 			}
 			return // Exit the loop once the payment has expired.
@@ -285,7 +286,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 				if err != nil {
 					return nil, fmt.Errorf("can't update order payment done: %w", err)
 				} else {
-					slog.Default().InfoCtx(ctx, "Order marked as paid", slog.Int("orderId", orderId))
+					slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
 				}
 				orderFull, err := p.freeAddress(payment.Payee.String)
 				if err != nil {

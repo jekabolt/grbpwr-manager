@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"log/slog"
+
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -14,7 +16,6 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
-	"golang.org/x/exp/slog"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -57,7 +58,7 @@ func New(
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't upload content image",
+		slog.Default().ErrorContext(ctx, "can't upload content image",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -71,7 +72,7 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_admin.UploadContentVideoResponse, error) {
 	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), s.bucket.GetBaseFolder(), bucket.GetMediaName(), req.ContentType)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't upload content video",
+		slog.Default().ErrorContext(ctx, "can't upload content video",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -84,7 +85,7 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 func (s *Server) UploadContentMediaLink(ctx context.Context, req *pb_admin.UploadContentMediaLinkRequest) (*pb_admin.UploadContentMediaLinkResponse, error) {
 	media, err := s.bucket.UploadContentImageFromUrl(ctx, req.Url, s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't upload content media link",
+		slog.Default().ErrorContext(ctx, "can't upload content media link",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -99,7 +100,7 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 	resp := &pb_admin.DeleteFromBucketResponse{}
 	err := s.repo.Media().DeleteMediaById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete object from bucket",
+		slog.Default().ErrorContext(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
 		return resp, err
@@ -112,7 +113,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 	list, err := s.repo.Media().ListMediaPaged(ctx, int(req.Limit), int(req.Offset), of)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't list objects from bucket",
+		slog.Default().ErrorContext(ctx, "can't list objects from bucket",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -134,7 +135,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
+		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product: %v", err)
@@ -142,7 +143,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 	_, err = v.ValidateStruct(prdNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "validation add product request failed",
+		slog.Default().ErrorContext(ctx, "validation add product request failed",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %v", err).Error())
@@ -150,7 +151,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 	prd, err := s.repo.Products().AddProduct(ctx, prdNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't create a product",
+		slog.Default().ErrorContext(ctx, "can't create a product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't create a product")
@@ -158,7 +159,7 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 
 	pbPrd, err := dto.ConvertToPbProductFull(prd)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity product to proto product",
+		slog.Default().ErrorContext(ctx, "can't convert entity product to proto product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity product to proto product: %v", err)
@@ -173,7 +174,7 @@ func (s *Server) UpdateProductMeasurements(ctx context.Context, req *pb_admin.Up
 
 	mUpd, err := dto.ConvertPbMeasurementsUpdateToEntity(req.Measurements)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert proto measurements to entity measurements",
+		slog.Default().ErrorContext(ctx, "can't convert proto measurements to entity measurements",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto measurements to entity measurements")
@@ -181,7 +182,7 @@ func (s *Server) UpdateProductMeasurements(ctx context.Context, req *pb_admin.Up
 
 	err = s.repo.Products().UpdateProductMeasurements(ctx, int(req.ProductId), mUpd)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add product measurement",
+		slog.Default().ErrorContext(ctx, "can't add product measurement",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add product measurement")
@@ -192,7 +193,7 @@ func (s *Server) UpdateProductMeasurements(ctx context.Context, req *pb_admin.Up
 func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMediaRequest) (*pb_admin.AddProductMediaResponse, error) {
 	err := s.repo.Products().AddProductMedia(ctx, int(req.ProductId), req.FullSize, req.Thumbnail, req.Compressed)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add product media",
+		slog.Default().ErrorContext(ctx, "can't add product media",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add product media")
@@ -203,7 +204,7 @@ func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMe
 func (s *Server) AddProductTag(ctx context.Context, req *pb_admin.AddProductTagRequest) (*pb_admin.AddProductTagResponse, error) {
 	err := s.repo.Products().AddProductTag(ctx, int(req.ProductId), req.Tag)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add product tag",
+		slog.Default().ErrorContext(ctx, "can't add product tag",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add product tag")
@@ -214,7 +215,7 @@ func (s *Server) AddProductTag(ctx context.Context, req *pb_admin.AddProductTagR
 func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
 	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete product",
+		slog.Default().ErrorContext(ctx, "can't delete product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete product")
@@ -225,7 +226,7 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeleteProductMediaRequest) (*pb_admin.DeleteProductMediaResponse, error) {
 	err := s.repo.Products().DeleteProductMedia(ctx, int(req.ProductMediaId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete product media",
+		slog.Default().ErrorContext(ctx, "can't delete product media",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete product media")
@@ -236,7 +237,7 @@ func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeletePro
 func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProductTagRequest) (*pb_admin.DeleteProductTagResponse, error) {
 	err := s.repo.Products().DeleteProductTag(ctx, int(req.ProductId), req.Tag)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete product tag",
+		slog.Default().ErrorContext(ctx, "can't delete product tag",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete product tag")
@@ -247,7 +248,7 @@ func (s *Server) DeleteProductTag(ctx context.Context, req *pb_admin.DeleteProdu
 func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
 	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get product by id",
+		slog.Default().ErrorContext(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get product by id")
@@ -255,7 +256,7 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
+		slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
@@ -288,7 +289,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 
 	prds, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, req.ShowHidden)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get products paged",
+		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
@@ -298,7 +299,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 	for _, prd := range prds {
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
+			slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
@@ -323,7 +324,7 @@ func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.R
 
 	err := s.repo.Products().ReduceStockForProductSizes(ctx, items)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't reduce stock for product sizes",
+		slog.Default().ErrorContext(ctx, "can't reduce stock for product sizes",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't reduce stock for product sizes")
@@ -343,7 +344,7 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 
 	err := s.repo.Products().RestoreStockForProductSizes(ctx, items)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't restore stock for product sizes",
+		slog.Default().ErrorContext(ctx, "can't restore stock for product sizes",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't restore stock for product sizes")
@@ -354,7 +355,7 @@ func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.
 func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductRequest) (*pb_admin.UpdateProductResponse, error) {
 	prdInsert, err := dto.ConvertPbProductInsertToEntity(req.Product)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert proto product to entity product",
+		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product")
@@ -362,7 +363,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductR
 
 	_, err = v.ValidateStruct(prdInsert)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "validation update product request failed",
+		slog.Default().ErrorContext(ctx, "validation update product request failed",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation update product request failed: %v", err).Error())
@@ -392,7 +393,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductR
 
 	err = s.repo.Products().UpdateProduct(ctx, prdInsert, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product",
+		slog.Default().ErrorContext(ctx, "can't update product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update product")
@@ -403,7 +404,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductR
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
 	err := s.repo.Products().UpdateProductSizeStock(ctx, int(req.ProductId), int(req.SizeId), int(req.Quantity))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update product size stock",
+		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
@@ -417,7 +418,7 @@ func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*
 
 	pi, err := dto.ConvertPbCommonPromoToEntity(req.Promo)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert pb promo to entity promo",
+		slog.Default().ErrorContext(ctx, "can't convert pb promo to entity promo",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert pb promo to entity promo")
@@ -425,7 +426,7 @@ func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*
 
 	err = s.repo.Promo().AddPromo(ctx, pi)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add promo",
+		slog.Default().ErrorContext(ctx, "can't add promo",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add promo")
@@ -440,7 +441,7 @@ func (s *Server) DeletePromoCode(ctx context.Context, req *pb_admin.DeletePromoC
 	}
 	err := s.repo.Promo().DeletePromoCode(ctx, req.Code)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete promo code",
+		slog.Default().ErrorContext(ctx, "can't delete promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete promo code")
@@ -456,7 +457,7 @@ func (s *Server) DisablePromoCode(ctx context.Context, req *pb_admin.DisableProm
 
 	err := s.repo.Promo().DisablePromoCode(ctx, req.Code)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't disable promo code",
+		slog.Default().ErrorContext(ctx, "can't disable promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't disable promo code")
@@ -468,7 +469,7 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 
 	promos, err := s.repo.Promo().ListPromos(ctx)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't list promos",
+		slog.Default().ErrorContext(ctx, "can't list promos",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't list promos")
@@ -497,7 +498,7 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "validation order create request failed",
+		slog.Default().ErrorContext(ctx, "validation order create request failed",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
@@ -505,7 +506,7 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 
 	order, err := s.repo.Order().CreateOrder(ctx, orderNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't create order",
+		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't create order")
@@ -513,7 +514,7 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 
 	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -529,7 +530,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_admin.Val
 	for _, i := range req.Items {
 		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
@@ -539,7 +540,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_admin.Val
 
 	oii, subtotal, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't validate order items insert",
+		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
@@ -559,7 +560,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_admin.Val
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_admin.ValidateOrderByUUIDRequest) (*pb_admin.ValidateOrderByUUIDResponse, error) {
 	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.Uuid)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't validate order by uuid",
+		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order by uuid")
@@ -567,7 +568,7 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_admin.Validate
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -580,7 +581,7 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_admin.Validate
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
 	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't apply promo code",
+		slog.Default().ErrorContext(ctx, "can't apply promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't apply promo code")
@@ -588,7 +589,7 @@ func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCod
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -603,7 +604,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 	for _, i := range req.Items {
 		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
@@ -613,7 +614,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 
 	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update order items",
+		slog.Default().ErrorContext(ctx, "can't update order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order items")
@@ -621,7 +622,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -634,7 +635,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrder
 func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
 	orderFull, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update order shipping carrier",
+		slog.Default().ErrorContext(ctx, "can't update order shipping carrier",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
@@ -642,7 +643,7 @@ func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.U
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -660,7 +661,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 	case entity.USDT_TRON:
 		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+			slog.Default().ErrorContext(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't get order invoice")
@@ -668,7 +669,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 
 		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -681,7 +682,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 	case entity.USDT_TRON_TEST:
 		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+			slog.Default().ErrorContext(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't get order invoice")
@@ -689,7 +690,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 
 		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -700,7 +701,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 			ExpiredAt: timestamppb.New(expire),
 		}, nil
 	default:
-		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
+		slog.Default().ErrorContext(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
 }
@@ -708,20 +709,20 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
 	sh := dto.ConvertPbShipmentToEntityShipment(req.ShippingInfo)
 	if sh.TrackingCode.String == "" {
-		slog.Default().ErrorCtx(ctx, "tracking code is empty")
+		slog.Default().ErrorContext(ctx, "tracking code is empty")
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
 
 	_, ok := s.repo.Cache().GetShipmentCarrierById(int(sh.CarrierID))
 	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't find shipment carrier by id")
+		slog.Default().ErrorContext(ctx, "can't find shipment carrier by id")
 		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
 	}
 
 	err := s.repo.Order().UpdateShippingInfo(ctx, int(req.OrderId), sh)
 
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update shipping info",
+		slog.Default().ErrorContext(ctx, "can't update shipping info",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
@@ -731,13 +732,13 @@ func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShi
 
 func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackingNumberRequest) (*pb_admin.SetTrackingNumberResponse, error) {
 	if req.TrackingCode == "" {
-		slog.Default().ErrorCtx(ctx, "tracking code is empty")
+		slog.Default().ErrorContext(ctx, "tracking code is empty")
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
 
 	obs, err := s.repo.Order().SetTrackingNumber(ctx, int(req.OrderId), req.TrackingCode)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update tracking number info",
+		slog.Default().ErrorContext(ctx, "can't update tracking number info",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
@@ -745,7 +746,7 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 
 	sc, ok := s.repo.Cache().GetShipmentCarrierById(int(obs.Shipment.CarrierID))
 	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't find shipment carrier by id")
+		slog.Default().ErrorContext(ctx, "can't find shipment carrier by id")
 		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
 	}
 
@@ -766,14 +767,14 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdRequest) (*pb_admin.GetOrderByIdResponse, error) {
 	order, err := s.repo.Order().GetOrderById(ctx, int(req.OrderId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get order by id",
+		slog.Default().ErrorContext(ctx, "can't get order by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get order by id")
 	}
 	o, err := dto.ConvertEntityOrderFullToPbOrderFull(order)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order full to pb order full",
+		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
@@ -787,12 +788,12 @@ func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdReq
 func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) (*pb_admin.GetOrdersResponse, error) {
 	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
 	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
+		slog.Default().ErrorContext(ctx, "can't convert pb order status to entity order status %v ", req.Status)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
 	}
 	pm, ok := dto.ConvertPbToEntityPaymentMethod(req.PaymentMethod)
 	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't convert pb payment method to entity payment method %v ", req.PaymentMethod)
+		slog.Default().ErrorContext(ctx, "can't convert pb payment method to entity payment method %v ", req.PaymentMethod)
 		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb payment method to entity payment method")
 	}
 
@@ -804,7 +805,7 @@ func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) 
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get orders by status",
+		slog.Default().ErrorContext(ctx, "can't get orders by status",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get orders by status")
@@ -814,7 +815,7 @@ func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) 
 	for _, order := range orders {
 		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -832,7 +833,7 @@ func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersBy
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get orders by email",
+		slog.Default().ErrorContext(ctx, "can't get orders by email",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get orders by email")
@@ -842,7 +843,7 @@ func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersBy
 	for _, order := range orders {
 		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -857,7 +858,7 @@ func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersBy
 func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
 	err := s.repo.Order().RefundOrder(ctx, int(req.OrderId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't refund order",
+		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't refund order")
@@ -868,7 +869,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
 	err := s.repo.Order().DeliveredOrder(ctx, int(req.OrderId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't mark order as delivered",
+		slog.Default().ErrorContext(ctx, "can't mark order as delivered",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't mark order as delivered")
@@ -879,7 +880,7 @@ func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrde
 func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderRequest) (*pb_admin.CancelOrderResponse, error) {
 	err := s.repo.Order().CancelOrder(ctx, int(req.OrderId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't cancel order",
+		slog.Default().ErrorContext(ctx, "can't cancel order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel order")
@@ -904,7 +905,7 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 
 	err := s.repo.Hero().SetHero(ctx, main, ads, prdIds)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add hero",
+		slog.Default().ErrorContext(ctx, "can't add hero",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add hero")
@@ -915,14 +916,14 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 func (s *Server) GetHero(ctx context.Context, req *pb_admin.GetHeroRequest) (*pb_admin.GetHeroResponse, error) {
 	hero, err := s.repo.Hero().GetHero(ctx)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get hero",
+		slog.Default().ErrorContext(ctx, "can't get hero",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get hero")
 	}
 	h, err := dto.ConvertEntityHeroFullToCommon(hero)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity hero to pb hero",
+		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity hero to pb hero")
@@ -939,7 +940,7 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 
 	archiveId, err := s.repo.Archive().AddArchive(ctx, an)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add archive",
+		slog.Default().ErrorContext(ctx, "can't add archive",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add archive")
@@ -958,7 +959,7 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 			Description: req.Archive.Description,
 		})
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update archive",
+		slog.Default().ErrorContext(ctx, "can't update archive",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update archive")
@@ -976,7 +977,7 @@ func (s *Server) AddArchiveItems(ctx context.Context, req *pb_admin.AddArchiveIt
 
 	err := s.repo.Archive().AddArchiveItems(ctx, int(req.ArchiveId), items)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add archive items",
+		slog.Default().ErrorContext(ctx, "can't add archive items",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add archive items")
@@ -988,7 +989,7 @@ func (s *Server) AddArchiveItems(ctx context.Context, req *pb_admin.AddArchiveIt
 func (s *Server) DeleteArchiveItem(ctx context.Context, req *pb_admin.DeleteArchiveItemRequest) (*pb_admin.DeleteArchiveItemResponse, error) {
 	err := s.repo.Archive().DeleteArchiveItem(ctx, int(req.ItemId))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete archive items",
+		slog.Default().ErrorContext(ctx, "can't delete archive items",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -1003,7 +1004,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchives
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get archives paged",
+		slog.Default().ErrorContext(ctx, "can't get archives paged",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -1024,7 +1025,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchives
 func (s *Server) GetArchiveById(ctx context.Context, req *pb_admin.GetArchiveByIdRequest) (*pb_admin.GetArchiveByIdResponse, error) {
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get archive by id",
+		slog.Default().ErrorContext(ctx, "can't get archive by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -1037,7 +1038,7 @@ func (s *Server) GetArchiveById(ctx context.Context, req *pb_admin.GetArchiveByI
 func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArchiveByIdRequest) (*pb_admin.DeleteArchiveByIdResponse, error) {
 	err := s.repo.Archive().DeleteArchiveById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't delete archive by id",
+		slog.Default().ErrorContext(ctx, "can't delete archive by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -1053,7 +1054,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 	for _, sc := range req.ShipmentCarriers {
 		err := s.repo.Settings().SetShipmentCarrierAllowance(ctx, sc.Carrier, sc.Allow)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't set shipment carrier allowance",
+			slog.Default().ErrorContext(ctx, "can't set shipment carrier allowance",
 				slog.String("err", err.Error()),
 			)
 			continue
@@ -1061,7 +1062,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 
 		price, err := decimal.NewFromString(sc.Price.Value)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert string to decimal",
+			slog.Default().ErrorContext(ctx, "can't convert string to decimal",
 				slog.String("err", err.Error()),
 			)
 			continue
@@ -1069,7 +1070,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 
 		err = s.repo.Settings().SetShipmentCarrierPrice(ctx, sc.Carrier, price)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't set shipment carrier price",
+			slog.Default().ErrorContext(ctx, "can't set shipment carrier price",
 				slog.String("err", err.Error()),
 			)
 			continue
@@ -1080,7 +1081,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		pme := dto.ConvertPbPaymentMethodToEntity(pm.PaymentMethod)
 		err := s.repo.Settings().SetPaymentMethodAllowance(ctx, pme, pm.Allow)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't set payment method allowance",
+			slog.Default().ErrorContext(ctx, "can't set payment method allowance",
 				slog.String("err", err.Error()),
 			)
 			continue
@@ -1089,7 +1090,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 
 	err := s.repo.Settings().SetSiteAvailability(ctx, req.SiteAvailable)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set site availability",
+		slog.Default().ErrorContext(ctx, "can't set site availability",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -1097,7 +1098,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 
 	err = s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't set max order items",
+		slog.Default().ErrorContext(ctx, "can't set max order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, err

@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 
+	"log/slog"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/minio/minio-go/v7"
-	"golang.org/x/exp/slog"
 )
 
 func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName string, contentType string) (*pb_common.Media, error) {
@@ -17,7 +18,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 
 	ext, err := fileExtensionFromContentType(ContentType(contentType))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get extension from content type",
+		slog.Default().ErrorContext(ctx, "can't get extension from content type",
 			slog.String("err", err.Error()))
 		return nil, err
 	}
@@ -34,7 +35,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 			ContentEncoding: "gzip",
 		})
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't upload video object",
+		slog.Default().ErrorContext(ctx, "can't upload video object",
 			slog.String("err", err.Error()))
 		return nil, err
 	}
@@ -46,7 +47,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		Thumbnail:  url,
 	})
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't add media to db",
+		slog.Default().ErrorContext(ctx, "can't add media to db",
 			slog.String("err", err.Error()))
 		return nil, err
 	}
