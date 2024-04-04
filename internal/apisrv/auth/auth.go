@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/exp/slog"
+	"log/slog"
 
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
@@ -83,7 +83,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 
 	pwHash, err := s.adminRepository.PasswordHashByUsername(ctx, username)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to get password hash by username",
+		slog.Default().ErrorContext(ctx, "failed to get password hash by username",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -91,7 +91,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 
 	err = s.pwhash.Validate(req.Password, pwHash)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to validate password",
+		slog.Default().ErrorContext(ctx, "failed to validate password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -99,7 +99,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 
 	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to create jwt token",
+		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -115,7 +115,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 
 	err := s.pwhash.Validate(s.c.MasterPassword, s.masterHash)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to validate master password",
+		slog.Default().ErrorContext(ctx, "failed to validate master password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -125,7 +125,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 
 	pwHash, err := s.pwhash.HashPassword(req.User.Password)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to hash password",
+		slog.Default().ErrorContext(ctx, "failed to hash password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -133,7 +133,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 
 	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to create jwt token",
+		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -141,7 +141,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 
 	err = s.adminRepository.AddAdmin(ctx, username, pwHash)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to add admin",
+		slog.Default().ErrorContext(ctx, "failed to add admin",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -156,7 +156,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.DeleteResponse, error) {
 	err := s.pwhash.Validate(req.MasterPassword, s.masterHash)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to validate master password",
+		slog.Default().ErrorContext(ctx, "failed to validate master password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -175,7 +175,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 
 	currentPwdHash, err := s.adminRepository.PasswordHashByUsername(ctx, username)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to get password hash by username",
+		slog.Default().ErrorContext(ctx, "failed to get password hash by username",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -185,7 +185,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 	if err != nil {
 		err = s.pwhash.Validate(req.CurrentPassword, currentPwdHash)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "failed to validate current password",
+			slog.Default().ErrorContext(ctx, "failed to validate current password",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -194,7 +194,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 
 	pwHashNew, err := s.pwhash.HashPassword(req.NewPassword)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to hash new password",
+		slog.Default().ErrorContext(ctx, "failed to hash new password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -202,7 +202,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 
 	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to create jwt token",
+		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -210,7 +210,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 
 	err = s.adminRepository.ChangePassword(ctx, username, pwHashNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "failed to change password",
+		slog.Default().ErrorContext(ctx, "failed to change password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")

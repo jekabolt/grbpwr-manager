@@ -6,12 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/Knetic/go-namedParameterQuery"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/slog"
 )
 
 type productStore struct {
@@ -536,7 +537,7 @@ func (ms *MYSQLStore) deleteProductMeasurement(ctx context.Context, mUpd entity.
 func (ms *MYSQLStore) UpdateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error {
 	for _, mu := range mUpd {
 		if mu.MeasurementValue.LessThan(decimal.Zero) {
-			slog.Default().ErrorCtx(ctx, "can't update product measurements: negative value",
+			slog.Default().ErrorContext(ctx, "can't update product measurements: negative value",
 				slog.Int("product_id", productId),
 				slog.Int("size_id", mu.SizeId),
 				slog.Int("measurement_name_id", mu.MeasurementNameId),
@@ -548,7 +549,7 @@ func (ms *MYSQLStore) UpdateProductMeasurements(ctx context.Context, productId i
 		if mu.MeasurementValue.Equal(decimal.Zero) {
 			err := ms.deleteProductMeasurement(ctx, mu)
 			if err != nil {
-				slog.Default().ErrorCtx(ctx, "can't delete product measurement",
+				slog.Default().ErrorContext(ctx, "can't delete product measurement",
 					slog.Int("product_id", productId),
 					slog.Int("size_id", mu.SizeId),
 					slog.Int("measurement_name_id", mu.MeasurementNameId),
@@ -636,4 +637,71 @@ func (ms *MYSQLStore) DeleteProductTag(ctx context.Context, productId int, tag s
 		"productId": productId,
 		"tag":       tag,
 	})
+}
+
+// for orders
+
+func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds []int) ([]entity.Product, error) {
+	if len(productIds) == 0 {
+		return []entity.Product{}, nil
+	}
+	query := `
+	SELECT * FROM product WHERE id IN (:productIds)`
+
+	products, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]interface{}{
+		"productIds": productIds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return products, nil
+}
+
+func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+	if len(items) == 0 {
+		return []entity.ProductSize{}, nil
+	}
+
+	var productSizeParams []interface{}
+	productSizeQuery := "SELECT * FROM product_size WHERE "
+
+	productSizeConditions := []string{}
+	for _, item := range items {
+		productSizeConditions = append(productSizeConditions, "(product_id = ? AND size_id = ?)")
+		productSizeParams = append(productSizeParams, item.ProductID, item.SizeID)
+	}
+
+	productSizeQuery += strings.Join(productSizeConditions, " OR ")
+
+	var productSizes []entity.ProductSize
+
+	rows, err := rep.DB().QueryxContext(ctx, productSizeQuery, productSizeParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ps entity.ProductSize
+		err := rows.StructScan(&ps)
+		if err != nil {
+			return nil, err
+		}
+		productSizes = append(productSizes, ps)
+	}
+
+	// Check for errors encountered during iteration over rows.
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return productSizes, nil
+}
+
+func getProductIdsFromItems(items []entity.OrderItemInsert) []int {
+	ids := make([]int, len(items))
+	for i, item := range items {
+		ids[i] = item.ProductID
+	}
+	return ids
 }

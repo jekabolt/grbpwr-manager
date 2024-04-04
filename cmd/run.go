@@ -7,10 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"log/slog"
+
 	"github.com/jekabolt/grbpwr-manager/app"
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/spf13/cobra"
-	"golang.org/x/exp/slog"
 )
 
 func run(cmd *cobra.Command, args []string) error {

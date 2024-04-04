@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 
+	"log/slog"
+
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -14,7 +16,6 @@ import (
 	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
-	"golang.org/x/exp/slog"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -51,7 +52,7 @@ func New(
 func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (*pb_frontend.GetHeroResponse, error) {
 	hero, err := s.repo.Hero().GetHero(ctx)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get hero",
+		slog.Default().ErrorContext(ctx, "can't get hero",
 			slog.String("err", err.Error()),
 		)
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -60,7 +61,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	}
 	h, err := dto.ConvertEntityHeroFullToCommon(hero)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity hero to pb hero",
+		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity hero to pb hero")
@@ -76,7 +77,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProductByNameRequest) (*pb_frontend.GetProductByNameResponse, error) {
 	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, req.Name)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get product by id",
+		slog.Default().ErrorContext(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get product by id")
@@ -84,7 +85,7 @@ func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProdu
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
+		slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
@@ -115,7 +116,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 
 	prds, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, false)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get products paged",
+		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
@@ -125,7 +126,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 	for _, prd := range prds {
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert dto product to proto product",
+			slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
@@ -143,7 +144,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "validation order create request failed",
+		slog.Default().ErrorContext(ctx, "validation order create request failed",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
@@ -151,7 +152,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	order, err := s.repo.Order().CreateOrder(ctx, orderNew)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't create order",
+		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't create order")
@@ -159,7 +160,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -173,7 +174,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
 	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.Uuid)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get order by uuid",
+		slog.Default().ErrorContext(ctx, "can't get order by uuid",
 			slog.String("err", err.Error()),
 		)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -184,7 +185,7 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 
 	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order full to pb order full",
+		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
@@ -200,7 +201,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	for _, i := range req.Items {
 		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
@@ -210,7 +211,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 
 	oii, subtotal, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't validate order items insert",
+		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
@@ -230,7 +231,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.ValidateOrderByUUIDRequest) (*pb_frontend.ValidateOrderByUUIDResponse, error) {
 	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.Uuid)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't validate order by uuid",
+		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order by uuid")
@@ -238,7 +239,7 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -254,7 +255,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 	pme, _ := s.repo.Cache().GetPaymentMethodsByName(pm)
 	if !pme.Allowed {
-		slog.Default().ErrorCtx(ctx, "payment method not allowed")
+		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
 
@@ -263,7 +264,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+			slog.Default().ErrorContext(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't get order invoice")
@@ -271,7 +272,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -286,7 +287,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 		pi, expire, err := s.usdtTronTestnet.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't get order invoice",
+			slog.Default().ErrorContext(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't get order invoice")
@@ -294,7 +295,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity payment insert to pb payment insert",
+			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -306,7 +307,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 		}, nil
 
 	default:
-		slog.Default().ErrorCtx(ctx, "payment method unimplemented")
+		slog.Default().ErrorContext(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
 
@@ -316,7 +317,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 	p, o, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't check payment pending by uuid",
+		slog.Default().ErrorContext(ctx, "can't check payment pending by uuid",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't check payment pending by uuid")
@@ -324,7 +325,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 	pm, ok := s.repo.Cache().GetPaymentMethodById(p.PaymentMethodID)
 	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't get payment method by id",
+		slog.Default().ErrorContext(ctx, "can't get payment method by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
@@ -337,7 +338,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 	case entity.USDT_TRON_TEST:
 		checker = s.usdtTronTestnet
 	default:
-		slog.Default().ErrorCtx(ctx, "payment method is not allowed",
+		slog.Default().ErrorContext(ctx, "payment method is not allowed",
 			slog.Any("paymentMethod", pm),
 		)
 		return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
@@ -345,7 +346,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 	p, err = checker.CheckForTransactions(ctx, int(o.ID), p)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't check for transactions",
+		slog.Default().ErrorContext(ctx, "can't check for transactions",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't check for transactions")
@@ -353,7 +354,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 	pbPayment, err := dto.ConvertEntityToPbPayment(p)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity payment to pb payment",
+		slog.Default().ErrorContext(ctx, "can't convert entity payment to pb payment",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment to pb payment")
@@ -368,7 +369,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
 	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't apply promo code",
+		slog.Default().ErrorContext(ctx, "can't apply promo code",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't apply promo code")
@@ -376,7 +377,7 @@ func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromo
 
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -391,7 +392,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 	for _, i := range req.Items {
 		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert pb order item to entity order item",
+			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
 				slog.String("err", err.Error()),
 			)
 			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
@@ -401,14 +402,14 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 
 	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't update order items",
+		slog.Default().ErrorContext(ctx, "can't update order items",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update order items")
 	}
 	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
@@ -422,7 +423,7 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 	// Subscribe the user.
 	err := s.repo.Subscribers().Subscribe(ctx, req.Email, req.Name)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't subscribe", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't subscribe", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't subscribe")
 	}
 
@@ -430,7 +431,7 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 	// TODO: in tx
 	err = s.mailer.SendNewSubscriber(ctx, s.repo, req.Email)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't send new subscriber mail",
+		slog.Default().ErrorContext(ctx, "can't send new subscriber mail",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't send new subscriber mail")
@@ -442,7 +443,7 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.UnsubscribeNewsletterRequest) (*pb_frontend.UnsubscribeNewsletterResponse, error) {
 	err := s.repo.Subscribers().Unsubscribe(ctx, req.Email)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't unsubscribe",
+		slog.Default().ErrorContext(ctx, "can't unsubscribe",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't unsubscribe")
@@ -457,7 +458,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get archives paged",
+		slog.Default().ErrorContext(ctx, "can't get archives paged",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
@@ -477,7 +478,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 func (s *Server) GetArchiveById(ctx context.Context, req *pb_frontend.GetArchiveByIdRequest) (*pb_frontend.GetArchiveByIdResponse, error) {
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get archive by id",
+		slog.Default().ErrorContext(ctx, "can't get archive by id",
 			slog.String("err", err.Error()),
 		)
 		return nil, err

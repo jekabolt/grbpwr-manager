@@ -8,11 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/slog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,71 +27,6 @@ func (ms *MYSQLStore) Order() dependency.Order {
 	return &orderStore{
 		MYSQLStore: ms,
 	}
-}
-
-func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds []int) ([]entity.Product, error) {
-	if len(productIds) == 0 {
-		return []entity.Product{}, nil
-	}
-	query := `
-	SELECT * FROM product WHERE id IN (:productIds)`
-
-	products, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]interface{}{
-		"productIds": productIds,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return products, nil
-}
-
-func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
-	if len(items) == 0 {
-		return []entity.ProductSize{}, nil
-	}
-
-	var productSizeParams []interface{}
-	productSizeQuery := "SELECT * FROM product_size WHERE "
-
-	productSizeConditions := []string{}
-	for _, item := range items {
-		productSizeConditions = append(productSizeConditions, "(product_id = ? AND size_id = ?)")
-		productSizeParams = append(productSizeParams, item.ProductID, item.SizeID)
-	}
-
-	productSizeQuery += strings.Join(productSizeConditions, " OR ")
-
-	var productSizes []entity.ProductSize
-
-	rows, err := rep.DB().QueryxContext(ctx, productSizeQuery, productSizeParams...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var ps entity.ProductSize
-		err := rows.StructScan(&ps)
-		if err != nil {
-			return nil, err
-		}
-		productSizes = append(productSizes, ps)
-	}
-
-	// Check for errors encountered during iteration over rows.
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return productSizes, nil
-}
-
-func getProductIdsFromItems(items []entity.OrderItemInsert) []int {
-	ids := make([]int, len(items))
-	for i, item := range items {
-		ids[i] = item.ProductID
-	}
-	return ids
 }
 
 func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, error) {
@@ -424,7 +360,6 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 	return validItems, nil
 }
 
-// TODO: grpc handler
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
 func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error) {
 	var err error
@@ -1060,7 +995,7 @@ func (ms *MYSQLStore) CheckPaymentPendingByUUID(ctx context.Context, uuid string
 
 	p, err := ms.GetPaymentByOrderId(ctx, o.ID)
 	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get payment by order id",
+		slog.Default().ErrorContext(ctx, "can't get payment by order id",
 			slog.String("err", err.Error()),
 		)
 		return nil, o, status.Errorf(codes.Internal, "can't get payment by order id")
@@ -2002,7 +1937,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId
 		// because payment is already done, canceled,
 		// refunded, delivered or already expired and got status placed
 		if os.Name != entity.AwaitingPayment {
-			slog.DebugCtx(ctx, "trying to expire order status is not awaiting payment: order status",
+			slog.DebugContext(ctx, "trying to expire order status is not awaiting payment: order status",
 				slog.String("order_status", os.Name.String()),
 			)
 			return nil

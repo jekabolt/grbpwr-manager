@@ -3,8 +3,9 @@ package log
 import (
 	"context"
 
+	"log/slog"
+
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
-	"golang.org/x/exp/slog"
 )
 
 type Config struct {

@@ -3,11 +3,12 @@ package cache
 import (
 	"fmt"
 
+	"log/slog"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
-	"golang.org/x/exp/slog"
 )
 
 const (

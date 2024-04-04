@@ -11,7 +11,8 @@ import (
 	"github.com/go-chi/chi"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 
-	"golang.org/x/exp/slog"
+	"log/slog"
+
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
@@ -92,7 +93,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 		tpl, err := template.ParseFS(fs, page)
 		if err != nil {
-			slog.Default().ErrorCtx(ctx, "get swagger template error [%v]", err.Error())
+			slog.Default().ErrorContext(ctx, "get swagger template error [%v]", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -230,12 +231,12 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	go func() {
-		slog.Default().InfoCtx(ctx, fmt.Sprintf("grbpwr-products-manager new listener on: http://%v", listenerAddr))
+		slog.Default().InfoContext(ctx, fmt.Sprintf("grbpwr-products-manager new listener on: http://%v", listenerAddr))
 		err := s.hs.ListenAndServe()
 		if err == http.ErrServerClosed {
-			slog.Default().InfoCtx(ctx, "http server returned")
+			slog.Default().InfoContext(ctx, "http server returned")
 		} else {
-			slog.Default().ErrorCtx(ctx, "http server exited with an error [%v]", err.Error())
+			slog.Default().ErrorContext(ctx, "http server exited with an error [%v]", err.Error())
 		}
 		cancel()
 		close(hsDone)
@@ -260,7 +261,7 @@ func (s *Server) cors(h http.Handler) http.Handler {
 
 		if origin == "" {
 			// If there's no origin, it's not a CORS request, so just pass it through.
-			slog.Default().InfoCtx(r.Context(), "no origin header")
+			slog.Default().InfoContext(r.Context(), "no origin header")
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -269,7 +270,7 @@ func (s *Server) cors(h http.Handler) http.Handler {
 		if isOriginAllowed(origin, s.c.AllowedOrigins) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		} else {
-			slog.Default().InfoCtx(r.Context(), "origin not allowed",
+			slog.Default().InfoContext(r.Context(), "origin not allowed",
 				slog.String("origin", origin),
 			)
 			http.Error(w, "Origin not allowed", http.StatusForbidden)
