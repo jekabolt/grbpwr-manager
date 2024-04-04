@@ -17,8 +17,10 @@ func TestToken(t *testing.T) {
 	fmt.Println(time.Parse(RFC3339, now.Format("2006-01-02T15:04:05.999999999Z07:00")))
 
 	jwtAuth := jwtauth.New("HS256", []byte("secret"), nil)
-	tok, err := NewToken(jwtAuth, time.Hour)
+	tok, err := NewToken(jwtAuth, time.Second)
 	assert.NoError(t, err)
+
+	fmt.Println("----- tok", tok)
 
 	subToken, err := VerifyToken(jwtAuth, tok)
 	assert.NoError(t, err)

@@ -2,29 +2,38 @@
 <html>
 <head>
     <title>Welcome to GRBPWR Mailing List</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+        body { font-family: 'Space Mono', monospace; text-transform: lowercase; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .container { width: 80%; padding: 30%; display: grid; align-items: center; gap: 30px }
+        .header { text-align: start; width: 353px;}
+        .header-title {font-size: 30px;}
+        .content { border-bottom: 2px dashed #666; padding-bottom: 30px; }
+        .footer { font-size: small; text-align: start; opacity: 0.3; }
+        a.unsubscribe { color: #666; font-size: small; }
+        a.mail { color: #666; font-size: small; }
+        .img {width: 60px;}
+        
+        @media screen and (max-width: 600px) {
+            .container { padding: 5%;}
+        }
+    </style>
 </head>
-<body style="font-family: Arial, sans-serif; text-transform: lowercase; margin: 0; padding: 0; box-sizing: border-box; display: flex; justify-content: center; align-items: center; height: 100vh;">
-    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto;">
-        <tr>
-            <td align="center" style="padding: 20px;">
-                <img src='https://files.grbpwr.com/grbpwr-com/mail/grbpwr-mail-thumb.svg' width="60" style="width: 60px; height: auto;" />
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 20px; text-align: left;">
-                <h1 style="font-size: 24px; margin: 0 0 10px 0;">Welcome to GRBPWR Mailing List</h1>
-                <p>Hello,</p>
-                <p>You are now subscribed to the GRBPWR mailing list, and will receive news on the latest arrivals, special events, and exclusive releases.</p>
-                <p>We appreciate action, not criticizing inaction. Thank you for taking the step to join us!</p>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 20px; text-align: left; border-bottom: 2px dashed #666;">
-                <p style="font-size: 14px; margin: 0; opacity: 0.6;">Should you wish to unsubscribe at any time, you can do so by <a href="YOUR_UNSUBSCRIBE_LINK_HERE" style="color: #666; text-decoration: none;">clicking here</a>.</p>
-                <p style="font-size: 14px; margin: 0; opacity: 0.6;">If you have any questions or feedback, please feel free to contact us at <a href="mailto:info@grbpwr.com" style="color: #666; text-decoration: none;">info@grbpwr.com</a>.</p>
-            </td>
-        </tr>
-    </table>
+<body>
+    <div class="container">
+        <div><img src='https://files.grbpwr.com/grbpwr-com/mail/grbpwr-mail-thumb.svg' class='img' /></div>
+        <header class="header">
+            <p class='header-title'>Welcome to GRBPWR Mailing List</p>
+        </header>
+        <main class="content">
+            <p>Hello,</p>
+            <p>You are now subscribed to the GRBPWR mailing list, and will receive news on the latest arrivals, special events, and exclusive releases.</p>
+            <p>We appreciate action, not criticizing inaction. Thank you for taking the step to join us!</p>
+        </main>
+        <footer class="footer">
+            <p>Should you wish to unsubscribe at any time, you can do so by <a href="YOUR_UNSUBSCRIBE_LINK_HERE" class="unsubscribe">clicking here</a>.</p>
+            <p>If you have any questions or feedback, please feel free to contact us at <a class='mail' href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
+        </footer>
+    </div>
 </body>
 </html>
