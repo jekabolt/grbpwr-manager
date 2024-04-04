@@ -258,20 +258,18 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/orders/{order_id}"};
   }
 
-  // Retrieves orders by the customer's email
+  // Retrieves orders by their status
+  rpc GetOrders(GetOrdersRequest) returns (GetOrdersResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/{status}/{payment_method}"};
+  }
+
   rpc GetOrdersByEmail(GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/by-email/{email}"};
+    option (google.api.http) = {
+      post: "/api/admin/orders/email/{order_factor}"
+      body: "*"
+    };
   }
 
-  // Retrieves orders by their status
-  rpc GetOrdersByStatus(GetOrdersByStatusRequest) returns (GetOrdersByStatusResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/by-status/{status}"};
-  }
-
-  // Retrieves orders by their status
-  rpc GetOrdersByStatusAndPaymentMethod(GetOrdersByStatusAndPaymentMethodRequest) returns (GetOrdersByStatusAndPaymentMethodResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/by-status/{status}/{payment_method}"};
-  }
   // Processes a refund for an order
   rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
     option (google.api.http) = {
@@ -632,26 +630,7 @@ message GetOrderByIdResponse {
   common.OrderFull order = 1;
 }
 
-message GetOrdersByEmailRequest {
-  string email = 1;
-}
-
-message GetOrdersByEmailResponse {
-  repeated common.OrderFull orders = 1;
-}
-
-message GetOrdersByStatusRequest {
-  common.OrderStatusEnum status = 1;
-  int32 limit = 2;
-  int32 offset = 3;
-  common.OrderFactor order_factor = 4;
-}
-
-message GetOrdersByStatusResponse {
-  repeated common.OrderFull orders = 1;
-}
-
-message GetOrdersByStatusAndPaymentMethodRequest {
+message GetOrdersRequest {
   common.OrderStatusEnum status = 1;
   common.PaymentMethodNameEnum payment_method = 2;
   int32 limit = 3;
@@ -659,8 +638,17 @@ message GetOrdersByStatusAndPaymentMethodRequest {
   common.OrderFactor order_factor = 5;
 }
 
-message GetOrdersByStatusAndPaymentMethodResponse {
-  repeated common.OrderFull orders = 1;
+message GetOrdersResponse {
+  repeated common.Order orders = 1;
+}
+
+message GetOrdersByEmailRequest {
+  string email = 1;
+  common.OrderFactor order_factor = 2;
+}
+
+message GetOrdersByEmailResponse {
+  repeated common.Order orders = 1;
 }
 
 message RefundOrderRequest {

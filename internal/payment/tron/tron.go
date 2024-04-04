@@ -67,7 +67,7 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	ofs, err := p.rep.Order().GetOrdersByStatusAndPaymentType(ctx, entity.AwaitingPayment, p.pm.Name)
+	ofs, err := p.rep.Order().GetAwaitingOrdersByPaymentType(ctx, p.pm.Name)
 	if err != nil {
 		return fmt.Errorf("can't get unpaid orders: %w", err)
 	}

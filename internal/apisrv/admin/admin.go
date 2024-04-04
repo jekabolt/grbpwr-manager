@@ -784,65 +784,7 @@ func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdReq
 	}, nil
 }
 
-func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersByEmailRequest) (*pb_admin.GetOrdersByEmailResponse, error) {
-	orders, err := s.repo.Order().GetOrdersByEmail(ctx, req.Email)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get orders by email",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get orders by email")
-	}
-	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
-	for _, order := range orders {
-		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
-		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-		}
-		ordersPb = append(ordersPb, o)
-	}
-	return &pb_admin.GetOrdersByEmailResponse{
-		Orders: ordersPb,
-	}, nil
-}
-
-func (s *Server) GetOrdersByStatus(ctx context.Context, req *pb_admin.GetOrdersByStatusRequest) (*pb_admin.GetOrdersByStatusResponse, error) {
-	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
-	if !ok {
-		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
-	}
-	orders, err := s.repo.Order().GetOrdersByStatus(ctx,
-		st, int(req.Limit),
-		int(req.Offset),
-		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
-	)
-	if err != nil {
-		slog.Default().ErrorCtx(ctx, "can't get orders by status",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get orders by status")
-	}
-
-	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
-	for _, order := range orders {
-		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
-		if err != nil {
-			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-		}
-		ordersPb = append(ordersPb, o)
-	}
-	return &pb_admin.GetOrdersByStatusResponse{
-		Orders: ordersPb,
-	}, nil
-}
-
-func (s *Server) GetOrdersByStatusAndPaymentMethod(ctx context.Context, req *pb_admin.GetOrdersByStatusAndPaymentMethodRequest) (*pb_admin.GetOrdersByStatusAndPaymentMethodResponse, error) {
+func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) (*pb_admin.GetOrdersResponse, error) {
 	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
 	if !ok {
 		slog.Default().ErrorCtx(ctx, "can't convert pb order status to entity order status %v ", req.Status)
@@ -868,9 +810,9 @@ func (s *Server) GetOrdersByStatusAndPaymentMethod(ctx context.Context, req *pb_
 		return nil, status.Errorf(codes.Internal, "can't get orders by status")
 	}
 
-	ordersPb := make([]*pb_common.OrderFull, 0, len(orders))
+	ordersPb := make([]*pb_common.Order, 0, len(orders))
 	for _, order := range orders {
-		o, err := dto.ConvertEntityOrderFullToPbOrderFull(&order)
+		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
 		if err != nil {
 			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
 				slog.String("err", err.Error()),
@@ -879,7 +821,35 @@ func (s *Server) GetOrdersByStatusAndPaymentMethod(ctx context.Context, req *pb_
 		}
 		ordersPb = append(ordersPb, o)
 	}
-	return &pb_admin.GetOrdersByStatusAndPaymentMethodResponse{
+	return &pb_admin.GetOrdersResponse{
+		Orders: ordersPb,
+	}, nil
+}
+
+func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersByEmailRequest) (*pb_admin.GetOrdersByEmailResponse, error) {
+	orders, err := s.repo.Order().GetOrdersByEmail(ctx,
+		req.Email,
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorCtx(ctx, "can't get orders by email",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get orders by email")
+	}
+
+	ordersPb := make([]*pb_common.Order, 0, len(orders))
+	for _, order := range orders {
+		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
+		if err != nil {
+			slog.Default().ErrorCtx(ctx, "can't convert entity order to pb common order",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		}
+		ordersPb = append(ordersPb, o)
+	}
+	return &pb_admin.GetOrdersByEmailResponse{
 		Orders: ordersPb,
 	}, nil
 }
