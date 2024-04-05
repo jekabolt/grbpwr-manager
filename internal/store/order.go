@@ -1901,10 +1901,10 @@ func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository,
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetAwaitingOrdersByPaymentType(ctx context.Context, pMethod entity.PaymentMethodName) ([]entity.OrderFull, error) {
-	pm, ok := ms.cache.GetPaymentMethodsByName(pMethod)
+func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn entity.PaymentMethodName) ([]entity.PaymentOrderId, error) {
+	pm, ok := ms.cache.GetPaymentMethodsByName(pmn)
 	if !ok {
-		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pMethod)
+		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pmn)
 	}
 
 	os, ok := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
@@ -1917,7 +1917,25 @@ func (ms *MYSQLStore) GetAwaitingOrdersByPaymentType(ctx context.Context, pMetho
 		return nil, err
 	}
 
-	return fetchOrderInfo(ctx, ms, orders)
+	oids := []int{}
+	for _, o := range orders {
+		oids = append(oids, o.ID)
+	}
+
+	mpo, err := paymentsByOrderIds(ctx, ms, oids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get payments by order ids: %w", err)
+	}
+
+	poids := []entity.PaymentOrderId{}
+	for oid, p := range mpo {
+		poids = append(poids, entity.PaymentOrderId{
+			OrderId: oid,
+			Payment: *p,
+		})
+	}
+
+	return poids, nil
 }
 
 func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error {
