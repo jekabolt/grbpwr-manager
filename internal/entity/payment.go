@@ -7,6 +7,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type PaymentOrderId struct {
+	OrderId int `db:"order_id"`
+	Payment Payment
+}
+
 // Payment represents the payment table
 type Payment struct {
 	ID         int       `db:"id"`

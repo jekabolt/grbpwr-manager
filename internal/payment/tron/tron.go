@@ -26,7 +26,7 @@ type Config struct {
 type Processor struct {
 	c      *Config
 	pm     *entity.PaymentMethod
-	addrs  map[string]*entity.OrderFull
+	addrs  map[string]bool //k:address v: is used
 	mu     sync.Mutex
 	rep    dependency.Repository
 	tg     dependency.Trongrid
@@ -40,9 +40,9 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 		return nil, fmt.Errorf("payment method not found")
 	}
 
-	addrs := make(map[string]*entity.OrderFull, len(c.Addresses))
+	addrs := make(map[string]bool, len(c.Addresses))
 	for _, addr := range c.Addresses {
-		addrs[addr] = &entity.OrderFull{}
+		addrs[addr] = false
 	}
 
 	p := &Processor{
@@ -68,15 +68,15 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	ofs, err := p.rep.Order().GetAwaitingOrdersByPaymentType(ctx, p.pm.Name)
+	poids, err := p.rep.Order().GetAwaitingPaymentsByPaymentType(ctx, p.pm.Name)
 	if err != nil {
 		return fmt.Errorf("can't get unpaid orders: %w", err)
 	}
 
-	for _, of := range ofs {
-		ofC := of
-		p.addrs[of.Payment.Payee.String] = &ofC
-		go p.monitorPayment(ctx, of.Order.ID, of.Payment)
+	for _, poid := range poids {
+		poidC := poid
+		p.addrs[poidC.Payment.Payee.String] = true
+		go p.monitorPayment(ctx, poidC.OrderId, &poidC.Payment)
 	}
 
 	return nil
@@ -89,7 +89,7 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderId, paymentId i
 		return fmt.Errorf("can't update orders status: %w", err)
 	}
 
-	_, err = p.freeAddress(address)
+	err = p.freeAddress(address)
 	if err != nil {
 		return fmt.Errorf("can't free address: %w", err)
 	}
@@ -101,35 +101,36 @@ func (p *Processor) getFreeAddress() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for addr, order := range p.addrs {
-		if order == nil || order.Order.ID == 0 {
+	for addr, used := range p.addrs {
+		if !used {
 			return addr, nil
 		}
 	}
 	return "", fmt.Errorf("no free address")
 }
 
-func (p *Processor) setAddressOrder(addr string, of *entity.OrderFull) error {
+// TODO: rename to setOrderAddress
+func (p *Processor) occupyPaymentAddress(addr string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if _, ok := p.addrs[addr]; !ok {
 		return fmt.Errorf("address not found")
 	}
-	p.addrs[addr] = of
+	p.addrs[addr] = true
 	return nil
 }
 
-func (p *Processor) freeAddress(addr string) (*entity.OrderFull, error) {
+func (p *Processor) freeAddress(addr string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	of, ok := p.addrs[addr]
+	_, ok := p.addrs[addr]
 	if !ok {
-		return nil, fmt.Errorf("address not found")
+		return fmt.Errorf("address not found")
 	}
-	p.addrs[addr] = nil
-	return of, nil
+	p.addrs[addr] = false
+	return nil
 }
 
 // GetOrderInvoice returns the payment details for the given order and expiration date.
@@ -163,7 +164,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 			return fmt.Errorf("can't get free address: %w", err)
 		}
 
-		orderFull, err := p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
+		_, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
 		if err != nil {
 			return fmt.Errorf("can't insert order invoice: %w", err)
 		}
@@ -179,7 +180,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 			return fmt.Errorf("can't update total payment currency: %w", err)
 		}
 
-		err = p.setAddressOrder(pAddr, orderFull)
+		err = p.occupyPaymentAddress(pAddr)
 		if err != nil {
 			return fmt.Errorf("can't set address amount: %w", err)
 		}
@@ -288,13 +289,18 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 				} else {
 					slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
 				}
-				orderFull, err := p.freeAddress(payment.Payee.String)
+				err := p.freeAddress(payment.Payee.String)
 				if err != nil {
 					return nil, fmt.Errorf("can't free address: %w", err)
 				}
 
-				orderDetails := dto.OrderFullToOrderConfirmed(orderFull, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
-				err = p.mailer.SendOrderConfirmation(ctx, p.rep, orderFull.Buyer.Email, orderDetails)
+				of, err := p.rep.Order().GetOrderById(ctx, orderId)
+				if err != nil {
+					return nil, fmt.Errorf("can't get order by id: %w", err)
+				}
+
+				orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
+				err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
 				if err != nil {
 					return nil, fmt.Errorf("can't send order confirmation: %w", err)
 				}
