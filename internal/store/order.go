@@ -1816,53 +1816,38 @@ func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email stri
 
 func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	ctx context.Context,
-	st entity.OrderStatusName,
-	pm entity.PaymentMethodName,
-	lim int,
+	statusId,
+	paymentMethodId,
+	lim,
 	off int,
-	of entity.OrderFactor,
-) ([]entity.Order, error) {
-	os, ok := ms.cache.GetOrderStatusByName(st)
-	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status name %v", st)
-	}
-	paymentMethod, ok := ms.cache.GetPaymentMethodsByName(pm)
-	if !ok {
-		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pm)
-	}
+	of entity.OrderFactor) ([]entity.Order, error) {
 
-	return getOrdersByStatusAndPaymentPaged(ctx, ms, os.ID, paymentMethod.ID, lim, off, of)
-}
-
-// getOrdersByStatusAndPayment retrieves a paginated list of orders based on their status, payment method, and sort order.
-func getOrdersByStatusAndPaymentPaged(
-	ctx context.Context,
-	rep dependency.Repository,
-	orderStatusId,
-	paymentMethodId int,
-	limit int,
-	offset int,
-	orderFactor entity.OrderFactor,
-) ([]entity.Order, error) {
 	query := fmt.Sprintf(`
-    SELECT 
-        co.*
-    FROM customer_order co 
-    JOIN payment p ON co.payment_id = p.id
-    WHERE co.order_status_id = :status AND p.payment_method_id = :paymentMethod
-    ORDER BY co.modified %s
-    LIMIT :limit
-    OFFSET :offset
-    `, orderFactor.String())
+		SELECT 
+			co.*
+		FROM 
+			customer_order co 
+		JOIN 
+			payment p ON co.payment_id = p.id
+		WHERE 
+			(:status = 0 OR co.order_status_id = :status) 
+			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
+		ORDER BY 
+			co.modified %s
+		LIMIT 
+			:limit
+		OFFSET 
+			:offset
+		`, of.String())
 
 	params := map[string]interface{}{
-		"status":        orderStatusId,
+		"status":        statusId,
 		"paymentMethod": paymentMethodId,
-		"limit":         limit,
-		"offset":        offset,
+		"limit":         lim,
+		"offset":        off,
 	}
 
-	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, params)
+	orders, err := QueryListNamed[entity.Order](ctx, ms.DB(), query, params)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []entity.Order{}, nil
