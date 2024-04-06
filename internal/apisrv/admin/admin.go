@@ -785,30 +785,45 @@ func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdReq
 	}, nil
 }
 
-func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) (*pb_admin.GetOrdersResponse, error) {
-	st, ok := dto.ConvertPbToEntityOrderStatus(req.Status)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't convert pb order status to entity order status %v ", req.Status)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb order status to entity order status")
-	}
-	pm, ok := dto.ConvertPbToEntityPaymentMethod(req.PaymentMethod)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't convert pb payment method to entity payment method %v ", req.PaymentMethod)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb payment method to entity payment method")
-	}
+func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {
+	orders := []entity.Order{}
+	var err error
 
-	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
-		st,
-		pm,
-		int(req.Limit),
-		int(req.Offset),
-		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
-	)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get orders by status",
-			slog.String("err", err.Error()),
+	if req.Email != "" {
+		orders, err = s.repo.Order().GetOrdersByEmail(ctx,
+			req.Email,
+			dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get orders by status")
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get orders by email",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get orders by email")
+		}
+	} else {
+		if req.Status < 0 {
+			slog.Default().ErrorContext(ctx, "status is invalid")
+			return nil, status.Errorf(codes.InvalidArgument, "status is invalid")
+		}
+
+		if req.PaymentMethod < 0 {
+			slog.Default().ErrorContext(ctx, "payment method is invalid")
+			return nil, status.Errorf(codes.InvalidArgument, "payment method is invalid")
+		}
+
+		orders, err = s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
+			int(req.Status),
+			int(req.PaymentMethod),
+			int(req.Limit),
+			int(req.Offset),
+			dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+		)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get orders by status",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get orders by status")
+		}
 	}
 
 	ordersPb := make([]*pb_common.Order, 0, len(orders))
@@ -822,35 +837,7 @@ func (s *Server) GetOrders(ctx context.Context, req *pb_admin.GetOrdersRequest) 
 		}
 		ordersPb = append(ordersPb, o)
 	}
-	return &pb_admin.GetOrdersResponse{
-		Orders: ordersPb,
-	}, nil
-}
-
-func (s *Server) GetOrdersByEmail(ctx context.Context, req *pb_admin.GetOrdersByEmailRequest) (*pb_admin.GetOrdersByEmailResponse, error) {
-	orders, err := s.repo.Order().GetOrdersByEmail(ctx,
-		req.Email,
-		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
-	)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get orders by email",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get orders by email")
-	}
-
-	ordersPb := make([]*pb_common.Order, 0, len(orders))
-	for _, order := range orders {
-		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-		}
-		ordersPb = append(ordersPb, o)
-	}
-	return &pb_admin.GetOrdersByEmailResponse{
+	return &pb_admin.ListOrdersResponse{
 		Orders: ordersPb,
 	}, nil
 }

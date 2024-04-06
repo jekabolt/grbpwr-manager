@@ -82,7 +82,7 @@ type (
 		GetOrderFullByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error)
 		CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error)
-		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, st entity.OrderStatusName, pm entity.PaymentMethodName, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
+		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, statusId, paymentMethodId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetOrdersByEmail(ctx context.Context, email string, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pm entity.PaymentMethodName) ([]entity.PaymentOrderId, error)
 		ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error

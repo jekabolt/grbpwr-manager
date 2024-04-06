@@ -258,14 +258,10 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/orders/{order_id}"};
   }
 
-  // Retrieves orders by their status
-  rpc GetOrders(GetOrdersRequest) returns (GetOrdersResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/{status}/{payment_method}"};
-  }
-
-  rpc GetOrdersByEmail(GetOrdersByEmailRequest) returns (GetOrdersByEmailResponse) {
+  // Retrieves orders by their status payment method or email
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/email/{order_factor}"
+      post: "/api/admin/orders/list"
       body: "*"
     };
   }
@@ -630,24 +626,16 @@ message GetOrderByIdResponse {
   common.OrderFull order = 1;
 }
 
-message GetOrdersRequest {
+message ListOrdersRequest {
   common.OrderStatusEnum status = 1;
   common.PaymentMethodNameEnum payment_method = 2;
-  int32 limit = 3;
-  int32 offset = 4;
-  common.OrderFactor order_factor = 5;
+  string email = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+  common.OrderFactor order_factor = 6;
 }
 
-message GetOrdersResponse {
-  repeated common.Order orders = 1;
-}
-
-message GetOrdersByEmailRequest {
-  string email = 1;
-  common.OrderFactor order_factor = 2;
-}
-
-message GetOrdersByEmailResponse {
+message ListOrdersResponse {
   repeated common.Order orders = 1;
 }
 
