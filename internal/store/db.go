@@ -162,7 +162,6 @@ func QueryListNamed[T any](
 	if err != nil {
 		return nil, fmt.Errorf("in: %w", err)
 	}
-
 	rows, err := conn.QueryxContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query context: %w", err)
