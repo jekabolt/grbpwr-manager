@@ -1793,29 +1793,9 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 	return &ofs[0], nil
 }
 
-func getOrdersByEmail(ctx context.Context, rep dependency.Repository, email string, of entity.OrderFactor) ([]entity.Order, error) {
-
-	query := `
-	SELECT 
-		co.*
-	FROM buyer b 
-	INNER JOIN customer_order co 
-		ON b.id = co.buyer_id 
-	WHERE b.email = :email
-	ORDER BY co.modified ` + of.String()
-
-	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
-		"email": email,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("can't get orders by email: %w", err)
-	}
-
-	return orders, nil
-}
-
 func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	ctx context.Context,
+	email string,
 	statusId,
 	paymentMethodId,
 	lim,
@@ -1827,11 +1807,14 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 			co.*
 		FROM 
 			customer_order co 
-		JOIN 
+		INNER JOIN 
 			payment p ON co.payment_id = p.id
+		INNER JOIN 
+			buyer b ON b.id = co.buyer_id
 		WHERE 
 			(:status = 0 OR co.order_status_id = :status) 
 			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
+			AND (:email = '' OR b.email = :email)
 		ORDER BY 
 			co.modified %s
 		LIMIT 
@@ -1841,6 +1824,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 		`, of.String())
 
 	params := map[string]interface{}{
+		"email":         email,
 		"status":        statusId,
 		"paymentMethod": paymentMethodId,
 		"limit":         lim,
@@ -1856,10 +1840,6 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	}
 
 	return orders, nil
-}
-
-func (ms *MYSQLStore) GetOrdersByEmail(ctx context.Context, email string, of entity.OrderFactor) ([]entity.Order, error) {
-	return getOrdersByEmail(ctx, ms, email, of)
 }
 
 // TODO: reuse getOrdersByStatusPaymentAndEmailPaged

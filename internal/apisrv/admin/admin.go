@@ -786,44 +786,30 @@ func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdReq
 }
 
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {
-	orders := []entity.Order{}
-	var err error
 
-	if req.Email != "" {
-		orders, err = s.repo.Order().GetOrdersByEmail(ctx,
-			req.Email,
-			dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	if req.Status < 0 {
+		slog.Default().ErrorContext(ctx, "status is invalid")
+		return nil, status.Errorf(codes.InvalidArgument, "status is invalid")
+	}
+
+	if req.PaymentMethod < 0 {
+		slog.Default().ErrorContext(ctx, "payment method is invalid")
+		return nil, status.Errorf(codes.InvalidArgument, "payment method is invalid")
+	}
+
+	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
+		req.Email,
+		int(req.Status),
+		int(req.PaymentMethod),
+		int(req.Limit),
+		int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get orders by status",
+			slog.String("err", err.Error()),
 		)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get orders by email",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get orders by email")
-		}
-	} else {
-		if req.Status < 0 {
-			slog.Default().ErrorContext(ctx, "status is invalid")
-			return nil, status.Errorf(codes.InvalidArgument, "status is invalid")
-		}
-
-		if req.PaymentMethod < 0 {
-			slog.Default().ErrorContext(ctx, "payment method is invalid")
-			return nil, status.Errorf(codes.InvalidArgument, "payment method is invalid")
-		}
-
-		orders, err = s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
-			int(req.Status),
-			int(req.PaymentMethod),
-			int(req.Limit),
-			int(req.Offset),
-			dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
-		)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get orders by status",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get orders by status")
-		}
+		return nil, status.Errorf(codes.Internal, "can't get orders by status")
 	}
 
 	ordersPb := make([]*pb_common.Order, 0, len(orders))
