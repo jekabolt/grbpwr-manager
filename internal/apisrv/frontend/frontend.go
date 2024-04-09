@@ -74,13 +74,13 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	}, nil
 }
 
-func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProductByNameRequest) (*pb_frontend.GetProductByNameResponse, error) {
-	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, req.Name)
+func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequest) (*pb_frontend.GetProductResponse, error) {
+	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, int(req.Year), int(req.CategoryId), req.Brand, req.Name)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get product by id",
+		slog.Default().ErrorContext(ctx, "can't get product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get product by id")
+		return nil, status.Errorf(codes.Internal, "can't get product")
 	}
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
@@ -91,7 +91,7 @@ func (s *Server) GetProductByName(ctx context.Context, req *pb_frontend.GetProdu
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
 	}
 
-	return &pb_frontend.GetProductByNameResponse{
+	return &pb_frontend.GetProductResponse{
 		Product: pbPrd,
 	}, nil
 }

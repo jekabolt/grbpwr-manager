@@ -392,41 +392,49 @@ func selectProducts(ctx context.Context, rep dependency.Repository, query string
 	return products, nil
 }
 
-// GetProductByIdShowHidden returns a product by its ID, including hidden products.
+// GetProductByIdShowHidden returns a product by its ID, potentially including hidden products.
 func (ms *MYSQLStore) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, "id", id, true)
-}
-
-// GetProductByNameShowHidden returns a product by its name, including hidden products.
-func (ms *MYSQLStore) GetProductByNameShowHidden(ctx context.Context, name string) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, "name", name, true)
-}
-
-// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
-func (ms *MYSQLStore) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, "id", id, false)
+	return ms.getProductDetails(ctx, map[string]any{"id": id}, true, 0) // No year filter needed
 }
 
 // GetProductByNameNoHidden returns a product by its name, excluding hidden products.
-func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, name string) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, "name", name, false)
+func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, year, categoryId int, brand, name string) (*entity.ProductFull, error) {
+	filters := map[string]any{
+		"name":        name,
+		"category_id": categoryId,
+		"brand":       brand,
+	}
+	return ms.getProductDetails(ctx, filters, false, year)
 }
 
 // getProductDetails fetches product details based on a specific field and value.
-func (ms *MYSQLStore) getProductDetails(ctx context.Context, field string, value any, showHidden bool) (*entity.ProductFull, error) {
+func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool, year int) (*entity.ProductFull, error) {
 	var productInfo entity.ProductFull
-	var err error
 
-	// Fetch Product
-	query := fmt.Sprintf("SELECT * FROM product WHERE %s = :value", field)
+	// Building the WHERE clause of the query with named parameters to prevent SQL injection
+	whereClauses := []string{}
+	params := map[string]interface{}{}
+	for key, value := range filters {
+		keyCamel := toCamelCase(key)
+		whereClause := fmt.Sprintf("%s = :%s", key, keyCamel)
+		whereClauses = append(whereClauses, whereClause)
+		params[keyCamel] = value
+	}
+
+	// Include year in the filter if provided (not zero)
+	if year != 0 {
+		whereClauses = append(whereClauses, "YEAR(created_at) = :year")
+		params["year"] = year
+	}
+
+	query := fmt.Sprintf("SELECT * FROM product WHERE %s", strings.Join(whereClauses, " AND "))
 
 	// Include or exclude hidden products based on the showHidden flag
 	if !showHidden {
 		query += " AND hidden = false"
 	}
-	prd, err := QueryNamedOne[entity.Product](ctx, ms.db, query, map[string]any{
-		"value": value,
-	})
+	// Execute the query using a safe, parameterized approach
+	prd, err := QueryNamedOne[entity.Product](ctx, ms.db, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)
 	}
@@ -472,6 +480,21 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, field string, value
 		return nil, fmt.Errorf("can't get tags: %w", err)
 	}
 	return &productInfo, nil
+}
+
+func toCamelCase(s string) string {
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, "_")
+	for i, part := range parts {
+		if i > 0 { // Only title-case the second part onwards
+			parts[i] = strings.Title(part)
+		} else {
+			parts[i] = strings.ToLower(part) // Ensure the first part is all lower case
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // DeleteProductById deletes a product by its ID.
