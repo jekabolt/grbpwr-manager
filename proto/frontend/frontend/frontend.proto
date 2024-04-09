@@ -22,8 +22,8 @@ service FrontendService {
   }
 
   // Get product brand and name
-  rpc GetProductByName(GetProductByNameRequest) returns (GetProductByNameResponse) {
-    option (google.api.http) = {get: "/api/frontend/product/{name}"};
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
+    option (google.api.http) = {get: "/api/frontend/product/{category_id}/{year}/{brand}/{name}"};
   }
 
   // Get paged products
@@ -123,12 +123,14 @@ message GetHeroResponse {
   common.CurrencyMap rates = 3;
 }
 
-message GetProductByNameRequest {
-  // Product name
+message GetProductRequest {
   string name = 1;
+  string brand = 2;
+  int32 category_id = 3;
+  int32 year = 4;
 }
 
-message GetProductByNameResponse {
+message GetProductResponse {
   common.ProductFull product = 1;
 }
 

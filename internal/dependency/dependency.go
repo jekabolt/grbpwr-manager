@@ -29,12 +29,8 @@ type (
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
-		// GetProductByNameShowHidden returns a product by its name no matter hidden they or not.
-		GetProductByNameShowHidden(ctx context.Context, name string) (*entity.ProductFull, error)
-		// GetProductById returns a product by its ID if it is not hidden.
-		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByName returns a product by its name if it is not hidden.
-		GetProductByNameNoHidden(ctx context.Context, name string) (*entity.ProductFull, error)
+		GetProductByNameNoHidden(ctx context.Context, year, categoryId int, brand, name string) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
