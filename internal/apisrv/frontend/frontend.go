@@ -77,10 +77,10 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequest) (*pb_frontend.GetProductResponse, error) {
 	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, int(req.Year), int(req.CategoryId), req.Brand, req.Name)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get product",
+		slog.Default().ErrorContext(ctx, "can't get product by full name",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get product")
+		return nil, status.Errorf(codes.Internal, "can't get product by full name")
 	}
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
