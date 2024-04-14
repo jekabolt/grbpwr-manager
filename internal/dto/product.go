@@ -3,6 +3,8 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -241,6 +243,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Id:            int32(e.Product.ID),
 		CreatedAt:     timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:     timestamppb.New(e.Product.UpdatedAt),
+		Slug:          GetSlug(e.Product),
 		ProductInsert: pbProductInsert,
 	}
 
@@ -303,6 +306,31 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}, nil
 }
 
+func GetSlug(ePrd *entity.Product) string {
+	return strings.ReplaceAll(strings.ToLower(fmt.Sprintf("%d_%d_%s_%s_%s", ePrd.ID, ePrd.CategoryID, ePrd.Brand, ePrd.Color, ePrd.Name)), " ", "-")
+}
+
+// returns product id + name or error
+func ParseSlug(slug string) (int, string, error) {
+	parts := strings.Split(slug, "_")
+	if len(parts) < 5 {
+		return 0, "", fmt.Errorf("invalid slug format")
+	}
+
+	idStr := parts[0]
+	productID, err := strconv.Atoi(idStr)
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid product ID: %v", err)
+	}
+
+	// Reassemble the name part in case it contains underscores
+	nameParts := parts[4:]
+	name := strings.Join(nameParts, "_")
+	name = strings.ReplaceAll(name, "-", " ")
+
+	return productID, name, nil
+}
+
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
 func ConvertEntityProductToCommon(entityProduct *entity.Product) (*pb_common.Product, error) {
 	tg, err := ConvertEntityGenderToPbGenderEnum(entityProduct.TargetGender)
@@ -313,6 +341,7 @@ func ConvertEntityProductToCommon(entityProduct *entity.Product) (*pb_common.Pro
 		Id:        int32(entityProduct.ID),
 		CreatedAt: timestamppb.New(entityProduct.CreatedAt),
 		UpdatedAt: timestamppb.New(entityProduct.UpdatedAt),
+		Slug:      GetSlug(entityProduct),
 		ProductInsert: &pb_common.ProductInsert{
 			Preorder:        entityProduct.Preorder.String,
 			Name:            entityProduct.Name,

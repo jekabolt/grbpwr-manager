@@ -1228,14 +1228,13 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, orderId int, shipment *entity.Shipment) error {
 	query := `
-	UPDATE shipment
-	SET 
-		tracking_code = :trackingCode,
-		shipping_date = :shippingDate,
-		estimated_arrival_date = :estimatedArrivalDate
-		carrier_id = :carrierId
-		shipping_date = :shippingDate
-	WHERE id = (SELECT shipment_id FROM customer_order WHERE id = :orderId)`
+    UPDATE shipment
+    SET 
+        tracking_code = :trackingCode,
+        carrier_id = :carrierId,
+        shipping_date = :shippingDate,
+        estimated_arrival_date = :estimatedArrivalDate
+    WHERE id = (SELECT shipment_id FROM customer_order WHERE id = :orderId)`
 
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
 		"orderId":              orderId,
@@ -1332,6 +1331,16 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, tracki
 			return fmt.Errorf("can't update order shipment: %w", err)
 		}
 
+		statusShipped, ok := ms.cache.GetOrderStatusByName(entity.Shipped)
+		if !ok {
+			return fmt.Errorf("order status is not exists: order status name %s", entity.Shipped)
+		}
+
+		err = updateOrderStatus(ctx, rep, orderId, statusShipped.ID)
+		if err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -1342,18 +1351,6 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, tracki
 		Buyer:    buyer,
 		Shipment: shipment,
 	}, nil
-}
-
-func getPaymentById(ctx context.Context, rep dependency.Repository, paymentId int) (*entity.Payment, error) {
-	query := `
-	SELECT * FROM payment WHERE id = :paymentId`
-	payment, err := QueryNamedOne[entity.Payment](ctx, rep.DB(), query, map[string]interface{}{
-		"paymentId": paymentId,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &payment, nil
 }
 
 func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]*entity.Payment, error) {

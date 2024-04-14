@@ -30,7 +30,7 @@ type (
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByName returns a product by its name if it is not hidden.
-		GetProductByNameNoHidden(ctx context.Context, year, categoryId int, brand, name string) (*entity.ProductFull, error)
+		GetProductByNameNoHidden(ctx context.Context, id int, name string) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.

@@ -23,7 +23,7 @@ service FrontendService {
 
   // Get product brand and name
   rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
-    option (google.api.http) = {get: "/api/frontend/product/{category_id}/{year}/{brand}/{name}"};
+    option (google.api.http) = {get: "/api/frontend/product/{slug}"};
   }
 
   // Get paged products
@@ -124,10 +124,7 @@ message GetHeroResponse {
 }
 
 message GetProductRequest {
-  string name = 1;
-  string brand = 2;
-  int32 category_id = 3;
-  int32 year = 4;
+  string slug = 1;
 }
 
 message GetProductResponse {
