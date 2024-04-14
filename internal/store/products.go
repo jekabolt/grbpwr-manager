@@ -394,21 +394,20 @@ func selectProducts(ctx context.Context, rep dependency.Repository, query string
 
 // GetProductByIdShowHidden returns a product by its ID, potentially including hidden products.
 func (ms *MYSQLStore) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, map[string]any{"id": id}, true, 0) // No year filter needed
+	return ms.getProductDetails(ctx, map[string]any{"id": id}, true) // No year filter needed
 }
 
 // GetProductByNameNoHidden returns a product by its name, excluding hidden products.
-func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, year, categoryId int, brand, name string) (*entity.ProductFull, error) {
+func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, id int, name string) (*entity.ProductFull, error) {
 	filters := map[string]any{
-		"name":        name,
-		"category_id": categoryId,
-		"brand":       brand,
+		"name": name,
+		"id":   id,
 	}
-	return ms.getProductDetails(ctx, filters, false, year)
+	return ms.getProductDetails(ctx, filters, false)
 }
 
 // getProductDetails fetches product details based on a specific field and value.
-func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool, year int) (*entity.ProductFull, error) {
+func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ProductFull, error) {
 	var productInfo entity.ProductFull
 
 	// Building the WHERE clause of the query with named parameters to prevent SQL injection
@@ -419,12 +418,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		whereClause := fmt.Sprintf("%s = :%s", key, keyCamel)
 		whereClauses = append(whereClauses, whereClause)
 		params[keyCamel] = value
-	}
-
-	// Include year in the filter if provided (not zero)
-	if year != 0 {
-		whereClauses = append(whereClauses, "YEAR(created_at) = :year")
-		params["year"] = year
 	}
 
 	query := fmt.Sprintf("SELECT * FROM product WHERE %s", strings.Join(whereClauses, " AND "))

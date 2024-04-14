@@ -97,7 +97,8 @@ message Product {
   int32 id = 1;
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
-  ProductInsert product_insert = 4;
+  string slug = 4;
+  ProductInsert product_insert = 5;
 }
 
 message ProductInsert {
