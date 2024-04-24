@@ -25,9 +25,8 @@ type Buyer struct {
 }
 
 type BuyerInsert struct {
-	FirstName          string `db:"first_name" valid:"required"`
-	LastName           string `db:"last_name" valid:"required"`
-	Email              string `db:"email" valid:"required,email"`
-	Phone              string `db:"phone" valid:"required"`
-	ReceivePromoEmails bool   `db:"receive_promo_emails"`
+	FirstName string `db:"first_name" valid:"required"`
+	LastName  string `db:"last_name" valid:"required"`
+	Email     string `db:"email" valid:"required,email"`
+	Phone     string `db:"phone" valid:"required"`
 }

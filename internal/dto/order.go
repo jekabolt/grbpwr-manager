@@ -21,9 +21,9 @@ func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) entity.OrderIt
 }
 
 // ConvertCommonOrderNewToEntity converts a common.OrderNew to an entity.OrderNew.
-func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) *entity.OrderNew {
+func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.OrderNew, bool) {
 	if commonOrder == nil {
-		return nil
+		return nil, false
 	}
 
 	// Convert items
@@ -45,11 +45,10 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) *entity.Orde
 	var buyer *entity.BuyerInsert
 	if commonOrder.Buyer != nil {
 		buyer = &entity.BuyerInsert{
-			FirstName:          commonOrder.Buyer.FirstName,
-			LastName:           commonOrder.Buyer.LastName,
-			Email:              commonOrder.Buyer.Email,
-			Phone:              commonOrder.Buyer.Phone,
-			ReceivePromoEmails: commonOrder.Buyer.ReceivePromoEmails,
+			FirstName: commonOrder.Buyer.FirstName,
+			LastName:  commonOrder.Buyer.LastName,
+			Email:     commonOrder.Buyer.Email,
+			Phone:     commonOrder.Buyer.Phone,
 		}
 	}
 
@@ -61,7 +60,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) *entity.Orde
 		PaymentMethodId:   int(commonOrder.PaymentMethodId),
 		ShipmentCarrierId: int(commonOrder.ShipmentCarrierId),
 		PromoCode:         commonOrder.PromoCode,
-	}
+	}, commonOrder.Buyer.ReceivePromoEmails
 }
 
 // convertAddress converts a common.AddressInsert to an entity.AddressInsert.
@@ -206,6 +205,7 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		ProductSalePercentage: e.ProductSalePercentage.String(),
 		CategoryId:            int32(e.CategoryID),
 		ProductBrand:          e.ProductBrand,
+		Sku:                   e.SKU,
 		// Assuming OrderItem has a nested struct or fields that can be mapped to OrderItemInsert
 		OrderItem: convertOrderItemInsert(e.OrderItemInsert),
 	}
@@ -296,11 +296,10 @@ func ConvertEntityBuyerToPbBuyer(b *entity.Buyer) (*pb_common.Buyer, error) {
 		BillingAddressId:  int32(b.BillingAddressID),
 		ShippingAddressId: int32(b.ShippingAddressID),
 		BuyerInsert: &pb_common.BuyerInsert{
-			FirstName:          b.FirstName,
-			LastName:           b.LastName,
-			Email:              b.Email,
-			Phone:              b.Phone,
-			ReceivePromoEmails: b.ReceivePromoEmails,
+			FirstName: b.FirstName,
+			LastName:  b.LastName,
+			Email:     b.Email,
+			Phone:     b.Phone,
 		},
 	}, nil
 }

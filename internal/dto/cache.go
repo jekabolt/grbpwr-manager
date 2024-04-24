@@ -328,7 +328,8 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 				Price: &pb_decimal.Decimal{
 					Value: s.Price.String(),
 				},
-				Allowed: s.Allowed,
+				Allowed:     s.Allowed,
+				Description: s.Description,
 			},
 		})
 	}

@@ -214,7 +214,6 @@ message UpdateOrderItemsResponse {
 
 message SubscribeNewsletterRequest {
   string email = 1;
-  string name = 2;
 }
 
 message SubscribeNewsletterResponse {}

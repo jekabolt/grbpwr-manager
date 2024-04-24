@@ -494,7 +494,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 }
 
 func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderRequest) (*pb_admin.CreateOrderResponse, error) {
-	orderNew := dto.ConvertCommonOrderNewToEntity(req.Order)
+	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
@@ -504,7 +504,7 @@ func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderReque
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
 	}
 
-	order, err := s.repo.Order().CreateOrder(ctx, orderNew)
+	order, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
