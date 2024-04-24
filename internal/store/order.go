@@ -190,7 +190,7 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 	query := `
 	INSERT INTO buyer 
 	(first_name, last_name, email, phone, billing_address_id, shipping_address_id)
-	VALUES (:firstName, :lastName, :email, :phone, :receivePromoEmails, :billingAddressId, :shippingAddressId)
+	VALUES (:firstName, :lastName, :email, :phone, :billingAddressId, :shippingAddressId)
 	`
 	buyer := entity.Buyer{
 		BuyerInsert:       *b,
