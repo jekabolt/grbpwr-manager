@@ -189,7 +189,7 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 	var buyerID int
 	query := `
 	INSERT INTO buyer 
-	(first_name, last_name, email, phone, receive_promo_emails, billing_address_id, shipping_address_id)
+	(first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 	VALUES (:firstName, :lastName, :email, :phone, :receivePromoEmails, :billingAddressId, :shippingAddressId)
 	`
 	buyer := entity.Buyer{
@@ -199,13 +199,12 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 	}
 
 	buyerID, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
-		"firstName":          buyer.FirstName,
-		"lastName":           buyer.LastName,
-		"email":              buyer.Email,
-		"phone":              buyer.Phone,
-		"receivePromoEmails": buyer.ReceivePromoEmails,
-		"billingAddressId":   buyer.BillingAddressID,
-		"shippingAddressId":  buyer.ShippingAddressID,
+		"firstName":         buyer.FirstName,
+		"lastName":          buyer.LastName,
+		"email":             buyer.Email,
+		"phone":             buyer.Phone,
+		"billingAddressId":  buyer.BillingAddressID,
+		"shippingAddressId": buyer.ShippingAddressID,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't insert buyer: %w", err)
@@ -445,7 +444,8 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 
 }
 
-func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error) {
+// TODO: receivePromo logic
+func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, error) {
 
 	if len(orderNew.Items) == 0 {
 		return nil, fmt.Errorf("no order items to insert")
@@ -512,6 +512,13 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			return fmt.Errorf("error while inserting buyer: %w", err)
 		}
 
+		if receivePromo {
+			err := ms.Subscribers().UpsertSubscription(ctx, orderNew.Buyer.Email, true)
+			if err != nil {
+				return fmt.Errorf("error while upserting subscription: %w", err)
+			}
+		}
+
 		paymentID, err := insertPaymentRecord(ctx, rep, paymentMethod)
 		if err != nil {
 			return fmt.Errorf("error while inserting payment record: %w", err)
@@ -574,6 +581,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			p.thumbnail,
 			p.name AS product_name,
 			p.brand AS product_brand,
+			p.sku AS product_sku,
 			p.category_id AS category_id 
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
@@ -1306,7 +1314,7 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, tracki
 		return nil, fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 	}
 
-	if orderStatus.Name != entity.Confirmed {
+	if orderStatus.Name != entity.Confirmed || orderStatus.Name != entity.Shipped {
 		return nil, fmt.Errorf("bad order status for setting tracking number must be confirmed got: %s", orderStatus.Name)
 	}
 
@@ -1457,7 +1465,6 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 		buyer.last_name,
 		buyer.email,
 		buyer.phone,
-		buyer.receive_promo_emails,
 		buyer.billing_address_id,
 		buyer.shipping_address_id
 	FROM buyer
@@ -1483,6 +1490,7 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 		var buyer entity.Buyer
 		var orderId int
 
+		// TODO: use scan struct
 		err := rows.Scan(
 			&orderId,
 			&buyer.ID,
@@ -1490,7 +1498,6 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 			&buyer.LastName,
 			&buyer.Email,
 			&buyer.Phone,
-			&buyer.ReceivePromoEmails,
 			&buyer.BillingAddressID,
 			&buyer.ShippingAddressID,
 		)

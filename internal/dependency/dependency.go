@@ -63,7 +63,7 @@ type (
 	}
 
 	Order interface {
-		CreateOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
+		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error)
 		ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
 		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (*entity.OrderFull, error)
@@ -97,9 +97,8 @@ type (
 	}
 
 	Subscribers interface {
-		GetActiveSubscribers(ctx context.Context) ([]entity.BuyerInsert, error)
-		Subscribe(ctx context.Context, email, name string) error
-		Unsubscribe(ctx context.Context, email string) error
+		GetActiveSubscribers(ctx context.Context) ([]entity.Subscriber, error)
+		UpsertSubscription(ctx context.Context, email string, receivePromo bool) error
 	}
 
 	Promo interface {

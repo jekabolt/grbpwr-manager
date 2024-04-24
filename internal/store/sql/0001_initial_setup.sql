@@ -100,7 +100,7 @@ CREATE TABLE product (
     preorder VARCHAR(255),
     name VARCHAR(255) NOT NULL,
     brand VARCHAR(255) NOT NULL,
-    sku VARCHAR(255) NOT NULL,
+    sku VARCHAR(255) NOT NULL UNIQUE,
     color VARCHAR(255) NOT NULL,
     color_hex VARCHAR(255) NOT NULL CHECK (
         color_hex REGEXP '^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$'
@@ -196,7 +196,6 @@ CREATE TABLE buyer (
         AND LENGTH(phone) >= 7
         AND LENGTH(phone) <= 15
     ),
-    receive_promo_emails BOOLEAN DEFAULT FALSE,
     billing_address_id INT NOT NULL,
     shipping_address_id INT NOT NULL,
     FOREIGN KEY (billing_address_id) REFERENCES address(id) ON DELETE CASCADE,
@@ -205,8 +204,7 @@ CREATE TABLE buyer (
 
 CREATE TABLE subscriber (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(255),
-    email VARCHAR(100) NOT NULL CHECK (
+    email VARCHAR(100) NOT NULL UNIQUE CHECK (
         email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'
     ),
     receive_promo_emails BOOLEAN DEFAULT FALSE
@@ -217,18 +215,14 @@ CREATE TABLE shipment_carrier (
     carrier VARCHAR(255) NOT NULL UNIQUE,
     price DECIMAL(10, 2) NOT NULL,
     tracking_url VARCHAR(255) NOT NULL,
-    allowed BOOLEAN DEFAULT FALSE
+    allowed BOOLEAN DEFAULT FALSE,
+    description TEXT
 );
 
-INSERT INTO
-    shipment_carrier (carrier, price, tracking_url, allowed)
+INSERT INTO shipment_carrier (carrier, price, tracking_url, allowed, description)
 VALUES
-    ('DHL', 10.99, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE);
-
-INSERT INTO
-    shipment_carrier (carrier, price, tracking_url, allowed)
-VALUES
-    ('FREE', 0, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE);
+    ('DHL', 10.99, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE, 'DHL global shipping services with fast international tracking.'),
+    ('FREE', 0, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE, 'Complimentary shipping option with basic tracking features.');
 
 CREATE TABLE shipment (
     id INT PRIMARY KEY AUTO_INCREMENT,

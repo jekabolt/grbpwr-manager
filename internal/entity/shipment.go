@@ -18,6 +18,7 @@ type ShipmentCarrierInsert struct {
 	Price       decimal.Decimal `db:"price"`
 	TrackingURL string          `db:"tracking_url"`
 	Allowed     bool            `db:"allowed"`
+	Description string          `db:"description"`
 }
 
 // Shipment represents the shipment table

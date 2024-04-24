@@ -58,6 +58,7 @@ type OrderItem struct {
 	ProductName  string `db:"product_name"`
 	ProductBrand string `db:"product_brand"`
 	CategoryID   int    `db:"category_id"`
+	SKU          string `db:"product_sku"`
 	OrderItemInsert
 }
 

@@ -148,7 +148,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 }
 
 func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRequest) (*pb_frontend.SubmitOrderResponse, error) {
-	orderNew := dto.ConvertCommonOrderNewToEntity(req.Order)
+	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
@@ -158,7 +158,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
 	}
 
-	order, err := s.repo.Order().CreateOrder(ctx, orderNew)
+	order, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
@@ -334,11 +334,12 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 	pm, ok := s.repo.Cache().GetPaymentMethodById(p.PaymentMethodID)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "can't get payment method by id",
-			slog.String("err", err.Error()),
+			slog.Any("paymentMethodId", p.PaymentMethodID),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
 	}
 
+	// TODO:
 	checker := s.usdtTron
 	switch pm.Name {
 	case entity.USDT_TRON:
@@ -429,10 +430,10 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
 	// Subscribe the user.
-	err := s.repo.Subscribers().Subscribe(ctx, req.Email, req.Name)
+	err := s.repo.Subscribers().UpsertSubscription(ctx, req.Email, true)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't subscribe", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "can't subscribe")
+		return nil, status.Errorf(codes.AlreadyExists, "can't subscribe")
 	}
 
 	// Send new subscriber mail.
@@ -449,7 +450,7 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 }
 
 func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.UnsubscribeNewsletterRequest) (*pb_frontend.UnsubscribeNewsletterResponse, error) {
-	err := s.repo.Subscribers().Unsubscribe(ctx, req.Email)
+	err := s.repo.Subscribers().UpsertSubscription(ctx, req.Email, false)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't unsubscribe",
 			slog.String("err", err.Error()),
