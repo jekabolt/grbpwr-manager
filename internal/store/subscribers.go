@@ -31,16 +31,21 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Subscr
 }
 
 func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, receivePromo bool) error {
-	// SQL query that inserts a new subscriber or updates an existing one.
+	// Corrected SQL query that inserts a new subscriber or updates an existing one if the email already exists.
 	query := `
-        INSERT INTO subscriber (email, receive_promo_emails)
-        VALUES (:email, :receivePromoEmails)
-        ON DUPLICATE KEY UPDATE receive_promo_emails = VALUES(:receivePromoEmails)
+		INSERT INTO subscriber (email, receive_promo_emails)
+		VALUES (:email, :receivePromoEmails)
+		ON DUPLICATE KEY UPDATE receive_promo_emails = VALUES(receive_promo_emails)
     `
-	err := ExecNamed(ctx, ms.DB(), query, map[string]any{
+
+	// Prepare the parameters for the query
+	params := map[string]interface{}{
 		"email":              email,
 		"receivePromoEmails": receivePromo,
-	})
+	}
+
+	// Execute the query with named parameters
+	err := ExecNamed(ctx, ms.DB(), query, params)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
