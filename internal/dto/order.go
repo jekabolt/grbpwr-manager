@@ -182,9 +182,6 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 
 // ConvertEntityOrderItemsToPbOrderItems converts a slice of entity.OrderItem to a slice of pb_common.OrderItem
 func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem) ([]*pb_common.OrderItem, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("empty order item slice")
-	}
 
 	pbOrderItems := make([]*pb_common.OrderItem, len(items))
 	for i, item := range items {
