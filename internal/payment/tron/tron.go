@@ -139,36 +139,41 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 	var payment *entity.Payment
 	expiration := time.Now()
 	var err error
+
+	payment, err = p.rep.Order().GetPaymentByOrderId(ctx, orderId)
+	if err != nil {
+		return nil, expiration, fmt.Errorf("can't get payment by order id: %w", err)
+	}
+
+	// If the payment is already done, return it immediately.
+	if payment.IsTransactionDone {
+		expiration = payment.ModifiedAt
+		return &payment.PaymentInsert, expiration, nil
+	}
+
+	// Order has unexpired invoice, return it.
+	if payment.Payee.Valid && payment.Payee.String != "" {
+		expiration = payment.ModifiedAt.Add(p.c.InvoiceExpiration)
+		return &payment.PaymentInsert, expiration, nil
+	}
+
+	// If the payment is not done and the address is not set, generate a new invoice.
+	pAddr, err := p.getFreeAddress()
+	if err != nil {
+		return nil, expiration, fmt.Errorf("can't get free address: %w", err)
+	}
+
+	_, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
+	if err != nil {
+		return nil, expiration, fmt.Errorf("can't insert order invoice: %w", err)
+	}
+
+	payment.PaymentInsert.Payee = sql.NullString{
+		String: pAddr,
+		Valid:  true,
+	}
+
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-
-		payment, err = rep.Order().GetPaymentByOrderId(ctx, orderId)
-		if err != nil {
-			return fmt.Errorf("can't get payment by order id: %w", err)
-		}
-
-		// If the payment is already done, return it immediately.
-		if payment.IsTransactionDone {
-			expiration = payment.ModifiedAt
-			return nil
-		}
-
-		// Order has unexpired invoice, return it.
-		if payment.Payee.Valid && payment.Payee.String != "" {
-			expiration = payment.ModifiedAt.Add(p.c.InvoiceExpiration)
-			return nil
-		}
-
-		// If the payment is not done and the address is not set, generate a new invoice.
-		pAddr, err := p.getFreeAddress()
-		if err != nil {
-			return fmt.Errorf("can't get free address: %w", err)
-		}
-
-		_, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
-		if err != nil {
-			return fmt.Errorf("can't insert order invoice: %w", err)
-		}
-
 		// convert base currency to payment currency in this case to USD
 		totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, payment.TransactionAmount)
 		if err != nil {
