@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,14 +87,27 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 }
 
 // compareItems return true if items are equal
-func compareItems(items []entity.OrderItemInsert, validItems []entity.OrderItemInsert) bool {
+func compareItems(items, validItems []entity.OrderItemInsert) bool {
+	// Sort both slices
+	sort.Sort(entity.OrderItemsByProductID(items))
+	sort.Sort(entity.OrderItemsByProductID(validItems))
+
+	// Compare lengths
 	if len(items) != len(validItems) {
 		return false
 	}
+
+	// Compare each element
 	for i := range items {
-		if items[i] != validItems[i] {
+		// Compare all fields of OrderItemInsert
+		if items[i].ProductID != validItems[i].ProductID ||
+			items[i].ProductPrice.Cmp(validItems[i].ProductPrice) != 0 ||
+			items[i].ProductSalePercentage.Cmp(validItems[i].ProductSalePercentage) != 0 ||
+			items[i].Quantity.Cmp(validItems[i].Quantity) != 0 ||
+			items[i].SizeID != validItems[i].SizeID {
 			return false
 		}
+		slog.Default().Debug("compareItems", "items[i]", items[i], "validItems[i]", validItems[i])
 	}
 	return true
 }
@@ -607,7 +621,8 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 	return orderItemsMap, nil
 }
 func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
-	query := `SELECT product_id, quantity, size_id FROM order_item WHERE order_id = :orderId`
+
+	query := `SELECT * FROM order_item WHERE order_id = :orderId`
 	ois, err := QueryListNamed[entity.OrderItemInsert](ctx, rep.DB(), query, map[string]any{
 		"orderId": orderId,
 	})
@@ -1149,13 +1164,21 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 		return nil, fmt.Errorf("can't get order by uuid %d: %w", orderId, err)
 	}
 
+	if orderFull.Order.TotalPrice.IsZero() {
+		err := cancelOrder(ctx, ms, orderFull)
+		if err != nil {
+			return nil, fmt.Errorf("can't cancel order invoice creation: %w", err)
+		}
+		return nil, fmt.Errorf("total price is zero")
+	}
+
 	orderStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
 	if !ok {
 		return nil, fmt.Errorf("order status is not exists: order status id %d", orderFull.Order.OrderStatusID)
 	}
 
 	if orderStatus.Name != entity.Placed && orderStatus.Name != entity.Cancelled {
-		return nil, fmt.Errorf("order status is not placed: order status %s", orderStatus.Name)
+		return nil, fmt.Errorf("order status is not placed and not cancelled: order status %s", orderStatus.Name)
 	}
 
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
@@ -1168,7 +1191,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderId int, addr 
 		if err != nil {
 			err := cancelOrder(ctx, rep, orderFull)
 			if err != nil {
-				return fmt.Errorf("can't cancel order while applying promo code: %w", err)
+				return fmt.Errorf("can't cancel order : %w", err)
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}

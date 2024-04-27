@@ -680,7 +680,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvo
 			ExpiredAt: timestamppb.New(expire),
 		}, nil
 	case entity.USDT_TRON_TEST:
-		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
+		pi, expire, err := s.usdtTronTestnet.GetOrderInvoice(ctx, int(req.OrderId))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get order invoice",
 				slog.String("err", err.Error()),
