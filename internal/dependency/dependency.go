@@ -79,8 +79,8 @@ type (
 		GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error)
 		CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error)
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
-		GetAwaitingPaymentsByPaymentType(ctx context.Context, pm entity.PaymentMethodName) ([]entity.PaymentOrderId, error)
-		ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error
+		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderId, error)
+		ExpireOrderPayment(ctx context.Context, orderId int) error
 		OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) (*entity.Payment, error)
 		RefundOrder(ctx context.Context, orderId int) error
 		DeliveredOrder(ctx context.Context, orderId int) error
@@ -257,5 +257,11 @@ type (
 		SetSiteAvailability(available bool)
 		SetMaxOrderItems(count int)
 		SetDefaultCurrency(cur dto.CurrencyTicker)
+	}
+
+	PaymentPool interface {
+		AddPaymentExpiration(ctx context.Context, poid entity.PaymentOrderId) error
+		RemovePaymentExpiration(orderId int) error
+		Start(ctx context.Context) error
 	}
 )

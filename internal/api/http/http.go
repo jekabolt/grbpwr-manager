@@ -261,7 +261,7 @@ func (s *Server) cors(h http.Handler) http.Handler {
 
 		if origin == "" {
 			// If there's no origin, it's not a CORS request, so just pass it through.
-			slog.Default().InfoContext(r.Context(), "no origin header")
+			// slog.Default().InfoContext(r.Context(), "no origin header")
 			h.ServeHTTP(w, r)
 			return
 		}

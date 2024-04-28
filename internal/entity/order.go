@@ -73,9 +73,14 @@ type OrderItemInsert struct {
 // ByProductID implements sort.Interface for []OrderItemInsert based on the ProductID field.
 type OrderItemsByProductID []OrderItemInsert
 
-func (a OrderItemsByProductID) Len() int           { return len(a) }
-func (a OrderItemsByProductID) Less(i, j int) bool { return a[i].ProductID < a[j].ProductID }
-func (a OrderItemsByProductID) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a OrderItemsByProductID) Len() int { return len(a) }
+func (a OrderItemsByProductID) Less(i, j int) bool {
+	if a[i].ProductID == a[j].ProductID {
+		return a[i].SizeID < a[j].SizeID
+	}
+	return a[i].ProductID < a[j].ProductID
+}
+func (a OrderItemsByProductID) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
 func ConvertOrderItemInsertsToProductInfoProviders(items []OrderItemInsert) []ProductInfoProvider {
 	providers := make([]ProductInfoProvider, len(items))

@@ -243,12 +243,13 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 	}
 
 	return &pb_common.PaymentInsert{
-		PaymentMethod:     pb_common.PaymentMethodNameEnum(p.PaymentMethodID),
-		TransactionId:     p.TransactionID.String,
-		TransactionAmount: &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
-		Payer:             p.Payer.String,
-		Payee:             p.Payee.String,
-		IsTransactionDone: p.IsTransactionDone,
+		PaymentMethod:                    pb_common.PaymentMethodNameEnum(p.PaymentMethodID),
+		TransactionId:                    p.TransactionID.String,
+		TransactionAmount:                &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
+		TransactionAmountPaymentCurrency: &pb_decimal.Decimal{Value: p.TransactionAmountPaymentCurrency.String()},
+		Payer:                            p.Payer.String,
+		Payee:                            p.Payee.String,
+		IsTransactionDone:                p.IsTransactionDone,
 	}, nil
 }
 
