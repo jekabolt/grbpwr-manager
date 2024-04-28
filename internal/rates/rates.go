@@ -126,6 +126,12 @@ func (c *Client) ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount d
 	if !ok {
 		return decimal.Zero, fmt.Errorf("unsupported currency: %s", currencyTo)
 	}
+
+	slog.Default().Info("Converting from base currency",
+		slog.String("currency", currencyTo.String()),
+		slog.String("amount", amount.String()),
+		slog.String("rate", rate.Rate.String()),
+	)
 	return amount.Mul(rate.Rate), nil
 }
 
@@ -135,7 +141,6 @@ func (c *Client) GetRates() map[dto.CurrencyTicker]dto.CurrencyRate {
 	c.rates.Range(func(key, value interface{}) bool {
 		ticker, ok := key.(string)
 		if !ok {
-			slog.Error("Invalid currency ticker type", slog.String("type", fmt.Sprintf("%T", key)))
 			return true
 		}
 		rates[dto.CurrencyTicker(ticker)] = value.(dto.CurrencyRate)
@@ -194,14 +199,15 @@ func (c *Client) updateRates() error {
 	}
 
 	// Update fiat rates in the map.
-	for k, v := range fiatRates {
+	for ticker, cr := range fiatRates {
 		// Ensure keys are of type CurrencyTicker.
-		ticker, ok := currencyDescriptions[dto.CurrencyTicker(k)]
+		description, ok := currencyDescriptions[dto.CurrencyTicker(ticker)]
+		cr.Description = description
 		if ok {
-			c.rates.Store(ticker, v)
+			c.rates.Store(ticker, cr)
 		} else {
 			slog.Error("Unsupported currency ticker for fiat rate",
-				slog.String("ticker", k))
+				slog.String("ticker", ticker))
 		}
 	}
 

@@ -107,7 +107,6 @@ func compareItems(items, validItems []entity.OrderItemInsert) bool {
 			items[i].SizeID != validItems[i].SizeID {
 			return false
 		}
-		slog.Default().Debug("compareItems", "items[i]", items[i], "validItems[i]", validItems[i])
 	}
 	return true
 }
@@ -622,7 +621,13 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 }
 func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
 
-	query := `SELECT * FROM order_item WHERE order_id = :orderId`
+	query := `SELECT 
+		product_id,
+		product_price,
+		product_sale_percentage,
+		quantity,
+		size_id
+	size_id FROM order_item WHERE order_id = :orderId`
 	ois, err := QueryListNamed[entity.OrderItemInsert](ctx, rep.DB(), query, map[string]any{
 		"orderId": orderId,
 	})
@@ -1870,18 +1875,32 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 }
 
 // TODO: reuse getOrdersByStatusPaymentAndEmailPaged
-func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository, orderStatusId, paymentMethodId int) ([]entity.Order, error) {
+func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository, orderStatusId int, paymentMethodIds ...int) ([]entity.Order, error) {
 	query := `
     SELECT 
         co.*
     FROM customer_order co 
-    JOIN payment p ON co.payment_id = p.id
-    WHERE co.order_status_id = :status AND p.payment_method_id = :paymentMethod
     `
 
+	var params = map[string]interface{}{
+		"status": orderStatusId,
+	}
+
+	if len(paymentMethodIds) > 0 {
+		query += `
+        JOIN payment p ON co.payment_id = p.id
+        WHERE co.order_status_id = :status AND p.payment_method_id IN (:paymentMethodIds)
+        `
+		params["paymentMethodIds"] = paymentMethodIds
+	} else {
+		query += `
+        WHERE co.order_status_id = :status
+        `
+	}
+
 	orders, err := QueryListNamed[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
-		"status":        orderStatusId,
-		"paymentMethod": paymentMethodId,
+		"status":           orderStatusId,
+		"paymentMethodIds": paymentMethodIds,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1893,10 +1912,16 @@ func getOrdersByStatusAndPayment(ctx context.Context, rep dependency.Repository,
 	return orders, nil
 }
 
-func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn entity.PaymentMethodName) ([]entity.PaymentOrderId, error) {
-	pm, ok := ms.cache.GetPaymentMethodsByName(pmn)
-	if !ok {
-		return nil, fmt.Errorf("payment method is not exists: payment method name %v", pmn)
+// GetAwaitingPaymentsByPaymentType retrieves all orders with the status "awaiting payment"
+// and the given payment method if payment method is not provided it returns all orders with the status "awaiting payment".
+func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderId, error) {
+
+	pmIds := []int{}
+	for _, pmn := range pmn {
+		pm, ok := ms.cache.GetPaymentMethodsByName(pmn)
+		if ok {
+			pmIds = append(pmIds, pm.ID)
+		}
 	}
 
 	os, ok := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
@@ -1904,7 +1929,7 @@ func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn 
 		return nil, fmt.Errorf("order status is not exists: order status id %v", entity.AwaitingPayment)
 	}
 
-	orders, err := getOrdersByStatusAndPayment(ctx, ms, os.ID, pm.ID)
+	orders, err := getOrdersByStatusAndPayment(ctx, ms, os.ID, pmIds...)
 	if err != nil {
 		return nil, err
 	}
@@ -1930,7 +1955,7 @@ func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn 
 	return poids, nil
 }
 
-func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId int) error {
+func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId int) error {
 
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		o, err := getOrderById(ctx, rep, orderId)
@@ -1972,13 +1997,16 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId, paymentId
 
 		// set payment to initial state
 		pi := &entity.PaymentInsert{
-			TransactionID:     sql.NullString{Valid: true},
-			Payer:             sql.NullString{Valid: true},
-			Payee:             sql.NullString{Valid: true},
-			IsTransactionDone: false,
+			PaymentMethodID:                  1,
+			TransactionID:                    sql.NullString{Valid: true},
+			TransactionAmount:                decimal.Zero,
+			TransactionAmountPaymentCurrency: decimal.Zero,
+			Payer:                            sql.NullString{Valid: true},
+			Payee:                            sql.NullString{Valid: true},
+			IsTransactionDone:                false,
 		}
 
-		err = updateOrderPayment(ctx, rep, paymentId, pi)
+		err = updateOrderPayment(ctx, rep, o.PaymentID, pi)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
@@ -2154,18 +2182,18 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *enti
 		}
 	}
 
-	err := deleteOrderItems(ctx, rep, orderFull.Order.ID)
-	if err != nil {
-		return fmt.Errorf("can't delete order items: %w", err)
-	}
+	// err := deleteOrderItems(ctx, rep, orderFull.Order.ID)
+	// if err != nil {
+	// 	return fmt.Errorf("can't delete order items: %w", err)
+	// }
 
-	err = setZeroTotal(ctx, rep, orderFull.Order.ID)
-	if err != nil {
-		return fmt.Errorf("can't set zero total: %w", err)
-	}
+	// err = setZeroTotal(ctx, rep, orderFull.Order.ID)
+	// if err != nil {
+	// 	return fmt.Errorf("can't set zero total: %w", err)
+	// }
 
 	if orderFull.PromoCode.ID != 0 {
-		err = removePromo(ctx, rep, orderFull.Order.ID)
+		err := removePromo(ctx, rep, orderFull.Order.ID)
 		if err != nil {
 			return fmt.Errorf("can't remove promo: %w", err)
 		}
@@ -2176,7 +2204,7 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *enti
 		return fmt.Errorf("can't get order status by name %s", entity.Cancelled)
 	}
 
-	err = updateOrderStatus(ctx, rep, orderFull.Order.ID, statusCancelled.ID)
+	err := updateOrderStatus(ctx, rep, orderFull.Order.ID, statusCancelled.ID)
 	if err != nil {
 		return fmt.Errorf("can't update order status: %w", err)
 	}

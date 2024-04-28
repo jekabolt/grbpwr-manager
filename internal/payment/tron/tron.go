@@ -83,8 +83,8 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 }
 
 // address is our address on which the payment should be made
-func (p *Processor) expireOrderPayment(ctx context.Context, orderId, paymentId int, address string) error {
-	err := p.rep.Order().ExpireOrderPayment(ctx, orderId, paymentId)
+func (p *Processor) expireOrderPayment(ctx context.Context, orderId int, address string) error {
+	err := p.rep.Order().ExpireOrderPayment(ctx, orderId)
 	if err != nil {
 		return fmt.Errorf("can't update orders status: %w", err)
 	}
@@ -163,22 +163,25 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 		return nil, expiration, fmt.Errorf("can't get free address: %w", err)
 	}
 
-	_, err = p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
+	of, err := p.rep.Order().InsertOrderInvoice(ctx, orderId, pAddr, p.pm)
 	if err != nil {
 		return nil, expiration, fmt.Errorf("can't insert order invoice: %w", err)
 	}
-
 	payment.PaymentInsert.Payee = sql.NullString{
 		String: pAddr,
 		Valid:  true,
 	}
+	// convert base currency to payment currency in this case to USD
+	totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, of.Order.TotalPrice)
+	if err != nil {
+		return nil, expiration, fmt.Errorf("can't convert from base currency: %w", err)
+	}
+
+	slog.Default().InfoContext(ctx, "Total USD", slog.String("totalUSD", totalUSD.String()))
+	payment.TransactionAmountPaymentCurrency = totalUSD
+	payment.TransactionAmount = of.Order.TotalPrice
 
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// convert base currency to payment currency in this case to USD
-		totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, payment.TransactionAmount)
-		if err != nil {
-			return fmt.Errorf("can't convert to base currency: %w", err)
-		}
 
 		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderId, totalUSD)
 		if err != nil {
@@ -189,11 +192,10 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 		if err != nil {
 			return fmt.Errorf("can't set address amount: %w", err)
 		}
-
-		go p.monitorPayment(ctx, orderId, payment)
-
 		return nil
 	})
+
+	go p.monitorPayment(context.TODO(), orderId, payment)
 
 	return &payment.PaymentInsert, expiration, err
 }
@@ -225,20 +227,21 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Default().DebugContext(ctx, "Context cancelled, stopping payment monitoring")
+			slog.Default().DebugContext(ctx, "context cancelled, stopping payment monitoring")
 			return
 		case <-ticker.C:
 			payment, err := p.CheckForTransactions(ctx, orderId, payment)
 			if err != nil {
-				slog.Default().ErrorContext(ctx, "Error during transaction check", slog.String("err", err.Error()))
+				slog.Default().ErrorContext(ctx, "error during transaction check", slog.String("err", err.Error()))
 			}
 			if payment.IsTransactionDone {
 				return // Exit the loop once the payment is done.
 			}
 		case <-expirationTimer.C:
+			slog.Default().InfoContext(ctx, "order payment expired", slog.Int("orderId", orderId))
 			// Attempt to expire the order payment only if it's not already done.
 			if !payment.IsTransactionDone {
-				if err := p.expireOrderPayment(ctx, orderId, payment.ID, payment.Payee.String); err != nil {
+				if err := p.expireOrderPayment(ctx, orderId, payment.Payee.String); err != nil {
 					slog.Default().ErrorContext(ctx, "can't expire order payment", slog.String("err", err.Error()))
 				}
 			}
