@@ -216,7 +216,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 	}
 
 	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
-	expirationDuration := time.Until(payment.ModifiedAt.Add(p.c.InvoiceExpiration))
+	expirationDuration := time.Until(time.Now().Add(p.c.InvoiceExpiration))
 
 	ticker := time.NewTicker(p.c.CheckIncomingTxInterval)
 	defer ticker.Stop()
