@@ -1342,7 +1342,7 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderId int, tracki
 		return nil, fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 	}
 
-	if orderStatus.Name != entity.Confirmed || orderStatus.Name != entity.Shipped {
+	if !(orderStatus.Name == entity.Confirmed || orderStatus.Name == entity.Shipped) {
 		return nil, fmt.Errorf("bad order status for setting tracking number must be confirmed got: %s", orderStatus.Name)
 	}
 
