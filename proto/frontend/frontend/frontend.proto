@@ -65,6 +65,14 @@ service FrontendService {
     };
   }
 
+  // Cancel an invoice for the order
+  rpc CancelOrderInvoice(CancelOrderInvoiceRequest) returns (CancelOrderInvoiceResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/{order_id}/invoice/cancel"
+      body: "*"
+    };
+  }
+
   // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
   rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
     option (google.api.http) = {
@@ -185,6 +193,12 @@ message GetOrderInvoiceResponse {
   google.protobuf.Timestamp expired_at = 1;
   common.PaymentInsert payment = 2;
 }
+
+message CancelOrderInvoiceRequest {
+  int32 order_id = 1;
+}
+
+message CancelOrderInvoiceResponse {}
 
 message CheckCryptoPaymentRequest {
   string order_uuid = 1;

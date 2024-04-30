@@ -321,6 +321,40 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 }
 
+func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.CancelOrderInvoiceRequest) (*pb_frontend.CancelOrderInvoiceResponse, error) {
+	payment, err := s.repo.Order().ExpireOrderPayment(ctx, int(req.OrderId))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't expire order payment",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't expire order payment")
+	}
+	pme, _ := s.repo.Cache().GetPaymentMethodById(payment.PaymentMethodID)
+
+	slog.Default().DebugContext(ctx, "cancel order invoice",
+		slog.Any("paymentMethod", pme),
+	)
+
+	switch pme.Name {
+	case entity.USDT_TRON:
+		err = s.usdtTron.CancelMonitorPayment(int(req.OrderId))
+	case entity.USDT_TRON_TEST:
+		err = s.usdtTronTestnet.CancelMonitorPayment(int(req.OrderId))
+	default:
+		slog.Default().ErrorContext(ctx, "payment method unimplemented")
+		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
+	}
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't cancel monitor payment",
+			slog.String("err", err.Error()),
+			slog.Any("paymentMethod", pme.Name),
+		)
+		return nil, status.Errorf(codes.Internal, "can't cancel monitor payment")
+	}
+
+	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
+}
+
 func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.CheckCryptoPaymentResponse, error) {
 
 	p, o, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)

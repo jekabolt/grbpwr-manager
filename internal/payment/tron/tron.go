@@ -24,14 +24,16 @@ type Config struct {
 }
 
 type Processor struct {
-	c      *Config
-	pm     *entity.PaymentMethod
-	addrs  map[string]bool //k:address v: is used
-	mu     sync.Mutex
-	rep    dependency.Repository
-	tg     dependency.Trongrid
-	mailer dependency.Mailer
-	rates  dependency.RatesService
+	c       *Config
+	pm      *entity.PaymentMethod
+	addrs   map[string]int //k:address v: order id
+	mu      sync.Mutex
+	rep     dependency.Repository
+	tg      dependency.Trongrid
+	mailer  dependency.Mailer
+	rates   dependency.RatesService
+	monCtxt map[int]context.CancelFunc // Tracks monitoring contexts by order id
+	ctxMu   sync.Mutex
 }
 
 func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, r dependency.RatesService, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
@@ -40,19 +42,20 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 		return nil, fmt.Errorf("payment method not found")
 	}
 
-	addrs := make(map[string]bool, len(c.Addresses))
+	addrs := make(map[string]int, len(c.Addresses))
 	for _, addr := range c.Addresses {
-		addrs[addr] = false
+		addrs[addr] = 0
 	}
 
 	p := &Processor{
-		c:      c,
-		pm:     &pm,
-		rep:    rep,
-		addrs:  addrs,
-		mailer: m,
-		tg:     tg,
-		rates:  r,
+		c:       c,
+		pm:      &pm,
+		rep:     rep,
+		addrs:   addrs,
+		mailer:  m,
+		tg:      tg,
+		rates:   r,
+		monCtxt: make(map[int]context.CancelFunc),
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -75,7 +78,7 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 
 	for _, poid := range poids {
 		poidC := poid
-		p.addrs[poidC.Payment.Payee.String] = true
+		p.addrs[poidC.Payment.Payee.String] = poid.OrderId
 		go p.monitorPayment(ctx, poidC.OrderId, &poidC.Payment)
 	}
 
@@ -83,13 +86,13 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 }
 
 // address is our address on which the payment should be made
-func (p *Processor) expireOrderPayment(ctx context.Context, orderId int, address string) error {
-	err := p.rep.Order().ExpireOrderPayment(ctx, orderId)
+func (p *Processor) expireOrderPayment(ctx context.Context, orderId int) error {
+	_, err := p.rep.Order().ExpireOrderPayment(ctx, orderId)
 	if err != nil {
-		return fmt.Errorf("can't update orders status: %w", err)
+		return fmt.Errorf("can't expire order payment: %w", err)
 	}
 
-	err = p.freeAddress(address)
+	err = p.freeAddress(orderId)
 	if err != nil {
 		return fmt.Errorf("can't free address: %w", err)
 	}
@@ -101,8 +104,8 @@ func (p *Processor) getFreeAddress() (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for addr, used := range p.addrs {
-		if !used {
+	for addr, orderId := range p.addrs {
+		if orderId == 0 {
 			return addr, nil
 		}
 	}
@@ -110,26 +113,28 @@ func (p *Processor) getFreeAddress() (string, error) {
 }
 
 // TODO: rename to setOrderAddress
-func (p *Processor) occupyPaymentAddress(addr string) error {
+func (p *Processor) occupyPaymentAddress(addr string, orderId int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if _, ok := p.addrs[addr]; !ok {
 		return fmt.Errorf("address not found")
 	}
-	p.addrs[addr] = true
+	p.addrs[addr] = orderId
 	return nil
 }
 
-func (p *Processor) freeAddress(addr string) error {
+func (p *Processor) freeAddress(oid int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	_, ok := p.addrs[addr]
-	if !ok {
-		return fmt.Errorf("address not found")
+	for address, oid := range p.addrs {
+		if oid == oid {
+			p.addrs[address] = 0
+			return nil
+		}
 	}
-	p.addrs[addr] = false
+	slog.Default().Error("can't free address", slog.Int("orderId", oid))
 	return nil
 }
 
@@ -178,7 +183,8 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 	}
 
 	slog.Default().InfoContext(ctx, "Total USD", slog.String("totalUSD", totalUSD.String()))
-	payment.TransactionAmountPaymentCurrency = totalUSD
+	// TODO: token decimals to config
+	payment.TransactionAmountPaymentCurrency = convertToBlockchainFormat(totalUSD, 6)
 	payment.TransactionAmount = of.Order.TotalPrice
 
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -188,7 +194,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 			return fmt.Errorf("can't update total payment currency: %w", err)
 		}
 
-		err = p.occupyPaymentAddress(pAddr)
+		err = p.occupyPaymentAddress(pAddr, orderId)
 		if err != nil {
 			return fmt.Errorf("can't set address amount: %w", err)
 		}
@@ -201,6 +207,18 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 }
 
 func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *entity.Payment) {
+	ctx, cancel := context.WithCancel(ctx)
+	p.ctxMu.Lock()
+	p.monCtxt[orderId] = cancel
+	p.ctxMu.Unlock()
+
+	defer cancel() // Ensure the context is cancelled when the monitoring stops.
+	defer func() {
+		p.ctxMu.Lock()
+		delete(p.monCtxt, orderId) // Clean up the map when monitoring ends.
+		p.ctxMu.Unlock()
+	}()
+
 	// Immediately check for transactions at least once before entering the loop.
 	payment, err := p.CheckForTransactions(ctx, orderId, payment)
 	if err != nil {
@@ -216,7 +234,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 	}
 
 	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
-	expirationDuration := time.Until(time.Now().Add(p.c.InvoiceExpiration))
+	expirationDuration := time.Until(payment.ModifiedAt.Add(p.c.InvoiceExpiration))
 
 	ticker := time.NewTicker(p.c.CheckIncomingTxInterval)
 	defer ticker.Stop()
@@ -230,24 +248,49 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 			slog.Default().DebugContext(ctx, "context cancelled, stopping payment monitoring")
 			return
 		case <-ticker.C:
-			payment, err := p.CheckForTransactions(ctx, orderId, payment)
+			payment, err = p.CheckForTransactions(ctx, orderId, payment)
 			if err != nil {
-				slog.Default().ErrorContext(ctx, "error during transaction check", slog.String("err", err.Error()))
+				slog.Default().ErrorContext(ctx, "error during transaction check",
+					slog.String("err", err.Error()),
+					slog.Int("orderId", orderId),
+					slog.String("address", payment.Payee.String),
+				)
 			}
 			if payment.IsTransactionDone {
 				return // Exit the loop once the payment is done.
 			}
 		case <-expirationTimer.C:
-			slog.Default().InfoContext(ctx, "order payment expired", slog.Int("orderId", orderId))
+			slog.Default().InfoContext(ctx, "order payment expired",
+				slog.Int("orderId", orderId))
 			// Attempt to expire the order payment only if it's not already done.
 			if !payment.IsTransactionDone {
-				if err := p.expireOrderPayment(ctx, orderId, payment.Payee.String); err != nil {
-					slog.Default().ErrorContext(ctx, "can't expire order payment", slog.String("err", err.Error()))
+				if err := p.expireOrderPayment(ctx, orderId); err != nil {
+					slog.Default().ErrorContext(ctx, "can't expire order payment",
+						slog.String("err", err.Error()),
+					)
 				}
 			}
 			return // Exit the loop once the payment has expired.
 		}
 	}
+
+}
+
+func (p *Processor) CancelMonitorPayment(orderId int) error {
+	p.ctxMu.Lock()
+	defer p.ctxMu.Unlock()
+
+	err := p.freeAddress(orderId)
+	if err != nil {
+		return fmt.Errorf("can't free address: %w", err)
+	}
+
+	if cancel, exists := p.monCtxt[orderId]; exists {
+		cancel()                   // Cancel the monitoring context.
+		delete(p.monCtxt, orderId) // Clean up the map.
+		return nil
+	}
+	return fmt.Errorf("no monitoring process found for order ID: %d", orderId)
 }
 
 func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payment *entity.Payment) (*entity.Payment, error) {
@@ -297,7 +340,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 				} else {
 					slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
 				}
-				err := p.freeAddress(payment.Payee.String)
+				err := p.freeAddress(orderId)
 				if err != nil {
 					return nil, fmt.Errorf("can't free address: %w", err)
 				}

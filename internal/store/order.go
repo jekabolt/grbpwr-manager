@@ -985,7 +985,7 @@ func getOrderById(ctx context.Context, rep dependency.Repository, orderId int) (
 		"orderId": orderId,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("can't get order by id:%d %w", orderId, err)
 	}
 	return &order, nil
 }
@@ -1039,7 +1039,7 @@ func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId i
 		"orderStatusId": orderStatusId,
 	})
 	if err != nil {
-		return fmt.Errorf("can't update order status: %w", err)
+		return err
 	}
 	return nil
 }
@@ -1068,7 +1068,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, paymentI
 	})
 
 	if err != nil {
-		return fmt.Errorf("can't update order payment: %w", err)
+		return err
 	}
 	return nil
 }
@@ -1955,17 +1955,24 @@ func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn 
 	return poids, nil
 }
 
-func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId int) error {
+func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId int) (*entity.Payment, error) {
 
+	payment := &entity.Payment{}
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		o, err := getOrderById(ctx, rep, orderId)
 		if err != nil {
-			return fmt.Errorf("can't get order by id: %w", err)
+			return err
 		}
 
 		os, ok := ms.cache.GetOrderStatusById(o.OrderStatusID)
 		if !ok {
 			return fmt.Errorf("order status is not exists: order status id %d", o.OrderStatusID)
+		}
+
+		// get payment by order id
+		payment, err = ms.GetPaymentByOrderId(ctx, orderId)
+		if err != nil {
+			return fmt.Errorf("can't get payment by order id: %w", err)
 		}
 
 		// if order status is not awaiting payment we can't expire payment
@@ -1997,8 +2004,8 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId int) error
 
 		// set payment to initial state
 		pi := &entity.PaymentInsert{
-			PaymentMethodID:                  1,
-			TransactionID:                    sql.NullString{Valid: true},
+			PaymentMethodID:                  payment.ID,
+			TransactionID:                    sql.NullString{Valid: false},
 			TransactionAmount:                decimal.Zero,
 			TransactionAmountPaymentCurrency: decimal.Zero,
 			Payer:                            sql.NullString{Valid: true},
@@ -2014,10 +2021,10 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderId int) error
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return payment, err
 }
 
 // TODO:
