@@ -9,6 +9,7 @@ import (
 
 	"log/slog"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -76,9 +77,13 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 		return fmt.Errorf("can't get unpaid orders: %w", err)
 	}
 
+	slog.Default().Info("Unpaid orders", slog.Any("poids", poids))
+
 	for _, poid := range poids {
 		poidC := poid
 		p.addrs[poidC.Payment.Payee.String] = poid.OrderId
+
+		slog.Default().Info("monitorPayment", slog.Any("poid", poid))
 		go p.monitorPayment(ctx, poidC.OrderId, &poidC.Payment)
 	}
 
@@ -124,18 +129,18 @@ func (p *Processor) occupyPaymentAddress(addr string, orderId int) error {
 	return nil
 }
 
-func (p *Processor) freeAddress(oid int) error {
+func (p *Processor) freeAddress(orderId int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	for address, oid := range p.addrs {
 		// TODO:
-		if oid == oid {
+		if oid == orderId {
 			p.addrs[address] = 0
 			return nil
 		}
 	}
-	slog.Default().Error("can't free address", slog.Int("orderId", oid))
+	slog.Default().Error("can't free address", slog.Int("orderId", orderId))
 	return nil
 }
 
@@ -227,15 +232,16 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 		p.ctxMu.Unlock()
 	}()
 
-	// Immediately check for transactions at least once before entering the loop.
-	payment, err := p.CheckForTransactions(ctx, orderId, payment)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "Error during initial transaction check",
-			slog.String("err", err.Error()),
-			slog.Int("orderId", orderId),
-			slog.Any("payment", payment),
-		)
-	}
+	// // Immediately check for transactions at least once before entering the loop.
+	// payment, err := p.CheckForTransactions(ctx, orderId, payment)
+	// if err != nil {
+	// 	slog.Default().ErrorContext(ctx, "Error during initial transaction check",
+	// 		slog.String("err", err.Error()),
+	// 		slog.Int("orderId", orderId),
+	// 		slog.Any("payment", payment),
+	// 	)
+	// }
+	var err error
 
 	if payment.IsTransactionDone {
 		return // Exit the loop once the payment is done.
@@ -258,14 +264,14 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 		case <-ticker.C:
 			slog.Default().DebugContext(ctx, "checking for transactions",
 				slog.Int("orderId", orderId),
-				slog.String("address", payment.Payee.String),
+				slog.Any("payment", payment),
 			)
 			payment, err = p.CheckForTransactions(ctx, orderId, payment)
 			if err != nil {
 				slog.Default().ErrorContext(ctx, "error during transaction check",
 					slog.String("err", err.Error()),
 					slog.Int("orderId", orderId),
-					slog.String("address", payment.Payee.String),
+					slog.Any("address", payment),
 				)
 			}
 			if payment.IsTransactionDone {
@@ -319,90 +325,100 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 
 	for _, tx := range transactions.Data {
 
-		// blockTimestamp := time.Unix(0, tx.BlockTimestamp*int64(time.Millisecond)).UTC()
+		blockTimestamp := time.Unix(0, tx.BlockTimestamp*int64(time.Millisecond)).UTC()
 
-		// slog.Default().Debug("Checking transaction",
-		// 	slog.Bool("blockTimestamp.After(payment.ModifiedAt)", blockTimestamp.After(payment.ModifiedAt)),
-		// )
-
-		// if blockTimestamp.After(payment.ModifiedAt) {
-
-		if tx.TokenInfo.Address != p.c.ContractAddress {
-			slog.Default().Debug("Skipping transaction",
-				slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
-				slog.String("p.c.ContractAddress", p.c.ContractAddress),
-			)
-			continue // Skip this transaction if it's not a selected coin transaction.
-		}
-
-		amount, err := decimal.NewFromString(tx.Value)
-		if err != nil {
-			slog.Default().Error("Error parsing transaction amount",
-				slog.String("tx.Value", tx.Value),
-				slog.String("err", err.Error()),
-			)
-			continue // Skip this transaction if the amount cannot be parsed.
-		}
-
-		// Convert payment.TransactionAmount to the same scale as blockchain amount
-		// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
-
-		slog.Default().Debug("Checking transaction amount",
-			slog.String("payment.TransactionAmountPaymentCurrency", payment.TransactionAmountPaymentCurrency.String()),
-			slog.String("amount", amount.String()),
-			slog.Any("equal", amount.Equal(payment.TransactionAmountPaymentCurrency)),
+		slog.Default().Debug("Checking transaction",
+			slog.Any("blockTimestamp", blockTimestamp.Format(time.UnixDate)),
+			slog.Any("now", time.Now().UTC().Format(time.UnixDate)),
+			slog.Any("payment.ModifiedAt", payment.ModifiedAt.UTC().Format(time.UnixDate)),
 		)
 
-		if amount.Equal(payment.TransactionAmountPaymentCurrency) {
+		//TODO: check if the transaction is recent
+		if blockTimestamp.After(payment.ModifiedAt.UTC().Add(-1 * time.Minute)) {
 
-			slog.Default().Info("Transaction found",
-				slog.String("tx.TransactionID", tx.TransactionID),
-				slog.String("tx.From", tx.From),
-				slog.String("tx.To", tx.To),
-				slog.String("tx.Value", tx.Value),
-				slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
-				slog.String("tx.TokenInfo.Decimals", fmt.Sprintf("%d", tx.TokenInfo.Decimals)),
+			if tx.TokenInfo.Address != p.c.ContractAddress {
+				slog.Default().Debug("Skipping transaction",
+					slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
+					slog.String("p.c.ContractAddress", p.c.ContractAddress),
+				)
+				continue // Skip this transaction if it's not a selected coin transaction.
+			}
+
+			amount, err := decimal.NewFromString(tx.Value)
+			if err != nil {
+				slog.Default().Error("Error parsing transaction amount",
+					slog.String("tx.Value", tx.Value),
+					slog.String("err", err.Error()),
+				)
+				continue // Skip this transaction if the amount cannot be parsed.
+			}
+
+			// Convert payment.TransactionAmount to the same scale as blockchain amount
+			// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
+
+			slog.Default().Debug("Checking transaction amount",
+				slog.String("payment.TransactionAmountPaymentCurrency", payment.TransactionAmountPaymentCurrency.String()),
+				slog.String("amount", amount.String()),
+				slog.Any("equal", amount.Equal(payment.TransactionAmountPaymentCurrency)),
 			)
-			// TODO: in transaction OrderPaymentDone + freeAddress
-			payment.TransactionID = sql.NullString{
-				String: tx.TransactionID,
-				Valid:  true,
-			}
-			payment.Payee = sql.NullString{
-				String: tx.To,
-				Valid:  true,
-			}
-			payment.Payer = sql.NullString{
-				String: tx.From,
-				Valid:  true,
-			}
 
-			payment.IsTransactionDone = true
-			payment, err = p.rep.Order().OrderPaymentDone(ctx, orderId, payment)
-			if err != nil {
-				return nil, fmt.Errorf("can't update order payment done: %w", err)
-			} else {
-				slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
-			}
-			err := p.freeAddress(orderId)
-			if err != nil {
-				return nil, fmt.Errorf("can't free address: %w", err)
-			}
+			if amount.Equal(payment.TransactionAmountPaymentCurrency) {
 
-			of, err := p.rep.Order().GetOrderById(ctx, orderId)
-			if err != nil {
-				return nil, fmt.Errorf("can't get order by id: %w", err)
-			}
+				slog.Default().Info("Transaction found",
+					slog.String("tx.TransactionID", tx.TransactionID),
+					slog.String("tx.From", tx.From),
+					slog.String("tx.To", tx.To),
+					slog.String("tx.Value", tx.Value),
+					slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
+					slog.String("tx.TokenInfo.Decimals", fmt.Sprintf("%d", tx.TokenInfo.Decimals)),
+				)
+				// TODO: in transaction OrderPaymentDone + freeAddress
+				payment.TransactionID = sql.NullString{
+					String: tx.TransactionID,
+					Valid:  true,
+				}
+				payment.Payee = sql.NullString{
+					String: tx.To,
+					Valid:  true,
+				}
+				payment.Payer = sql.NullString{
+					String: tx.From,
+					Valid:  true,
+				}
 
-			orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
-			err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
-			if err != nil {
-				return nil, fmt.Errorf("can't send order confirmation: %w", err)
-			}
+				payment.IsTransactionDone = true
+				payment, err = p.rep.Order().OrderPaymentDone(ctx, orderId, payment)
+				if err != nil {
+					if mysqlErr, ok := err.(*mysql.MySQLError); ok {
+						if mysqlErr.Number == 1062 {
+							fmt.Println("Duplicate entry detected")
+						} else {
+							fmt.Printf("An error occurred: %v\n", err)
+						}
+					}
+					return nil, fmt.Errorf("can't update order payment done: %w", err)
+				} else {
+					slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
+				}
+				err := p.freeAddress(orderId)
+				if err != nil {
+					return nil, fmt.Errorf("can't free address: %w", err)
+				}
 
-			return payment, nil // Exit as the payment is successfully processed.
+				of, err := p.rep.Order().GetOrderById(ctx, orderId)
+				if err != nil {
+					return nil, fmt.Errorf("can't get order by id: %w", err)
+				}
+
+				orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
+				err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
+				if err != nil {
+					return nil, fmt.Errorf("can't send order confirmation: %w", err)
+				}
+
+				return payment, nil // Exit as the payment is successfully processed.
+			}
 		}
-		// }
 	}
 
 	return payment, nil // Return nil if no suitable transaction was found.
