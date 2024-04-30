@@ -80,7 +80,7 @@ type (
 		CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error)
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderId, error)
-		ExpireOrderPayment(ctx context.Context, orderId int) error
+		ExpireOrderPayment(ctx context.Context, orderId int) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) (*entity.Payment, error)
 		RefundOrder(ctx context.Context, orderId int) error
 		DeliveredOrder(ctx context.Context, orderId int) error
@@ -89,6 +89,7 @@ type (
 
 	CryptoInvoice interface {
 		GetOrderInvoice(ctx context.Context, orderId int) (*entity.PaymentInsert, time.Time, error)
+		CancelMonitorPayment(orderId int) error
 		CheckForTransactions(ctx context.Context, orderId int, payment *entity.Payment) (*entity.Payment, error)
 	}
 
