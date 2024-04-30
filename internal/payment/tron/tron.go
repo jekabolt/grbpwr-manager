@@ -233,7 +233,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 		slog.Default().ErrorContext(ctx, "Error during initial transaction check",
 			slog.String("err", err.Error()),
 			slog.Int("orderId", orderId),
-			slog.String("address", payment.Payee.String),
+			slog.Any("payment", payment),
 		)
 	}
 
@@ -348,7 +348,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 		// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
 
 		slog.Default().Debug("Checking transaction amount",
-			slog.String("payment.TransactionAmountPaymentCurrenc", payment.TransactionAmountPaymentCurrency.String()),
+			slog.String("payment.TransactionAmountPaymentCurrency", payment.TransactionAmountPaymentCurrency.String()),
 			slog.String("amount", amount.String()),
 			slog.Any("equal", amount.Equal(payment.TransactionAmountPaymentCurrency)),
 		)
