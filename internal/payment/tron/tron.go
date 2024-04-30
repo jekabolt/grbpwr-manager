@@ -129,6 +129,7 @@ func (p *Processor) freeAddress(oid int) error {
 	defer p.mu.Unlock()
 
 	for address, oid := range p.addrs {
+		// TODO:
 		if oid == oid {
 			p.addrs[address] = 0
 			return nil
@@ -184,12 +185,19 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderId int) (*entity.P
 
 	slog.Default().InfoContext(ctx, "Total USD", slog.String("totalUSD", totalUSD.String()))
 	// TODO: token decimals to config
-	payment.TransactionAmountPaymentCurrency = convertToBlockchainFormat(totalUSD, 6)
+
+	totalBlockchainValue := convertToBlockchainFormat(totalUSD, 6)
+	slog.Default().InfoContext(ctx, "Total USD",
+		slog.String("totalUSD", totalUSD.String()),
+		slog.String("totalUSDBlockchain", totalBlockchainValue.String()),
+	)
+
+	payment.TransactionAmountPaymentCurrency = totalBlockchainValue
 	payment.TransactionAmount = of.Order.TotalPrice
 
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderId, totalUSD)
+		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderId, totalBlockchainValue)
 		if err != nil {
 			return fmt.Errorf("can't update total payment currency: %w", err)
 		}
@@ -248,6 +256,10 @@ func (p *Processor) monitorPayment(ctx context.Context, orderId int, payment *en
 			slog.Default().DebugContext(ctx, "context cancelled, stopping payment monitoring")
 			return
 		case <-ticker.C:
+			slog.Default().DebugContext(ctx, "checking for transactions",
+				slog.Int("orderId", orderId),
+				slog.String("address", payment.Payee.String),
+			)
 			payment, err = p.CheckForTransactions(ctx, orderId, payment)
 			if err != nil {
 				slog.Default().ErrorContext(ctx, "error during transaction check",
@@ -299,66 +311,98 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderId int, payme
 		return nil, fmt.Errorf("can't get address transactions: %w", err)
 	}
 
+	slog.Default().Debug("Checking for transactions",
+		slog.Int("orderId", orderId),
+		slog.String("address", payment.Payee.String),
+		slog.Any("txs", transactions),
+	)
+
 	for _, tx := range transactions.Data {
 
-		blockTimestamp := time.Unix(0, tx.BlockTimestamp*int64(time.Millisecond)).UTC()
+		// blockTimestamp := time.Unix(0, tx.BlockTimestamp*int64(time.Millisecond)).UTC()
 
-		if blockTimestamp.After(payment.ModifiedAt) {
+		// slog.Default().Debug("Checking transaction",
+		// 	slog.Bool("blockTimestamp.After(payment.ModifiedAt)", blockTimestamp.After(payment.ModifiedAt)),
+		// )
 
-			if tx.TokenInfo.Address != p.c.ContractAddress {
-				continue // Skip this transaction if it's not a selected coin transaction.
-			}
+		// if blockTimestamp.After(payment.ModifiedAt) {
 
-			amount, err := decimal.NewFromString(tx.Value)
-			if err != nil {
-				continue // Skip this transaction if the amount cannot be parsed.
-			}
-
-			// Convert payment.TransactionAmount to the same scale as blockchain amount
-			// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
-			paymentAmountInBlockchainFormat := convertToBlockchainFormat(payment.TransactionAmount, tx.TokenInfo.Decimals)
-
-			if amount.Equal(paymentAmountInBlockchainFormat) {
-				// TODO: in transaction OrderPaymentDone + freeAddress
-				payment.TransactionID = sql.NullString{
-					String: tx.TransactionID,
-					Valid:  true,
-				}
-				payment.Payee = sql.NullString{
-					String: tx.To,
-					Valid:  true,
-				}
-				payment.Payer = sql.NullString{
-					String: tx.From,
-					Valid:  true,
-				}
-
-				payment.IsTransactionDone = true
-				payment, err = p.rep.Order().OrderPaymentDone(ctx, orderId, payment)
-				if err != nil {
-					return nil, fmt.Errorf("can't update order payment done: %w", err)
-				} else {
-					slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
-				}
-				err := p.freeAddress(orderId)
-				if err != nil {
-					return nil, fmt.Errorf("can't free address: %w", err)
-				}
-
-				of, err := p.rep.Order().GetOrderById(ctx, orderId)
-				if err != nil {
-					return nil, fmt.Errorf("can't get order by id: %w", err)
-				}
-
-				orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
-				err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
-				if err != nil {
-					return nil, fmt.Errorf("can't send order confirmation: %w", err)
-				}
-
-				return payment, nil // Exit as the payment is successfully processed.
-			}
+		if tx.TokenInfo.Address != p.c.ContractAddress {
+			slog.Default().Debug("Skipping transaction",
+				slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
+				slog.String("p.c.ContractAddress", p.c.ContractAddress),
+			)
+			continue // Skip this transaction if it's not a selected coin transaction.
 		}
+
+		amount, err := decimal.NewFromString(tx.Value)
+		if err != nil {
+			slog.Default().Error("Error parsing transaction amount",
+				slog.String("tx.Value", tx.Value),
+				slog.String("err", err.Error()),
+			)
+			continue // Skip this transaction if the amount cannot be parsed.
+		}
+
+		// Convert payment.TransactionAmount to the same scale as blockchain amount
+		// Assuming payment.TransactionAmount is in USD and needs to be converted to the format with 6 decimals
+
+		slog.Default().Debug("Checking transaction amount",
+			slog.String("payment.TransactionAmountPaymentCurrenc", payment.TransactionAmountPaymentCurrency.String()),
+			slog.String("amount", amount.String()),
+			slog.Any("equal", amount.Equal(payment.TransactionAmountPaymentCurrency)),
+		)
+
+		if amount.Equal(payment.TransactionAmountPaymentCurrency) {
+
+			slog.Default().Info("Transaction found",
+				slog.String("tx.TransactionID", tx.TransactionID),
+				slog.String("tx.From", tx.From),
+				slog.String("tx.To", tx.To),
+				slog.String("tx.Value", tx.Value),
+				slog.String("tx.TokenInfo.Address", tx.TokenInfo.Address),
+				slog.String("tx.TokenInfo.Decimals", fmt.Sprintf("%d", tx.TokenInfo.Decimals)),
+			)
+			// TODO: in transaction OrderPaymentDone + freeAddress
+			payment.TransactionID = sql.NullString{
+				String: tx.TransactionID,
+				Valid:  true,
+			}
+			payment.Payee = sql.NullString{
+				String: tx.To,
+				Valid:  true,
+			}
+			payment.Payer = sql.NullString{
+				String: tx.From,
+				Valid:  true,
+			}
+
+			payment.IsTransactionDone = true
+			payment, err = p.rep.Order().OrderPaymentDone(ctx, orderId, payment)
+			if err != nil {
+				return nil, fmt.Errorf("can't update order payment done: %w", err)
+			} else {
+				slog.Default().InfoContext(ctx, "Order marked as paid", slog.Int("orderId", orderId))
+			}
+			err := p.freeAddress(orderId)
+			if err != nil {
+				return nil, fmt.Errorf("can't free address: %w", err)
+			}
+
+			of, err := p.rep.Order().GetOrderById(ctx, orderId)
+			if err != nil {
+				return nil, fmt.Errorf("can't get order by id: %w", err)
+			}
+
+			orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
+			err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
+			if err != nil {
+				return nil, fmt.Errorf("can't send order confirmation: %w", err)
+			}
+
+			return payment, nil // Exit as the payment is successfully processed.
+		}
+		// }
 	}
 
 	return payment, nil // Return nil if no suitable transaction was found.
