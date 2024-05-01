@@ -98,7 +98,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, a.r, entity.USDT_TRON)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor"
+		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor",
 			slog.String("err", err.Error()),
 		)
 		return err
