@@ -42,7 +42,7 @@ func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repos
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 
-	ser, err := m.buildSendMailRequest(to, NewSubscriber, orderDetails)
+	ser, err := m.buildSendMailRequest(to, OrderConfirmed, orderDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order confirmation : %w", err)
 	}
@@ -55,7 +55,7 @@ func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repos
 	if orderDetails.OrderID == "" || orderDetails.Name == "" {
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
-	ser, err := m.buildSendMailRequest(to, NewSubscriber, orderDetails)
+	ser, err := m.buildSendMailRequest(to, OrderCancelled, orderDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order cancellation: %w", err)
 	}
@@ -65,7 +65,7 @@ func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repos
 
 // SendOrderShipped sends an order shipped email.
 func (m *Mailer) SendOrderShipped(ctx context.Context, rep dependency.Repository, to string, shipmentDetails *dto.OrderShipment) error {
-	ser, err := m.buildSendMailRequest(to, NewSubscriber, shipmentDetails)
+	ser, err := m.buildSendMailRequest(to, OrderShipped, shipmentDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order shipped: %w", err)
 	}
@@ -79,7 +79,7 @@ func (m *Mailer) SendPromoCode(ctx context.Context, rep dependency.Repository, t
 		return fmt.Errorf("incomplete promo code details: %+v", promoDetails)
 	}
 
-	ser, err := m.buildSendMailRequest(to, NewSubscriber, promoDetails)
+	ser, err := m.buildSendMailRequest(to, PromoCode, promoDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for promo: %w", err)
 	}
