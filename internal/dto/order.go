@@ -295,10 +295,11 @@ func ConvertEntityBuyerToPbBuyer(b *entity.Buyer) (*pb_common.Buyer, error) {
 		BillingAddressId:  int32(b.BillingAddressID),
 		ShippingAddressId: int32(b.ShippingAddressID),
 		BuyerInsert: &pb_common.BuyerInsert{
-			FirstName: b.FirstName,
-			LastName:  b.LastName,
-			Email:     b.Email,
-			Phone:     b.Phone,
+			FirstName:          b.FirstName,
+			LastName:           b.LastName,
+			Email:              b.Email,
+			Phone:              b.Phone,
+			ReceivePromoEmails: b.ReceivePromoEmails,
 		},
 	}, nil
 }

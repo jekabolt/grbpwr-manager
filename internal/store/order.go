@@ -1487,16 +1487,18 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 
 	query := `
 	SELECT 
-		customer_order.id as order_id,
-		buyer.id,
-		buyer.first_name,
-		buyer.last_name,
-		buyer.email,
-		buyer.phone,
-		buyer.billing_address_id,
-		buyer.shipping_address_id
+		customer_order.id AS order_id,
+		buyer.id AS id,
+		buyer.first_name AS first_name,
+		buyer.last_name AS last_name,
+		buyer.email AS email,
+		buyer.phone AS phone,
+		buyer.billing_address_id AS billing_address_id,
+		buyer.shipping_address_id AS shipping_address_id,
+		subscriber.receive_promo_emails AS receive_promo_emails
 	FROM buyer
 	JOIN customer_order ON buyer.id = customer_order.buyer_id
+	LEFT JOIN subscriber ON buyer.email = subscriber.email
 	WHERE customer_order.id IN (:orderIds)`
 
 	query, params, err := MakeQuery(query, map[string]interface{}{
@@ -1515,25 +1517,17 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 	buyers := make(map[int]*entity.Buyer)
 
 	for rows.Next() {
-		var buyer entity.Buyer
-		var orderId int
+		type buyerOrderId struct {
+			OrderID int `db:"order_id"`
+			*entity.Buyer
+		}
+		var buyerRow buyerOrderId
 
-		// TODO: use scan struct
-		err := rows.Scan(
-			&orderId,
-			&buyer.ID,
-			&buyer.FirstName,
-			&buyer.LastName,
-			&buyer.Email,
-			&buyer.Phone,
-			&buyer.BillingAddressID,
-			&buyer.ShippingAddressID,
-		)
+		err := rows.StructScan(&buyerRow)
 		if err != nil {
 			return nil, err
 		}
-
-		buyers[orderId] = &buyer
+		buyers[buyerRow.OrderID] = buyerRow.Buyer
 	}
 
 	if err := rows.Err(); err != nil {
