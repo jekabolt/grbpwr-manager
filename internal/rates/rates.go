@@ -126,12 +126,6 @@ func (c *Client) ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount d
 	if !ok {
 		return decimal.Zero, fmt.Errorf("unsupported currency: %s", currencyTo)
 	}
-
-	slog.Default().Info("Converting from base currency",
-		slog.String("currency", currencyTo.String()),
-		slog.String("amount", amount.String()),
-		slog.String("rate", rate.Rate.String()),
-	)
 	return amount.Mul(rate.Rate), nil
 }
 

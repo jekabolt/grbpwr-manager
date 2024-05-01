@@ -86,6 +86,7 @@ func ConvertEntityOrderToPbCommonOrder(eOrder *entity.Order) (*pb_common.Order, 
 
 	pbOrder := &pb_common.Order{
 		Id:            int32(eOrder.ID),
+		Uuid:          eOrder.UUID,
 		BuyerId:       int32(eOrder.BuyerID),
 		Placed:        timestamppb.New(eOrder.Placed),
 		Modified:      timestamppb.New(eOrder.Modified),
