@@ -47,18 +47,24 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.db, err = store.New(ctx, a.c.DB)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't connect to mysql")
+		slog.Default().ErrorContext(ctx, "couldn't connect to mysql",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't connect to mailer")
+		slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 	err = a.ma.Start(ctx)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start mailer worker")
+		slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 
@@ -74,12 +80,17 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't init bucket",
+			slog.String("err", err.Error()),
+		)
 		return fmt.Errorf("cannot init bucket %v", err.Error())
 	}
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new auth server")
+		slog.Default().ErrorContext(ctx, "failed create new auth server",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 
@@ -87,15 +98,19 @@ func (a *App) Start(ctx context.Context) error {
 
 	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, a.r, entity.USDT_TRON)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor")
+		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor"
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 
-	tgShasta := trongrid.New(&a.c.Trongrid)
+	tgShasta := trongrid.New(&a.c.TrongridShasta)
 
 	usdtTronTestnet, err := tron.New(ctx, &a.c.USDTTronShastaTestnetPayment, a.db, a.ma, tgShasta, a.r, entity.USDT_TRON_TEST)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor")
+		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor",
+			slog.String("err", err.Error()),
+		)
 		return err
 	}
 
@@ -115,7 +130,6 @@ func (a *App) Start(ctx context.Context) error {
 
 // Stop stops the application and waits for all services to exit
 func (a *App) Stop(ctx context.Context) {
-
 	a.db.Close()
 	close(a.done)
 }

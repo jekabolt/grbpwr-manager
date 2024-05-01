@@ -93,7 +93,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 		tpl, err := template.ParseFS(fs, page)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "get swagger template error [%v]", err.Error())
+			slog.Default().ErrorContext(ctx, "get swagger template error",
+				slog.String("error", err.Error()),
+			)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -236,7 +238,9 @@ func (s *Server) Start(ctx context.Context,
 		if err == http.ErrServerClosed {
 			slog.Default().InfoContext(ctx, "http server returned")
 		} else {
-			slog.Default().ErrorContext(ctx, "http server exited with an error [%v]", err.Error())
+			slog.Default().ErrorContext(ctx, "http server exited with an error",
+				slog.String("error", err.Error()),
+			)
 		}
 		cancel()
 		close(hsDone)
