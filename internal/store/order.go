@@ -861,16 +861,6 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderUUID string, it
 	return orderFull, err
 }
 
-func getOrderTotalPrice(ctx context.Context, rep dependency.Repository, orderId int) (decimal.Decimal, error) {
-	query := fmt.Sprintf(`SELECT total_price FROM customer_order WHERE id = %d`, orderId)
-	var total decimal.Decimal
-	err := rep.DB().GetContext(ctx, &total, query)
-	if err != nil {
-		return decimal.Zero, fmt.Errorf("can't get order total price: %w", err)
-	}
-	return total, nil
-}
-
 func updateOrderShipping(ctx context.Context, rep dependency.Repository, orderId int, newShipmentCarrier *entity.ShipmentCarrier) error {
 	query := `UPDATE shipment SET carrier_id = :carrierId WHERE id = (SELECT shipment_id FROM customer_order WHERE id = :orderId)`
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
@@ -1801,6 +1791,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	email string,
 	statusId,
 	paymentMethodId,
+	orderId int,
 	lim,
 	off int,
 	of entity.OrderFactor) ([]entity.Order, error) {
@@ -1818,6 +1809,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 			(:status = 0 OR co.order_status_id = :status) 
 			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
 			AND (:email = '' OR b.email = :email)
+			AND (:orderId = 0 OR co.id = :orderId)
 		ORDER BY 
 			co.modified %s
 		LIMIT 
@@ -1830,6 +1822,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 		"email":         email,
 		"status":        statusId,
 		"paymentMethod": paymentMethodId,
+		"orderId":       orderId,
 		"limit":         lim,
 		"offset":        off,
 	}
@@ -2120,17 +2113,6 @@ func removePromo(ctx context.Context, rep dependency.Repository, orderId int) er
 	})
 	if err != nil {
 		return fmt.Errorf("can't remove promo: %w", err)
-	}
-	return nil
-}
-
-func setZeroTotal(ctx context.Context, rep dependency.Repository, orderId int) error {
-	query := `UPDATE customer_order SET total_price = 0 WHERE id = :orderId`
-	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"orderId": orderId,
-	})
-	if err != nil {
-		return fmt.Errorf("can't set zero total: %w", err)
 	}
 	return nil
 }
