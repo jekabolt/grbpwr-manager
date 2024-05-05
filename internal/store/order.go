@@ -144,7 +144,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 	idsSQL := strings.Join(productIDs, ", ")
 
 	query := fmt.Sprintf(`
-		SELECT SUM(price * (1 - sale_percentage / 100) * CASE %s END) AS total_amount
+		SELECT SUM(price * (1 - COALESCE(sale_percentage, 0) / 100) * CASE %s END) AS total_amount
 		FROM product
 		WHERE id IN (%s)
 	`, caseSQL, idsSQL)
@@ -152,7 +152,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 	var totalAmount decimal.Decimal
 	err := rep.DB().GetContext(ctx, &totalAmount, query)
 	if err != nil {
-		return decimal.Zero, fmt.Errorf("error while calculating total amount: %w", err)
+		return decimal.Zero, err
 	}
 
 	return totalAmount, nil
@@ -1180,6 +1180,9 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 
 		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't validate order items",
+				slog.String("err", err.Error()),
+			)
 			err := cancelOrder(ctx, rep, orderFull)
 			if err != nil {
 				return fmt.Errorf("can't cancel order : %w", err)
@@ -1972,7 +1975,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 
 		// set payment to initial state
 		pi := &entity.PaymentInsert{
-			PaymentMethodID:                  payment.ID,
+			PaymentMethodID:                  payment.PaymentMethodID,
 			TransactionID:                    sql.NullString{Valid: false},
 			TransactionAmount:                decimal.Zero,
 			TransactionAmountPaymentCurrency: decimal.Zero,

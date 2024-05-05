@@ -113,6 +113,8 @@ func (p *Processor) getFreeAddress() (string, error) {
 			return addr, nil
 		}
 	}
+
+	slog.Default().Debug("addrs", slog.Any("addrs", p.addrs))
 	return "", fmt.Errorf("no free address")
 }
 

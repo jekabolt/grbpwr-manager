@@ -197,6 +197,12 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 	pi := &entity.ProductFull{}
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
+		if !prd.Product.SalePercentage.Valid || prd.Product.SalePercentage.Decimal.LessThan(decimal.Zero) {
+			prd.Product.SalePercentage = decimal.NullDecimal{
+				Valid:   true,
+				Decimal: decimal.NewFromFloat(0),
+			}
+		}
 		pi.Product, err = insertProduct(ctx, rep, prd.Product)
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
@@ -227,6 +233,12 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 }
 
 func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error {
+	if !prd.SalePercentage.Valid || prd.SalePercentage.Decimal.LessThan(decimal.Zero) {
+		prd.SalePercentage = decimal.NullDecimal{
+			Valid:   true,
+			Decimal: decimal.NewFromFloat(0),
+		}
+	}
 	query := `
 	UPDATE product 
 	SET 
