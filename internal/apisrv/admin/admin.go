@@ -16,10 +16,8 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server implements handlers for admin.
@@ -493,219 +491,6 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 	}, nil
 }
 
-func (s *Server) CreateOrder(ctx context.Context, req *pb_admin.CreateOrderRequest) (*pb_admin.CreateOrderResponse, error) {
-	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
-
-	_, err := v.ValidateStruct(orderNew)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "validation order create request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
-	}
-
-	order, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't create order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't create order")
-	}
-
-	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-
-	return &pb_admin.CreateOrderResponse{
-		Order: o,
-	}, nil
-}
-
-func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_admin.ValidateOrderItemsInsertRequest) (*pb_admin.ValidateOrderItemsInsertResponse, error) {
-	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
-	for _, i := range req.Items {
-		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
-		}
-		itemsToInsert = append(itemsToInsert, *oii)
-	}
-
-	oii, subtotal, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't validate order items insert",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
-	}
-
-	pbOii := make([]*pb_common.OrderItemInsert, 0, len(oii))
-	for _, i := range oii {
-		pbOii = append(pbOii, dto.ConvertEntityOrderItemInsertToPb(&i))
-	}
-
-	return &pb_admin.ValidateOrderItemsInsertResponse{
-		Items:    pbOii,
-		Subtotal: &pb_decimal.Decimal{Value: subtotal.String()},
-	}, nil
-
-}
-func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_admin.ValidateOrderByUUIDRequest) (*pb_admin.ValidateOrderByUUIDResponse, error) {
-	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.Uuid)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't validate order by uuid")
-	}
-
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_admin.ValidateOrderByUUIDResponse{
-		Order: of,
-	}, nil
-}
-
-func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_admin.ApplyPromoCodeRequest) (*pb_admin.ApplyPromoCodeResponse, error) {
-	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't apply promo code",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't apply promo code")
-	}
-
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_admin.ApplyPromoCodeResponse{
-		Order: of,
-	}, nil
-}
-
-func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_admin.UpdateOrderItemsRequest) (*pb_admin.UpdateOrderItemsResponse, error) {
-	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
-	for _, i := range req.Items {
-		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
-		}
-		itemsToInsert = append(itemsToInsert, *oii)
-	}
-
-	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update order items",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update order items")
-	}
-
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_admin.UpdateOrderItemsResponse{
-		Order: of,
-	}, nil
-}
-
-func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_admin.UpdateOrderShippingCarrierRequest) (*pb_admin.UpdateOrderShippingCarrierResponse, error) {
-	orderFull, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, int(req.OrderId), int(req.ShippingCarrierId))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update order shipping carrier",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
-	}
-
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_admin.UpdateOrderShippingCarrierResponse{
-		Order: of,
-	}, nil
-}
-
-func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_admin.GetOrderInvoiceRequest) (*pb_admin.GetOrderInvoiceResponse, error) {
-
-	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
-
-	switch pm {
-	case entity.USDT_TRON:
-		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order invoice",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get order invoice")
-		}
-
-		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
-		}
-
-		return &pb_admin.GetOrderInvoiceResponse{
-			Payment:   pbPi,
-			ExpiredAt: timestamppb.New(expire),
-		}, nil
-	case entity.USDT_TRON_TEST:
-		pi, expire, err := s.usdtTronTestnet.GetOrderInvoice(ctx, int(req.OrderId))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order invoice",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get order invoice")
-		}
-
-		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
-		}
-
-		return &pb_admin.GetOrderInvoiceResponse{
-			Payment:   pbPi,
-			ExpiredAt: timestamppb.New(expire),
-		}, nil
-	default:
-		slog.Default().ErrorContext(ctx, "payment method unimplemented")
-		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
-	}
-}
-
 func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
 	sh := dto.ConvertPbShipmentToEntityShipment(req.ShippingInfo)
 	if sh.TrackingCode.String == "" {
@@ -719,7 +504,7 @@ func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShi
 		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
 	}
 
-	err := s.repo.Order().UpdateShippingInfo(ctx, int(req.OrderId), sh)
+	err := s.repo.Order().UpdateShippingInfo(ctx, req.OrderUuid, sh)
 
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update shipping info",
@@ -736,7 +521,7 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
 
-	obs, err := s.repo.Order().SetTrackingNumber(ctx, int(req.OrderId), req.TrackingCode)
+	obs, err := s.repo.Order().SetTrackingNumber(ctx, req.OrderUuid, req.TrackingCode)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update tracking number info",
 			slog.String("err", err.Error()),
@@ -764,8 +549,8 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
 
-func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdRequest) (*pb_admin.GetOrderByIdResponse, error) {
-	order, err := s.repo.Order().GetOrderById(ctx, int(req.OrderId))
+func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUIDRequest) (*pb_admin.GetOrderByUUIDResponse, error) {
+	order, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order by id",
 			slog.String("err", err.Error()),
@@ -780,7 +565,7 @@ func (s *Server) GetOrderById(ctx context.Context, req *pb_admin.GetOrderByIdReq
 		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
 	}
 
-	return &pb_admin.GetOrderByIdResponse{
+	return &pb_admin.GetOrderByUUIDResponse{
 		Order: o,
 	}, nil
 }
@@ -829,7 +614,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 }
 
 func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
-	err := s.repo.Order().RefundOrder(ctx, int(req.OrderId))
+	err := s.repo.Order().RefundOrder(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),
@@ -840,7 +625,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 }
 
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
-	err := s.repo.Order().DeliveredOrder(ctx, int(req.OrderId))
+	err := s.repo.Order().DeliveredOrder(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't mark order as delivered",
 			slog.String("err", err.Error()),
@@ -851,7 +636,7 @@ func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrde
 }
 
 func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderRequest) (*pb_admin.CancelOrderResponse, error) {
-	err := s.repo.Order().CancelOrder(ctx, int(req.OrderId))
+	err := s.repo.Order().CancelOrder(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't cancel order",
 			slog.String("err", err.Error()),

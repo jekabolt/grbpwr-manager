@@ -13,7 +13,6 @@ import "common/product.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
 import "google/api/annotations.proto";
-import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
@@ -183,64 +182,10 @@ service AdminService {
 
   // ORDER MANAGER
 
-  // Creates a new order
-  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/create"
-      body: "*"
-    };
-  }
-
-  rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/validate-items"
-      body: "*"
-    };
-  }
-
-  rpc ValidateOrderByUUID(ValidateOrderByUUIDRequest) returns (ValidateOrderByUUIDResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/validate/{uuid}"
-      body: "*"
-    };
-  }
-
-  // Applies a promo code to an order
-  rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/apply-promo"
-      body: "*"
-    };
-  }
-
-  // Updates items in an existing order
-  rpc UpdateOrderItems(UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/update-items"
-      body: "*"
-    };
-  }
-
-  // Updates the shipping carrier for an order
-  rpc UpdateOrderShippingCarrier(UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/update-shipping-carrier"
-      body: "*"
-    };
-  }
-
-  // Retrieves an invoice for an order
-  rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/order/{order_id}/{payment_method}/invoice"
-      body: "*"
-    };
-  }
-
   // Updates shipping information for an order
   rpc SetTrackingNumber(SetTrackingNumberRequest) returns (SetTrackingNumberResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/set-tracking-number"
+      post: "/api/admin/orders/{order_uuid}/set-tracking-number"
       body: "*"
     };
   }
@@ -248,14 +193,14 @@ service AdminService {
   // Updates shipping information for an order
   rpc UpdateShippingInfo(UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/update-shipping-info"
+      post: "/api/admin/orders/{order_uuid}/update-shipping-info"
       body: "*"
     };
   }
 
   // Retrieves an order by its ID
-  rpc GetOrderById(GetOrderByIdRequest) returns (GetOrderByIdResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/{order_id}"};
+  rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/{order_uuid}"};
   }
 
   // Retrieves orders by their status payment method or email
@@ -269,7 +214,7 @@ service AdminService {
   // Processes a refund for an order
   rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/refund"
+      post: "/api/admin/orders/{order_uuid}/refund"
       body: "*"
     };
   }
@@ -277,7 +222,7 @@ service AdminService {
   // Marks an order as delivered
   rpc DeliveredOrder(DeliveredOrderRequest) returns (DeliveredOrderResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/delivered"
+      post: "/api/admin/orders/{order_uuid}/delivered"
       body: "*"
     };
   }
@@ -285,7 +230,7 @@ service AdminService {
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/{order_id}/cancel"
+      post: "/api/admin/orders/{order_uuid}/cancel"
       body: "*"
     };
   }
@@ -542,87 +487,25 @@ message DisablePromoCodeResponse {}
 
 // ORDER MANAGER
 
-message CreateOrderRequest {
-  common.OrderNew order = 1;
-}
-
-message CreateOrderResponse {
-  common.Order order = 1;
-}
-
-message ValidateOrderItemsInsertRequest {
-  repeated common.OrderItemInsert items = 1;
-}
-
-message ValidateOrderItemsInsertResponse {
-  repeated common.OrderItemInsert items = 1;
-  google.type.Decimal subtotal = 2;
-}
-
-message ValidateOrderByUUIDRequest {
-  string uuid = 1;
-}
-
-message ValidateOrderByUUIDResponse {
-  common.OrderFull order = 1;
-}
-
-message ApplyPromoCodeRequest {
-  int32 order_id = 1;
-  string promo_code = 2;
-}
-
-message ApplyPromoCodeResponse {
-  common.OrderFull order = 1;
-}
-
-message UpdateOrderItemsRequest {
-  int32 order_id = 1;
-  repeated common.OrderItemInsert items = 2;
-}
-
-message UpdateOrderItemsResponse {
-  common.OrderFull order = 1;
-}
-
-message UpdateOrderShippingCarrierRequest {
-  int32 order_id = 1;
-  int32 shipping_carrier_id = 2;
-}
-
-message UpdateOrderShippingCarrierResponse {
-  common.OrderFull order = 1;
-}
-
-message GetOrderInvoiceRequest {
-  int32 order_id = 1;
-  common.PaymentMethodNameEnum payment_method = 2;
-}
-
-message GetOrderInvoiceResponse {
-  google.protobuf.Timestamp expired_at = 1;
-  common.PaymentInsert payment = 2;
-}
-
 message UpdateShippingInfoRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   common.Shipment shipping_info = 2;
 }
 
 message UpdateShippingInfoResponse {}
 
 message SetTrackingNumberRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   string tracking_code = 2;
 }
 
 message SetTrackingNumberResponse {}
 
-message GetOrderByIdRequest {
-  int32 order_id = 1;
+message GetOrderByUUIDRequest {
+  string order_uuid = 1;
 }
 
-message GetOrderByIdResponse {
+message GetOrderByUUIDResponse {
   common.OrderFull order = 1;
 }
 
@@ -640,19 +523,19 @@ message ListOrdersResponse {
 }
 
 message RefundOrderRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
 }
 
 message RefundOrderResponse {}
 
 message DeliveredOrderRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
 }
 
 message DeliveredOrderResponse {}
 
 message CancelOrderRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
 }
 
 message CancelOrderResponse {}

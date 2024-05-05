@@ -38,9 +38,17 @@ service FrontendService {
       body: "*"
     };
   }
+
+  rpc UpdateOrderShippingCarrier(UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/{order_uuid}/update-shipping-carrier"
+      body: "*"
+    };
+  }
+
   // Retrieves an order by its ID
   rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
-    option (google.api.http) = {get: "/api/frontend/orders/{uuid}"};
+    option (google.api.http) = {get: "/api/frontend/orders/{order_uuid}"};
   }
 
   rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
@@ -52,7 +60,7 @@ service FrontendService {
 
   rpc ValidateOrderByUUID(ValidateOrderByUUIDRequest) returns (ValidateOrderByUUIDResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/validate/{uuid}"
+      post: "/api/admin/orders/validate/{order_uuid}"
       body: "*"
     };
   }
@@ -60,7 +68,7 @@ service FrontendService {
   // Generate an invoice for the order or return the existing one
   rpc GetOrderInvoice(GetOrderInvoiceRequest) returns (GetOrderInvoiceResponse) {
     option (google.api.http) = {
-      post: "/api/frontend/order/{order_id}/{payment_method}/invoice"
+      post: "/api/frontend/order/{order_uuid}/{payment_method}/invoice"
       body: "*"
     };
   }
@@ -68,7 +76,7 @@ service FrontendService {
   // Cancel an invoice for the order
   rpc CancelOrderInvoice(CancelOrderInvoiceRequest) returns (CancelOrderInvoiceResponse) {
     option (google.api.http) = {
-      post: "/api/frontend/order/{order_id}/invoice/cancel"
+      post: "/api/frontend/order/{order_uuid}/invoice/cancel"
       body: "*"
     };
   }
@@ -159,8 +167,17 @@ message SubmitOrderResponse {
   common.Order order = 1;
 }
 
+message UpdateOrderShippingCarrierRequest {
+  string order_uuid = 1;
+  int32 shipping_carrier_id = 2;
+}
+
+message UpdateOrderShippingCarrierResponse {
+  common.OrderFull order = 1;
+}
+
 message GetOrderByUUIDRequest {
-  string uuid = 1;
+  string order_uuid = 1;
 }
 
 message GetOrderByUUIDResponse {
@@ -177,7 +194,7 @@ message ValidateOrderItemsInsertResponse {
 }
 
 message ValidateOrderByUUIDRequest {
-  string uuid = 1;
+  string order_uuid = 1;
 }
 
 message ValidateOrderByUUIDResponse {
@@ -185,7 +202,7 @@ message ValidateOrderByUUIDResponse {
 }
 
 message GetOrderInvoiceRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   common.PaymentMethodNameEnum payment_method = 2;
 }
 
@@ -195,7 +212,7 @@ message GetOrderInvoiceResponse {
 }
 
 message CancelOrderInvoiceRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
 }
 
 message CancelOrderInvoiceResponse {}
@@ -209,7 +226,7 @@ message CheckCryptoPaymentResponse {
 }
 
 message ApplyPromoCodeRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   string promo_code = 2;
 }
 
@@ -218,7 +235,7 @@ message ApplyPromoCodeResponse {
 }
 
 message UpdateOrderItemsRequest {
-  int32 order_id = 1;
+  string order_uuid = 1;
   repeated common.OrderItemInsert items = 2;
 }
 
