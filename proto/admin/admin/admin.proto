@@ -513,9 +513,10 @@ message ListOrdersRequest {
   common.OrderStatusEnum status = 1;
   common.PaymentMethodNameEnum payment_method = 2;
   string email = 3;
-  int32 limit = 4;
-  int32 offset = 5;
-  common.OrderFactor order_factor = 6;
+  int32 order_id = 4;
+  int32 limit = 5;
+  int32 offset = 6;
+  common.OrderFactor order_factor = 7;
 }
 
 message ListOrdersResponse {

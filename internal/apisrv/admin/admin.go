@@ -586,6 +586,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 		req.Email,
 		int(req.Status),
 		int(req.PaymentMethod),
+		int(req.OrderId),
 		int(req.Limit),
 		int(req.Offset),
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
