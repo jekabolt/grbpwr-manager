@@ -65,32 +65,32 @@ type (
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error)
-		ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
-		ApplyPromoCode(ctx context.Context, orderId int, promoCode string) (*entity.OrderFull, error)
-		UpdateOrderItems(ctx context.Context, orderId int, items []entity.OrderItemInsert) (*entity.OrderFull, error)
-		UpdateOrderShippingCarrier(ctx context.Context, orderId int, shipmentCarrierId int) (*entity.OrderFull, error)
-		InsertOrderInvoice(ctx context.Context, orderId int, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
-		UpdateTotalPaymentCurrency(ctx context.Context, paymentId int, tapc decimal.Decimal) error
-		UpdateShippingInfo(ctx context.Context, orderId int, shipment *entity.Shipment) error
-		SetTrackingNumber(ctx context.Context, orderId int, trackingCode string) (*entity.OrderBuyerShipment, error)
-		GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error)
-		GetPaymentByOrderId(ctx context.Context, orderId int) (*entity.Payment, error)
-		GetOrderFullByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error)
-		GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error)
-		CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error)
+		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
+		ApplyPromoCode(ctx context.Context, orderUUID string, promoCode string) (*entity.OrderFull, error)
+		UpdateOrderItems(ctx context.Context, orderUUID string, items []entity.OrderItemInsert) (*entity.OrderFull, error)
+		UpdateOrderShippingCarrier(ctx context.Context, orderUUID string, shipmentCarrierId int) (*entity.OrderFull, error)
+		InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
+		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
+		UpdateShippingInfo(ctx context.Context, orderUUID string, shipment *entity.Shipment) error
+		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
+		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
+		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
+		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
+		GetOrderByUUID(ctx context.Context, orderUUID string) (*entity.Order, error)
+		CheckPaymentPendingByUUID(ctx context.Context, orderUUID string) (*entity.Payment, *entity.Order, error)
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
-		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderId, error)
-		ExpireOrderPayment(ctx context.Context, orderId int) (*entity.Payment, error)
-		OrderPaymentDone(ctx context.Context, orderId int, p *entity.Payment) (*entity.Payment, error)
-		RefundOrder(ctx context.Context, orderId int) error
-		DeliveredOrder(ctx context.Context, orderId int) error
-		CancelOrder(ctx context.Context, orderId int) error
+		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
+		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
+		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error)
+		RefundOrder(ctx context.Context, orderUUID string) error
+		DeliveredOrder(ctx context.Context, orderUUID string) error
+		CancelOrder(ctx context.Context, orderUUID string) error
 	}
 
 	CryptoInvoice interface {
-		GetOrderInvoice(ctx context.Context, orderId int) (*entity.PaymentInsert, time.Time, error)
-		CancelMonitorPayment(orderId int) error
-		CheckForTransactions(ctx context.Context, orderId int, payment *entity.Payment) (*entity.Payment, error)
+		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
+		CancelMonitorPayment(orderUUID string) error
+		CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error)
 	}
 
 	Trongrid interface {
@@ -231,7 +231,7 @@ type (
 		GetOrderStatusByName(orderStatus entity.OrderStatusName) (entity.OrderStatus, bool)
 
 		GetPaymentMethodById(id int) (*entity.PaymentMethod, bool)
-		GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
+		GetPaymentMethodByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
 		UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error
 
 		GetPromoById(id int) (*entity.PromoCode, bool)
@@ -261,7 +261,7 @@ type (
 	}
 
 	PaymentPool interface {
-		AddPaymentExpiration(ctx context.Context, poid entity.PaymentOrderId) error
+		AddPaymentExpiration(ctx context.Context, poid entity.PaymentOrderUUID) error
 		RemovePaymentExpiration(orderId int) error
 		Start(ctx context.Context) error
 	}

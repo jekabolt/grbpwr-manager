@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"log/slog"
 
@@ -179,8 +180,29 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}, nil
 }
 
+func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_frontend.UpdateOrderShippingCarrierRequest) (*pb_frontend.UpdateOrderShippingCarrierResponse, error) {
+	orderFull, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, req.OrderUuid, int(req.ShippingCarrierId))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't update order shipping carrier",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
+	}
+
+	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	}
+	return &pb_frontend.UpdateOrderShippingCarrierResponse{
+		Order: of,
+	}, nil
+}
+
 func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
-	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.Uuid)
+	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order by uuid",
 			slog.String("err", err.Error()),
@@ -237,7 +259,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 
 }
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.ValidateOrderByUUIDRequest) (*pb_frontend.ValidateOrderByUUIDResponse, error) {
-	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.Uuid)
+	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
 			slog.String("err", err.Error()),
@@ -258,71 +280,66 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 }
 
 func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderInvoiceRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
-
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
-	pme, _ := s.repo.Cache().GetPaymentMethodsByName(pm)
+	pme, ok := s.repo.Cache().GetPaymentMethodByName(pm)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
+		return nil, status.Errorf(codes.Internal, "internal error")
+	}
 	if !pme.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
 
+	invoice, err := s.getInvoiceByPaymentMethod(ctx, pm, req.OrderUuid)
+	if err != nil {
+		return nil, err
+	}
+
+	pbPi, err := dto.ConvertEntityToPbPaymentInsert(invoice.Payment)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+	}
+
+	return &pb_frontend.GetOrderInvoiceResponse{
+		Payment:   pbPi,
+		ExpiredAt: timestamppb.New(invoice.ExpiredAt),
+	}, nil
+}
+
+type InvoiceDetails struct {
+	Payment   *entity.PaymentInsert
+	ExpiredAt time.Time
+}
+
+func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, pm entity.PaymentMethodName, orderUuid string) (*InvoiceDetails, error) {
+	var handler dependency.CryptoInvoice
 	switch pm {
 	case entity.USDT_TRON:
-
-		pi, expire, err := s.usdtTron.GetOrderInvoice(ctx, int(req.OrderId))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order invoice",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get order invoice")
-		}
-
-		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
-		}
-
-		return &pb_frontend.GetOrderInvoiceResponse{
-			Payment:   pbPi,
-			ExpiredAt: timestamppb.New(expire),
-		}, nil
-
+		handler = s.usdtTron
 	case entity.USDT_TRON_TEST:
-
-		pi, expire, err := s.usdtTronTestnet.GetOrderInvoice(ctx, int(req.OrderId))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order invoice",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get order invoice")
-		}
-
-		pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
-		}
-
-		return &pb_frontend.GetOrderInvoiceResponse{
-			Payment:   pbPi,
-			ExpiredAt: timestamppb.New(expire),
-		}, nil
-
+		handler = s.usdtTronTestnet
 	default:
 		slog.Default().ErrorContext(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
 
+	pi, expire, err := handler.GetOrderInvoice(ctx, orderUuid)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get order invoice")
+	}
+
+	return &InvoiceDetails{
+		Payment:   pi,
+		ExpiredAt: expire,
+	}, nil
 }
 
 func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.CancelOrderInvoiceRequest) (*pb_frontend.CancelOrderInvoiceResponse, error) {
-	payment, err := s.repo.Order().ExpireOrderPayment(ctx, int(req.OrderId))
+	payment, err := s.repo.Order().ExpireOrderPayment(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't expire order payment",
 			slog.String("err", err.Error()),
@@ -337,9 +354,9 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 
 	switch pme.Name {
 	case entity.USDT_TRON:
-		err = s.usdtTron.CancelMonitorPayment(int(req.OrderId))
+		err = s.usdtTron.CancelMonitorPayment(req.OrderUuid)
 	case entity.USDT_TRON_TEST:
-		err = s.usdtTronTestnet.CancelMonitorPayment(int(req.OrderId))
+		err = s.usdtTronTestnet.CancelMonitorPayment(req.OrderUuid)
 	default:
 		slog.Default().ErrorContext(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
@@ -357,7 +374,7 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 
 func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.CheckCryptoPaymentResponse, error) {
 
-	p, o, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
+	payment, order, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't check payment pending by uuid",
 			slog.String("err", err.Error()),
@@ -365,10 +382,10 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't check payment pending by uuid")
 	}
 
-	pm, ok := s.repo.Cache().GetPaymentMethodById(p.PaymentMethodID)
+	pm, ok := s.repo.Cache().GetPaymentMethodById(payment.PaymentMethodID)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "can't get payment method by id",
-			slog.Any("paymentMethodId", p.PaymentMethodID),
+			slog.Any("paymentMethodId", payment.PaymentMethodID),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
 	}
@@ -387,7 +404,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
 	}
 
-	p, err = checker.CheckForTransactions(ctx, int(o.ID), p)
+	payment, err = checker.CheckForTransactions(ctx, order.UUID, payment)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't check for transactions",
 			slog.String("err", err.Error()),
@@ -395,7 +412,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't check for transactions")
 	}
 
-	pbPayment, err := dto.ConvertEntityToPbPayment(p)
+	pbPayment, err := dto.ConvertEntityToPbPayment(payment)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity payment to pb payment",
 			slog.String("err", err.Error()),
@@ -410,7 +427,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
-	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, int(req.OrderId), req.PromoCode)
+	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, req.OrderUuid, req.PromoCode)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't apply promo code",
 			slog.String("err", err.Error()),
@@ -443,7 +460,7 @@ func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOr
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
-	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, int(req.OrderId), itemsToInsert)
+	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, req.OrderUuid, itemsToInsert)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update order items",
 			slog.String("err", err.Error()),

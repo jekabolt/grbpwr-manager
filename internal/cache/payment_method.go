@@ -48,8 +48,8 @@ func (c *PaymentMethodCache) GetPaymentMethodById(id int) (*entity.PaymentMethod
 	return &paymentMethod, found
 }
 
-// GetPaymentMethodsByName fetches PaymentMethod by PaymentMethodName from PaymentMethodCache
-func (c *PaymentMethodCache) GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool) {
+// GetPaymentMethodByName fetches PaymentMethod by PaymentMethodName from PaymentMethodCache
+func (c *PaymentMethodCache) GetPaymentMethodByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool) {
 	c.Mutex.RLock()
 	defer c.Mutex.RUnlock()
 

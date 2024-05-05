@@ -131,8 +131,8 @@ func (c *Cache) GetOrderStatusByName(orderStatus entity.OrderStatusName) (entity
 func (c *Cache) GetPaymentMethodById(id int) (*entity.PaymentMethod, bool) {
 	return c.PaymentMethod.GetPaymentMethodById(id)
 }
-func (c *Cache) GetPaymentMethodsByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool) {
-	return c.PaymentMethod.GetPaymentMethodsByName(paymentMethod)
+func (c *Cache) GetPaymentMethodByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool) {
+	return c.PaymentMethod.GetPaymentMethodByName(paymentMethod)
 }
 
 func (c *Cache) UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error {
