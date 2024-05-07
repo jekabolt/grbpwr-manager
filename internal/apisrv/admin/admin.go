@@ -273,11 +273,6 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		sfs = append(sfs, dto.ConvertPBCommonSortFactorToEntity(sf))
 	}
 
-	// Validate parameters
-	if req.Limit <= 0 || req.Offset < 0 {
-		req.Limit, req.Offset = 15, 0
-	}
-
 	// remove duplicates
 	sfs = slices.Compact(sfs)
 
@@ -285,7 +280,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 
 	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
 
-	prds, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, req.ShowHidden)
+	prds, _, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, req.ShowHidden)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),

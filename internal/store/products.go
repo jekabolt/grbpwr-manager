@@ -3,15 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"log/slog"
 
-	"github.com/Knetic/go-namedParameterQuery"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 )
 
@@ -296,18 +295,15 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 //   - by tags
 //
 // GetProductsPaged rewritten to use go-namedParameterQuery
-func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error) {
+func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error) {
 
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
-				return nil, fmt.Errorf("invalid sort factor: %s", sf)
+				return nil, 0, fmt.Errorf("invalid sort factor: %s", sf)
 			}
 		}
 	}
-
-	// Initialize
-	baseQuery := "SELECT * FROM product"
 	var whereClauses []string
 	args := make(map[string]interface{})
 
@@ -321,8 +317,6 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	if filterConditions != nil {
 		if filterConditions.To.GreaterThan(decimal.Zero) && filterConditions.From.LessThanOrEqual(filterConditions.To) &&
 			filterConditions.From.GreaterThanOrEqual(decimal.Zero) {
-			fmt.Println("priceFrom", filterConditions.From)
-			fmt.Println("priceTo", filterConditions.To)
 			whereClauses = append(whereClauses, "price BETWEEN :priceFrom AND :priceTo")
 			args["priceFrom"] = filterConditions.From
 			args["priceTo"] = filterConditions.To
@@ -352,56 +346,50 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		}
 	}
 
-	// Build SQL query with named parameters
-	fullQuery, err := buildQuery(baseQuery, sortFactors, orderFactor, whereClauses, limit, offset)
+	listQuery, countQuery := buildQuery(sortFactors, orderFactor, whereClauses, limit, offset)
+	count, err := QueryCountNamed(ctx, ms.db, countQuery, args)
 	if err != nil {
-		return nil, err
+		return nil, 0, fmt.Errorf("can't get product count: %w", err)
 	}
+
+	slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
+	slog.Default().DebugContext(ctx, "countQuery", slog.String("countQuery", countQuery))
 
 	// Add limit and offset
 	args["limit"] = limit
 	args["offset"] = offset
 
-	// Create NamedParameterQuery and set values
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(fullQuery)
-	queryNamed.SetValuesFromMap(args)
-
-	// Parse query and prepare args
-	query, argsSlice, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+	prds, err := QueryListNamed[entity.Product](ctx, ms.db, listQuery, args)
 	if err != nil {
-		return nil, fmt.Errorf("can't parse query: %w", err)
+		return nil, 0, fmt.Errorf("can't get products: %w", err)
 	}
-	// Execute query
-	return selectProducts(ctx, ms, query, argsSlice)
+
+	return prds, count, nil
 }
 
 // buildQuery refactored to use named parameters and to include limit and offset
-func buildQuery(baseQuery string, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, error) {
+func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
+	baseQuery := "SELECT * FROM product"
+	countQuery := "SELECT COUNT(*) FROM product"
+
 	if len(whereClauses) > 0 {
-		baseQuery += " WHERE " + strings.Join(whereClauses, " AND ")
+		conditions := " WHERE " + strings.Join(whereClauses, " AND ")
+		baseQuery += conditions
+		countQuery += conditions
 	}
+
 	if len(sortFactors) > 0 {
-		baseQuery += " ORDER BY " + strings.Join(entity.SortFactorsToSS(sortFactors), ", ")
+		ordering := " ORDER BY " + strings.Join(entity.SortFactorsToSS(sortFactors), ", ")
 		if orderFactor != "" {
-			baseQuery += " " + string(orderFactor)
+			ordering += " " + string(orderFactor)
 		} else {
-			baseQuery += " " + string(entity.Ascending)
+			ordering += " " + string(entity.Ascending)
 		}
+		baseQuery += ordering
 	}
+	baseQuery += " LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 
-	baseQuery += " LIMIT :limit OFFSET :offset"
-
-	return baseQuery, nil
-}
-
-// selectProducts - assuming this is similar to your existing function
-func selectProducts(ctx context.Context, rep dependency.Repository, query string, args []interface{}) ([]entity.Product, error) {
-	var products []entity.Product
-	err := rep.DB().SelectContext(ctx, &products, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("can't select products: %w", err)
-	}
-	return products, nil
+	return baseQuery, countQuery
 }
 
 // GetProductByIdShowHidden returns a product by its ID, potentially including hidden products.

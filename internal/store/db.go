@@ -205,7 +205,7 @@ func QueryCountNamed(
 	conn dependency.DB,
 	query string,
 	params map[string]any,
-) (int32, error) {
+) (int, error) {
 	queryCountNamed := namedParameterQuery.NewNamedParameterQuery(query)
 	queryCountNamed.SetValuesFromMap(params)
 
@@ -214,7 +214,7 @@ func QueryCountNamed(
 		return 0, fmt.Errorf("sqlx in: %w", err)
 	}
 
-	var count int32
+	var count int
 	if err := conn.QueryRowxContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("query row scan: %w", err)
 	}
