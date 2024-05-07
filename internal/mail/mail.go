@@ -138,6 +138,7 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	}
 
 	html := body.String()
+
 	sr := resend.SendEmailRequest{
 		From:    fmt.Sprintf("%s <%s>", m.c.FromName, m.c.FromEmail),
 		To:      []string{to},

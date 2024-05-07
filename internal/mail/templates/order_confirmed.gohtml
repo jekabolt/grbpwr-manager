@@ -1,4 +1,3 @@
-{{define "orderConfirmation"}}
 <!DOCTYPE html>
 <html>
 <head>
@@ -20,12 +19,12 @@
             <h1>GRBPWR</h1>
         </header>
         <main class="content">
-            <p>Hello {{.FullName}},</p>
+            <p>Hello {{html .FullName}},</p>
             <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been placed successfully.</p>
             <h2>Order Details:</h2>
             {{range .OrderItems}}
             <div>
-                <p><b>Item:</b> {{.Name}} - Size: {{.Size}}, Quantity: {{.Quantity}}, Price: {{.Price}} {{if ne .SalePercent "0"}}({{.SalePercent}}% off){{end}}</p>
+                <p><b>Item:</b> {{.Name}} - Size: {{.Size}}, Quantity: {{.Quantity}}, Price: {{.Price}} {{if .SalePercent}}({{.SalePercent}}% off){{end}}</p>
                 <p><img src="{{.Thumbnail}}" alt="{{.Name}}" style="width:100px; height:auto;"></p>
             </div>
             {{end}}
@@ -44,4 +43,3 @@
     </div>
 </body>
 </html>
-{{end}}
