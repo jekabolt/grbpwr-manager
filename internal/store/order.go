@@ -690,7 +690,7 @@ func shipmentsByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, fmt.Errorf("can't get shipments by order ID: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -963,7 +963,7 @@ func getOrderById(ctx context.Context, rep dependency.Repository, orderId int) (
 		"orderId": orderId,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't get order by id:%d %w", orderId, err)
+		return nil, err
 	}
 	return &order, nil
 }
@@ -1408,7 +1408,7 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 	// Execute the query
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, fmt.Errorf("can't get payments by order ids: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1448,7 +1448,7 @@ func getBuyerById(ctx context.Context, rep dependency.Repository, buyerId int) (
 		"buyerId": buyerId,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't get buyer by id: %w", err)
+		return nil, err
 	}
 	return &buyer, nil
 }
@@ -1484,7 +1484,7 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, fmt.Errorf("can't get buyers by order ID: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1564,7 +1564,7 @@ func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, fmt.Errorf("can't get addresses by order ID: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1652,7 +1652,7 @@ func promosByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 	// Execute the query
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, fmt.Errorf("can't get promos by order ids: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1715,7 +1715,7 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 
 	buyers, err := buyersByOrderIds(ctx, rep, ids)
 	if err != nil {
-		return nil, fmt.Errorf("can't get buyer by id: %w", err)
+		return nil, fmt.Errorf("can't get buyers order by ids %w", err)
 	}
 
 	addressesFull, err := addressesByOrderIds(ctx, rep, ids)
@@ -1757,7 +1757,7 @@ func (ms *MYSQLStore) GetPaymentByOrderUUID(ctx context.Context, orderUUID strin
 		"orderUUID": orderUUID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't get payment by order id: %w", err)
+		return nil, err
 	}
 	return &payment, nil
 }

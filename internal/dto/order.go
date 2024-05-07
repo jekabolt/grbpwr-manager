@@ -299,7 +299,7 @@ func ConvertEntityBuyerToPbBuyer(b *entity.Buyer) (*pb_common.Buyer, error) {
 			LastName:           b.LastName,
 			Email:              b.Email,
 			Phone:              b.Phone,
-			ReceivePromoEmails: b.ReceivePromoEmails,
+			ReceivePromoEmails: b.ReceivePromoEmails.Bool,
 		},
 	}, nil
 }

@@ -77,8 +77,6 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 		return fmt.Errorf("can't get unpaid orders: %w", err)
 	}
 
-	slog.Default().Info("Unpaid orders", slog.Any("poids", poids))
-
 	for _, poid := range poids {
 		poidC := poid
 		p.addrs[poidC.Payment.Payee.String] = poid.OrderUUID

@@ -68,25 +68,32 @@ func TestMailer(t *testing.T) {
 
 	to := "jekabolt@yahoo.com"
 
-	err = m.SendOrderConfirmation(ctx, repMock, to, &dto.OrderConfirmed{
-		OrderUUID:  "testuuid",
-		TotalPrice: "123",
-		OrderItems: []dto.OrderItem{
-			{
-				Name:        "shirt",
-				Thumbnail:   "https://files.grbpwr.com/grbpwr-com/grbpwr-com/2024/april/20240425215239809-thumb.webp",
-				Size:        "M",
-				Quantity:    1,
-				Price:       "100",
-				SalePercent: "0",
-			},
-		},
-		FullName:            "jeka bolt",
-		PromoExist:          false,
-		PromoDiscountAmount: "0",
-		HasFreeShipping:     false,
-		ShippingPrice:       10,
-		ShipmentCarrier:     "DHL",
+	// err = m.SendOrderConfirmation(ctx, repMock, to, &dto.OrderConfirmed{
+	// 	OrderUUID:  "testuuid",
+	// 	TotalPrice: "123",
+	// 	OrderItems: []dto.OrderItem{
+	// 		{
+	// 			Name:        "shirt",
+	// 			Thumbnail:   "https://files.grbpwr.com/grbpwr-com/grbpwr-com/2024/april/20240425215239809-thumb.webp",
+	// 			Size:        "M",
+	// 			Quantity:    1,
+	// 			Price:       "100",
+	// 			SalePercent: "0",
+	// 		},
+	// 	},
+	// 	FullName:            "jeka bolt",
+	// 	PromoExist:          false,
+	// 	PromoDiscountAmount: "0",
+	// 	HasFreeShipping:     false,
+	// 	ShippingPrice:       10,
+	// 	ShipmentCarrier:     "DHL",
+	// })
+	// assert.NoError(t, err)
+
+	err = m.SendOrderShipped(ctx, repMock, to, &dto.OrderShipment{
+		Name:         "jeka bolt",
+		OrderUUID:    "testuuid",
+		ShippingDate: "2021-09-01",
 	})
 	assert.NoError(t, err)
 
