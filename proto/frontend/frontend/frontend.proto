@@ -157,6 +157,7 @@ message GetProductsPagedRequest {
 
 message GetProductsPagedResponse {
   repeated common.Product products = 1;
+  int32 total = 2;
 }
 
 message SubmitOrderRequest {

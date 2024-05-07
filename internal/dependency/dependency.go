@@ -26,7 +26,7 @@ type (
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
-		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, error)
+		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByName returns a product by its name if it is not hidden.
