@@ -457,31 +457,32 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 
 }
 
-func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, error) {
+func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error) {
 
 	if len(orderNew.Items) == 0 {
-		return nil, fmt.Errorf("no order items to insert")
+		return nil, false, fmt.Errorf("no order items to insert")
 	}
 
 	if orderNew.ShippingAddress == nil || orderNew.BillingAddress == nil {
-		return nil, fmt.Errorf("shipping and billing addresses are required")
+		return nil, false, fmt.Errorf("shipping and billing addresses are required")
 	}
 
 	if orderNew.Buyer == nil {
-		return nil, fmt.Errorf("buyer is required")
+		return nil, false, fmt.Errorf("buyer is required")
 	}
 
 	paymentMethod, ok := ms.cache.GetPaymentMethodById(orderNew.PaymentMethodId)
 	if !ok || !paymentMethod.Allowed {
-		return nil, fmt.Errorf("payment method is not exists")
+		return nil, false, fmt.Errorf("payment method is not exists")
 	}
 
 	shipmentCarrier, ok := ms.cache.GetShipmentCarrierById(orderNew.ShipmentCarrierId)
 	if !ok || !shipmentCarrier.Allowed {
-		return nil, fmt.Errorf("shipment carrier is not exists")
+		return nil, false, fmt.Errorf("shipment carrier is not exists")
 	}
 
 	order := &entity.Order{}
+	sendEmail := false
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		orderNew.Items = mergeOrderItems(orderNew.Items)
@@ -525,9 +526,16 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		if receivePromo {
-			err := ms.Subscribers().UpsertSubscription(ctx, orderNew.Buyer.Email, true)
+			subscribed, err := ms.Subscribers().IsSubscribed(ctx, orderNew.Buyer.Email)
 			if err != nil {
-				return fmt.Errorf("error while upserting subscription: %w", err)
+				return fmt.Errorf("error while checking subscription: %w", err)
+			}
+			if !subscribed {
+				sendEmail = true
+				err := ms.Subscribers().UpsertSubscription(ctx, orderNew.Buyer.Email, true)
+				if err != nil {
+					return fmt.Errorf("error while upserting subscription: %w", err)
+				}
 			}
 		}
 
@@ -572,7 +580,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		return nil
 	})
 
-	return order, err
+	return order, sendEmail, err
 }
 
 func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int][]entity.OrderItem, error) {
