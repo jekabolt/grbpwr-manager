@@ -85,11 +85,9 @@ type OrderCancelled struct {
 }
 
 type OrderShipment struct {
-	Name           string
-	OrderUUID      string
-	ShippingDate   string
-	TrackingNumber string
-	TrackingURL    string
+	Name         string
+	OrderUUID    string
+	ShippingDate string
 }
 type PromoCodeDetails struct {
 	PromoCode       string

@@ -524,22 +524,17 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
 	}
 
-	sc, ok := s.repo.Cache().GetShipmentCarrierById(int(obs.Shipment.CarrierID))
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't find shipment carrier by id")
-		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
-	}
-
-	trackingUrlFull := fmt.Sprintf(sc.ShipmentCarrierInsert.TrackingURL, req.TrackingCode)
-
-	// TODO: in tx
-	s.mailer.SendOrderShipped(ctx, s.repo, obs.Buyer.Email, &dto.OrderShipment{
-		Name:           fmt.Sprintf("%s %s", obs.Buyer.FirstName, obs.Buyer.LastName),
-		OrderUUID:      obs.Order.UUID,
-		ShippingDate:   time.Now().Format("2006-01-02"),
-		TrackingNumber: req.TrackingCode,
-		TrackingURL:    trackingUrlFull,
+	err = s.mailer.SendOrderShipped(ctx, s.repo, obs.Buyer.Email, &dto.OrderShipment{
+		Name:         fmt.Sprintf("%s %s", obs.Buyer.FirstName, obs.Buyer.LastName),
+		OrderUUID:    obs.Order.UUID,
+		ShippingDate: time.Now().Format("2006-01-02"),
 	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't send order shipped email",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't send order shipped email")
+	}
 
 	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
