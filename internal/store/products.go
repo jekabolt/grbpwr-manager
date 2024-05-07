@@ -65,7 +65,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 		INSERT INTO product_size (product_id, size_id, quantity)
 		VALUES (:productId, :sizeId, :quantity)
 		`
-		productSizeID, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+		_, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 			"productId": productID,
 			"sizeId":    sizeMeasurement.ProductSize.SizeID,
 			"quantity":  sizeMeasurement.ProductSize.Quantity,
@@ -83,7 +83,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 			`
 			err := ExecNamed(ctx, rep.DB(), query, map[string]any{
 				"productId":         productID,
-				"productSizeId":     productSizeID,
+				"productSizeId":     sizeMeasurement.ProductSize.SizeID,
 				"measurementNameId": measurement.MeasurementNameID,
 				"measurementValue":  measurement.MeasurementValue.String(),
 			})
@@ -94,7 +94,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 
 			measurements = append(measurements, entity.ProductMeasurement{
 				ProductID:         productID,
-				ProductSizeID:     productSizeID,
+				ProductSizeID:     sizeMeasurement.ProductSize.SizeID,
 				MeasurementNameID: measurement.MeasurementNameID,
 				MeasurementValue:  measurement.MeasurementValue,
 			})
@@ -102,7 +102,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 
 		result = append(result, entity.SizeWithMeasurement{
 			ProductSize: entity.ProductSize{
-				ID:        productSizeID,
+				ID:        sizeMeasurement.ProductSize.SizeID,
 				ProductID: productID,
 				Quantity:  sizeMeasurement.ProductSize.Quantity,
 				SizeID:    sizeMeasurement.ProductSize.SizeID,

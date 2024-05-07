@@ -155,12 +155,21 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
 	}
 
-	order, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
+	order, sendEmail, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't create order")
+	}
+
+	if sendEmail {
+		err := s.mailer.SendNewSubscriber(ctx, s.repo, orderNew.Buyer.Email)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't send new subscriber mail",
+				slog.String("err", err.Error()),
+			)
+		}
 	}
 
 	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)

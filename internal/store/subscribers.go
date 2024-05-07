@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -50,4 +52,20 @@ func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, rece
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
 	return nil
+}
+
+func (ms *MYSQLStore) IsSubscribed(ctx context.Context, email string) (bool, error) {
+	query := `SELECT * FROM subscriber WHERE email = :email`
+	params := map[string]interface{}{
+		"email": email,
+	}
+
+	subscriber, err := QueryNamedOne[entity.Subscriber](ctx, ms.DB(), query, params)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check subscription: %w", err)
+	}
+	return subscriber.ReceivePromoEmails, nil
 }
