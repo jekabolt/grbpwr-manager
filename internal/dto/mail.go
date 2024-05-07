@@ -27,7 +27,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull, sizeMap map[int]entity.Size
 		PromoExist:          of.PromoCode.ID != 0,
 		PromoDiscountAmount: of.PromoCode.Discount.String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
-		ShippingPrice:       sc.Price.String(),
+		ShippingPrice:       int(sc.Price.IntPart()),
 		ShipmentCarrier:     sc.Carrier,
 	}
 }
@@ -62,7 +62,7 @@ type OrderConfirmed struct {
 	PromoExist          bool
 	PromoDiscountAmount string
 	HasFreeShipping     bool
-	ShippingPrice       string
+	ShippingPrice       int
 	ShipmentCarrier     string
 }
 

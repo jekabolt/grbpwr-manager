@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -55,13 +56,38 @@ func TestMailer(t *testing.T) {
 
 	mailDBMock := mocks.NewMail(t)
 
+	repMock := mocks.NewRepository(t)
+
 	m, err := New(conf, mailDBMock)
 	ctx := context.Background()
 	assert.NoError(t, err)
 
+	repMock.EXPECT().Mail().Return(mailDBMock)
+
+	mailDBMock.EXPECT().AddMail(ctx, mock.Anything).Return(1, nil)
+
 	to := "jekabolt@yahoo.com"
 
-	_, err = m.SendNewSubscriber(ctx, to)
+	err = m.SendOrderConfirmation(ctx, repMock, to, &dto.OrderConfirmed{
+		OrderUUID:  "testuuid",
+		TotalPrice: "123",
+		OrderItems: []dto.OrderItem{
+			{
+				Name:        "shirt",
+				Thumbnail:   "https://files.grbpwr.com/grbpwr-com/grbpwr-com/2024/april/20240425215239809-thumb.webp",
+				Size:        "M",
+				Quantity:    1,
+				Price:       "100",
+				SalePercent: "0",
+			},
+		},
+		FullName:            "jeka bolt",
+		PromoExist:          false,
+		PromoDiscountAmount: "0",
+		HasFreeShipping:     false,
+		ShippingPrice:       10,
+		ShipmentCarrier:     "DHL",
+	})
 	assert.NoError(t, err)
 
 	// _, err = m.SendOrderConfirmation(ctx, to, &dto.OrderConfirmed{

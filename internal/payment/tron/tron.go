@@ -391,9 +391,9 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 				if err != nil {
 					if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 						if mysqlErr.Number == 1062 {
-							fmt.Println("Duplicate entry detected")
+							slog.Default().InfoContext(ctx, "Order already marked as paid", slog.String("orderUUID", orderUUID))
 						} else {
-							fmt.Printf("An error occurred: %v\n", err)
+							return nil, fmt.Errorf("can't update order payment done: %w", err)
 						}
 					}
 					return nil, fmt.Errorf("can't update order payment done: %w", err)
