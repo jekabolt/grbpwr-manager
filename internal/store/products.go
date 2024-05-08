@@ -29,7 +29,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 	query := `
 	INSERT INTO product 
 	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail, price, category_id, description, hidden, target_gender)
-	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnail, :price, :categoryId, :description, :hidden, :targetGender)`
+	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnail, :price, :sale_percentage, :categoryId, :description, :hidden, :targetGender)`
 	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 		"preorder":        product.Preorder,
 		"name":            product.Name,
@@ -40,6 +40,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"countryOfOrigin": product.CountryOfOrigin,
 		"thumbnail":       product.Thumbnail,
 		"price":           product.Price,
+		"sale_percentage": product.SalePercentage,
 		"categoryId":      product.CategoryID,
 		"description":     product.Description,
 		"hidden":          product.Hidden,
