@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -258,25 +259,18 @@ func (s *Server) Start(ctx context.Context,
 // cors is a middleware that implements Cross Origin Resource Sharing.
 // It adds CORS headers to each response.
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-
 func (s *Server) cors(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 
 		if origin == "" {
-			// If there's no origin, it's not a CORS request, so just pass it through.
-			// slog.Default().InfoContext(r.Context(), "no origin header")
 			h.ServeHTTP(w, r)
 			return
 		}
 
-		// Check if the origin is from localhost or in the allowed origins list
 		if isOriginAllowed(origin, s.c.AllowedOrigins) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		} else {
-			slog.Default().InfoContext(r.Context(), "origin not allowed",
-				slog.String("origin", origin),
-			)
 			http.Error(w, "Origin not allowed", http.StatusForbidden)
 			return
 		}
@@ -299,12 +293,23 @@ func isOriginAllowed(origin string, allowedOrigins []string) bool {
 		return true
 	}
 
-	// Check if origin is in the list of allowed origins
-	for _, allowedOrigin := range allowedOrigins {
-		if origin == allowedOrigin {
+	// Check if origin matches any pattern in the allowed origins list
+	for _, pattern := range allowedOrigins {
+		matched, _ := matchPattern(pattern, origin)
+		if matched {
 			return true
 		}
 	}
 
 	return false
+}
+
+func matchPattern(pattern, origin string) (bool, error) {
+	if strings.Contains(pattern, "*") {
+		// Convert wildcard domain to a regex pattern
+		regexPattern := "^" + regexp.QuoteMeta(pattern)
+		regexPattern = strings.Replace(regexPattern, "\\*", ".*", -1) + "$"
+		return regexp.MatchString(regexPattern, origin)
+	}
+	return pattern == origin, nil
 }
