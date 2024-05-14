@@ -149,6 +149,10 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
+func (ge GenderEnum) String() string {
+	return string(ge)
+}
+
 func IsValidTargetGender(g GenderEnum) bool {
 	_, ok := ValidProductTargetGenders[g]
 	return ok
