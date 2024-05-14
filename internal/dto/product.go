@@ -243,7 +243,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Id:            int32(e.Product.ID),
 		CreatedAt:     timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:     timestamppb.New(e.Product.UpdatedAt),
-		Slug:          GetSlug(e.Product),
+		Slug:          GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.Color, e.Product.TargetGender.String()),
 		ProductInsert: pbProductInsert,
 	}
 
@@ -306,29 +306,38 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}, nil
 }
 
-func GetSlug(ePrd *entity.Product) string {
-	return strings.ReplaceAll(strings.ToLower(fmt.Sprintf("%d_%d_%s_%s_%s", ePrd.ID, ePrd.CategoryID, ePrd.Brand, ePrd.Color, ePrd.Name)), " ", "-")
+func GetSlug(id int, brand, name, color, gender string) string {
+	clean := func(part string) string {
+		return strings.ToLower(strings.ReplaceAll(part, " ", "-"))
+	}
+	// Include the name with `--` delimiters
+	return fmt.Sprintf("%d-%s--%s--%s-%s", id, clean(brand), clean(name), clean(color), clean(gender))
 }
 
 // returns product id + name or error
 func ParseSlug(slug string) (int, string, error) {
-	parts := strings.Split(slug, "_")
-	if len(parts) < 5 {
+	// Extract the ID from the beginning
+	parts := strings.Split(slug, "-")
+	if len(parts) < 2 {
 		return 0, "", fmt.Errorf("invalid slug format")
 	}
-
-	idStr := parts[0]
-	productID, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid product ID: %v", err)
+		return 0, "", fmt.Errorf("invalid product ID in slug")
 	}
 
-	// Reassemble the name part in case it contains underscores
-	nameParts := parts[4:]
-	name := strings.Join(nameParts, "_")
+	// Locate the start and end indices of the `--` delimiters
+	start := strings.Index(slug, "--")
+	end := strings.LastIndex(slug, "--")
+	if start == -1 || end == -1 || start == end {
+		return 0, "", fmt.Errorf("product name not found or improperly formatted")
+	}
+
+	// Extract the name between the delimiters, removing the additional "-"
+	name := slug[start+2 : end]
 	name = strings.ReplaceAll(name, "-", " ")
 
-	return productID, name, nil
+	return id, name, nil
 }
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
@@ -341,7 +350,7 @@ func ConvertEntityProductToCommon(entityProduct *entity.Product) (*pb_common.Pro
 		Id:        int32(entityProduct.ID),
 		CreatedAt: timestamppb.New(entityProduct.CreatedAt),
 		UpdatedAt: timestamppb.New(entityProduct.UpdatedAt),
-		Slug:      GetSlug(entityProduct),
+		Slug:      GetSlug(entityProduct.ID, entityProduct.Brand, entityProduct.Name, entityProduct.Color, entityProduct.TargetGender.String()),
 		ProductInsert: &pb_common.ProductInsert{
 			Preorder:        entityProduct.Preorder.String,
 			Name:            entityProduct.Name,
