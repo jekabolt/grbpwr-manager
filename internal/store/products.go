@@ -28,7 +28,7 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert) (*entity.Product, error) {
 	query := `
 	INSERT INTO product 
-	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail, price, category_id, description, hidden, target_gender)
+	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail, price, sale_percentage, category_id, description, hidden, target_gender)
 	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnail, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
 	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 		"preorder":        product.Preorder,
@@ -47,7 +47,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"targetGender":    product.TargetGender,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't insert product: %w", err)
+		return nil, err
 	}
 
 	return &entity.Product{
