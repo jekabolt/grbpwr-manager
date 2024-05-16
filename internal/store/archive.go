@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -22,6 +25,15 @@ func (ms *MYSQLStore) Archive() dependency.Archive {
 }
 
 func (ms *MYSQLStore) AddArchive(ctx context.Context, archiveNew *entity.ArchiveNew) (int, error) {
+
+	if archiveNew.Items == nil || len(archiveNew.Items) == 0 {
+		return 0, errors.New("archive items must not be empty")
+	}
+
+	if archiveNew.Archive.Title == "" {
+		return 0, errors.New("archive title must not be empty")
+	}
+
 	var archiveID int
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -91,7 +103,29 @@ func (ms *MYSQLStore) AddArchiveItems(ctx context.Context, archiveId int, archiv
 // DeleteArchiveItem deletes an item from an archive by its ID.
 func (ms *MYSQLStore) DeleteArchiveItem(ctx context.Context, archiveItemID int) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `DELETE FROM archive_item WHERE id = :id`
+
+		// Check if the archive item is the last item in the archive
+		query := `
+		SELECT archive_id, COUNT(id) AS item_count
+		FROM archive_item
+		WHERE archive_id = (SELECT archive_id FROM archive_item WHERE id = :archiveItemID)
+		GROUP BY archive_id;`
+		type archiveItemCount struct {
+			ArchiveID int `db:"archive_id"`
+			ItemCount int `db:"item_count"`
+		}
+		count, err := QueryNamedOne[archiveItemCount](ctx, rep.DB(), query, map[string]interface{}{
+			"archiveItemID": archiveItemID,
+		})
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("failed to get archive item count: %w", err)
+			}
+		}
+
+		slog.Default().Debug("archive item count", slog.Int("count", count.ItemCount), slog.Int("archive_id", count.ArchiveID))
+
+		query = `DELETE FROM archive_item WHERE id = :id`
 		res, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
 			"id": archiveItemID,
 		})
@@ -108,16 +142,28 @@ func (ms *MYSQLStore) DeleteArchiveItem(ctx context.Context, archiveItemID int) 
 			return fmt.Errorf("no archive item found with ID %d", archiveItemID)
 		}
 
+		// If the item was the last item in the archive, delete the archive as well
+		if count.ItemCount == 1 {
+			query = `DELETE FROM archive WHERE id = :id`
+			_, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+				"id": count.ArchiveID,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to delete archive with ID %d: %w", count.ArchiveID, err)
+			}
+		}
+
 		return nil
 	})
 }
 
 type archiveJoin struct {
-	entity.Archive
-	ItemID    int            `db:"item_id"`
-	ItemMedia string         `db:"media"`
-	ItemURL   sql.NullString `db:"url"`
-	ItemTitle sql.NullString `db:"item_title"`
+	Id           int       `db:"id"`
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
+	Title        string    `db:"title"`
+	Description  string    `db:"description"`
+	ArchiveItems string    `db:"archive_items"`
 }
 
 func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error) {
@@ -125,18 +171,34 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 		return nil, errors.New("invalid pagination parameters")
 	}
 
-	// Validate orderFactor to prevent SQL injection
-	if orderFactor != entity.Ascending && orderFactor != entity.Descending {
-		return nil, errors.New("invalid order factor")
-	}
-
-	// Prepare the query with dynamic ordering and pagination placeholders
-	query := fmt.Sprintf(`
-    SELECT a.id, a.created_at, a.updated_at, a.title, a.description,
-           ai.id AS item_id, ai.media, ai.url, ai.title AS item_title
-    FROM archive a
-    LEFT JOIN archive_item ai ON a.id = ai.archive_id
-    ORDER BY a.created_at %s LIMIT ? OFFSET ?`, orderFactor.String())
+	query := fmt.Sprintf(
+		`SELECT 
+		a.id,
+		a.created_at,
+		a.updated_at,
+		a.title,
+		a.description,
+		JSON_ARRAYAGG(
+			JSON_OBJECT(
+				'id', ai.id,
+				'media', ai.media,
+				'url', ai.url,
+				'title', ai.title,
+				'archive_id', ai.archive_id
+			)
+			) AS archive_items
+		FROM 
+			archive a
+		LEFT JOIN 
+			archive_item ai ON a.id = ai.archive_id
+		GROUP BY 
+			a.id
+		ORDER BY 
+			a.created_at %s
+		LIMIT 
+			? OFFSET ?`,
+		orderFactor.String(),
+	)
 
 	// Slice to store the joined data from the query
 	var archiveData []archiveJoin
@@ -147,64 +209,40 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 		return nil, fmt.Errorf("failed to get archives paged: %w", err)
 	}
 
-	// Group the flat data into structured archives
-	grouped := groupArchives(archiveData)
-	// Flatten the map into a slice for the final output
-	return flattenArchives(grouped), nil
+	afs, err := convertArchiveJoinToArchiveFull(archiveData)
+
+	slog.Default().Debug("archive data", slog.Any("afs", afs), slog.Int("count", len(afs)))
+
+	return afs, err
+
 }
 
-// groupArchives groups the flat join data by archive ID, creating structured archive entities.
-func groupArchives(data []archiveJoin) map[int]entity.ArchiveFull {
-	grouped := make(map[int]entity.ArchiveFull)
+func convertArchiveJoinToArchiveFull(ajs []archiveJoin) ([]entity.ArchiveFull, error) {
+	result := make([]entity.ArchiveFull, len(ajs))
 
-	for _, d := range data {
-		// Retrieve the current ArchiveFull, or create a new one if it doesn't exist
-		archiveFull, exists := grouped[d.ID]
-		if !exists {
-			archiveFull = entity.ArchiveFull{
-				Archive: &entity.Archive{
-					ID:        d.ID,
-					CreatedAt: d.CreatedAt,
-					UpdatedAt: d.UpdatedAt,
-					ArchiveInsert: entity.ArchiveInsert{
-						Title:       d.Title,
-						Description: d.Description,
-					},
-				},
-				Items: []entity.ArchiveItem{},
-			}
+	for i, aj := range ajs {
+		var archiveItems []entity.ArchiveItem
+		if err := json.Unmarshal([]byte(aj.ArchiveItems), &archiveItems); err != nil {
+			return nil, err
 		}
 
-		// Add the item to the archive's items if it exists
-		if d.ItemID != 0 {
-			archiveItem := entity.ArchiveItem{
-				ID:        d.ItemID,
-				ArchiveID: d.ID,
-				ArchiveItemInsert: entity.ArchiveItemInsert{
-					Media: d.ItemMedia,
-					URL:   d.ItemURL,
-					Title: d.ItemTitle,
-				},
-			}
-			archiveFull.Items = append(archiveFull.Items, archiveItem)
+		archive := &entity.Archive{
+			ID:        aj.Id,
+			CreatedAt: aj.CreatedAt,
+			UpdatedAt: aj.UpdatedAt,
+			ArchiveInsert: entity.ArchiveInsert{
+				Title:       aj.Title,
+				Description: aj.Description,
+			},
 		}
 
-		// Update or add the archive in the map
-		grouped[d.ID] = archiveFull
+		result[i] = entity.ArchiveFull{
+			Archive: archive,
+			Items:   archiveItems,
+		}
 	}
 
-	return grouped
-}
-
-// flattenArchives converts the map of archives into a slice.
-func flattenArchives(grouped map[int]entity.ArchiveFull) []entity.ArchiveFull {
-	// Slice to hold the final flattened archive list
-	archives := make([]entity.ArchiveFull, 0, len(grouped))
-	for _, archive := range grouped {
-		// Append each archive to the slice
-		archives = append(archives, archive)
-	}
-	return archives
+	return result, nil
 }
 
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {

@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/asaskevich/govalidator"
@@ -33,6 +34,35 @@ type ArchiveItem struct {
 	ID        int `db:"id"`
 	ArchiveID int `db:"archive_id"`
 	ArchiveItemInsert
+}
+
+func (ai *ArchiveItem) UnmarshalJSON(data []byte) error {
+	type Alias ArchiveItem
+	aux := &struct {
+		URL   *string `json:"url"`
+		Title *string `json:"title"`
+		*Alias
+	}{
+		Alias: (*Alias)(ai),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.URL != nil {
+		ai.URL = sql.NullString{String: *aux.URL, Valid: true}
+	} else {
+		ai.URL = sql.NullString{Valid: false}
+	}
+
+	if aux.Title != nil {
+		ai.Title = sql.NullString{String: *aux.Title, Valid: true}
+	} else {
+		ai.Title = sql.NullString{Valid: false}
+	}
+
+	return nil
 }
 
 type ArchiveItemInsert struct {

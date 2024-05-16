@@ -61,12 +61,16 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 
 	itemsPb := make([]*pb_common.ArchiveItem, 0, len(af.Items))
 	for _, item := range af.Items {
+		url := ""
+		if item.URL.Valid {
+			url = item.URL.String
+		}
 		itemPb := &pb_common.ArchiveItem{
 			Id:        int32(item.ID),
 			ArchiveId: int32(item.ArchiveID),
 			ArchiveItemInsert: &pb_common.ArchiveItemInsert{
 				Media: item.Media,
-				Url:   item.URL.String,
+				Url:   url,
 				Title: item.Title.String,
 			},
 		}
