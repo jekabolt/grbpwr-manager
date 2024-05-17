@@ -1999,13 +1999,19 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 	return payment, err
 }
 
-// TODO:
 func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error) {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		if order.PromoID.Int32 != 0 {
+			err := rep.Promo().DisableVoucher(ctx, order.PromoID)
+			if err != nil {
+				return fmt.Errorf("can't disable voucher: %w", err)
+			}
 		}
 
 		os, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
