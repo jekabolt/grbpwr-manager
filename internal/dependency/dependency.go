@@ -105,7 +105,7 @@ type (
 
 	Promo interface {
 		AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error
-		ListPromos(ctx context.Context) ([]entity.PromoCode, error)
+		ListPromos(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.PromoCode, error)
 		DeletePromoCode(ctx context.Context, code string) error
 		DisablePromoCode(ctx context.Context, code string) error
 		DisableVoucher(ctx context.Context, promoID sql.NullInt32) error

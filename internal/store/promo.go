@@ -21,7 +21,8 @@ func (ms *MYSQLStore) Promo() dependency.Promo {
 }
 
 func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
-	id, err := ExecNamedLastId(ctx, ms.DB(), `INSERT INTO promo_code (code, free_shipping, discount, expiration, voucher, allowed) VALUES
+	id, err := ExecNamedLastId(ctx, ms.DB(), `
+	INSERT INTO promo_code (code, free_shipping, discount, expiration, voucher, allowed) VALUES
 		(:code, :freeShipping, :discount, :expiration, :voucher, :allowed)`, map[string]any{
 		"code":         promo.Code,
 		"freeShipping": promo.FreeShipping,
@@ -41,13 +42,20 @@ func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInser
 	return nil
 }
 
-func (ms *MYSQLStore) ListPromos(ctx context.Context) ([]entity.PromoCode, error) {
-	query := `
-	SELECT * FROM promo_code`
-	promos, err := QueryListNamed[entity.PromoCode](ctx, ms.DB(), query, map[string]interface{}{})
+func (ms *MYSQLStore) ListPromos(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.PromoCode, error) {
+	query := fmt.Sprintf(`
+	SELECT * FROM promo_code
+	ORDER BY id %s
+	LIMIT :limit OFFSET :offset`, orderFactor.String())
+
+	promos, err := QueryListNamed[entity.PromoCode](ctx, ms.DB(), query, map[string]interface{}{
+		"limit":  limit,
+		"offset": offset,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get PromoCode list: %w", err)
 	}
+
 	return promos, nil
 }
 

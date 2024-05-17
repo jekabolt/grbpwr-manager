@@ -460,7 +460,7 @@ func (s *Server) DisablePromoCode(ctx context.Context, req *pb_admin.DisableProm
 
 func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest) (*pb_admin.ListPromosResponse, error) {
 
-	promos, err := s.repo.Promo().ListPromos(ctx)
+	promos, err := s.repo.Promo().ListPromos(ctx, int(req.Limit), int(req.Offset), dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list promos",
 			slog.String("err", err.Error()),
