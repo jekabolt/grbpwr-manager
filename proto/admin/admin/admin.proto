@@ -470,7 +470,12 @@ message AddPromoRequest {
 }
 message AddPromoResponse {}
 
-message ListPromosRequest {}
+message ListPromosRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+}
+
 message ListPromosResponse {
   repeated common.PromoCode promo_codes = 1;
 }
