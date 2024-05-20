@@ -186,14 +186,9 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 	}
 
 	// Convert Media
-	var media []entity.ProductMediaInsert
-	for _, pbMedia := range pbProductNew.Media {
-		mediaInsert := entity.ProductMediaInsert{
-			FullSize:   pbMedia.FullSize,
-			Thumbnail:  pbMedia.Thumbnail,
-			Compressed: pbMedia.Compressed,
-		}
-		media = append(media, mediaInsert)
+	var mediaIds []int
+	for _, pbMediaId := range pbProductNew.MediaIds {
+		mediaIds = append(mediaIds, int(pbMediaId))
 	}
 
 	// Convert Tags
@@ -208,7 +203,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 	return &entity.ProductNew{
 		Product:          productInsert,
 		SizeMeasurements: sizeMeasurements,
-		Media:            media,
+		MediaIds:         mediaIds,
 		Tags:             tags,
 	}, nil
 }
@@ -272,17 +267,28 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		})
 	}
 
-	var pbMedia []*pb_common.ProductMedia
+	var pbMedia []*pb_common.MediaFull
 	for _, media := range e.Media {
 
-		pbMedia = append(pbMedia, &pb_common.ProductMedia{
-			Id:        int32(media.ID),
+		pbMedia = append(pbMedia, &pb_common.MediaFull{
+			Id:        int32(media.Id),
 			CreatedAt: timestamppb.New(media.CreatedAt),
-			ProductId: int32(media.ProductID),
-			ProductMediaInsert: &pb_common.ProductMediaInsert{
-				FullSize:   media.FullSize,
-				Thumbnail:  media.Thumbnail,
-				Compressed: media.Compressed,
+			Media: &pb_common.MediaInsert{
+				FullSize: &pb_common.MediaInfo{
+					MediaUrl: media.FullSizeMediaURL,
+					Width:    int32(media.FullSizeWidth),
+					Height:   int32(media.FullSizeHeight),
+				},
+				Thumbnail: &pb_common.MediaInfo{
+					MediaUrl: media.ThumbnailMediaURL,
+					Width:    int32(media.ThumbnailWidth),
+					Height:   int32(media.ThumbnailHeight),
+				},
+				Compressed: &pb_common.MediaInfo{
+					MediaUrl: media.CompressedMediaURL,
+					Width:    int32(media.CompressedWidth),
+					Height:   int32(media.CompressedHeight),
+				},
 			},
 		})
 	}

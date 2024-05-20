@@ -20,11 +20,25 @@ func (ms *MYSQLStore) Media() dependency.Media {
 }
 
 func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error) {
-	query := `INSERT INTO media (full_size, compressed, thumbnail) VALUES (:fullSize, :compressed, :thumbnail)`
+	query := `INSERT INTO media (
+		full_size, full_size_width, full_size_height,
+		compressed, compressed_width, compressed_height,
+		thumbnail, thumbnail_width, thumbnail_height
+	) VALUES (
+		:fullSize, :fullSizeWidth, :fullSizeHeight,
+		:compressed, :compressedWidth, :compressedHeight,
+		:thumbnail, :thumbnailWidth, :thumbnailHeight
+	);`
 	id, err := ExecNamedLastId(ctx, ms.DB(), query, map[string]any{
-		"fullSize":   media.FullSize,
-		"compressed": media.Compressed,
-		"thumbnail":  media.Thumbnail,
+		"fullSize":         media.FullSizeMediaURL,
+		"fullSizeWidth":    media.FullSizeWidth,
+		"fullSizeHeight":   media.FullSizeHeight,
+		"compressed":       media.CompressedMediaURL,
+		"compressedWidth":  media.CompressedWidth,
+		"compressedHeight": media.CompressedHeight,
+		"thumbnail":        media.ThumbnailMediaURL,
+		"thumbnailWidth":   media.ThumbnailWidth,
+		"thumbnailHeight":  media.ThumbnailHeight,
 	})
 	if err != nil {
 		return id, fmt.Errorf("failed to add media: %w", err)
@@ -42,13 +56,14 @@ func (ms *MYSQLStore) DeleteMediaById(ctx context.Context, id int) error {
 	}
 	return nil
 }
-func (ms *MYSQLStore) ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Media, error) {
+
+func (ms *MYSQLStore) ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error) {
 	if limit <= 0 || offset < 0 {
 		return nil, fmt.Errorf("invalid pagination parameters")
 	}
 
 	query := fmt.Sprintf(`SELECT * FROM media ORDER BY id %s LIMIT :limit OFFSET :offset`, orderFactor.String())
-	mediaPage, err := QueryListNamed[entity.Media](ctx, ms.DB(), query, map[string]any{
+	mediaPage, err := QueryListNamed[entity.MediaFull](ctx, ms.DB(), query, map[string]any{
 		"limit":  limit,
 		"offset": offset,
 	})

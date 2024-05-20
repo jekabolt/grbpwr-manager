@@ -115,24 +115,16 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 	return result, nil
 }
 
-func insertMedia(ctx context.Context, rep dependency.Repository, media []entity.ProductMediaInsert, productID int) ([]entity.ProductMedia, error) {
-	rows := make([]map[string]any, 0, len(media))
-	medias := make([]entity.ProductMedia, 0, len(media))
-	for _, m := range media {
-		medias = append(medias, entity.ProductMedia{
-			ProductMediaInsert: m,
-		})
+func insertMedia(ctx context.Context, rep dependency.Repository, mediaIds []int, productID int) error {
+	rows := make([]map[string]any, 0, len(mediaIds))
+	for _, mId := range mediaIds {
 		row := map[string]any{
 			"product_id": productID,
-			"full_size":  m.FullSize,
-			"thumbnail":  m.Thumbnail,
-			"compressed": m.Compressed,
+			"media_id":   mId,
 		}
 		rows = append(rows, row)
-
 	}
-
-	return medias, BulkInsert(ctx, rep.DB(), "product_media", rows)
+	return BulkInsert(ctx, rep.DB(), "product_media", rows)
 }
 
 func insertTags(ctx context.Context, rep dependency.Repository, tagsInsert []entity.ProductTagInsert, productID int) ([]entity.ProductTag, error) {
@@ -214,7 +206,7 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 		}
 		pi.Sizes, pi.Measurements = sizesAndMeasurements(sizesWithMeasurements)
 
-		pi.Media, err = insertMedia(ctx, rep, prd.Media, pi.Product.ID)
+		err = insertMedia(ctx, rep, prd.MediaIds, pi.Product.ID)
 		if err != nil {
 			return fmt.Errorf("can't insert media: %w", err)
 		}
@@ -457,8 +449,25 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	productInfo.Measurements = measurements
 
 	// Fetch Media
-	query = "SELECT * FROM product_media WHERE product_id = :id"
-	productInfo.Media, err = QueryListNamed[entity.ProductMedia](ctx, ms.db, query, map[string]interface{}{
+	query = `
+		SELECT 
+			m.id,
+			m.created_at,
+			m.updated_at,
+			m.full_size,
+			m.full_size_width,
+			m.full_size_height,
+			m.thumbnail,
+			m.thumbnail_width,
+			m.thumbnail_height,
+			m.compressed,
+			m.compressed_width,
+			m.compressed_height
+		FROM media m
+		INNER JOIN product_media pm ON m.id = pm.media_id
+		WHERE pm.product_id = :id;
+	`
+	productInfo.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, map[string]interface{}{
 		"id": prd.ID,
 	})
 	if err != nil {

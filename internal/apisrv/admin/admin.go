@@ -117,7 +117,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 		return nil, err
 	}
 
-	entities := make([]*pb_common.Media, 0, len(list))
+	entities := make([]*pb_common.MediaFull, 0, len(list))
 	for _, m := range list {
 		entities = append(entities, dto.ConvertEntityToCommonMedia(m))
 	}
@@ -484,30 +484,6 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
 		Rates:      dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
-}
-
-func (s *Server) UpdateShippingInfo(ctx context.Context, req *pb_admin.UpdateShippingInfoRequest) (*pb_admin.UpdateShippingInfoResponse, error) {
-	sh := dto.ConvertPbShipmentToEntityShipment(req.ShippingInfo)
-	if sh.TrackingCode.String == "" {
-		slog.Default().ErrorContext(ctx, "tracking code is empty")
-		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
-	}
-
-	_, ok := s.repo.Cache().GetShipmentCarrierById(int(sh.CarrierID))
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't find shipment carrier by id")
-		return nil, status.Errorf(codes.InvalidArgument, "can't find shipment carrier by id")
-	}
-
-	err := s.repo.Order().UpdateShippingInfo(ctx, req.OrderUuid, sh)
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update shipping info",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update shipping info")
-	}
-	return &pb_admin.UpdateShippingInfoResponse{}, nil
 }
 
 func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackingNumberRequest) (*pb_admin.SetTrackingNumberResponse, error) {

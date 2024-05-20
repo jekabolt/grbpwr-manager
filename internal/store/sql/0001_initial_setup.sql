@@ -141,14 +141,28 @@ CREATE TABLE size_measurement (
     FOREIGN KEY(measurement_name_id) REFERENCES measurement_name(id) ON DELETE CASCADE
 );
 
+
+CREATE TABLE media (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
+    full_size VARCHAR(255) NOT NULL,
+    full_size_width INT NOT NULL,
+    full_size_height INT NOT NULL,
+    thumbnail VARCHAR(255) NOT NULL,
+    thumbnail_width INT NOT NULL,
+    thumbnail_height INT NOT NULL,
+    compressed VARCHAR(255) NOT NULL,
+    compressed_width INT NOT NULL,
+    compressed_height INT NOT NULL
+);
+
 CREATE TABLE product_media (
     id INT PRIMARY KEY AUTO_INCREMENT,
     product_id INT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    full_size VARCHAR(255) NOT NULL,
-    thumbnail VARCHAR(255) NOT NULL,
-    compressed VARCHAR(255) NOT NULL,
-    FOREIGN KEY(product_id) REFERENCES product(id) ON DELETE CASCADE
+    media_id INT NOT NULL,
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE,
+    FOREIGN KEY (media_id) REFERENCES media(id)
 );
 
 CREATE TABLE product_tag (
@@ -300,15 +314,6 @@ CREATE TABLE archive_item (
     title VARCHAR(255),
     archive_id INT NOT NULL,
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE
-);
-
-CREATE TABLE media (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
-    full_size VARCHAR(255) NOT NULL,
-    thumbnail VARCHAR(255) NOT NULL,
-    compressed VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE hero (

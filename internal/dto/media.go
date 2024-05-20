@@ -6,19 +6,31 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// ConvertEntityToCommonMedia converts an entity.Media object to a common.Media object.
-func ConvertEntityToCommonMedia(eMedia entity.Media) *pb_common.Media {
+// ConvertEntityToCommonMedia converts an entity.Media object to a common.MediaFull object.
+func ConvertEntityToCommonMedia(eMedia entity.MediaFull) *pb_common.MediaFull {
 	// Convert time.Time to *timestamppb.Timestamp
 	createdAt := timestamppb.New(eMedia.CreatedAt)
 
 	// Convert MediaInsert
 	mediaInsert := &pb_common.MediaInsert{
-		FullSize:   eMedia.FullSize,
-		Thumbnail:  eMedia.Thumbnail,
-		Compressed: eMedia.Compressed,
+		FullSize: &pb_common.MediaInfo{
+			MediaUrl: eMedia.FullSizeMediaURL,
+			Width:    int32(eMedia.FullSizeWidth),
+			Height:   int32(eMedia.FullSizeHeight),
+		},
+		Thumbnail: &pb_common.MediaInfo{
+			MediaUrl: eMedia.ThumbnailMediaURL,
+			Width:    int32(eMedia.ThumbnailWidth),
+			Height:   int32(eMedia.ThumbnailHeight),
+		},
+		Compressed: &pb_common.MediaInfo{
+			MediaUrl: eMedia.CompressedMediaURL,
+			Width:    int32(eMedia.CompressedWidth),
+			Height:   int32(eMedia.CompressedHeight),
+		},
 	}
 
-	return &pb_common.Media{
+	return &pb_common.MediaFull{
 		Id:        int32(eMedia.Id), // Assuming the conversion from int to int32 is safe and acceptable
 		CreatedAt: createdAt,
 		Media:     mediaInsert,

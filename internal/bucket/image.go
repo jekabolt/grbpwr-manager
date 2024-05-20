@@ -82,25 +82,29 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 }
 
 // upload single image with defined quality and	prefix to bucket
-func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (string, error) {
+func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (*pb_common.MediaInfo, error) {
 	var buf bytes.Buffer
 
 	// Encode the image to JPEG format with given quality.
 	if err := encodeWEBP(&buf, img, quality); err != nil {
-		return "", fmt.Errorf("failed to encode JPG: %v", err)
+		return nil, fmt.Errorf("failed to encode JPG: %v", err)
 	}
 
 	// Upload the JPEG data to S3 bucket.
 	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeWEBP)
 	if err != nil {
-		return "", fmt.Errorf("failed to upload image to bucket: %v", err)
+		return nil, fmt.Errorf("failed to upload image to bucket: %v", err)
 	}
 
-	return url, nil
+	return &pb_common.MediaInfo{
+		MediaUrl: url,
+		Width:    int32(img.Bounds().Dx()),
+		Height:   int32(img.Bounds().Dy()),
+	}, nil
 }
 
 // compose internal image object (with FullSize & Compressed formats) and upload it to S3
-func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.Media, error) {
+func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.MediaFull, error) {
 	imgObj := &pb_common.MediaInsert{}
 
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
@@ -126,15 +130,21 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	}
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
-		FullSize:   imgObj.FullSize,
-		Thumbnail:  imgObj.Thumbnail,
-		Compressed: imgObj.Compressed,
+		FullSizeMediaURL:   imgObj.FullSize.MediaUrl,
+		FullSizeWidth:      int(imgObj.FullSize.Width),
+		FullSizeHeight:     int(imgObj.FullSize.Height),
+		CompressedMediaURL: imgObj.Compressed.MediaUrl,
+		CompressedWidth:    int(imgObj.Compressed.Width),
+		CompressedHeight:   int(imgObj.Compressed.Height),
+		ThumbnailMediaURL:  imgObj.Thumbnail.MediaUrl,
+		ThumbnailWidth:     int(imgObj.Thumbnail.Width),
+		ThumbnailHeight:    int(imgObj.Thumbnail.Height),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add media to db: %v", err)
 	}
 
-	return &pb_common.Media{
+	return &pb_common.MediaFull{
 		Id:    int32(mediaId),
 		Media: imgObj,
 	}, nil

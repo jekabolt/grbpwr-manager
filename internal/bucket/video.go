@@ -11,7 +11,7 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName string, contentType string) (*pb_common.Media, error) {
+func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName string, contentType string) (*pb_common.MediaFull, error) {
 
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
@@ -42,9 +42,9 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	url := b.getCDNURL(fp)
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
-		FullSize:   url,
-		Compressed: url,
-		Thumbnail:  url,
+		FullSizeMediaURL:   url,
+		CompressedMediaURL: url,
+		ThumbnailMediaURL:  url,
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't add media to db",
@@ -52,13 +52,17 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		return nil, err
 	}
 
-	mi := &pb_common.MediaInsert{
-		FullSize:   url,
-		Compressed: url,
-		Thumbnail:  url,
+	mInfo := &pb_common.MediaInfo{
+		MediaUrl: url,
 	}
 
-	return &pb_common.Media{
+	mi := &pb_common.MediaInsert{
+		FullSize:   mInfo,
+		Compressed: mInfo,
+		Thumbnail:  mInfo,
+	}
+
+	return &pb_common.MediaFull{
 		Id:    int32(mediaId),
 		Media: mi,
 	}, nil
