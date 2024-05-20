@@ -10,7 +10,7 @@ import (
 type ProductNew struct {
 	Product          *ProductInsert              `valid:"required"`
 	SizeMeasurements []SizeWithMeasurementInsert `valid:"required"`
-	Media            []ProductMediaInsert        `valid:"required"`
+	MediaIds         []int                       `valid:"required"`
 	Tags             []ProductTagInsert          `valid:"required"`
 }
 
@@ -18,7 +18,7 @@ type ProductFull struct {
 	Product      *Product
 	Sizes        []ProductSize
 	Measurements []ProductMeasurement
-	Media        []ProductMedia
+	Media        []MediaFull
 	Tags         []ProductTag
 }
 
@@ -233,21 +233,6 @@ type ProductMeasurement struct {
 type ProductMeasurementInsert struct {
 	MeasurementNameID int             `db:"measurement_name_id"`
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
-}
-
-// ProductMedia represents the product_media table
-type ProductMedia struct {
-	ID        int       `db:"id"`
-	CreatedAt time.Time `db:"created_at"`
-	ProductID int       `db:"product_id"`
-	ProductMediaInsert
-}
-
-// ProductMedia represents the product_media table
-type ProductMediaInsert struct {
-	FullSize   string `db:"full_size"`
-	Thumbnail  string `db:"thumbnail"`
-	Compressed string `db:"compressed"`
 }
 
 // ProductTag represents the product_tag table

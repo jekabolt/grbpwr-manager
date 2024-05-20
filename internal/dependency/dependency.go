@@ -71,7 +71,6 @@ type (
 		UpdateOrderShippingCarrier(ctx context.Context, orderUUID string, shipmentCarrierId int) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
-		UpdateShippingInfo(ctx context.Context, orderUUID string, shipment *entity.Shipment) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
@@ -128,7 +127,7 @@ type (
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error)
 		DeleteMediaById(ctx context.Context, id int) error
-		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Media, error)
+		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 	}
 
 	Admin interface {
@@ -189,11 +188,11 @@ type (
 	}
 
 	FileStore interface {
-		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.Media, error)
+		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.MediaFull, error)
 		// UploadContentVideo uploads mp4 video to bucket
-		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.Media, error)
+		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.MediaFull, error)
 		// UploadContentImageFromUrl uploads image from url to bucket
-		UploadContentImageFromUrl(ctx context.Context, url, folder, imageName string) (*pb_common.Media, error)
+		UploadContentImageFromUrl(ctx context.Context, url, folder, imageName string) (*pb_common.MediaFull, error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 	}

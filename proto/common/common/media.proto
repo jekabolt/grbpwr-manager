@@ -6,7 +6,7 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-message Media {
+message MediaFull {
   // Media ID
   int32 id = 1;
   // Media created date
@@ -17,9 +17,18 @@ message Media {
 
 message MediaInsert {
   // Full-size media URL
-  string full_size = 1;
+  MediaInfo full_size = 1;
   // Thumbnail media URL
-  string thumbnail = 2;
+  MediaInfo thumbnail = 2;
   // Compressed media URL
-  string compressed = 3;
+  MediaInfo compressed = 3;
+}
+
+message MediaInfo {
+  // Media URL
+  string media_url = 1;
+  // width
+  int32 width = 2;
+  // height
+  int32 height = 3;
 }

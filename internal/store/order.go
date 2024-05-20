@@ -501,10 +501,6 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			promo = entity.PromoCode{}
 		}
 
-		if !promo.FreeShipping {
-			subtotal = subtotal.Add(shipmentCarrier.Price)
-		}
-
 		shipmentId, err := insertShipment(ctx, rep, shipmentCarrier)
 		if err != nil {
 			return fmt.Errorf("error while inserting shipment: %w", err)
@@ -512,6 +508,10 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 
 		if !promo.Discount.Equals(decimal.Zero) {
 			subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+		}
+
+		if !promo.FreeShipping {
+			subtotal = subtotal.Add(shipmentCarrier.Price)
 		}
 
 		shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep,
@@ -1092,16 +1092,17 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId i
 	if !promo.Allowed || promo.Expiration.Before(time.Now()) {
 		promo = &entity.PromoCode{}
 	}
+
+	if !promo.Discount.Equals(decimal.Zero) {
+		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+	}
+
 	if !promo.FreeShipping {
 		shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
 		if !ok {
 			return decimal.Zero, fmt.Errorf("shipment carrier is not exists")
 		}
 		subtotal = subtotal.Add(shipmentCarrier.Price)
-	}
-
-	if !promo.Discount.Equals(decimal.Zero) {
-		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
 	}
 
 	err := updateOrderTotalPromo(ctx, rep, orderId, promo.ID, subtotal)
@@ -1269,51 +1270,6 @@ func updateOrderShipment(ctx context.Context, rep dependency.Repository, orderId
 	if err != nil {
 		return fmt.Errorf("can't update order shipment: %w", err)
 	}
-	return nil
-}
-
-// UpdateShippingStatus updates the shipping status of an order.
-func (ms *MYSQLStore) UpdateShippingInfo(ctx context.Context, orderUUID string, shipment *entity.Shipment) error {
-	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderByUUID(ctx, rep, orderUUID)
-		if err != nil {
-			return err
-		}
-
-		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
-		if !ok {
-			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
-		}
-
-		if orderStatus.Name != entity.Confirmed {
-			return fmt.Errorf("order status is not confirmed: order status %s", orderStatus.Name)
-		}
-
-		sc, ok := ms.cache.GetShipmentCarrierById(shipment.CarrierID)
-		if !ok || !sc.Allowed {
-			return fmt.Errorf("shipment carrier is not exists: shipment carrier id %d", shipment.CarrierID)
-		}
-		err = updateOrderShipment(ctx, rep, order.ID, shipment)
-		if err != nil {
-			return fmt.Errorf("can't update order shipment: %w", err)
-		}
-
-		statusShipped, ok := ms.cache.GetOrderStatusByName(entity.Shipped)
-		if !ok {
-			return fmt.Errorf("order status is not exists: order status name %s", entity.Shipped)
-		}
-
-		err = updateOrderStatus(ctx, rep, order.ID, statusShipped.ID)
-		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("can't update order payment: %w", err)
-	}
-
 	return nil
 }
 

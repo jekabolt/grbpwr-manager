@@ -11,7 +11,6 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/promo.proto";
-import "common/shipment.proto";
 import "google/api/annotations.proto";
 import "google/type/decimal.proto";
 
@@ -190,14 +189,6 @@ service AdminService {
     };
   }
 
-  // Updates shipping information for an order
-  rpc UpdateShippingInfo(UpdateShippingInfoRequest) returns (UpdateShippingInfoResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/orders/{order_uuid}/update-shipping-info"
-      body: "*"
-    };
-  }
-
   // Retrieves an order by its ID
   rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
     option (google.api.http) = {get: "/api/admin/orders/{order_uuid}"};
@@ -321,7 +312,7 @@ message UploadContentImageRequest {
 }
 
 message UploadContentImageResponse {
-  common.Media media = 1;
+  common.MediaFull media = 1;
 }
 
 message UploadContentMediaLinkRequest {
@@ -329,7 +320,7 @@ message UploadContentMediaLinkRequest {
 }
 
 message UploadContentMediaLinkResponse {
-  common.Media media = 1;
+  common.MediaFull media = 1;
 }
 
 message UploadContentVideoRequest {
@@ -338,7 +329,7 @@ message UploadContentVideoRequest {
 }
 
 message UploadContentVideoResponse {
-  common.Media media = 1;
+  common.MediaFull media = 1;
 }
 
 message ListObjectsPagedRequest {
@@ -348,7 +339,7 @@ message ListObjectsPagedRequest {
 }
 
 message ListObjectsPagedResponse {
-  repeated common.Media list = 1;
+  repeated common.MediaFull list = 1;
 }
 
 message DeleteFromBucketRequest {
@@ -491,13 +482,6 @@ message DisablePromoCodeRequest {
 message DisablePromoCodeResponse {}
 
 // ORDER MANAGER
-
-message UpdateShippingInfoRequest {
-  string order_uuid = 1;
-  common.Shipment shipping_info = 2;
-}
-
-message UpdateShippingInfoResponse {}
 
 message SetTrackingNumberRequest {
   string order_uuid = 1;
