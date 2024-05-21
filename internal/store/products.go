@@ -632,10 +632,11 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 	return nil
 }
 
-func (ms *MYSQLStore) DeleteProductMedia(ctx context.Context, productMediaId int) error {
-	query := "DELETE FROM product_media WHERE id = :id"
+func (ms *MYSQLStore) DeleteProductMedia(ctx context.Context, productId, mediaId int) error {
+	query := "DELETE FROM product_media WHERE product_id = :productId AND media_id = :mediaId"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"id": productMediaId,
+		"productId": productId,
+		"mediaId":   mediaId,
 	})
 }
 
