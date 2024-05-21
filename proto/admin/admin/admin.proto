@@ -433,9 +433,7 @@ message DeleteProductMediaResponse {}
 
 message AddProductMediaRequest {
   int32 product_id = 1;
-  string full_size = 2;
-  string thumbnail = 3;
-  string compressed = 4;
+  repeated int32 media_ids = 2;
 }
 
 message AddProductMediaResponse {}

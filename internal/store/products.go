@@ -639,14 +639,12 @@ func (ms *MYSQLStore) DeleteProductMedia(ctx context.Context, productMediaId int
 	})
 }
 
-func (ms *MYSQLStore) AddProductMedia(ctx context.Context, productId int, fullSize string, thumbnail string, compressed string) error {
-	query := `INSERT INTO product_media (product_id, full_size, thumbnail, compressed) VALUES (:productId, :fullSize, :thumbnail, :compressed)`
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"productId":  productId,
-		"fullSize":   fullSize,
-		"thumbnail":  thumbnail,
-		"compressed": compressed,
-	})
+func (ms *MYSQLStore) AddProductMedia(ctx context.Context, productId int, mediaIds []int) error {
+	err := insertMedia(ctx, ms, mediaIds, productId)
+	if err != nil {
+		return fmt.Errorf("can't insert media: %w", err)
+	}
+	return nil
 }
 
 func (ms *MYSQLStore) AddProductTag(ctx context.Context, productId int, tag string) error {
