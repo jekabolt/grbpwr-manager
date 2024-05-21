@@ -44,7 +44,7 @@ type (
 		// DeleteProductMedia deletes media for a product.
 		DeleteProductMedia(ctx context.Context, productMediaId int) error
 		// AddProductMedia adds new media for a product.
-		AddProductMedia(ctx context.Context, productId int, fullSize string, thumbnail string, compressed string) error
+		AddProductMedia(ctx context.Context, productId int, mediaIds []int) error
 		// AddProductTag adds a new tag for a product.
 		AddProductTag(ctx context.Context, productId int, tag string) error
 		// DeleteProductTag deletes a tag for a product.

@@ -189,7 +189,13 @@ func (s *Server) UpdateProductMeasurements(ctx context.Context, req *pb_admin.Up
 }
 
 func (s *Server) AddProductMedia(ctx context.Context, req *pb_admin.AddProductMediaRequest) (*pb_admin.AddProductMediaResponse, error) {
-	err := s.repo.Products().AddProductMedia(ctx, int(req.ProductId), req.FullSize, req.Thumbnail, req.Compressed)
+
+	mIds := make([]int, 0, len(req.MediaIds))
+	for _, mId := range req.MediaIds {
+		mIds = append(mIds, int(mId))
+	}
+
+	err := s.repo.Products().AddProductMedia(ctx, int(req.ProductId), mIds)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't add product media",
 			slog.String("err", err.Error()),
