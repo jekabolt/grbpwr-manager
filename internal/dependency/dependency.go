@@ -42,7 +42,7 @@ type (
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// DeleteProductMedia deletes media for a product.
-		DeleteProductMedia(ctx context.Context, productMediaId int) error
+		DeleteProductMedia(ctx context.Context, productId, mediaId int) error
 		// AddProductMedia adds new media for a product.
 		AddProductMedia(ctx context.Context, productId int, mediaIds []int) error
 		// AddProductTag adds a new tag for a product.

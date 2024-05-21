@@ -228,7 +228,7 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 }
 
 func (s *Server) DeleteProductMedia(ctx context.Context, req *pb_admin.DeleteProductMediaRequest) (*pb_admin.DeleteProductMediaResponse, error) {
-	err := s.repo.Products().DeleteProductMedia(ctx, int(req.ProductMediaId))
+	err := s.repo.Products().DeleteProductMedia(ctx, int(req.ProductId), int(req.MediaId))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't delete product media",
 			slog.String("err", err.Error()),

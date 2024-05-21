@@ -127,7 +127,7 @@ service AdminService {
 
   // Deletes media associated with a product.
   rpc DeleteProductMedia(DeleteProductMediaRequest) returns (DeleteProductMediaResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/media/{product_media_id}/delete"};
+    option (google.api.http) = {delete: "/api/admin/product/{product_id}/media/{media_id}/delete"};
   }
 
   // Adds media to a product.
@@ -426,7 +426,8 @@ message UpdateProductSizeStockRequest {
 message UpdateProductSizeStockResponse {}
 
 message DeleteProductMediaRequest {
-  int32 product_media_id = 1;
+  int32 product_id = 1;
+  int32 media_id = 2;
 }
 
 message DeleteProductMediaResponse {}
