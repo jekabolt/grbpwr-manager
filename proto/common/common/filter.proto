@@ -23,7 +23,7 @@ message FilterConditions {
   string to = 2;
   bool on_sale = 3;
   string color = 4;
-  int32 category_id = 5;
+  repeated int32 category_ids = 5;
   repeated int32 sizes_ids = 6;
   bool preorder = 7;
   string by_tag = 8;

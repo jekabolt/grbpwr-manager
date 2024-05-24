@@ -13,15 +13,20 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		sizes[i] = int32(v)
 	}
 
+	categories := make([]int32, len(fc.CategoryIds))
+	for i, v := range fc.CategoryIds {
+		categories[i] = int32(v)
+	}
+
 	return &pb_common.FilterConditions{
-		From:       fc.From.String(),
-		To:         fc.To.String(),
-		OnSale:     fc.OnSale,
-		Color:      fc.Color,
-		CategoryId: int32(fc.CategoryId),
-		SizesIds:   sizes,
-		Preorder:   fc.Preorder,
-		ByTag:      fc.ByTag,
+		From:        fc.From.String(),
+		To:          fc.To.String(),
+		OnSale:      fc.OnSale,
+		Color:       fc.Color,
+		CategoryIds: categories,
+		SizesIds:    sizes,
+		Preorder:    fc.Preorder,
+		ByTag:       fc.ByTag,
 	}
 }
 
@@ -63,6 +68,12 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	for i, v := range fc.SizesIds {
 		sizes[i] = int(v)
 	}
+
+	categories := make([]int, len(fc.CategoryIds))
+	for i, v := range fc.CategoryIds {
+		categories[i] = int(v)
+	}
+
 	from, err := decimal.NewFromString(fc.From)
 	if err != nil {
 		from = decimal.Zero
@@ -73,13 +84,13 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	}
 
 	return &entity.FilterConditions{
-		From:       from,
-		To:         to,
-		OnSale:     fc.OnSale,
-		Color:      fc.Color,
-		CategoryId: int(fc.CategoryId),
-		SizesIds:   sizes,
-		Preorder:   fc.Preorder,
-		ByTag:      fc.ByTag,
+		From:        from,
+		To:          to,
+		OnSale:      fc.OnSale,
+		Color:       fc.Color,
+		CategoryIds: categories,
+		SizesIds:    sizes,
+		Preorder:    fc.Preorder,
+		ByTag:       fc.ByTag,
 	}
 }
