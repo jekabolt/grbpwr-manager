@@ -322,9 +322,9 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			whereClauses = append(whereClauses, "color = :color")
 			args["color"] = filterConditions.Color
 		}
-		if filterConditions.CategoryId != 0 {
-			whereClauses = append(whereClauses, "category_id = :categoryId")
-			args["categoryId"] = filterConditions.CategoryId
+		if len(filterConditions.CategoryIds) != 0 {
+			whereClauses = append(whereClauses, "category_id IN (:categoryIds)")
+			args["categoryIds"] = filterConditions.CategoryIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
 			whereClauses = append(whereClauses, "id IN (SELECT product_id FROM product_size WHERE size_id IN (:sizes))")

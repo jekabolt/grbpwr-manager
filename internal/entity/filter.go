@@ -48,12 +48,12 @@ func SortFactorsToSS(factors []SortFactor) []string {
 }
 
 type FilterConditions struct {
-	From       decimal.Decimal
-	To         decimal.Decimal
-	OnSale     bool
-	Color      string
-	CategoryId int
-	SizesIds   []int
-	Preorder   bool
-	ByTag      string
+	From        decimal.Decimal
+	To          decimal.Decimal
+	OnSale      bool
+	Color       string
+	CategoryIds []int
+	SizesIds    []int
+	Preorder    bool
+	ByTag       string
 }
