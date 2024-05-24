@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -20,14 +21,18 @@ func (ms *MYSQLStore) Promo() dependency.Promo {
 	}
 }
 
+func startOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.UTC().Location())
+}
 func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
+	expiration := startOfDay(promo.Expiration)
 	id, err := ExecNamedLastId(ctx, ms.DB(), `
 	INSERT INTO promo_code (code, free_shipping, discount, expiration, voucher, allowed) VALUES
 		(:code, :freeShipping, :discount, :expiration, :voucher, :allowed)`, map[string]any{
 		"code":         promo.Code,
 		"freeShipping": promo.FreeShipping,
 		"discount":     promo.Discount,
-		"expiration":   promo.Expiration,
+		"expiration":   expiration,
 		"voucher":      promo.Voucher,
 		"allowed":      promo.Allowed,
 	})
@@ -92,14 +97,14 @@ func (ms *MYSQLStore) DisableVoucher(ctx context.Context, promoID sql.NullInt32)
 	if !ok {
 		return nil
 	}
+
 	if promo.Voucher {
 		err := ms.DisablePromoCode(ctx, promo.Code)
 		if err != nil {
 			return fmt.Errorf("failed to disable voucher: %w", err)
 		}
+		ms.cache.DisablePromo(promo.Code)
 	}
-
-	ms.cache.DisablePromo(promo.Code)
 
 	return nil
 }
