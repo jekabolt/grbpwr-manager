@@ -51,7 +51,7 @@ type (
 		DeleteProductTag(ctx context.Context, productId int, tag string) error
 	}
 	Hero interface {
-		SetHero(ctx context.Context, main entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error
+		SetHero(ctx context.Context, main *entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}
 
@@ -117,15 +117,12 @@ type (
 
 	Archive interface {
 		AddArchive(ctx context.Context, archiveNew *entity.ArchiveNew) (int, error)
-		UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveInsert) error
-		AddArchiveItems(ctx context.Context, archiveId int, archiveItemNew []entity.ArchiveItemInsert) error
-		DeleteArchiveItem(ctx context.Context, archiveItemID int) error
+		UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveBody, archiveItems []entity.ArchiveItemInsert) error
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error)
-		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
 		DeleteArchiveById(ctx context.Context, id int) error
 	}
 	Media interface {
-		AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error)
+		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 	}

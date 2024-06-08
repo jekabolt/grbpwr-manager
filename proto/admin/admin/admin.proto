@@ -258,27 +258,9 @@ service AdminService {
     };
   }
 
-  // AddArchiveItems adds items to an existing archive.
-  rpc AddArchiveItems(AddArchiveItemsRequest) returns (AddArchiveItemsResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/archive/add/items"
-      body: "*"
-    };
-  }
-
-  // DeleteArchiveItem deletes an archive item.
-  rpc DeleteArchiveItem(DeleteArchiveItemRequest) returns (DeleteArchiveItemResponse) {
-    option (google.api.http) = {delete: "/api/admin/archive/delete/item/{item_id}"};
-  }
-
   // GetArchivesPaged retrieves paged archives.
   rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
     option (google.api.http) = {get: "/api/admin/archive/paged"};
-  }
-
-  // GetArchiveById retrieves an archive by ID.
-  rpc GetArchiveById(GetArchiveByIdRequest) returns (GetArchiveByIdResponse) {
-    option (google.api.http) = {get: "/api/admin/archive/{id}"};
   }
 
   // DeleteArchiveById deletes an archive by ID.
@@ -532,8 +514,8 @@ message CancelOrderResponse {}
 // HERO MANAGER
 
 message AddHeroRequest {
-  common.HeroInsert main = 1;
-  repeated common.HeroInsert ads = 2;
+  common.HeroItemInsert main = 1;
+  repeated common.HeroItemInsert ads = 2;
   repeated int32 product_ids = 3;
 }
 
@@ -557,25 +539,10 @@ message AddArchiveResponse {
 
 message UpdateArchiveRequest {
   int32 id = 1;
-  common.ArchiveInsert archive = 2;
+  common.ArchiveNew archive_update = 2;
 }
 
 message UpdateArchiveResponse {}
-
-message AddArchiveItemsRequest {
-  int32 archive_id = 1;
-  repeated common.ArchiveItemInsert items = 2;
-}
-
-message AddArchiveItemsResponse {
-  string message = 1;
-}
-
-message DeleteArchiveItemRequest {
-  int32 item_id = 1;
-}
-
-message DeleteArchiveItemResponse {}
 
 message GetArchivesPagedRequest {
   int32 limit = 1;
@@ -585,14 +552,6 @@ message GetArchivesPagedRequest {
 
 message GetArchivesPagedResponse {
   repeated common.ArchiveFull archives = 1;
-}
-
-message GetArchiveByIdRequest {
-  int32 id = 1;
-}
-
-message GetArchiveByIdResponse {
-  common.ArchiveFull archive = 1;
 }
 
 message DeleteArchiveByIdRequest {

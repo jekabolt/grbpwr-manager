@@ -145,7 +145,6 @@ CREATE TABLE size_measurement (
 CREATE TABLE media (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
     full_size VARCHAR(255) NOT NULL,
     full_size_width INT NOT NULL,
     full_size_height INT NOT NULL,
@@ -309,39 +308,31 @@ CREATE TABLE archive (
 
 CREATE TABLE archive_item (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    media VARCHAR(255) NOT NULL,
-    url VARCHAR(255),
+    media_id INT NOT NULL,
     title VARCHAR(255),
+    url VARCHAR(255),
     archive_id INT NOT NULL,
-    FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE
+    sequence_number INT NOT NULL DEFAULT 0,
+    FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE,
+    FOREIGN KEY (media_id) REFERENCES media(id)
 );
 
 CREATE TABLE hero (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    content_link VARCHAR(255),
-    content_type VARCHAR(255),
+    media_id INT NOT NULL,
     explore_link VARCHAR(255),
-    explore_text VARCHAR(255)
+    explore_text VARCHAR(255),
+    main BOOLEAN DEFAULT FALSE NOT NULL,
+    FOREIGN KEY (media_id) REFERENCES media(id)
 );
 
 CREATE TABLE hero_product (
-    hero_id INT NOT NULL,
     product_id INT NOT NULL,
     sequence_number INT NOT NULL DEFAULT 0,
-    FOREIGN KEY (hero_id) REFERENCES hero(id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE,
-    PRIMARY KEY (hero_id, product_id)
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
 );
 
-CREATE TABLE hero_ads (
-    hero_id INT NOT NULL,
-    content_link VARCHAR(255),
-    content_type VARCHAR(255),
-    explore_link VARCHAR(255),
-    explore_text VARCHAR(255),
-    FOREIGN KEY (hero_id) REFERENCES hero(id) ON DELETE CASCADE
-);
 
 CREATE TABLE send_email_request (
     id INT PRIMARY KEY AUTO_INCREMENT,

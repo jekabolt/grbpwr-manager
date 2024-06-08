@@ -105,7 +105,7 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 
 // compose internal image object (with FullSize & Compressed formats) and upload it to S3
 func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.MediaFull, error) {
-	imgObj := &pb_common.MediaInsert{}
+	imgObj := &pb_common.MediaItem{}
 
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
 	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
@@ -129,7 +129,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
 	}
 
-	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
+	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   imgObj.FullSize.MediaUrl,
 		FullSizeWidth:      int(imgObj.FullSize.Width),
 		FullSizeHeight:     int(imgObj.FullSize.Height),

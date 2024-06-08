@@ -345,8 +345,8 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		return nil, 0, fmt.Errorf("can't get product count: %w", err)
 	}
 
-	slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
-	slog.Default().DebugContext(ctx, "countQuery", slog.String("countQuery", countQuery))
+	// slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
+	// slog.Default().DebugContext(ctx, "countQuery", slog.String("countQuery", countQuery))
 
 	// Add limit and offset
 	args["limit"] = limit

@@ -7,12 +7,12 @@ import (
 )
 
 // ConvertEntityToCommonMedia converts an entity.Media object to a common.MediaFull object.
-func ConvertEntityToCommonMedia(eMedia entity.MediaFull) *pb_common.MediaFull {
+func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 	// Convert time.Time to *timestamppb.Timestamp
 	createdAt := timestamppb.New(eMedia.CreatedAt)
 
-	// Convert MediaInsert
-	mediaInsert := &pb_common.MediaInsert{
+	// Convert MediaItem
+	MediaItem := &pb_common.MediaItem{
 		FullSize: &pb_common.MediaInfo{
 			MediaUrl: eMedia.FullSizeMediaURL,
 			Width:    int32(eMedia.FullSizeWidth),
@@ -33,6 +33,6 @@ func ConvertEntityToCommonMedia(eMedia entity.MediaFull) *pb_common.MediaFull {
 	return &pb_common.MediaFull{
 		Id:        int32(eMedia.Id), // Assuming the conversion from int to int32 is safe and acceptable
 		CreatedAt: createdAt,
-		Media:     mediaInsert,
+		Media:     MediaItem,
 	}
 }

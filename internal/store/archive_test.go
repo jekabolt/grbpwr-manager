@@ -15,11 +15,11 @@ func TestArchiveCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	an := &entity.ArchiveNew{
-		Archive: &entity.ArchiveInsert{
+		Archive: &entity.ArchiveBody{
 			Title:       "test",
 			Description: "test",
 		},
-		Items: []entity.ArchiveItemInsert{
+		Items: []entity.ArchiveItem{
 			{
 				Media: "1",
 				URL: sql.NullString{
@@ -47,7 +47,7 @@ func TestArchiveCRUD(t *testing.T) {
 	aid, err := as.AddArchive(ctx, an)
 	assert.NoError(t, err)
 
-	err = as.AddArchiveItems(ctx, aid, []entity.ArchiveItemInsert{
+	err = as.AddArchiveItems(ctx, aid, []entity.ArchiveItem{
 		{
 			Media: "3",
 			URL: sql.NullString{

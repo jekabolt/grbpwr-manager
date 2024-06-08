@@ -10,11 +10,11 @@ import (
 
 type ArchiveFull struct {
 	Archive *Archive
-	Items   []ArchiveItem
+	Items   []ArchiveItemFull
 }
 
 type ArchiveNew struct {
-	Archive *ArchiveInsert      `valid:"required"`
+	Archive *ArchiveBody        `valid:"required"`
 	Items   []ArchiveItemInsert `valid:"required"`
 }
 
@@ -22,22 +22,22 @@ type Archive struct {
 	ID        int       `db:"id"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
-	ArchiveInsert
+	ArchiveBody
 }
 
-type ArchiveInsert struct {
+type ArchiveBody struct {
 	Title       string `db:"title" valid:"required,utfletternum"`
 	Description string `db:"description" valid:"required,utfletternum"`
 }
 
-type ArchiveItem struct {
-	ID        int `db:"id"`
-	ArchiveID int `db:"archive_id"`
-	ArchiveItemInsert
+type ArchiveItemFull struct {
+	ID        int `db:"id" json:"id"`
+	ArchiveID int `db:"archive_id" json:"archive_id"`
+	ArchiveItem
 }
 
-func (ai *ArchiveItem) UnmarshalJSON(data []byte) error {
-	type Alias ArchiveItem
+func (ai *ArchiveItemFull) UnmarshalJSON(data []byte) error {
+	type Alias ArchiveItemFull
 	aux := &struct {
 		URL   *string `json:"url"`
 		Title *string `json:"title"`
@@ -66,9 +66,9 @@ func (ai *ArchiveItem) UnmarshalJSON(data []byte) error {
 }
 
 type ArchiveItemInsert struct {
-	Media string         `db:"media" valid:"required,url"`
-	URL   sql.NullString `db:"url" valid:"url"`
-	Title sql.NullString `db:"title" valid:"utfletternum"`
+	MediaId int            `db:"media_id" valid:"required,url"`
+	URL     sql.NullString `db:"url" valid:"url"`
+	Title   sql.NullString `db:"title" valid:"utfletternum"`
 }
 
 // ValidateArchiveNew validates the ArchiveNew struct
@@ -84,4 +84,10 @@ func (an *ArchiveNew) ValidateArchiveNew() error {
 		}
 	}
 	return nil
+}
+
+type ArchiveItem struct {
+	Media MediaFull      `json:"media"`
+	URL   sql.NullString `json:"url"`
+	Title sql.NullString `json:"title"`
 }

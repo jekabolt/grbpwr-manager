@@ -19,7 +19,7 @@ func (ms *MYSQLStore) Media() dependency.Media {
 	}
 }
 
-func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaInsert) (int, error) {
+func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaItem) (int, error) {
 	query := `INSERT INTO media (
 		full_size, full_size_width, full_size_height,
 		compressed, compressed_width, compressed_height,
