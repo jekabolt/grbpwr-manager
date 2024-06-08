@@ -273,7 +273,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		pbMedia = append(pbMedia, &pb_common.MediaFull{
 			Id:        int32(media.Id),
 			CreatedAt: timestamppb.New(media.CreatedAt),
-			Media: &pb_common.MediaInsert{
+			Media: &pb_common.MediaItem{
 				FullSize: &pb_common.MediaInfo{
 					MediaUrl: media.FullSizeMediaURL,
 					Width:    int32(media.FullSizeWidth),

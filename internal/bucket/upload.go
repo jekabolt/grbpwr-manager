@@ -20,7 +20,7 @@ func (b *Bucket) UploadContentImage(ctx context.Context, rawB64Image, folder, im
 func (b *Bucket) UploadContentImageFromUrl(ctx context.Context, url, folder, imageName string) (*pb_common.MediaFull, error) {
 	rawB64Image, err := getMediaB64(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get media from url: %v", err)
+		return nil, fmt.Errorf("failed to decode media from url: %v", err)
 	}
 	img, err := imageFromString(rawB64Image)
 	if err != nil {

@@ -92,8 +92,8 @@ func getRandomMeasurement(db *MYSQLStore) (*entity.MeasurementName, error) {
 	return &m, nil
 }
 
-func getRandomMedia() []entity.ProductMediaInsert {
-	return []entity.ProductMediaInsert{
+func getRandomMedia() []entity.ProductMediaItem {
+	return []entity.ProductMediaItem{
 		{
 			FullSize:   "full_size.jpg",
 			Thumbnail:  "thumbnail.jpg",

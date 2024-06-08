@@ -64,7 +64,7 @@ func (ms *MYSQLStore) GetAllUnsent(ctx context.Context, withError bool) ([]entit
 
 	srs, err := QueryListNamed[entity.SendEmailRequest](ctx, ms.DB(), query, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get media: %w", err)
+		return nil, fmt.Errorf("failed to get unsent emails: %w", err)
 	}
 
 	return srs, nil

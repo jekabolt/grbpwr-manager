@@ -41,7 +41,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	}
 	url := b.getCDNURL(fp)
 
-	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaInsert{
+	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   url,
 		CompressedMediaURL: url,
 		ThumbnailMediaURL:  url,
@@ -56,7 +56,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		MediaUrl: url,
 	}
 
-	mi := &pb_common.MediaInsert{
+	mi := &pb_common.MediaItem{
 		FullSize:   mInfo,
 		Compressed: mInfo,
 		Thumbnail:  mInfo,

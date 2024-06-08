@@ -12,10 +12,10 @@ message MediaFull {
   // Media created date
   google.protobuf.Timestamp created_at = 2;
   // media
-  MediaInsert media = 3;
+  MediaItem media = 3;
 }
 
-message MediaInsert {
+message MediaItem {
   // Full-size media URL
   MediaInfo full_size = 1;
   // Thumbnail media URL

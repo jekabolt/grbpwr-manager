@@ -5,22 +5,27 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func ConvertCommonHeroInsertToEntity(hi *pb_common.HeroInsert) entity.HeroInsert {
+func ConvertCommonHeroInsertToEntity(hi *pb_common.HeroItemInsert) entity.HeroInsert {
 	return entity.HeroInsert{
-		ContentLink: hi.ContentLink,
-		ContentType: hi.ContentType,
+		MediaId:     int(hi.MediaId),
 		ExploreLink: hi.ExploreLink,
 		ExploreText: hi.ExploreText,
 	}
 }
 
-func ConvertEntityHeroInsertToCommon(hi *entity.HeroInsert) *pb_common.HeroInsert {
-	return &pb_common.HeroInsert{
-		ContentLink: hi.ContentLink,
-		ContentType: hi.ContentType,
+func ConvertEntityHeroItemInsertToCommon(hi *entity.HeroInsert) *pb_common.HeroItemInsert {
+	return &pb_common.HeroItemInsert{
+		MediaId:     int32(hi.MediaId),
+		ExploreLink: hi.ExploreLink,
+		ExploreText: hi.ExploreText,
+	}
+}
+
+func ConvertEntityHeroItemToCommon(hi *entity.HeroItem) *pb_common.HeroItem {
+	return &pb_common.HeroItem{
+		Media:       ConvertEntityToCommonMedia(hi.Media),
 		ExploreLink: hi.ExploreLink,
 		ExploreText: hi.ExploreText,
 	}
@@ -28,9 +33,9 @@ func ConvertEntityHeroInsertToCommon(hi *entity.HeroInsert) *pb_common.HeroInser
 
 func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, error) {
 
-	ads := make([]*pb_common.HeroInsert, 0, len(hf.Ads))
+	ads := make([]*pb_common.HeroItem, 0, len(hf.Ads))
 	for _, ad := range hf.Ads {
-		ads = append(ads, ConvertEntityHeroInsertToCommon(&ad))
+		ads = append(ads, ConvertEntityHeroItemToCommon(&ad))
 	}
 	prdsFeatured := make([]*pb_common.Product, 0, len(hf.ProductsFeatured))
 	for _, prd := range hf.ProductsFeatured {
@@ -41,9 +46,7 @@ func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, er
 		prdsFeatured = append(prdsFeatured, prd)
 	}
 	return &pb_common.HeroFull{
-		Id:               int32(hf.Id),
-		CreatedAt:        timestamppb.New(hf.CreatedAt),
-		Main:             ConvertEntityHeroInsertToCommon(&hf.Main),
+		Main:             ConvertEntityHeroItemToCommon(hf.Main),
 		Ads:              ads,
 		ProductsFeatured: prdsFeatured,
 	}, nil

@@ -125,11 +125,6 @@ service FrontendService {
   rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
     option (google.api.http) = {get: "/api/frontend/archive/paged"};
   }
-
-  // GetArchiveById retrieves an archive by ID.
-  rpc GetArchiveById(GetArchiveByIdRequest) returns (GetArchiveByIdResponse) {
-    option (google.api.http) = {get: "/api/frontend/archive/{id}"};
-  }
 }
 
 message GetHeroRequest {}
@@ -264,12 +259,4 @@ message GetArchivesPagedRequest {
 
 message GetArchivesPagedResponse {
   repeated common.ArchiveFull archives = 1;
-}
-
-message GetArchiveByIdRequest {
-  int32 id = 1;
-}
-
-message GetArchiveByIdResponse {
-  common.ArchiveFull archive = 1;
 }
