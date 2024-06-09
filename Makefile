@@ -7,10 +7,10 @@ GO_LINT_VERSION := v1.53.3
 init: clean install proto generate
 	
 generate: generate-resend-client
-	# go generate ./...
+	go generate ./...
 
 proto: format-proto
-	# buf generate 
+	buf generate 
 
 format-proto:
 	find ./proto -name '*.proto' -exec buf format {} -o {} \;
@@ -88,6 +88,6 @@ RESEND_GENERATED_CODE_PATH = openapi/gen/resend
 
 # Generate setings client code from OpenAPI yaml
 generate-resend-client:
-	# @echo "Generating code in: $(RESEND_GENERATED_CODE_PATH)" 
-	# @mkdir -p $(RESEND_GENERATED_CODE_PATH)
-	# @oapi-codegen -package resend -generate types,client -o $(RESEND_GENERATED_CODE_PATH)/resend.gen.go $(RESEND_OPENAPI_PATH)
+	@echo "Generating code in: $(RESEND_GENERATED_CODE_PATH)" 
+	@mkdir -p $(RESEND_GENERATED_CODE_PATH)
+	@oapi-codegen -package resend -generate types,client -o $(RESEND_GENERATED_CODE_PATH)/resend.gen.go $(RESEND_OPENAPI_PATH)
