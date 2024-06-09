@@ -151,10 +151,11 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 
 	heroList, err := QueryListNamed[heroRaw](ctx, ms.db, query, map[string]any{})
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no hero found: %w", err)
-		}
 		return nil, fmt.Errorf("failed to query hero: %w", err)
+	}
+
+	if len(heroList) == 0 {
+		return nil, sql.ErrNoRows
 	}
 
 	hf = &entity.HeroFull{}
