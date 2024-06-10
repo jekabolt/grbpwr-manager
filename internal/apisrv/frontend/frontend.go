@@ -57,7 +57,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			slog.String("err", err.Error()),
 		)
 		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.Internal, "can't get hero")
+			return nil, status.Errorf(codes.NotFound, "can't get hero")
 		}
 	}
 	h, err := dto.ConvertEntityHeroFullToCommon(hero)
