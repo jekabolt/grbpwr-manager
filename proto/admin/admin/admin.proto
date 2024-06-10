@@ -42,14 +42,6 @@ service AdminService {
     };
   }
 
-  // UploadContentImage uploads an image to a specific folder with a specified name.
-  rpc UploadContentMediaLink(UploadContentMediaLinkRequest) returns (UploadContentMediaLinkResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/content/link"
-      body: "*"
-    };
-  }
-
   // DeleteFromBucket deletes objects specified by their keys.
   rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
     option (google.api.http) = {delete: "/api/admin/content"};
@@ -189,11 +181,6 @@ service AdminService {
     };
   }
 
-  // Retrieves an order by its ID
-  rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
-    option (google.api.http) = {get: "/api/admin/orders/{order_uuid}"};
-  }
-
   // Retrieves orders by their status payment method or email
   rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
     option (google.api.http) = {
@@ -236,11 +223,6 @@ service AdminService {
     };
   }
 
-  // Retrieves hero information
-  rpc GetHero(GetHeroRequest) returns (GetHeroResponse) {
-    option (google.api.http) = {get: "/api/admin/hero"};
-  }
-
   // ARCHIVE MANAGER
 
   // AddArchive creates a new archive.
@@ -256,11 +238,6 @@ service AdminService {
       post: "/api/admin/archive/update"
       body: "*"
     };
-  }
-
-  // GetArchivesPaged retrieves paged archives.
-  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/archive/paged"};
   }
 
   // DeleteArchiveById deletes an archive by ID.
@@ -294,14 +271,6 @@ message UploadContentImageRequest {
 }
 
 message UploadContentImageResponse {
-  common.MediaFull media = 1;
-}
-
-message UploadContentMediaLinkRequest {
-  string url = 1;
-}
-
-message UploadContentMediaLinkResponse {
   common.MediaFull media = 1;
 }
 
@@ -471,14 +440,6 @@ message SetTrackingNumberRequest {
 
 message SetTrackingNumberResponse {}
 
-message GetOrderByUUIDRequest {
-  string order_uuid = 1;
-}
-
-message GetOrderByUUIDResponse {
-  common.OrderFull order = 1;
-}
-
 message ListOrdersRequest {
   common.OrderStatusEnum status = 1;
   common.PaymentMethodNameEnum payment_method = 2;
@@ -521,12 +482,6 @@ message AddHeroRequest {
 
 message AddHeroResponse {}
 
-message GetHeroRequest {}
-
-message GetHeroResponse {
-  common.HeroFull hero = 1;
-}
-
 // ARCHIVE MANAGER
 
 message AddArchiveRequest {
@@ -543,16 +498,6 @@ message UpdateArchiveRequest {
 }
 
 message UpdateArchiveResponse {}
-
-message GetArchivesPagedRequest {
-  int32 limit = 1;
-  int32 offset = 2;
-  common.OrderFactor order_factor = 3;
-}
-
-message GetArchivesPagedResponse {
-  repeated common.ArchiveFull archives = 1;
-}
 
 message DeleteArchiveByIdRequest {
   int32 id = 1;

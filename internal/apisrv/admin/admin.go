@@ -80,19 +80,6 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 	}, nil
 }
 
-func (s *Server) UploadContentMediaLink(ctx context.Context, req *pb_admin.UploadContentMediaLinkRequest) (*pb_admin.UploadContentMediaLinkResponse, error) {
-	media, err := s.bucket.UploadContentImageFromUrl(ctx, req.Url, s.bucket.GetBaseFolder(), bucket.GetMediaName())
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't upload content media link",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-	return &pb_admin.UploadContentMediaLinkResponse{
-		Media: media,
-	}, nil
-}
-
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}
@@ -521,27 +508,6 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
 
-func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUIDRequest) (*pb_admin.GetOrderByUUIDResponse, error) {
-	order, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get order by id",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get order by id")
-	}
-	o, err := dto.ConvertEntityOrderFullToPbOrderFull(order)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
-	}
-
-	return &pb_admin.GetOrderByUUIDResponse{
-		Order: o,
-	}, nil
-}
-
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {
 
 	if req.Status < 0 {
@@ -644,26 +610,6 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 	return &pb_admin.AddHeroResponse{}, nil
 }
 
-func (s *Server) GetHero(ctx context.Context, req *pb_admin.GetHeroRequest) (*pb_admin.GetHeroResponse, error) {
-	hero, err := s.repo.Hero().GetHero(ctx)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get hero")
-	}
-	h, err := dto.ConvertEntityHeroFullToCommon(hero)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity hero to pb hero")
-	}
-	return &pb_admin.GetHeroResponse{
-		Hero: h,
-	}, nil
-}
-
 // ARCHIVE MANAGER
 
 func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest) (*pb_admin.AddArchiveResponse, error) {
@@ -699,31 +645,6 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 	}
 
 	return &pb_admin.UpdateArchiveResponse{}, nil
-}
-
-func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchivesPagedRequest) (*pb_admin.GetArchivesPagedResponse, error) {
-	afs, err := s.repo.Archive().GetArchivesPaged(ctx,
-		int(req.Limit),
-		int(req.Offset),
-		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
-	)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get archives paged",
-			slog.String("err", err.Error()),
-		)
-		return nil, err
-	}
-
-	pbAfs := []*pb_common.ArchiveFull{}
-
-	for _, af := range afs {
-		pbAfs = append(pbAfs, dto.ConvertArchiveFullEntityToPb(&af))
-	}
-
-	return &pb_admin.GetArchivesPagedResponse{
-		Archives: pbAfs,
-	}, nil
-
 }
 
 func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArchiveByIdRequest) (*pb_admin.DeleteArchiveByIdResponse, error) {

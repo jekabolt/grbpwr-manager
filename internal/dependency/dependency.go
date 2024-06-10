@@ -188,8 +188,6 @@ type (
 		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.MediaFull, error)
 		// UploadContentVideo uploads mp4 video to bucket
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.MediaFull, error)
-		// UploadContentImageFromUrl uploads image from url to bucket
-		UploadContentImageFromUrl(ctx context.Context, url, folder, imageName string) (*pb_common.MediaFull, error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 	}
