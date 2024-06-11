@@ -21,3 +21,7 @@ func (hc *HeroCache) GetHero() *entity.HeroFull {
 func (hc *HeroCache) UpdateHero(hf *entity.HeroFull) {
 	hc.hero = hf
 }
+
+func (hc *HeroCache) DeleteHero() {
+	hc.hero = nil
+}
