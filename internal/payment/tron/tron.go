@@ -42,6 +42,9 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
 	}
+	if !isPaymentMethodTron(pm) {
+		return nil, fmt.Errorf("payment method is not valid for tron")
+	}
 
 	addrs := make(map[string]string, len(c.Addresses))
 	for _, addr := range c.Addresses {
@@ -66,6 +69,9 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 
 	return p, nil
 
+}
+func isPaymentMethodTron(pm entity.PaymentMethod) bool {
+	return pm.Name == entity.USDT_TRON || pm.Name == entity.USDT_TRON_TEST
 }
 
 func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {

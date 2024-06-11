@@ -228,6 +228,9 @@ func (c *Cache) GetHero() *entity.HeroFull {
 func (c *Cache) UpdateHero(hf *entity.HeroFull) {
 	c.Hero.UpdateHero(hf)
 }
+func (c *Cache) DeleteHero() {
+	c.Hero.DeleteHero()
+}
 
 func (c *Cache) SetSiteAvailability(available bool) {
 	c.Dict.SiteEnabled = available

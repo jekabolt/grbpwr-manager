@@ -247,6 +247,7 @@ type (
 
 		GetHero() *entity.HeroFull
 		UpdateHero(hf *entity.HeroFull)
+		DeleteHero()
 
 		GetDict() *dto.Dict
 

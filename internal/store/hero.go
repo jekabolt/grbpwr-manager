@@ -36,6 +36,8 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, main *entity.HeroInsert, ads 
 			return fmt.Errorf("failed to delete hero products: %w", err)
 		}
 
+		ms.cache.DeleteHero()
+
 		err = insertHeroProducts(ctx, rep, productIds)
 		if err != nil {
 			return fmt.Errorf("failed to add hero products: %w", err)
@@ -122,7 +124,7 @@ type heroRaw struct {
 
 func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	hf := ms.cache.GetHero()
-	if hf.Main != nil {
+	if hf != nil {
 		// early return if hero is cached
 		return hf, nil
 	}
