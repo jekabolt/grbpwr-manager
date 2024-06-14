@@ -453,7 +453,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		SELECT 
 			m.id,
 			m.created_at,
-			m.updated_at,
 			m.full_size,
 			m.full_size_width,
 			m.full_size_height,

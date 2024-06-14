@@ -82,6 +82,17 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aId int, aBody *entity.
 			return fmt.Errorf("failed to delete archive items with archive Id %d: %w", aId, err)
 		}
 
+		if len(aItems) == 0 {
+			// if no items are provided delete the archive and return
+			query = `DELETE FROM archive WHERE id = :id`
+			_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+				"id": aId,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to delete archive with ID %d: %w", aId, err)
+			}
+		}
+
 		query = `UPDATE archive SET title = :title, description = :description WHERE id = :id`
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
 			"id":          aId,

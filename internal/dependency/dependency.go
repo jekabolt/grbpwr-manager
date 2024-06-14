@@ -86,10 +86,14 @@ type (
 		CancelOrder(ctx context.Context, orderUUID string) error
 	}
 
+	// TODO: invoice to separate interface
 	CryptoInvoice interface {
 		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
 		CancelMonitorPayment(orderUUID string) error
 		CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error)
+	}
+	Invoice interface {
+		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
 	}
 
 	Trongrid interface {
