@@ -8,10 +8,8 @@ type HeroCache struct {
 	hero *entity.HeroFull
 }
 
-func newHeroCache(hero *entity.HeroFull) *HeroCache {
-	return &HeroCache{
-		hero: hero,
-	}
+func newHeroCache() *HeroCache {
+	return &HeroCache{}
 }
 
 func (hc *HeroCache) GetHero() *entity.HeroFull {

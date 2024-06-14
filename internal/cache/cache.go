@@ -84,7 +84,7 @@ func NewCache(
 		Promo:           newPromoCache(promos),
 		ShipmentCarrier: newShipmentCarrierCache(shipmentCarriers),
 		Size:            sc,
-		Hero:            newHeroCache(&entity.HeroFull{}),
+		Hero:            newHeroCache(),
 		Dict: &dto.Dict{
 			Categories:       categories,
 			Measurements:     measurements,

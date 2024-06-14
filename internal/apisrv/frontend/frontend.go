@@ -60,6 +60,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			return nil, status.Errorf(codes.NotFound, "can't get hero")
 		}
 	}
+
 	h, err := dto.ConvertEntityHeroFullToCommon(hero)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
