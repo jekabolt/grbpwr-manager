@@ -53,3 +53,12 @@ const (
 	UAH CurrencyTicker = "UAH"
 	USD CurrencyTicker = "USD"
 )
+
+func VerifyCurrencyTicker(ticker string) bool {
+	switch CurrencyTicker(ticker) {
+	case BTC, ETH, CHF, CNY, CZK, DKK, EUR, GBP, GEL, HKD, HUF, ILS, JPY, NOK, PLN, RUB, SEK, SGD, TRY, UAH, USD:
+		return true
+	default:
+		return false
+	}
+}
