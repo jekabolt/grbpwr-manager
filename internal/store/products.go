@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"log/slog"
 
@@ -25,11 +24,11 @@ func (ms *MYSQLStore) Products() dependency.Products {
 	}
 }
 
-func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert) (*entity.Product, error) {
+func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert) (int, error) {
 	query := `
 	INSERT INTO product 
-	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail, price, sale_percentage, category_id, description, hidden, target_gender)
-	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnail, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
+	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, hidden, target_gender)
+	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
 	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 		"preorder":        product.Preorder,
 		"name":            product.Name,
@@ -38,7 +37,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"color":           product.Color,
 		"colorHex":        product.ColorHex,
 		"countryOfOrigin": product.CountryOfOrigin,
-		"thumbnail":       product.Thumbnail,
+		"thumbnailId":     product.ThumbnailMediaID,
 		"price":           product.Price,
 		"salePercentage":  product.SalePercentage,
 		"categoryId":      product.CategoryID,
@@ -47,15 +46,10 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"targetGender":    product.TargetGender,
 	})
 	if err != nil {
-		return nil, err
+		return id, err
 	}
 
-	return &entity.Product{
-		ID:            id,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-		ProductInsert: *product,
-	}, nil
+	return id, nil
 }
 
 func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) ([]entity.SizeWithMeasurement, error) {
@@ -155,38 +149,9 @@ func insertTags(ctx context.Context, rep dependency.Repository, tagsInsert []ent
 	return tags, BulkInsert(ctx, rep.DB(), "product_tag", rows)
 }
 
-// sizesAndMeasurements converts []SizeWithMeasurementInsert to []ProductSizeInsert and []ProductMeasurementInsert
-func sizesAndMeasurements(sizesWithMeasurements []entity.SizeWithMeasurement) ([]entity.ProductSize, []entity.ProductMeasurement) {
-	var sizes []entity.ProductSize
-	var measurements []entity.ProductMeasurement
-
-	for _, sizeWithMeasurement := range sizesWithMeasurements {
-		// Convert ProductSizeInsert to ProductSize
-		size := entity.ProductSize{
-			Quantity:  sizeWithMeasurement.ProductSize.Quantity,
-			SizeID:    sizeWithMeasurement.ProductSize.SizeID,
-			ProductID: sizeWithMeasurement.ProductSize.ProductID,
-		}
-		sizes = append(sizes, size)
-
-		// Convert []ProductMeasurementInsert to []ProductMeasurement
-		for _, measurementInsert := range sizeWithMeasurement.Measurements {
-			measurement := entity.ProductMeasurement{
-				MeasurementNameID: measurementInsert.MeasurementNameID,
-				MeasurementValue:  measurementInsert.MeasurementValue,
-				ProductID:         size.ProductID,
-			}
-			measurements = append(measurements, measurement)
-		}
-	}
-
-	return sizes, measurements
-}
-
 // AddProduct adds a new product to the product store.
-func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error) {
+func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) error {
 
-	pi := &entity.ProductFull{}
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
 		if !prd.Product.SalePercentage.Valid || prd.Product.SalePercentage.Decimal.LessThan(decimal.Zero) {
@@ -195,22 +160,21 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 				Decimal: decimal.NewFromFloat(0),
 			}
 		}
-		pi.Product, err = insertProduct(ctx, rep, prd.Product)
+		prdId, err := insertProduct(ctx, rep, prd.Product)
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}
 
-		sizesWithMeasurements, err := insertSizeMeasurements(ctx, rep, prd.SizeMeasurements, pi.Product.ID)
+		_, err = insertSizeMeasurements(ctx, rep, prd.SizeMeasurements, prdId)
 		if err != nil {
 			return fmt.Errorf("can't insert size measurements: %w", err)
 		}
-		pi.Sizes, pi.Measurements = sizesAndMeasurements(sizesWithMeasurements)
 
-		err = insertMedia(ctx, rep, prd.MediaIds, pi.Product.ID)
+		err = insertMedia(ctx, rep, prd.MediaIds, prdId)
 		if err != nil {
 			return fmt.Errorf("can't insert media: %w", err)
 		}
-		pi.Tags, err = insertTags(ctx, rep, prd.Tags, pi.Product.ID)
+		_, err = insertTags(ctx, rep, prd.Tags, prdId)
 		if err != nil {
 			return fmt.Errorf("can't insert tags: %w", err)
 		}
@@ -218,10 +182,10 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (*
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't add product: %w", err)
+		return fmt.Errorf("can't add product: %w", err)
 	}
 
-	return pi, nil
+	return nil
 }
 
 func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error {
@@ -241,7 +205,7 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 		color = :color, 
 		color_hex = :colorHex, 
 		country_of_origin = :countryOfOrigin, 
-		thumbnail = :thumbnail, 
+		thumbnail_id = :thumbnailId, 
 		price = :price, 
 		sale_percentage = :salePercentage,
 		category_id = :categoryId, 
@@ -258,7 +222,7 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductInse
 		"color":           prd.Color,
 		"colorHex":        prd.ColorHex,
 		"countryOfOrigin": prd.CountryOfOrigin,
-		"thumbnail":       prd.Thumbnail,
+		"thumbnailId":     prd.ThumbnailMediaID,
 		"price":           prd.Price,
 		"salePercentage":  prd.SalePercentage,
 		"categoryId":      prd.CategoryID,
@@ -362,7 +326,40 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 
 // buildQuery refactored to use named parameters and to include limit and offset
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
-	baseQuery := "SELECT * FROM product"
+	baseQuery := `
+	SELECT 
+		p.id,
+		p.created_at,
+		p.updated_at,
+		p.preorder,
+		p.name,
+		p.brand,
+		p.sku,
+		p.color,
+		p.color_hex,
+		p.country_of_origin,
+		p.price,
+		p.sale_percentage,
+		p.category_id,
+		p.description,
+		p.hidden,
+		p.target_gender,
+		m.full_size,
+		m.full_size_width,
+		m.full_size_height,
+		m.thumbnail,
+		m.thumbnail_width,
+		m.thumbnail_height,
+		m.compressed,
+		m.compressed_width,
+		m.compressed_height
+	FROM 
+		product p
+	JOIN 
+		media m
+	ON 
+		p.thumbnail_id = m.id`
+
 	countQuery := "SELECT COUNT(*) FROM product"
 
 	if len(whereClauses) > 0 {
@@ -647,19 +644,47 @@ func (ms *MYSQLStore) AddProductMedia(ctx context.Context, productId int, mediaI
 	return nil
 }
 
-func (ms *MYSQLStore) AddProductTag(ctx context.Context, productId int, tag string) error {
-	query := "INSERT INTO product_tag (product_id, tag) VALUES (:productId, :tag)"
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"productId": productId,
-		"tag":       tag,
+func (ms *MYSQLStore) UpdateProductMedia(ctx context.Context, productId int, mediaIds []int) error {
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		query := "DELETE FROM product_media WHERE product_id = :productId"
+		err := ExecNamed(ctx, ms.db, query, map[string]interface{}{
+			"productId": productId,
+		})
+		if err != nil {
+			return fmt.Errorf("can't delete product media: %w", err)
+		}
+
+		err = insertMedia(ctx, ms, mediaIds, productId)
+		if err != nil {
+			return fmt.Errorf("can't insert media: %w", err)
+		}
+		return nil
 	})
 }
 
-func (ms *MYSQLStore) DeleteProductTag(ctx context.Context, productId int, tag string) error {
-	query := "DELETE FROM product_tag WHERE product_id = :productId AND tag = :tag"
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"productId": productId,
-		"tag":       tag,
+func (ms *MYSQLStore) UpdateProductTags(ctx context.Context, productId int, tags []string) error {
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		query := "DELETE FROM product_tag WHERE product_id = :productId"
+		err := ExecNamed(ctx, ms.db, query, map[string]interface{}{
+			"productId": productId,
+		})
+		if err != nil {
+			return fmt.Errorf("can't delete product tags: %w", err)
+		}
+
+		rows := make([]map[string]any, 0, len(tags))
+		for _, tag := range tags {
+			row := map[string]any{
+				"product_id": productId,
+				"tag":        tag,
+			}
+			rows = append(rows, row)
+		}
+		err = BulkInsert(ctx, ms.db, "product_tag", rows)
+		if err != nil {
+			return fmt.Errorf("can't insert product tags: %w", err)
+		}
+		return nil
 	})
 }
 

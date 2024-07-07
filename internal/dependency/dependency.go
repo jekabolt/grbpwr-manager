@@ -22,7 +22,7 @@ type (
 	Products interface {
 		ContextStore
 		// AddProduct adds a new product along with its associated data.
-		AddProduct(ctx context.Context, prd *entity.ProductNew) (*entity.ProductFull, error)
+		AddProduct(ctx context.Context, prd *entity.ProductNew) error
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
@@ -41,14 +41,10 @@ type (
 		UpdateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
-		// DeleteProductMedia deletes media for a product.
-		DeleteProductMedia(ctx context.Context, productId, mediaId int) error
 		// AddProductMedia adds new media for a product.
-		AddProductMedia(ctx context.Context, productId int, mediaIds []int) error
+		UpdateProductMedia(ctx context.Context, productId int, mediaIds []int) error
 		// AddProductTag adds a new tag for a product.
-		AddProductTag(ctx context.Context, productId int, tag string) error
-		// DeleteProductTag deletes a tag for a product.
-		DeleteProductTag(ctx context.Context, productId int, tag string) error
+		UpdateProductTags(ctx context.Context, productId int, tag []string) error
 	}
 	Hero interface {
 		SetHero(ctx context.Context, main *entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error

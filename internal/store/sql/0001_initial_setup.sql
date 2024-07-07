@@ -93,6 +93,20 @@ VALUES
     ('cancelled'),
     ('refunded');
 
+CREATE TABLE media (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    full_size VARCHAR(255) NOT NULL,
+    full_size_width INT NOT NULL,
+    full_size_height INT NOT NULL,
+    thumbnail VARCHAR(255) NOT NULL,
+    thumbnail_width INT NOT NULL,
+    thumbnail_height INT NOT NULL,
+    compressed VARCHAR(255) NOT NULL,
+    compressed_width INT NOT NULL,
+    compressed_height INT NOT NULL
+);
+
 CREATE TABLE product (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -106,7 +120,7 @@ CREATE TABLE product (
         color_hex REGEXP '^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$'
     ),
     country_of_origin VARCHAR(50) NOT NULL,
-    thumbnail VARCHAR(255) NOT NULL,
+    thumbnail_id INT NOT NULL,
     price DECIMAL(10, 2) NOT NULL CHECK (price >= 0),
     sale_percentage DECIMAL(5, 2) DEFAULT 0 CHECK (
         sale_percentage >= 0
@@ -118,14 +132,15 @@ CREATE TABLE product (
     target_gender VARCHAR(255) NOT NULL CHECK (
         target_gender REGEXP '^(male|female|unisex)$'
     ),
-    FOREIGN KEY (category_id) REFERENCES category(id) ON DELETE CASCADE
+    FOREIGN KEY (category_id) REFERENCES category(id) ON DELETE CASCADE,
+    FOREIGN KEY (thumbnail_id) REFERENCES media(id)
 );
 
 CREATE TABLE product_size (
     id INT PRIMARY KEY AUTO_INCREMENT,
     product_id INT NOT NULL,
     size_id INT NOT NULL,
-    quantity INT NOT NULL CHECK (quantity >= 0),
+    quantity INT CHECK (quantity IS NULL OR quantity >= 0),
     UNIQUE(product_id, size_id),
     FOREIGN KEY(product_id) REFERENCES product(id) ON DELETE CASCADE,
     FOREIGN KEY(size_id) REFERENCES size(id) ON DELETE CASCADE
@@ -139,21 +154,6 @@ CREATE TABLE size_measurement (
     measurement_value DECIMAL(10, 2) NOT NULL,
     UNIQUE(product_id, product_size_id, measurement_name_id),
     FOREIGN KEY(measurement_name_id) REFERENCES measurement_name(id) ON DELETE CASCADE
-);
-
-
-CREATE TABLE media (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    full_size VARCHAR(255) NOT NULL,
-    full_size_width INT NOT NULL,
-    full_size_height INT NOT NULL,
-    thumbnail VARCHAR(255) NOT NULL,
-    thumbnail_width INT NOT NULL,
-    thumbnail_height INT NOT NULL,
-    compressed VARCHAR(255) NOT NULL,
-    compressed_width INT NOT NULL,
-    compressed_height INT NOT NULL
 );
 
 CREATE TABLE product_media (
