@@ -48,38 +48,40 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	}
 
 	// Convert ProductInsert
-	price, err := decimal.NewFromString(pbProductNew.Price.Value)
+	price, err := decimal.NewFromString(pbProductNew.ProductBody.Price.Value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert product price: %w", err)
 	}
-	salePercentage, err := decimal.NewFromString(pbProductNew.SalePercentage.Value)
+	salePercentage, err := decimal.NewFromString(pbProductNew.ProductBody.SalePercentage.Value)
 	if err != nil {
-		if pbProductNew.SalePercentage.Value == "" {
+		if pbProductNew.ProductBody.SalePercentage.Value == "" {
 			salePercentage = decimal.Zero
 		} else {
 			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
 		}
 	}
-	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.TargetGender)
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.ProductBody.TargetGender)
 	if err != nil {
 		return nil, err
 	}
 
 	return &entity.ProductInsert{
-		Preorder:        sql.NullString{String: pbProductNew.Preorder, Valid: pbProductNew.Preorder != ""},
-		Name:            pbProductNew.Name,
-		Brand:           pbProductNew.Brand,
-		SKU:             pbProductNew.Sku,
-		Color:           pbProductNew.Color,
-		ColorHex:        pbProductNew.ColorHex,
-		CountryOfOrigin: pbProductNew.CountryOfOrigin,
-		Thumbnail:       pbProductNew.Thumbnail,
-		Price:           price,
-		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.SalePercentage.Value != ""},
-		CategoryID:      int(pbProductNew.CategoryId),
-		Description:     pbProductNew.Description,
-		Hidden:          sql.NullBool{Bool: pbProductNew.Hidden, Valid: true},
-		TargetGender:    targetGender,
+		ProductBody: entity.ProductBody{
+			Preorder:        sql.NullString{String: pbProductNew.ProductBody.Preorder, Valid: pbProductNew.ProductBody.Preorder != ""},
+			Name:            pbProductNew.ProductBody.Name,
+			Brand:           pbProductNew.ProductBody.Brand,
+			SKU:             pbProductNew.ProductBody.Sku,
+			Color:           pbProductNew.ProductBody.Color,
+			ColorHex:        pbProductNew.ProductBody.ColorHex,
+			CountryOfOrigin: pbProductNew.ProductBody.CountryOfOrigin,
+			Price:           price,
+			SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.ProductBody.SalePercentage.Value != ""},
+			CategoryID:      int(pbProductNew.ProductBody.CategoryId),
+			Description:     pbProductNew.ProductBody.Description,
+			Hidden:          sql.NullBool{Bool: pbProductNew.ProductBody.Hidden, Valid: true},
+			TargetGender:    targetGender,
+		},
+		ThumbnailMediaID: int(pbProductNew.ThumbnailMediaId),
 	}, nil
 
 }
@@ -115,38 +117,40 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 	}
 
 	// Convert ProductInsert
-	price, err := decimal.NewFromString(pbProductNew.Product.Price.Value)
+	price, err := decimal.NewFromString(pbProductNew.Product.ProductBody.Price.Value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert product price: %w", err)
 	}
-	salePercentage, err := decimal.NewFromString(pbProductNew.Product.SalePercentage.Value)
+	salePercentage, err := decimal.NewFromString(pbProductNew.Product.ProductBody.SalePercentage.Value)
 	if err != nil {
-		if pbProductNew.Product.SalePercentage.Value == "" {
+		if pbProductNew.Product.ProductBody.SalePercentage.Value == "" {
 			salePercentage = decimal.Zero
 		} else {
 			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
 		}
 	}
-	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.Product.TargetGender)
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductNew.Product.ProductBody.TargetGender)
 	if err != nil {
 		return nil, err
 	}
 
 	productInsert := &entity.ProductInsert{
-		Preorder:        sql.NullString{String: pbProductNew.Product.Preorder, Valid: pbProductNew.Product.Preorder != ""},
-		Name:            pbProductNew.Product.Name,
-		Brand:           pbProductNew.Product.Brand,
-		SKU:             pbProductNew.Product.Sku,
-		Color:           pbProductNew.Product.Color,
-		ColorHex:        pbProductNew.Product.ColorHex,
-		CountryOfOrigin: pbProductNew.Product.CountryOfOrigin,
-		Thumbnail:       pbProductNew.Product.Thumbnail,
-		Price:           price,
-		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.Product.SalePercentage.Value != ""},
-		CategoryID:      int(pbProductNew.Product.CategoryId),
-		Description:     pbProductNew.Product.Description,
-		Hidden:          sql.NullBool{Bool: pbProductNew.Product.Hidden, Valid: true},
-		TargetGender:    targetGender,
+		ProductBody: entity.ProductBody{
+			Preorder:        sql.NullString{String: pbProductNew.Product.ProductBody.Preorder, Valid: pbProductNew.Product.ProductBody.Preorder != ""},
+			Name:            pbProductNew.Product.ProductBody.Name,
+			Brand:           pbProductNew.Product.ProductBody.Brand,
+			SKU:             pbProductNew.Product.ProductBody.Sku,
+			Color:           pbProductNew.Product.ProductBody.Color,
+			ColorHex:        pbProductNew.Product.ProductBody.ColorHex,
+			CountryOfOrigin: pbProductNew.Product.ProductBody.CountryOfOrigin,
+			Price:           price,
+			SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductNew.Product.ProductBody.SalePercentage.Value != ""},
+			CategoryID:      int(pbProductNew.Product.ProductBody.CategoryId),
+			Description:     pbProductNew.Product.ProductBody.Description,
+			Hidden:          sql.NullBool{Bool: pbProductNew.Product.ProductBody.Hidden, Valid: true},
+			TargetGender:    targetGender,
+		},
+		ThumbnailMediaID: int(pbProductNew.Product.ThumbnailMediaId),
 	}
 
 	// Convert SizeMeasurements
@@ -217,29 +221,47 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		return nil, err
 	}
 
-	pbProductInsert := &pb_common.ProductInsert{
-		Preorder:        e.Product.Preorder.String,
-		Name:            e.Product.Name,
-		Brand:           e.Product.Brand,
-		Sku:             e.Product.SKU,
-		Color:           e.Product.Color,
-		ColorHex:        e.Product.ColorHex,
-		CountryOfOrigin: e.Product.CountryOfOrigin,
-		Thumbnail:       e.Product.Thumbnail,
-		Price:           &pb_decimal.Decimal{Value: e.Product.Price.String()},
-		SalePercentage:  &pb_decimal.Decimal{Value: e.Product.SalePercentage.Decimal.String()},
-		CategoryId:      int32(e.Product.CategoryID),
-		Description:     e.Product.Description,
-		Hidden:          e.Product.Hidden.Bool,
-		TargetGender:    tg,
+	pbProductDisplay := &pb_common.ProductDisplay{
+		ProductBody: &pb_common.ProductBody{
+			Preorder:        e.Product.Preorder.String,
+			Name:            e.Product.Name,
+			Brand:           e.Product.Brand,
+			Sku:             e.Product.SKU,
+			Color:           e.Product.Color,
+			ColorHex:        e.Product.ColorHex,
+			CountryOfOrigin: e.Product.CountryOfOrigin,
+			Price:           &pb_decimal.Decimal{Value: e.Product.Price.String()},
+			SalePercentage:  &pb_decimal.Decimal{Value: e.Product.SalePercentage.Decimal.String()},
+			CategoryId:      int32(e.Product.CategoryID),
+			Description:     e.Product.Description,
+			Hidden:          e.Product.Hidden.Bool,
+			TargetGender:    tg,
+		},
+		Thumbnail: &pb_common.MediaItem{
+			FullSize: &pb_common.MediaInfo{
+				MediaUrl: e.Product.ProductDisplay.FullSizeMediaURL,
+				Width:    int32(e.Product.ProductDisplay.FullSizeWidth),
+				Height:   int32(e.Product.ProductDisplay.FullSizeHeight),
+			},
+			Thumbnail: &pb_common.MediaInfo{
+				MediaUrl: e.Product.ProductDisplay.ThumbnailMediaURL,
+				Width:    int32(e.Product.ProductDisplay.ThumbnailWidth),
+				Height:   int32(e.Product.ProductDisplay.ThumbnailHeight),
+			},
+			Compressed: &pb_common.MediaInfo{
+				MediaUrl: e.Product.ProductDisplay.CompressedMediaURL,
+				Width:    int32(e.Product.ProductDisplay.CompressedWidth),
+				Height:   int32(e.Product.ProductDisplay.CompressedHeight),
+			},
+		},
 	}
 
 	pbProduct := &pb_common.Product{
-		Id:            int32(e.Product.ID),
-		CreatedAt:     timestamppb.New(e.Product.CreatedAt),
-		UpdatedAt:     timestamppb.New(e.Product.UpdatedAt),
-		Slug:          GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.Color, e.Product.TargetGender.String()),
-		ProductInsert: pbProductInsert,
+		Id:             int32(e.Product.ID),
+		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
+		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
+		Slug:           GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.Color, e.Product.TargetGender.String()),
+		ProductDisplay: pbProductDisplay,
 	}
 
 	var pbSizes []*pb_common.ProductSize
@@ -347,33 +369,50 @@ func ParseSlug(slug string) (int, string, error) {
 }
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
-func ConvertEntityProductToCommon(entityProduct *entity.Product) (*pb_common.Product, error) {
-	tg, err := ConvertEntityGenderToPbGenderEnum(entityProduct.TargetGender)
+func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error) {
+	tg, err := ConvertEntityGenderToPbGenderEnum(e.TargetGender)
 	if err != nil {
 		return nil, err
 	}
+
 	pbProduct := &pb_common.Product{
-		Id:        int32(entityProduct.ID),
-		CreatedAt: timestamppb.New(entityProduct.CreatedAt),
-		UpdatedAt: timestamppb.New(entityProduct.UpdatedAt),
-		Slug:      GetSlug(entityProduct.ID, entityProduct.Brand, entityProduct.Name, entityProduct.Color, entityProduct.TargetGender.String()),
-		ProductInsert: &pb_common.ProductInsert{
-			Preorder:        entityProduct.Preorder.String,
-			Name:            entityProduct.Name,
-			Brand:           entityProduct.Brand,
-			Sku:             entityProduct.SKU,
-			Color:           entityProduct.Color,
-			ColorHex:        entityProduct.ColorHex,
-			CountryOfOrigin: entityProduct.CountryOfOrigin,
-			Thumbnail:       entityProduct.Thumbnail,
-			Price: &pb_decimal.Decimal{
-				Value: entityProduct.Price.String(),
+		Id:        int32(e.ID),
+		CreatedAt: timestamppb.New(e.CreatedAt),
+		UpdatedAt: timestamppb.New(e.UpdatedAt),
+		Slug:      GetSlug(e.ID, e.Brand, e.Name, e.Color, e.TargetGender.String()),
+		ProductDisplay: &pb_common.ProductDisplay{
+			ProductBody: &pb_common.ProductBody{
+				Preorder:        e.Preorder.String,
+				Name:            e.Name,
+				Brand:           e.Brand,
+				Sku:             e.SKU,
+				Color:           e.Color,
+				ColorHex:        e.ColorHex,
+				CountryOfOrigin: e.CountryOfOrigin,
+				Price:           &pb_decimal.Decimal{Value: e.Price.String()},
+				SalePercentage:  &pb_decimal.Decimal{Value: e.SalePercentage.Decimal.String()},
+				CategoryId:      int32(e.CategoryID),
+				Description:     e.Description,
+				Hidden:          e.Hidden.Bool,
+				TargetGender:    tg,
 			},
-			SalePercentage: &pb_decimal.Decimal{Value: entityProduct.SalePercentage.Decimal.String()},
-			CategoryId:     int32(entityProduct.CategoryID),
-			Description:    entityProduct.Description,
-			Hidden:         entityProduct.Hidden.Bool,
-			TargetGender:   tg,
+			Thumbnail: &pb_common.MediaItem{
+				FullSize: &pb_common.MediaInfo{
+					MediaUrl: e.ProductDisplay.FullSizeMediaURL,
+					Width:    int32(e.ProductDisplay.FullSizeWidth),
+					Height:   int32(e.ProductDisplay.FullSizeHeight),
+				},
+				Thumbnail: &pb_common.MediaInfo{
+					MediaUrl: e.ProductDisplay.ThumbnailMediaURL,
+					Width:    int32(e.ProductDisplay.ThumbnailWidth),
+					Height:   int32(e.ProductDisplay.ThumbnailHeight),
+				},
+				Compressed: &pb_common.MediaInfo{
+					MediaUrl: e.ProductDisplay.CompressedMediaURL,
+					Width:    int32(e.ProductDisplay.CompressedWidth),
+					Height:   int32(e.ProductDisplay.CompressedHeight),
+				},
+			},
 		},
 	}
 

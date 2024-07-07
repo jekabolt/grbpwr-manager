@@ -99,10 +99,10 @@ message Product {
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   string slug = 4;
-  ProductInsert product_insert = 5;
+  ProductDisplay product_display = 5;
 }
 
-message ProductInsert {
+message ProductBody {
   string preorder = 1;
   string name = 2;
   string brand = 3;
@@ -110,13 +110,22 @@ message ProductInsert {
   string color = 5;
   string color_hex = 6;
   string country_of_origin = 7;
-  string thumbnail = 8;
   google.type.Decimal price = 9;
   google.type.Decimal sale_percentage = 10;
   int32 category_id = 11;
   string description = 12;
   bool hidden = 13;
   GenderEnum target_gender = 14;
+}
+
+message ProductInsert {
+  ProductBody product_body = 1;
+  int32 thumbnail_media_id = 2;
+}
+
+message ProductDisplay {
+  ProductBody product_body = 1;
+  common.MediaItem thumbnail = 2;
 }
 
 message ProductMeasurementUpdate {

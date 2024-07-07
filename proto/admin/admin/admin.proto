@@ -62,6 +62,14 @@ service AdminService {
     };
   }
 
+  // Reduces stock for specific product sizes.
+  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/update/{id}"
+      body: "*"
+    };
+  }
+
   // Retrieves a paginated list of products.
   rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
     option (google.api.http) = {get: "/api/admin/product/paged"};
@@ -77,70 +85,12 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/product/{id}"};
   }
 
-  // Reduces stock for specific product sizes.
-  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/update/{id}"
-      body: "*"
-    };
-  }
-
-  // Updates a product's measurements.
-  rpc UpdateProductMeasurements(UpdateProductMeasurementsRequest) returns (UpdateProductMeasurementsResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/measurement/update"
-      body: "*"
-    };
-  }
-
-  // Reduces stock for specific product sizes.
-  rpc ReduceStockForProductSizes(ReduceStockForProductSizesRequest) returns (ReduceStockForProductSizesResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/reducestock"
-      body: "*"
-    };
-  }
-
-  // Restores stock for specific product sizes.
-  rpc RestoreStockForProductSizes(RestoreStockForProductSizesRequest) returns (RestoreStockForProductSizesResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/restorestock"
-      body: "*"
-    };
-  }
-
   // Updates the stock for a specific product size.
   rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/{product_id}/size/{size_id}/updatestock"
       body: "*"
     };
-  }
-
-  // Deletes media associated with a product.
-  rpc DeleteProductMedia(DeleteProductMediaRequest) returns (DeleteProductMediaResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/{product_id}/media/{media_id}/delete"};
-  }
-
-  // Adds media to a product.
-  rpc AddProductMedia(AddProductMediaRequest) returns (AddProductMediaResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/media/add"
-      body: "*"
-    };
-  }
-
-  // Adds a tag to a product.
-  rpc AddProductTag(AddProductTagRequest) returns (AddProductTagResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/tag/add"
-      body: "*"
-    };
-  }
-
-  // Deletes a tag from a product.
-  rpc DeleteProductTag(DeleteProductTagRequest) returns (DeleteProductTagResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/{product_id}/tag/{tag}/delete"};
   }
 
   // PROMO MANAGER
@@ -305,9 +255,7 @@ message AddProductRequest {
   common.ProductNew product = 1;
 }
 
-message AddProductResponse {
-  common.ProductFull product = 1;
-}
+message AddProductResponse {}
 
 message GetProductsPagedRequest {
   int32 limit = 1;
@@ -339,22 +287,12 @@ message DeleteProductByIDResponse {}
 message UpdateProductRequest {
   int32 id = 1;
   common.ProductInsert product = 2;
+  repeated common.ProductMeasurementUpdate measurements = 3;
+  repeated string tags = 4;
+  repeated int32 media_ids = 5;
 }
 
 message UpdateProductResponse {}
-
-message DeleteProductMeasurementRequest {
-  int32 id = 1;
-}
-
-message DeleteProductMeasurementResponse {}
-
-message UpdateProductMeasurementsRequest {
-  int32 product_id = 1;
-  repeated common.ProductMeasurementUpdate measurements = 2;
-}
-
-message UpdateProductMeasurementsResponse {}
 
 message ReduceStockForProductSizesRequest {
   repeated common.OrderItem items = 1;
@@ -382,27 +320,6 @@ message DeleteProductMediaRequest {
 }
 
 message DeleteProductMediaResponse {}
-
-message AddProductMediaRequest {
-  int32 product_id = 1;
-  repeated int32 media_ids = 2;
-}
-
-message AddProductMediaResponse {}
-
-message AddProductTagRequest {
-  int32 product_id = 1;
-  string tag = 2;
-}
-
-message AddProductTagResponse {}
-
-message DeleteProductTagRequest {
-  int32 product_id = 1;
-  string tag = 2;
-}
-
-message DeleteProductTagResponse {}
 
 // PROMO MANAGER
 

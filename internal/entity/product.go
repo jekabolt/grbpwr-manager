@@ -165,15 +165,7 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 	Unisex: true,
 }
 
-// Product represents the product table
-type Product struct {
-	ID        int       `db:"id"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
-	ProductInsert
-}
-
-type ProductInsert struct {
+type ProductBody struct {
 	Preorder        sql.NullString      `db:"preorder" valid:"-"`
 	Name            string              `db:"name" valid:"required"`
 	Brand           string              `db:"brand" valid:"required"`
@@ -181,13 +173,30 @@ type ProductInsert struct {
 	Color           string              `db:"color" valid:"required"`
 	ColorHex        string              `db:"color_hex" valid:"required,hexcolor"`
 	CountryOfOrigin string              `db:"country_of_origin" valid:"required"`
-	Thumbnail       string              `db:"thumbnail" valid:"required,url"`
 	Price           decimal.Decimal     `db:"price" valid:"required"`
 	SalePercentage  decimal.NullDecimal `db:"sale_percentage" valid:"-"`
 	CategoryID      int                 `db:"category_id" valid:"required"`
 	Description     string              `db:"description" valid:"required"`
 	Hidden          sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender    GenderEnum          `db:"target_gender"`
+}
+
+// Product represents the product table
+type Product struct {
+	ID        int       `db:"id"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+	ProductDisplay
+}
+
+type ProductInsert struct {
+	ProductBody
+	ThumbnailMediaID int `db:"thumbnail_media_id"`
+}
+
+type ProductDisplay struct {
+	ProductBody
+	MediaItem
 }
 
 type ProductMeasurementUpdate struct {
