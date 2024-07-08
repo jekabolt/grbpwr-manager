@@ -410,7 +410,40 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		params[keyCamel] = value
 	}
 
-	query := fmt.Sprintf("SELECT * FROM product WHERE %s", strings.Join(whereClauses, " AND "))
+	query := fmt.Sprintf(`
+		SELECT 
+			p.id,
+			p.created_at,
+			p.updated_at,
+			p.preorder,
+			p.name,
+			p.brand,
+			p.sku,
+			p.color,
+			p.color_hex,
+			p.country_of_origin,
+			p.price,
+			p.sale_percentage,
+			p.category_id,
+			p.description,
+			p.hidden,
+			p.target_gender,
+			m.full_size,
+			m.full_size_width,
+			m.full_size_height,
+			m.thumbnail,
+			m.thumbnail_width,
+			m.thumbnail_height,
+			m.compressed,
+			m.compressed_width,
+			m.compressed_height
+		FROM 
+			product p
+		JOIN 
+			media m
+		ON 
+			p.thumbnail_id = m.id 
+		WHERE p.%s`, strings.Join(whereClauses, " AND "))
 
 	// Include or exclude hidden products based on the showHidden flag
 	if !showHidden {
