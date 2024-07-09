@@ -67,7 +67,7 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 
 	return &entity.ProductInsert{
 		ProductBody: entity.ProductBody{
-			Preorder:        sql.NullString{String: pbProductNew.ProductBody.Preorder, Valid: pbProductNew.ProductBody.Preorder != ""},
+			Preorder:        sql.NullTime{Time: pbProductNew.ProductBody.Preorder.AsTime(), Valid: pbProductNew.ProductBody.Preorder.IsValid()},
 			Name:            pbProductNew.ProductBody.Name,
 			Brand:           pbProductNew.ProductBody.Brand,
 			SKU:             pbProductNew.ProductBody.Sku,
@@ -136,7 +136,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 
 	productInsert := &entity.ProductInsert{
 		ProductBody: entity.ProductBody{
-			Preorder:        sql.NullString{String: pbProductNew.Product.ProductBody.Preorder, Valid: pbProductNew.Product.ProductBody.Preorder != ""},
+			Preorder:        sql.NullTime{Time: pbProductNew.Product.ProductBody.Preorder.AsTime(), Valid: pbProductNew.Product.ProductBody.Preorder.IsValid()},
 			Name:            pbProductNew.Product.ProductBody.Name,
 			Brand:           pbProductNew.Product.ProductBody.Brand,
 			SKU:             pbProductNew.Product.ProductBody.Sku,
@@ -223,7 +223,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 
 	pbProductDisplay := &pb_common.ProductDisplay{
 		ProductBody: &pb_common.ProductBody{
-			Preorder:        e.Product.Preorder.String,
+			Preorder:        timestamppb.New(e.Product.Preorder.Time),
 			Name:            e.Product.Name,
 			Brand:           e.Product.Brand,
 			Sku:             e.Product.SKU,
@@ -237,21 +237,25 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 			Hidden:          e.Product.Hidden.Bool,
 			TargetGender:    tg,
 		},
-		Thumbnail: &pb_common.MediaItem{
-			FullSize: &pb_common.MediaInfo{
-				MediaUrl: e.Product.ProductDisplay.FullSizeMediaURL,
-				Width:    int32(e.Product.ProductDisplay.FullSizeWidth),
-				Height:   int32(e.Product.ProductDisplay.FullSizeHeight),
-			},
-			Thumbnail: &pb_common.MediaInfo{
-				MediaUrl: e.Product.ProductDisplay.ThumbnailMediaURL,
-				Width:    int32(e.Product.ProductDisplay.ThumbnailWidth),
-				Height:   int32(e.Product.ProductDisplay.ThumbnailHeight),
-			},
-			Compressed: &pb_common.MediaInfo{
-				MediaUrl: e.Product.ProductDisplay.CompressedMediaURL,
-				Width:    int32(e.Product.ProductDisplay.CompressedWidth),
-				Height:   int32(e.Product.ProductDisplay.CompressedHeight),
+		Thumbnail: &pb_common.MediaFull{
+			Id:        int32(e.Product.MediaFull.Id),
+			CreatedAt: timestamppb.New(e.Product.CreatedAt),
+			Media: &pb_common.MediaItem{
+				FullSize: &pb_common.MediaInfo{
+					MediaUrl: e.Product.ProductDisplay.FullSizeMediaURL,
+					Width:    int32(e.Product.ProductDisplay.FullSizeWidth),
+					Height:   int32(e.Product.ProductDisplay.FullSizeHeight),
+				},
+				Thumbnail: &pb_common.MediaInfo{
+					MediaUrl: e.Product.ProductDisplay.ThumbnailMediaURL,
+					Width:    int32(e.Product.ProductDisplay.ThumbnailWidth),
+					Height:   int32(e.Product.ProductDisplay.ThumbnailHeight),
+				},
+				Compressed: &pb_common.MediaInfo{
+					MediaUrl: e.Product.ProductDisplay.CompressedMediaURL,
+					Width:    int32(e.Product.ProductDisplay.CompressedWidth),
+					Height:   int32(e.Product.ProductDisplay.CompressedHeight),
+				},
 			},
 		},
 	}
@@ -382,7 +386,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		Slug:      GetSlug(e.ID, e.Brand, e.Name, e.Color, e.TargetGender.String()),
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
-				Preorder:        e.Preorder.String,
+				Preorder:        timestamppb.New(e.Preorder.Time),
 				Name:            e.Name,
 				Brand:           e.Brand,
 				Sku:             e.SKU,
@@ -396,21 +400,25 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 				Hidden:          e.Hidden.Bool,
 				TargetGender:    tg,
 			},
-			Thumbnail: &pb_common.MediaItem{
-				FullSize: &pb_common.MediaInfo{
-					MediaUrl: e.ProductDisplay.FullSizeMediaURL,
-					Width:    int32(e.ProductDisplay.FullSizeWidth),
-					Height:   int32(e.ProductDisplay.FullSizeHeight),
-				},
-				Thumbnail: &pb_common.MediaInfo{
-					MediaUrl: e.ProductDisplay.ThumbnailMediaURL,
-					Width:    int32(e.ProductDisplay.ThumbnailWidth),
-					Height:   int32(e.ProductDisplay.ThumbnailHeight),
-				},
-				Compressed: &pb_common.MediaInfo{
-					MediaUrl: e.ProductDisplay.CompressedMediaURL,
-					Width:    int32(e.ProductDisplay.CompressedWidth),
-					Height:   int32(e.ProductDisplay.CompressedHeight),
+			Thumbnail: &pb_common.MediaFull{
+				Id:        int32(e.MediaFull.Id),
+				CreatedAt: timestamppb.New(e.CreatedAt),
+				Media: &pb_common.MediaItem{
+					FullSize: &pb_common.MediaInfo{
+						MediaUrl: e.ProductDisplay.FullSizeMediaURL,
+						Width:    int32(e.ProductDisplay.FullSizeWidth),
+						Height:   int32(e.ProductDisplay.FullSizeHeight),
+					},
+					Thumbnail: &pb_common.MediaInfo{
+						MediaUrl: e.ProductDisplay.ThumbnailMediaURL,
+						Width:    int32(e.ProductDisplay.ThumbnailWidth),
+						Height:   int32(e.ProductDisplay.ThumbnailHeight),
+					},
+					Compressed: &pb_common.MediaInfo{
+						MediaUrl: e.ProductDisplay.CompressedMediaURL,
+						Width:    int32(e.ProductDisplay.CompressedWidth),
+						Height:   int32(e.ProductDisplay.CompressedHeight),
+					},
 				},
 			},
 		},

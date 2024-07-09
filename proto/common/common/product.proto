@@ -103,7 +103,7 @@ message Product {
 }
 
 message ProductBody {
-  string preorder = 1;
+  google.protobuf.Timestamp preorder = 1;
   string name = 2;
   string brand = 3;
   string sku = 4;
@@ -125,7 +125,7 @@ message ProductInsert {
 
 message ProductDisplay {
   ProductBody product_body = 1;
-  common.MediaItem thumbnail = 2;
+  common.MediaFull thumbnail = 2;
 }
 
 message ProductMeasurementUpdate {

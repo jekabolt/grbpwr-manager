@@ -22,9 +22,9 @@ type (
 	Products interface {
 		ContextStore
 		// AddProduct adds a new product along with its associated data.
-		AddProduct(ctx context.Context, prd *entity.ProductNew) error
+		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
-		UpdateProduct(ctx context.Context, prd *entity.ProductInsert, id int) error
+		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
@@ -37,14 +37,8 @@ type (
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
-		// AddProductMeasurement adds a new size measurement for a product.
-		UpdateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
-		// AddProductMedia adds new media for a product.
-		UpdateProductMedia(ctx context.Context, productId int, mediaIds []int) error
-		// AddProductTag adds a new tag for a product.
-		UpdateProductTags(ctx context.Context, productId int, tag []string) error
 	}
 	Hero interface {
 		SetHero(ctx context.Context, main *entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error

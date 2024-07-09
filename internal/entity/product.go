@@ -166,7 +166,7 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 }
 
 type ProductBody struct {
-	Preorder        sql.NullString      `db:"preorder" valid:"-"`
+	Preorder        sql.NullTime        `db:"preorder" valid:"-"`
 	Name            string              `db:"name" valid:"required"`
 	Brand           string              `db:"brand" valid:"required"`
 	SKU             string              `db:"sku" valid:"required,alphanum"`
@@ -196,7 +196,7 @@ type ProductInsert struct {
 
 type ProductDisplay struct {
 	ProductBody
-	MediaItem
+	MediaFull
 }
 
 type ProductMeasurementUpdate struct {

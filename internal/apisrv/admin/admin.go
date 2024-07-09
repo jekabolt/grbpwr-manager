@@ -116,7 +116,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 
 // PRODUCT MANAGER
 
-func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest) (*pb_admin.AddProductResponse, error) {
+func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductRequest) (*pb_admin.UpsertProductResponse, error) {
 
 	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
 	if err != nil {
@@ -134,109 +134,32 @@ func (s *Server) AddProduct(ctx context.Context, req *pb_admin.AddProductRequest
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %v", err).Error())
 	}
 
-	err = s.repo.Products().AddProduct(ctx, prdNew)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't create a product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't create a product")
+	id := int(req.Id)
+	// new product
+	if req.Id == 0 {
+		id, err = s.repo.Products().AddProduct(ctx, prdNew)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't create a product",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't create a product")
+		}
 	}
 
-	return &pb_admin.AddProductResponse{}, nil
-}
-
-func (s *Server) UpdateProduct(ctx context.Context, req *pb_admin.UpdateProductRequest) (*pb_admin.UpdateProductResponse, error) {
-	// update product itself
-	prdInsert, err := dto.ConvertPbProductInsertToEntity(req.Product)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product")
+	// update product
+	if req.Id != 0 {
+		err := s.repo.Products().UpdateProduct(ctx, prdNew, int(req.Id))
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't update a product",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't update a product")
+		}
 	}
 
-	_, err = v.ValidateStruct(prdInsert)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "validation update product request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation update product request failed: %v", err).Error())
-	}
-
-	if prdInsert.Price.LessThanOrEqual(decimal.Zero) {
-		return nil, status.Errorf(codes.InvalidArgument, "price must be greater than 0")
-	}
-
-	if prdInsert.SalePercentage.Valid &&
-		(prdInsert.SalePercentage.Decimal.GreaterThan(decimal.NewFromInt(100)) ||
-			prdInsert.SalePercentage.Decimal.LessThan(decimal.NewFromInt(0))) {
-		return nil, status.Errorf(codes.InvalidArgument, "sale must be between 0 and 100")
-	}
-
-	if prdInsert.CategoryID == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "category id is invalid")
-	}
-
-	if !v.IsHexcolor(prdInsert.ColorHex) {
-		return nil, status.Errorf(codes.InvalidArgument, "color hex is not valid")
-	}
-
-	if !entity.IsValidTargetGender(prdInsert.TargetGender) {
-		return nil, status.Errorf(codes.InvalidArgument, "gender not valid")
-	}
-
-	err = s.repo.Products().UpdateProduct(ctx, prdInsert, int(req.Id))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product")
-	}
-
-	// update product measurements
-
-	prdMeasurementsUpd, err := dto.ConvertPbMeasurementsUpdateToEntity(req.Measurements)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert proto measurements to entity measurements",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto measurements to entity measurements")
-	}
-
-	err = s.repo.Products().UpdateProductMeasurements(ctx, int(req.Id), prdMeasurementsUpd)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update product measurements",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product measurements")
-	}
-
-	// update product tags
-
-	err = s.repo.Products().UpdateProductTags(ctx, int(req.Id), req.Tags)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update product tags",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update product tags")
-	}
-
-	// update product media
-
-	mIds := make([]int, 0, len(req.MediaIds))
-	for _, mId := range req.MediaIds {
-		mIds = append(mIds, int(mId))
-	}
-
-	err = s.repo.Products().UpdateProductMedia(ctx, int(req.Id), mIds)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't add product media",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't add product media")
-	}
-
-	return &pb_admin.UpdateProductResponse{}, nil
+	return &pb_admin.UpsertProductResponse{
+		Id: int32(id),
+	}, nil
 }
 
 func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
@@ -310,46 +233,6 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 	return &pb_admin.GetProductsPagedResponse{
 		Products: prdsPb,
 	}, nil
-}
-
-func (s *Server) ReduceStockForProductSizes(ctx context.Context, req *pb_admin.ReduceStockForProductSizesRequest) (*pb_admin.ReduceStockForProductSizesResponse, error) {
-	if len(req.Items) == 0 {
-		return &pb_admin.ReduceStockForProductSizesResponse{}, nil
-	}
-
-	items := make([]entity.OrderItemInsert, 0, len(req.Items))
-	for _, item := range req.Items {
-		items = append(items, dto.ConvertPbOrderItemToEntity(item))
-	}
-
-	err := s.repo.Products().ReduceStockForProductSizes(ctx, items)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't reduce stock for product sizes",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't reduce stock for product sizes")
-	}
-	return &pb_admin.ReduceStockForProductSizesResponse{}, nil
-
-}
-
-func (s *Server) RestoreStockForProductSizes(ctx context.Context, req *pb_admin.RestoreStockForProductSizesRequest) (*pb_admin.RestoreStockForProductSizesResponse, error) {
-	if len(req.Items) == 0 {
-		return &pb_admin.RestoreStockForProductSizesResponse{}, nil
-	}
-	items := make([]entity.OrderItemInsert, 0, len(req.Items))
-	for _, item := range req.Items {
-		items = append(items, dto.ConvertPbOrderItemToEntity(item))
-	}
-
-	err := s.repo.Products().RestoreStockForProductSizes(ctx, items)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't restore stock for product sizes",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't restore stock for product sizes")
-	}
-	return &pb_admin.RestoreStockForProductSizesResponse{}, nil
 }
 
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
