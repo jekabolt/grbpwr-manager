@@ -501,7 +501,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		CreatedAt   time.Time `db:"thumbnail_created_at"`
 	}
 
-	// Execute the query using a safe, parameterized approach
 	prd, err := QueryNamedOne[product](ctx, ms.db, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)

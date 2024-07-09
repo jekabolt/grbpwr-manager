@@ -193,7 +193,7 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 		}
 	}
 
-	hf.ProductsFeatured, err = getProductsByHeroId(ctx, ms)
+	hf.ProductsFeatured, err = getHeroProducts(ctx, ms)
 	if err != nil {
 		return nil, err
 	}
@@ -203,16 +203,65 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	return hf, nil
 }
 
-func getProductsByHeroId(ctx context.Context, rep dependency.Repository) ([]entity.Product, error) {
+func getHeroProducts(ctx context.Context, rep dependency.Repository) ([]entity.Product, error) {
 	// Query to get the associated products
 	query := `
-		SELECT p.*
-		FROM product AS p
-		INNER JOIN hero_product AS hp ON p.id = hp.product_id`
+		SELECT 
+			p.id,
+			p.created_at,
+			p.updated_at,
+			p.preorder,
+			p.name,
+			p.brand,
+			p.sku,
+			p.color,
+			p.color_hex,
+			p.country_of_origin,
+			p.price,
+			p.sale_percentage,
+			p.category_id,
+			p.description,
+			p.hidden,
+			p.target_gender,
+			m.id AS thumbnail_id,
+			m.created_at AS thumbnail_created_at, 
+			m.full_size,
+			m.full_size_width,
+			m.full_size_height,
+			m.thumbnail,
+			m.thumbnail_width,
+			m.thumbnail_height,
+			m.compressed,
+			m.compressed_width,
+			m.compressed_height
+		FROM 
+			product p
+		JOIN 
+			media m
+		ON 
+			p.thumbnail_id = m.id 
+		INNER JOIN 
+			hero_product AS hp ON p.id = hp.product_id`
 
-	prds, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]any{})
+	type product struct {
+		entity.Product
+		ThumbnailID int       `db:"thumbnail_id"`
+		CreatedAt   time.Time `db:"thumbnail_created_at"`
+	}
+
+	prds, err := QueryListNamed[product](ctx, rep.DB(), query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query hero products: %w", err)
 	}
-	return prds, nil
+	products := make([]entity.Product, 0, len(prds))
+
+	for _, p := range prds {
+		prd := p.Product
+		prd.MediaFull.Id = p.ThumbnailID
+		prd.MediaFull.CreatedAt = p.CreatedAt
+
+		products = append(products, prd)
+	}
+
+	return products, nil
 }
