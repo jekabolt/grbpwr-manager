@@ -54,18 +54,10 @@ service AdminService {
 
   // PRODUCTS MANAGER
 
-  // Adds a new product.
-  rpc AddProduct(AddProductRequest) returns (AddProductResponse) {
+  // Adds a new product or updates an existing one.
+  rpc UpsertProduct(UpsertProductRequest) returns (UpsertProductResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/add"
-      body: "*"
-    };
-  }
-
-  // Reduces stock for specific product sizes.
-  rpc UpdateProduct(UpdateProductRequest) returns (UpdateProductResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/update/{id}"
+      post: "/api/admin/product/upsert"
       body: "*"
     };
   }
@@ -251,11 +243,14 @@ message DeleteFromBucketResponse {}
 
 // PRODUCTS MANAGER
 
-message AddProductRequest {
-  common.ProductNew product = 1;
+message UpsertProductRequest {
+  int32 id = 1;
+  common.ProductNew product = 2;
 }
 
-message AddProductResponse {}
+message UpsertProductResponse {
+  int32 id = 1;
+}
 
 message GetProductsPagedRequest {
   int32 limit = 1;
@@ -283,28 +278,6 @@ message DeleteProductByIDRequest {
 }
 
 message DeleteProductByIDResponse {}
-
-message UpdateProductRequest {
-  int32 id = 1;
-  common.ProductInsert product = 2;
-  repeated common.ProductMeasurementUpdate measurements = 3;
-  repeated string tags = 4;
-  repeated int32 media_ids = 5;
-}
-
-message UpdateProductResponse {}
-
-message ReduceStockForProductSizesRequest {
-  repeated common.OrderItem items = 1;
-}
-
-message ReduceStockForProductSizesResponse {}
-
-message RestoreStockForProductSizesRequest {
-  repeated common.OrderItem items = 1;
-}
-
-message RestoreStockForProductSizesResponse {}
 
 message UpdateProductSizeStockRequest {
   int32 product_id = 1;
