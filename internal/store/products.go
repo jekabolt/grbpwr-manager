@@ -25,12 +25,13 @@ func (ms *MYSQLStore) Products() dependency.Products {
 	}
 }
 
-func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert) (int, error) {
+func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, hidden, target_gender)
-	VALUES (:preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
+	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, hidden, target_gender)
+	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
 	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+		"id":              id,
 		"preorder":        product.Preorder,
 		"name":            product.Name,
 		"brand":           product.Brand,
@@ -168,7 +169,9 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 				Decimal: decimal.NewFromFloat(0),
 			}
 		}
-		prdId, err = insertProduct(ctx, rep, prd.Product)
+		// generate unique id
+		id := time.Now().Unix()
+		prdId, err = insertProduct(ctx, rep, prd.Product, int(id))
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}
