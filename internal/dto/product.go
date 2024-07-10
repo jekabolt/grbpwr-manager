@@ -3,7 +3,6 @@ package dto
 import (
 	"database/sql"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -264,7 +263,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Id:             int32(e.Product.ID),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.Color, e.Product.TargetGender.String()),
+		Slug:           GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
 		ProductDisplay: pbProductDisplay,
 	}
 
@@ -338,39 +337,38 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}, nil
 }
 
-func GetSlug(id int, brand, name, color, gender string) string {
+func GetSlug(id int, brand, name, gender string) string {
 	clean := func(part string) string {
 		return strings.ToLower(strings.ReplaceAll(part, " ", "-"))
 	}
-	// Include the name with `--` delimiters
-	return fmt.Sprintf("%d-%s--%s--%s-%s", id, clean(brand), clean(name), clean(color), clean(gender))
+	return fmt.Sprintf("/api/frontend/product/%s/%s/%s/%d", gender, clean(brand), clean(name), id)
 }
 
-// returns product id + name or error
-func ParseSlug(slug string) (int, string, error) {
-	// Extract the ID from the beginning
-	parts := strings.Split(slug, "-")
-	if len(parts) < 2 {
-		return 0, "", fmt.Errorf("invalid slug format")
-	}
-	id, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, "", fmt.Errorf("invalid product ID in slug")
-	}
+// // returns product id + name or error
+// func ParseSlug(slug string) (int, string, error) {
+// 	// Extract the ID from the beginning
+// 	parts := strings.Split(slug, "-")
+// 	if len(parts) < 2 {
+// 		return 0, "", fmt.Errorf("invalid slug format")
+// 	}
+// 	id, err := strconv.Atoi(parts[0])
+// 	if err != nil {
+// 		return 0, "", fmt.Errorf("invalid product ID in slug")
+// 	}
 
-	// Locate the start and end indices of the `--` delimiters
-	start := strings.Index(slug, "--")
-	end := strings.LastIndex(slug, "--")
-	if start == -1 || end == -1 || start == end {
-		return 0, "", fmt.Errorf("product name not found or improperly formatted")
-	}
+// 	// Locate the start and end indices of the `--` delimiters
+// 	start := strings.Index(slug, "--")
+// 	end := strings.LastIndex(slug, "--")
+// 	if start == -1 || end == -1 || start == end {
+// 		return 0, "", fmt.Errorf("product name not found or improperly formatted")
+// 	}
 
-	// Extract the name between the delimiters, removing the additional "-"
-	name := slug[start+2 : end]
-	name = strings.ReplaceAll(name, "-", " ")
+// 	// Extract the name between the delimiters, removing the additional "-"
+// 	name := slug[start+2 : end]
+// 	name = strings.ReplaceAll(name, "-", " ")
 
-	return id, name, nil
-}
+// 	return id, name, nil
+// }
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
 func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error) {
@@ -383,7 +381,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		Id:        int32(e.ID),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetSlug(e.ID, e.Brand, e.Name, e.Color, e.TargetGender.String()),
+		Slug:      GetSlug(e.ID, e.Brand, e.Name, e.TargetGender.String()),
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
 				Preorder:        timestamppb.New(e.Preorder.Time),
