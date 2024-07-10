@@ -341,7 +341,7 @@ func GetSlug(id int, brand, name, gender string) string {
 	clean := func(part string) string {
 		return strings.ToLower(strings.ReplaceAll(part, " ", "-"))
 	}
-	return fmt.Sprintf("/api/frontend/product/%s/%s/%s/%d", gender, clean(brand), clean(name), id)
+	return fmt.Sprintf("/product/%s/%s/%s/%d", gender, clean(brand), clean(name), id)
 }
 
 // // returns product id + name or error
