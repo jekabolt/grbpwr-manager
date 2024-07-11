@@ -74,46 +74,71 @@ func deleteSizeMeasurements(ctx context.Context, rep dependency.Repository, prod
 }
 
 func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) error {
-	for _, sizeMeasurement := range sizeMeasurements {
-		query := `
-		INSERT INTO product_size (product_id, size_id, quantity)
-		VALUES (:productId, :sizeId, :quantity)
-		`
-		_, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"productId": productID,
-			"sizeId":    sizeMeasurement.ProductSize.SizeID,
-			"quantity":  sizeMeasurement.ProductSize.Quantity,
-		})
-		if err != nil {
-			return fmt.Errorf("error inserting into product_size: %v", err)
+
+	rowsPrdSizes := make([]map[string]any, 0, len(sizeMeasurements))
+	rowsPrdMeasurements := make([]map[string]any, 0, len(sizeMeasurements))
+	for _, sm := range sizeMeasurements {
+		row := map[string]any{
+			"product_id": productID,
+			"size_id":    sm.ProductSize.SizeID,
+			"quantity":   sm.ProductSize.Quantity,
 		}
+		rowsPrdSizes = append(rowsPrdSizes, row)
 
-		var measurements []entity.ProductMeasurement
-
-		for _, measurement := range sizeMeasurement.Measurements {
-			query := `
-				INSERT INTO size_measurement (product_id, product_size_id, measurement_name_id, measurement_value)
-				VALUES (:productId, :productSizeId, :measurementNameId, :measurementValue)
-			`
-			err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-				"productId":         productID,
-				"productSizeId":     sizeMeasurement.ProductSize.SizeID,
-				"measurementNameId": measurement.MeasurementNameID,
-				"measurementValue":  measurement.MeasurementValue.String(),
-			})
-
-			if err != nil {
-				return fmt.Errorf("error inserting into size_measurement: %v", err)
+		for _, m := range sm.Measurements {
+			row := map[string]any{
+				"product_id":          productID,
+				"product_size_id":     sm.ProductSize.SizeID,
+				"measurement_name_id": m.MeasurementNameID,
+				"measurement_value":   m.MeasurementValue,
 			}
-
-			measurements = append(measurements, entity.ProductMeasurement{
-				ProductID:         productID,
-				ProductSizeID:     sizeMeasurement.ProductSize.SizeID,
-				MeasurementNameID: measurement.MeasurementNameID,
-				MeasurementValue:  measurement.MeasurementValue,
-			})
+			rowsPrdMeasurements = append(rowsPrdMeasurements, row)
 		}
+
 	}
+	err := BulkInsert(ctx, rep.DB(), "product_size", rowsPrdSizes)
+	if err != nil {
+		return fmt.Errorf("can't insert product sizes: %w", err)
+	}
+
+	err = BulkInsert(ctx, rep.DB(), "size_measurement", rowsPrdMeasurements)
+	if err != nil {
+		return fmt.Errorf("can't insert product measurements: %w", err)
+	}
+
+	// for _, sizeMeasurement := range sizeMeasurements {
+	// 	query := `
+	// 	INSERT INTO product_size (product_id, size_id, quantity)
+	// 	VALUES (:productId, :sizeId, :quantity)
+	// 	`
+	// 	_, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+	// 		"productId": productID,
+	// 		"sizeId":    sizeMeasurement.ProductSize.SizeID,
+	// 		"quantity":  sizeMeasurement.ProductSize.Quantity,
+	// 	})
+	// 	if err != nil {
+	// 		return fmt.Errorf("error inserting into product_size: %v", err)
+	// 	}
+
+	// 	// var measurements []entity.ProductMeasurement
+
+	// 	for _, measurement := range sizeMeasurement.Measurements {
+	// 		query := `
+	// 			INSERT INTO size_measurement (product_id, product_size_id, measurement_name_id, measurement_value)
+	// 			VALUES (:productId, :productSizeId, :measurementNameId, :measurementValue)
+	// 		`
+	// 		err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+	// 			"productId":         productID,
+	// 			"productSizeId":     sizeMeasurement.ProductSize.SizeID,
+	// 			"measurementNameId": measurement.MeasurementNameID,
+	// 			"measurementValue":  measurement.MeasurementValue.String(),
+	// 		})
+
+	// 		if err != nil {
+	// 			return fmt.Errorf("error inserting into size_measurement: %v", err)
+	// 		}
+	// 	}
+	// }
 
 	return nil
 }
