@@ -106,40 +106,6 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 		return fmt.Errorf("can't insert product measurements: %w", err)
 	}
 
-	// for _, sizeMeasurement := range sizeMeasurements {
-	// 	query := `
-	// 	INSERT INTO product_size (product_id, size_id, quantity)
-	// 	VALUES (:productId, :sizeId, :quantity)
-	// 	`
-	// 	_, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-	// 		"productId": productID,
-	// 		"sizeId":    sizeMeasurement.ProductSize.SizeID,
-	// 		"quantity":  sizeMeasurement.ProductSize.Quantity,
-	// 	})
-	// 	if err != nil {
-	// 		return fmt.Errorf("error inserting into product_size: %v", err)
-	// 	}
-
-	// 	// var measurements []entity.ProductMeasurement
-
-	// 	for _, measurement := range sizeMeasurement.Measurements {
-	// 		query := `
-	// 			INSERT INTO size_measurement (product_id, product_size_id, measurement_name_id, measurement_value)
-	// 			VALUES (:productId, :productSizeId, :measurementNameId, :measurementValue)
-	// 		`
-	// 		err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-	// 			"productId":         productID,
-	// 			"productSizeId":     sizeMeasurement.ProductSize.SizeID,
-	// 			"measurementNameId": measurement.MeasurementNameID,
-	// 			"measurementValue":  measurement.MeasurementValue.String(),
-	// 		})
-
-	// 		if err != nil {
-	// 			return fmt.Errorf("error inserting into size_measurement: %v", err)
-	// 		}
-	// 	}
-	// }
-
 	return nil
 }
 
