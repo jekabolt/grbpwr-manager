@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -191,9 +190,6 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert archive json to entity %w", err)
 	}
-
-	//TODO: remove this log
-	slog.Default().Debug("archive data", slog.Any("afs", afs), slog.Int("count", len(afs)))
 
 	return afs, err
 

@@ -126,7 +126,7 @@ type (
 		DeleteAdmin(ctx context.Context, username string) error
 		ChangePassword(ctx context.Context, un, newHash string) error
 		PasswordHashByUsername(ctx context.Context, un string) (string, error)
-		GetAdminByUsername(ctx context.Context, username string) (*dto.Admin, error)
+		GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error)
 	}
 
 	Settings interface {

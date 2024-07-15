@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
-	admin = dto.Admin{
+	admin = entity.Admin{
 		Username:     "testUsername",
 		PasswordHash: "hash",
 	}
