@@ -6,6 +6,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func ConvertEntityMediaListToPbMedia(media []entity.MediaFull) []*pb_common.MediaFull {
+	var pbMedia []*pb_common.MediaFull
+	for _, m := range media {
+		pbMedia = append(pbMedia, ConvertEntityToCommonMedia(&m))
+	}
+	return pbMedia
+}
+
 // ConvertEntityToCommonMedia converts an entity.Media object to a common.MediaFull object.
 func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 	// Convert time.Time to *timestamppb.Timestamp
@@ -34,5 +42,28 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 		Id:        int32(eMedia.Id), // Assuming the conversion from int to int32 is safe and acceptable
 		CreatedAt: createdAt,
 		Media:     MediaItem,
+	}
+}
+
+func ConvertPbMediaFullToEntity(m *pb_common.MediaFull) entity.MediaFull {
+	return entity.MediaFull{
+		Id:        int(m.Id),
+		CreatedAt: m.CreatedAt.AsTime(),
+		MediaItem: convertPbMediaItemToEntity(m.Media),
+	}
+}
+
+// Convert a protobuf MediaItem to an entity MediaItem
+func convertPbMediaItemToEntity(m *pb_common.MediaItem) entity.MediaItem {
+	return entity.MediaItem{
+		FullSizeMediaURL:   m.FullSize.MediaUrl,
+		FullSizeWidth:      int(m.FullSize.Width),
+		FullSizeHeight:     int(m.FullSize.Height),
+		ThumbnailMediaURL:  m.Thumbnail.MediaUrl,
+		ThumbnailWidth:     int(m.Thumbnail.Width),
+		ThumbnailHeight:    int(m.Thumbnail.Height),
+		CompressedMediaURL: m.Compressed.MediaUrl,
+		CompressedWidth:    int(m.Compressed.Width),
+		CompressedHeight:   int(m.Compressed.Height),
 	}
 }

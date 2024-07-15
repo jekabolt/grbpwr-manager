@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
@@ -81,7 +80,7 @@ func (as *adminStore) PasswordHashByUsername(ctx context.Context, un string) (st
 	SELECT
 		*
 	FROM admins WHERE username = :username`
-	adm, err := QueryNamedOne[entity.Admins](ctx, as.db, query, map[string]any{"username": un})
+	adm, err := QueryNamedOne[entity.Admin](ctx, as.db, query, map[string]any{"username": un})
 	if err != nil {
 		return "", fmt.Errorf("failed to get password hash %w", err)
 	}
@@ -89,14 +88,14 @@ func (as *adminStore) PasswordHashByUsername(ctx context.Context, un string) (st
 }
 
 // GetUserByUsername returns user by username
-func (as *adminStore) GetAdminByUsername(ctx context.Context, un string) (*dto.Admin, error) {
+func (as *adminStore) GetAdminByUsername(ctx context.Context, un string) (*entity.Admin, error) {
 	query := `
 	SELECT
 		id,
 		username,
 		password_hash
 	FROM admins WHERE username = :username`
-	admin, err := QueryNamedOne[dto.Admin](ctx, as.db, query, map[string]any{"username": un})
+	admin, err := QueryNamedOne[entity.Admin](ctx, as.db, query, map[string]any{"username": un})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get admin")
 	}

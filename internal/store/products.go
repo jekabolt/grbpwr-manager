@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"log/slog"
-
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 type productStore struct {
@@ -231,7 +231,6 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 	return nil
 }
 
-// TODO: rm (ms *MYSQLStore) from the function signature
 func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.ProductInsert, id int) error {
 	query := `
 	UPDATE product 
@@ -319,6 +318,10 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		}
 		if filterConditions.OnSale {
 			whereClauses = append(whereClauses, "sale_percentage > 0")
+		}
+		if filterConditions.Gender != "" {
+			whereClauses = append(whereClauses, "target_gender = :targetGender")
+			args["targetGender"] = filterConditions.Gender.String()
 		}
 		if filterConditions.Color != "" {
 			whereClauses = append(whereClauses, "color = :color")
@@ -567,11 +570,12 @@ func toCamelCase(s string) string {
 		return ""
 	}
 	parts := strings.Split(s, "_")
+	titleCaser := cases.Title(language.English)
 	for i, part := range parts {
-		if i > 0 { // Only title-case the second part onwards
-			parts[i] = strings.Title(part)
+		if i > 0 {
+			parts[i] = titleCaser.String(part)
 		} else {
-			parts[i] = strings.ToLower(part) // Ensure the first part is all lower case
+			parts[i] = strings.ToLower(part)
 		}
 	}
 	return strings.Join(parts, "")
@@ -624,61 +628,6 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		})
 		if err != nil {
 			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
-		}
-	}
-	return nil
-}
-
-func (ms *MYSQLStore) deleteProductMeasurement(ctx context.Context, mUpd entity.ProductMeasurementUpdate) error {
-	query := "DELETE FROM size_measurement WHERE product_size_id = :productSizeId AND measurement_name_id = :measurementNameId"
-	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
-		"productSizeId":     mUpd.SizeId,
-		"measurementNameId": mUpd.MeasurementNameId,
-	})
-}
-
-func (ms *MYSQLStore) updateProductMeasurements(ctx context.Context, productId int, mUpd []entity.ProductMeasurementUpdate) error {
-	for _, mu := range mUpd {
-		if mu.MeasurementValue.LessThan(decimal.Zero) {
-			slog.Default().ErrorContext(ctx, "can't update product measurements: negative value",
-				slog.Int("product_id", productId),
-				slog.Int("size_id", mu.SizeId),
-				slog.Int("measurement_name_id", mu.MeasurementNameId),
-				slog.String("measurement_value", mu.MeasurementValue.String()),
-			)
-			continue
-		}
-
-		if mu.MeasurementValue.Equal(decimal.Zero) {
-			err := ms.deleteProductMeasurement(ctx, mu)
-			if err != nil {
-				slog.Default().ErrorContext(ctx, "can't delete product measurement",
-					slog.Int("product_id", productId),
-					slog.Int("size_id", mu.SizeId),
-					slog.Int("measurement_name_id", mu.MeasurementNameId),
-					slog.String("measurement_value", mu.MeasurementValue.String()),
-					slog.String("err", err.Error()),
-				)
-			}
-			continue
-		}
-
-		query := `
-		INSERT INTO size_measurement 
-			(product_id, product_size_id, measurement_name_id, measurement_value) 
-		VALUES 
-			(:productId, :productSizeId, :measurementNameId, :measurementValue) 
-		ON DUPLICATE KEY UPDATE 
-			measurement_value = VALUES(measurement_value);
-		`
-		err := ExecNamed(ctx, ms.db, query, map[string]any{
-			"productId":         productId,
-			"productSizeId":     mu.SizeId,
-			"measurementNameId": mu.MeasurementNameId,
-			"measurementValue":  mu.MeasurementValue,
-		})
-		if err != nil {
-			return fmt.Errorf("can't update product measurements: %w", err)
 		}
 	}
 	return nil

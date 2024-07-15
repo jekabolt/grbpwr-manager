@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Convert a protobuf ArchiveNew to an entity ArchiveNew
 func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.ArchiveNew {
 	if pbArchiveNew == nil {
 		return nil
@@ -18,8 +19,18 @@ func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.Arc
 		Description: pbArchiveNew.Archive.Description,
 	}
 
+	entityItems := convertPbArchiveItemsInsertToEntity(pbArchiveNew.ItemsInsert)
+
+	return &entity.ArchiveNew{
+		Archive: ArchiveBody,
+		Items:   entityItems,
+	}
+}
+
+// Convert a slice of protobuf ArchiveItemInsert to a slice of entity ArchiveItemInsert
+func convertPbArchiveItemsInsertToEntity(pbItemsInsert []*pb_common.ArchiveItemInsert) []entity.ArchiveItemInsert {
 	var entityItems []entity.ArchiveItemInsert
-	for _, pbItem := range pbArchiveNew.ItemsInsert {
+	for _, pbItem := range pbItemsInsert {
 		entityItem := entity.ArchiveItemInsert{
 			MediaId: int(pbItem.MediaId),
 			URL:     sql.NullString{String: pbItem.Url, Valid: pbItem.Url != ""},
@@ -27,37 +38,21 @@ func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.Arc
 		}
 		entityItems = append(entityItems, entityItem)
 	}
-
-	entityArchiveNew := &entity.ArchiveNew{
-		Archive: ArchiveBody,
-		Items:   entityItems,
-	}
-
-	return entityArchiveNew
+	return entityItems
 }
 
+// Convert a protobuf ArchiveItem to an entity ArchiveItem
 func ConvertPbArchiveItemToEntity(i *pb_common.ArchiveItem) *entity.ArchiveItem {
 	return &entity.ArchiveItem{
-		Media: entity.MediaFull{
-			Id:        int(i.Media.Id),
-			CreatedAt: i.Media.CreatedAt.AsTime(),
-			MediaItem: entity.MediaItem{
-				FullSizeMediaURL:   i.Media.Media.FullSize.MediaUrl,
-				FullSizeWidth:      int(i.Media.Media.FullSize.Width),
-				FullSizeHeight:     int(i.Media.Media.FullSize.Height),
-				ThumbnailMediaURL:  i.Media.Media.Thumbnail.MediaUrl,
-				ThumbnailWidth:     int(i.Media.Media.Thumbnail.Width),
-				ThumbnailHeight:    int(i.Media.Media.Thumbnail.Height),
-				CompressedMediaURL: i.Media.Media.Compressed.MediaUrl,
-				CompressedWidth:    int(i.Media.Media.Compressed.Width),
-				CompressedHeight:   int(i.Media.Media.Compressed.Height),
-			},
-		},
+		Media: ConvertPbMediaFullToEntity(i.Media),
 		URL:   sql.NullString{String: i.Url, Valid: i.Url != ""},
 		Title: sql.NullString{String: i.Title, Valid: i.Title != ""},
 	}
 }
 
+// Convert a protobuf MediaFull to an entity MediaFull
+
+// Convert an entity ArchiveFull to a protobuf ArchiveFull
 func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull {
 	if af == nil {
 		return nil
@@ -73,8 +68,18 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		},
 	}
 
-	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(af.Items))
-	for _, item := range af.Items {
+	itemsPb := convertArchiveItemsToPb(af.Items)
+
+	return &pb_common.ArchiveFull{
+		Archive: archivePb,
+		Items:   itemsPb,
+	}
+}
+
+// Convert a slice of entity ArchiveItem to a slice of protobuf ArchiveItemFull
+func convertArchiveItemsToPb(items []entity.ArchiveItemFull) []*pb_common.ArchiveItemFull {
+	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(items))
+	for _, item := range items {
 		url := ""
 		if item.URL.Valid {
 			url = item.URL.String
@@ -83,36 +88,12 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 			Id:        int32(item.ID),
 			ArchiveId: int32(item.ArchiveID),
 			ArchiveItem: &pb_common.ArchiveItem{
-				Media: &pb_common.MediaFull{
-					Id:        int32(item.Media.Id),
-					CreatedAt: timestamppb.New(item.Media.CreatedAt),
-					Media: &pb_common.MediaItem{
-						FullSize: &pb_common.MediaInfo{
-							MediaUrl: item.Media.FullSizeMediaURL,
-							Width:    int32(item.Media.FullSizeWidth),
-							Height:   int32(item.Media.FullSizeHeight),
-						},
-						Thumbnail: &pb_common.MediaInfo{
-							MediaUrl: item.Media.ThumbnailMediaURL,
-							Width:    int32(item.Media.FullSizeWidth),
-							Height:   int32(item.Media.FullSizeHeight),
-						},
-						Compressed: &pb_common.MediaInfo{
-							MediaUrl: item.Media.CompressedMediaURL,
-							Width:    int32(item.Media.CompressedWidth),
-							Height:   int32(item.Media.CompressedHeight),
-						},
-					},
-				},
+				Media: ConvertEntityToCommonMedia(&item.Media),
 				Url:   url,
 				Title: item.Title.String,
 			},
 		}
 		itemsPb = append(itemsPb, itemPb)
 	}
-
-	return &pb_common.ArchiveFull{
-		Archive: archivePb,
-		Items:   itemsPb,
-	}
+	return itemsPb
 }

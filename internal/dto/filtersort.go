@@ -87,6 +87,7 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		From:        from,
 		To:          to,
 		OnSale:      fc.OnSale,
+		Gender:      genderPbEntityMap[fc.Gender],
 		Color:       fc.Color,
 		CategoryIds: categories,
 		SizesIds:    sizes,

@@ -51,6 +51,7 @@ type FilterConditions struct {
 	From        decimal.Decimal
 	To          decimal.Decimal
 	OnSale      bool
+	Gender      GenderEnum
 	Color       string
 	CategoryIds []int
 	SizesIds    []int

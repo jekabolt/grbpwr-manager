@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package common;
 
+import "common/product.proto";
+
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
 enum OrderFactor {
@@ -22,9 +24,10 @@ message FilterConditions {
   string from = 1;
   string to = 2;
   bool on_sale = 3;
-  string color = 4;
-  repeated int32 category_ids = 5;
-  repeated int32 sizes_ids = 6;
-  bool preorder = 7;
-  string by_tag = 8;
+  common.GenderEnum gender = 4;
+  string color = 5;
+  repeated int32 category_ids = 6;
+  repeated int32 sizes_ids = 7;
+  bool preorder = 8;
+  string by_tag = 9;
 }

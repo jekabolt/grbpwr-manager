@@ -150,7 +150,16 @@ const (
 )
 
 func (ge GenderEnum) String() string {
-	return string(ge)
+	switch ge {
+	case Male:
+		return string(Male)
+	case Female:
+		return string(Female)
+	case Unisex:
+		return string(Unisex)
+	default:
+		return string(Unisex)
+	}
 }
 
 func IsValidTargetGender(g GenderEnum) bool {
