@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-//go:generate go run github.com/vektra/mockery/v2@v2.24.0 --with-expecter --case underscore --all
+//go:generate go run github.com/vektra/mockery/v2@v2.43.2 --with-expecter --case underscore --all
 type (
 	ContextStore interface {
 		Tx(ctx context.Context, fn func(ctx context.Context, store Repository) error) error
