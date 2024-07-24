@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -194,6 +195,7 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// product
+		slog.Default().DebugContext(ctx, "product", slog.Any("product", prd.Product.Preorder))
 		err := updateProduct(ctx, rep, prd.Product, id)
 		if err != nil {
 			return fmt.Errorf("can't update product: %w", err)

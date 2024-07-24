@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -64,7 +65,7 @@ func convertProductBody(pbProductBody *pb_common.ProductBody) (*entity.ProductBo
 		return nil, err
 	}
 
-	return &entity.ProductBody{
+	pb := &entity.ProductBody{
 		Preorder:        sql.NullTime{Time: pbProductBody.Preorder.AsTime(), Valid: pbProductBody.Preorder.IsValid()},
 		Name:            pbProductBody.Name,
 		Brand:           pbProductBody.Brand,
@@ -78,7 +79,13 @@ func convertProductBody(pbProductBody *pb_common.ProductBody) (*entity.ProductBo
 		Description:     pbProductBody.Description,
 		Hidden:          sql.NullBool{Bool: pbProductBody.Hidden, Valid: true},
 		TargetGender:    targetGender,
-	}, nil
+	}
+
+	if pbProductBody.Preorder.AsTime().Year() < time.Now().Year() {
+		pb.Preorder.Valid = false
+	}
+
+	return pb, nil
 }
 
 func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ProductInsert, error) {
