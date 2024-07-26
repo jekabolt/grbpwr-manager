@@ -730,13 +730,58 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 		return []entity.Product{}, nil
 	}
 	query := `
-	SELECT * FROM product WHERE id IN (:productIds)`
+	SELECT 
+			p.id,
+			p.created_at,
+			p.updated_at,
+			p.preorder,
+			p.name,
+			p.brand,
+			p.sku,
+			p.color,
+			p.color_hex,
+			p.country_of_origin,
+			p.price,
+			p.sale_percentage,
+			p.category_id,
+			p.description,
+			p.hidden,
+			p.target_gender,
+			m.full_size,
+			m.full_size_width,
+			m.full_size_height,
+			m.thumbnail,
+			m.thumbnail_width,
+			m.thumbnail_height,
+			m.compressed,
+			m.compressed_width,
+			m.compressed_height
+		FROM 
+			product p
+		JOIN 
+			media m
+		ON 
+			p.thumbnail_id = m.id
+		WHERE p.id IN (:productIds)`
 
-	products, err := QueryListNamed[entity.Product](ctx, rep.DB(), query, map[string]interface{}{
-		"productIds": productIds,
-	})
+	type product struct {
+		entity.Product
+		ThumbnailID int       `db:"thumbnail_id"`
+		CreatedAt   time.Time `db:"thumbnail_created_at"`
+	}
+
+	prds, err := QueryListNamed[product](ctx, rep.DB(), query, map[string]any{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query hero products: %w", err)
+	}
+	products := make([]entity.Product, 0, len(prds))
+
+	for _, p := range prds {
+		prd := p.Product
+		prd.MediaFull.Id = p.ThumbnailID
+		prd.MediaFull.CreatedAt = p.CreatedAt
+
+		products = append(products, prd)
 	}
 	return products, nil
 }
