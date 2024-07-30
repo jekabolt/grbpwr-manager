@@ -598,13 +598,14 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			oi.size_id,
 			oi.product_price,
 			oi.product_sale_percentage,
-			p.thumbnail,
+			m.thumbnail,
 			p.name AS product_name,
 			p.brand AS product_brand,
 			p.sku AS product_sku,
 			p.category_id AS category_id 
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
+		JOIN media m ON p.thumbnail_id = m.id
         WHERE oi.order_id IN (:orderIds)
     `
 
