@@ -301,6 +301,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
 	}
+	pbPi.PaymentMethod = req.PaymentMethod
 
 	return &pb_frontend.GetOrderInvoiceResponse{
 		Payment:   pbPi,

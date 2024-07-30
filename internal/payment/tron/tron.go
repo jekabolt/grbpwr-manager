@@ -192,7 +192,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, expiration, fmt.Errorf("can't convert from base currency: %w", err)
 	}
 
-	slog.Default().InfoContext(ctx, "Total USD", slog.String("totalUSD", totalUSD.String()))
+	slog.Default().InfoContext(ctx, "total USD", slog.String("totalUSD", totalUSD.String()))
 	// TODO: token decimals to config
 
 	totalBlockchainValue := convertToBlockchainFormat(totalUSD, 6)
