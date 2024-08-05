@@ -10,12 +10,12 @@ message Address {
 }
 
 message AddressInsert {
-  string street = 1;
-  string house_number = 2;
-  string apartment_number = 3;
-  string city = 4;
-  string state = 5;
-  string country = 6;
+  string country = 1;
+  string state = 2;
+  string city = 3;
+  string address_line_one = 4;
+  string address_line_two = 5;
+  string company = 6;
   string postal_code = 7;
 }
 

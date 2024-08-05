@@ -16,7 +16,7 @@ message OrderNew {
   AddressInsert shipping_address = 2;
   AddressInsert billing_address = 3;
   BuyerInsert buyer = 4;
-  int32 payment_method_id = 5;
+  common.PaymentMethodNameEnum payment_method = 5;
   int32 shipment_carrier_id = 6;
   string promo_code = 7;
 }

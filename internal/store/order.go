@@ -161,8 +161,9 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAddress, billingAddress *entity.AddressInsert) (int, int, error) {
 	var shippingID, billingID int64
 	query := `
-		INSERT INTO address (street, house_number, apartment_number, city, state, country, postal_code) 
-		VALUES (:street, :house_number, :apartment_number, :city, :state, :country, :postal_code)`
+		INSERT INTO address (country, state, city, address_line_one, address_line_two, company, postal_code)
+		VALUES (:country, :state, :city, :address_line_one, :address_line_two, :company, :postal_code);
+	`
 
 	if *shippingAddress == *billingAddress {
 		// If shipping and billing addresses are the same, insert only once
@@ -226,7 +227,7 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 	return buyerID, nil
 }
 
-func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethod *entity.PaymentMethod) (int, error) {
+func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethodId int) (int, error) {
 
 	insertQuery := `
 		INSERT INTO payment (payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done)
@@ -234,7 +235,7 @@ func insertPaymentRecord(ctx context.Context, rep dependency.Repository, payment
 	`
 
 	paymentID, err := ExecNamedLastId(ctx, rep.DB(), insertQuery, map[string]interface{}{
-		"paymentMethodId": paymentMethod.ID,
+		"paymentMethodId": paymentMethodId,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't insert payment record: %w", err)
@@ -471,7 +472,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		return nil, false, fmt.Errorf("buyer is required")
 	}
 
-	paymentMethod, ok := ms.cache.GetPaymentMethodById(orderNew.PaymentMethodId)
+	paymentMethod, ok := ms.cache.GetPaymentMethodByName(orderNew.PaymentMethod)
 	if !ok || !paymentMethod.Allowed {
 		return nil, false, fmt.Errorf("payment method is not exists")
 	}
@@ -539,7 +540,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			}
 		}
 
-		paymentID, err := insertPaymentRecord(ctx, rep, paymentMethod)
+		paymentID, err := insertPaymentRecord(ctx, rep, paymentMethod.ID)
 		if err != nil {
 			return fmt.Errorf("error while inserting payment record: %w", err)
 		}
@@ -1487,19 +1488,19 @@ func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 	query := `
 	SELECT 
 		co.id AS order_id,
-		billing.street AS billing_street,
-		billing.house_number AS billing_house_number,
-		billing.apartment_number AS billing_apartment_number,
-		billing.city AS billing_city,
-		billing.state AS billing_state,
 		billing.country AS billing_country,
+		billing.state AS billing_state,
+		billing.city AS billing_city,
+		billing.address_line_one AS billing_address_line_one,
+		billing.address_line_two AS billing_address_line_two,
+		billing.company AS billing_company,
 		billing.postal_code AS billing_postal_code,
-		shipping.street AS shipping_street,
-		shipping.house_number AS shipping_house_number,
-		shipping.apartment_number AS shipping_apartment_number,
-		shipping.city AS shipping_city,
-		shipping.state AS shipping_state,
 		shipping.country AS shipping_country,
+		shipping.state AS shipping_state,
+		shipping.city AS shipping_city,
+		shipping.address_line_one AS shipping_address_line_one,
+		shipping.address_line_two AS shipping_address_line_two,
+		shipping.company AS shipping_company,
 		shipping.postal_code AS shipping_postal_code
 	FROM 
 		customer_order co
@@ -1535,19 +1536,19 @@ func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 		// TODO: rows.StructScan
 		err := rows.Scan(
 			&orderId,
-			&billing.Street,
-			&billing.HouseNumber,
-			&billing.ApartmentNumber,
-			&billing.City,
-			&billing.State,
 			&billing.Country,
+			&billing.State,
+			&billing.City,
+			&billing.AddressLineOne,
+			&billing.AddressLineTwo,
+			&billing.Company,
 			&billing.PostalCode,
-			&shipping.Street,
-			&shipping.HouseNumber,
-			&shipping.ApartmentNumber,
-			&shipping.City,
-			&shipping.State,
 			&shipping.Country,
+			&shipping.State,
+			&shipping.City,
+			&shipping.AddressLineOne,
+			&shipping.AddressLineTwo,
+			&shipping.Company,
 			&shipping.PostalCode,
 		)
 		if err != nil {

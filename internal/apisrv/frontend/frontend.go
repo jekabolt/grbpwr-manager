@@ -427,23 +427,38 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 }
 
 func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
-	orderFull, err := s.repo.Order().ApplyPromoCode(ctx, req.OrderUuid, req.PromoCode)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't apply promo code",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't apply promo code")
+	var of *pb_common.OrderFull
+	if req.OrderUuid != "" {
+		orderFull, err := s.repo.Order().ApplyPromoCode(ctx, req.OrderUuid, req.PromoCode)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't apply promo code",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't apply promo code")
+		}
+
+		of, err = dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		}
 	}
 
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
+	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "can't get promo by name",
+			slog.String("promoCode", req.PromoCode),
 		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+		return nil, status.Errorf(codes.Internal, "can't get promo by name")
 	}
+
+	pr := dto.ConvertEntityPromoInsertToPb(&promo.PromoCodeInsert)
+
 	return &pb_frontend.ApplyPromoCodeResponse{
 		Order: of,
+		Promo: pr,
 	}, nil
 }
 

@@ -188,12 +188,12 @@ CREATE TABLE payment (
 
 CREATE TABLE address (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    street VARCHAR(255) NOT NULL,
-    house_number VARCHAR(50) NOT NULL,
-    apartment_number VARCHAR(50),
-    city VARCHAR(255) NOT NULL,
+     country VARCHAR(255) NOT NULL,
     state VARCHAR(255),
-    country VARCHAR(255) NOT NULL,
+    city VARCHAR(255) NOT NULL,
+    address_line_one VARCHAR(255) NOT NULL,
+    address_line_two VARCHAR(255),
+    company VARCHAR(255),
     postal_code VARCHAR(20) NOT NULL
 );
 
