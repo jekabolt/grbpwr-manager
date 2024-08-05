@@ -57,7 +57,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 		ShippingAddress:   shippingAddress,
 		BillingAddress:    billingAddress,
 		Buyer:             buyer,
-		PaymentMethodId:   int(commonOrder.PaymentMethodId),
+		PaymentMethod:     ConvertPbPaymentMethodToEntity(commonOrder.PaymentMethod),
 		ShipmentCarrierId: int(commonOrder.ShipmentCarrierId),
 		PromoCode:         commonOrder.PromoCode,
 	}, commonOrder.Buyer.ReceivePromoEmails
@@ -69,13 +69,13 @@ func convertAddress(commonAddress *pb_common.AddressInsert) *entity.AddressInser
 		return nil
 	}
 	return &entity.AddressInsert{
-		Street:          commonAddress.Street,
-		HouseNumber:     commonAddress.HouseNumber,
-		ApartmentNumber: commonAddress.ApartmentNumber,
-		City:            commonAddress.City,
-		State:           commonAddress.State,
-		Country:         commonAddress.Country,
-		PostalCode:      commonAddress.PostalCode,
+		Country:        commonAddress.Country,
+		State:          commonAddress.State,
+		City:           commonAddress.City,
+		AddressLineOne: commonAddress.AddressLineOne,
+		AddressLineTwo: commonAddress.AddressLineTwo,
+		Company:        commonAddress.Company,
+		PostalCode:     commonAddress.PostalCode,
 	}
 }
 
@@ -276,13 +276,13 @@ func ConvertEntityAddressToPbAddress(a *entity.Address) (*pb_common.Address, err
 	return &pb_common.Address{
 		Id: int32(a.ID),
 		AddressInsert: &pb_common.AddressInsert{
-			Street:          a.Street,
-			HouseNumber:     a.HouseNumber,
-			ApartmentNumber: a.ApartmentNumber,
-			City:            a.City,
-			State:           a.State,
-			Country:         a.Country,
-			PostalCode:      a.PostalCode,
+			Country:        a.Country,
+			State:          a.State,
+			City:           a.City,
+			AddressLineOne: a.AddressLineOne,
+			AddressLineTwo: a.AddressLineTwo,
+			Company:        a.Company,
+			PostalCode:     a.PostalCode,
 		},
 	}, nil
 }

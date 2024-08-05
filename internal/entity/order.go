@@ -12,7 +12,7 @@ type OrderNew struct {
 	ShippingAddress   *AddressInsert    `valid:"required"`
 	BillingAddress    *AddressInsert    `valid:"required"`
 	Buyer             *BuyerInsert      `valid:"required"`
-	PaymentMethodId   int               `valid:"required"`
+	PaymentMethod     PaymentMethodName `valid:"required"`
 	ShipmentCarrierId int               `valid:"required"`
 	PromoCode         string            `valid:"-"`
 }

@@ -9,6 +9,7 @@ import "common/hero.proto";
 import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
+import "common/promo.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
@@ -83,10 +84,7 @@ service FrontendService {
 
   // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
   rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
-    option (google.api.http) = {
-      post: "/api/frontend/order/check/{order_uuid}"
-      body: "*"
-    };
+    option (google.api.http) = {get: "/api/frontend/order/check/{order_uuid}"};
   }
 
   // ApplyPromoCode applies promo code on selected order id
@@ -231,6 +229,7 @@ message ApplyPromoCodeRequest {
 
 message ApplyPromoCodeResponse {
   common.OrderFull order = 1;
+  common.PromoCodeInsert promo = 2;
 }
 
 message UpdateOrderItemsRequest {
