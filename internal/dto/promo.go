@@ -35,13 +35,13 @@ func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.P
 func ConvertEntityPromoToPb(entityPromo *entity.PromoCode) *pb_common.PromoCode {
 	pbPromo := &pb_common.PromoCode{
 		Id:              int32(entityPromo.ID),
-		PromoCodeInsert: ConvertEntityPromoInsertToPb(&entityPromo.PromoCodeInsert),
+		PromoCodeInsert: ConvertEntityPromoInsertToPb(entityPromo.PromoCodeInsert),
 	}
 
 	return pbPromo
 }
 
-func ConvertEntityPromoInsertToPb(entityPromo *entity.PromoCodeInsert) *pb_common.PromoCodeInsert {
+func ConvertEntityPromoInsertToPb(entityPromo entity.PromoCodeInsert) *pb_common.PromoCodeInsert {
 	// Convert decimal.Decimal to string for protobuf
 	discountStr := entityPromo.Discount.String()
 

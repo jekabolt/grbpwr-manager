@@ -17,6 +17,7 @@ import (
 	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -179,27 +180,6 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}, nil
 }
 
-func (s *Server) UpdateOrderShippingCarrier(ctx context.Context, req *pb_frontend.UpdateOrderShippingCarrierRequest) (*pb_frontend.UpdateOrderShippingCarrierResponse, error) {
-	orderFull, err := s.repo.Order().UpdateOrderShippingCarrier(ctx, req.OrderUuid, int(req.ShippingCarrierId))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update order shipping carrier",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update order shipping carrier")
-	}
-
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_frontend.UpdateOrderShippingCarrierResponse{
-		Order: of,
-	}, nil
-}
-
 func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
 	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
 	if err != nil {
@@ -251,9 +231,30 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		pbOii = append(pbOii, dto.ConvertEntityOrderItemInsertToPb(&i))
 	}
 
+	shipmentCarrier, ok := s.repo.Cache().GetShipmentCarriersByName(req.PromoCode)
+	if ok && !shipmentCarrier.Allowed {
+		slog.Default().ErrorContext(ctx, "shipment carrier not allowed",
+			slog.Any("shipmentCarrier", shipmentCarrier),
+		)
+		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
+	}
+
+	totalSale := subtotal
+	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
+	if ok && promo.Allowed {
+		if !promo.Discount.Equals(decimal.Zero) {
+			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+		}
+		if !promo.FreeShipping && shipmentCarrier.Allowed {
+			totalSale = totalSale.Add(shipmentCarrier.Price)
+		}
+	}
+
 	return &pb_frontend.ValidateOrderItemsInsertResponse{
-		Items:    pbOii,
-		Subtotal: &pb_decimal.Decimal{Value: subtotal.String()},
+		ValidItems: pbOii,
+		Subtotal:   &pb_decimal.Decimal{Value: subtotal.String()},
+		TotalSale:  &pb_decimal.Decimal{Value: totalSale.String()},
+		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
 	}, nil
 
 }
@@ -424,42 +425,6 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		Payment: pbPayment,
 	}, nil
 
-}
-
-func (s *Server) ApplyPromoCode(ctx context.Context, req *pb_frontend.ApplyPromoCodeRequest) (*pb_frontend.ApplyPromoCodeResponse, error) {
-	var of *pb_common.OrderFull
-	if req.OrderUuid != "" {
-		orderFull, err := s.repo.Order().ApplyPromoCode(ctx, req.OrderUuid, req.PromoCode)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't apply promo code",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't apply promo code")
-		}
-
-		of, err = dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-		}
-	}
-
-	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't get promo by name",
-			slog.String("promoCode", req.PromoCode),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get promo by name")
-	}
-
-	pr := dto.ConvertEntityPromoInsertToPb(&promo.PromoCodeInsert)
-
-	return &pb_frontend.ApplyPromoCodeResponse{
-		Order: of,
-		Promo: pr,
-	}, nil
 }
 
 func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOrderItemsRequest) (*pb_frontend.UpdateOrderItemsResponse, error) {
