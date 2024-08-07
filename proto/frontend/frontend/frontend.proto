@@ -40,13 +40,6 @@ service FrontendService {
     };
   }
 
-  rpc UpdateOrderShippingCarrier(UpdateOrderShippingCarrierRequest) returns (UpdateOrderShippingCarrierResponse) {
-    option (google.api.http) = {
-      post: "/api/frontend/order/{order_uuid}/update-shipping-carrier"
-      body: "*"
-    };
-  }
-
   // Retrieves an order by its ID
   rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
     option (google.api.http) = {get: "/api/frontend/orders/{order_uuid}"};
@@ -85,14 +78,6 @@ service FrontendService {
   // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
   rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
     option (google.api.http) = {get: "/api/frontend/order/check/{order_uuid}"};
-  }
-
-  // ApplyPromoCode applies promo code on selected order id
-  rpc ApplyPromoCode(ApplyPromoCodeRequest) returns (ApplyPromoCodeResponse) {
-    option (google.api.http) = {
-      post: "/api/frontend/order/promo/apply"
-      body: "*"
-    };
   }
 
   // Update order items
@@ -164,15 +149,6 @@ message SubmitOrderResponse {
   common.Order order = 1;
 }
 
-message UpdateOrderShippingCarrierRequest {
-  string order_uuid = 1;
-  int32 shipping_carrier_id = 2;
-}
-
-message UpdateOrderShippingCarrierResponse {
-  common.OrderFull order = 1;
-}
-
 message GetOrderByUUIDRequest {
   string order_uuid = 1;
 }
@@ -183,11 +159,15 @@ message GetOrderByUUIDResponse {
 
 message ValidateOrderItemsInsertRequest {
   repeated common.OrderItemInsert items = 1;
+  string promo_code = 2;
+  int32 shipment_carrier_id = 3;
 }
 
 message ValidateOrderItemsInsertResponse {
-  repeated common.OrderItemInsert items = 1;
+  repeated common.OrderItemInsert valid_items = 1;
   google.type.Decimal subtotal = 2;
+  google.type.Decimal total_sale = 3;
+  common.PromoCodeInsert promo = 4;
 }
 
 message ValidateOrderByUUIDRequest {
@@ -220,16 +200,6 @@ message CheckCryptoPaymentRequest {
 
 message CheckCryptoPaymentResponse {
   common.Payment payment = 1;
-}
-
-message ApplyPromoCodeRequest {
-  string order_uuid = 1;
-  string promo_code = 2;
-}
-
-message ApplyPromoCodeResponse {
-  common.OrderFull order = 1;
-  common.PromoCodeInsert promo = 2;
 }
 
 message UpdateOrderItemsRequest {

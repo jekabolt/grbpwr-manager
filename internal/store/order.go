@@ -374,7 +374,7 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 }
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
-func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error) {
+func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, decimal.Decimal, error) {
 	var err error
 
 	validItems, err := ms.validateOrderItemsInsert(ctx, items)
