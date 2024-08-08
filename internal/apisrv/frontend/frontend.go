@@ -432,38 +432,6 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 }
 
-func (s *Server) UpdateOrderItems(ctx context.Context, req *pb_frontend.UpdateOrderItemsRequest) (*pb_frontend.UpdateOrderItemsResponse, error) {
-	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
-	for _, i := range req.Items {
-		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert pb order item to entity order item",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert pb order item to entity order item")
-		}
-		itemsToInsert = append(itemsToInsert, *oii)
-	}
-
-	orderFull, err := s.repo.Order().UpdateOrderItems(ctx, req.OrderUuid, itemsToInsert)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update order items",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't update order items")
-	}
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
-	}
-	return &pb_frontend.UpdateOrderItemsResponse{
-		Order: of,
-	}, nil
-}
-
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
 	// Subscribe the user.
 	err := s.repo.Subscribers().UpsertSubscription(ctx, req.Email, true)

@@ -2,6 +2,7 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -69,13 +70,23 @@ func convertAddress(commonAddress *pb_common.AddressInsert) *entity.AddressInser
 		return nil
 	}
 	return &entity.AddressInsert{
-		Country:        commonAddress.Country,
-		State:          commonAddress.State,
+		Country: commonAddress.Country,
+		State: sql.NullString{
+			String: commonAddress.State,
+			Valid:  commonAddress.State != "",
+		},
 		City:           commonAddress.City,
 		AddressLineOne: commonAddress.AddressLineOne,
-		AddressLineTwo: commonAddress.AddressLineTwo,
-		Company:        commonAddress.Company,
-		PostalCode:     commonAddress.PostalCode,
+		AddressLineTwo: sql.NullString{
+			String: commonAddress.AddressLineTwo,
+			Valid:  commonAddress.AddressLineTwo != "",
+		},
+		Company: sql.NullString{
+			String: commonAddress.Company,
+			Valid:  commonAddress.Company != "",
+		},
+
+		PostalCode: commonAddress.PostalCode,
 	}
 }
 
@@ -292,11 +303,11 @@ func ConvertEntityAddressToPbAddress(a *entity.Address) (*pb_common.Address, err
 		Id: int32(a.ID),
 		AddressInsert: &pb_common.AddressInsert{
 			Country:        a.Country,
-			State:          a.State,
+			State:          a.State.String,
 			City:           a.City,
 			AddressLineOne: a.AddressLineOne,
-			AddressLineTwo: a.AddressLineTwo,
-			Company:        a.Company,
+			AddressLineTwo: a.AddressLineTwo.String,
+			Company:        a.Company.String,
 			PostalCode:     a.PostalCode,
 		},
 	}, nil

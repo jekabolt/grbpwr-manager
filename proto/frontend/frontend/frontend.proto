@@ -42,7 +42,7 @@ service FrontendService {
 
   // Retrieves an order by its ID
   rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
-    option (google.api.http) = {get: "/api/frontend/orders/{order_uuid}"};
+    option (google.api.http) = {get: "/api/frontend/order/{order_uuid}"};
   }
 
   rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
@@ -78,14 +78,6 @@ service FrontendService {
   // CheckCryptoPayment checks the crypto payment if it has been received and updates the order status if it has been received
   rpc CheckCryptoPayment(CheckCryptoPaymentRequest) returns (CheckCryptoPaymentResponse) {
     option (google.api.http) = {get: "/api/frontend/order/check/{order_uuid}"};
-  }
-
-  // Update order items
-  rpc UpdateOrderItems(UpdateOrderItemsRequest) returns (UpdateOrderItemsResponse) {
-    option (google.api.http) = {
-      post: "/api/frontend/order/update/items"
-      body: "*"
-    };
   }
 
   // Subscribe to the newsletter
@@ -200,15 +192,6 @@ message CheckCryptoPaymentRequest {
 
 message CheckCryptoPaymentResponse {
   common.Payment payment = 1;
-}
-
-message UpdateOrderItemsRequest {
-  string order_uuid = 1;
-  repeated common.OrderItemInsert items = 2;
-}
-
-message UpdateOrderItemsResponse {
-  common.OrderFull order = 1;
 }
 
 message SubscribeNewsletterRequest {
