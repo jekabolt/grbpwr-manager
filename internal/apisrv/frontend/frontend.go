@@ -226,27 +226,32 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
 	}
 
-	pbOii := make([]*pb_common.OrderItemInsert, 0, len(oii))
+	pbOii := make([]*pb_common.OrderItem, 0, len(oii))
 	for _, i := range oii {
-		pbOii = append(pbOii, dto.ConvertEntityOrderItemInsertToPb(&i))
+		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i))
 	}
 
-	shipmentCarrier, ok := s.repo.Cache().GetShipmentCarriersByName(req.PromoCode)
-	if ok && !shipmentCarrier.Allowed {
+	shipmentCarrier, scOk := s.repo.Cache().GetShipmentCarrierById(int(req.ShipmentCarrierId))
+	if scOk && !shipmentCarrier.Allowed {
 		slog.Default().ErrorContext(ctx, "shipment carrier not allowed",
 			slog.Any("shipmentCarrier", shipmentCarrier),
 		)
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
+	if scOk && shipmentCarrier.Allowed {
+		subtotal = subtotal.Add(shipmentCarrier.Price)
+	}
+
+	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
+	if ok && promo.Allowed && promo.FreeShipping && scOk {
+		subtotal = subtotal.Sub(shipmentCarrier.Price)
+	}
 
 	totalSale := subtotal
-	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
+
 	if ok && promo.Allowed {
 		if !promo.Discount.Equals(decimal.Zero) {
 			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
-		}
-		if !promo.FreeShipping && shipmentCarrier.Allowed {
-			totalSale = totalSale.Add(shipmentCarrier.Price)
 		}
 	}
 

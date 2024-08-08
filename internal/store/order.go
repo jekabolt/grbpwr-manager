@@ -30,7 +30,7 @@ func (ms *MYSQLStore) Order() dependency.Order {
 	}
 }
 
-func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, error) {
+func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
 	// Check if there are no items provided
 	if len(items) == 0 {
 		return nil, errors.New("no items to validate")
@@ -52,9 +52,11 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 	}
 
 	// Initialize a slice to store the valid order items
-	validItems := make([]entity.OrderItemInsert, 0, len(items))
+	validItems := make([]entity.OrderItem, 0, len(items))
 
 	for _, item := range items {
+		itemValid := false
+
 		for _, prdSize := range prdSizes {
 			if item.ProductID == prdSize.ProductID && item.SizeID == prdSize.SizeID {
 				if prdSize.Quantity.GreaterThan(decimal.Zero) {
@@ -63,22 +65,33 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 						item.Quantity = prdSize.Quantity
 					}
 
-					// Set price and sale percentage from product details only if item is valid
 					for _, prd := range prds {
 						if item.ProductID == prd.ID {
+							// Set price and sale percentage from product details
 							item.ProductPrice = prd.Price
 							if prd.SalePercentage.Valid {
 								item.ProductSalePercentage = prd.SalePercentage.Decimal
 							}
-							break // Found matching product, no need to continue the loop
+							validItem := entity.OrderItem{
+								OrderItemInsert: item,
+								Thumbnail:       prd.ThumbnailMediaURL,
+								ProductName:     prd.Name,
+								ProductBrand:    prd.Brand,
+								SKU:             prd.SKU,
+								CategoryID:      prd.CategoryID,
+							}
+
+							// Add item to valid list as it passed all checks
+							validItems = append(validItems, validItem)
+							itemValid = true
+							break
 						}
 					}
 
-					// Add item to valid list as it passed all checks
-					validItems = append(validItems, item)
-					break // Item is valid and processed, no need to check further
+					if itemValid {
+						break // Item is valid and processed, no need to check further
+					}
 				}
-				break // Item does not have sufficient stock, no need to set price or add to valid items
 			}
 		}
 	}
@@ -352,7 +365,7 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) [
 	return items
 }
 
-func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, error) {
+func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no order items to insert")
 	}
@@ -374,7 +387,7 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 }
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
-func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, decimal.Decimal, error) {
+func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, decimal.Decimal, error) {
 	var err error
 
 	validItems, err := ms.validateOrderItemsInsert(ctx, items)
@@ -384,8 +397,9 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	if len(validItems) == 0 {
 		return nil, decimal.Zero, fmt.Errorf("no valid order items to insert")
 	}
+	validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItems)
+	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
 	total, err := calculateTotalAmount(ctx, ms, providers)
 	if err != nil {
 		return nil, decimal.Zero, fmt.Errorf("error while calculating total amount: %w", err)
@@ -428,11 +442,13 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
 
-		ok = compareItems(items, validItems)
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
+
+		ok = compareItems(items, validItemsInsert)
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
@@ -492,6 +508,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err != nil {
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
 		promo, ok := ms.cache.GetPromoByName(orderNew.PromoCode)
 		if !ok {
@@ -573,7 +590,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		order.ID = orderId
 		order.UUID = uuid
 
-		err = insertOrderItems(ctx, rep, validItems, orderId)
+		err = insertOrderItems(ctx, rep, validItemsInsert, orderId)
 		if err != nil {
 			return fmt.Errorf("error while inserting order items: %w", err)
 		}
@@ -768,12 +785,13 @@ func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderUUID string, prom
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-		ok = compareItems(items, validItems)
+		ok = compareItems(items, validItemsInsert)
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
@@ -845,8 +863,9 @@ func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderUUID string, it
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-		err = updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+		err = updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
 		if err != nil {
 			return fmt.Errorf("error while updating order items: %w", err)
 		}
@@ -927,12 +946,13 @@ func (ms *MYSQLStore) UpdateOrderShippingCarrier(ctx context.Context, orderUUID 
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-		ok = compareItems(items, validItems)
+		ok = compareItems(items, validItemsInsert)
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
@@ -1190,12 +1210,13 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-		ok = compareItems(items, validItems)
+		ok = compareItems(items, validItemsInsert)
 		if !ok {
 			// valid items not equal to order items
 			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItems, orderFull.Order.ID)
+			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
@@ -1207,7 +1228,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			return nil
 		}
 
-		err = rep.Products().ReduceStockForProductSizes(ctx, validItems)
+		err = rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert)
 		if err != nil {
 			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
 		}

@@ -128,6 +128,21 @@ func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_com
 	}
 }
 
+func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderItem {
+	return &pb_common.OrderItem{
+		Id:                    int32(orderItem.ID),
+		OrderId:               int32(orderItem.OrderID),
+		Thumbnail:             orderItem.Thumbnail,
+		ProductName:           orderItem.ProductName,
+		ProductPrice:          orderItem.ProductPrice.String(),
+		ProductSalePercentage: orderItem.ProductSalePercentage.String(),
+		CategoryId:            int32(orderItem.CategoryID),
+		ProductBrand:          orderItem.ProductBrand,
+		Sku:                   orderItem.SKU,
+		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
+	}
+}
+
 func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderFull, error) {
 	if e == nil {
 		return nil, fmt.Errorf("entity.OrderFull is nil")
