@@ -9,13 +9,13 @@ type Address struct {
 }
 
 type AddressInsert struct {
-	Country        string `db:"country" valid:"required"`
-	State          string `db:"state" valid:"-"`
-	City           string `db:"city" valid:"required"`
-	AddressLineOne string `db:"address_line_one" valid:"required"`
-	AddressLineTwo string `db:"address_line_two" valid:"-"`
-	Company        string `db:"company" valid:"-"`
-	PostalCode     string `db:"postal_code" valid:"required"`
+	Country        string         `db:"country" valid:"required"`
+	State          sql.NullString `db:"state" valid:"-"`
+	City           string         `db:"city" valid:"required"`
+	AddressLineOne string         `db:"address_line_one" valid:"required"`
+	AddressLineTwo sql.NullString `db:"address_line_two" valid:"-"`
+	Company        sql.NullString `db:"company" valid:"-"`
+	PostalCode     string         `db:"postal_code" valid:"required"`
 }
 
 // Buyer represents the buyer table

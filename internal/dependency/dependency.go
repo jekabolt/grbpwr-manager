@@ -58,7 +58,6 @@ type (
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
 		ApplyPromoCode(ctx context.Context, orderUUID string, promoCode string) (*entity.OrderFull, error)
 		UpdateOrderItems(ctx context.Context, orderUUID string, items []entity.OrderItemInsert) (*entity.OrderFull, error)
-		UpdateOrderShippingCarrier(ctx context.Context, orderUUID string, shipmentCarrierId int) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
