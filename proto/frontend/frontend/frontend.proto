@@ -47,14 +47,14 @@ service FrontendService {
 
   rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/validate-items"
+      post: "/api/frontend/orders/validate-items"
       body: "*"
     };
   }
 
   rpc ValidateOrderByUUID(ValidateOrderByUUIDRequest) returns (ValidateOrderByUUIDResponse) {
     option (google.api.http) = {
-      post: "/api/admin/orders/validate/{order_uuid}"
+      post: "/api/frontend/orders/validate/{order_uuid}"
       body: "*"
     };
   }
@@ -164,7 +164,7 @@ message ValidateOrderItemsInsertRequest {
 }
 
 message ValidateOrderItemsInsertResponse {
-  repeated common.OrderItemInsert valid_items = 1;
+  repeated common.OrderItem valid_items = 1;
   google.type.Decimal subtotal = 2;
   google.type.Decimal total_sale = 3;
   common.PromoCodeInsert promo = 4;
