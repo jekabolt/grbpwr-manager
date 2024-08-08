@@ -139,6 +139,8 @@ message SubmitOrderRequest {
 
 message SubmitOrderResponse {
   common.Order order = 1;
+  google.protobuf.Timestamp expired_at = 2;
+  common.PaymentInsert payment = 3;
 }
 
 message GetOrderByUUIDRequest {
