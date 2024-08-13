@@ -138,9 +138,10 @@ message SubmitOrderRequest {
 }
 
 message SubmitOrderResponse {
-  common.Order order = 1;
-  google.protobuf.Timestamp expired_at = 2;
-  common.PaymentInsert payment = 3;
+  string order_uuid = 1;
+  common.OrderStatusEnum order_status = 2;
+  google.protobuf.Timestamp expired_at = 3;
+  common.PaymentInsert payment = 4;
 }
 
 message GetOrderByUUIDRequest {
@@ -159,9 +160,10 @@ message ValidateOrderItemsInsertRequest {
 
 message ValidateOrderItemsInsertResponse {
   repeated common.OrderItem valid_items = 1;
-  google.type.Decimal subtotal = 2;
-  google.type.Decimal total_sale = 3;
-  common.PromoCodeInsert promo = 4;
+  repeated common.OrderItem invalid_items = 2;
+  google.type.Decimal subtotal = 3;
+  google.type.Decimal total_sale = 4;
+  common.PromoCodeInsert promo = 5;
 }
 
 message ValidateOrderByUUIDRequest {
