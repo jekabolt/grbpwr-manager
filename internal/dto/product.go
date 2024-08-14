@@ -3,7 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -314,7 +314,9 @@ func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag
 
 func GetSlug(id int, brand, name, gender string) string {
 	clean := func(part string) string {
-		return strings.ToLower(strings.ReplaceAll(part, " ", "-"))
+		reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
+		// Replace all non-alphanumeric characters with an empty string
+		return reg.ReplaceAllString(part, "")
 	}
 	return fmt.Sprintf("/product/%s/%s/%s/%d", gender, clean(brand), clean(name), id)
 }
