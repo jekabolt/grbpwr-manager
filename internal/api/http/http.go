@@ -10,7 +10,8 @@ import (
 	"text/template"
 
 	"github.com/go-chi/chi"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"log/slog"
 
@@ -125,8 +126,10 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
+			MarshalOptions: protojson.MarshalOptions{
+				UseEnumNumbers:  false,
+				EmitUnpopulated: true,
+			},
 		},
 	))
 
@@ -146,8 +149,10 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
+			MarshalOptions: protojson.MarshalOptions{
+				UseEnumNumbers:  false,
+				EmitUnpopulated: true,
+			},
 		},
 	))
 	err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
@@ -166,8 +171,10 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
 		runtime.MIMEWildcard,
 		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
+			MarshalOptions: protojson.MarshalOptions{
+				UseEnumNumbers:  false,
+				EmitUnpopulated: true,
+			},
 		},
 	))
 

@@ -160,7 +160,7 @@ message ValidateOrderItemsInsertRequest {
 
 message ValidateOrderItemsInsertResponse {
   repeated common.OrderItem valid_items = 1;
-  repeated common.OrderItem invalid_items = 2;
+  bool has_changed = 2;
   google.type.Decimal subtotal = 3;
   google.type.Decimal total_sale = 4;
   common.PromoCodeInsert promo = 5;

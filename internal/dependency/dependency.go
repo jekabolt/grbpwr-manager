@@ -54,10 +54,8 @@ type (
 
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error)
-		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, decimal.Decimal, error)
+		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
-		ApplyPromoCode(ctx context.Context, orderUUID string, promoCode string) (*entity.OrderFull, error)
-		UpdateOrderItems(ctx context.Context, orderUUID string, items []entity.OrderItemInsert) (*entity.OrderFull, error)
 		InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)

@@ -55,9 +55,10 @@ message OrderItem {
   string product_sale_percentage = 7;
   string product_brand = 8;
   string slug = 9;
-  int32 category_id = 10;
-  string sku = 11;
-  OrderItemInsert order_item = 12;
+  string color = 10;
+  int32 category_id = 11;
+  string sku = 12;
+  OrderItemInsert order_item = 13;
 }
 
 message OrderItemInsert {
