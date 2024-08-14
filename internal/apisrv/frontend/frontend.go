@@ -167,16 +167,48 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		}
 	}
 
-	o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
+	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
+
+	pme, ok := s.repo.Cache().GetPaymentMethodByName(pm)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
+		return nil, status.Errorf(codes.Internal, "internal error")
+	}
+	if !pme.Allowed {
+		slog.Default().ErrorContext(ctx, "payment method not allowed")
+		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
 
+	invoice, err := s.getInvoiceByPaymentMethod(ctx, pm, order.UUID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	eos, ok := s.repo.Cache().GetOrderStatusById(order.OrderStatusID)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to retrieve order status")
+		return nil, status.Errorf(codes.Internal, "internal error")
+	}
+
+	os, ok := dto.ConvertEntityToPbOrderStatus(eos.Name)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to convert order status")
+		return nil, status.Errorf(codes.Internal, "internal error")
+	}
+
+	pbPi, err := dto.ConvertEntityToPbPaymentInsert(invoice.Payment)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+	}
+	pbPi.PaymentMethod = req.Order.PaymentMethod
+
 	return &pb_frontend.SubmitOrderResponse{
-		Order: o,
+		OrderUuid:   order.UUID,
+		OrderStatus: os,
+		ExpiredAt:   timestamppb.New(invoice.ExpiredAt),
+		Payment:     pbPi,
 	}, nil
 }
 
@@ -218,7 +250,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
-	oii, subtotal, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
+	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
@@ -226,8 +258,8 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
 	}
 
-	pbOii := make([]*pb_common.OrderItem, 0, len(oii))
-	for _, i := range oii {
+	pbOii := make([]*pb_common.OrderItem, 0, len(oiv.ValidItems))
+	for _, i := range oiv.ValidItems {
 		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i))
 	}
 
@@ -239,15 +271,15 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
 	if scOk && shipmentCarrier.Allowed {
-		subtotal = subtotal.Add(shipmentCarrier.Price)
+		oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price)
 	}
 
 	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
 	if ok && promo.Allowed && promo.FreeShipping && scOk {
-		subtotal = subtotal.Sub(shipmentCarrier.Price)
+		oiv.Subtotal = oiv.Subtotal.Sub(shipmentCarrier.Price)
 	}
 
-	totalSale := subtotal
+	totalSale := oiv.Subtotal
 
 	if ok && promo.Allowed {
 		if !promo.Discount.Equals(decimal.Zero) {
@@ -257,7 +289,8 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 
 	return &pb_frontend.ValidateOrderItemsInsertResponse{
 		ValidItems: pbOii,
-		Subtotal:   &pb_decimal.Decimal{Value: subtotal.String()},
+		HasChanged: oiv.HasChanged,
+		Subtotal:   &pb_decimal.Decimal{Value: oiv.Subtotal.String()},
 		TotalSale:  &pb_decimal.Decimal{Value: totalSale.String()},
 		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
 	}, nil

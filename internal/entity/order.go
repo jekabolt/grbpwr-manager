@@ -57,8 +57,10 @@ type OrderItem struct {
 	Thumbnail    string `db:"thumbnail"`
 	ProductName  string `db:"product_name"`
 	ProductBrand string `db:"product_brand"`
+	Color        string `db:"color"`
 	CategoryID   int    `db:"category_id"`
 	SKU          string `db:"product_sku"`
+	Slug         string
 	OrderItemInsert
 }
 
@@ -66,8 +68,15 @@ type OrderItemInsert struct {
 	ProductID             int             `db:"product_id" valid:"required"`
 	ProductPrice          decimal.Decimal `db:"product_price"`
 	ProductSalePercentage decimal.Decimal `db:"product_sale_percentage"`
+	ProductPriceWithSale  decimal.Decimal
 	Quantity              decimal.Decimal `db:"quantity" valid:"required"`
 	SizeID                int             `db:"size_id" valid:"required"`
+}
+
+type OrderItemValidation struct {
+	ValidItems []OrderItem
+	Subtotal   decimal.Decimal
+	HasChanged bool
 }
 
 // ByProductID implements sort.Interface for []OrderItemInsert based on the ProductID field.

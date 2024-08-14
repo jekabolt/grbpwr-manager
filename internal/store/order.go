@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
@@ -71,13 +72,19 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 							item.ProductPrice = prd.Price
 							if prd.SalePercentage.Valid {
 								item.ProductSalePercentage = prd.SalePercentage.Decimal
+								item.ProductPriceWithSale = prd.Price.Mul(decimal.NewFromInt(100).Sub(prd.SalePercentage.Decimal).Div(decimal.NewFromInt(100)))
+							} else {
+								item.ProductPriceWithSale = prd.Price
 							}
+
 							validItem := entity.OrderItem{
 								OrderItemInsert: item,
 								Thumbnail:       prd.ThumbnailMediaURL,
 								ProductName:     prd.Name,
 								ProductBrand:    prd.Brand,
+								Color:           prd.Color,
 								SKU:             prd.SKU,
+								Slug:            dto.GetSlug(prd.ID, prd.Brand, prd.Name, prd.TargetGender.String()),
 								CategoryID:      prd.CategoryID,
 							}
 
@@ -366,11 +373,6 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) [
 }
 
 func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("no order items to insert")
-	}
-	// map items by product id and size id
-	items = mergeOrderItems(items)
 
 	// adjust quantities if it exceeds the maxOrderItemPerSize
 	items = adjustQuantities(ms.cache.GetDict().MaxOrderItems, items)
@@ -387,28 +389,38 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 }
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
-func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, decimal.Decimal, error) {
+func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error) {
 	var err error
+
+	if len(items) == 0 {
+		return nil, fmt.Errorf("no order items to insert")
+	}
+	// map items by product id and size id
+	items = mergeOrderItems(items)
 
 	validItems, err := ms.validateOrderItemsInsert(ctx, items)
 	if err != nil {
-		return nil, decimal.Zero, fmt.Errorf("error while validating order items: %w", err)
+		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 	if len(validItems) == 0 {
-		return nil, decimal.Zero, fmt.Errorf("no valid order items to insert")
+		return nil, fmt.Errorf("no valid order items to insert")
 	}
 	validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
 	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
 	total, err := calculateTotalAmount(ctx, ms, providers)
 	if err != nil {
-		return nil, decimal.Zero, fmt.Errorf("error while calculating total amount: %w", err)
+		return nil, fmt.Errorf("error while calculating total amount: %w", err)
 	}
 	if total.IsZero() {
-		return nil, decimal.Zero, fmt.Errorf("total amount is zero")
+		return nil, fmt.Errorf("total amount is zero")
 	}
 
-	return validItems, total, nil
+	return &entity.OrderItemValidation{
+		ValidItems: validItems,
+		Subtotal:   total,
+		HasChanged: !compareItems(items, validItemsInsert),
+	}, nil
 }
 
 func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
@@ -433,7 +445,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 	var customErr error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
+		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
 			err := cancelOrder(ctx, rep, orderFull)
 			if err != nil {
@@ -442,7 +454,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
 
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
 		ok = compareItems(items, validItemsInsert)
 		if !ok {
@@ -452,7 +464,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, subtotal, orderFull.PromoCode, orderFull.Shipment)
+			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.Subtotal, orderFull.PromoCode, orderFull.Shipment)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}
@@ -504,11 +516,11 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 
 		orderNew.Items = mergeOrderItems(orderNew.Items)
 
-		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, orderNew.Items)
+		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, orderNew.Items)
 		if err != nil {
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
 		promo, ok := ms.cache.GetPromoByName(orderNew.PromoCode)
 		if !ok {
@@ -525,11 +537,11 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		if !promo.Discount.Equals(decimal.Zero) {
-			subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+			oiv.Subtotal = oiv.Subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
 		}
 
 		if !promo.FreeShipping {
-			subtotal = subtotal.Add(shipmentCarrier.Price)
+			oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price)
 		}
 
 		shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep,
@@ -577,7 +589,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		order = &entity.Order{
 			BuyerID:       buyerID,
 			PaymentID:     paymentID,
-			TotalPrice:    subtotal,
+			TotalPrice:    oiv.Subtotal,
 			PromoID:       prId,
 			ShipmentId:    shipmentId,
 			OrderStatusID: placed.ID,
@@ -753,69 +765,6 @@ func shipmentsByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 	return shipments, nil
 }
 
-func (ms *MYSQLStore) ApplyPromoCode(ctx context.Context, orderUUID string, promoCode string) (*entity.OrderFull, error) {
-	promo, ok := ms.cache.GetPromoByName(promoCode)
-	if !ok || !promo.Allowed || promo.Expiration.Before(time.Now()) {
-		return nil, fmt.Errorf("promo code is not exists or not allowed or expired")
-	}
-
-	orderFull, err := ms.GetOrderFullByUUID(ctx, orderUUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order by id: %w", err)
-	}
-
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-
-		os, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
-		if !ok {
-			return fmt.Errorf("order status is not exists")
-		}
-
-		if os.Name != entity.Placed {
-			return fmt.Errorf("bad order status for applying promo code must be placed got: %s", os.Name)
-		}
-
-		items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
-
-		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
-		if err != nil {
-			err := cancelOrder(ctx, rep, orderFull)
-			if err != nil {
-				return fmt.Errorf("can't cancel order while applying promo code: %w", err)
-			}
-			return fmt.Errorf("error while validating order items: %w", err)
-		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
-
-		ok = compareItems(items, validItemsInsert)
-		if !ok {
-			// valid items not equal to order items
-			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
-			if err != nil {
-				return fmt.Errorf("error while updating order items: %w", err)
-			}
-		}
-
-		orderFull.Order.PromoID = sql.NullInt32{
-			Int32: int32(promo.ID),
-			Valid: true,
-		}
-
-		grandTotal, err := updateTotalAmount(ctx, rep, orderFull.Order.ID, subtotal, &promo, orderFull.Shipment)
-		if err != nil {
-			return fmt.Errorf("error while updating total amount: %w", err)
-		}
-		orderFull.Order.TotalPrice = grandTotal
-
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("can't apply promo code: %w", err)
-	}
-	return orderFull, nil
-}
-
 func getOrderShipmentCarrier(ctx context.Context, rep dependency.Repository, orderId int) (*entity.ShipmentCarrier, error) {
 	query := `
 	SELECT
@@ -834,60 +783,6 @@ func getOrderShipmentCarrier(ctx context.Context, rep dependency.Repository, ord
 		return nil, err
 	}
 	return &carrier, nil
-}
-
-// UpdateOrderItems update order items
-func (ms *MYSQLStore) UpdateOrderItems(ctx context.Context, orderUUID string, items []entity.OrderItemInsert) (*entity.OrderFull, error) {
-
-	orderFull, err := ms.GetOrderFullByUUID(ctx, orderUUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order by id: %w", err)
-	}
-
-	oStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
-	if !ok {
-		return nil, fmt.Errorf("order status is not exists")
-	}
-
-	if oStatus.Name != entity.Placed {
-		return nil, fmt.Errorf("bad order status for updating items must be placed got: %s", oStatus.Name)
-	}
-
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-
-		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
-		if err != nil {
-			err := cancelOrder(ctx, rep, orderFull)
-			if err != nil {
-				return fmt.Errorf("can't cancel order while applying promo code: %w", err)
-			}
-			return fmt.Errorf("error while validating order items: %w", err)
-		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
-
-		err = updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
-		if err != nil {
-			return fmt.Errorf("error while updating order items: %w", err)
-		}
-		getOrdersItems, err := getOrdersItems(ctx, rep, []int{orderFull.Order.ID})
-		if err != nil {
-			return fmt.Errorf("can't get order items: %w", err)
-		}
-		orderFull.OrderItems = getOrdersItems[orderFull.Order.ID]
-
-		grandTotal, err := updateTotalAmount(ctx, rep, orderFull.Order.ID, subtotal, orderFull.PromoCode, orderFull.Shipment)
-		if err != nil {
-			return fmt.Errorf("error while updating total amount: %w", err)
-		}
-		orderFull.Order.TotalPrice = grandTotal
-
-		return nil
-	})
-	if err != nil {
-		return orderFull, fmt.Errorf("can't update order items: %w", err)
-	}
-
-	return orderFull, err
 }
 
 func updateOrderShipping(ctx context.Context, rep dependency.Repository, orderId int, newShipmentCarrier *entity.ShipmentCarrier) error {
@@ -1123,7 +1018,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 	// var p *entity.Payment
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		validItems, subtotal, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
+		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't validate order items",
 				slog.String("err", err.Error()),
@@ -1134,7 +1029,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
 		ok = compareItems(items, validItemsInsert)
 		if !ok {
@@ -1144,7 +1039,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, subtotal, orderFull.PromoCode, orderFull.Shipment)
+			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.Subtotal, orderFull.PromoCode, orderFull.Shipment)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}

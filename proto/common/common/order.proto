@@ -51,11 +51,14 @@ message OrderItem {
   string thumbnail = 3;
   string product_name = 4;
   string product_price = 5;
-  string product_sale_percentage = 6;
-  string product_brand = 7;
-  int32 category_id = 8;
-  string sku = 9;
-  OrderItemInsert order_item = 10;
+  string product_price_with_sale = 6;
+  string product_sale_percentage = 7;
+  string product_brand = 8;
+  string slug = 9;
+  string color = 10;
+  int32 category_id = 11;
+  string sku = 12;
+  OrderItemInsert order_item = 13;
 }
 
 message OrderItemInsert {
