@@ -181,6 +181,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	invoice, err := s.getInvoiceByPaymentMethod(ctx, pm, order.UUID)
 	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
 		return nil, err
 	}
 
