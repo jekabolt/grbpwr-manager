@@ -66,7 +66,7 @@ install:
 	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest || exit 1
 	go install golang.org/x/text/cmd/gotext@latest || exit 1
 	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest || exit 1
-	go install github.com/vektra/mockery/v2@latest || exit 1 
+	go install github.com/vektra/mockery/v2@v2.43.2 || exit 1 
 	go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest || exit 1
 
 
