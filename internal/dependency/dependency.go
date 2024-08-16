@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-//go:generate mockery --with-expecter --case underscore --all
+//go:generate mockery --with-expecter --case underscore --all --output=./mocks
 type (
 	ContextStore interface {
 		Tx(ctx context.Context, fn func(ctx context.Context, store Repository) error) error
