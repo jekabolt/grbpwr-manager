@@ -7,7 +7,7 @@ GO_LINT_VERSION := v1.53.3
 init: clean install proto generate
 	
 generate: generate-resend-client
-	go generate -v ./...
+	go generate ./...
 
 proto: format-proto
 	buf generate 
@@ -70,8 +70,7 @@ install:
 	go install golang.org/x/text/cmd/gotext@latest || exit 1
 	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest || exit 1
 	go install github.com/vektra/mockery/v2@v2.43.2 || exit 1 
-	go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest || exit 1
-
+	go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest || exit 1
 
 REGISTRY=grbpwr
 IMAGE_NAME=grbpwr-pm
