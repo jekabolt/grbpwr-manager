@@ -6,11 +6,14 @@ GO_LINT_VERSION := v1.53.3
 
 init: clean install proto generate
 	
-generate: generate-resend-client
+generate: tidy generate-resend-client
 	go generate ./...
 
 proto: format-proto
 	buf generate 
+
+tidy:
+	go mod tidy
 
 format-proto:
 	find ./proto -name '*.proto' -exec buf format {} -o {} \;
