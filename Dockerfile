@@ -1,4 +1,4 @@
-FROM golang:1.21rc4-alpine3.18 as builder
+FROM golang:1.23.0-alpine3.20 as builder
 
 # Install build dependencies including libwebp-dev and potentially libsharpyuv
 RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
