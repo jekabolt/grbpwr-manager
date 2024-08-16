@@ -12,18 +12,19 @@ message HeroItemInsert {
   int32 media_id = 1;
   string explore_link = 2;
   string explore_text = 3;
+  bool is_main = 4;
 }
 
 message HeroItem {
   common.MediaFull media = 1;
   string explore_link = 2;
   string explore_text = 3;
+  bool is_main = 4;
 }
 
 message HeroFull {
   int32 id = 1;
   google.protobuf.Timestamp created_at = 2;
-  HeroItem main = 3;
   repeated HeroItem ads = 4;
   repeated common.Product products_featured = 5;
 }

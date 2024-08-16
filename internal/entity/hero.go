@@ -17,14 +17,12 @@ type HeroItem struct {
 }
 
 type HeroFull struct {
-	Main             *HeroItem  `valid:"required"`
-	Ads              []HeroItem `valid:"required"`
+	Ads              []HeroItem
 	ProductsFeatured []Product
 }
 
 type HeroFullInsert struct {
 	CreatedAt        time.Time  `db:"created_at"`
-	Main             *HeroItem  `valid:"required"`
 	Ads              []HeroItem `valid:"required"`
 	ProductsFeatured []Product
 }

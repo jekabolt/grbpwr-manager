@@ -28,6 +28,7 @@ func ConvertEntityHeroItemToCommon(hi *entity.HeroItem) *pb_common.HeroItem {
 		Media:       ConvertEntityToCommonMedia(hi.Media),
 		ExploreLink: hi.ExploreLink,
 		ExploreText: hi.ExploreText,
+		IsMain:      hi.IsMain,
 	}
 }
 
@@ -46,7 +47,6 @@ func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, er
 		prdsFeatured = append(prdsFeatured, prd)
 	}
 	return &pb_common.HeroFull{
-		Main:             ConvertEntityHeroItemToCommon(hf.Main),
 		Ads:              ads,
 		ProductsFeatured: prdsFeatured,
 	}, nil

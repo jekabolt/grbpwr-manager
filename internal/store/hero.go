@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,7 +22,7 @@ func (ms *MYSQLStore) Hero() dependency.Hero {
 	}
 }
 
-func (ms *MYSQLStore) SetHero(ctx context.Context, main *entity.HeroInsert, ads []entity.HeroInsert, productIds []int) error {
+func (ms *MYSQLStore) SetHero(ctx context.Context, ads []entity.HeroInsert, productIds []int) error {
 
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `DELETE FROM hero`
@@ -43,18 +44,17 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, main *entity.HeroInsert, ads 
 			return fmt.Errorf("failed to add hero products: %w", err)
 		}
 
-		err = insertHero(ctx, rep, main, ads)
+		err = insertHero(ctx, rep, ads)
 		if err != nil {
 			return fmt.Errorf("failed to add hero ads: %w", err)
 		}
 
 		hero, err := rep.Hero().GetHero(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get hero: %w", err)
 		}
 
 		ms.cache.UpdateHero(&entity.HeroFull{
-			Main:             hero.Main,
 			Ads:              hero.Ads,
 			ProductsFeatured: hero.ProductsFeatured,
 		})
@@ -82,7 +82,7 @@ func insertHeroProducts(ctx context.Context, rep dependency.Repository, productI
 	return BulkInsert(ctx, rep.DB(), "hero_product", rows)
 }
 
-func insertHero(ctx context.Context, rep dependency.Repository, main *entity.HeroInsert, ads []entity.HeroInsert) error {
+func insertHero(ctx context.Context, rep dependency.Repository, ads []entity.HeroInsert) error {
 	rows := make([]map[string]any, 0, len(ads))
 	for _, ad := range ads {
 		row := map[string]any{
@@ -93,12 +93,6 @@ func insertHero(ctx context.Context, rep dependency.Repository, main *entity.Her
 		}
 		rows = append(rows, row)
 	}
-	rows = append(rows, map[string]any{
-		"media_id":     main.MediaId,
-		"explore_link": main.ExploreLink,
-		"explore_text": main.ExploreText,
-		"main":         true,
-	})
 
 	return BulkInsert(ctx, rep.DB(), "hero", rows)
 }
@@ -153,13 +147,10 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 
 	heroList, err := QueryListNamed[heroRaw](ctx, ms.db, query, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to query hero: %w", err)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("failed to query hero: %w", err)
+		}
 	}
-
-	if len(heroList) == 0 {
-		return nil, sql.ErrNoRows
-	}
-
 	hf = &entity.HeroFull{}
 
 	for _, h := range heroList {
@@ -185,17 +176,14 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 			ExploreText: h.ExploreText,
 			IsMain:      h.IsMain,
 		}
-
-		if h.IsMain {
-			hf.Main = hi
-		} else {
-			hf.Ads = append(hf.Ads, *hi)
-		}
+		hf.Ads = append(hf.Ads, *hi)
 	}
 
 	hf.ProductsFeatured, err = getHeroProducts(ctx, ms)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("failed to get hero products: %w", err)
+		}
 	}
 
 	ms.cache.UpdateHero(hf)
