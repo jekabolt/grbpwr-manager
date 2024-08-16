@@ -1,6 +1,6 @@
 module github.com/jekabolt/grbpwr-manager
 
-go 1.21
+go 1.23
 
 require (
 	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
