@@ -60,7 +60,6 @@ golangci-lint:
 
 install:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest || exit 1
-	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest || exit 1
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest || exit 1
 	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway@latest || exit 1
 	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest || exit 1
