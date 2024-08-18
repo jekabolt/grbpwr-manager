@@ -14,27 +14,31 @@ func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.Arc
 		return nil
 	}
 
-	ArchiveBody := &entity.ArchiveBody{
-		Title:       pbArchiveNew.Archive.Heading,
-		Description: pbArchiveNew.Archive.Description,
+	archiveBody := &entity.ArchiveBody{
+		Heading: pbArchiveNew.Archive.Heading,
+		Text:    pbArchiveNew.Archive.Text,
 	}
 
 	entityItems := convertPbArchiveItemsInsertToEntity(pbArchiveNew.ItemsInsert)
 
 	return &entity.ArchiveNew{
-		Archive: ArchiveBody,
+		Archive: archiveBody,
 		Items:   entityItems,
 	}
 }
 
 // Convert a slice of protobuf ArchiveItemInsert to a slice of entity ArchiveItemInsert
 func convertPbArchiveItemsInsertToEntity(pbItemsInsert []*pb_common.ArchiveItemInsert) []entity.ArchiveItemInsert {
+	if pbItemsInsert == nil {
+		return nil
+	}
+
 	var entityItems []entity.ArchiveItemInsert
 	for _, pbItem := range pbItemsInsert {
 		entityItem := entity.ArchiveItemInsert{
 			MediaId: int(pbItem.MediaId),
 			URL:     sql.NullString{String: pbItem.Url, Valid: pbItem.Url != ""},
-			Title:   sql.NullString{String: pbItem.Title, Valid: pbItem.Title != ""},
+			Name:    sql.NullString{String: pbItem.Name, Valid: pbItem.Name != ""},
 		}
 		entityItems = append(entityItems, entityItem)
 	}
@@ -46,7 +50,7 @@ func ConvertPbArchiveItemToEntity(i *pb_common.ArchiveItem) *entity.ArchiveItem 
 	return &entity.ArchiveItem{
 		Media: ConvertPbMediaFullToEntity(i.Media),
 		URL:   sql.NullString{String: i.Url, Valid: i.Url != ""},
-		Title: sql.NullString{String: i.Title, Valid: i.Title != ""},
+		Name:  sql.NullString{String: i.Name, Valid: i.Name != ""},
 	}
 }
 
@@ -63,8 +67,8 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		CreatedAt: timestamppb.New(af.Archive.CreatedAt),
 		UpdatedAt: timestamppb.New(af.Archive.UpdatedAt),
 		ArchiveBody: &pb_common.ArchiveBody{
-			Heading:     af.Archive.Title,
-			Description: af.Archive.Description,
+			Heading: af.Archive.Heading,
+			Text:    af.Archive.Text,
 		},
 	}
 
@@ -90,7 +94,7 @@ func convertArchiveItemsToPb(items []entity.ArchiveItemFull) []*pb_common.Archiv
 			ArchiveItem: &pb_common.ArchiveItem{
 				Media: ConvertEntityToCommonMedia(&item.Media),
 				Url:   url,
-				Title: item.Title.String,
+				Name:  item.Name.String,
 			},
 		}
 		itemsPb = append(itemsPb, itemPb)

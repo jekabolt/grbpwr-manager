@@ -28,17 +28,17 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (
 		return 0, errors.New("archive items must not be empty")
 	}
 
-	if aNew.Archive.Title == "" {
+	if aNew.Archive.Heading == "" {
 		return 0, errors.New("archive title must not be empty")
 	}
 
 	var archiveID int
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `INSERT INTO archive (title, description) VALUES (:title, :description)`
+		query := `INSERT INTO archive (heading, text) VALUES (:heading, :text)`
 		archiveID, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"title":       aNew.Archive.Title,
-			"description": aNew.Archive.Description,
+			"heading": aNew.Archive.Heading,
+			"text":    aNew.Archive.Text,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
@@ -48,7 +48,7 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (
 		for i, archive := range aNew.Items {
 			row := map[string]any{
 				"media_id":        archive.MediaId,
-				"title":           archive.Title,
+				"name":            archive.Name,
 				"url":             archive.URL,
 				"archive_id":      archiveID,
 				"sequence_number": i,
@@ -73,6 +73,19 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (
 func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aId int, aBody *entity.ArchiveBody, aItems []entity.ArchiveItemInsert) error {
 
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// If no items are provided, delete the archive and return
+		if len(aItems) == 0 {
+			query := `DELETE FROM archive WHERE id = :id`
+			_, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+				"id": aId,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to delete archive with ID %d: %w", aId, err)
+			}
+			return nil
+		}
+
+		// Delete existing archive items
 		query := `DELETE FROM archive_item WHERE archive_id = :archiveId`
 		_, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
 			"archiveId": aId,
@@ -81,33 +94,25 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aId int, aBody *entity.
 			return fmt.Errorf("failed to delete archive items with archive Id %d: %w", aId, err)
 		}
 
-		if len(aItems) == 0 {
-			// if no items are provided delete the archive and return
-			query = `DELETE FROM archive WHERE id = :id`
-			_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
-				"id": aId,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to delete archive with ID %d: %w", aId, err)
-			}
-		}
-
-		query = `UPDATE archive SET title = :title, description = :description WHERE id = :id`
+		// Update the archive itself
+		query = `UPDATE archive SET heading = :heading, text = :text WHERE id = :id`
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
-			"id":          aId,
-			"title":       aBody.Title,
-			"description": aBody.Description,
+			"id":      aId,
+			"heading": aBody.Heading,
+			"text":    aBody.Text,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update archive: %w", err)
 		}
 
+		// Insert new archive items
 		rows := make([]map[string]any, 0, len(aItems))
 		for i, archive := range aItems {
 			row := map[string]any{
-				"archive_id":      aId,
 				"media_id":        archive.MediaId,
-				"title":           archive.Title,
+				"name":            archive.Name,
+				"url":             archive.URL,
+				"archive_id":      aId,
 				"sequence_number": i,
 			}
 			rows = append(rows, row)
@@ -125,8 +130,8 @@ type archiveJoin struct {
 	Id           int       `db:"id"`
 	CreatedAt    time.Time `db:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at"`
-	Title        string    `db:"title"`
-	Description  string    `db:"description"`
+	Heading      string    `db:"heading"`
+	Text         string    `db:"text"`
 	ArchiveItems string    `db:"archive_items"`
 }
 
@@ -140,8 +145,8 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 		a.id,
 		a.created_at,
 		a.updated_at,
-		a.title,
-		a.description,
+		a.heading,
+		a.text,
 		JSON_ARRAYAGG(
 			JSON_OBJECT(
 				'id', ai.id,
@@ -158,7 +163,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 					'compressed_height', m.compressed_height
 				),
 				'url', ai.url,
-				'title', ai.title,
+				'name', ai.name,
 				'archive_id', ai.archive_id
 			)
 		) AS archive_items
@@ -219,8 +224,8 @@ func convertArchiveJoinToArchiveFull(ajs []archiveJoin) ([]entity.ArchiveFull, e
 			CreatedAt: aj.CreatedAt,
 			UpdatedAt: aj.UpdatedAt,
 			ArchiveBody: entity.ArchiveBody{
-				Title:       aj.Title,
-				Description: aj.Description,
+				Heading: aj.Heading,
+				Text:    aj.Text,
 			},
 		}
 

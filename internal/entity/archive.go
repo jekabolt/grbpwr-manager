@@ -26,8 +26,8 @@ type Archive struct {
 }
 
 type ArchiveBody struct {
-	Title       string `db:"title" valid:"required,utfletternum"`
-	Description string `db:"description" valid:"required,utfletternum"`
+	Heading string `db:"heading"`
+	Text    string `db:"text"`
 }
 
 type ArchiveItemFull struct {
@@ -39,8 +39,8 @@ type ArchiveItemFull struct {
 func (ai *ArchiveItemFull) UnmarshalJSON(data []byte) error {
 	type Alias ArchiveItemFull
 	aux := &struct {
-		URL   *string `json:"url"`
-		Title *string `json:"title"`
+		URL  *string `json:"url"`
+		Name *string `json:"name"`
 		*Alias
 	}{
 		Alias: (*Alias)(ai),
@@ -56,19 +56,19 @@ func (ai *ArchiveItemFull) UnmarshalJSON(data []byte) error {
 		ai.URL = sql.NullString{Valid: false}
 	}
 
-	if aux.Title != nil {
-		ai.Title = sql.NullString{String: *aux.Title, Valid: true}
+	if aux.Name != nil {
+		ai.Name = sql.NullString{String: *aux.Name, Valid: true}
 	} else {
-		ai.Title = sql.NullString{Valid: false}
+		ai.Name = sql.NullString{Valid: false}
 	}
 
 	return nil
 }
 
 type ArchiveItemInsert struct {
-	MediaId int            `db:"media_id" valid:"required,url"`
-	URL     sql.NullString `db:"url" valid:"url"`
-	Title   sql.NullString `db:"title" valid:"utfletternum"`
+	MediaId int            `db:"media_id"`
+	URL     sql.NullString `db:"url"`
+	Name    sql.NullString `db:"name"`
 }
 
 // ValidateArchiveNew validates the ArchiveNew struct
@@ -89,5 +89,5 @@ func (an *ArchiveNew) ValidateArchiveNew() error {
 type ArchiveItem struct {
 	Media MediaFull      `json:"media"`
 	URL   sql.NullString `json:"url"`
-	Title sql.NullString `json:"title"`
+	Name  sql.NullString `json:"name"`
 }

@@ -30,7 +30,7 @@ message Archive {
 // ArchiveBody represents the insertable fields of an archive.
 message ArchiveBody {
   string heading = 1;
-  string description = 2;
+  string text = 2;
 }
 
 // ArchiveItemFull represents an item within an archive.
@@ -44,11 +44,11 @@ message ArchiveItemFull {
 message ArchiveItem {
   common.MediaFull media = 1;
   string url = 2;
-  string title = 3;
+  string name = 3;
 }
 
 message ArchiveItemInsert {
   int32 media_id = 1;
   string url = 2;
-  string title = 3;
+  string name = 3;
 }
