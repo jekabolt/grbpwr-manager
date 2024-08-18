@@ -479,6 +479,11 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 
 	upd := dto.ConvertPbArchiveNewToEntity(req.ArchiveUpdate)
 
+	slog.Default().InfoContext(ctx, "update archive",
+		slog.Any("archive", req),
+		slog.Any("upd", upd),
+	)
+
 	err := s.repo.Archive().UpdateArchive(ctx,
 		int(req.Id),
 		upd.Archive,

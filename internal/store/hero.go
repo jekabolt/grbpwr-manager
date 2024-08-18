@@ -89,7 +89,7 @@ func insertHero(ctx context.Context, rep dependency.Repository, ads []entity.Her
 			"media_id":     ad.MediaId,
 			"explore_link": ad.ExploreLink,
 			"explore_text": ad.ExploreText,
-			"main":         false,
+			"main":         ad.IsMain,
 		}
 		rows = append(rows, row)
 	}

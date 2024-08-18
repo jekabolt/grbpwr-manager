@@ -97,7 +97,7 @@ type PromoCodeDetails struct {
 }
 
 func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest) (*entity.SendEmailRequest, error) {
-	if mr.To == nil || len(mr.To) == 0 {
+	if len(mr.To) == 0 {
 		return nil, fmt.Errorf("mail req 'to' is empty")
 	}
 	return &entity.SendEmailRequest{

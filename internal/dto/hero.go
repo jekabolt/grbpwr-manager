@@ -12,6 +12,7 @@ func ConvertCommonHeroInsertToEntity(hi *pb_common.HeroItemInsert) entity.HeroIn
 		MediaId:     int(hi.MediaId),
 		ExploreLink: hi.ExploreLink,
 		ExploreText: hi.ExploreText,
+		IsMain:      hi.IsMain,
 	}
 }
 
