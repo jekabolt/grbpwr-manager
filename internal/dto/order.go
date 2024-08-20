@@ -13,12 +13,38 @@ import (
 )
 
 // ConvertPbOrderItemToEntity converts a protobuf OrderItem to an entity OrderItem
-func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) entity.OrderItemInsert {
-	return entity.OrderItemInsert{
-		ProductID: int(pbOrderItem.OrderItem.ProductId),
-		Quantity:  decimal.NewFromInt32(pbOrderItem.OrderItem.Quantity),
-		SizeID:    int(pbOrderItem.OrderItem.SizeId),
+func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderItemInsert, error) {
+
+	oii := entity.OrderItemInsert{}
+
+	price, err := decimal.NewFromString(pbOrderItem.ProductPrice)
+	if err != nil {
+		return oii, fmt.Errorf("error converting price to decimal: %w", err)
 	}
+	price = price.Round(2)
+
+	salePercentage, err := decimal.NewFromString(pbOrderItem.ProductSalePercentage)
+	if err != nil {
+		return oii, fmt.Errorf("error converting sale percentage to decimal: %w", err)
+	}
+	salePercentage = salePercentage.Round(2)
+
+	priceWithSale, err := decimal.NewFromString(pbOrderItem.ProductPriceWithSale)
+	if err != nil {
+		return oii, fmt.Errorf("error converting price with sale to decimal: %w", err)
+	}
+	priceWithSale = priceWithSale.Round(2)
+
+	quantity := decimal.NewFromInt32(pbOrderItem.OrderItem.Quantity).Round(0)
+
+	return entity.OrderItemInsert{
+		ProductID:             int(pbOrderItem.OrderItem.ProductId),
+		ProductPrice:          price,
+		ProductSalePercentage: salePercentage,
+		ProductPriceWithSale:  priceWithSale,
+		Quantity:              quantity,
+		SizeID:                int(pbOrderItem.OrderItem.SizeId),
+	}, nil
 }
 
 // ConvertCommonOrderNewToEntity converts a common.OrderNew to an entity.OrderNew.
@@ -32,7 +58,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 	for _, item := range commonOrder.Items {
 		newItem := entity.OrderItemInsert{
 			ProductID: int(item.ProductId),
-			Quantity:  decimal.NewFromInt32(item.Quantity),
+			Quantity:  decimal.NewFromInt32(item.Quantity).Round(0),
 			SizeID:    int(item.SizeId),
 		}
 		items = append(items, newItem)
@@ -102,7 +128,7 @@ func ConvertEntityOrderToPbCommonOrder(eOrder *entity.Order) (*pb_common.Order, 
 		Placed:        timestamppb.New(eOrder.Placed),
 		Modified:      timestamppb.New(eOrder.Modified),
 		PaymentId:     int32(eOrder.PaymentID),
-		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPrice.String()},
+		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
 		OrderStatusId: int32(eOrder.OrderStatusID),
 		ShipmentId:    int32(eOrder.ShipmentId),
 	}
@@ -126,7 +152,7 @@ func ConvertPbOrderItemInsertToEntity(pbOrderItem *pb_common.OrderItemInsert) (*
 
 	return &entity.OrderItemInsert{
 		ProductID: int(pbOrderItem.ProductId),
-		Quantity:  quantityDecimal,
+		Quantity:  quantityDecimal.Round(0),
 		SizeID:    int(pbOrderItem.SizeId),
 	}, nil
 }
@@ -145,9 +171,9 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderIte
 		OrderId:               int32(orderItem.OrderID),
 		Thumbnail:             orderItem.Thumbnail,
 		ProductName:           orderItem.ProductName,
-		ProductPrice:          orderItem.ProductPrice.String(),
-		ProductSalePercentage: orderItem.ProductSalePercentage.String(),
-		ProductPriceWithSale:  orderItem.ProductPriceWithSale.String(),
+		ProductPrice:          orderItem.ProductPriceDecimal().String(),
+		ProductSalePercentage: orderItem.ProductSalePercentageDecimal().String(),
+		ProductPriceWithSale:  orderItem.ProductPriceWithSaleDecimal().String(),
 		Slug:                  orderItem.Slug,
 		Color:                 orderItem.Color,
 		CategoryId:            int32(orderItem.CategoryID),
@@ -228,8 +254,9 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		OrderId:               int32(e.OrderID),
 		Thumbnail:             e.Thumbnail,
 		ProductName:           e.ProductName,
-		ProductPrice:          e.ProductPrice.String(),
-		ProductSalePercentage: e.ProductSalePercentage.String(),
+		ProductPrice:          e.ProductPriceDecimal().String(),
+		ProductPriceWithSale:  e.ProductPriceWithSaleDecimal().String(),
+		ProductSalePercentage: e.ProductSalePercentageDecimal().String(),
 		CategoryId:            int32(e.CategoryID),
 		ProductBrand:          e.ProductBrand,
 		Sku:                   e.SKU,

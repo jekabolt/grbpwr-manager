@@ -190,6 +190,17 @@ type ProductBody struct {
 	TargetGender    GenderEnum          `db:"target_gender"`
 }
 
+func (pb *ProductBody) PriceDecimal() decimal.Decimal {
+	return pb.Price.Round(2)
+}
+
+func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
+	if pb.SalePercentage.Valid {
+		return pb.SalePercentage.Decimal.Round(2)
+	}
+	return decimal.Zero
+}
+
 // Product represents the product table
 type Product struct {
 	ID        int       `db:"id"`
@@ -232,10 +243,18 @@ type ProductSize struct {
 	SizeID    int             `db:"size_id"`
 }
 
+func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
+	return ps.Quantity.Round(0)
+}
+
 // ProductSizes for insert represents the product_size table
 type ProductSizeInsert struct {
 	Quantity decimal.Decimal `db:"quantity"`
 	SizeID   int             `db:"size_id"`
+}
+
+func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
+	return psi.Quantity.Round(0)
 }
 
 // SizeMeasurement represents the size_measurement table

@@ -20,3 +20,7 @@ type PromoCodeInsert struct {
 	Voucher      bool            `db:"voucher"`
 	Allowed      bool            `db:"allowed"`
 }
+
+func (pc *PromoCode) DiscountDecimal() decimal.Decimal {
+	return pc.Discount.Round(2)
+}

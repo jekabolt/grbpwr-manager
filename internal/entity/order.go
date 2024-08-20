@@ -42,6 +42,10 @@ type Order struct {
 	PromoID       sql.NullInt32   `db:"promo_id"`
 }
 
+func (o *Order) TotalPriceDecimal() decimal.Decimal {
+	return o.TotalPrice.Round(2)
+}
+
 type ProductInfoProvider interface {
 	GetProductID() int
 	GetProductPrice() decimal.Decimal
@@ -68,15 +72,35 @@ type OrderItemInsert struct {
 	ProductID             int             `db:"product_id" valid:"required"`
 	ProductPrice          decimal.Decimal `db:"product_price"`
 	ProductSalePercentage decimal.Decimal `db:"product_sale_percentage"`
-	ProductPriceWithSale  decimal.Decimal
+	ProductPriceWithSale  decimal.Decimal `db:"product_price_with_sale"`
 	Quantity              decimal.Decimal `db:"quantity" valid:"required"`
 	SizeID                int             `db:"size_id" valid:"required"`
+}
+
+func (oii *OrderItemInsert) ProductPriceWithSaleDecimal() decimal.Decimal {
+	return oii.ProductPriceWithSale.Round(2)
+}
+
+func (oii *OrderItemInsert) ProductPriceDecimal() decimal.Decimal {
+	return oii.ProductPrice.Round(2)
+}
+
+func (oii *OrderItemInsert) ProductSalePercentageDecimal() decimal.Decimal {
+	return oii.ProductSalePercentage.Round(2)
+}
+
+func (oii *OrderItemInsert) QuantityDecimal() decimal.Decimal {
+	return oii.Quantity.Round(0)
 }
 
 type OrderItemValidation struct {
 	ValidItems []OrderItem
 	Subtotal   decimal.Decimal
 	HasChanged bool
+}
+
+func (oiv *OrderItemValidation) SubtotalDecimal() decimal.Decimal {
+	return oiv.Subtotal.Round(2)
 }
 
 // ByProductID implements sort.Interface for []OrderItemInsert based on the ProductID field.
@@ -112,15 +136,15 @@ func (oii *OrderItemInsert) GetProductID() int {
 }
 
 func (oii *OrderItemInsert) GetProductPrice() decimal.Decimal {
-	return oii.ProductPrice
+	return oii.ProductPriceDecimal()
 }
 
 func (oii *OrderItemInsert) GetProductSalePercentage() decimal.Decimal {
-	return oii.ProductSalePercentage
+	return oii.ProductSalePercentageDecimal()
 }
 
 func (oii *OrderItemInsert) GetQuantity() decimal.Decimal {
-	return oii.Quantity
+	return oii.QuantityDecimal()
 }
 func (oii *OrderItemInsert) GetSizeId() int {
 	return oii.SizeID

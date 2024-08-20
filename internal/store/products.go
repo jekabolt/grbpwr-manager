@@ -82,7 +82,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 		row := map[string]any{
 			"product_id": productID,
 			"size_id":    sm.ProductSize.SizeID,
-			"quantity":   sm.ProductSize.Quantity,
+			"quantity":   sm.ProductSize.QuantityDecimal(),
 		}
 		rowsPrdSizes = append(rowsPrdSizes, row)
 
@@ -603,13 +603,13 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 			return fmt.Errorf("error checking current quantity: %w", err)
 		}
 
-		if productSize.Quantity.Add(item.Quantity.Neg()).LessThan(decimal.Zero) {
+		if productSize.QuantityDecimal().Add(item.Quantity.Neg()).LessThan(decimal.Zero) {
 			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductID, item.SizeID)
 		}
 
 		query = `UPDATE product_size SET quantity = quantity - :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err = ExecNamed(ctx, ms.db, query, map[string]any{
-			"quantity":  item.Quantity,
+			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductID,
 			"sizeId":    item.SizeID,
 		})
@@ -624,7 +624,7 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 	for _, item := range items {
 		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err := ExecNamed(ctx, ms.db, updateQuery, map[string]any{
-			"quantity":  item.Quantity,
+			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductID,
 			"sizeId":    item.SizeID,
 		})

@@ -187,10 +187,11 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		Valid:  true,
 	}
 	// convert base currency to payment currency in this case to USD
-	totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, of.Order.TotalPrice)
+	totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, of.Order.TotalPriceDecimal())
 	if err != nil {
 		return nil, expiration, fmt.Errorf("can't convert from base currency: %w", err)
 	}
+	totalUSD = totalUSD.Round(2)
 
 	slog.Default().InfoContext(ctx, "total USD", slog.String("totalUSD", totalUSD.String()))
 	// TODO: token decimals to config
@@ -202,7 +203,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	)
 
 	payment.TransactionAmountPaymentCurrency = totalBlockchainValue
-	payment.TransactionAmount = of.Order.TotalPrice
+	payment.TransactionAmount = of.Order.TotalPriceDecimal()
 
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
