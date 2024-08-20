@@ -60,21 +60,21 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 
 		for _, prdSize := range prdSizes {
 			if item.ProductID == prdSize.ProductID && item.SizeID == prdSize.SizeID {
-				if prdSize.Quantity.GreaterThan(decimal.Zero) {
+				if prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
 					// Adjust quantity if necessary
-					if item.Quantity.GreaterThan(prdSize.Quantity) {
-						item.Quantity = prdSize.Quantity
+					if item.QuantityDecimal().GreaterThan(prdSize.QuantityDecimal()) {
+						item.Quantity = prdSize.QuantityDecimal()
 					}
 
 					for _, prd := range prds {
 						if item.ProductID == prd.ID {
 							// Set price and sale percentage from product details
-							item.ProductPrice = prd.Price
-							if prd.SalePercentage.Valid {
-								item.ProductSalePercentage = prd.SalePercentage.Decimal
-								item.ProductPriceWithSale = prd.Price.Mul(decimal.NewFromInt(100).Sub(prd.SalePercentage.Decimal).Div(decimal.NewFromInt(100)))
+							item.ProductPrice = prd.PriceDecimal()
+							if prd.SalePercentageDecimal().GreaterThan(decimal.Zero) {
+								item.ProductSalePercentage = prd.SalePercentageDecimal()
+								item.ProductPriceWithSale = prd.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(prd.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
 							} else {
-								item.ProductPriceWithSale = prd.Price
+								item.ProductPriceWithSale = prd.PriceDecimal()
 							}
 
 							validItem := entity.OrderItem{
@@ -121,9 +121,9 @@ func compareItems(items, validItems []entity.OrderItemInsert) bool {
 	for i := range items {
 		// Compare all fields of OrderItemInsert
 		if items[i].ProductID != validItems[i].ProductID ||
-			items[i].ProductPrice.Cmp(validItems[i].ProductPrice) != 0 ||
-			items[i].ProductSalePercentage.Cmp(validItems[i].ProductSalePercentage) != 0 ||
-			items[i].Quantity.Cmp(validItems[i].Quantity) != 0 ||
+			items[i].ProductPriceDecimal().Cmp(validItems[i].ProductPriceDecimal()) != 0 ||
+			items[i].ProductSalePercentageDecimal().Cmp(validItems[i].ProductSalePercentageDecimal()) != 0 ||
+			items[i].QuantityDecimal().Cmp(validItems[i].QuantityDecimal()) != 0 ||
 			items[i].SizeID != validItems[i].SizeID {
 			return false
 		}
@@ -153,10 +153,10 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 	)
 
 	for _, item := range itemsNoSizeID {
-		if !item.Quantity.IsPositive() { // Ensure that the quantity is a positive number
+		if !item.QuantityDecimal().IsPositive() { // Ensure that the quantity is a positive number
 			return decimal.Zero, fmt.Errorf("quantity for product ID %d is not positive", item.ProductID)
 		}
-		caseStatements = append(caseStatements, fmt.Sprintf("WHEN product.id = %d THEN %s", item.ProductID, item.Quantity.String()))
+		caseStatements = append(caseStatements, fmt.Sprintf("WHEN product.id = %d THEN %s", item.ProductID, item.QuantityDecimal().String()))
 		productIDs = append(productIDs, fmt.Sprintf("%d", item.ProductID))
 	}
 
@@ -175,7 +175,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 		return decimal.Zero, err
 	}
 
-	return totalAmount, nil
+	return totalAmount.Round(2), nil
 }
 
 func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAddress, billingAddress *entity.AddressInsert) (int, int, error) {
@@ -273,9 +273,9 @@ func insertOrderItems(ctx context.Context, rep dependency.Repository, items []en
 		row := map[string]any{
 			"order_id":                orderID,
 			"product_id":              item.ProductID,
-			"product_price":           item.ProductPrice,
-			"product_sale_percentage": item.ProductSalePercentage,
-			"quantity":                item.Quantity,
+			"product_price":           item.ProductPriceDecimal(),
+			"product_sale_percentage": item.ProductSalePercentageDecimal(),
+			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeID,
 		}
 		rows = append(rows, row)
@@ -323,7 +323,7 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		"buyerId":       order.BuyerID,
 		"paymentId":     order.PaymentID,
 		"shipmentId":    order.ShipmentId,
-		"totalPrice":    order.TotalPrice,
+		"totalPrice":    order.TotalPriceDecimal(),
 		"orderStatusId": order.OrderStatusID,
 		"promoId":       order.PromoID,
 	})
@@ -344,7 +344,7 @@ func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
 		}
 		key := fmt.Sprintf("%d-%d", item.ProductID, item.SizeID)
 		if existingItem, ok := mergedItems[key]; ok {
-			existingItem.Quantity = existingItem.Quantity.Add(item.Quantity)
+			existingItem.Quantity = existingItem.QuantityDecimal().Add(item.QuantityDecimal())
 			mergedItems[key] = existingItem
 		} else {
 			mergedItems[key] = item
@@ -365,8 +365,8 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) [
 	maxQuantity := decimal.NewFromInt(int64(maxOrderItemPerSize))
 	for i, item := range items {
 		// Check if the item quantity exceeds the maxOrderItemPerSize
-		if item.Quantity.Cmp(maxQuantity) > 0 {
-			items[i].Quantity = maxQuantity
+		if item.QuantityDecimal().Cmp(maxQuantity) > 0 {
+			items[i].Quantity = maxQuantity.Round(0)
 		}
 	}
 	return items
@@ -418,7 +418,7 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 
 	return &entity.OrderItemValidation{
 		ValidItems: validItems,
-		Subtotal:   total,
+		Subtotal:   total.Round(2),
 		HasChanged: !compareItems(items, validItemsInsert),
 	}, nil
 }
@@ -464,7 +464,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.Subtotal, orderFull.PromoCode, orderFull.Shipment)
+			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}
@@ -537,11 +537,11 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		if !promo.Discount.Equals(decimal.Zero) {
-			oiv.Subtotal = oiv.Subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+			oiv.Subtotal = oiv.Subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100))).Round(2)
 		}
 
 		if !promo.FreeShipping {
-			oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price)
+			oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price).Round(2)
 		}
 
 		shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep,
@@ -589,7 +589,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		order = &entity.Order{
 			BuyerID:       buyerID,
 			PaymentID:     paymentID,
-			TotalPrice:    oiv.Subtotal,
+			TotalPrice:    oiv.SubtotalDecimal(),
 			PromoID:       prId,
 			ShipmentId:    shipmentId,
 			OrderStatusID: placed.ID,
@@ -663,15 +663,18 @@ func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId
 		product_id,
 		product_price,
 		product_sale_percentage,
+		product_price * (1 - COALESCE(product_sale_percentage, 0) / 100) AS product_price_with_sale
 		quantity,
 		size_id
 	size_id FROM order_item WHERE order_id = :orderId`
 	ois, err := QueryListNamed[entity.OrderItemInsert](ctx, rep.DB(), query, map[string]any{
 		"orderId": orderId,
 	})
+
 	if err != nil {
 		return nil, err
 	}
+
 	return ois, nil
 }
 
@@ -935,7 +938,7 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId i
 	}
 
 	if !promo.Discount.Equals(decimal.Zero) {
-		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
+		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100))).Round(2)
 	}
 
 	if !promo.FreeShipping {
@@ -943,7 +946,7 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId i
 		if !ok {
 			return decimal.Zero, fmt.Errorf("shipment carrier is not exists")
 		}
-		subtotal = subtotal.Add(shipmentCarrier.Price)
+		subtotal = subtotal.Add(shipmentCarrier.PriceDecimal()).Round(2)
 	}
 
 	err := updateOrderTotalPromo(ctx, rep, orderId, promo.ID, subtotal)
@@ -961,20 +964,15 @@ func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, order
 		total_price = :totalPrice
 	WHERE id = :orderId`
 
-	promoIdNull := sql.NullInt32{}
-	if promoId == 0 {
-		promoIdNull = sql.NullInt32{}
-	} else {
-		promoIdNull = sql.NullInt32{
-			Int32: int32(promoId),
-			Valid: true,
-		}
+	promoIdNull := sql.NullInt32{
+		Int32: int32(promoId),
+		Valid: promoId != 0,
 	}
 
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
 		"orderId":    orderId,
 		"promoId":    promoIdNull,
-		"totalPrice": totalPrice,
+		"totalPrice": totalPrice.Round(2),
 	})
 	if err != nil {
 		return err
@@ -1039,7 +1037,7 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			if err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.Subtotal, orderFull.PromoCode, orderFull.Shipment)
+			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment)
 			if err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}
@@ -1054,8 +1052,8 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 
 		orderFull.Payment.PaymentMethodID = pm.ID
 		orderFull.Payment.IsTransactionDone = false
-		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPrice
-		orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPrice
+		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
+		orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
 		orderFull.Payment.Payee = sql.NullString{
 			String: addr,
 			Valid:  true,

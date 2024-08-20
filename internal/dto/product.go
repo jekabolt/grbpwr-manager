@@ -166,7 +166,7 @@ func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurement
 		}
 
 		productSize := &entity.ProductSizeInsert{
-			Quantity: quantity,
+			Quantity: quantity.Round(0),
 			SizeID:   int(pbSizeMeasurement.ProductSize.SizeId),
 		}
 

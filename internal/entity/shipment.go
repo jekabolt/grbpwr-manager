@@ -21,6 +21,10 @@ type ShipmentCarrierInsert struct {
 	Description string          `db:"description"`
 }
 
+func (sc ShipmentCarrierInsert) PriceDecimal() decimal.Decimal {
+	return sc.Price.Round(2)
+}
+
 // Shipment represents the shipment table
 type Shipment struct {
 	ID                   int            `db:"id"`

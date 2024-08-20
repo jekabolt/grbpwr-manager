@@ -21,13 +21,13 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull, sizeMap map[int]entity.Size
 	}
 	return &OrderConfirmed{
 		OrderUUID:           of.Order.UUID,
-		TotalPrice:          of.Order.TotalPrice.String(),
+		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		OrderItems:          oi,
 		FullName:            fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName),
 		PromoExist:          of.PromoCode.ID != 0,
-		PromoDiscountAmount: of.PromoCode.Discount.String(),
+		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
-		ShippingPrice:       int(sc.Price.IntPart()),
+		ShippingPrice:       sc.PriceDecimal().String(),
 		ShipmentCarrier:     sc.Carrier,
 	}
 }
@@ -46,8 +46,8 @@ func EntityOrderItemsToDto(items []entity.OrderItem, sizeMap map[int]entity.Size
 			Thumbnail:   item.Thumbnail,
 			Size:        string(size.Name),
 			Quantity:    int(item.Quantity.IntPart()),
-			Price:       item.OrderItemInsert.ProductPrice.String(),
-			SalePercent: item.OrderItemInsert.ProductSalePercentage.String(),
+			Price:       item.OrderItemInsert.ProductPriceDecimal().String(),
+			SalePercent: item.OrderItemInsert.ProductSalePercentageDecimal().String(),
 		}
 	}
 
@@ -62,7 +62,7 @@ type OrderConfirmed struct {
 	PromoExist          bool
 	PromoDiscountAmount string
 	HasFreeShipping     bool
-	ShippingPrice       int
+	ShippingPrice       string
 	ShipmentCarrier     string
 }
 

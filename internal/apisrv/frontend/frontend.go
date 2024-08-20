@@ -271,16 +271,15 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
 	if scOk && shipmentCarrier.Allowed {
-		oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price)
+		oiv.Subtotal = oiv.SubtotalDecimal().Add(shipmentCarrier.PriceDecimal()).Round(2)
 	}
 
 	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
 	if ok && promo.Allowed && promo.FreeShipping && scOk {
-		oiv.Subtotal = oiv.Subtotal.Sub(shipmentCarrier.Price)
+		oiv.Subtotal = oiv.SubtotalDecimal().Sub(shipmentCarrier.PriceDecimal()).Round(2)
 	}
 
-	totalSale := oiv.Subtotal
-
+	totalSale := oiv.SubtotalDecimal()
 	if ok && promo.Allowed {
 		if !promo.Discount.Equals(decimal.Zero) {
 			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
@@ -290,8 +289,8 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	return &pb_frontend.ValidateOrderItemsInsertResponse{
 		ValidItems: pbOii,
 		HasChanged: oiv.HasChanged,
-		Subtotal:   &pb_decimal.Decimal{Value: oiv.Subtotal.String()},
-		TotalSale:  &pb_decimal.Decimal{Value: totalSale.String()},
+		Subtotal:   &pb_decimal.Decimal{Value: oiv.SubtotalDecimal().String()},
+		TotalSale:  &pb_decimal.Decimal{Value: totalSale.Round(2).String()},
 		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
 	}, nil
 

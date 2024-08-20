@@ -24,7 +24,7 @@ func (ms *MYSQLStore) Archive() dependency.Archive {
 
 func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (int, error) {
 
-	if aNew.Items == nil || len(aNew.Items) == 0 {
+	if len(aNew.Items) == 0 {
 		return 0, errors.New("archive items must not be empty")
 	}
 
