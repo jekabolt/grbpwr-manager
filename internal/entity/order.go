@@ -18,27 +18,24 @@ type OrderNew struct {
 }
 
 type OrderFull struct {
-	Order      *Order
+	Order      Order
 	OrderItems []OrderItem
-	Payment    *Payment
-	Shipment   *Shipment
-	PromoCode  *PromoCode
-	Buyer      *Buyer
-	Billing    *Address
-	Shipping   *Address
+	Payment    Payment
+	Shipment   Shipment
+	PromoCode  PromoCode
+	Buyer      Buyer
+	Billing    Address
+	Shipping   Address
 }
 
 // Orders represents the orders table
 type Order struct {
 	ID            int             `db:"id"`
 	UUID          string          `db:"uuid"`
-	BuyerID       int             `db:"buyer_id"`
 	Placed        time.Time       `db:"placed"`
 	Modified      time.Time       `db:"modified"`
-	PaymentID     int             `db:"payment_id"`
 	TotalPrice    decimal.Decimal `db:"total_price"`
 	OrderStatusID int             `db:"order_status_id"`
-	ShipmentId    int             `db:"shipment_id"`
 	PromoID       sql.NullInt32   `db:"promo_id"`
 }
 
@@ -56,14 +53,15 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	ID           int    `db:"id"`
-	OrderID      int    `db:"order_id"`
-	Thumbnail    string `db:"thumbnail"`
-	ProductName  string `db:"product_name"`
-	ProductBrand string `db:"product_brand"`
-	Color        string `db:"color"`
-	CategoryID   int    `db:"category_id"`
-	SKU          string `db:"product_sku"`
+	ID           int        `db:"id"`
+	OrderID      int        `db:"order_id"`
+	Thumbnail    string     `db:"thumbnail"`
+	ProductName  string     `db:"product_name"`
+	ProductBrand string     `db:"product_brand"`
+	Color        string     `db:"color"`
+	CategoryID   int        `db:"category_id"`
+	TargetGender GenderEnum `db:"target_gender"`
+	SKU          string     `db:"product_sku"`
 	Slug         string
 	OrderItemInsert
 }

@@ -223,7 +223,6 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 		}
 		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
 	}
-
 	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
@@ -450,7 +449,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't check for transactions")
 	}
 
-	pbPayment, err := dto.ConvertEntityToPbPayment(payment)
+	pbPayment, err := dto.ConvertEntityToPbPayment(*payment)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity payment to pb payment",
 			slog.String("err", err.Error()),

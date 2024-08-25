@@ -5,8 +5,7 @@ package common;
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
 message Address {
-  int32 id = 1;
-  AddressInsert address_insert = 2;
+  AddressInsert address_insert = 1;
 }
 
 message AddressInsert {
@@ -20,10 +19,7 @@ message AddressInsert {
 }
 
 message Buyer {
-  int32 id = 1;
-  int32 billing_address_id = 2;
-  int32 shipping_address_id = 3;
-  BuyerInsert buyer_insert = 4;
+  BuyerInsert buyer_insert = 1;
 }
 
 message BuyerInsert {

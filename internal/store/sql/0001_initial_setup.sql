@@ -172,49 +172,6 @@ CREATE TABLE product_tag (
 );
 
 
-CREATE TABLE payment (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    payment_method_id INT NOT NULL,
-    transaction_id VARCHAR(255) UNIQUE,
-    transaction_amount DECIMAL(10, 2) NOT NULL,
-    transaction_amount_payment_currency DECIMAL(10, 2) NOT NULL,
-    payer VARCHAR(255),
-    payee VARCHAR(255),
-    is_transaction_done BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY(payment_method_id) REFERENCES payment_method(id)
-);
-
-CREATE TABLE address (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-     country VARCHAR(255) NOT NULL,
-    state VARCHAR(255),
-    city VARCHAR(255) NOT NULL,
-    address_line_one VARCHAR(255) NOT NULL,
-    address_line_two VARCHAR(255),
-    company VARCHAR(255),
-    postal_code VARCHAR(20) NOT NULL
-);
-
-CREATE TABLE buyer (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    first_name VARCHAR(255) NOT NULL,
-    last_name VARCHAR(255) NOT NULL,
-    email VARCHAR(100) NOT NULL CHECK (
-        email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'
-    ),
-    phone VARCHAR(20) NOT NULL CHECK (
-        phone REGEXP '^[0-9]+$'
-        AND LENGTH(phone) >= 7
-        AND LENGTH(phone) <= 15
-    ),
-    billing_address_id INT NOT NULL,
-    shipping_address_id INT NOT NULL,
-    FOREIGN KEY (billing_address_id) REFERENCES address(id) ON DELETE CASCADE,
-    FOREIGN KEY (shipping_address_id) REFERENCES address(id) ON DELETE CASCADE
-);
-
 CREATE TABLE subscriber (
     id INT PRIMARY KEY AUTO_INCREMENT,
     email VARCHAR(100) NOT NULL UNIQUE CHECK (
@@ -237,16 +194,6 @@ VALUES
     ('DHL', 10.99, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE, 'DHL global shipping services with fast international tracking.'),
     ('FREE', 0, 'https://www.dhl.com/pl-en/home/tracking/tracking-express.html?submit=1&tracking-id=%s', TRUE, 'Complimentary shipping option with basic tracking features.');
 
-CREATE TABLE shipment (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
-    carrier_id INT NOT NULL,
-    tracking_code VARCHAR(255),
-    shipping_date DATETIME,
-    estimated_arrival_date DATETIME,
-    FOREIGN KEY (carrier_id) REFERENCES shipment_carrier(id)
-);
 
 CREATE TABLE promo_code (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -261,24 +208,81 @@ CREATE TABLE promo_code (
 CREATE TABLE customer_order (
     id INT PRIMARY KEY AUTO_INCREMENT,
     uuid CHAR(36) NOT NULL UNIQUE,
-    buyer_id INT NOT NULL,
     placed DATETIME DEFAULT CURRENT_TIMESTAMP,
     modified DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    payment_id INT NOT NULL,
     total_price DECIMAL(10, 2) NOT NULL,
     order_status_id INT NOT NULL,
-    shipment_id INT NOT NULL,
-    promo_id INT,
-    FOREIGN KEY (buyer_id) REFERENCES buyer(id) ON DELETE CASCADE,
-    FOREIGN KEY (payment_id) REFERENCES payment(id) ON DELETE CASCADE,
-    FOREIGN KEY (shipment_id) REFERENCES shipment(id) ON DELETE CASCADE,
+    promo_id INT DEFAULT NULL,
     FOREIGN KEY (promo_id) REFERENCES promo_code(id),
     FOREIGN KEY (order_status_id) REFERENCES order_status(id) ON DELETE CASCADE
 );
 
+CREATE TABLE shipment (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL UNIQUE,
+    cost DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
+    carrier_id INT NOT NULL,
+    tracking_code VARCHAR(255),
+    shipping_date DATETIME,
+    estimated_arrival_date DATETIME,
+    FOREIGN KEY (carrier_id) REFERENCES shipment_carrier(id),
+    FOREIGN KEY (order_id) REFERENCES customer_order(id) ON DELETE CASCADE
+);
+
+
+CREATE TABLE address (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    country VARCHAR(255) NOT NULL,
+    state VARCHAR(255),
+    city VARCHAR(255) NOT NULL,
+    address_line_one VARCHAR(255) NOT NULL,
+    address_line_two VARCHAR(255),
+    company VARCHAR(255),
+    postal_code VARCHAR(20) NOT NULL
+);
+
+CREATE TABLE buyer (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL UNIQUE,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    email VARCHAR(100) NOT NULL CHECK (
+        email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'
+    ),
+    phone VARCHAR(20) NOT NULL CHECK (
+        phone REGEXP '^[0-9]+$'
+        AND LENGTH(phone) >= 7
+        AND LENGTH(phone) <= 15
+    ),
+    billing_address_id INT NOT NULL,
+    shipping_address_id INT NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES customer_order(id) ON DELETE CASCADE,
+    FOREIGN KEY (billing_address_id) REFERENCES address(id) ON DELETE CASCADE,
+    FOREIGN KEY (shipping_address_id) REFERENCES address(id) ON DELETE CASCADE
+);
+
+CREATE TABLE payment (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL UNIQUE,
+    payment_method_id INT NOT NULL,
+    transaction_id VARCHAR(255) UNIQUE,
+    transaction_amount DECIMAL(10, 2) NOT NULL,
+    transaction_amount_payment_currency DECIMAL(20, 2) NOT NULL,
+    payer VARCHAR(255),
+    payee VARCHAR(255),
+    is_transaction_done BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY(order_id) REFERENCES customer_order(id) ON DELETE CASCADE,
+    FOREIGN KEY(payment_method_id) REFERENCES payment_method(id)
+);
+
+
 CREATE TABLE order_item (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    order_id INT NOT NULL,
+    order_id INT NOT NULL UNIQUE,
     product_id INT NOT NULL,
     product_price DECIMAL(10, 2) NOT NULL CHECK (product_price >= 0),
     product_sale_percentage DECIMAL(5, 2) DEFAULT 0 CHECK (
@@ -360,12 +364,6 @@ CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 CREATE INDEX idx_product_id_on_product_media ON product_media(product_id);
 
 CREATE INDEX idx_product_id_on_product_tag ON product_tag(product_id);
-
-CREATE INDEX idx_buyer_id_on_order ON customer_order(buyer_id);
-
-CREATE INDEX idx_payment_id_on_order ON customer_order(payment_id);
-
-CREATE INDEX idx_shipment_id_on_order ON customer_order(shipment_id);
 
 CREATE INDEX idx_product_size_id_on_size_measurement ON size_measurement(product_size_id);
 

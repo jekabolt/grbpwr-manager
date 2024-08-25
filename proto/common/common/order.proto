@@ -35,14 +35,11 @@ message OrderFull {
 message Order {
   int32 id = 1;
   string uuid = 2;
-  int32 buyer_id = 3;
-  google.protobuf.Timestamp placed = 4;
-  google.protobuf.Timestamp modified = 5;
-  int32 payment_id = 6;
-  google.type.Decimal total_price = 7;
-  int32 order_status_id = 8;
-  int32 shipment_id = 9;
-  int32 promo_id = 10;
+  google.protobuf.Timestamp placed = 3;
+  google.protobuf.Timestamp modified = 4;
+  google.type.Decimal total_price = 5;
+  int32 order_status_id = 6;
+  int32 promo_id = 7;
 }
 
 message OrderItem {

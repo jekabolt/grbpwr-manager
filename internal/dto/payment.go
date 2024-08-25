@@ -28,18 +28,13 @@ func ConvertToEntityPaymentInsert(pbPayment *pb_common.PaymentInsert) (*entity.P
 	}, nil
 }
 
-func ConvertEntityToPbPayment(p *entity.Payment) (*pb_common.Payment, error) {
-	if p == nil {
-		return nil, fmt.Errorf("empty entity.Payment")
-	}
-
+func ConvertEntityToPbPayment(p entity.Payment) (*pb_common.Payment, error) {
 	pi, err := ConvertEntityToPbPaymentInsert(&p.PaymentInsert)
 	if err != nil {
 		return nil, err
 	}
 
 	return &pb_common.Payment{
-		Id:            int32(p.ID),
 		CreatedAt:     timestamppb.New(p.CreatedAt),
 		ModifiedAt:    timestamppb.New(p.ModifiedAt),
 		PaymentInsert: pi,
