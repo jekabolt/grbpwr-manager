@@ -21,7 +21,7 @@ message ShipmentCarrier {
 
 // Shipment represents the shipment table
 message Shipment {
-  int32 id = 1;
+  google.type.Decimal cost = 1;
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   int32 carrier_id = 4;

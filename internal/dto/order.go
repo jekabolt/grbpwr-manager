@@ -116,21 +116,14 @@ func convertAddress(commonAddress *pb_common.AddressInsert) *entity.AddressInser
 	}
 }
 
-func ConvertEntityOrderToPbCommonOrder(eOrder *entity.Order) (*pb_common.Order, error) {
-	if eOrder == nil {
-		return nil, fmt.Errorf("order is nil")
-	}
-
+func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, error) {
 	pbOrder := &pb_common.Order{
 		Id:            int32(eOrder.ID),
 		Uuid:          eOrder.UUID,
-		BuyerId:       int32(eOrder.BuyerID),
 		Placed:        timestamppb.New(eOrder.Placed),
 		Modified:      timestamppb.New(eOrder.Modified),
-		PaymentId:     int32(eOrder.PaymentID),
 		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
 		OrderStatusId: int32(eOrder.OrderStatusID),
-		ShipmentId:    int32(eOrder.ShipmentId),
 	}
 
 	if eOrder.PromoID.Valid {
@@ -274,13 +267,9 @@ func convertOrderItemInsert(e entity.OrderItemInsert) *pb_common.OrderItemInsert
 	}
 }
 
-func ConvertEntityShipmentToPbShipment(s *entity.Shipment) (*pb_common.Shipment, error) {
-	if s == nil {
-		return nil, fmt.Errorf("empty entity.Shipment")
-	}
-
+func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, error) {
 	return &pb_common.Shipment{
-		Id:                   int32(s.ID),
+		Cost:                 &pb_decimal.Decimal{Value: s.Cost.String()},
 		CreatedAt:            timestamppb.New(s.CreatedAt),
 		UpdatedAt:            timestamppb.New(s.UpdatedAt),
 		CarrierId:            int32(s.CarrierID),
@@ -305,15 +294,9 @@ func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) 
 	}, nil
 }
 
-func ConvertEntityBuyerToPbBuyer(b *entity.Buyer) (*pb_common.Buyer, error) {
-	if b == nil {
-		return nil, fmt.Errorf("empty entity.Buyer")
-	}
+func ConvertEntityBuyerToPbBuyer(b entity.Buyer) (*pb_common.Buyer, error) {
 
 	return &pb_common.Buyer{
-		Id:                int32(b.ID),
-		BillingAddressId:  int32(b.BillingAddressID),
-		ShippingAddressId: int32(b.ShippingAddressID),
 		BuyerInsert: &pb_common.BuyerInsert{
 			FirstName:          b.FirstName,
 			LastName:           b.LastName,
@@ -324,13 +307,8 @@ func ConvertEntityBuyerToPbBuyer(b *entity.Buyer) (*pb_common.Buyer, error) {
 	}, nil
 }
 
-func ConvertEntityAddressToPbAddress(a *entity.Address) (*pb_common.Address, error) {
-	if a == nil {
-		return nil, fmt.Errorf("empty entity.Address")
-	}
-
+func ConvertEntityAddressToPbAddress(a entity.Address) (*pb_common.Address, error) {
 	return &pb_common.Address{
-		Id: int32(a.ID),
 		AddressInsert: &pb_common.AddressInsert{
 			Country:        a.Country,
 			State:          a.State.String,

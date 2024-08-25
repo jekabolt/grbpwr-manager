@@ -9,10 +9,9 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 
 // Payment represents the payment table
 message Payment {
-  int32 id = 1;
-  google.protobuf.Timestamp created_at = 2;
-  google.protobuf.Timestamp modified_at = 3;
-  PaymentInsert payment_insert = 4;
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp modified_at = 2;
+  PaymentInsert payment_insert = 3;
 }
 
 message PaymentInsert {

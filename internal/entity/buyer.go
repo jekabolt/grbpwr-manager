@@ -9,6 +9,7 @@ type Address struct {
 }
 
 type AddressInsert struct {
+	OrderId        int            `db:"order_id"`
 	Country        string         `db:"country" valid:"required"`
 	State          sql.NullString `db:"state" valid:"-"`
 	City           string         `db:"city" valid:"required"`
@@ -27,6 +28,7 @@ type Buyer struct {
 }
 
 type BuyerInsert struct {
+	OrderId            int          `db:"order_id"`
 	FirstName          string       `db:"first_name" valid:"required"`
 	LastName           string       `db:"last_name" valid:"required"`
 	Email              string       `db:"email" valid:"required,email"`

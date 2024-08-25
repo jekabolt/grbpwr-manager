@@ -312,7 +312,7 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 	pbPromos := make([]*pb_common.PromoCode, 0, len(promos))
 
 	for _, promo := range promos {
-		pbPromos = append(pbPromos, dto.ConvertEntityPromoToPb(&promo))
+		pbPromos = append(pbPromos, dto.ConvertEntityPromoToPb(promo))
 	}
 
 	return &pb_admin.ListPromosResponse{
@@ -386,7 +386,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 
 	ordersPb := make([]*pb_common.Order, 0, len(orders))
 	for _, order := range orders {
-		o, err := dto.ConvertEntityOrderToPbCommonOrder(&order)
+		o, err := dto.ConvertEntityOrderToPbCommonOrder(order)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 				slog.String("err", err.Error()),

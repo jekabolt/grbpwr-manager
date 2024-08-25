@@ -31,7 +31,8 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 	INSERT INTO product 
 	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, hidden, target_gender)
 	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
-	id, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+
+	params := map[string]any{
 		"id":              id,
 		"preorder":        product.Preorder,
 		"name":            product.Name,
@@ -47,7 +48,11 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"description":     product.Description,
 		"hidden":          product.Hidden,
 		"targetGender":    product.TargetGender,
-	})
+	}
+
+	slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
+
+	id, err := ExecNamedLastId(ctx, rep.DB(), query, params)
 	if err != nil {
 		return id, err
 	}

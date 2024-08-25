@@ -19,6 +19,5 @@ message PromoCodeInsert {
 
 // PromoCode represents the promo_code table
 message PromoCode {
-  int32 id = 1;
-  PromoCodeInsert promo_code_insert = 2;
+  PromoCodeInsert promo_code_insert = 1;
 }

@@ -21,6 +21,7 @@ type Payment struct {
 }
 
 type PaymentInsert struct {
+	OrderId                          int             `db:"order_id"`
 	PaymentMethodID                  int             `db:"payment_method_id"`
 	TransactionID                    sql.NullString  `db:"transaction_id"`
 	TransactionAmount                decimal.Decimal `db:"transaction_amount"`
