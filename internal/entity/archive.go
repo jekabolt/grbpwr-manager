@@ -57,9 +57,9 @@ func (ai *ArchiveItemFull) UnmarshalJSON(data []byte) error {
 	}
 
 	if aux.Name != nil {
-		ai.Title = sql.NullString{String: *aux.Name, Valid: true}
+		ai.Name = sql.NullString{String: *aux.Name, Valid: true}
 	} else {
-		ai.Title = sql.NullString{Valid: false}
+		ai.Name = sql.NullString{Valid: false}
 	}
 
 	return nil
@@ -89,5 +89,5 @@ func (an *ArchiveNew) ValidateArchiveNew() error {
 type ArchiveItem struct {
 	Media MediaFull      `json:"media"`
 	URL   sql.NullString `json:"url"`
-	Title sql.NullString `json:"title"`
+	Name  sql.NullString `json:"name"`
 }
