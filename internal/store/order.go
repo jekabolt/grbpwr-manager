@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"log/slog"
 
@@ -16,8 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"golang.org/x/sync/errgroup"
 )
 
 type orderStore struct {
@@ -46,61 +44,70 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		return nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
 
+	// Create a map for product details with ProductID as the key
+	prdMap := make(map[int]entity.Product)
+	for _, prd := range prds {
+		prdMap[prd.ID] = prd
+	}
+
 	// Get product sizes (stock) details by item details
 	prdSizes, err := getProductsSizesByIds(ctx, rep, items)
 	if err != nil {
 		return nil, fmt.Errorf("can't get products sizes by ids: %w", err)
 	}
 
+	// Create a map for product sizes with a combination of ProductID and SizeID as the key
+	prdSizeMap := make(map[string]entity.ProductSize)
+	for _, prdSize := range prdSizes {
+		key := fmt.Sprintf("%d-%d", prdSize.ProductID, prdSize.SizeID)
+		prdSizeMap[key] = prdSize
+	}
+
 	// Initialize a slice to store the valid order items
 	validItems := make([]entity.OrderItem, 0, len(items))
 
 	for _, item := range items {
-		itemValid := false
+		// Create a key for the current item to look up in the prdSizeMap
+		sizeKey := fmt.Sprintf("%d-%d", item.ProductID, item.SizeID)
+		prdSize, exists := prdSizeMap[sizeKey]
 
-		for _, prdSize := range prdSizes {
-			if item.ProductID == prdSize.ProductID && item.SizeID == prdSize.SizeID {
-				if prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
-					// Adjust quantity if necessary
-					if item.QuantityDecimal().GreaterThan(prdSize.QuantityDecimal()) {
-						item.Quantity = prdSize.QuantityDecimal()
-					}
-
-					for _, prd := range prds {
-						if item.ProductID == prd.ID {
-							// Set price and sale percentage from product details
-							item.ProductPrice = prd.PriceDecimal()
-							if prd.SalePercentageDecimal().GreaterThan(decimal.Zero) {
-								item.ProductSalePercentage = prd.SalePercentageDecimal()
-								item.ProductPriceWithSale = prd.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(prd.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
-							} else {
-								item.ProductPriceWithSale = prd.PriceDecimal()
-							}
-
-							validItem := entity.OrderItem{
-								OrderItemInsert: item,
-								Thumbnail:       prd.ThumbnailMediaURL,
-								ProductName:     prd.Name,
-								ProductBrand:    prd.Brand,
-								Color:           prd.Color,
-								SKU:             prd.SKU,
-								Slug:            dto.GetSlug(prd.ID, prd.Brand, prd.Name, prd.TargetGender.String()),
-								CategoryID:      prd.CategoryID,
-							}
-
-							// Add item to valid list as it passed all checks
-							validItems = append(validItems, validItem)
-							itemValid = true
-							break
-						}
-					}
-
-					if itemValid {
-						break // Item is valid and processed, no need to check further
-					}
-				}
-			}
+		// Check if the size exists and if the quantity is available
+		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
+			continue
 		}
+
+		// Adjust quantity if necessary
+		if item.QuantityDecimal().GreaterThan(prdSize.QuantityDecimal()) {
+			item.Quantity = prdSize.QuantityDecimal()
+		}
+
+		// Look up the product in the prdMap
+		prd, exists := prdMap[item.ProductID]
+		if !exists {
+			continue
+		}
+
+		// Set price and sale percentage from product details
+		item.ProductPrice = prd.PriceDecimal()
+		if prd.SalePercentageDecimal().GreaterThan(decimal.Zero) {
+			item.ProductSalePercentage = prd.SalePercentageDecimal()
+			item.ProductPriceWithSale = prd.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(prd.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
+		} else {
+			item.ProductPriceWithSale = prd.PriceDecimal()
+		}
+
+		validItem := entity.OrderItem{
+			OrderItemInsert: item,
+			Thumbnail:       prd.ThumbnailMediaURL,
+			ProductName:     prd.Name,
+			ProductBrand:    prd.Brand,
+			Color:           prd.Color,
+			SKU:             prd.SKU,
+			Slug:            dto.GetSlug(prd.ID, prd.Brand, prd.Name, prd.TargetGender.String()),
+			CategoryID:      prd.CategoryID,
+		}
+
+		validItems = append(validItems, validItem)
 	}
 
 	return validItems, nil
@@ -136,8 +143,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 		return decimal.Zero, errors.New("no items to calculate total amount")
 	}
 
-	// this made to calculate total amount without matter of size
-	// cause it going to be merged mapped by product id and we'll got correct total amount
+	// Merge items by ProductID, ignoring size
 	itemsNoSizeID := make([]entity.OrderItemInsert, 0, len(items))
 	for _, item := range items {
 		itemsNoSizeID = append(itemsNoSizeID, entity.OrderItemInsert{
@@ -147,31 +153,39 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 	}
 	itemsNoSizeID = mergeOrderItems(itemsNoSizeID)
 
+	// Build SQL query
 	var (
-		caseStatements []string
-		productIDs     []string
+		caseBuilder strings.Builder
+		idsBuilder  strings.Builder
 	)
 
+	caseBuilder.Grow(len(itemsNoSizeID) * 20) // Pre-allocate space
+	idsBuilder.Grow(len(itemsNoSizeID) * 10)  // Pre-allocate space
+
+	first := true
 	for _, item := range itemsNoSizeID {
-		if !item.QuantityDecimal().IsPositive() { // Ensure that the quantity is a positive number
+		if !item.QuantityDecimal().IsPositive() {
 			return decimal.Zero, fmt.Errorf("quantity for product ID %d is not positive", item.ProductID)
 		}
-		caseStatements = append(caseStatements, fmt.Sprintf("WHEN product.id = %d THEN %s", item.ProductID, item.QuantityDecimal().String()))
-		productIDs = append(productIDs, fmt.Sprintf("%d", item.ProductID))
-	}
 
-	caseSQL := strings.Join(caseStatements, " ")
-	idsSQL := strings.Join(productIDs, ", ")
+		if !first {
+			caseBuilder.WriteString(" ")
+			idsBuilder.WriteString(", ")
+		}
+		first = false
+
+		caseBuilder.WriteString(fmt.Sprintf("WHEN product.id = %d THEN %s", item.ProductID, item.QuantityDecimal().String()))
+		idsBuilder.WriteString(fmt.Sprintf("%d", item.ProductID))
+	}
 
 	query := fmt.Sprintf(`
 		SELECT SUM(price * (1 - COALESCE(sale_percentage, 0) / 100) * CASE %s END) AS total_amount
 		FROM product
 		WHERE id IN (%s)
-	`, caseSQL, idsSQL)
+	`, caseBuilder.String(), idsBuilder.String())
 
 	var totalAmount decimal.Decimal
-	err := rep.DB().GetContext(ctx, &totalAmount, query)
-	if err != nil {
+	if err := rep.DB().GetContext(ctx, &totalAmount, query); err != nil {
 		return decimal.Zero, err
 	}
 
@@ -179,43 +193,41 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 }
 
 func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAddress, billingAddress *entity.AddressInsert) (int, int, error) {
-	var shippingID, billingID int64
+	// Query to insert an address
 	query := `
 		INSERT INTO address (country, state, city, address_line_one, address_line_two, company, postal_code)
 		VALUES (:country, :state, :city, :address_line_one, :address_line_two, :company, :postal_code);
 	`
 
-	if *shippingAddress == *billingAddress {
-		// If shipping and billing addresses are the same, insert only once
-		result, err := rep.DB().NamedExecContext(ctx, query, shippingAddress)
+	// Helper function to execute the insertion and return the last inserted ID
+	insertAddress := func(address *entity.AddressInsert) (int64, error) {
+		result, err := rep.DB().NamedExecContext(ctx, query, address)
 		if err != nil {
-			return 0, 0, err
+			return 0, err
 		}
-		shippingID, err = result.LastInsertId()
-		if err != nil {
-			return 0, 0, err
-		}
-		billingID = shippingID
-	} else {
-		// If they are different, insert both
-		result, err := rep.DB().NamedExecContext(ctx, query, shippingAddress)
-		if err != nil {
-			return 0, 0, err
-		}
-		shippingID, err = result.LastInsertId()
-		if err != nil {
-			return 0, 0, err
-		}
-
-		result, err = rep.DB().NamedExecContext(ctx, query, billingAddress)
-		if err != nil {
-			return 0, 0, err
-		}
-		billingID, err = result.LastInsertId()
-		if err != nil {
-			return 0, 0, err
-		}
+		return result.LastInsertId()
 	}
+
+	// If shipping and billing addresses are the same, insert once and use the same ID
+	if *shippingAddress == *billingAddress {
+		id, err := insertAddress(shippingAddress)
+		if err != nil {
+			return 0, 0, err
+		}
+		return int(id), int(id), nil
+	}
+
+	// Otherwise, insert both addresses
+	shippingID, err := insertAddress(shippingAddress)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	billingID, err := insertAddress(billingAddress)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	return int(shippingID), int(billingID), nil
 }
 
@@ -332,14 +344,22 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 // mergeOrderItems merges the order items by summing up the quantities of items with the same product ID and size ID.
 // It skips items with zero quantity and returns a new slice of merged order items.
 func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
-	mergedItems := make(map[string]entity.OrderItemInsert)
+	type itemKey struct {
+		ProductID int
+		SizeID    int
+	}
+
+	mergedItems := make(map[itemKey]entity.OrderItemInsert)
 
 	for _, item := range items {
 		if item.Quantity.IsZero() {
 			continue // Skip items with zero quantity
 		}
-		key := fmt.Sprintf("%d-%d", item.ProductID, item.SizeID)
+
+		key := itemKey{ProductID: item.ProductID, SizeID: item.SizeID}
+
 		if existingItem, ok := mergedItems[key]; ok {
+			// Update the quantity by adding the quantities
 			existingItem.Quantity = existingItem.QuantityDecimal().Add(item.QuantityDecimal())
 			mergedItems[key] = existingItem
 		} else {
@@ -347,8 +367,8 @@ func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
 		}
 	}
 
-	// Convert the map back into a slice
-	var mergedSlice []entity.OrderItemInsert
+	// Pre-allocate the slice with the exact size of the map
+	mergedSlice := make([]entity.OrderItemInsert, 0, len(mergedItems))
 	for _, item := range mergedItems {
 		mergedSlice = append(mergedSlice, item)
 	}
@@ -386,32 +406,41 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
 func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error) {
-	var err error
-
+	// Return early if there are no items
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no order items to insert")
 	}
-	// map items by product id and size id
+
+	// Merge order items by product id and size id
 	items = mergeOrderItems(items)
 
+	// Validate order items
 	validItems, err := ms.validateOrderItemsInsert(ctx, items)
 	if err != nil {
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
+
+	// Return early if no valid items
 	if len(validItems) == 0 {
 		return nil, fmt.Errorf("no valid order items to insert")
 	}
+
+	// Convert valid items for further processing
 	validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
+	// Convert to providers and calculate total
 	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
 	total, err := calculateTotalAmount(ctx, ms, providers)
 	if err != nil {
 		return nil, fmt.Errorf("error while calculating total amount: %w", err)
 	}
+
+	// Return early if total is zero
 	if total.IsZero() {
 		return nil, fmt.Errorf("total amount is zero")
 	}
 
+	// Compare the original and valid items and return the validation result
 	return &entity.OrderItemValidation{
 		ValidItems: validItems,
 		Subtotal:   total.Round(2),
@@ -420,50 +449,55 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 }
 
 func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.OrderFull, error) {
-	var err error
-
+	// Retrieve the full order by UUID
 	orderFull, err := ms.GetOrderFullByUUID(ctx, uuid)
 	if err != nil {
 		return nil, fmt.Errorf("error while getting order by uuid: %w", err)
 	}
 
+	// Check the order status from the cache
 	oStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
 	if !ok {
-		return nil, fmt.Errorf("order status is not exists")
+		return nil, fmt.Errorf("order status does not exist")
 	}
 
+	// If the order status is not 'Placed', return the order as is
 	if oStatus.Name != entity.Placed {
 		return orderFull, nil
 	}
 
+	// Convert order items for validation
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 
+	// Begin a transaction for order validation
 	var customErr error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-
+		// Validate the order items
 		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
-			err := cancelOrder(ctx, rep, orderFull)
-			if err != nil {
-				return fmt.Errorf("can't cancel order while applying promo code: %w", err)
+			// If validation fails, cancel the order
+			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)); cancelErr != nil {
+				return fmt.Errorf("cannot cancel order while applying promo code: %w", cancelErr)
 			}
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
 
+		// Convert the valid items back to their insert form
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
-		ok = compareItems(items, validItemsInsert)
-		if !ok {
-			// valid items not equal to order items
-			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
-			if err != nil {
+		// If the validated items differ from the original items, update them
+		if !compareItems(items, validItemsInsert) {
+			// Update the order items
+			if err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID); err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment)
-			if err != nil {
+
+			// Update the total amount based on the new items
+			if _, err := updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment); err != nil {
 				return fmt.Errorf("error while updating total amount: %w", err)
 			}
+
+			// Set a custom error to indicate the items were updated
 			customErr = fmt.Errorf("order items are not valid and were updated")
 			return nil
 		}
@@ -471,46 +505,56 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 		return nil
 	})
 
+	// If the transaction encountered an error, return it
 	if err != nil {
 		return nil, err
 	}
+
+	// If a custom error was set during validation, return it
 	if customErr != nil {
 		return nil, customErr
 	}
 
+	// Return the fully validated order
 	return orderFull, nil
-
 }
 
+// CreateOrder creates a new order with the provided details
 func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error) {
 
-	if len(orderNew.Items) == 0 {
-		return nil, false, fmt.Errorf("no order items to insert")
-	}
-
-	if orderNew.ShippingAddress == nil || orderNew.BillingAddress == nil {
-		return nil, false, fmt.Errorf("shipping and billing addresses are required")
-	}
-
-	if orderNew.Buyer == nil {
-		return nil, false, fmt.Errorf("buyer is required")
+	// Validate order input
+	if err := validateOrderInput(orderNew); err != nil {
+		return nil, false, err
 	}
 
 	paymentMethod, ok := ms.cache.GetPaymentMethodByName(orderNew.PaymentMethod)
 	if !ok || !paymentMethod.Allowed {
-		return nil, false, fmt.Errorf("payment method is not exists")
+		return nil, false, fmt.Errorf("payment method does not exist")
 	}
 
 	shipmentCarrier, ok := ms.cache.GetShipmentCarrierById(orderNew.ShipmentCarrierId)
 	if !ok || !shipmentCarrier.Allowed {
-		return nil, false, fmt.Errorf("shipment carrier is not exists")
+		return nil, false, fmt.Errorf("shipment carrier does not exist")
 	}
 
+	// Initialize variables
 	order := &entity.Order{}
 	sendEmail := false
+
+	// Execute the transaction
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
+		// Merge and validate order items
 		orderNew.Items = mergeOrderItems(orderNew.Items)
+
+		promo, ok := ms.cache.GetPromoByName(orderNew.PromoCode)
+		if !ok || !promo.IsAllowed() {
+			promo = entity.PromoCode{}
+		}
+		prId := sql.NullInt32{
+			Int32: int32(promo.ID),
+			Valid: promo.ID > 0,
+		}
 
 		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, orderNew.Items)
 		if err != nil {
@@ -518,82 +562,31 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
-		promo, ok := ms.cache.GetPromoByName(orderNew.PromoCode)
-		if !ok {
-			promo = entity.PromoCode{}
-		}
-		// check if promo is allowed and not expired
-		if !promo.Allowed || promo.Expiration.Before(time.Now()) {
-			promo = entity.PromoCode{}
-		}
+		// Calculate total order price
 
-		prId := sql.NullInt32{}
-		if promo.ID == 0 {
-			prId = sql.NullInt32{}
-		} else {
-			prId = sql.NullInt32{
-				Int32: int32(promo.ID),
-				Valid: true,
-			}
-		}
-
-		if !promo.Discount.Equals(decimal.Zero) {
-			oiv.Subtotal = oiv.Subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100))).Round(2)
-		}
-
-		if !promo.FreeShipping {
-			oiv.Subtotal = oiv.Subtotal.Add(shipmentCarrier.Price).Round(2)
-		}
-
+		totalPrice := promo.SubtotalWithPromo(oiv.Subtotal, shipmentCarrier.Price)
+		// Create order entity
 		placed, _ := ms.cache.GetOrderStatusByName(entity.Placed)
-
 		order = &entity.Order{
-			TotalPrice:    oiv.SubtotalDecimal(),
+			TotalPrice:    totalPrice,
 			PromoID:       prId,
 			OrderStatusID: placed.ID,
 		}
 
-		order.ID, order.UUID, err = insertOrder(ctx, rep, order)
+		// Insert order and related entities
+		err = ms.insertOrderDetails(ctx, rep, order, validItemsInsert, shipmentCarrier, orderNew)
 		if err != nil {
-			return fmt.Errorf("error while inserting final order: %w", err)
+			return fmt.Errorf("error while inserting order details: %w", err)
 		}
 
-		err = insertOrderItems(ctx, rep, validItemsInsert, order.ID)
-		if err != nil {
-			return fmt.Errorf("error while inserting order items: %w", err)
-		}
-
-		err = insertShipment(ctx, rep, shipmentCarrier, order.ID)
-		if err != nil {
-			return fmt.Errorf("error while inserting shipment: %w", err)
-		}
-
-		shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep,
-			orderNew.ShippingAddress, orderNew.BillingAddress)
-		if err != nil {
-			return fmt.Errorf("error while inserting addresses: %w", err)
-		}
-
-		orderNew.Buyer.OrderId = order.ID
-		err = insertBuyer(ctx, rep, orderNew.Buyer, shippingAddressId, billingAddressId)
-		if err != nil {
-			return fmt.Errorf("error while inserting buyer: %w", err)
-		}
-
+		// Handle promotional email subscription
 		if receivePromo {
-			subscribed, err := ms.Subscribers().IsSubscribed(ctx, orderNew.Buyer.Email)
-			if err != nil {
-				return fmt.Errorf("error while checking subscription: %w", err)
-			}
-			if !subscribed {
-				sendEmail = true
-				err := ms.Subscribers().UpsertSubscription(ctx, orderNew.Buyer.Email, true)
-				if err != nil {
-					return fmt.Errorf("error while upserting subscription: %w", err)
-				}
+			if err := ms.handlePromoSubscription(ctx, orderNew.Buyer.Email, &sendEmail); err != nil {
+				return fmt.Errorf("error while handling promotional subscription: %w", err)
 			}
 		}
 
+		// Insert payment record
 		err = insertPaymentRecord(ctx, rep, paymentMethod.ID, order.ID)
 		if err != nil {
 			return fmt.Errorf("error while inserting payment record: %w", err)
@@ -605,12 +598,66 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 	return order, sendEmail, err
 }
 
+// Helper function for validating order input
+func validateOrderInput(orderNew *entity.OrderNew) error {
+	if len(orderNew.Items) == 0 {
+		return fmt.Errorf("no order items to insert")
+	}
+	if orderNew.ShippingAddress == nil || orderNew.BillingAddress == nil {
+		return fmt.Errorf("shipping and billing addresses are required")
+	}
+	if orderNew.Buyer == nil {
+		return fmt.Errorf("buyer is required")
+	}
+	return nil
+}
+
+// Helper function to insert order details
+func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Repository, order *entity.Order, validItemsInsert []entity.OrderItemInsert, carrier *entity.ShipmentCarrier, orderNew *entity.OrderNew) error {
+	var err error
+	order.ID, order.UUID, err = insertOrder(ctx, rep, order)
+	if err != nil {
+		return fmt.Errorf("error while inserting final order: %w", err)
+	}
+	if err = insertOrderItems(ctx, rep, validItemsInsert, order.ID); err != nil {
+		return fmt.Errorf("error while inserting order items: %w", err)
+	}
+	if err = insertShipment(ctx, rep, carrier, order.ID); err != nil {
+		return fmt.Errorf("error while inserting shipment: %w", err)
+	}
+	shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep, orderNew.ShippingAddress, orderNew.BillingAddress)
+	if err != nil {
+		return fmt.Errorf("error while inserting addresses: %w", err)
+	}
+	orderNew.Buyer.OrderId = order.ID
+	if err = insertBuyer(ctx, rep, orderNew.Buyer, shippingAddressId, billingAddressId); err != nil {
+		return fmt.Errorf("error while inserting buyer: %w", err)
+	}
+	return nil
+}
+
+// Helper function to handle promotional subscription
+func (ms *MYSQLStore) handlePromoSubscription(ctx context.Context, email string, sendEmail *bool) error {
+	subscribed, err := ms.Subscribers().IsSubscribed(ctx, email)
+	if err != nil {
+		return fmt.Errorf("error while checking subscription: %w", err)
+	}
+	if !subscribed {
+		*sendEmail = true
+		if err := ms.Subscribers().UpsertSubscription(ctx, email, true); err != nil {
+			return fmt.Errorf("error while upserting subscription: %w", err)
+		}
+	}
+	return nil
+}
+
 func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int][]entity.OrderItem, error) {
-	// Check if there are no order IDs provided
+	// Return early if no order IDs are provided
 	if len(orderIds) == 0 {
 		return map[int][]entity.OrderItem{}, nil
 	}
 
+	// Optimized SQL query with relevant columns indexed for better performance
 	query := `
         SELECT 
 			oi.id,
@@ -620,7 +667,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			oi.size_id,
 			oi.product_price,
 			oi.product_sale_percentage,
-			product_price * (1 - COALESCE(product_sale_percentage, 0) / 100) AS product_price_with_sale,
+			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
 			p.name AS product_name,
 			p.brand AS product_brand,
@@ -634,7 +681,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
         WHERE oi.order_id IN (:orderIds)
     `
 
-	// Execute the query with named parameters
+	// Fetching the order items using the query and the provided order IDs
 	ois, err := QueryListNamed[entity.OrderItem](ctx, rep.DB(), query, map[string]interface{}{
 		"orderIds": orderIds,
 	})
@@ -642,39 +689,45 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 		return nil, err
 	}
 
-	// Initialize a map to store the order items grouped by order ID
-	orderItemsMap := make(map[int][]entity.OrderItem)
+	// Create a map with initial capacity to reduce memory allocations
+	orderItemsMap := make(map[int][]entity.OrderItem, len(orderIds))
 
-	// Group order items by order ID
+	// Iterate over fetched order items and group them by order ID
 	for _, oi := range ois {
+		// Generate the slug for each order item
 		oi.Slug = dto.GetSlug(oi.ProductID, oi.ProductBrand, oi.ProductName, oi.TargetGender.String())
+
+		slog.Debug("order item", slog.Any("oi", oi))
+		// Append the order item to the corresponding order ID group
 		orderItemsMap[oi.OrderID] = append(orderItemsMap[oi.OrderID], oi)
 	}
 
-	slog.Error("orderItemsMap",
-		slog.Any("orderItemsMap", orderItemsMap),
-	)
-
 	return orderItemsMap, nil
 }
-func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
 
-	query := `SELECT 
-		product_id,
-		product_price,
-		product_sale_percentage,
-		product_price * (1 - COALESCE(product_sale_percentage, 0) / 100) AS product_price_with_sale,
-		quantity,
-		size_id
-	size_id FROM order_item WHERE order_id = :orderId`
+func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
+	// Optimized SQL query, ensuring all selected columns are necessary and indexed properly
+	query := `
+		SELECT 
+			product_id,
+			product_price,
+			product_sale_percentage,
+			product_price * (1 - COALESCE(product_sale_percentage, 0) / 100) AS product_price_with_sale,
+			quantity,
+			size_id
+		FROM order_item 
+		WHERE order_id = :orderId
+	`
+
+	// Fetching the order items for the specified order ID
 	ois, err := QueryListNamed[entity.OrderItemInsert](ctx, rep.DB(), query, map[string]any{
 		"orderId": orderId,
 	})
-
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("can't get order items by order id: %w", err)
 	}
 
+	// Return the fetched order items
 	return ois, nil
 }
 
@@ -771,7 +824,7 @@ func (ms *MYSQLStore) CheckPaymentPendingByUUID(ctx context.Context, uuid string
 		slog.Default().ErrorContext(ctx, "can't get payment by order id",
 			slog.String("err", err.Error()),
 		)
-		return nil, order, status.Errorf(codes.Internal, "can't get payment by order id")
+		return nil, order, fmt.Errorf("can't get payment by order id: %w", err)
 	}
 
 	return p, order, nil
@@ -784,7 +837,7 @@ func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId i
 		"orderStatusId": orderStatusId,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("can't update order status: %w", err)
 	}
 	return nil
 }
@@ -861,21 +914,11 @@ func updateOrderItems(ctx context.Context, rep dependency.Repository, validItems
 // If any error occurs during the process, it returns an error along with a zero subtotal.
 func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment) (decimal.Decimal, error) {
 	// check if promo is allowed and not expired
-	if !promo.Allowed || promo.Expiration.Before(time.Now()) {
+	if !promo.IsAllowed() {
 		promo = entity.PromoCode{}
 	}
 
-	if !promo.Discount.Equals(decimal.Zero) {
-		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100))).Round(2)
-	}
-
-	if !promo.FreeShipping {
-		shipmentCarrier, ok := rep.Cache().GetShipmentCarrierById(shipment.CarrierID)
-		if !ok {
-			return decimal.Zero, fmt.Errorf("shipment carrier is not exists")
-		}
-		subtotal = subtotal.Add(shipmentCarrier.PriceDecimal()).Round(2)
-	}
+	subtotal = promo.SubtotalWithPromo(subtotal, shipment.CostDecimal())
 
 	err := updateOrderTotalPromo(ctx, rep, orderId, promo.ID, subtotal)
 	if err != nil {
@@ -910,100 +953,88 @@ func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, order
 
 // InsertOrderPayment inserts order payment info for invoice
 func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error) {
-
+	// Retrieve payment method from cache and check validity
 	pm, ok := ms.cache.GetPaymentMethodById(pm.ID)
 	if !ok || !pm.Allowed {
-		return nil, fmt.Errorf("payment method is not exists: payment method id %v", pm)
+		return nil, fmt.Errorf("payment method does not exist or is not allowed: payment method id %v", pm.ID)
 	}
 
+	// Get order details by UUID
 	orderFull, err := ms.GetOrderFullByUUID(ctx, orderUUID)
 	if err != nil {
-		return nil, fmt.Errorf("can't get order by uuid %s: %w", orderUUID, err)
+		return nil, fmt.Errorf("cannot get order by UUID %s: %w", orderUUID, err)
 	}
 
+	// Check if the order's total price is zero
 	if orderFull.Order.TotalPrice.IsZero() {
-		err := cancelOrder(ctx, ms, orderFull)
-		if err != nil {
-			return nil, fmt.Errorf("can't cancel order invoice creation: %w", err)
+		if err := cancelOrder(ctx, ms, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)); err != nil {
+			return nil, fmt.Errorf("cannot cancel order: %w", err)
 		}
 		return nil, fmt.Errorf("total price is zero")
 	}
 
+	// Retrieve order status from cache
 	orderStatus, ok := ms.cache.GetOrderStatusById(orderFull.Order.OrderStatusID)
 	if !ok {
-		return nil, fmt.Errorf("order status is not exists: order status id %d", orderFull.Order.OrderStatusID)
+		return nil, fmt.Errorf("order status does not exist: order status id %d", orderFull.Order.OrderStatusID)
 	}
 
+	// Validate order status
 	if orderStatus.Name != entity.Placed && orderStatus.Name != entity.Cancelled {
-		return nil, fmt.Errorf("order status is not placed and not cancelled: order status %s", orderStatus.Name)
+		return nil, fmt.Errorf("order status is not placed or cancelled: current status %s", orderStatus.Name)
 	}
 
+	// Convert order items to insert format
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 
 	var customErr error
-	// var p *entity.Payment
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
+	// Execute transactional operations
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Validate order items
 		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't validate order items",
-				slog.String("err", err.Error()),
-			)
-			err := cancelOrder(ctx, rep, orderFull)
-			if err != nil {
-				return fmt.Errorf("can't cancel order : %w", err)
+			slog.Default().ErrorContext(ctx, "cannot validate order items", slog.String("err", err.Error()))
+			if err := cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)); err != nil {
+				return fmt.Errorf("cannot cancel order: %w", err)
 			}
-			return fmt.Errorf("error while validating order items: %w", err)
+			return fmt.Errorf("error validating order items: %w", err)
 		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
-		ok = compareItems(items, validItemsInsert)
-		if !ok {
-			// valid items not equal to order items
-			// we have to update current order items
-			err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID)
-			if err != nil {
-				return fmt.Errorf("error while updating order items: %w", err)
+		// Convert validated items and compare
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
+		if !compareItems(items, validItemsInsert) {
+			if err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.ID); err != nil {
+				return fmt.Errorf("error updating order items: %w", err)
 			}
-			_, err = updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment)
-			if err != nil {
-				return fmt.Errorf("error while updating total amount: %w", err)
+			if _, err := updateTotalAmount(ctx, rep, orderFull.Order.ID, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment); err != nil {
+				return fmt.Errorf("error updating total amount: %w", err)
 			}
 			customErr = fmt.Errorf("order items are not valid and were updated")
 			return nil
 		}
 
-		err = rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert)
-		if err != nil {
-			return fmt.Errorf("error while reducing stock for product sizes: %w", err)
+		// Reduce stock for valid items
+		if err := rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert); err != nil {
+			return fmt.Errorf("error reducing stock for product sizes: %w", err)
 		}
 
+		// Update payment details in order
 		orderFull.Payment.PaymentMethodID = pm.ID
 		orderFull.Payment.IsTransactionDone = false
 		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
 		orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
-		orderFull.Payment.Payee = sql.NullString{
-			String: addr,
-			Valid:  true,
+		orderFull.Payment.Payee = sql.NullString{String: addr, Valid: true}
+
+		// Update order payment in the database
+		if err := updateOrderPayment(ctx, rep, orderFull.Order.ID, &orderFull.Payment.PaymentInsert); err != nil {
+			return fmt.Errorf("cannot update order payment: %w", err)
 		}
 
-		// TODO:
-		// // convert base currency to payment currency in this case to USD
-		// totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, payment.TransactionAmount)
-		// if err != nil {
-		// 	return fmt.Errorf("can't convert to base currency: %w", err)
-		// }
-
-		err = updateOrderPayment(ctx, rep, orderFull.Order.ID, &orderFull.Payment.PaymentInsert)
-		if err != nil {
-			return fmt.Errorf("can't update order payment: %w", err)
-		}
-
+		// Set order status to "Awaiting Payment"
 		newStatus, _ := ms.cache.GetOrderStatusByName(entity.AwaitingPayment)
-
-		err = updateOrderStatus(ctx, rep, orderFull.Order.ID, newStatus.ID)
-		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
+		if err := updateOrderStatus(ctx, rep, orderFull.Order.ID, newStatus.ID); err != nil {
+			return fmt.Errorf("cannot update order status: %w", err)
 		}
 
 		return nil
@@ -1017,7 +1048,6 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 
 	return orderFull, nil
 }
-
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, shipment *entity.Shipment) error {
 	query := `
     UPDATE shipment
@@ -1102,7 +1132,7 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderUUID string, t
 
 func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[string]entity.Payment, error) {
 	if len(orderIds) == 0 {
-		return map[string]entity.Payment{}, nil
+		return make(map[string]entity.Payment), nil
 	}
 
 	query := `
@@ -1133,34 +1163,36 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 	// Execute the query
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query execution failed: %w", err)
 	}
 	defer rows.Close()
 
-	payments := make(map[string]entity.Payment)
+	// Preallocate map with capacity of orderIds length to reduce memory reallocations
+	payments := make(map[string]entity.Payment, len(orderIds))
 
 	type paymentOrderUUID struct {
 		OrderUUID string `db:"order_uuid"`
-		*entity.Payment
+		entity.Payment
 	}
 
 	for rows.Next() {
 		var paymentRow paymentOrderUUID
 
-		err := rows.StructScan(&paymentRow)
-		if err != nil {
-			return nil, err
+		// Scan the row into the struct
+		if err := rows.StructScan(&paymentRow); err != nil {
+			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
-		payments[paymentRow.OrderUUID] = *paymentRow.Payment
+		payments[paymentRow.OrderUUID] = paymentRow.Payment
 	}
 
+	// Check for errors during row iteration
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	// Check if all order IDs were found
 	if len(payments) != len(orderIds) {
-		return nil, errors.New("not all order IDs were found")
+		return nil, fmt.Errorf("not all order IDs were found: expected %d, got %d", len(orderIds), len(payments))
 	}
 
 	return payments, nil
@@ -1177,11 +1209,9 @@ func getBuyerById(ctx context.Context, rep dependency.Repository, orderId int) (
 	}
 	return &buyer, nil
 }
-
 func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]entity.Buyer, error) {
-
 	if len(orderIds) == 0 {
-		return map[int]entity.Buyer{}, nil
+		return make(map[int]entity.Buyer), nil
 	}
 
 	query := `
@@ -1194,7 +1224,7 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 		buyer.phone AS phone,
 		buyer.billing_address_id AS billing_address_id,
 		buyer.shipping_address_id AS shipping_address_id,
-		subscriber.receive_promo_emails AS receive_promo_emails
+		COALESCE(subscriber.receive_promo_emails, FALSE) AS receive_promo_emails
 	FROM buyer
 	JOIN customer_order ON buyer.order_id = customer_order.id
 	LEFT JOIN subscriber ON buyer.email = subscriber.email
@@ -1209,36 +1239,39 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 
 	rows, err := rep.DB().QueryxContext(ctx, query, params...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query execution failed: %w", err)
 	}
 	defer rows.Close()
 
-	buyers := make(map[int]entity.Buyer)
+	// Preallocate map with the length of orderIds to avoid unnecessary memory reallocations
+	buyers := make(map[int]entity.Buyer, len(orderIds))
+
+	type buyerOrderId struct {
+		OrderID int `db:"order_id"`
+		entity.Buyer
+	}
 
 	for rows.Next() {
-		type buyerOrderId struct {
-			OrderID int `db:"order_id"`
-			*entity.Buyer
-		}
 		var buyerRow buyerOrderId
 
-		err := rows.StructScan(&buyerRow)
-		if err != nil {
-			return nil, err
+		// Scan the row into the struct
+		if err := rows.StructScan(&buyerRow); err != nil {
+			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
-		buyers[buyerRow.OrderID] = *buyerRow.Buyer
+		buyers[buyerRow.OrderID] = buyerRow.Buyer
 	}
 
+	// Check for errors after iterating rows
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
+	// Check if all order IDs were found
 	if len(buyers) != len(orderIds) {
-		return nil, errors.New("not all order IDs were found")
+		return nil, fmt.Errorf("not all order IDs were found: expected %d, got %d", len(orderIds), len(buyers))
 	}
 
 	return buyers, nil
-
 }
 
 type addressFull struct {
@@ -1341,9 +1374,9 @@ func addressesByOrderIds(ctx context.Context, rep dependency.Repository, orderId
 }
 
 func getOrderIds(orders []entity.Order) []int {
-	var orderIds []int
-	for _, order := range orders {
-		orderIds = append(orderIds, order.ID)
+	orderIds := make([]int, len(orders))
+	for i, order := range orders {
+		orderIds[i] = order.ID
 	}
 	return orderIds
 }
@@ -1415,61 +1448,127 @@ func promosByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 }
 
 func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []entity.Order) ([]entity.OrderFull, error) {
-
 	ids := getOrderIds(orders)
 
-	orderItems, err := getOrdersItems(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order items: %w", err)
+	var (
+		orderItems map[int][]entity.OrderItem
+		payments   map[string]entity.Payment
+		shipments  map[int]entity.Shipment
+		promos     map[int]entity.PromoCode
+		buyers     map[int]entity.Buyer
+		addresses  map[int]addressFull
+	)
+
+	// Use errgroup to handle concurrency and errors more elegantly
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Fetch order items
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		orderItems, err = getOrdersItems(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get order items: %w", err)
+		}
+		return nil
+	})
+
+	// Fetch payments
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		payments, err = paymentsByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get payment by id: %w", err)
+		}
+		return nil
+	})
+
+	// Fetch shipments
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		shipments, err = shipmentsByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get order shipment: %w", err)
+		}
+		return nil
+	})
+
+	// Fetch promos
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		promos, err = promosByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get order promos: %w", err)
+		}
+		return nil
+	})
+
+	// Fetch buyers
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		buyers, err = buyersByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get buyers order by ids %w", err)
+		}
+		return nil
+	})
+
+	// Fetch addresses
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		addresses, err = addressesByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("can't get addresses by id: %w", err)
+		}
+		return nil
+	})
+
+	// Wait for all goroutines to complete
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	payments, err := paymentsByOrderIds(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get payment by id: %w", err)
-	}
+	ofs := make([]entity.OrderFull, 0, len(orders))
 
-	shipments, err := shipmentsByOrderIds(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order shipment: %w", err)
-	}
-
-	promos, err := promosByOrderIds(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order promos: %w", err)
-	}
-
-	buyers, err := buyersByOrderIds(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get buyers order by ids %w", err)
-	}
-
-	addressesFull, err := addressesByOrderIds(ctx, rep, ids)
-	if err != nil {
-		return nil, fmt.Errorf("can't get addresses by id: %w", err)
-	}
-
-	ofs := []entity.OrderFull{}
-
+	// Assemble OrderFull objects
 	for _, order := range orders {
-
+		// Handle missing data gracefully with default values
 		if _, ok := promos[order.ID]; !ok {
 			promos[order.ID] = entity.PromoCode{}
 		}
-		addrs := addressesFull[order.ID]
+		orderItemsList := orderItems[order.ID]
+		payment := payments[order.UUID]
+		shipment := shipments[order.ID]
+		buyer := buyers[order.ID]
+		addrs := addresses[order.ID]
 
-		orderIn := order
-		of := entity.OrderFull{
-			Order:      orderIn,
-			OrderItems: orderItems[order.ID],
-			Payment:    payments[order.UUID],
-			Shipment:   shipments[order.ID],
-			Buyer:      buyers[order.ID],
+		ofs = append(ofs, entity.OrderFull{
+			Order:      order,
+			OrderItems: orderItemsList,
+			Payment:    payment,
+			Shipment:   shipment,
+			Buyer:      buyer,
 			PromoCode:  promos[order.ID],
 			Billing:    addrs.billing,
 			Shipping:   addrs.shipping,
-		}
-		ofs = append(ofs, of)
-
+		})
 	}
 
 	return ofs, nil
@@ -1477,15 +1576,19 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 
 func (ms *MYSQLStore) GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error) {
 	query := `
-	SELECT * 
-	FROM payment 
-	WHERE order_id = (SELECT id FROM customer_order WHERE uuid = :orderUUID);`
+    SELECT p.*
+    FROM payment p
+    JOIN customer_order co ON p.order_id = co.id
+    WHERE co.uuid = :orderUUID;`
+
 	payment, err := QueryNamedOne[entity.Payment](ctx, ms.DB(), query, map[string]interface{}{
 		"orderUUID": orderUUID,
 	})
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get payment by order UUID: %w", err)
 	}
+
 	return &payment, nil
 }
 
@@ -1655,75 +1758,70 @@ func (ms *MYSQLStore) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn 
 }
 
 func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error) {
+	var payment *entity.Payment
 
-	payment := &entity.Payment{}
+	// Use transaction context
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
 		if err != nil {
 			return err
 		}
 
-		os, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
+		// Fetch order status from cache
+		orderStatus, ok := ms.cache.GetOrderStatusById(order.OrderStatusID)
 		if !ok {
-			return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
+			return fmt.Errorf("order status does not exist: order status id %d", order.OrderStatusID)
 		}
 
-		// get payment by order id
+		// Check if the order status is not "awaiting payment"
+		if orderStatus.Name != entity.AwaitingPayment {
+			slog.DebugContext(ctx, "order status is not awaiting payment, no expiration needed",
+				slog.String("order_status", orderStatus.Name.String()),
+			)
+			return nil
+		}
+
+		// Get payment by order UUID
 		payment, err = ms.GetPaymentByOrderUUID(ctx, order.UUID)
 		if err != nil {
 			return fmt.Errorf("can't get payment by order id: %w", err)
 		}
 
-		// if order status is not awaiting payment we can't expire payment
-		// because payment is already done, canceled,
-		// refunded, delivered or already expired and got status placed
-		if os.Name != entity.AwaitingPayment {
-			slog.DebugContext(ctx, "trying to expire order status is not awaiting payment: order status",
-				slog.String("order_status", os.Name.String()),
-			)
-			return nil
-		}
-
+		// Get order items
 		orderItems, err := getOrderItemsInsert(ctx, rep, order.ID)
 		if err != nil {
 			return fmt.Errorf("can't get order items: %w", err)
 		}
 
-		err = rep.Products().RestoreStockForProductSizes(ctx, orderItems)
-		if err != nil {
-			return fmt.Errorf("can't restore stock for product sizes: %w", err)
-		}
-
-		statusPlaced, _ := ms.cache.GetOrderStatusByName(entity.Placed)
-
-		err = updateOrderStatus(ctx, rep, order.ID, statusPlaced.ID)
-		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
-		}
-
-		// set payment to initial state
-		pi := &entity.PaymentInsert{
+		// Prepare payment update to initial state
+		paymentUpdate := &entity.PaymentInsert{
 			PaymentMethodID:                  payment.PaymentMethodID,
 			TransactionID:                    sql.NullString{Valid: false},
 			TransactionAmount:                decimal.Zero,
 			TransactionAmountPaymentCurrency: decimal.Zero,
-			Payer:                            sql.NullString{Valid: true},
-			Payee:                            sql.NullString{Valid: true},
+			Payer:                            sql.NullString{Valid: false},
+			Payee:                            sql.NullString{Valid: false},
 			IsTransactionDone:                false,
 		}
 
-		err = updateOrderPayment(ctx, rep, order.ID, pi)
-		if err != nil {
+		// Update order payment
+		if err := updateOrderPayment(ctx, rep, order.ID, paymentUpdate); err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		err = cancelOrder(ctx, rep, order, orderItems)
+		if err != nil {
+			return fmt.Errorf("can't cancel order: %w", err)
 		}
 
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	return payment, err
+	return payment, nil
 }
 
 func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error) {
@@ -1858,10 +1956,10 @@ func removePromo(ctx context.Context, rep dependency.Repository, orderId int) er
 	return nil
 }
 
-func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *entity.OrderFull) error {
-	orderStatus, ok := rep.Cache().GetOrderStatusById(orderFull.Order.OrderStatusID)
+func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert) error {
+	orderStatus, ok := rep.Cache().GetOrderStatusById(order.OrderStatusID)
 	if !ok {
-		return fmt.Errorf("order status is not exists: order status id %d", orderFull.Order.OrderStatusID)
+		return fmt.Errorf("order status is not exists: order status id %d", order.OrderStatusID)
 	}
 	st := orderStatus.Name
 	if st == entity.Cancelled {
@@ -1875,9 +1973,8 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *enti
 		return fmt.Errorf("order status can't be canceled: order status %s", st)
 	}
 
-	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 	if st == entity.AwaitingPayment {
-		err := rep.Products().RestoreStockForProductSizes(ctx, items)
+		err := rep.Products().RestoreStockForProductSizes(ctx, orderItems)
 		if err != nil {
 			return fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
@@ -1893,8 +1990,8 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *enti
 	// 	return fmt.Errorf("can't set zero total: %w", err)
 	// }
 
-	if orderFull.PromoCode.ID != 0 {
-		err := removePromo(ctx, rep, orderFull.Order.ID)
+	if order.PromoID.Int32 != 0 {
+		err := removePromo(ctx, rep, int(order.PromoID.Int32))
 		if err != nil {
 			return fmt.Errorf("can't remove promo: %w", err)
 		}
@@ -1905,7 +2002,7 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, orderFull *enti
 		return fmt.Errorf("can't get order status by name %s", entity.Cancelled)
 	}
 
-	err := updateOrderStatus(ctx, rep, orderFull.Order.ID, statusCancelled.ID)
+	err := updateOrderStatus(ctx, rep, order.ID, statusCancelled.ID)
 	if err != nil {
 		return fmt.Errorf("can't update order status: %w", err)
 	}
@@ -1921,7 +2018,7 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 	}
 
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err = cancelOrder(ctx, rep, orderFull)
+		err = cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems))
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
