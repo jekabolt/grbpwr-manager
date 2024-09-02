@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -312,13 +313,26 @@ func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag
 	return pbTags
 }
 
+var reg = regexp.MustCompile("[^a-zA-Z0-9]+")
+
 func GetSlug(id int, brand, name, gender string) string {
 	clean := func(part string) string {
-		reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 		// Replace all non-alphanumeric characters with an empty string
 		return reg.ReplaceAllString(part, "")
 	}
-	return fmt.Sprintf("/product/%s/%s/%s/%d", gender, clean(brand), clean(name), id)
+
+	// Use strings.Builder for efficient string concatenation
+	var sb strings.Builder
+	sb.WriteString("/product/")
+	sb.WriteString(gender)
+	sb.WriteString("/")
+	sb.WriteString(clean(brand))
+	sb.WriteString("/")
+	sb.WriteString(clean(name))
+	sb.WriteString("/")
+	sb.WriteString(fmt.Sprint(id))
+
+	return sb.String()
 }
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product

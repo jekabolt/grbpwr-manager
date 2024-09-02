@@ -253,8 +253,9 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		CategoryId:            int32(e.CategoryID),
 		ProductBrand:          e.ProductBrand,
 		Sku:                   e.SKU,
-		// Assuming OrderItem has a nested struct or fields that can be mapped to OrderItemInsert
-		OrderItem: convertOrderItemInsert(e.OrderItemInsert),
+		Color:                 e.Color,
+		Slug:                  e.Slug,
+		OrderItem:             convertOrderItemInsert(e.OrderItemInsert),
 	}
 }
 
