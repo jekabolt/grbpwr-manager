@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
@@ -32,8 +33,6 @@ type MYSQLStore struct {
 	txDB  txDB
 	ts    time.Time
 	close context.CancelFunc
-
-	cache dependency.Cache
 }
 
 // New connects to the database, applies migrations and returns a new MYSQLStore object
@@ -56,12 +55,21 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		close: c,
 	}
 
-	// cache initialization
-	ca, err := ss.initCache(ctx)
+	di, err := ss.GetDictionaryInfo(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("can't init cache: %w", err)
+		return nil, fmt.Errorf("can't get dictionary info: %w", err)
 	}
-	ss.cache = ca
+
+	hf, err := ss.GetHero(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("can't get hero: %w", err)
+	}
+
+	// cache initialization
+	err = cache.InitConsts(ctx, di, hf)
+	if err != nil {
+		return nil, fmt.Errorf("can't init consts: %w", err)
+	}
 
 	go func() {
 		<-ctx.Done()

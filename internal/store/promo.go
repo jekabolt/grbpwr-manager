@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
@@ -39,8 +40,8 @@ func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInser
 	if err != nil {
 		return fmt.Errorf("failed to add promo code: %w", err)
 	}
-	ms.cache.AddPromo(entity.PromoCode{
-		ID:              id,
+	cache.AddPromo(entity.PromoCode{
+		Id:              id,
 		PromoCodeInsert: *promo,
 	})
 
@@ -71,7 +72,7 @@ func (ms *MYSQLStore) DeletePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete promo code: %w", err)
 	}
-	ms.cache.DeletePromo(code)
+	cache.DeletePromo(code)
 
 	return nil
 }
@@ -83,7 +84,7 @@ func (ms *MYSQLStore) DisablePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to disable promo code: %w", err)
 	}
-	ms.cache.DisablePromo(code)
+	cache.DisablePromo(code)
 
 	return nil
 }
@@ -93,7 +94,7 @@ func (ms *MYSQLStore) DisableVoucher(ctx context.Context, promoID sql.NullInt32)
 		return nil
 	}
 
-	promo, ok := ms.cache.GetPromoById(int(promoID.Int32))
+	promo, ok := cache.GetPromoById(int(promoID.Int32))
 	if !ok {
 		return nil
 	}
@@ -103,7 +104,7 @@ func (ms *MYSQLStore) DisableVoucher(ctx context.Context, promoID sql.NullInt32)
 		if err != nil {
 			return fmt.Errorf("failed to disable voucher: %w", err)
 		}
-		ms.cache.DisablePromo(promo.Code)
+		cache.DisablePromo(promo.Code)
 	}
 
 	return nil

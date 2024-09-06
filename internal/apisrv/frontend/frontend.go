@@ -11,6 +11,7 @@ import (
 	"log/slog"
 
 	v "github.com/asaskevich/govalidator"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -52,17 +53,8 @@ func New(
 }
 
 func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (*pb_frontend.GetHeroResponse, error) {
-	hero, err := s.repo.Hero().GetHero(ctx)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get hero",
-			slog.String("err", err.Error()),
-		)
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "can't get hero")
-		}
-	}
 
-	h, err := dto.ConvertEntityHeroFullToCommon(hero)
+	h, err := dto.ConvertEntityHeroFullToCommon(cache.GetHero())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
 			slog.String("err", err.Error()),
@@ -71,9 +63,22 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	}
 
 	return &pb_frontend.GetHeroResponse{
-		Hero:       h,
-		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
-		Rates:      dto.CurrencyRateToPb(s.rates.GetRates()),
+		Hero: h,
+		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
+			Categories:       cache.GetCategories(),
+			Measurements:     cache.GetMeasurements(),
+			OrderStatuses:    cache.GetOrderStatuses(),
+			PaymentMethods:   cache.GetPaymentMethods(),
+			ShipmentCarriers: cache.GetShipmentCarriers(),
+			Sizes:            cache.GetSizes(),
+			Genders:          cache.GetGenders(),
+			SortFactors:      cache.GetSortFactors(),
+			OrderFactors:     cache.GetOrderFactors(),
+			SiteEnabled:      cache.GetSiteAvailability(),
+			MaxOrderItems:    cache.GetMaxOrderItems(),
+			BaseCurrency:     cache.GetBaseCurrency(),
+		}),
+		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
 }
 
@@ -169,12 +174,12 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
 
-	pme, ok := s.repo.Cache().GetPaymentMethodByName(pm)
+	pme, ok := cache.GetPaymentMethodByName(pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
 		return nil, status.Errorf(codes.Internal, "internal error")
 	}
-	if !pme.Allowed {
+	if !pme.Method.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
@@ -185,13 +190,13 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, err
 	}
 
-	eos, ok := s.repo.Cache().GetOrderStatusById(order.OrderStatusID)
+	eos, ok := cache.GetOrderStatusById(order.OrderStatusId)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve order status")
 		return nil, status.Errorf(codes.Internal, "internal error")
 	}
 
-	os, ok := dto.ConvertEntityToPbOrderStatus(eos.Name)
+	os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to convert order status")
 		return nil, status.Errorf(codes.Internal, "internal error")
@@ -262,7 +267,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i))
 	}
 
-	shipmentCarrier, scOk := s.repo.Cache().GetShipmentCarrierById(int(req.ShipmentCarrierId))
+	shipmentCarrier, scOk := cache.GetShipmentCarrierById(int(req.ShipmentCarrierId))
 	if scOk && !shipmentCarrier.Allowed {
 		slog.Default().ErrorContext(ctx, "shipment carrier not allowed",
 			slog.Any("shipmentCarrier", shipmentCarrier),
@@ -273,7 +278,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		oiv.Subtotal = oiv.SubtotalDecimal().Add(shipmentCarrier.PriceDecimal()).Round(2)
 	}
 
-	promo, ok := s.repo.Cache().GetPromoByName(req.PromoCode)
+	promo, ok := cache.GetPromoByCode(req.PromoCode)
 	if ok && promo.Allowed && promo.FreeShipping && scOk {
 		oiv.Subtotal = oiv.SubtotalDecimal().Sub(shipmentCarrier.PriceDecimal()).Round(2)
 	}
@@ -318,12 +323,12 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderInvoiceRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
-	pme, ok := s.repo.Cache().GetPaymentMethodByName(pm)
+	pme, ok := cache.GetPaymentMethodByName(pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
 		return nil, status.Errorf(codes.Internal, "internal error")
 	}
-	if !pme.Allowed {
+	if !pme.Method.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
@@ -383,13 +388,13 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 		)
 		return nil, status.Errorf(codes.Internal, "can't expire order payment")
 	}
-	pme, _ := s.repo.Cache().GetPaymentMethodById(payment.PaymentMethodID)
+	pme, _ := cache.GetPaymentMethodById(payment.PaymentMethodID)
 
 	slog.Default().DebugContext(ctx, "cancel order invoice",
 		slog.Any("paymentMethod", pme),
 	)
 
-	switch pme.Name {
+	switch pme.Method.Name {
 	case entity.USDT_TRON:
 		err = s.usdtTron.CancelMonitorPayment(req.OrderUuid)
 	case entity.USDT_TRON_TEST:
@@ -401,7 +406,7 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't cancel monitor payment",
 			slog.String("err", err.Error()),
-			slog.Any("paymentMethod", pme.Name),
+			slog.Any("paymentMethod", pme.Method.Name),
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel monitor payment")
 	}
@@ -419,7 +424,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't check payment pending by uuid")
 	}
 
-	pm, ok := s.repo.Cache().GetPaymentMethodById(payment.PaymentMethodID)
+	pm, ok := cache.GetPaymentMethodById(payment.PaymentMethodID)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "can't get payment method by id",
 			slog.Any("paymentMethodId", payment.PaymentMethodID),
@@ -429,7 +434,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 
 	// TODO:
 	checker := s.usdtTron
-	switch pm.Name {
+	switch pm.Method.Name {
 	case entity.USDT_TRON:
 		checker = s.usdtTron
 	case entity.USDT_TRON_TEST:

@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
@@ -76,7 +77,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.r.Start()
-	a.db.Cache().SetDefaultCurrency(a.r.GetBaseCurrency())
+	cache.SetDefaultCurrency(a.r.GetBaseCurrency().String())
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {

@@ -63,7 +63,7 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 	}
 
 	archivePb := &pb_common.Archive{
-		Id:        int32(af.Archive.ID),
+		Id:        int32(af.Archive.Id),
 		CreatedAt: timestamppb.New(af.Archive.CreatedAt),
 		UpdatedAt: timestamppb.New(af.Archive.UpdatedAt),
 		ArchiveBody: &pb_common.ArchiveBody{
@@ -89,7 +89,7 @@ func convertArchiveItemsToPb(items []entity.ArchiveItemFull) []*pb_common.Archiv
 			url = item.URL.String
 		}
 		itemPb := &pb_common.ArchiveItemFull{
-			Id:        int32(item.ID),
+			Id:        int32(item.Id),
 			ArchiveId: int32(item.ArchiveID),
 			ArchiveItem: &pb_common.ArchiveItem{
 				Media: ConvertEntityToCommonMedia(&item.Media),

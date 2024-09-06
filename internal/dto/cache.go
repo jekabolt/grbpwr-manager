@@ -11,7 +11,6 @@ type Dict struct {
 	Measurements     []entity.MeasurementName
 	OrderStatuses    []entity.OrderStatus
 	PaymentMethods   []entity.PaymentMethod
-	Promos           []entity.PromoCode
 	ShipmentCarriers []entity.ShipmentCarrier
 	Sizes            []entity.Size
 	Genders          []pb_common.Genders
@@ -21,56 +20,6 @@ type Dict struct {
 	MaxOrderItems    int
 	BaseCurrency     string
 }
-
-var (
-	genders []*pb_common.Genders = []*pb_common.Genders{
-		{
-			Name: string(entity.Male),
-			Id:   pb_common.GenderEnum_GENDER_ENUM_MALE,
-		},
-		{
-			Name: string(entity.Female),
-			Id:   pb_common.GenderEnum_GENDER_ENUM_FEMALE,
-		},
-		{
-			Name: string(entity.Unisex),
-			Id:   pb_common.GenderEnum_GENDER_ENUM_UNISEX,
-		},
-	}
-
-	sortFactors []*pb_common.SortFactors = []*pb_common.SortFactors{
-		{
-			Name: string(entity.CreatedAt),
-			Id:   pb_common.SortFactor_SORT_FACTOR_CREATED_AT,
-		},
-
-		{
-			Name: string(entity.UpdatedAt),
-			Id:   pb_common.SortFactor_SORT_FACTOR_UPDATED_AT,
-		},
-
-		{
-			Name: string(entity.Name),
-			Id:   pb_common.SortFactor_SORT_FACTOR_NAME,
-		},
-
-		{
-			Name: string(entity.Price),
-			Id:   pb_common.SortFactor_SORT_FACTOR_PRICE,
-		},
-	}
-
-	orderFactors []*pb_common.OrderFactors = []*pb_common.OrderFactors{
-		{
-			Name: string(entity.Ascending),
-			Id:   pb_common.OrderFactor_ORDER_FACTOR_ASC,
-		},
-		{
-			Name: string(entity.Descending),
-			Id:   pb_common.OrderFactor_ORDER_FACTOR_DESC,
-		},
-	}
-)
 
 var (
 	categoryEntityPbMap = map[entity.CategoryEnum]pb_common.CategoryEnum{
@@ -280,14 +229,14 @@ func ConvertEntityToPbSize(s entity.SizeEnum) (pb_common.SizeEnum, bool) {
 	return g, true
 }
 
-func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
+func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict := &pb_common.Dictionary{}
 
 	for _, c := range dict.Categories {
 		name, _ := ConvertEntityToPbCategory(c.Name)
 		commonDict.Categories = append(commonDict.Categories,
 			&pb_common.Category{
-				Id:   int32(c.ID),
+				Id:   int32(c.Id),
 				Name: name,
 			})
 	}
@@ -296,7 +245,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 		name, _ := ConvertEntityToPbMeasurement(m.Name)
 		commonDict.Measurements = append(commonDict.Measurements,
 			&pb_common.MeasurementName{
-				Id:   int32(m.ID),
+				Id:   int32(m.Id),
 				Name: name,
 			})
 	}
@@ -305,7 +254,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 		name, _ := ConvertEntityToPbOrderStatus(o.Name)
 		commonDict.OrderStatuses = append(commonDict.OrderStatuses,
 			&pb_common.OrderStatus{
-				Id:   int32(o.ID),
+				Id:   int32(o.Id),
 				Name: name,
 			})
 	}
@@ -314,7 +263,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 		name, _ := ConvertEntityToPbPaymentMethod(p.Name)
 		commonDict.PaymentMethods = append(commonDict.PaymentMethods,
 			&pb_common.PaymentMethod{
-				Id:      int32(p.ID),
+				Id:      int32(p.Id),
 				Name:    *pb_common.PaymentMethodNameEnum(name).Enum(),
 				Allowed: p.Allowed,
 			})
@@ -322,7 +271,7 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 
 	for _, s := range dict.ShipmentCarriers {
 		commonDict.ShipmentCarriers = append(commonDict.ShipmentCarriers, &pb_common.ShipmentCarrier{
-			Id: int32(s.ID),
+			Id: int32(s.Id),
 			ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
 				Carrier: s.Carrier,
 				Price: &pb_decimal.Decimal{
@@ -338,14 +287,10 @@ func ConvertToCommonDictionary(dict *Dict) *pb_common.Dictionary {
 		name, _ := ConvertEntityToPbSize(sz.Name)
 		commonDict.Sizes = append(commonDict.Sizes,
 			&pb_common.Size{
-				Id:   int32(sz.ID),
+				Id:   int32(sz.Id),
 				Name: *pb_common.SizeEnum(name).Enum(),
 			})
 	}
-
-	commonDict.Genders = genders
-	commonDict.SortFactors = sortFactors
-	commonDict.OrderFactors = orderFactors
 	commonDict.SiteEnabled = dict.SiteEnabled
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency

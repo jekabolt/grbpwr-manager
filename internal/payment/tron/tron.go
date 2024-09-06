@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -38,11 +39,11 @@ type Processor struct {
 }
 
 func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, r dependency.RatesService, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
-	pm, ok := rep.Cache().GetPaymentMethodByName(pmn)
+	pm, ok := cache.GetPaymentMethodByName(pmn)
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
 	}
-	if !isPaymentMethodTron(pm) {
+	if !isPaymentMethodTron(pm.Method) {
 		return nil, fmt.Errorf("payment method is not valid for tron")
 	}
 
@@ -53,7 +54,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 
 	p := &Processor{
 		c:       c,
-		pm:      &pm,
+		pm:      &pm.Method,
 		rep:     rep,
 		addrs:   addrs,
 		mailer:  m,
@@ -415,7 +416,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 					return nil, fmt.Errorf("can't get order by id: %w", err)
 				}
 
-				orderDetails := dto.OrderFullToOrderConfirmed(of, p.rep.Cache().GetAllSizes(), p.rep.Cache().GetAllShipmentCarriers())
+				orderDetails := dto.OrderFullToOrderConfirmed(of)
 				err = p.mailer.SendOrderConfirmation(ctx, p.rep, of.Buyer.Email, orderDetails)
 				if err != nil {
 					return nil, fmt.Errorf("can't send order confirmation: %w", err)
