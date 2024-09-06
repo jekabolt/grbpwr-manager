@@ -71,7 +71,7 @@ var ValidCategories = map[CategoryEnum]bool{
 
 // Category represents the category table
 type Category struct {
-	ID   int          `db:"id"`
+	Id   int          `db:"id"`
 	Name CategoryEnum `db:"name"`
 }
 
@@ -102,7 +102,7 @@ var ValidSizes = map[SizeEnum]bool{
 
 // Size represents the size table
 type Size struct {
-	ID   int      `db:"id"`
+	Id   int      `db:"id"`
 	Name SizeEnum `db:"name"`
 }
 
@@ -137,7 +137,7 @@ var ValidMeasurementNames = map[MeasurementNameEnum]bool{
 
 // MeasurementName represents the measurement_name table
 type MeasurementName struct {
-	ID   int                 `db:"id"`
+	Id   int                 `db:"id"`
 	Name MeasurementNameEnum `db:"name"`
 }
 
@@ -184,7 +184,7 @@ type ProductBody struct {
 	CountryOfOrigin string              `db:"country_of_origin" valid:"required"`
 	Price           decimal.Decimal     `db:"price" valid:"required"`
 	SalePercentage  decimal.NullDecimal `db:"sale_percentage" valid:"-"`
-	CategoryID      int                 `db:"category_id" valid:"required"`
+	CategoryId      int                 `db:"category_id" valid:"required"`
 	Description     string              `db:"description" valid:"required"`
 	Hidden          sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender    GenderEnum          `db:"target_gender"`
@@ -203,7 +203,7 @@ func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
 
 // Product represents the product table
 type Product struct {
-	ID        int       `db:"id"`
+	Id        int       `db:"id"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 	ProductDisplay
@@ -237,10 +237,10 @@ type SizeWithMeasurement struct {
 
 // ProductSizes represents the product_size table
 type ProductSize struct {
-	ID        int             `db:"id"`
+	Id        int             `db:"id"`
 	Quantity  decimal.Decimal `db:"quantity"`
-	ProductID int             `db:"product_id"`
-	SizeID    int             `db:"size_id"`
+	ProductId int             `db:"product_id"`
+	SizeId    int             `db:"size_id"`
 }
 
 func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
@@ -250,7 +250,7 @@ func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
 // ProductSizes for insert represents the product_size table
 type ProductSizeInsert struct {
 	Quantity decimal.Decimal `db:"quantity"`
-	SizeID   int             `db:"size_id"`
+	SizeId   int             `db:"size_id"`
 }
 
 func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
@@ -259,23 +259,23 @@ func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
 
 // SizeMeasurement represents the size_measurement table
 type ProductMeasurement struct {
-	ID                int             `db:"id"`
-	ProductID         int             `db:"product_id"`
-	ProductSizeID     int             `db:"product_size_id"`
-	MeasurementNameID int             `db:"measurement_name_id"`
+	Id                int             `db:"id"`
+	ProductId         int             `db:"product_id"`
+	ProductSizeId     int             `db:"product_size_id"`
+	MeasurementNameId int             `db:"measurement_name_id"`
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
 // SizeMeasurement represents the size_measurement table
 type ProductMeasurementInsert struct {
-	MeasurementNameID int             `db:"measurement_name_id"`
+	MeasurementNameId int             `db:"measurement_name_id"`
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
 // ProductTag represents the product_tag table
 type ProductTag struct {
-	ID        int `db:"id"`
-	ProductID int `db:"product_id"`
+	Id        int `db:"id"`
+	ProductId int `db:"product_id"`
 	ProductTagInsert
 }
 

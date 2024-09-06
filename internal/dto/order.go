@@ -38,12 +38,12 @@ func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderI
 	quantity := decimal.NewFromInt32(pbOrderItem.OrderItem.Quantity).Round(0)
 
 	return entity.OrderItemInsert{
-		ProductID:             int(pbOrderItem.OrderItem.ProductId),
+		ProductId:             int(pbOrderItem.OrderItem.ProductId),
 		ProductPrice:          price,
 		ProductSalePercentage: salePercentage,
 		ProductPriceWithSale:  priceWithSale,
 		Quantity:              quantity,
-		SizeID:                int(pbOrderItem.OrderItem.SizeId),
+		SizeId:                int(pbOrderItem.OrderItem.SizeId),
 	}, nil
 }
 
@@ -57,9 +57,9 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 	var items []entity.OrderItemInsert
 	for _, item := range commonOrder.Items {
 		newItem := entity.OrderItemInsert{
-			ProductID: int(item.ProductId),
+			ProductId: int(item.ProductId),
 			Quantity:  decimal.NewFromInt32(item.Quantity).Round(0),
-			SizeID:    int(item.SizeId),
+			SizeId:    int(item.SizeId),
 		}
 		items = append(items, newItem)
 	}
@@ -118,16 +118,16 @@ func convertAddress(commonAddress *pb_common.AddressInsert) *entity.AddressInser
 
 func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, error) {
 	pbOrder := &pb_common.Order{
-		Id:            int32(eOrder.ID),
+		Id:            int32(eOrder.Id),
 		Uuid:          eOrder.UUID,
 		Placed:        timestamppb.New(eOrder.Placed),
 		Modified:      timestamppb.New(eOrder.Modified),
 		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
-		OrderStatusId: int32(eOrder.OrderStatusID),
+		OrderStatusId: int32(eOrder.OrderStatusId),
 	}
 
-	if eOrder.PromoID.Valid {
-		pbOrder.PromoId = int32(eOrder.PromoID.Int32)
+	if eOrder.PromoId.Valid {
+		pbOrder.PromoId = int32(eOrder.PromoId.Int32)
 	}
 
 	return pbOrder, nil
@@ -144,24 +144,24 @@ func ConvertPbOrderItemInsertToEntity(pbOrderItem *pb_common.OrderItemInsert) (*
 	}
 
 	return &entity.OrderItemInsert{
-		ProductID: int(pbOrderItem.ProductId),
+		ProductId: int(pbOrderItem.ProductId),
 		Quantity:  quantityDecimal.Round(0),
-		SizeID:    int(pbOrderItem.SizeId),
+		SizeId:    int(pbOrderItem.SizeId),
 	}, nil
 }
 
 func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_common.OrderItemInsert {
 	return &pb_common.OrderItemInsert{
-		ProductId: int32(orderItem.ProductID),
+		ProductId: int32(orderItem.ProductId),
 		Quantity:  int32(orderItem.Quantity.IntPart()),
-		SizeId:    int32(orderItem.SizeID),
+		SizeId:    int32(orderItem.SizeId),
 	}
 }
 
 func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderItem {
 	return &pb_common.OrderItem{
-		Id:                    int32(orderItem.ID),
-		OrderId:               int32(orderItem.OrderID),
+		Id:                    int32(orderItem.Id),
+		OrderId:               int32(orderItem.OrderId),
 		Thumbnail:             orderItem.Thumbnail,
 		ProductName:           orderItem.ProductName,
 		ProductPrice:          orderItem.ProductPriceDecimal().String(),
@@ -169,7 +169,7 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderIte
 		ProductPriceWithSale:  orderItem.ProductPriceWithSaleDecimal().String(),
 		Slug:                  orderItem.Slug,
 		Color:                 orderItem.Color,
-		CategoryId:            int32(orderItem.CategoryID),
+		CategoryId:            int32(orderItem.CategoryId),
 		ProductBrand:          orderItem.ProductBrand,
 		Sku:                   orderItem.SKU,
 		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
@@ -243,14 +243,14 @@ func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem) ([]*pb_comm
 func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 	// Replace the following with actual conversion logic based on the structure of entity.OrderItem
 	return &pb_common.OrderItem{
-		Id:                    int32(e.ID),
-		OrderId:               int32(e.OrderID),
+		Id:                    int32(e.Id),
+		OrderId:               int32(e.OrderId),
 		Thumbnail:             e.Thumbnail,
 		ProductName:           e.ProductName,
 		ProductPrice:          e.ProductPriceDecimal().String(),
 		ProductPriceWithSale:  e.ProductPriceWithSaleDecimal().String(),
 		ProductSalePercentage: e.ProductSalePercentageDecimal().String(),
-		CategoryId:            int32(e.CategoryID),
+		CategoryId:            int32(e.CategoryId),
 		ProductBrand:          e.ProductBrand,
 		Sku:                   e.SKU,
 		Color:                 e.Color,
@@ -262,9 +262,9 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 // convertOrderItemInsert converts a nested struct or fields of entity.OrderItem to pb_common.OrderItemInsert
 func convertOrderItemInsert(e entity.OrderItemInsert) *pb_common.OrderItemInsert {
 	return &pb_common.OrderItemInsert{
-		ProductId: int32(e.ProductID),
+		ProductId: int32(e.ProductId),
 		Quantity:  int32(e.Quantity.IntPart()),
-		SizeId:    int32(e.SizeID),
+		SizeId:    int32(e.SizeId),
 	}
 }
 
@@ -273,7 +273,7 @@ func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, 
 		Cost:                 &pb_decimal.Decimal{Value: s.Cost.String()},
 		CreatedAt:            timestamppb.New(s.CreatedAt),
 		UpdatedAt:            timestamppb.New(s.UpdatedAt),
-		CarrierId:            int32(s.CarrierID),
+		CarrierId:            int32(s.CarrierId),
 		TrackingCode:         s.TrackingCode.String,
 		ShippingDate:         timestamppb.New(s.ShippingDate.Time),
 		EstimatedArrivalDate: timestamppb.New(s.EstimatedArrivalDate.Time),
@@ -286,7 +286,7 @@ func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) 
 	}
 
 	return &pb_common.ShipmentCarrier{
-		Id: int32(s.ID),
+		Id: int32(s.Id),
 		ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
 			Carrier: s.Carrier,
 			Price:   &pb_decimal.Decimal{Value: s.Price.String()},

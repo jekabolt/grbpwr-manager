@@ -9,7 +9,7 @@ import (
 
 // ShipmentCarriers represents the shipment_carrier table
 type ShipmentCarrier struct {
-	ID int `db:"id"`
+	Id int `db:"id"`
 	ShipmentCarrierInsert
 }
 
@@ -27,12 +27,12 @@ func (sc ShipmentCarrierInsert) PriceDecimal() decimal.Decimal {
 
 // Shipment represents the shipment table
 type Shipment struct {
-	ID                   int             `db:"id"`
+	Id                   int             `db:"id"`
 	OrderId              int             `db:"order_id"`
 	Cost                 decimal.Decimal `db:"cost"`
 	CreatedAt            time.Time       `db:"created_at"`
 	UpdatedAt            time.Time       `db:"updated_at"`
-	CarrierID            int             `db:"carrier_id"`
+	CarrierId            int             `db:"carrier_id"`
 	TrackingCode         sql.NullString  `db:"tracking_code"`
 	ShippingDate         sql.NullTime    `db:"shipping_date"`
 	EstimatedArrivalDate sql.NullTime    `db:"estimated_arrival_date"`

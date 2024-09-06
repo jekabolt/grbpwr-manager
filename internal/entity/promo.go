@@ -8,7 +8,7 @@ import (
 
 // PromoCode represents the promo_code table
 type PromoCode struct {
-	ID int `db:"id"`
+	Id int `db:"id"`
 	PromoCodeInsert
 }
 

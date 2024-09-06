@@ -30,13 +30,13 @@ type OrderFull struct {
 
 // Orders represents the orders table
 type Order struct {
-	ID            int             `db:"id"`
+	Id            int             `db:"id"`
 	UUID          string          `db:"uuid"`
 	Placed        time.Time       `db:"placed"`
 	Modified      time.Time       `db:"modified"`
 	TotalPrice    decimal.Decimal `db:"total_price"`
-	OrderStatusID int             `db:"order_status_id"`
-	PromoID       sql.NullInt32   `db:"promo_id"`
+	OrderStatusId int             `db:"order_status_id"`
+	PromoId       sql.NullInt32   `db:"promo_id"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
@@ -44,7 +44,7 @@ func (o *Order) TotalPriceDecimal() decimal.Decimal {
 }
 
 type ProductInfoProvider interface {
-	GetProductID() int
+	GetProductId() int
 	GetProductPrice() decimal.Decimal
 	GetProductSalePercentage() decimal.Decimal
 	GetQuantity() decimal.Decimal
@@ -53,13 +53,13 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	ID           int        `db:"id"`
-	OrderID      int        `db:"order_id"`
+	Id           int        `db:"id"`
+	OrderId      int        `db:"order_id"`
 	Thumbnail    string     `db:"thumbnail"`
 	ProductName  string     `db:"product_name"`
 	ProductBrand string     `db:"product_brand"`
 	Color        string     `db:"color"`
-	CategoryID   int        `db:"category_id"`
+	CategoryId   int        `db:"category_id"`
 	TargetGender GenderEnum `db:"target_gender"`
 	SKU          string     `db:"product_sku"`
 	Slug         string
@@ -67,12 +67,12 @@ type OrderItem struct {
 }
 
 type OrderItemInsert struct {
-	ProductID             int             `db:"product_id" valid:"required"`
+	ProductId             int             `db:"product_id" valid:"required"`
 	ProductPrice          decimal.Decimal `db:"product_price"`
 	ProductSalePercentage decimal.Decimal `db:"product_sale_percentage"`
 	ProductPriceWithSale  decimal.Decimal `db:"product_price_with_sale"`
 	Quantity              decimal.Decimal `db:"quantity" valid:"required"`
-	SizeID                int             `db:"size_id" valid:"required"`
+	SizeId                int             `db:"size_id" valid:"required"`
 }
 
 func (oii *OrderItemInsert) ProductPriceWithSaleDecimal() decimal.Decimal {
@@ -102,16 +102,16 @@ func (oiv *OrderItemValidation) SubtotalDecimal() decimal.Decimal {
 }
 
 // ByProductID implements sort.Interface for []OrderItemInsert based on the ProductID field.
-type OrderItemsByProductID []OrderItemInsert
+type OrderItemsByProductId []OrderItemInsert
 
-func (a OrderItemsByProductID) Len() int { return len(a) }
-func (a OrderItemsByProductID) Less(i, j int) bool {
-	if a[i].ProductID == a[j].ProductID {
-		return a[i].SizeID < a[j].SizeID
+func (a OrderItemsByProductId) Len() int { return len(a) }
+func (a OrderItemsByProductId) Less(i, j int) bool {
+	if a[i].ProductId == a[j].ProductId {
+		return a[i].SizeId < a[j].SizeId
 	}
-	return a[i].ProductID < a[j].ProductID
+	return a[i].ProductId < a[j].ProductId
 }
-func (a OrderItemsByProductID) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a OrderItemsByProductId) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
 func ConvertOrderItemInsertsToProductInfoProviders(items []OrderItemInsert) []ProductInfoProvider {
 	providers := make([]ProductInfoProvider, len(items))
@@ -129,8 +129,8 @@ func ConvertOrderItemToOrderItemInsert(items []OrderItem) []OrderItemInsert {
 	return inserts
 }
 
-func (oii *OrderItemInsert) GetProductID() int {
-	return oii.ProductID
+func (oii *OrderItemInsert) GetProductId() int {
+	return oii.ProductId
 }
 
 func (oii *OrderItemInsert) GetProductPrice() decimal.Decimal {
@@ -145,7 +145,7 @@ func (oii *OrderItemInsert) GetQuantity() decimal.Decimal {
 	return oii.QuantityDecimal()
 }
 func (oii *OrderItemInsert) GetSizeId() int {
-	return oii.SizeID
+	return oii.SizeId
 }
 
 // OrderStatusName is the custom type to enforce enum-like behavior
@@ -178,7 +178,7 @@ var ValidOrderStatusNames = map[OrderStatusName]bool{
 
 // OrderStatus represents the order_status table
 type OrderStatus struct {
-	ID   int             `db:"id"`
+	Id   int             `db:"id"`
 	Name OrderStatusName `db:"name"`
 }
 

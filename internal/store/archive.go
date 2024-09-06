@@ -220,7 +220,7 @@ func convertArchiveJoinToArchiveFull(ajs []archiveJoin) ([]entity.ArchiveFull, e
 		}
 
 		archive := &entity.Archive{
-			ID:        aj.Id,
+			Id:        aj.Id,
 			CreatedAt: aj.CreatedAt,
 			UpdatedAt: aj.UpdatedAt,
 			ArchiveBody: entity.ArchiveBody{

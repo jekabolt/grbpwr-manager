@@ -76,7 +76,7 @@ func convertProductBody(pbProductBody *pb_common.ProductBody) (*entity.ProductBo
 		CountryOfOrigin: pbProductBody.CountryOfOrigin,
 		Price:           price,
 		SalePercentage:  decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBody.SalePercentage.Value != ""},
-		CategoryID:      int(pbProductBody.CategoryId),
+		CategoryId:      int(pbProductBody.CategoryId),
 		Description:     pbProductBody.Description,
 		Hidden:          sql.NullBool{Bool: pbProductBody.Hidden, Valid: true},
 		TargetGender:    targetGender,
@@ -168,7 +168,7 @@ func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurement
 
 		productSize := &entity.ProductSizeInsert{
 			Quantity: quantity.Round(0),
-			SizeID:   int(pbSizeMeasurement.ProductSize.SizeId),
+			SizeId:   int(pbSizeMeasurement.ProductSize.SizeId),
 		}
 
 		measurements, err := convertMeasurements(pbSizeMeasurement.Measurements)
@@ -193,7 +193,7 @@ func convertMeasurements(pbMeasurements []*pb_common.ProductMeasurementInsert) (
 		}
 
 		measurements = append(measurements, entity.ProductMeasurementInsert{
-			MeasurementNameID: int(pbMeasurement.MeasurementNameId),
+			MeasurementNameId: int(pbMeasurement.MeasurementNameId),
 			MeasurementValue:  measurementValue,
 		})
 	}
@@ -239,7 +239,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 			CountryOfOrigin: e.Product.CountryOfOrigin,
 			Price:           &pb_decimal.Decimal{Value: e.Product.Price.String()},
 			SalePercentage:  &pb_decimal.Decimal{Value: e.Product.SalePercentage.Decimal.String()},
-			CategoryId:      int32(e.Product.CategoryID),
+			CategoryId:      int32(e.Product.CategoryId),
 			Description:     e.Product.Description,
 			Hidden:          e.Product.Hidden.Bool,
 			TargetGender:    tg,
@@ -248,10 +248,10 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}
 
 	pbProduct := &pb_common.Product{
-		Id:             int32(e.Product.ID),
+		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetSlug(e.Product.ID, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
+		Slug:           GetSlug(e.Product.Id, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
 		ProductDisplay: pbProductDisplay,
 	}
 
@@ -273,12 +273,12 @@ func convertEntitySizesToPbSizes(sizes []entity.ProductSize) []*pb_common.Produc
 	var pbSizes []*pb_common.ProductSize
 	for _, size := range sizes {
 		pbSizes = append(pbSizes, &pb_common.ProductSize{
-			Id: int32(size.ID),
+			Id: int32(size.Id),
 			Quantity: &pb_decimal.Decimal{
 				Value: size.Quantity.String(),
 			},
-			ProductId: int32(size.ProductID),
-			SizeId:    int32(size.SizeID),
+			ProductId: int32(size.ProductId),
+			SizeId:    int32(size.SizeId),
 		})
 	}
 	return pbSizes
@@ -288,10 +288,10 @@ func convertEntityMeasurementsToPbMeasurements(measurements []entity.ProductMeas
 	var pbMeasurements []*pb_common.ProductMeasurement
 	for _, measurement := range measurements {
 		pbMeasurements = append(pbMeasurements, &pb_common.ProductMeasurement{
-			Id:                int32(measurement.ID),
-			ProductId:         int32(measurement.ProductID),
-			ProductSizeId:     int32(measurement.ProductSizeID),
-			MeasurementNameId: int32(measurement.MeasurementNameID),
+			Id:                int32(measurement.Id),
+			ProductId:         int32(measurement.ProductId),
+			ProductSizeId:     int32(measurement.ProductSizeId),
+			MeasurementNameId: int32(measurement.MeasurementNameId),
 			MeasurementValue: &pb_decimal.Decimal{
 				Value: measurement.MeasurementValue.String(),
 			},
@@ -304,7 +304,7 @@ func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag
 	var pbTags []*pb_common.ProductTag
 	for _, tag := range tags {
 		pbTags = append(pbTags, &pb_common.ProductTag{
-			Id: int32(tag.ID),
+			Id: int32(tag.Id),
 			ProductTagInsert: &pb_common.ProductTagInsert{
 				Tag: tag.Tag,
 			},
@@ -343,10 +343,10 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 	}
 
 	pbProduct := &pb_common.Product{
-		Id:        int32(e.ID),
+		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetSlug(e.ID, e.Brand, e.Name, e.TargetGender.String()),
+		Slug:      GetSlug(e.Id, e.Brand, e.Name, e.TargetGender.String()),
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
 				Preorder:        timestamppb.New(e.Preorder.Time),
@@ -358,7 +358,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 				CountryOfOrigin: e.CountryOfOrigin,
 				Price:           &pb_decimal.Decimal{Value: e.Price.String()},
 				SalePercentage:  &pb_decimal.Decimal{Value: e.SalePercentage.Decimal.String()},
-				CategoryId:      int32(e.CategoryID),
+				CategoryId:      int32(e.CategoryId),
 				Description:     e.Description,
 				Hidden:          e.Hidden.Bool,
 				TargetGender:    tg,

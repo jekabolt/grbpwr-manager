@@ -19,7 +19,7 @@ type ArchiveNew struct {
 }
 
 type Archive struct {
-	ID        int       `db:"id"`
+	Id        int       `db:"id"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 	ArchiveBody
@@ -31,7 +31,7 @@ type ArchiveBody struct {
 }
 
 type ArchiveItemFull struct {
-	ID        int `db:"id" json:"id"`
+	Id        int `db:"id" json:"id"`
 	ArchiveID int `db:"archive_id" json:"archive_id"`
 	ArchiveItem
 }

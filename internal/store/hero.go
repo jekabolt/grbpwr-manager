@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
@@ -37,8 +38,6 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, ads []entity.HeroInsert, prod
 			return fmt.Errorf("failed to delete hero products: %w", err)
 		}
 
-		ms.cache.DeleteHero()
-
 		err = insertHeroProducts(ctx, rep, productIds)
 		if err != nil {
 			return fmt.Errorf("failed to add hero products: %w", err)
@@ -54,10 +53,7 @@ func (ms *MYSQLStore) SetHero(ctx context.Context, ads []entity.HeroInsert, prod
 			return fmt.Errorf("failed to get hero: %w", err)
 		}
 
-		ms.cache.UpdateHero(&entity.HeroFull{
-			Ads:              hero.Ads,
-			ProductsFeatured: hero.ProductsFeatured,
-		})
+		cache.UpdateHero(hero)
 
 		return nil
 
@@ -117,12 +113,6 @@ type heroRaw struct {
 }
 
 func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
-	hf := ms.cache.GetHero()
-	if hf != nil {
-		// early return if hero is cached
-		return hf, nil
-	}
-
 	query := `
 		SELECT
 			h.id,
@@ -151,7 +141,7 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 			return nil, fmt.Errorf("failed to query hero: %w", err)
 		}
 	}
-	hf = &entity.HeroFull{}
+	hf := &entity.HeroFull{}
 
 	for _, h := range heroList {
 		media := &entity.MediaFull{
@@ -185,9 +175,6 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 			return nil, fmt.Errorf("failed to get hero products: %w", err)
 		}
 	}
-
-	ms.cache.UpdateHero(hf)
-
 	return hf, nil
 }
 

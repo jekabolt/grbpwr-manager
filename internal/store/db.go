@@ -36,10 +36,6 @@ func (ms *MYSQLStore) DB() dependency.DB {
 	return ms.db
 }
 
-func (ms *MYSQLStore) Cache() dependency.Cache {
-	return ms.cache
-}
-
 // Tx starts transaction and executes the function passing to it Handler
 // using this transaction. It automatically rolls the transaction back if
 // function returns an error. If the error has been caused by serialization
@@ -83,8 +79,6 @@ func (ms *MYSQLStore) TxBegin(ctx context.Context) (dependency.Repository, error
 		db:   ltx{Tx: tx},
 		txDB: tx,
 		ts:   ms.Now(),
-
-		cache: ms.cache,
 	}, nil
 }
 

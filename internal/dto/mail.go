@@ -3,14 +3,14 @@ package dto
 import (
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/shopspring/decimal"
 )
 
-func OrderFullToOrderConfirmed(of *entity.OrderFull, sizeMap map[int]entity.Size, shippingCarriersMap map[int]entity.ShipmentCarrier) *OrderConfirmed {
-	oi := EntityOrderItemsToDto(of.OrderItems, sizeMap)
-	sc, ok := shippingCarriersMap[of.Shipment.CarrierID]
+func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
+	sc, ok := cache.GetShipmentCarrierById(of.Shipment.CarrierId)
 	if !ok {
 		sc = entity.ShipmentCarrier{
 			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
@@ -22,9 +22,9 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull, sizeMap map[int]entity.Size
 	return &OrderConfirmed{
 		OrderUUID:           of.Order.UUID,
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
-		OrderItems:          oi,
+		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
 		FullName:            fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName),
-		PromoExist:          of.PromoCode.ID != 0,
+		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
 		ShippingPrice:       sc.PriceDecimal().String(),
@@ -32,19 +32,21 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull, sizeMap map[int]entity.Size
 	}
 }
 
-func EntityOrderItemsToDto(items []entity.OrderItem, sizeMap map[int]entity.Size) []OrderItem {
+func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 	oi := make([]OrderItem, len(items))
 	for i, item := range items {
-		size, found := sizeMap[item.SizeID]
+		size, found := cache.GetSizeById(item.SizeId)
 		if !found {
-			size = entity.Size{
-				Name: "unknown",
+			size = cache.Size{
+				Size: entity.Size{
+					Name: "unknown",
+				},
 			}
 		}
 		oi[i] = OrderItem{
 			Name:        fmt.Sprintf("%s %s", item.ProductBrand, item.ProductName),
 			Thumbnail:   item.Thumbnail,
-			Size:        string(size.Name),
+			Size:        string(size.Size.Name),
 			Quantity:    int(item.Quantity.IntPart()),
 			Price:       item.OrderItemInsert.ProductPriceDecimal().String(),
 			SalePercent: item.OrderItemInsert.ProductSalePercentageDecimal().String(),

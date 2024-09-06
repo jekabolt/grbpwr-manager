@@ -141,6 +141,7 @@ type (
 		Promo() Promo
 		Rates() Rates
 		Admin() Admin
+		Cache() Cache
 		Mail() Mail
 		Archive() Archive
 		Subscribers() Subscribers
@@ -155,8 +156,11 @@ type (
 		Close()
 		IsErrUniqueViolation(err error) bool
 		IsErrorRepeat(err error) bool
-		Cache() Cache
 		DB() DB
+	}
+
+	Cache interface {
+		GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, error)
 	}
 
 	// DB represents database interface.
@@ -204,47 +208,6 @@ type (
 
 	Sender interface {
 		PostEmails(ctx context.Context, body resend.SendEmailRequest, reqEditors ...resend.RequestEditorFn) (*http.Response, error)
-	}
-
-	Cache interface {
-		GetCategoryById(id int) (*entity.Category, bool)
-		GetCategoryByName(category entity.CategoryEnum) (entity.Category, bool)
-
-		GetMeasurementById(id int) (*entity.MeasurementName, bool)
-		GetMeasurementsByName(measurement entity.MeasurementNameEnum) (entity.MeasurementName, bool)
-
-		GetOrderStatusById(id int) (*entity.OrderStatus, bool)
-		GetOrderStatusByName(orderStatus entity.OrderStatusName) (entity.OrderStatus, bool)
-
-		GetPaymentMethodById(id int) (*entity.PaymentMethod, bool)
-		GetPaymentMethodByName(paymentMethod entity.PaymentMethodName) (entity.PaymentMethod, bool)
-		UpdatePaymentMethodAllowance(pm entity.PaymentMethodName, allowance bool) error
-
-		GetPromoById(id int) (*entity.PromoCode, bool)
-		GetPromoByName(paymentMethod string) (entity.PromoCode, bool)
-		AddPromo(promo entity.PromoCode)
-		DeletePromo(code string)
-		DisablePromo(code string)
-
-		GetShipmentCarrierById(id int) (*entity.ShipmentCarrier, bool)
-		GetShipmentCarriersByName(carrier string) (entity.ShipmentCarrier, bool)
-		UpdateShipmentCarrierAllowance(carrier string, allowance bool) error
-		UpdateShipmentCarrierCost(carrier string, cost decimal.Decimal) error
-		GetAllShipmentCarriers() map[int]entity.ShipmentCarrier
-
-		GetSizeById(id int) (*entity.Size, bool)
-		GetSizesByName(size entity.SizeEnum) (entity.Size, bool)
-		GetAllSizes() map[int]entity.Size
-
-		GetHero() *entity.HeroFull
-		UpdateHero(hf *entity.HeroFull)
-		DeleteHero()
-
-		GetDict() *dto.Dict
-
-		SetSiteAvailability(available bool)
-		SetMaxOrderItems(count int)
-		SetDefaultCurrency(cur dto.CurrencyTicker)
 	}
 
 	PaymentPool interface {

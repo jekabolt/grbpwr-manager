@@ -9,6 +9,7 @@ import (
 
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -322,8 +323,21 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
-		Dictionary: dto.ConvertToCommonDictionary(s.repo.Cache().GetDict()),
-		Rates:      dto.CurrencyRateToPb(s.rates.GetRates()),
+		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
+			Categories:       cache.GetCategories(),
+			Measurements:     cache.GetMeasurements(),
+			OrderStatuses:    cache.GetOrderStatuses(),
+			PaymentMethods:   cache.GetPaymentMethods(),
+			ShipmentCarriers: cache.GetShipmentCarriers(),
+			Sizes:            cache.GetSizes(),
+			Genders:          cache.GetGenders(),
+			SortFactors:      cache.GetSortFactors(),
+			OrderFactors:     cache.GetOrderFactors(),
+			SiteEnabled:      cache.GetSiteAvailability(),
+			MaxOrderItems:    cache.GetMaxOrderItems(),
+			BaseCurrency:     cache.GetBaseCurrency(),
+		}),
+		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
 }
 

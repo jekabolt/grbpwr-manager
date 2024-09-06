@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -22,20 +23,16 @@ func (ms *MYSQLStore) Settings() dependency.Settings {
 
 func (ms *MYSQLStore) SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err := ms.cache.UpdateShipmentCarrierAllowance(carrier, allowance)
-		if err != nil {
-			return fmt.Errorf("failed to update shipment carrier allowance: %w", err)
-		}
 		query := `UPDATE shipment_carrier SET allowed = :allowed WHERE carrier = :carrier`
-		err = ExecNamed(ctx, ms.DB(), query, map[string]any{
+		err := ExecNamed(ctx, ms.DB(), query, map[string]any{
 			"carrier": carrier,
 			"allowed": allowance,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update shipment carrier allowance: %w", err)
 		}
+		cache.UpdateShipmentCarrierAllowance(carrier, allowance)
 		return nil
-
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update shipment carrier allowance: %w", err)
@@ -45,19 +42,15 @@ func (ms *MYSQLStore) SetShipmentCarrierAllowance(ctx context.Context, carrier s
 }
 func (ms *MYSQLStore) SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err := ms.cache.UpdateShipmentCarrierCost(carrier, price)
-		if err != nil {
-			return fmt.Errorf("failed to update shipment carrier price: %w", err)
-		}
-
 		query := `UPDATE shipment_carrier SET price = :price WHERE carrier = :carrier`
-		err = ExecNamed(ctx, ms.DB(), query, map[string]any{
+		err := ExecNamed(ctx, ms.DB(), query, map[string]any{
 			"carrier": carrier,
 			"price":   price,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update shipment carrier price: %w", err)
 		}
+		cache.UpdateShipmentCarrierCost(carrier, price)
 		return nil
 	})
 	if err != nil {
@@ -67,18 +60,15 @@ func (ms *MYSQLStore) SetShipmentCarrierPrice(ctx context.Context, carrier strin
 }
 func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err := ms.cache.UpdatePaymentMethodAllowance(paymentMethod, allowance)
-		if err != nil {
-			return fmt.Errorf("failed to update payment method allowance: %w", err)
-		}
 		query := `UPDATE payment_method SET allowed = :allowed WHERE name = :method`
-		err = ExecNamed(ctx, ms.DB(), query, map[string]any{
+		err := ExecNamed(ctx, ms.DB(), query, map[string]any{
 			"method":  paymentMethod,
 			"allowed": allowance,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update payment method allowance: %w", err)
 		}
+		cache.UpdatePaymentMethodAllowance(paymentMethod, allowance)
 		return nil
 	})
 	if err != nil {
@@ -88,11 +78,11 @@ func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMeth
 }
 
 func (ms *MYSQLStore) SetSiteAvailability(ctx context.Context, available bool) error {
-	ms.cache.SetSiteAvailability(available)
+	cache.SetSiteAvailability(available)
 	return nil
 }
 
 func (ms *MYSQLStore) SetMaxOrderItems(ctx context.Context, count int) error {
-	ms.cache.SetMaxOrderItems(count)
+	cache.SetMaxOrderItems(count)
 	return nil
 }

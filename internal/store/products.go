@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -44,7 +45,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"thumbnailId":     product.ThumbnailMediaID,
 		"price":           product.Price,
 		"salePercentage":  product.SalePercentage,
-		"categoryId":      product.CategoryID,
+		"categoryId":      product.CategoryId,
 		"description":     product.Description,
 		"hidden":          product.Hidden,
 		"targetGender":    product.TargetGender,
@@ -86,7 +87,7 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 	for _, sm := range sizeMeasurements {
 		row := map[string]any{
 			"product_id": productID,
-			"size_id":    sm.ProductSize.SizeID,
+			"size_id":    sm.ProductSize.SizeId,
 			"quantity":   sm.ProductSize.QuantityDecimal(),
 		}
 		rowsPrdSizes = append(rowsPrdSizes, row)
@@ -94,8 +95,8 @@ func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, size
 		for _, m := range sm.Measurements {
 			row := map[string]any{
 				"product_id":          productID,
-				"product_size_id":     sm.ProductSize.SizeID,
-				"measurement_name_id": m.MeasurementNameID,
+				"product_size_id":     sm.ProductSize.SizeId,
+				"measurement_name_id": m.MeasurementNameId,
 				"measurement_value":   m.MeasurementValue,
 			}
 			rowsPrdMeasurements = append(rowsPrdMeasurements, row)
@@ -269,7 +270,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"thumbnailId":     prd.ThumbnailMediaID,
 		"price":           prd.Price,
 		"salePercentage":  prd.SalePercentage,
-		"categoryId":      prd.CategoryID,
+		"categoryId":      prd.CategoryId,
 		"description":     prd.Description,
 		"hidden":          prd.Hidden,
 		"targetGender":    prd.TargetGender,
@@ -518,7 +519,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	query = `SELECT * FROM product_size WHERE product_id = :id`
 
 	sizes, err := QueryListNamed[entity.ProductSize](ctx, ms.db, query, map[string]any{
-		"id": prd.ID,
+		"id": prd.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get sizes: %w", err)
@@ -529,7 +530,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	query = `SELECT * FROM size_measurement	WHERE product_id = :id`
 
 	measurements, err := QueryListNamed[entity.ProductMeasurement](ctx, ms.db, query, map[string]any{
-		"id": prd.ID,
+		"id": prd.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get measurements: %w", err)
@@ -555,7 +556,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		WHERE pm.product_id = :id;
 	`
 	productInfo.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, map[string]interface{}{
-		"id": prd.ID,
+		"id": prd.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get media: %w", err)
@@ -564,7 +565,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	// Fetch Tags
 	query = "SELECT * FROM product_tag WHERE product_id = :id"
 	productInfo.Tags, err = QueryListNamed[entity.ProductTag](ctx, ms.db, query, map[string]interface{}{
-		"id": prd.ID,
+		"id": prd.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get tags: %w", err)
@@ -601,22 +602,22 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 
 		query := `SELECT * FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
 		productSize, err := QueryNamedOne[entity.ProductSize](ctx, ms.db, query, map[string]any{
-			"productId": item.ProductID,
-			"sizeId":    item.SizeID,
+			"productId": item.ProductId,
+			"sizeId":    item.SizeId,
 		})
 		if err != nil {
 			return fmt.Errorf("error checking current quantity: %w", err)
 		}
 
 		if productSize.QuantityDecimal().Add(item.Quantity.Neg()).LessThan(decimal.Zero) {
-			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductID, item.SizeID)
+			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductId, item.SizeId)
 		}
 
 		query = `UPDATE product_size SET quantity = quantity - :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err = ExecNamed(ctx, ms.db, query, map[string]any{
 			"quantity":  item.QuantityDecimal(),
-			"productId": item.ProductID,
-			"sizeId":    item.SizeID,
+			"productId": item.ProductId,
+			"sizeId":    item.SizeId,
 		})
 		if err != nil {
 			return fmt.Errorf("can't decrease available sizes: %w", err)
@@ -630,8 +631,8 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err := ExecNamed(ctx, ms.db, updateQuery, map[string]any{
 			"quantity":  item.QuantityDecimal(),
-			"productId": item.ProductID,
-			"sizeId":    item.SizeID,
+			"productId": item.ProductId,
+			"sizeId":    item.SizeId,
 		})
 		if err != nil {
 			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
@@ -642,7 +643,7 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 
 func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
 
-	sz, ok := ms.cache.GetSizeById(sizeId)
+	sz, ok := cache.GetSizeById(sizeId)
 	if !ok {
 		return fmt.Errorf("can't get size by id: %d", sizeId)
 	}
@@ -656,7 +657,7 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 	`
 	err := ExecNamed(ctx, ms.db, query, map[string]any{
 		"productId": productId,
-		"sizeId":    sz.ID,
+		"sizeId":    sz.Size.Id,
 		"quantity":  quantity,
 	})
 	if err != nil {
@@ -807,7 +808,7 @@ func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items
 	productSizeConditions := []string{}
 	for _, item := range items {
 		productSizeConditions = append(productSizeConditions, "(product_id = ? AND size_id = ?)")
-		productSizeParams = append(productSizeParams, item.ProductID, item.SizeID)
+		productSizeParams = append(productSizeParams, item.ProductId, item.SizeId)
 	}
 
 	productSizeQuery += strings.Join(productSizeConditions, " OR ")
@@ -840,7 +841,7 @@ func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items
 func getProductIdsFromItems(items []entity.OrderItemInsert) []int {
 	ids := make([]int, len(items))
 	for i, item := range items {
-		ids[i] = item.ProductID
+		ids[i] = item.ProductId
 	}
 	return ids
 }
