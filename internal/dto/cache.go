@@ -41,6 +41,7 @@ var (
 		entity.Gloves:    pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES,
 		entity.Shoes:     pb_common.CategoryEnum_CATEGORY_ENUM_SHOES,
 		entity.Belt:      pb_common.CategoryEnum_CATEGORY_ENUM_BELT,
+		entity.Bag:       pb_common.CategoryEnum_CATEGORY_ENUM_BAG,
 		entity.Other:     pb_common.CategoryEnum_CATEGORY_ENUM_OTHER,
 	}
 
@@ -63,6 +64,7 @@ var (
 		pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES:    entity.Gloves,
 		pb_common.CategoryEnum_CATEGORY_ENUM_SHOES:     entity.Shoes,
 		pb_common.CategoryEnum_CATEGORY_ENUM_BELT:      entity.Belt,
+		pb_common.CategoryEnum_CATEGORY_ENUM_BAG:       entity.Bag,
 		pb_common.CategoryEnum_CATEGORY_ENUM_OTHER:     entity.Other,
 	}
 

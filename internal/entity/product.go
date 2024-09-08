@@ -43,6 +43,7 @@ const (
 	Gloves    CategoryEnum = "gloves"
 	Shoes     CategoryEnum = "shoes"
 	Belt      CategoryEnum = "belt"
+	Bag       CategoryEnum = "bag"
 	Other     CategoryEnum = "other"
 )
 
@@ -66,6 +67,7 @@ var ValidCategories = map[CategoryEnum]bool{
 	Gloves:    true,
 	Shoes:     true,
 	Belt:      true,
+	Bag:       true,
 	Other:     true,
 }
 

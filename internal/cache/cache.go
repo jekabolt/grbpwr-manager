@@ -55,6 +55,7 @@ var (
 	CategoryGloves    = Category{Category: entity.Category{Name: entity.Gloves}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES}
 	CategoryShoes     = Category{Category: entity.Category{Name: entity.Shoes}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SHOES}
 	CategoryBelt      = Category{Category: entity.Category{Name: entity.Belt}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BELT}
+	CategoryBag       = Category{Category: entity.Category{Name: entity.Bag}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BAG}
 	CategoryOther     = Category{Category: entity.Category{Name: entity.Other}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_OTHER}
 
 	categories = []*Category{
@@ -76,6 +77,7 @@ var (
 		&CategoryGloves,
 		&CategoryShoes,
 		&CategoryBelt,
+		&CategoryBag,
 		&CategoryOther,
 	}
 
