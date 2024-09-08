@@ -25,6 +25,7 @@ VALUES
     ('gloves'),
     ('shoes'),
     ('belt'),
+    ('bag'),
     ('other');
 
 CREATE TABLE size (
