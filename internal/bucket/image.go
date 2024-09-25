@@ -124,7 +124,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
 	}
 
-	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName)
+	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 10), 90, folder, thumbnailName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
 	}
