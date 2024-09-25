@@ -27,7 +27,7 @@ type Config struct {
 
 type Processor struct {
 	c       *Config
-	pm      *entity.PaymentMethod
+	pm      entity.PaymentMethod
 	addrs   map[string]string //k:address v: order uuid
 	mu      sync.Mutex
 	rep     dependency.Repository
@@ -38,7 +38,7 @@ type Processor struct {
 	ctxMu   sync.Mutex
 }
 
-func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, r dependency.RatesService, pmn entity.PaymentMethodName) (dependency.CryptoInvoice, error) {
+func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, tg dependency.Trongrid, r dependency.RatesService, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
 	pm, ok := cache.GetPaymentMethodByName(pmn)
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
@@ -54,7 +54,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 
 	p := &Processor{
 		c:       c,
-		pm:      &pm.Method,
+		pm:      pm.Method,
 		rep:     rep,
 		addrs:   addrs,
 		mailer:  m,
@@ -71,6 +71,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 	return p, nil
 
 }
+
 func isPaymentMethodTron(pm entity.PaymentMethod) bool {
 	return pm.Name == entity.USDT_TRON || pm.Name == entity.USDT_TRON_TEST
 }
@@ -179,7 +180,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, expiration, fmt.Errorf("can't get free address: %w", err)
 	}
 
-	of, err := p.rep.Order().InsertOrderInvoice(ctx, orderUUID, pAddr, p.pm)
+	of, err := p.rep.Order().InsertCryptoInvoice(ctx, orderUUID, pAddr, p.pm)
 	if err != nil {
 		return nil, expiration, fmt.Errorf("can't insert order invoice: %w", err)
 	}

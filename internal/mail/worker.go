@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"log/slog"
-
-	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 )
 
 // Start starts the worker
@@ -69,7 +67,7 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 				slog.Any("mail", email),
 			)
 
-			if errors.Is(err, gerr.MailApiLimitReached) {
+			if errors.Is(err, mailApiLimitReached) {
 				return nil // Stop sending mails if API limit is reached
 			}
 

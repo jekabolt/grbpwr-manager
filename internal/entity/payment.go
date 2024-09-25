@@ -28,6 +28,7 @@ type PaymentInsert struct {
 	TransactionAmountPaymentCurrency decimal.Decimal `db:"transaction_amount_payment_currency"`
 	Payer                            sql.NullString  `db:"payer"`
 	Payee                            sql.NullString  `db:"payee"`
+	ClientSecret                     sql.NullString  `db:"client_secret"`
 	IsTransactionDone                bool            `db:"is_transaction_done"`
 }
 
@@ -35,7 +36,9 @@ type PaymentMethodName string
 
 const (
 	CARD           PaymentMethodName = "card"
+	CARD_TEST      PaymentMethodName = "card-test"
 	ETH            PaymentMethodName = "eth"
+	ETH_TEST       PaymentMethodName = "eth-test"
 	USDT_TRON      PaymentMethodName = "usdt-tron"
 	USDT_TRON_TEST PaymentMethodName = "usdt-shasta"
 )
@@ -43,7 +46,9 @@ const (
 // ValidPaymentMethodNames is a set of valid payment method names
 var ValidPaymentMethodNames = map[PaymentMethodName]bool{
 	CARD:           true,
+	CARD_TEST:      true,
 	ETH:            true,
+	ETH_TEST:       true,
 	USDT_TRON:      true,
 	USDT_TRON_TEST: true,
 }

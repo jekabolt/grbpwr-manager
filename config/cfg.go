@@ -7,6 +7,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/tron"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
@@ -28,6 +29,8 @@ type Config struct {
 	TrongridShasta               trongrid.Config `mapstructure:"trongrid_shasta_testnet"`
 	USDTTronPayment              tron.Config     `mapstructure:"usdt_tron_payment"`
 	USDTTronShastaTestnetPayment tron.Config     `mapstructure:"usdt_tron_shasta_testnet_payment"`
+	StripePayment                stripe.Config   `mapstructure:"stripe_payment"`
+	StripePaymentTest            stripe.Config   `mapstructure:"stripe_payment_test"`
 }
 
 // LoadConfig loads the configuration from a file.

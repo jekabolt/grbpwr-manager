@@ -54,11 +54,11 @@ const (
 	USD CurrencyTicker = "USD"
 )
 
-func VerifyCurrencyTicker(ticker string) bool {
+func VerifyCurrencyTicker(ticker string) (CurrencyTicker, bool) {
 	switch CurrencyTicker(ticker) {
 	case BTC, ETH, CHF, CNY, CZK, DKK, EUR, GBP, GEL, HKD, HUF, ILS, JPY, NOK, PLN, RUB, SEK, SGD, TRY, UAH, USD:
-		return true
+		return CurrencyTicker(ticker), true
 	default:
-		return false
+		return "", false
 	}
 }

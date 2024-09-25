@@ -12,6 +12,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
+	"github.com/stripe/stripe-go/v79"
 )
 
 //go:generate mockery --with-expecter --case underscore --all --output=./mocks
@@ -56,7 +57,8 @@ type (
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
-		InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error)
+		InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod) (*entity.OrderFull, error)
+		InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod) (*entity.OrderFull, error)
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
@@ -74,14 +76,19 @@ type (
 	}
 
 	// TODO: invoice to separate interface
-	CryptoInvoice interface {
+	Invoicer interface {
 		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
 		CancelMonitorPayment(orderUUID string) error
 		CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error)
 	}
-	Invoice interface {
-		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
+
+	StripePayment interface {
+		CreatePaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error)
 	}
+
+	// Invoice interface {
+	// 	GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
+	// }
 
 	Trongrid interface {
 		GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error)

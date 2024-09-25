@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
@@ -195,11 +194,11 @@ func (s *Server) Start(ctx context.Context,
 		grpc.MaxRecvMsgSize(20*1024*1024), // 20MB
 		grpc.ChainUnaryInterceptor(
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
-			grpcRecovery.UnaryServerInterceptor(),
+			// grpcRecovery.UnaryServerInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
-			grpcRecovery.StreamServerInterceptor(),
+			// grpcRecovery.StreamServerInterceptor(),
 		),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
