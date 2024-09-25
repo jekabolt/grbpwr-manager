@@ -21,15 +21,18 @@ message PaymentInsert {
   google.type.Decimal transaction_amount_payment_currency = 4;
   string payer = 5;
   string payee = 6;
-  bool is_transaction_done = 7;
+  string client_secret = 7;
+  bool is_transaction_done = 8;
 }
 
 enum PaymentMethodNameEnum {
   PAYMENT_METHOD_NAME_ENUM_UNKNOWN = 0;
   PAYMENT_METHOD_NAME_ENUM_CARD = 1;
-  PAYMENT_METHOD_NAME_ENUM_ETH = 2;
-  PAYMENT_METHOD_NAME_ENUM_USDT_TRON = 3;
-  PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA = 4;
+  PAYMENT_METHOD_NAME_ENUM_CARD_TEST = 2;
+  PAYMENT_METHOD_NAME_ENUM_ETH = 3;
+  PAYMENT_METHOD_NAME_ENUM_ETH_TEST = 4;
+  PAYMENT_METHOD_NAME_ENUM_USDT_TRON = 5;
+  PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA = 6;
 }
 
 // PaymentMethod represents the payment_method table

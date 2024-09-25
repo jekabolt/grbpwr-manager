@@ -15,7 +15,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/shopspring/decimal"
@@ -28,11 +27,13 @@ import (
 // Server implements handlers for frontend requests.
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
-	repo            dependency.Repository
-	rates           dependency.RatesService
-	mailer          dependency.Mailer
-	usdtTron        dependency.CryptoInvoice
-	usdtTronTestnet dependency.CryptoInvoice
+	repo              dependency.Repository
+	rates             dependency.RatesService
+	mailer            dependency.Mailer
+	usdtTron          dependency.Invoicer
+	usdtTronTestnet   dependency.Invoicer
+	stripePayment     dependency.Invoicer
+	stripePaymentTest dependency.Invoicer
 }
 
 // New creates a new server with frontend handlers.
@@ -40,15 +41,19 @@ func New(
 	r dependency.Repository,
 	m dependency.Mailer,
 	ra dependency.RatesService,
-	usdtTron dependency.CryptoInvoice,
-	usdtTronTestnet dependency.CryptoInvoice,
+	usdtTron dependency.Invoicer,
+	usdtTronTestnet dependency.Invoicer,
+	stripePayment dependency.Invoicer,
+	stripePaymentTest dependency.Invoicer,
 ) *Server {
 	return &Server{
-		repo:            r,
-		mailer:          m,
-		rates:           ra,
-		usdtTron:        usdtTron,
-		usdtTronTestnet: usdtTronTestnet,
+		repo:              r,
+		mailer:            m,
+		rates:             ra,
+		usdtTron:          usdtTron,
+		usdtTronTestnet:   usdtTronTestnet,
+		stripePayment:     stripePayment,
+		stripePaymentTest: stripePaymentTest,
 	}
 }
 
@@ -224,7 +229,7 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 			slog.String("err", err.Error()),
 		)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, gerr.OrderNotFound
+			return nil, status.Errorf(codes.NotFound, "order not found")
 		}
 		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
 	}
@@ -357,12 +362,16 @@ type InvoiceDetails struct {
 }
 
 func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, pm entity.PaymentMethodName, orderUuid string) (*InvoiceDetails, error) {
-	var handler dependency.CryptoInvoice
+	var handler dependency.Invoicer
 	switch pm {
 	case entity.USDT_TRON:
 		handler = s.usdtTron
 	case entity.USDT_TRON_TEST:
 		handler = s.usdtTronTestnet
+	case entity.CARD:
+		handler = s.stripePayment
+	case entity.CARD_TEST:
+		handler = s.stripePaymentTest
 	default:
 		slog.Default().ErrorContext(ctx, "payment method unimplemented")
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
@@ -414,7 +423,7 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
 }
 
-func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckCryptoPaymentRequest) (*pb_frontend.CheckCryptoPaymentResponse, error) {
+func (s *Server) CheckPayment(ctx context.Context, req *pb_frontend.CheckPaymentRequest) (*pb_frontend.CheckPaymentResponse, error) {
 
 	payment, order, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
 	if err != nil {
@@ -432,13 +441,16 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
 	}
 
-	// TODO:
-	checker := s.usdtTron
+	var checker dependency.Invoicer
 	switch pm.Method.Name {
 	case entity.USDT_TRON:
 		checker = s.usdtTron
 	case entity.USDT_TRON_TEST:
 		checker = s.usdtTronTestnet
+	case entity.CARD:
+		checker = s.stripePayment
+	case entity.CARD_TEST:
+		checker = s.stripePaymentTest
 	default:
 		slog.Default().ErrorContext(ctx, "payment method is not allowed",
 			slog.Any("paymentMethod", pm),
@@ -462,7 +474,7 @@ func (s *Server) CheckCryptoPayment(ctx context.Context, req *pb_frontend.CheckC
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment to pb payment")
 	}
 
-	return &pb_frontend.CheckCryptoPaymentResponse{
+	return &pb_frontend.CheckPaymentResponse{
 		Payment: pbPayment,
 	}, nil
 

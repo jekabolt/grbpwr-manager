@@ -694,8 +694,6 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 	for _, oi := range ois {
 		// Generate the slug for each order item
 		oi.Slug = dto.GetSlug(oi.ProductId, oi.ProductBrand, oi.ProductName, oi.TargetGender.String())
-
-		slog.Debug("order item", slog.Any("oi", oi))
 		// Append the order item to the corresponding order ID group
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
 	}
@@ -849,7 +847,8 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		is_transaction_done = :isTransactionDone,
 		payment_method_id = :paymentMethodId,
 		payer = :payer,
-		payee = :payee
+		payee = :payee,
+		client_secret = :clientSecret
 	WHERE order_id = :orderId`
 
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
@@ -860,6 +859,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"paymentMethodId":                  payment.PaymentMethodID,
 		"payer":                            payment.Payer,
 		"payee":                            payment.Payee,
+		"clientSecret":                     payment.ClientSecret,
 		"orderId":                          orderId,
 	})
 
@@ -877,10 +877,6 @@ func (ms *MYSQLStore) UpdateTotalPaymentCurrency(ctx context.Context, orderUUID 
 		SELECT id FROM customer_order 
 		WHERE uuid = :orderUUID
 	)`
-
-	slog.Default().Error("UpdateTotalPaymentCurrency",
-		slog.Any("tapc", tapc.String()),
-	)
 
 	err := ExecNamed(ctx, ms.db, query, map[string]any{
 		"tapc":      tapc,
@@ -949,10 +945,8 @@ func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, order
 	return nil
 }
 
-// InsertOrderPayment inserts order payment info for invoice
-func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, addr string, pm *entity.PaymentMethod) (*entity.OrderFull, error) {
+func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, addrOrSecret string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
 	// Retrieve payment method from cache and check validity
-
 	if !pm.Allowed {
 		return nil, fmt.Errorf("payment method does not exist or is not allowed: payment method id %v", pm.Id)
 	}
@@ -971,25 +965,19 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 		return nil, fmt.Errorf("total price is zero")
 	}
 
-	// Retrieve order status from cache
+	// Retrieve and validate order status from cache
 	orderStatus, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
 	if !ok {
 		return nil, fmt.Errorf("order status does not exist: order status id %d", orderFull.Order.OrderStatusId)
 	}
-
-	// Validate order status
 	if orderStatus.Status.Name != entity.Placed && orderStatus.Status.Name != entity.Cancelled {
 		return nil, fmt.Errorf("order status is not placed or cancelled: current status %s", orderStatus.Status.Name)
 	}
 
-	// Convert order items to insert format
+	// Convert order items to insert format and validate them
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
-
 	var customErr error
-
-	// Execute transactional operations
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// Validate order items
 		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "cannot validate order items", slog.String("err", err.Error()))
@@ -999,7 +987,6 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			return fmt.Errorf("error validating order items: %w", err)
 		}
 
-		// Convert validated items and compare
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 		if !compareItems(items, validItemsInsert) {
 			if err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.Id); err != nil {
@@ -1017,24 +1004,8 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 			return fmt.Errorf("error reducing stock for product sizes: %w", err)
 		}
 
-		// Update payment details in order
-		orderFull.Payment.PaymentMethodID = pm.Id
-		orderFull.Payment.IsTransactionDone = false
-		orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
-		orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
-		orderFull.Payment.Payee = sql.NullString{String: addr, Valid: true}
-
-		// Update order payment in the database
-		if err := updateOrderPayment(ctx, rep, orderFull.Order.Id, &orderFull.Payment.PaymentInsert); err != nil {
-			return fmt.Errorf("cannot update order payment: %w", err)
-		}
-
-		// Set order status to "Awaiting Payment"
-		if err := updateOrderStatus(ctx, rep, orderFull.Order.Id, cache.OrderStatusAwaitingPayment.Status.Id); err != nil {
-			return fmt.Errorf("cannot update order status: %w", err)
-		}
-
-		return nil
+		// Update order payment details based on the payment method
+		return ms.processPayment(ctx, rep, orderFull, addrOrSecret, pm)
 	})
 	if err != nil {
 		return nil, err
@@ -1045,6 +1016,46 @@ func (ms *MYSQLStore) InsertOrderInvoice(ctx context.Context, orderUUID string, 
 
 	return orderFull, nil
 }
+
+// processPayment processes payment details based on the payment method
+func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Repository, orderFull *entity.OrderFull, addrOrSecret string, pm entity.PaymentMethod) error {
+	orderFull.Payment.PaymentMethodID = pm.Id
+	orderFull.Payment.IsTransactionDone = false
+	orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
+	orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
+
+	switch pm.Name {
+
+	case entity.USDT_TRON, entity.USDT_TRON_TEST:
+		orderFull.Payment.Payee = sql.NullString{String: addrOrSecret, Valid: true}
+	case entity.CARD, entity.CARD_TEST:
+		orderFull.Payment.ClientSecret = sql.NullString{String: addrOrSecret, Valid: true}
+	default:
+		return fmt.Errorf("unsupported payment method: %s", pm.Name)
+	}
+
+	if err := updateOrderPayment(ctx, rep, orderFull.Order.Id, &orderFull.Payment.PaymentInsert); err != nil {
+		return fmt.Errorf("cannot update order payment: %w", err)
+	}
+
+	// Set order status to "Awaiting Payment"
+	if err := updateOrderStatus(ctx, rep, orderFull.Order.Id, cache.OrderStatusAwaitingPayment.Status.Id); err != nil {
+		return fmt.Errorf("cannot update order status: %w", err)
+	}
+
+	return nil
+}
+
+// InsertCryptoInvoice handles crypto-specific invoice insertion
+func (ms *MYSQLStore) InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
+	return ms.insertOrderInvoice(ctx, orderUUID, payeeAddress, pm)
+}
+
+// InsertFiatInvoice handles fiat-specific invoice insertion
+func (ms *MYSQLStore) InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
+	return ms.insertOrderInvoice(ctx, orderUUID, clientSecret, pm)
+}
+
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, shipment *entity.Shipment) error {
 	query := `
     UPDATE shipment
@@ -1138,6 +1149,7 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 		payment.transaction_amount_payment_currency,
 		payment.payer, 
 		payment.payee, 
+		payment.client_secret,
 		payment.is_transaction_done,
 		payment.created_at,
 		payment.modified_at
@@ -1222,40 +1234,16 @@ func buyersByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 	LEFT JOIN subscriber ON buyer.email = subscriber.email
 	WHERE customer_order.id IN (:orderIds)`
 
-	query, params, err := MakeQuery(query, map[string]interface{}{
+	bos, err := QueryListNamed[entity.Buyer](ctx, rep.DB(), query, map[string]interface{}{
 		"orderIds": orderIds,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't make query: %w", err)
+		return nil, fmt.Errorf("can't get buyers by order ids: %w", err)
 	}
 
-	rows, err := rep.DB().QueryxContext(ctx, query, params...)
-	if err != nil {
-		return nil, fmt.Errorf("query execution failed: %w", err)
-	}
-	defer rows.Close()
-
-	// Preallocate map with the length of orderIds to avoid unnecessary memory reallocations
 	buyers := make(map[int]entity.Buyer, len(orderIds))
-
-	type buyerOrderId struct {
-		OrderID int `db:"order_id"`
-		entity.Buyer
-	}
-
-	for rows.Next() {
-		var buyerRow buyerOrderId
-
-		// Scan the row into the struct
-		if err := rows.StructScan(&buyerRow); err != nil {
-			return nil, fmt.Errorf("row scan failed: %w", err)
-		}
-		buyers[buyerRow.OrderId] = buyerRow.Buyer
-	}
-
-	// Check for errors after iterating rows
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error: %w", err)
+	for _, bo := range bos {
+		buyers[bo.OrderId] = bo
 	}
 
 	// Check if all order IDs were found
@@ -1751,7 +1739,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
 		if err != nil {
-			return err
+			return fmt.Errorf("can't get order by id: %w", err)
 		}
 
 		// Fetch order status from cache

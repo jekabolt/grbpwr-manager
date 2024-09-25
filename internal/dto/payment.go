@@ -53,10 +53,12 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 		TransactionAmountPaymentCurrency: &pb_decimal.Decimal{Value: p.TransactionAmountPaymentCurrency.String()},
 		Payer:                            p.Payer.String,
 		Payee:                            p.Payee.String,
+		ClientSecret:                     p.ClientSecret.String,
 		IsTransactionDone:                p.IsTransactionDone,
 	}, nil
 }
 
+// TODO:
 var paymentMethodToCurrency = map[pb_common.PaymentMethodNameEnum]string{
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        "EUR",
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         "ETH",
@@ -66,7 +68,9 @@ var paymentMethodToCurrency = map[pb_common.PaymentMethodNameEnum]string{
 
 var pbPaymentMethodToEntity = map[pb_common.PaymentMethodNameEnum]entity.PaymentMethodName{
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        entity.CARD,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:   entity.CARD_TEST,
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         entity.ETH,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST:    entity.ETH_TEST,
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   entity.USDT_TRON,
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: entity.USDT_TRON_TEST,
 }

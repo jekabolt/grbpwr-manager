@@ -137,9 +137,15 @@ var (
 	PaymentMethodCard = PaymentMethod{Method: entity.PaymentMethod{
 		Name: entity.CARD,
 	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD}
+	PaymentMethodCardTest = PaymentMethod{Method: entity.PaymentMethod{
+		Name: entity.CARD_TEST,
+	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST}
 	PaymentMethodEth = PaymentMethod{Method: entity.PaymentMethod{
 		Name: entity.ETH,
 	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH}
+	PaymentMethodEthTest = PaymentMethod{Method: entity.PaymentMethod{
+		Name: entity.ETH_TEST,
+	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST}
 	PaymentMethodUsdtTron = PaymentMethod{Method: entity.PaymentMethod{
 		Name: entity.USDT_TRON,
 	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON}
@@ -149,7 +155,9 @@ var (
 
 	paymentMethods = []*PaymentMethod{
 		&PaymentMethodCard,
+		&PaymentMethodCardTest,
 		&PaymentMethodEth,
+		&PaymentMethodEthTest,
 		&PaymentMethodUsdtTron,
 		&PaymentMethodUsdtTronTest,
 	}
@@ -160,7 +168,9 @@ var (
 
 	paymentMethodsByName = map[entity.PaymentMethodName]*PaymentMethod{
 		entity.CARD:           &PaymentMethodCard,
+		entity.CARD_TEST:      &PaymentMethodCardTest,
 		entity.ETH:            &PaymentMethodEth,
+		entity.ETH_TEST:       &PaymentMethodEthTest,
 		entity.USDT_TRON:      &PaymentMethodUsdtTron,
 		entity.USDT_TRON_TEST: &PaymentMethodUsdtTronTest,
 	}
@@ -283,6 +293,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 		for _, p := range paymentMethods {
 			if pm.Name == p.Method.Name {
 				p.Method.Id = pm.Id
+				p.Method.Allowed = pm.Allowed
 				entityPaymentMethods = append(entityPaymentMethods, pm)
 				paymentMethodsById[pm.Id] = p
 			}

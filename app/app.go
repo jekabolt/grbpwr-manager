@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/tron"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
@@ -115,9 +116,25 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, a.r, usdtTron, usdtTronTestnet)
+	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.r, a.ma, entity.CARD)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
 
-	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet)
+	stripeTest, err := stripe.New(ctx, &a.c.StripePaymentTest, a.db, a.r, a.ma, entity.CARD_TEST)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	adminS := admin.New(a.db, a.b, a.ma, a.r)
+
+	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest)
 
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)

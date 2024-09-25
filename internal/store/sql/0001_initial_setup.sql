@@ -74,7 +74,9 @@ INSERT INTO
     payment_method (name)
 VALUES
     ('card'),
+    ('card-test'),
     ('eth'),
+    ('eth-test'),
     ('usdt-tron'),
     ('usdt-shasta');
 
@@ -273,6 +275,7 @@ CREATE TABLE payment (
     transaction_amount_payment_currency DECIMAL(20, 2) NOT NULL,
     payer VARCHAR(255),
     payee VARCHAR(255),
+    client_secret VARCHAR(255),
     is_transaction_done BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

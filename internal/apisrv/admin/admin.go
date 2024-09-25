@@ -24,12 +24,10 @@ import (
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo            dependency.Repository
-	bucket          dependency.FileStore
-	mailer          dependency.Mailer
-	rates           dependency.RatesService
-	usdtTron        dependency.CryptoInvoice
-	usdtTronTestnet dependency.CryptoInvoice
+	repo   dependency.Repository
+	bucket dependency.FileStore
+	mailer dependency.Mailer
+	rates  dependency.RatesService
 }
 
 // New creates a new server with admin handlers.
@@ -38,16 +36,12 @@ func New(
 	b dependency.FileStore,
 	m dependency.Mailer,
 	rates dependency.RatesService,
-	usdtTron dependency.CryptoInvoice,
-	usdtTronTestnet dependency.CryptoInvoice,
 ) *Server {
 	return &Server{
-		repo:            r,
-		bucket:          b,
-		mailer:          m,
-		rates:           rates,
-		usdtTron:        usdtTron,
-		usdtTronTestnet: usdtTronTestnet,
+		repo:   r,
+		bucket: b,
+		mailer: m,
+		rates:  rates,
 	}
 }
 

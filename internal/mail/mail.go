@@ -15,9 +15,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	gerr "github.com/jekabolt/grbpwr-manager/internal/errors"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 //go:embed templates/*.gohtml
@@ -25,6 +26,10 @@ var templatesFS embed.FS
 
 const (
 	resendAPIBaseURL = "https://api.resend.com/"
+)
+
+var (
+	mailApiLimitReached = status.Error(codes.ResourceExhausted, "mail api limit reached")
 )
 
 type Config struct {
@@ -156,7 +161,7 @@ func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 	resp, err := m.cli.PostEmails(ctx, *ser)
 	if err != nil {
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return gerr.MailApiLimitReached
+			return mailApiLimitReached
 		}
 		return fmt.Errorf("error sending email: %w", err)
 	}
@@ -167,14 +172,14 @@ func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
 	req, err := dto.EntitySendEmailRequestToResend(ser)
 	if err != nil {
-		return gerr.BadMailRequest
+		return fmt.Errorf("error converting email: %w", err)
 	}
 	resp, err := m.cli.PostEmails(ctx, *req)
 	if err != nil {
 		return fmt.Errorf("error sending email: %w", err)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return gerr.MailApiLimitReached
+		return mailApiLimitReached
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("error sending email bad status code: %s, status code: %d", resp.Body, resp.StatusCode)
