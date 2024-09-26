@@ -18,4 +18,5 @@ type MediaItem struct {
 	CompressedMediaURL string `db:"compressed" json:"compressed"`
 	CompressedWidth    int    `db:"compressed_width" json:"compressed_width"`
 	CompressedHeight   int    `db:"compressed_height" json:"compressed_height"`
+	BlurHash           string `db:"blur_hash" json:"blur_hash"`
 }

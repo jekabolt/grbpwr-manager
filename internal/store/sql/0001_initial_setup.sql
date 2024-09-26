@@ -107,7 +107,8 @@ CREATE TABLE media (
     thumbnail_height INT NOT NULL,
     compressed VARCHAR(255) NOT NULL,
     compressed_width INT NOT NULL,
-    compressed_height INT NOT NULL
+    compressed_height INT NOT NULL,
+    blur_hash VARCHAR(255) NULL
 );
 
 CREATE TABLE product (

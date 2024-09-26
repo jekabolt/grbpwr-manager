@@ -110,6 +110,7 @@ type heroRaw struct {
 	Compressed       string    `db:"compressed"`
 	CompressedWidth  int       `db:"compressed_width"`
 	CompressedHeight int       `db:"compressed_height"`
+	BlurHash         string    `db:"blur_hash"`
 }
 
 func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
@@ -130,7 +131,8 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 			m.thumbnail_height,
 			m.compressed,
 			m.compressed_width,
-			m.compressed_height 
+			m.compressed_height,
+			m.blur_hash
 		FROM hero h 
 		INNER JOIN media m ON h.media_id = m.id
 	`
@@ -157,6 +159,7 @@ func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 				CompressedMediaURL: h.Compressed,
 				CompressedWidth:    h.CompressedWidth,
 				CompressedHeight:   h.CompressedHeight,
+				BlurHash:           h.BlurHash,
 			},
 		}
 
@@ -208,7 +211,8 @@ func getHeroProducts(ctx context.Context, rep dependency.Repository) ([]entity.P
 			m.thumbnail_height,
 			m.compressed,
 			m.compressed_width,
-			m.compressed_height
+			m.compressed_height,
+			m.blur_hash
 		FROM 
 			product p
 		JOIN 

@@ -100,6 +100,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		validItem := entity.OrderItem{
 			OrderItemInsert: item,
 			Thumbnail:       prd.ThumbnailMediaURL,
+			BlurHash:        prd.BlurHash,
 			ProductName:     prd.Name,
 			ProductBrand:    prd.Brand,
 			Color:           prd.Color,
@@ -667,6 +668,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			oi.product_sale_percentage,
 			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
+			m.blur_hash,
 			p.name AS product_name,
 			p.brand AS product_brand,
 			p.sku AS product_sku,

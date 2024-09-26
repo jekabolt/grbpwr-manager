@@ -56,6 +56,7 @@ type OrderItem struct {
 	Id           int        `db:"id"`
 	OrderId      int        `db:"order_id"`
 	Thumbnail    string     `db:"thumbnail"`
+	BlurHash     string     `db:"blur_hash"`
 	ProductName  string     `db:"product_name"`
 	ProductBrand string     `db:"product_brand"`
 	Color        string     `db:"color"`
