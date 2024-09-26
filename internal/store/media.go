@@ -23,11 +23,11 @@ func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaItem) (in
 	query := `INSERT INTO media (
 		full_size, full_size_width, full_size_height,
 		compressed, compressed_width, compressed_height,
-		thumbnail, thumbnail_width, thumbnail_height
+		thumbnail, thumbnail_width, thumbnail_height, blur_hash
 	) VALUES (
 		:fullSize, :fullSizeWidth, :fullSizeHeight,
 		:compressed, :compressedWidth, :compressedHeight,
-		:thumbnail, :thumbnailWidth, :thumbnailHeight
+		:thumbnail, :thumbnailWidth, :thumbnailHeight, :blurHash
 	);`
 	id, err := ExecNamedLastId(ctx, ms.DB(), query, map[string]any{
 		"fullSize":         media.FullSizeMediaURL,
@@ -39,6 +39,7 @@ func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaItem) (in
 		"thumbnail":        media.ThumbnailMediaURL,
 		"thumbnailWidth":   media.ThumbnailWidth,
 		"thumbnailHeight":  media.ThumbnailHeight,
+		"blurHash":         media.BlurHash,
 	})
 	if err != nil {
 		return id, fmt.Errorf("failed to add media: %w", err)

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"log"
+	"math"
 	"strings"
 
+	"github.com/bbrks/go-blurhash"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/minio/minio-go/v7"
@@ -124,9 +127,14 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
 	}
 
-	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 10), 90, folder, thumbnailName)
+	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
+	}
+
+	h, err := getBlurHash(img)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get blurhash: %v", err)
 	}
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
@@ -139,6 +147,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		ThumbnailMediaURL:  imgObj.Thumbnail.MediaUrl,
 		ThumbnailWidth:     int(imgObj.Thumbnail.Width),
 		ThumbnailHeight:    int(imgObj.Thumbnail.Height),
+		BlurHash:           h,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add media to db: %v", err)
@@ -148,6 +157,29 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		Id:    int32(mediaId),
 		Media: imgObj,
 	}, nil
+}
+
+func getBlurHash(img image.Image) (string, error) {
+	// Get the image dimensions
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+
+	// Set a base component size (tune this based on the level of detail you want)
+	baseComponent := 4
+
+	// Calculate componentsX and componentsY to match the image aspect ratio
+	aspectRatio := float64(width) / float64(height)
+	componentsX := int(math.Max(1, float64(baseComponent)*aspectRatio))
+	componentsY := int(math.Max(1, float64(baseComponent)/aspectRatio))
+
+	// Encode the image to a BlurHash
+	hash, err := blurhash.Encode(componentsX, componentsY, img)
+	if err != nil {
+		log.Fatalf("Failed to encode image to BlurHash: %v", err)
+	}
+
+	return hash, nil
+
 }
 
 // resizeImage checks the height of the given image. If it's greater than minWidth in px,

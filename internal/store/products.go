@@ -401,7 +401,8 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		m.thumbnail_height,
 		m.compressed,
 		m.compressed_width,
-		m.compressed_height
+		m.compressed_height,
+		m.blur_hash
 	FROM 
 		product p
 	JOIN 
@@ -487,7 +488,8 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 			m.thumbnail_height,
 			m.compressed,
 			m.compressed_width,
-			m.compressed_height
+			m.compressed_height,
+			m.blur_hash
 		FROM 
 			product p
 		JOIN 
@@ -550,7 +552,8 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 			m.thumbnail_height,
 			m.compressed,
 			m.compressed_width,
-			m.compressed_height
+			m.compressed_height,
+			m.blur_hash
 		FROM media m
 		INNER JOIN product_media pm ON m.id = pm.media_id
 		WHERE pm.product_id = :id;
@@ -763,7 +766,8 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			m.thumbnail_height,
 			m.compressed,
 			m.compressed_width,
-			m.compressed_height
+			m.compressed_height,
+			m.blur_hash
 		FROM 
 			product p
 		JOIN 

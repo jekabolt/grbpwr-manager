@@ -22,6 +22,8 @@ message MediaItem {
   MediaInfo thumbnail = 2;
   // Compressed media URL
   MediaInfo compressed = 3;
+  // BlurHash
+  string blurhash = 4;
 }
 
 message MediaInfo {

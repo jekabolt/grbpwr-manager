@@ -36,6 +36,7 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 			Width:    int32(eMedia.CompressedWidth),
 			Height:   int32(eMedia.CompressedHeight),
 		},
+		Blurhash: eMedia.BlurHash,
 	}
 
 	return &pb_common.MediaFull{
@@ -65,5 +66,6 @@ func convertPbMediaItemToEntity(m *pb_common.MediaItem) entity.MediaItem {
 		CompressedMediaURL: m.Compressed.MediaUrl,
 		CompressedWidth:    int(m.Compressed.Width),
 		CompressedHeight:   int(m.Compressed.Height),
+		BlurHash:           m.Blurhash,
 	}
 }

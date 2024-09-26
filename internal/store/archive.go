@@ -160,7 +160,8 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 					'thumbnail_height', m.thumbnail_height,
 					'compressed', m.compressed,
 					'compressed_width', m.compressed_width,
-					'compressed_height', m.compressed_height
+					'compressed_height', m.compressed_height,
+					'blur_hash', m.blur_hash
 				),
 				'url', ai.url,
 				'name', ai.name,
