@@ -329,17 +329,7 @@ CREATE TABLE archive_item (
 CREATE TABLE hero (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    media_id INT NOT NULL,
-    explore_link VARCHAR(255),
-    explore_text VARCHAR(255),
-    main BOOLEAN DEFAULT FALSE NOT NULL,
-    FOREIGN KEY (media_id) REFERENCES media(id)
-);
-
-CREATE TABLE hero_product (
-    product_id INT NOT NULL,
-    sequence_number INT NOT NULL DEFAULT 0,
-    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
+    data JSON NOT NULL
 );
 
 

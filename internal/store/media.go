@@ -47,6 +47,17 @@ func (ms *MYSQLStore) AddMedia(ctx context.Context, media *entity.MediaItem) (in
 	return id, nil
 }
 
+func (ms *MYSQLStore) GetMediaById(ctx context.Context, id int) (*entity.MediaFull, error) {
+	query := `SELECT * FROM media WHERE id = :id`
+	media, err := QueryNamedOne[entity.MediaFull](ctx, ms.DB(), query, map[string]any{
+		"id": id,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get media: %w", err)
+	}
+	return &media, nil
+}
+
 func (ms *MYSQLStore) DeleteMediaById(ctx context.Context, id int) error {
 	query := `DELETE FROM media WHERE id = :id`
 	err := ExecNamed(ctx, ms.DB(), query, map[string]any{

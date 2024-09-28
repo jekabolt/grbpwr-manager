@@ -365,8 +365,7 @@ message CancelOrderResponse {}
 // HERO MANAGER
 
 message AddHeroRequest {
-  repeated common.HeroItemInsert ads = 1;
-  repeated int32 product_ids = 3;
+  common.HeroFullInsert hero = 1;
 }
 
 message AddHeroResponse {}

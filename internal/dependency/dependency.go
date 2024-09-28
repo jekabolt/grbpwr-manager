@@ -28,6 +28,8 @@ type (
 		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
+		// GetProductsByIds returns a list of products by their IDs.
+		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByName returns a product by its name if it is not hidden.
@@ -42,7 +44,7 @@ type (
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 	}
 	Hero interface {
-		SetHero(ctx context.Context, ads []entity.HeroInsert, productIds []int) error
+		SetHero(ctx context.Context, hei []entity.HeroEntityInsert) error
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}
 
@@ -121,6 +123,7 @@ type (
 	}
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
+		GetMediaById(ctx context.Context, id int) (*entity.MediaFull, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 	}
