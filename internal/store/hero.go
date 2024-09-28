@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -23,224 +24,166 @@ func (ms *MYSQLStore) Hero() dependency.Hero {
 	}
 }
 
-func (ms *MYSQLStore) SetHero(ctx context.Context, ads []entity.HeroInsert, productIds []int) error {
-
-	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `DELETE FROM hero`
-		_, err := rep.DB().ExecContext(ctx, query)
+func (hs *heroStore) SetHero(ctx context.Context, heroInsert []entity.HeroEntityInsert) error {
+	return hs.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Delete existing hero data
+		err := deleteExistingHeroData(ctx, rep)
 		if err != nil {
-			return fmt.Errorf("failed to delete hero: %w", err)
+			return fmt.Errorf("failed to delete hero data: %w", err)
 		}
 
-		query = `DELETE FROM hero_product`
-		_, err = rep.DB().ExecContext(ctx, query)
+		entities, err := buildHeroData(ctx, rep, heroInsert)
 		if err != nil {
-			return fmt.Errorf("failed to delete hero products: %w", err)
+			return fmt.Errorf("failed to build hero data: %w", err)
 		}
 
-		err = insertHeroProducts(ctx, rep, productIds)
-		if err != nil {
-			return fmt.Errorf("failed to add hero products: %w", err)
+		if err := insertHeroData(ctx, rep, entities); err != nil {
+			return fmt.Errorf("failed to insert hero data: %w", err)
 		}
 
-		err = insertHero(ctx, rep, ads)
-		if err != nil {
-			return fmt.Errorf("failed to add hero ads: %w", err)
-		}
-
+		// Update cache
 		hero, err := rep.Hero().GetHero(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get hero: %w", err)
 		}
-
 		cache.UpdateHero(hero)
 
 		return nil
-
 	})
+}
+
+func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
+	query := `SELECT data FROM hero`
+
+	type hero struct {
+		Id        int       `db:"id"`
+		CreatedAt time.Time `db:"created_at"`
+		Data      []byte    `db:"data"`
+	}
+
+	heroRaw, err := QueryNamedOne[hero](ctx, hs.DB(), query, nil)
 	if err != nil {
-		return fmt.Errorf("failed to add hero: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &entity.HeroFull{}, nil
+		}
+		return nil, fmt.Errorf("failed to get hero: %w", err)
+	}
+	heroFull := entity.HeroFull{}
+	err = json.Unmarshal(heroRaw.Data, &heroFull)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal hero data: %w", err)
+	}
+
+	return &heroFull, nil
+}
+
+func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) error {
+	query := `DELETE FROM hero`
+	_, err := rep.DB().ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to delete hero data: %w", err)
 	}
 
 	return nil
 }
 
-func insertHeroProducts(ctx context.Context, rep dependency.Repository, productIds []int) error {
-	rows := make([]map[string]any, 0, len(productIds))
-	for i, productId := range productIds {
-		row := map[string]any{
-			"product_id":      productId,
-			"sequence_number": i,
+func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts []entity.HeroEntityInsert) ([]entity.HeroEntity, error) {
+
+	entities := make([]entity.HeroEntity, 0, len(heroInserts))
+	for n, e := range heroInserts {
+		switch e.Type {
+		case entity.HeroTypeFeaturedProducts:
+			if len(e.FeaturedProducts.ProductIDs) == 0 {
+				continue
+			}
+			products, err := rep.Products().GetProductsByIds(ctx, e.FeaturedProducts.ProductIDs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get products by ids: %w", err)
+			}
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				FeaturedProducts: &entity.HeroFeaturedProducts{
+					Products:    products,
+					Title:       e.FeaturedProducts.Title,
+					ExploreText: e.FeaturedProducts.ExploreText,
+					ExploreLink: e.FeaturedProducts.ExploreLink,
+				},
+			})
+		case entity.HeroTypeMainAdd:
+			// main add should be only on first position
+			if n != 0 {
+				continue
+			}
+			media, err := rep.Media().GetMediaById(ctx, e.MainAdd.SingleAdd.MediaId)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get media by id: %w", err)
+			}
+
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				MainAdd: &entity.HeroMainAdd{
+					SingleAdd: entity.HeroSingleAdd{
+						Media:       *media,
+						ExploreLink: e.MainAdd.SingleAdd.ExploreLink,
+						ExploreText: e.MainAdd.SingleAdd.ExploreText,
+					},
+				},
+			})
+		case entity.HeroTypeSingleAdd:
+			media, err := rep.Media().GetMediaById(ctx, e.SingleAdd.MediaId)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get media by id: %w", err)
+			}
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				SingleAdd: &entity.HeroSingleAdd{
+					Media:       *media,
+					ExploreLink: e.SingleAdd.ExploreLink,
+					ExploreText: e.SingleAdd.ExploreText,
+				},
+			})
+		case entity.HeroTypeDoubleAdd:
+			leftMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Left.MediaId)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get media by id: %w", err)
+			}
+			rightMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Right.MediaId)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get media by id: %w", err)
+			}
+
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				DoubleAdd: &entity.HeroDoubleAdd{
+					Left: entity.HeroSingleAdd{
+						Media:       *leftMedia,
+						ExploreLink: e.DoubleAdd.Left.ExploreLink,
+						ExploreText: e.DoubleAdd.Left.ExploreText,
+					},
+					Right: entity.HeroSingleAdd{
+						Media:       *rightMedia,
+						ExploreLink: e.DoubleAdd.Right.ExploreLink,
+						ExploreText: e.DoubleAdd.Right.ExploreText,
+					},
+				},
+			})
 		}
-		rows = append(rows, row)
 	}
 
-	return BulkInsert(ctx, rep.DB(), "hero_product", rows)
+	return entities, nil
 }
 
-func insertHero(ctx context.Context, rep dependency.Repository, ads []entity.HeroInsert) error {
-	rows := make([]map[string]any, 0, len(ads))
-	for _, ad := range ads {
-		row := map[string]any{
-			"media_id":     ad.MediaId,
-			"explore_link": ad.ExploreLink,
-			"explore_text": ad.ExploreText,
-			"main":         ad.IsMain,
-		}
-		rows = append(rows, row)
-	}
-
-	return BulkInsert(ctx, rep.DB(), "hero", rows)
-}
-
-type heroRaw struct {
-	Id               int       `db:"id"`
-	CreatedAt        time.Time `db:"created_at"`
-	ExploreLink      string    `db:"explore_link"`
-	ExploreText      string    `db:"explore_text"`
-	IsMain           bool      `db:"main"`
-	MediaId          int       `db:"media_id"`
-	MediaCreatedAt   time.Time `db:"media_created_at"`
-	FullSize         string    `db:"full_size"`
-	FullSizeWidth    int       `db:"full_size_width"`
-	FullSizeHeight   int       `db:"full_size_height"`
-	Thumbnail        string    `db:"thumbnail"`
-	ThumbnailWidth   int       `db:"thumbnail_width"`
-	ThumbnailHeight  int       `db:"thumbnail_height"`
-	Compressed       string    `db:"compressed"`
-	CompressedWidth  int       `db:"compressed_width"`
-	CompressedHeight int       `db:"compressed_height"`
-	BlurHash         string    `db:"blur_hash"`
-}
-
-func (ms *MYSQLStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
-	query := `
-		SELECT
-			h.id,
-			h.created_at,
-			h.explore_link,
-			h.explore_text,
-			h.main,
-			m.id as media_id,
-			m.created_at as media_created_at,
-			m.full_size,
-			m.full_size_width,
-			m.full_size_height,
-			m.thumbnail,
-			m.thumbnail_width,
-			m.thumbnail_height,
-			m.compressed,
-			m.compressed_width,
-			m.compressed_height,
-			m.blur_hash
-		FROM hero h 
-		INNER JOIN media m ON h.media_id = m.id
-	`
-
-	heroList, err := QueryListNamed[heroRaw](ctx, ms.db, query, map[string]any{})
+func insertHeroData(ctx context.Context, rep dependency.Repository, entities []entity.HeroEntity) error {
+	jsonData, err := json.Marshal(entity.HeroFull{Entities: entities})
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("failed to query hero: %w", err)
-		}
+		return fmt.Errorf("failed to marshal hero data: %w", err)
 	}
-	hf := &entity.HeroFull{}
-
-	for _, h := range heroList {
-		media := &entity.MediaFull{
-			Id:        h.MediaId,
-			CreatedAt: h.MediaCreatedAt,
-			MediaItem: entity.MediaItem{
-				FullSizeMediaURL:   h.FullSize,
-				FullSizeWidth:      h.FullSizeWidth,
-				FullSizeHeight:     h.FullSizeHeight,
-				ThumbnailMediaURL:  h.Thumbnail,
-				ThumbnailWidth:     h.ThumbnailWidth,
-				ThumbnailHeight:    h.ThumbnailHeight,
-				CompressedMediaURL: h.Compressed,
-				CompressedWidth:    h.CompressedWidth,
-				CompressedHeight:   h.CompressedHeight,
-				BlurHash:           h.BlurHash,
-			},
-		}
-
-		hi := &entity.HeroItem{
-			Media:       media,
-			ExploreLink: h.ExploreLink,
-			ExploreText: h.ExploreText,
-			IsMain:      h.IsMain,
-		}
-		hf.Ads = append(hf.Ads, *hi)
-	}
-
-	hf.ProductsFeatured, err = getHeroProducts(ctx, ms)
+	query := `INSERT INTO hero (data) VALUES (:data)`
+	_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
+		"data": jsonData,
+	})
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("failed to get hero products: %w", err)
-		}
+		return fmt.Errorf("failed to insert hero data: %w", err)
 	}
-	return hf, nil
-}
-
-func getHeroProducts(ctx context.Context, rep dependency.Repository) ([]entity.Product, error) {
-	// Query to get the associated products
-	query := `
-		SELECT 
-			p.id,
-			p.created_at,
-			p.updated_at,
-			p.preorder,
-			p.name,
-			p.brand,
-			p.sku,
-			p.color,
-			p.color_hex,
-			p.country_of_origin,
-			p.price,
-			p.sale_percentage,
-			p.category_id,
-			p.description,
-			p.hidden,
-			p.target_gender,
-			m.id AS thumbnail_id,
-			m.created_at AS thumbnail_created_at, 
-			m.full_size,
-			m.full_size_width,
-			m.full_size_height,
-			m.thumbnail,
-			m.thumbnail_width,
-			m.thumbnail_height,
-			m.compressed,
-			m.compressed_width,
-			m.compressed_height,
-			m.blur_hash
-		FROM 
-			product p
-		JOIN 
-			media m
-		ON 
-			p.thumbnail_id = m.id 
-		INNER JOIN 
-			hero_product AS hp ON p.id = hp.product_id`
-
-	type product struct {
-		entity.Product
-		ThumbnailID int       `db:"thumbnail_id"`
-		CreatedAt   time.Time `db:"thumbnail_created_at"`
-	}
-
-	prds, err := QueryListNamed[product](ctx, rep.DB(), query, map[string]any{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to query hero products: %w", err)
-	}
-	products := make([]entity.Product, 0, len(prds))
-
-	for _, p := range prds {
-		prd := p.Product
-		prd.MediaFull.Id = p.ThumbnailID
-		prd.MediaFull.CreatedAt = p.CreatedAt
-
-		products = append(products, prd)
-	}
-
-	return products, nil
+	return nil
 }

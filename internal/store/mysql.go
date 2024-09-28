@@ -60,7 +60,7 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("can't get dictionary info: %w", err)
 	}
 
-	hf, err := ss.GetHero(ctx)
+	hf, err := ss.Hero().GetHero(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("can't get hero: %w", err)
 	}

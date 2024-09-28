@@ -4,27 +4,81 @@ package common;
 
 import "common/media.proto";
 import "common/product.proto";
-import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-message HeroItemInsert {
-  int32 media_id = 1;
-  string explore_link = 2;
-  string explore_text = 3;
-  bool is_main = 4;
+message HeroFull {
+  repeated HeroEntity entities = 1;
 }
 
-message HeroItem {
+message HeroFullInsert {
+  repeated HeroEntityInsert entities = 1;
+}
+
+enum HeroType {
+  HERO_TYPE_UNKNOWN = 0;
+  HERO_TYPE_SINGLE_ADD = 1;
+  HERO_TYPE_DOUBLE_ADD = 2;
+  HERO_TYPE_MAIN_ADD = 3;
+  HERO_TYPE_FEATURED_PRODUCTS = 4;
+}
+
+message HeroEntity {
+  HeroType type = 1;
+  HeroSingleAdd single_add = 2;
+  HeroDoubleAdd double_add = 3;
+  HeroMainAdd main_add = 4;
+  HeroFeaturedProducts featured_products = 5;
+}
+
+message HeroEntityInsert {
+  HeroType type = 1;
+  HeroSingleAddInsert single_add = 2;
+  HeroDoubleAddInsert double_add = 3;
+  HeroMainAddInsert main_add = 4;
+  HeroFeaturedProductsInsert featured_products = 5;
+}
+
+message HeroSingleAdd {
   common.MediaFull media = 1;
   string explore_link = 2;
   string explore_text = 3;
-  bool is_main = 4;
 }
 
-message HeroFull {
-  int32 id = 1;
-  google.protobuf.Timestamp created_at = 2;
-  repeated HeroItem ads = 4;
-  repeated common.Product products_featured = 5;
+message HeroDoubleAdd {
+  HeroSingleAdd left = 1;
+  HeroSingleAdd right = 2;
+}
+
+message HeroMainAdd {
+  HeroSingleAdd single_add = 1;
+}
+
+message HeroFeaturedProducts {
+  repeated common.Product products = 1;
+  string title = 2;
+  string explore_text = 3;
+  string explore_link = 4;
+}
+
+message HeroFeaturedProductsInsert {
+  repeated int32 product_ids = 1;
+  string title = 2;
+  string explore_text = 3;
+  string explore_link = 4;
+}
+
+message HeroSingleAddInsert {
+  int32 media_id = 1;
+  string explore_link = 2;
+  string explore_text = 3;
+}
+
+message HeroDoubleAddInsert {
+  HeroSingleAddInsert left = 1;
+  HeroSingleAddInsert right = 2;
+}
+
+message HeroMainAddInsert {
+  HeroSingleAddInsert single_add = 1;
 }

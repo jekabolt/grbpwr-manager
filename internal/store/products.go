@@ -373,6 +373,19 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	return prds, count, nil
 }
 
+func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error) {
+	query := `
+	SELECT * FROM product WHERE id IN (:ids)
+	`
+	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
+		"ids": ids,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get products by ids: %w", err)
+	}
+	return prds, nil
+}
+
 // buildQuery refactored to use named parameters and to include limit and offset
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
 	baseQuery := `
