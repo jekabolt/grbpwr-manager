@@ -116,7 +116,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 }
 
 // compareItems return true if items are equal
-func compareItems(items, validItems []entity.OrderItemInsert) bool {
+func compareItems(items, validItems []entity.OrderItemInsert, onlyQuantity bool) bool {
 	// Sort both slices
 	sort.Sort(entity.OrderItemsByProductId(items))
 	sort.Sort(entity.OrderItemsByProductId(validItems))
@@ -128,13 +128,22 @@ func compareItems(items, validItems []entity.OrderItemInsert) bool {
 
 	// Compare each element
 	for i := range items {
-		// Compare all fields of OrderItemInsert
-		if items[i].ProductId != validItems[i].ProductId ||
-			items[i].ProductPriceDecimal().Cmp(validItems[i].ProductPriceDecimal()) != 0 ||
-			items[i].ProductSalePercentageDecimal().Cmp(validItems[i].ProductSalePercentageDecimal()) != 0 ||
-			items[i].QuantityDecimal().Cmp(validItems[i].QuantityDecimal()) != 0 ||
-			items[i].SizeId != validItems[i].SizeId {
-			return false
+		if onlyQuantity {
+			// Compare only ProductId, SizeId, and Quantity
+			if items[i].ProductId != validItems[i].ProductId ||
+				items[i].SizeId != validItems[i].SizeId ||
+				items[i].QuantityDecimal().Cmp(validItems[i].QuantityDecimal()) != 0 {
+				return false
+			}
+		} else {
+			// Compare all fields of OrderItemInsert
+			if items[i].ProductId != validItems[i].ProductId ||
+				items[i].ProductPriceDecimal().Cmp(validItems[i].ProductPriceDecimal()) != 0 ||
+				items[i].ProductSalePercentageDecimal().Cmp(validItems[i].ProductSalePercentageDecimal()) != 0 ||
+				items[i].QuantityDecimal().Cmp(validItems[i].QuantityDecimal()) != 0 ||
+				items[i].SizeId != validItems[i].SizeId {
+				return false
+			}
 		}
 	}
 	return true
@@ -413,11 +422,15 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 		return nil, fmt.Errorf("no order items to insert")
 	}
 
-	// Merge order items by product id and size id
-	items = mergeOrderItems(items)
+	// Make a copy of the original items to avoid modifying the input slice
+	copiedItems := make([]entity.OrderItemInsert, len(items))
+	copy(copiedItems, items)
 
-	// Validate order items
-	validItems, err := ms.validateOrderItemsInsert(ctx, items)
+	// Merge order items by product id and size id on the copied items
+	mergedItems := mergeOrderItems(copiedItems)
+
+	// Validate the merged order items
+	validItems, err := ms.validateOrderItemsInsert(ctx, mergedItems)
 	if err != nil {
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
@@ -442,11 +455,11 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 		return nil, fmt.Errorf("total amount is zero")
 	}
 
-	// Compare the original and valid items and return the validation result
+	// Compare the original (copied) and valid items and return the validation result
 	return &entity.OrderItemValidation{
 		ValidItems: validItems,
 		Subtotal:   total.Round(2),
-		HasChanged: !compareItems(items, validItemsInsert),
+		HasChanged: !compareItems(copiedItems, validItemsInsert, true),
 	}, nil
 }
 
@@ -488,7 +501,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
 		// If the validated items differ from the original items, update them
-		if !compareItems(items, validItemsInsert) {
+		if !compareItems(items, validItemsInsert, false) {
 			// Update the order items
 			if err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.Id); err != nil {
 				return fmt.Errorf("error while updating order items: %w", err)
@@ -990,7 +1003,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		}
 
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
-		if !compareItems(items, validItemsInsert) {
+		if !compareItems(items, validItemsInsert, false) {
 			if err := updateOrderItems(ctx, rep, validItemsInsert, orderFull.Order.Id); err != nil {
 				return fmt.Errorf("error updating order items: %w", err)
 			}

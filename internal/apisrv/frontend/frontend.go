@@ -259,6 +259,10 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
+	slog.Default().Info("items to insert",
+		"items", itemsToInsert,
+	)
+
 	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order items insert",
