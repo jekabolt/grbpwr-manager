@@ -374,9 +374,8 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 }
 
 func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error) {
-	query := `
-	SELECT * FROM product WHERE id IN (:ids)
-	`
+	query, _ := buildQuery([]entity.SortFactor{}, entity.OrderFactor(""), []string{}, 10000, 0)
+
 	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
 		"ids": ids,
 	})
