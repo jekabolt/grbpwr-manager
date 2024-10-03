@@ -213,7 +213,7 @@ type Product struct {
 
 type ProductInsert struct {
 	ProductBody
-	ThumbnailMediaID int `db:"thumbnail_media_id"`
+	ThumbnailMediaID int `db:"thumbnail_id"`
 }
 
 type ProductDisplay struct {
