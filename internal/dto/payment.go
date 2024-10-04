@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -45,9 +46,13 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 	if p == nil {
 		return nil, fmt.Errorf("empty entity.PaymentInsert")
 	}
+	pm, ok := cache.GetPaymentMethodById(p.PaymentMethodID)
+	if !ok {
+		return nil, fmt.Errorf("payment method not found")
+	}
 
 	return &pb_common.PaymentInsert{
-		PaymentMethod:                    pb_common.PaymentMethodNameEnum(p.PaymentMethodID),
+		PaymentMethod:                    pm.PB,
 		TransactionId:                    p.TransactionID.String,
 		TransactionAmount:                &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
 		TransactionAmountPaymentCurrency: &pb_decimal.Decimal{Value: p.TransactionAmountPaymentCurrency.String()},

@@ -1612,6 +1612,8 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 	if err != nil {
 		return nil, fmt.Errorf("can't fetch order info: %w", err)
 	}
+
+	slog.Default().DebugContext(ctx, "order full", slog.Any("order", ofs[0].Payment.PaymentMethodID))
 	if len(ofs) == 0 {
 		return nil, fmt.Errorf("order is not found")
 	}
