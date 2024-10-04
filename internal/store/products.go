@@ -374,7 +374,28 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 }
 
 func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error) {
-	query, _ := buildQuery([]entity.SortFactor{}, entity.OrderFactor(""), []string{}, 10000, 0)
+	if len(ids) == 0 {
+		return []entity.Product{}, nil
+	}
+
+	query := `
+	SELECT 
+		p.*,
+		m.full_size,
+		m.full_size_width,
+		m.full_size_height,
+		m.thumbnail,
+		m.thumbnail_width,
+		m.thumbnail_height,
+		m.compressed,
+		m.compressed_width,
+		m.compressed_height,
+		m.blur_hash
+	FROM 
+		product p
+	JOIN 
+		media m ON p.thumbnail_id = m.id 
+	WHERE p.id IN (:ids)`
 
 	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
 		"ids": ids,
@@ -382,6 +403,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 	if err != nil {
 		return nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
+
 	return prds, nil
 }
 
@@ -389,22 +411,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
 	baseQuery := `
 	SELECT 
-		p.id,
-		p.created_at,
-		p.updated_at,
-		p.preorder,
-		p.name,
-		p.brand,
-		p.sku,
-		p.color,
-		p.color_hex,
-		p.country_of_origin,
-		p.price,
-		p.sale_percentage,
-		p.category_id,
-		p.description,
-		p.hidden,
-		p.target_gender,
+		p.*,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,

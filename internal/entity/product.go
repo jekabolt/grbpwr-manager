@@ -219,6 +219,7 @@ type ProductInsert struct {
 type ProductDisplay struct {
 	ProductBody
 	MediaFull
+	ThumbnailMediaID int `db:"thumbnail_id"`
 }
 
 type ProductMeasurementUpdate struct {
