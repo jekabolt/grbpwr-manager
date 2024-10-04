@@ -1219,7 +1219,7 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 
 func getBuyerById(ctx context.Context, rep dependency.Repository, orderId int) (*entity.Buyer, error) {
 	query := `
-	SELECT * FROM buyer WHERE order_id = :buyerId`
+	SELECT * FROM buyer WHERE order_id = :orderId`
 	buyer, err := QueryNamedOne[entity.Buyer](ctx, rep.DB(), query, map[string]interface{}{
 		"orderId": orderId,
 	})
@@ -1612,8 +1612,6 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 	if err != nil {
 		return nil, fmt.Errorf("can't fetch order info: %w", err)
 	}
-
-	slog.Default().DebugContext(ctx, "order full", slog.Any("order", ofs[0].Payment.PaymentMethodID))
 	if len(ofs) == 0 {
 		return nil, fmt.Errorf("order is not found")
 	}
