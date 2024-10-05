@@ -815,32 +815,6 @@ func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.
 	return getOrderByUUID(ctx, ms, uuid)
 }
 
-func (ms *MYSQLStore) CheckPaymentPendingByUUID(ctx context.Context, uuid string) (*entity.Payment, *entity.Order, error) {
-	order, err := ms.GetOrderByUUID(ctx, uuid)
-	if err != nil {
-		return nil, order, fmt.Errorf("can't get order by uuid: %w", err)
-	}
-
-	os, ok := cache.GetOrderStatusById(order.OrderStatusId)
-	if !ok {
-		return nil, order, fmt.Errorf("order status is not exists by id: %d", order.OrderStatusId)
-	}
-
-	if os.Status.Name != entity.AwaitingPayment {
-		return nil, order, fmt.Errorf("bad order status for checking payment pending must be awaiting payment got: %s", os.Status.Name)
-	}
-
-	p, err := ms.GetPaymentByOrderUUID(ctx, order.UUID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get payment by order id",
-			slog.String("err", err.Error()),
-		)
-		return nil, order, fmt.Errorf("can't get payment by order id: %w", err)
-	}
-
-	return p, order, nil
-}
-
 func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
 	query := `UPDATE customer_order SET order_status_id = :orderStatusId WHERE id = :orderId`
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{

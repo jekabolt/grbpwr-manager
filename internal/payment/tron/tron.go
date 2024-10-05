@@ -273,7 +273,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, paymen
 				slog.String("orderUUID", orderUUID),
 				slog.Any("payment", payment),
 			)
-			payment, err = p.CheckForTransactions(ctx, orderUUID, payment)
+			payment, err = p.CheckForTransactions(ctx, orderUUID, *payment)
 			if err != nil {
 				slog.Default().ErrorContext(ctx, "error during transaction check",
 					slog.String("err", err.Error()),
@@ -318,7 +318,7 @@ func (p *Processor) CancelMonitorPayment(orderUUID string) error {
 	return fmt.Errorf("no monitoring process found for order ID: %s", orderUUID)
 }
 
-func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error) {
+func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error) {
 	transactions, err := p.tg.GetAddressTransactions(payment.Payee.String)
 	if err != nil {
 		return nil, fmt.Errorf("can't get address transactions: %w", err)
@@ -394,7 +394,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 				}
 
 				payment.IsTransactionDone = true
-				payment, err = p.rep.Order().OrderPaymentDone(ctx, orderUUID, payment)
+				updatedPayment, err := p.rep.Order().OrderPaymentDone(ctx, orderUUID, &payment)
 				if err != nil {
 					if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 						if mysqlErr.Number == 1062 {
@@ -407,7 +407,8 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 				} else {
 					slog.Default().InfoContext(ctx, "Order marked as paid", slog.String("orderUUID", orderUUID))
 				}
-				err := p.freeAddress(orderUUID)
+				payment = *updatedPayment
+				err = p.freeAddress(orderUUID)
 				if err != nil {
 					return nil, fmt.Errorf("can't free address: %w", err)
 				}
@@ -423,12 +424,12 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 					return nil, fmt.Errorf("can't send order confirmation: %w", err)
 				}
 
-				return payment, nil // Exit as the payment is successfully processed.
+				return &payment, nil // Exit as the payment is successfully processed.
 			}
 		}
 	}
 
-	return payment, nil // Return nil if no suitable transaction was found.
+	return &payment, nil // Return nil if no suitable transaction was found.
 }
 
 func convertToBlockchainFormat(amount decimal.Decimal, decimals int) decimal.Decimal {

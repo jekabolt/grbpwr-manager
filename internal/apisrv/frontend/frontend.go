@@ -233,6 +233,49 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 		}
 		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
 	}
+
+	os, ok := cache.GetOrderStatusById(o.Order.OrderStatusId)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "can't get order status by id")
+	}
+
+	if os.Status.Name == entity.AwaitingPayment {
+		pm, ok := cache.GetPaymentMethodById(o.Payment.PaymentMethodID)
+		if !ok {
+			slog.Default().ErrorContext(ctx, "can't get payment method by id",
+				slog.Any("paymentMethodId", o.Payment.PaymentMethodID),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get payment method by id")
+		}
+
+		var checker dependency.Invoicer
+		switch pm.Method.Name {
+		case entity.USDT_TRON:
+			checker = s.usdtTron
+		case entity.USDT_TRON_TEST:
+			checker = s.usdtTronTestnet
+		case entity.CARD:
+			checker = s.stripePayment
+		case entity.CARD_TEST:
+			checker = s.stripePaymentTest
+		default:
+			slog.Default().ErrorContext(ctx, "payment method is not allowed",
+				slog.Any("paymentMethod", pm),
+			)
+			return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
+		}
+
+		payment, err := checker.CheckForTransactions(ctx, o.Order.UUID, o.Payment)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't check for transactions",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't check for transactions")
+		}
+
+		o.Payment = *payment
+	}
+
 	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
@@ -258,10 +301,6 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		}
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
-
-	slog.Default().Info("items to insert",
-		"items", itemsToInsert,
-	)
 
 	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
 	if err != nil {
@@ -425,63 +464,6 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	}
 
 	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
-}
-
-func (s *Server) CheckPayment(ctx context.Context, req *pb_frontend.CheckPaymentRequest) (*pb_frontend.CheckPaymentResponse, error) {
-
-	payment, order, err := s.repo.Order().CheckPaymentPendingByUUID(ctx, req.OrderUuid)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't check payment pending by uuid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't check payment pending by uuid")
-	}
-
-	pm, ok := cache.GetPaymentMethodById(payment.PaymentMethodID)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "can't get payment method by id",
-			slog.Any("paymentMethodId", payment.PaymentMethodID),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get payment method by id")
-	}
-
-	var checker dependency.Invoicer
-	switch pm.Method.Name {
-	case entity.USDT_TRON:
-		checker = s.usdtTron
-	case entity.USDT_TRON_TEST:
-		checker = s.usdtTronTestnet
-	case entity.CARD:
-		checker = s.stripePayment
-	case entity.CARD_TEST:
-		checker = s.stripePaymentTest
-	default:
-		slog.Default().ErrorContext(ctx, "payment method is not allowed",
-			slog.Any("paymentMethod", pm),
-		)
-		return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
-	}
-
-	payment, err = checker.CheckForTransactions(ctx, order.UUID, payment)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't check for transactions",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't check for transactions")
-	}
-
-	pbPayment, err := dto.ConvertEntityToPbPayment(*payment)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert entity payment to pb payment",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert entity payment to pb payment")
-	}
-
-	return &pb_frontend.CheckPaymentResponse{
-		Payment: pbPayment,
-	}, nil
-
 }
 
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
