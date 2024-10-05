@@ -853,7 +853,7 @@ func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId i
 	return nil
 }
 
-func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId int, payment *entity.PaymentInsert) error {
+func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId int, payment entity.PaymentInsert) error {
 	query := `
 	UPDATE payment 
 	SET transaction_amount = :transactionAmount,
@@ -866,7 +866,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		client_secret = :clientSecret
 	WHERE order_id = :orderId`
 
-	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+	params := map[string]any{
 		"transactionAmount":                payment.TransactionAmount,
 		"transactionAmountPaymentCurrency": payment.TransactionAmountPaymentCurrency,
 		"transactionId":                    payment.TransactionID,
@@ -876,11 +876,13 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"payee":                            payment.Payee,
 		"clientSecret":                     payment.ClientSecret,
 		"orderId":                          orderId,
-	})
-
-	if err != nil {
-		return err
 	}
+
+	_, err := rep.DB().NamedExecContext(ctx, query, params)
+	if err != nil {
+		return fmt.Errorf("failed to update payment: %w", err)
+	}
+
 	return nil
 }
 
@@ -1049,7 +1051,7 @@ func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Reposit
 		return fmt.Errorf("unsupported payment method: %s", pm.Name)
 	}
 
-	if err := updateOrderPayment(ctx, rep, orderFull.Order.Id, &orderFull.Payment.PaymentInsert); err != nil {
+	if err := updateOrderPayment(ctx, rep, orderFull.Order.Id, orderFull.Payment.PaymentInsert); err != nil {
 		return fmt.Errorf("cannot update order payment: %w", err)
 	}
 
@@ -1784,7 +1786,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 		}
 
 		// Prepare payment update to initial state
-		paymentUpdate := &entity.PaymentInsert{
+		paymentUpdate := entity.PaymentInsert{
 			PaymentMethodID:                  payment.PaymentMethodID,
 			TransactionID:                    sql.NullString{Valid: false},
 			TransactionAmount:                decimal.Zero,
@@ -1793,6 +1795,8 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 			Payee:                            sql.NullString{Valid: false},
 			IsTransactionDone:                false,
 		}
+
+		// TODO: check if payment is already done
 
 		// Update order payment
 		if err := updateOrderPayment(ctx, rep, order.Id, paymentUpdate); err != nil {
@@ -1845,7 +1849,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 
 		p.PaymentInsert.IsTransactionDone = true
 
-		err = updateOrderPayment(ctx, rep, p.Id, &p.PaymentInsert)
+		err = updateOrderPayment(ctx, rep, order.Id, p.PaymentInsert)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
