@@ -67,7 +67,7 @@ type (
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, orderUUID string) (*entity.Order, error)
-		CheckPaymentPendingByUUID(ctx context.Context, orderUUID string) (*entity.Payment, *entity.Order, error)
+		// CheckPaymentPendingByUUID(ctx context.Context, orderUUID string) (*entity.Payment, *entity.Order, error)
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
@@ -81,7 +81,7 @@ type (
 	Invoicer interface {
 		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
 		CancelMonitorPayment(orderUUID string) error
-		CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error)
+		CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error)
 	}
 
 	StripePayment interface {

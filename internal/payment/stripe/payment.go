@@ -114,7 +114,7 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 
 	switch pi.Status {
 	case stripe.PaymentIntentStatusSucceeded:
-		err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, payment)
+		err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment)
 		if err != nil {
 			return fmt.Errorf("can't update order as paid: %w", err)
 		}
@@ -131,11 +131,11 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 	return nil
 }
 
-func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Repository, orderUUID string, payment *entity.Payment) error {
+func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) error {
 	var err error
 
 	payment.IsTransactionDone = true
-	_, err = rep.Order().OrderPaymentDone(ctx, orderUUID, payment)
+	_, err = rep.Order().OrderPaymentDone(ctx, orderUUID, &payment)
 	if err != nil {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
 			if mysqlErr.Number == 1062 {
@@ -282,10 +282,10 @@ func (p *Processor) CancelMonitorPayment(orderUUID string) error {
 	return fmt.Errorf("no monitoring process found for order ID: %s", orderUUID)
 }
 
-func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, payment *entity.Payment) (*entity.Payment, error) {
+func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error) {
 
 	if payment.IsTransactionDone {
-		return payment, nil
+		return &payment, nil
 	}
 
 	o, err := p.rep.Order().GetOrderByUUID(ctx, orderUUID)
@@ -294,7 +294,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 	}
 
 	if o.OrderStatusId != cache.OrderStatusAwaitingPayment.Status.Id {
-		return payment, nil
+		return &payment, nil
 	}
 
 	pi, err := p.getPaymentIntent(payment.ClientSecret.String)
@@ -308,7 +308,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 		if err != nil {
 			return nil, fmt.Errorf("can't update order as paid: %w", err)
 		}
-		return payment, nil
+		return &payment, nil
 	default:
 		return nil, nil
 	}
