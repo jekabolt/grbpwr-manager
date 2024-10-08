@@ -404,7 +404,21 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		return nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
 
-	return prds, nil
+	// Create a map for quick lookup
+	prdMap := make(map[int]entity.Product)
+	for _, p := range prds {
+		prdMap[p.Id] = p
+	}
+
+	// Create the result slice in the order of input ids
+	result := make([]entity.Product, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := prdMap[id]; ok {
+			result = append(result, p)
+		}
+	}
+
+	return result, nil
 }
 
 // buildQuery refactored to use named parameters and to include limit and offset
