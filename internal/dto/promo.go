@@ -24,6 +24,7 @@ func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.P
 		FreeShipping: pbPromo.FreeShipping,
 		Discount:     discountDecimal,
 		Expiration:   pbPromo.Expiration.AsTime(),
+		Start:        pbPromo.Start.AsTime(),
 		Allowed:      pbPromo.Allowed,
 		Voucher:      pbPromo.Voucher,
 	}
@@ -50,6 +51,7 @@ func ConvertEntityPromoInsertToPb(entityPromo entity.PromoCodeInsert) *pb_common
 		FreeShipping: entityPromo.FreeShipping,
 		Discount:     &pb_decimal.Decimal{Value: discountStr},
 		Expiration:   timestamppb.New(entityPromo.Expiration),
+		Start:        timestamppb.New(entityPromo.Start),
 		Allowed:      entityPromo.Allowed,
 		Voucher:      entityPromo.Voucher,
 	}

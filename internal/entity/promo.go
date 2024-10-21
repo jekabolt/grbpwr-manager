@@ -13,7 +13,7 @@ type PromoCode struct {
 }
 
 func (pc *PromoCode) IsAllowed() bool {
-	return pc.Allowed && pc.Expiration.After(time.Now())
+	return pc.Allowed && pc.Expiration.After(time.Now()) && pc.Start.Before(time.Now())
 }
 
 func (pc *PromoCode) SubtotalWithPromo(subtotal, shippingPrice decimal.Decimal) decimal.Decimal {
@@ -32,6 +32,7 @@ type PromoCodeInsert struct {
 	FreeShipping bool            `db:"free_shipping"`
 	Discount     decimal.Decimal `db:"discount"`
 	Expiration   time.Time       `db:"expiration"`
+	Start        time.Time       `db:"start"`
 	Voucher      bool            `db:"voucher"`
 	Allowed      bool            `db:"allowed"`
 }

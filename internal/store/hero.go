@@ -99,7 +99,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 			products, err := rep.Products().GetProductsByIds(ctx, e.FeaturedProducts.ProductIDs)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get products by ids: %w", err)
-			}
+			}			
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
 				FeaturedProducts: &entity.HeroFeaturedProducts{
