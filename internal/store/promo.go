@@ -28,12 +28,13 @@ func startOfDay(t time.Time) time.Time {
 func (ms *MYSQLStore) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error {
 	expiration := startOfDay(promo.Expiration)
 	id, err := ExecNamedLastId(ctx, ms.DB(), `
-	INSERT INTO promo_code (code, free_shipping, discount, expiration, voucher, allowed) VALUES
-		(:code, :freeShipping, :discount, :expiration, :voucher, :allowed)`, map[string]any{
+	INSERT INTO promo_code (code, free_shipping, discount, expiration, start, voucher, allowed) VALUES
+		(:code, :freeShipping, :discount, :expiration, :start, :voucher, :allowed)`, map[string]any{
 		"code":         promo.Code,
 		"freeShipping": promo.FreeShipping,
 		"discount":     promo.Discount,
 		"expiration":   expiration,
+		"start":        promo.Start,
 		"voucher":      promo.Voucher,
 		"allowed":      promo.Allowed,
 	})

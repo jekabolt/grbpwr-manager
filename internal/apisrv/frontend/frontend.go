@@ -332,7 +332,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	}
 
 	totalSale := oiv.SubtotalDecimal()
-	if ok && promo.Allowed {
+	if ok && promo.IsAllowed() {
 		if !promo.Discount.Equals(decimal.Zero) {
 			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
 		}

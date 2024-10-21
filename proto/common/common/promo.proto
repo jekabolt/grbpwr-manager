@@ -13,8 +13,9 @@ message PromoCodeInsert {
   bool free_shipping = 2;
   google.type.Decimal discount = 3;
   google.protobuf.Timestamp expiration = 4;
-  bool allowed = 5;
-  bool voucher = 6;
+  google.protobuf.Timestamp start = 5;
+  bool allowed = 6;
+  bool voucher = 7;
 }
 
 // PromoCode represents the promo_code table

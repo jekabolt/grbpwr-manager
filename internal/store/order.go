@@ -1365,6 +1365,7 @@ func promosByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
         promo_code.free_shipping, 
         promo_code.discount, 
         promo_code.expiration, 
+		promo_code.start,
         promo_code.voucher, 
         promo_code.allowed
     FROM promo_code
@@ -1400,6 +1401,7 @@ func promosByOrderIds(ctx context.Context, rep dependency.Repository, orderIds [
 			&promo.FreeShipping,
 			&promo.Discount,
 			&promo.Expiration,
+			&promo.Start,
 			&promo.Voucher,
 			&promo.Allowed,
 		)
