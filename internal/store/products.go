@@ -317,12 +317,18 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 
 	// Handle filters
 	if filterConditions != nil {
-		if filterConditions.To.GreaterThan(decimal.Zero) && filterConditions.From.LessThanOrEqual(filterConditions.To) &&
-			filterConditions.From.GreaterThanOrEqual(decimal.Zero) {
+		if filterConditions.From.GreaterThan(decimal.Zero) {
+			// If priceTo is not set (0), set it to int32 max value
+			if filterConditions.To.Equal(decimal.Zero) {
+				filterConditions.To = decimal.NewFromInt(int64(^uint32(0) >> 1)) // int32 max value
+			}
 			whereClauses = append(whereClauses, "price BETWEEN :priceFrom AND :priceTo")
 			args["priceFrom"] = filterConditions.From
 			args["priceTo"] = filterConditions.To
-
+		} else if filterConditions.From.GreaterThan(decimal.Zero) {
+			// Ensure that if only From is set, we filter for prices greater than or equal to From
+			whereClauses = append(whereClauses, "price >= :priceFrom")
+			args["priceFrom"] = filterConditions.From
 		}
 		if filterConditions.OnSale {
 			whereClauses = append(whereClauses, "sale_percentage > 0")

@@ -175,6 +175,15 @@ var (
 		entity.USDT_TRON_TEST: &PaymentMethodUsdtTronTest,
 	}
 
+	paymentMethodIdByPbId = map[pb_common.PaymentMethodNameEnum]int{
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        PaymentMethodCard.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:   PaymentMethodCardTest.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         PaymentMethodEth.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST:    PaymentMethodEthTest.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   PaymentMethodUsdtTron.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: PaymentMethodUsdtTronTest.Method.Id,
+	}
+
 	// Sizes
 	SizeXXS = Size{Size: entity.Size{Name: entity.XXS}, PB: pb_common.SizeEnum_SIZE_ENUM_XXS}
 	SizeXS  = Size{Size: entity.Size{Name: entity.XS}, PB: pb_common.SizeEnum_SIZE_ENUM_XS}
@@ -519,4 +528,12 @@ func GetShipmentCarriers() []entity.ShipmentCarrier {
 		scs = append(scs, sc)
 	}
 	return scs
+}
+
+func GetPaymentMethodIdByPbId(pbId pb_common.PaymentMethodNameEnum) int {
+	id, ok := paymentMethodIdByPbId[pbId]
+	if !ok {
+		return 0
+	}
+	return id
 }
