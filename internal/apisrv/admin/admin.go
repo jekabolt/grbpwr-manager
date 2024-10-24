@@ -379,7 +379,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
 		req.Email,
 		int(req.Status),
-		int(req.PaymentMethod),
+		cache.GetPaymentMethodIdByPbId(req.PaymentMethod),
 		int(req.OrderId),
 		int(req.Limit),
 		int(req.Offset),
