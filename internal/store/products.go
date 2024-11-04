@@ -315,6 +315,35 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		args["isHidden"] = 0
 	}
 
+	// Handle price filtering
+	if filterConditions != nil {
+		if filterConditions.From.LessThan(decimal.Zero) {
+			return nil, 0, fmt.Errorf("price range cannot be negative")
+		}
+		if filterConditions.From.GreaterThan(filterConditions.To) && !filterConditions.To.Equals(decimal.Zero) {
+			return nil, 0, fmt.Errorf("invalid price range: from cannot be greater than to unless to is unset")
+		}
+
+		if filterConditions.From.IsZero() && filterConditions.To.GreaterThan(decimal.Zero) {
+			// Case 1: from = nil & to = x > 0
+			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) BETWEEN 0 AND :priceTo")
+			args["priceTo"] = filterConditions.To
+		} else if filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.IsZero() {
+			// Case 2: from = x > 0 & to = nil
+			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) >= :priceFrom")
+			args["priceFrom"] = filterConditions.From
+		} else if filterConditions.From.IsZero() && filterConditions.To.IsZero() {
+			// Case 3: from = nil & to = nil
+			// No additional filtering needed
+		} else if filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.GreaterThan(decimal.Zero) {
+			// Case 4: from > to
+			// This case is already handled above
+		} else if filterConditions.From.IsZero() && filterConditions.To.IsZero() {
+			// Case 5: from = 0 & to = 0
+			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) = 0")
+		}
+	}
+
 	// Handle filters
 	if filterConditions != nil {
 		if filterConditions.From.GreaterThan(decimal.Zero) {
@@ -374,6 +403,10 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	prds, err := QueryListNamed[entity.Product](ctx, ms.db, listQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get products: %w", err)
+	}
+
+	for _, p := range prds {
+		slog.Default().DebugContext(ctx, "product", slog.Any("price", p.Price))
 	}
 
 	return prds, count, nil
