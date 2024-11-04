@@ -405,9 +405,9 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		return nil, 0, fmt.Errorf("can't get products: %w", err)
 	}
 
-	for _, p := range prds {
-		slog.Default().DebugContext(ctx, "product", slog.Any("price", p.Price))
-	}
+	// for _, p := range prds {
+	// 	slog.Default().DebugContext(ctx, "product", slog.Any("price", p.Price))
+	// }
 
 	return prds, count, nil
 }
