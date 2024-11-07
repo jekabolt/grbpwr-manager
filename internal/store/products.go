@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +193,11 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		return prdId, fmt.Errorf("can't add product: %w", err)
 	}
 
+	err = ms.Hero().RefreshHero(ctx)
+	if err != nil {
+		return prdId, fmt.Errorf("can't refresh hero: %w", err)
+	}
+
 	return prdId, nil
 }
 
@@ -234,6 +238,11 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 	})
 	if err != nil {
 		return fmt.Errorf("can't add product: %w", err)
+	}
+
+	err = ms.Hero().RefreshHero(ctx)
+	if err != nil {
+		return fmt.Errorf("can't refresh hero: %w", err)
 	}
 
 	return nil
@@ -298,7 +307,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 //
 // GetProductsPaged rewritten to use go-namedParameterQuery
 func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error) {
-
+	// Validate sort factors
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
@@ -306,12 +315,13 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			}
 		}
 	}
+
 	var whereClauses []string
 	args := make(map[string]interface{})
 
 	// Handle hidden products
 	if !showHidden {
-		whereClauses = append(whereClauses, "hidden = :isHidden")
+		whereClauses = append(whereClauses, "p.hidden = :isHidden")
 		args["isHidden"] = 0
 	}
 
@@ -324,90 +334,74 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			return nil, 0, fmt.Errorf("invalid price range: from cannot be greater than to unless to is unset")
 		}
 
-		if filterConditions.From.IsZero() && filterConditions.To.GreaterThan(decimal.Zero) {
+		switch {
+		case filterConditions.From.IsZero() && filterConditions.To.GreaterThan(decimal.Zero):
 			// Case 1: from = nil & to = x > 0
-			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) BETWEEN 0 AND :priceTo")
+			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) BETWEEN 0 AND :priceTo")
 			args["priceTo"] = filterConditions.To
-		} else if filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.IsZero() {
+		case filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.IsZero():
 			// Case 2: from = x > 0 & to = nil
-			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) >= :priceFrom")
+			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) >= :priceFrom")
 			args["priceFrom"] = filterConditions.From
-		} else if filterConditions.From.IsZero() && filterConditions.To.IsZero() {
+		case filterConditions.From.IsZero() && filterConditions.To.IsZero():
 			// Case 3: from = nil & to = nil
 			// No additional filtering needed
-		} else if filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.GreaterThan(decimal.Zero) {
-			// Case 4: from > to
-			// This case is already handled above
-		} else if filterConditions.From.IsZero() && filterConditions.To.IsZero() {
-			// Case 5: from = 0 & to = 0
-			whereClauses = append(whereClauses, "price * (1 - COALESCE(sale_percentage, 0) / 100) = 0")
+		case filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.GreaterThan(decimal.Zero):
+			// Case 4: from > 0 & to > 0
+			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) BETWEEN :priceFrom AND :priceTo")
+			args["priceFrom"] = filterConditions.From
+			args["priceTo"] = filterConditions.To
 		}
 	}
 
-	// Handle filters
+	// Additional filters
 	if filterConditions != nil {
-		if filterConditions.From.GreaterThan(decimal.Zero) {
-			// If priceTo is not set (0), set it to int32 max value
-			if filterConditions.To.Equal(decimal.Zero) {
-				filterConditions.To = decimal.NewFromInt(int64(^uint32(0) >> 1)) // int32 max value
-			}
-			whereClauses = append(whereClauses, "price BETWEEN :priceFrom AND :priceTo")
-			args["priceFrom"] = filterConditions.From
-			args["priceTo"] = filterConditions.To
-		} else if filterConditions.From.GreaterThan(decimal.Zero) {
-			// Ensure that if only From is set, we filter for prices greater than or equal to From
-			whereClauses = append(whereClauses, "price >= :priceFrom")
-			args["priceFrom"] = filterConditions.From
-		}
 		if filterConditions.OnSale {
-			whereClauses = append(whereClauses, "sale_percentage > 0")
+			whereClauses = append(whereClauses, "p.sale_percentage > 0")
 		}
 		if filterConditions.Gender != "" {
-			whereClauses = append(whereClauses, "target_gender = :targetGender")
+			whereClauses = append(whereClauses, "p.target_gender = :targetGender")
 			args["targetGender"] = filterConditions.Gender.String()
 		}
 		if filterConditions.Color != "" {
-			whereClauses = append(whereClauses, "color = :color")
+			whereClauses = append(whereClauses, "p.color = :color")
 			args["color"] = filterConditions.Color
 		}
 		if len(filterConditions.CategoryIds) != 0 {
-			whereClauses = append(whereClauses, "category_id IN (:categoryIds)")
+			whereClauses = append(whereClauses, "p.category_id IN (:categoryIds)")
 			args["categoryIds"] = filterConditions.CategoryIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
-			whereClauses = append(whereClauses, "id IN (SELECT product_id FROM product_size WHERE size_id IN (:sizes))")
+			whereClauses = append(whereClauses, "p.id IN (SELECT ps.product_id FROM product_size ps WHERE ps.size_id IN (:sizes))")
 			args["sizes"] = filterConditions.SizesIds
 		}
 		if filterConditions.Preorder {
-			whereClauses = append(whereClauses, "preorder IS NOT NULL AND preorder <> ''")
+			whereClauses = append(whereClauses, "p.preorder IS NOT NULL AND p.preorder <> ''")
 		}
 		if filterConditions.ByTag != "" {
-			whereClauses = append(whereClauses, "id IN (SELECT product_id FROM product_tag WHERE tag = :tag)")
+			whereClauses = append(whereClauses, "p.id IN (SELECT pt.product_id FROM product_tag pt WHERE pt.tag = :tag)")
 			args["tag"] = filterConditions.ByTag
 		}
 	}
 
+	// Build and execute the queries
 	listQuery, countQuery := buildQuery(sortFactors, orderFactor, whereClauses, limit, offset)
 	count, err := QueryCountNamed(ctx, ms.db, countQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get product count: %w", err)
 	}
 
-	// slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
-	// slog.Default().DebugContext(ctx, "countQuery", slog.String("countQuery", countQuery))
+	slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
 
-	// Add limit and offset
+	// Set limit and offset
 	args["limit"] = limit
 	args["offset"] = offset
 
+	// Fetch products
 	prds, err := QueryListNamed[entity.Product](ctx, ms.db, listQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get products: %w", err)
 	}
-
-	// for _, p := range prds {
-	// 	slog.Default().DebugContext(ctx, "product", slog.Any("price", p.Price))
-	// }
 
 	return prds, count, nil
 }
@@ -432,9 +426,9 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		m.blur_hash
 	FROM 
 		product p
-	JOIN 
+	JOIN
 		media m ON p.thumbnail_id = m.id 
-	WHERE p.id IN (:ids)`
+	WHERE p.id IN (:ids) AND p.hidden = 0`
 
 	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
 		"ids": ids,
@@ -460,6 +454,40 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 	return result, nil
 }
 
+func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error) {
+	if tag == "" {
+		return []entity.Product{}, nil
+	}
+
+	query := `
+	SELECT 
+		p.*,
+		m.full_size,
+		m.full_size_width,
+		m.full_size_height,
+		m.thumbnail,
+		m.thumbnail_width,
+		m.thumbnail_height,
+		m.compressed,
+		m.compressed_width,
+		m.compressed_height,
+		m.blur_hash
+	FROM 
+		product p
+	JOIN 
+		media m ON p.thumbnail_id = m.id 
+	WHERE p.id IN (SELECT pt.product_id FROM product_tag pt WHERE pt.tag = :tag) AND p.hidden = 0`
+
+	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
+		"tag": tag,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get products by ids: %w", err)
+	}
+
+	return prds, nil
+}
+
 // buildQuery refactored to use named parameters and to include limit and offset
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
 	baseQuery := `
@@ -482,14 +510,16 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	ON 
 		p.thumbnail_id = m.id`
 
-	countQuery := "SELECT COUNT(*) FROM product"
+	countQuery := "SELECT COUNT(*) FROM product p JOIN media m ON p.thumbnail_id = m.id"
 
+	// Add WHERE clause if there are conditions
 	if len(whereClauses) > 0 {
 		conditions := " WHERE " + strings.Join(whereClauses, " AND ")
 		baseQuery += conditions
 		countQuery += conditions
 	}
 
+	// Add ORDER BY clause if sorting factors are provided
 	if len(sortFactors) > 0 {
 		ordering := " ORDER BY " + strings.Join(entity.SortFactorsToSS(sortFactors), ", ")
 		if orderFactor != "" {
@@ -499,7 +529,9 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		}
 		baseQuery += ordering
 	}
-	baseQuery += " LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+
+	// Add LIMIT and OFFSET for pagination
+	baseQuery += " LIMIT :limit OFFSET :offset"
 
 	return baseQuery, countQuery
 }
