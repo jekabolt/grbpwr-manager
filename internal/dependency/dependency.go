@@ -30,6 +30,8 @@ type (
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
 		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error)
+		// GetProductsByTag returns a list of products by their tag.
+		GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByName returns a product by its name if it is not hidden.
@@ -44,6 +46,7 @@ type (
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 	}
 	Hero interface {
+		RefreshHero(ctx context.Context) error
 		SetHero(ctx context.Context, hei []entity.HeroEntityInsert) error
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}

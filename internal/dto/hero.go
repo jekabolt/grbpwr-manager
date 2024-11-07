@@ -58,6 +58,15 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 				result.FeaturedProducts.ProductIDs[i] = int(id)
 			}
 		}
+	case pb_common.HeroType_HERO_TYPE_FEATURED_PRODUCTS_TAG:
+		if hi.FeaturedProductsTag != nil {
+			result.FeaturedProductsTag = entity.HeroFeaturedProductsTagInsert{
+				Tag:         hi.FeaturedProductsTag.Tag,
+				Title:       hi.FeaturedProductsTag.Title,
+				ExploreText: hi.FeaturedProductsTag.ExploreText,
+				ExploreLink: hi.FeaturedProductsTag.ExploreLink,
+			}
+		}
 	}
 
 	return result
@@ -113,6 +122,14 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 			}
 			result.FeaturedProducts = featuredProducts
 		}
+	case entity.HeroTypeFeaturedProductsTag:
+		if he.FeaturedProductsTag != nil {
+			featuredProductsTag, err := ConvertEntityHeroFeaturedProductsTagToCommon(he.FeaturedProductsTag)
+			if err != nil {
+				return nil, err
+			}
+			result.FeaturedProductsTag = featuredProductsTag
+		}
 	}
 
 	return result, nil
@@ -166,4 +183,23 @@ func ConvertEntityHeroFeaturedProductsToCommon(hfp *entity.HeroFeaturedProducts)
 		result.Products[i] = commonProduct
 	}
 	return result, nil
+}
+
+func ConvertEntityHeroFeaturedProductsTagToCommon(hfp *entity.HeroFeaturedProductsTag) (*pb_common.HeroFeaturedProductsTag, error) {
+	if hfp == nil {
+		return nil, nil
+	}
+	commonProducts, err := ConvertEntityHeroFeaturedProductsToCommon(&entity.HeroFeaturedProducts{
+		Products:    hfp.Products,
+		Title:       hfp.Title,
+		ExploreText: hfp.ExploreText,
+		ExploreLink: hfp.ExploreLink,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert featured products: %w", err)
+	}
+	return &pb_common.HeroFeaturedProductsTag{
+		Tag:      hfp.Tag,
+		Products: commonProducts,
+	}, nil
 }

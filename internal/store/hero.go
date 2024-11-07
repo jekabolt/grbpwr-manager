@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -22,6 +23,66 @@ func (ms *MYSQLStore) Hero() dependency.Hero {
 	return &heroStore{
 		MYSQLStore: ms,
 	}
+}
+
+func (hs *heroStore) RefreshHero(ctx context.Context) error {
+	hero, err := hs.GetHero(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get hero: %w", err)
+	}
+
+	hei := []entity.HeroEntityInsert{}
+	for _, e := range hero.Entities {
+		switch e.Type {
+		case entity.HeroTypeFeaturedProducts:
+			ids := make([]int, 0, len(e.FeaturedProducts.Products))
+			for _, p := range e.FeaturedProducts.Products {
+				ids = append(ids, p.Id)
+			}
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedProducts: entity.HeroFeaturedProductsInsert{
+				ProductIDs:  ids,
+				Title:       e.FeaturedProducts.Title,
+				ExploreText: e.FeaturedProducts.ExploreText,
+				ExploreLink: e.FeaturedProducts.ExploreLink,
+			}})
+		case entity.HeroTypeFeaturedProductsTag:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedProductsTag: entity.HeroFeaturedProductsTagInsert{
+				Tag:         e.FeaturedProductsTag.Tag,
+				Title:       e.FeaturedProductsTag.Title,
+				ExploreText: e.FeaturedProductsTag.ExploreText,
+				ExploreLink: e.FeaturedProductsTag.ExploreLink,
+			}})
+		case entity.HeroTypeMainAdd:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, MainAdd: entity.HeroMainAddInsert{
+				SingleAdd: entity.HeroSingleAddInsert{
+					MediaId:     e.MainAdd.SingleAdd.Media.Id,
+					ExploreLink: e.MainAdd.SingleAdd.ExploreLink,
+					ExploreText: e.MainAdd.SingleAdd.ExploreText,
+				},
+			}})
+		case entity.HeroTypeSingleAdd:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, SingleAdd: entity.HeroSingleAddInsert{
+				MediaId:     e.SingleAdd.Media.Id,
+				ExploreLink: e.SingleAdd.ExploreLink,
+				ExploreText: e.SingleAdd.ExploreText,
+			}})
+		case entity.HeroTypeDoubleAdd:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, DoubleAdd: entity.HeroDoubleAddInsert{
+				Left: entity.HeroSingleAddInsert{
+					MediaId:     e.DoubleAdd.Left.Media.Id,
+					ExploreLink: e.DoubleAdd.Left.ExploreLink,
+					ExploreText: e.DoubleAdd.Left.ExploreText,
+				},
+			}})
+		}
+	}
+
+	err = hs.SetHero(ctx, hei)
+	if err != nil {
+		return fmt.Errorf("failed to set hero: %w", err)
+	}
+
+	return nil
 }
 
 func (hs *heroStore) SetHero(ctx context.Context, heroInsert []entity.HeroEntityInsert) error {
@@ -99,7 +160,12 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 			products, err := rep.Products().GetProductsByIds(ctx, e.FeaturedProducts.ProductIDs)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get products by ids: %w", err)
-			}			
+			}
+
+			if len(products) == 0 {
+				continue
+			}
+
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
 				FeaturedProducts: &entity.HeroFeaturedProducts{
@@ -107,6 +173,32 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					Title:       e.FeaturedProducts.Title,
 					ExploreText: e.FeaturedProducts.ExploreText,
 					ExploreLink: e.FeaturedProducts.ExploreLink,
+				},
+			})
+		case entity.HeroTypeFeaturedProductsTag:
+			if e.FeaturedProductsTag.Tag == "" {
+				continue
+			}
+
+			products, err := rep.Products().GetProductsByTag(ctx, e.FeaturedProductsTag.Tag)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get products by ids: %w", err)
+			}
+
+			slog.Info("featured products tag", "tag", e.FeaturedProductsTag.Tag, "products", len(products))
+
+			if len(products) == 0 {
+				continue
+			}
+
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				FeaturedProductsTag: &entity.HeroFeaturedProductsTag{
+					Products:    products,
+					Tag:         e.FeaturedProductsTag.Tag,
+					Title:       e.FeaturedProductsTag.Title,
+					ExploreText: e.FeaturedProductsTag.ExploreText,
+					ExploreLink: e.FeaturedProductsTag.ExploreLink,
 				},
 			})
 		case entity.HeroTypeMainAdd:
