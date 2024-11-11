@@ -136,6 +136,14 @@ CREATE TABLE product (
     target_gender VARCHAR(255) NOT NULL CHECK (
         target_gender REGEXP '^(male|female|unisex)$'
     ),
+    care_instructions VARCHAR(255) NULL CHECK (
+        care_instructions IS NULL OR 
+        care_instructions REGEXP '^(\s*|((MW(N|30|40|50|60|95)|GW|VGW|HW|DNW|BA|NCB|DNB|TD(N|L|M|H|D)|LD|DF|DD|DIS|LDS|DFS|DDS|I(L|M|H)|DN(S|I)|DC(AS|PS|ASE)|GD?C|VG?DC|PWC|G?PWC|DN(DC|WC))(\s*,\s*(MW(N|30|40|50|60|95)|GW|VGW|HW|DNW|BA|NCB|DNB|TD(N|L|M|H|D)|LD|DF|DD|DIS|LDS|DFS|DDS|I(L|M|H)|DN(S|I)|DC(AS|PS|ASE)|GD?C|VG?DC|PWC|G?PWC|DN(DC|WC)))*\s*))$'
+    ),
+    composition VARCHAR(255) NULL CHECK (
+        composition IS NULL OR 
+        composition REGEXP '^(|\\s*([^,\\s:]+:[^,\\s]+)(\\s*,\\s*[^,\\s:]+:[^,\\s]+)*)\\s*$'
+    ),
     FOREIGN KEY (category_id) REFERENCES category(id) ON DELETE CASCADE,
     FOREIGN KEY (thumbnail_id) REFERENCES media(id)
 );

@@ -115,8 +115,10 @@ message ProductBody {
   google.type.Decimal sale_percentage = 10;
   int32 category_id = 11;
   string description = 12;
-  bool hidden = 13;
-  GenderEnum target_gender = 14;
+  string care_instructions = 13;
+  string composition = 14;
+  bool hidden = 15;
+  GenderEnum target_gender = 16;
 }
 
 message ProductInsert {

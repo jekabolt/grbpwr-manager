@@ -29,25 +29,27 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, hidden, target_gender)
-	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :hidden, :targetGender)`
+	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, care_instructions, composition, hidden, target_gender)
+	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :careInstructions, :composition, :hidden, :targetGender)`
 
 	params := map[string]any{
-		"id":              id,
-		"preorder":        product.Preorder,
-		"name":            product.Name,
-		"brand":           product.Brand,
-		"sku":             product.SKU,
-		"color":           product.Color,
-		"colorHex":        product.ColorHex,
-		"countryOfOrigin": product.CountryOfOrigin,
-		"thumbnailId":     product.ThumbnailMediaID,
-		"price":           product.Price,
-		"salePercentage":  product.SalePercentage,
-		"categoryId":      product.CategoryId,
-		"description":     product.Description,
-		"hidden":          product.Hidden,
-		"targetGender":    product.TargetGender,
+		"id":               id,
+		"preorder":         product.Preorder,
+		"name":             product.Name,
+		"brand":            product.Brand,
+		"sku":              product.SKU,
+		"color":            product.Color,
+		"colorHex":         product.ColorHex,
+		"countryOfOrigin":  product.CountryOfOrigin,
+		"thumbnailId":      product.ThumbnailMediaID,
+		"price":            product.Price,
+		"salePercentage":   product.SalePercentage,
+		"categoryId":       product.CategoryId,
+		"description":      product.Description,
+		"hidden":           product.Hidden,
+		"targetGender":     product.TargetGender,
+		"careInstructions": product.CareInstructions,
+		"composition":      product.Composition,
 	}
 
 	slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
@@ -265,25 +267,29 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		category_id = :categoryId, 
 		description = :description, 
 		hidden = :hidden,
-		target_gender = :targetGender
+		target_gender = :targetGender,
+		care_instructions = :careInstructions,
+		composition = :composition
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"preorder":        prd.Preorder,
-		"name":            prd.Name,
-		"brand":           prd.Brand,
-		"sku":             prd.SKU,
-		"color":           prd.Color,
-		"colorHex":        prd.ColorHex,
-		"countryOfOrigin": prd.CountryOfOrigin,
-		"thumbnailId":     prd.ThumbnailMediaID,
-		"price":           prd.Price,
-		"salePercentage":  prd.SalePercentage,
-		"categoryId":      prd.CategoryId,
-		"description":     prd.Description,
-		"hidden":          prd.Hidden,
-		"targetGender":    prd.TargetGender,
-		"id":              id,
+		"preorder":         prd.Preorder,
+		"name":             prd.Name,
+		"brand":            prd.Brand,
+		"sku":              prd.SKU,
+		"color":            prd.Color,
+		"colorHex":         prd.ColorHex,
+		"countryOfOrigin":  prd.CountryOfOrigin,
+		"thumbnailId":      prd.ThumbnailMediaID,
+		"price":            prd.Price,
+		"salePercentage":   prd.SalePercentage,
+		"categoryId":       prd.CategoryId,
+		"description":      prd.Description,
+		"hidden":           prd.Hidden,
+		"targetGender":     prd.TargetGender,
+		"careInstructions": prd.CareInstructions,
+		"composition":      prd.Composition,
+		"id":               id,
 	})
 }
 
