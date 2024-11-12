@@ -372,3 +372,27 @@ CREATE INDEX idx_product_id_on_product_tag ON product_tag(product_id);
 CREATE INDEX idx_product_size_id_on_size_measurement ON size_measurement(product_size_id);
 
 CREATE INDEX idx_category_id_on_product ON product(category_id);
+
+CREATE INDEX idx_order_item_order_id ON order_item(order_id);
+
+CREATE INDEX idx_customer_order_status_id ON customer_order(order_status_id);
+
+CREATE INDEX idx_payment_method_id ON payment(payment_method_id);
+
+CREATE INDEX idx_buyer_email ON buyer(email);
+
+CREATE INDEX idx_customer_order_promo_id ON customer_order(promo_id);
+
+CREATE INDEX idx_payment_method_order ON payment(payment_method_id, order_id);
+
+CREATE UNIQUE INDEX idx_buyer_order_email ON buyer(order_id, email);
+
+CREATE INDEX idx_product_size_size_id_product_id ON product_size(size_id, product_id);
+
+CREATE INDEX idx_product_tag_tag_product_id ON product_tag(tag, product_id);
+
+CREATE INDEX idx_product_target_gender ON product(target_gender);
+
+CREATE INDEX idx_product_media_product_id_media_id ON product_media(product_id, media_id);
+
+CREATE INDEX idx_product_thumbnail_id ON product(thumbnail_id);
