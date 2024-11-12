@@ -142,7 +142,7 @@ CREATE TABLE product (
     ),
     composition VARCHAR(255) NULL CHECK (
         composition IS NULL OR 
-        composition REGEXP '^(|\\s*([^,\\s:]+:[^,\\s]+)(\\s*,\\s*[^,\\s:]+:[^,\\s]+)*)\\s*$'
+        composition REGEXP '^([A-Z]+(?:-[A-Z]+)*:(100|[1-9][0-9]?))(,\s*[A-Z]+(?:-[A-Z]+)*:(100|[1-9][0-9]?))*$'
     ),
     FOREIGN KEY (category_id) REFERENCES category(id) ON DELETE CASCADE,
     FOREIGN KEY (thumbnail_id) REFERENCES media(id)
