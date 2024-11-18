@@ -261,3 +261,64 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 		return nil
 	})
 }
+
+func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
+	query := `
+	SELECT 
+		a.id,
+		a.created_at,
+		a.updated_at,
+		a.heading,
+		a.text,
+		JSON_ARRAYAGG(
+			JSON_OBJECT(
+				'id', ai.id,
+				'media', JSON_OBJECT(
+					'id', m.id,
+					'full_size', m.full_size,
+					'full_size_width', m.full_size_width,
+					'full_size_height', m.full_size_height,
+					'thumbnail', m.thumbnail,
+					'thumbnail_width', m.thumbnail_width,
+					'thumbnail_height', m.thumbnail_height,
+					'compressed', m.compressed,
+					'compressed_width', m.compressed_width,
+					'compressed_height', m.compressed_height,
+					'blur_hash', m.blur_hash
+				),
+				'url', ai.url,
+				'name', ai.name,
+				'archive_id', ai.archive_id
+			)
+		) AS archive_items
+	FROM 
+		archive a
+	LEFT JOIN 
+		archive_item ai ON a.id = ai.archive_id
+	LEFT JOIN
+		media m ON ai.media_id = m.id
+	WHERE 
+		a.id = ?
+	GROUP BY 
+		a.id
+	`
+
+	var archiveData []archiveJoin
+
+	// Execute the query with context and scan the results into the slice
+	err := ms.DB().SelectContext(ctx, &archiveData, query, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get archive by ID %d: %w", id, err)
+	}
+
+	if len(archiveData) == 0 {
+		return nil, fmt.Errorf("no archive found with ID %d", id)
+	}
+
+	afs, err := convertArchiveJoinToArchiveFull(archiveData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert archive json to entity %w", err)
+	}
+
+	return &afs[0], nil
+}
