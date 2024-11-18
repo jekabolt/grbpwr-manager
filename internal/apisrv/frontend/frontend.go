@@ -522,3 +522,17 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 	}, nil
 
 }
+
+func (s *Server) GetArchiveById(ctx context.Context, req *pb_frontend.GetArchiveByIdRequest) (*pb_frontend.GetArchiveByIdResponse, error) {
+	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get archive by id", slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	pbAf := dto.ConvertArchiveFullEntityToPb(af)
+
+	return &pb_frontend.GetArchiveByIdResponse{
+		Archive: pbAf,
+	}, nil
+}

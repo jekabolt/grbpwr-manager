@@ -123,6 +123,7 @@ type (
 		UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveBody, archiveItems []entity.ArchiveItemInsert) error
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error)
 		DeleteArchiveById(ctx context.Context, id int) error
+		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
 	}
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
