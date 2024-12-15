@@ -299,17 +299,25 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 
 	pi, err := p.getPaymentIntent(payment.ClientSecret.String)
 	if err != nil {
+		slog.Default().Info("can't get payment intent", "err", err)
 		return &payment, fmt.Errorf("can't get payment intent: %w", err)
 	}
 
-	switch pi.Status {
-	case stripe.PaymentIntentStatusSucceeded:
-		err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, payment)
-		if err != nil {
-			return nil, fmt.Errorf("can't update order as paid: %w", err)
+	if pi != nil {
+		switch pi.Status {
+		case stripe.PaymentIntentStatusSucceeded:
+			slog.Default().Info("payment intent succeeded", "pi", pi)
+			err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, payment)
+			if err != nil {
+				return nil, fmt.Errorf("can't update order as paid: %w", err)
+			}
+			return &payment, nil
+		default:
+			slog.Default().Info("payment intent not succeeded", "pi", pi)
+			return &payment, nil
 		}
-		return &payment, nil
-	default:
-		return nil, nil
 	}
+
+	return &payment, nil
+
 }
