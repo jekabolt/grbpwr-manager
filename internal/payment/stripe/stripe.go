@@ -2,7 +2,6 @@ package stripe
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -57,8 +56,6 @@ func (p *Processor) getPaymentIntent(paymentSecret string) (*stripe.PaymentInten
 
 	paymentIntentID := trimSecret(paymentSecret)
 
-	slog.Default().Info("Order payment expired", slog.Any("paymentIntentID", paymentIntentID))
-
 	pi, err := p.stripeClient.PaymentIntents.Get(paymentIntentID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve payment intent: %v", err)
@@ -69,8 +66,6 @@ func (p *Processor) getPaymentIntent(paymentSecret string) (*stripe.PaymentInten
 func (p *Processor) cancelPaymentIntent(paymentSecret string) (*stripe.PaymentIntent, error) {
 
 	paymentIntentID := trimSecret(paymentSecret)
-
-	slog.Default().Info("Order payment expired", slog.Any("paymentIntentID", paymentIntentID))
 
 	pi, err := p.stripeClient.PaymentIntents.Cancel(paymentIntentID, nil)
 	if err != nil {

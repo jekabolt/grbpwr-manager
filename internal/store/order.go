@@ -631,6 +631,8 @@ func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Rep
 	if err != nil {
 		return fmt.Errorf("error while inserting final order: %w", err)
 	}
+
+	slog.Info("inserting order items", "order_id", order.Id, "items", validItemsInsert)
 	if err = insertOrderItems(ctx, rep, validItemsInsert, order.Id); err != nil {
 		return fmt.Errorf("error while inserting order items: %w", err)
 	}

@@ -299,7 +299,7 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 
 	pi, err := p.getPaymentIntent(payment.ClientSecret.String)
 	if err != nil {
-		return nil, fmt.Errorf("can't get payment intent: %w", err)
+		return &payment, fmt.Errorf("can't get payment intent: %w", err)
 	}
 
 	switch pi.Status {
