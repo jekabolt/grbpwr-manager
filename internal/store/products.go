@@ -195,11 +195,6 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		return prdId, fmt.Errorf("can't add product: %w", err)
 	}
 
-	err = ms.Hero().RefreshHero(ctx)
-	if err != nil {
-		return prdId, fmt.Errorf("can't refresh hero: %w", err)
-	}
-
 	return prdId, nil
 }
 
@@ -240,11 +235,6 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 	})
 	if err != nil {
 		return fmt.Errorf("can't add product: %w", err)
-	}
-
-	err = ms.Hero().RefreshHero(ctx)
-	if err != nil {
-		return fmt.Errorf("can't refresh hero: %w", err)
 	}
 
 	return nil

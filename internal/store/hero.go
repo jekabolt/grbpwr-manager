@@ -151,6 +151,8 @@ func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) erro
 func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts []entity.HeroEntityInsert) ([]entity.HeroEntity, error) {
 
 	entities := make([]entity.HeroEntity, 0, len(heroInserts))
+
+	newEntities := make([]entity.HeroEntityInsert, 0, len(heroInserts))
 	for n, e := range heroInserts {
 		switch e.Type {
 		case entity.HeroTypeFeaturedProducts:
@@ -161,20 +163,28 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 			if err != nil {
 				return nil, fmt.Errorf("failed to get products by ids: %w", err)
 			}
+			prds := make([]entity.Product, 0, len(products))
+			for _, p := range products {
+				if p.Hidden.Valid && p.Hidden.Bool {
+					continue
+				}
+				prds = append(prds, p)
+			}
 
-			if len(products) == 0 {
+			if len(prds) == 0 {
 				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
 				FeaturedProducts: &entity.HeroFeaturedProducts{
-					Products:    products,
+					Products:    prds,
 					Title:       e.FeaturedProducts.Title,
 					ExploreText: e.FeaturedProducts.ExploreText,
 					ExploreLink: e.FeaturedProducts.ExploreLink,
 				},
 			})
+			newEntities = append(newEntities, e)
 		case entity.HeroTypeFeaturedProductsTag:
 			if e.FeaturedProductsTag.Tag == "" {
 				continue
@@ -185,22 +195,30 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 				return nil, fmt.Errorf("failed to get products by ids: %w", err)
 			}
 
-			slog.Info("featured products tag", "tag", e.FeaturedProductsTag.Tag, "products", len(products))
+			prds := make([]entity.Product, 0, len(products))
+			for _, p := range products {
+				if p.Hidden.Valid && p.Hidden.Bool {
+					continue
+				}
+				prds = append(prds, p)
+			}
 
-			if len(products) == 0 {
+			if len(prds) == 0 {
 				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
 				FeaturedProductsTag: &entity.HeroFeaturedProductsTag{
-					Products:    products,
+					Products:    prds,
 					Tag:         e.FeaturedProductsTag.Tag,
 					Title:       e.FeaturedProductsTag.Title,
 					ExploreText: e.FeaturedProductsTag.ExploreText,
 					ExploreLink: e.FeaturedProductsTag.ExploreLink,
 				},
 			})
+
+			newEntities = append(newEntities, e)
 		case entity.HeroTypeMainAdd:
 			// main add should be only on first position
 			if n != 0 {
@@ -208,7 +226,10 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 			}
 			media, err := rep.Media().GetMediaById(ctx, e.MainAdd.SingleAdd.MediaId)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get media by id: %w", err)
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.MainAdd.SingleAdd.MediaId))
+				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
@@ -221,10 +242,14 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					},
 				},
 			})
+			newEntities = append(newEntities, e)
 		case entity.HeroTypeSingleAdd:
 			media, err := rep.Media().GetMediaById(ctx, e.SingleAdd.MediaId)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get media by id: %w", err)
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.SingleAdd.MediaId))
+				continue
 			}
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
@@ -234,14 +259,21 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					ExploreText: e.SingleAdd.ExploreText,
 				},
 			})
+			newEntities = append(newEntities, e)
 		case entity.HeroTypeDoubleAdd:
 			leftMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Left.MediaId)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get media by id: %w", err)
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.DoubleAdd.Left.MediaId))
+				continue
 			}
 			rightMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Right.MediaId)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get media by id: %w", err)
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.DoubleAdd.Right.MediaId))
+				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
@@ -259,6 +291,14 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					},
 				},
 			})
+			newEntities = append(newEntities, e)
+		}
+	}
+
+	if len(newEntities) != len(heroInserts) {
+		err := rep.Hero().SetHero(ctx, newEntities)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set hero: %w", err)
 		}
 	}
 

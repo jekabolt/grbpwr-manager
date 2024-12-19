@@ -268,7 +268,6 @@ func BulkInsert(ctx context.Context, conn dependency.DB, tableName string, rows 
 		strings.Join(columns, ", "),
 		strings.Join(valueStrings, ", "),
 	)
-
 	// Execute the query
 	_, err := conn.ExecContext(ctx, query, values...)
 	if err != nil {
