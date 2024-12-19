@@ -85,6 +85,14 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 		)
 		return resp, err
 	}
+
+	err = s.repo.Hero().RefreshHero(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't refresh hero")
+	}
 	return resp, err
 }
 
@@ -118,7 +126,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't convert proto product to entity product: %v", err)
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("can't convert proto product to entity product: %v", err))
 	}
 
 	_, err = v.ValidateStruct(prdNew)
@@ -126,7 +134,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		slog.Default().ErrorContext(ctx, "validation add product request failed",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation  add product request failed: %v", err).Error())
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("validation add product request failed: %v", err))
 	}
 
 	id := int(req.Id)
@@ -150,6 +158,14 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 			)
 			return nil, status.Errorf(codes.Internal, "can't update a product")
 		}
+	}
+
+	err = s.repo.Hero().RefreshHero(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't refresh hero")
 	}
 
 	return &pb_admin.UpsertProductResponse{
