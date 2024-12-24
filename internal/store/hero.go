@@ -41,14 +41,14 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 			}
 			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedProducts: entity.HeroFeaturedProductsInsert{
 				ProductIDs:  ids,
-				Title:       e.FeaturedProducts.Title,
+				Headline:    e.FeaturedProducts.Headline,
 				ExploreText: e.FeaturedProducts.ExploreText,
 				ExploreLink: e.FeaturedProducts.ExploreLink,
 			}})
 		case entity.HeroTypeFeaturedProductsTag:
 			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedProductsTag: entity.HeroFeaturedProductsTagInsert{
 				Tag:         e.FeaturedProductsTag.Tag,
-				Title:       e.FeaturedProductsTag.Title,
+				Headline:    e.FeaturedProductsTag.Headline,
 				ExploreText: e.FeaturedProductsTag.ExploreText,
 				ExploreLink: e.FeaturedProductsTag.ExploreLink,
 			}})
@@ -65,7 +65,7 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 		case entity.HeroTypeSingle:
 			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, Single: entity.HeroSingleInsert{
 				MediaId:     e.Single.Media.Id,
-				Title:       e.Single.Title,
+				Headline:    e.Single.Headline,
 				ExploreLink: e.Single.ExploreLink,
 				ExploreText: e.Single.ExploreText,
 			}})
@@ -75,13 +75,13 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 					MediaId:     e.Double.Left.Media.Id,
 					ExploreLink: e.Double.Left.ExploreLink,
 					ExploreText: e.Double.Left.ExploreText,
-					Title:       e.Double.Left.Title,
+					Headline:    e.Double.Left.Headline,
 				},
 				Right: entity.HeroSingleInsert{
 					MediaId:     e.Double.Right.Media.Id,
 					ExploreLink: e.Double.Right.ExploreLink,
 					ExploreText: e.Double.Right.ExploreText,
-					Title:       e.Double.Right.Title,
+					Headline:    e.Double.Right.Headline,
 				},
 			}})
 		}
@@ -187,7 +187,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 				Type: e.Type,
 				FeaturedProducts: &entity.HeroFeaturedProducts{
 					Products:    prds,
-					Title:       e.FeaturedProducts.Title,
+					Headline:    e.FeaturedProducts.Headline,
 					ExploreText: e.FeaturedProducts.ExploreText,
 					ExploreLink: e.FeaturedProducts.ExploreLink,
 				},
@@ -219,7 +219,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 				FeaturedProductsTag: &entity.HeroFeaturedProductsTag{
 					Products:    prds,
 					Tag:         e.FeaturedProductsTag.Tag,
-					Title:       e.FeaturedProductsTag.Title,
+					Headline:    e.FeaturedProductsTag.Headline,
 					ExploreText: e.FeaturedProductsTag.ExploreText,
 					ExploreLink: e.FeaturedProductsTag.ExploreLink,
 				},
@@ -261,7 +261,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 				Type: e.Type,
 				Single: &entity.HeroSingle{
 					Media:       *media,
-					Title:       e.Single.Title,
+					Headline:    e.Single.Headline,
 					ExploreLink: e.Single.ExploreLink,
 					ExploreText: e.Single.ExploreText,
 				},
@@ -289,13 +289,13 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 						Media:       *leftMedia,
 						ExploreLink: e.Double.Left.ExploreLink,
 						ExploreText: e.Double.Left.ExploreText,
-						Title:       e.Double.Left.Title,
+						Headline:    e.Double.Left.Headline,
 					},
 					Right: entity.HeroSingle{
 						Media:       *rightMedia,
 						ExploreLink: e.Double.Right.ExploreLink,
 						ExploreText: e.Double.Right.ExploreText,
-						Title:       e.Double.Right.Title,
+						Headline:    e.Double.Right.Headline,
 					},
 				},
 			})
