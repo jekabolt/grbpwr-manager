@@ -44,7 +44,7 @@ message HeroEntityInsert {
 
 message HeroSingle {
   common.MediaFull media = 1;
-  string title = 2;
+  string headline = 2;
   string explore_link = 3;
   string explore_text = 4;
 }
@@ -62,7 +62,7 @@ message HeroMain {
 
 message HeroFeaturedProducts {
   repeated common.Product products = 1;
-  string title = 2;
+  string headline = 2;
   string explore_text = 3;
   string explore_link = 4;
 }
@@ -74,21 +74,21 @@ message HeroFeaturedProductsTag {
 
 message HeroFeaturedProductsInsert {
   repeated int32 product_ids = 1;
-  string title = 2;
+  string headline = 2;
   string explore_text = 3;
   string explore_link = 4;
 }
 
 message HeroFeaturedProductsTagInsert {
   string tag = 1;
-  string title = 2;
+  string headline = 2;
   string explore_text = 3;
   string explore_link = 4;
 }
 
 message HeroSingleInsert {
   int32 media_id = 1;
-  string title = 2;
+  string headline = 2;
   string explore_link = 3;
   string explore_text = 4;
 }

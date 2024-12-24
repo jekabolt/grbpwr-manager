@@ -19,6 +19,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 				MediaId:     int(hi.Single.MediaId),
 				ExploreLink: hi.Single.ExploreLink,
 				ExploreText: hi.Single.ExploreText,
+				Headline:    hi.Single.Headline,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_DOUBLE:
@@ -28,11 +29,13 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 					MediaId:     int(hi.Double.Left.MediaId),
 					ExploreLink: hi.Double.Left.ExploreLink,
 					ExploreText: hi.Double.Left.ExploreText,
+					Headline:    hi.Double.Left.Headline,
 				},
 				Right: entity.HeroSingleInsert{
 					MediaId:     int(hi.Double.Right.MediaId),
 					ExploreLink: hi.Double.Right.ExploreLink,
 					ExploreText: hi.Double.Right.ExploreText,
+					Headline:    hi.Double.Right.Headline,
 				},
 			}
 		}
@@ -43,6 +46,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 					MediaId:     int(hi.Main.Single.MediaId),
 					ExploreLink: hi.Main.Single.ExploreLink,
 					ExploreText: hi.Main.Single.ExploreText,
+					Headline:    hi.Main.Single.Headline,
 				},
 			}
 		}
@@ -50,7 +54,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 		if hi.FeaturedProducts != nil {
 			result.FeaturedProducts = entity.HeroFeaturedProductsInsert{
 				ProductIDs:  make([]int, len(hi.FeaturedProducts.ProductIds)),
-				Title:       hi.FeaturedProducts.Title,
+				Headline:    hi.FeaturedProducts.Headline,
 				ExploreText: hi.FeaturedProducts.ExploreText,
 				ExploreLink: hi.FeaturedProducts.ExploreLink,
 			}
@@ -62,7 +66,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 		if hi.FeaturedProductsTag != nil {
 			result.FeaturedProductsTag = entity.HeroFeaturedProductsTagInsert{
 				Tag:         hi.FeaturedProductsTag.Tag,
-				Title:       hi.FeaturedProductsTag.Title,
+				Headline:    hi.FeaturedProductsTag.Headline,
 				ExploreText: hi.FeaturedProductsTag.ExploreText,
 				ExploreLink: hi.FeaturedProductsTag.ExploreLink,
 			}
@@ -141,7 +145,7 @@ func ConvertEntityHeroSingleToCommon(hsa *entity.HeroSingle) *pb_common.HeroSing
 	}
 	return &pb_common.HeroSingle{
 		Media:       ConvertEntityToCommonMedia(&hsa.Media),
-		Title:       hsa.Title,
+		Headline:    hsa.Headline,
 		ExploreLink: hsa.ExploreLink,
 		ExploreText: hsa.ExploreText,
 	}
@@ -174,7 +178,7 @@ func ConvertEntityHeroFeaturedProductsToCommon(hfp *entity.HeroFeaturedProducts)
 	}
 	result := &pb_common.HeroFeaturedProducts{
 		Products:    make([]*pb_common.Product, len(hfp.Products)),
-		Title:       hfp.Title,
+		Headline:    hfp.Headline,
 		ExploreText: hfp.ExploreText,
 		ExploreLink: hfp.ExploreLink,
 	}
@@ -194,7 +198,7 @@ func ConvertEntityHeroFeaturedProductsTagToCommon(hfp *entity.HeroFeaturedProduc
 	}
 	commonProducts, err := ConvertEntityHeroFeaturedProductsToCommon(&entity.HeroFeaturedProducts{
 		Products:    hfp.Products,
-		Title:       hfp.Title,
+		Headline:    hfp.Headline,
 		ExploreText: hfp.ExploreText,
 		ExploreLink: hfp.ExploreLink,
 	})
