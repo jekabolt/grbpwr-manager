@@ -12,59 +12,65 @@ type HeroType int32
 
 const (
 	HeroTypeUnknown             HeroType = 0
-	HeroTypeSingleAdd           HeroType = 1
-	HeroTypeDoubleAdd           HeroType = 2
-	HeroTypeMainAdd             HeroType = 3
+	HeroTypeSingle              HeroType = 1
+	HeroTypeDouble              HeroType = 2
+	HeroTypeMain                HeroType = 3
 	HeroTypeFeaturedProducts    HeroType = 4
 	HeroTypeFeaturedProductsTag HeroType = 5
 )
 
 type HeroEntity struct {
 	Type                HeroType                 `json:"type"`
-	SingleAdd           *HeroSingleAdd           `json:"single_add"`
-	DoubleAdd           *HeroDoubleAdd           `json:"double_add"`
-	MainAdd             *HeroMainAdd             `json:"main_add"`
+	Single              *HeroSingle              `json:"single_"`
+	Double              *HeroDouble              `json:"double_"`
+	Main                *HeroMain                `json:"main_"`
 	FeaturedProducts    *HeroFeaturedProducts    `json:"featured_products"`
 	FeaturedProductsTag *HeroFeaturedProductsTag `json:"featured_products_tag"`
 }
 
-type HeroSingleAdd struct {
+type HeroSingle struct {
 	Media       MediaFull `json:"media"`
+	Title       string    `json:"title"`
 	ExploreLink string    `json:"explore_link"`
 	ExploreText string    `json:"explore_text"`
 }
 
-type HeroDoubleAdd struct {
-	Left  HeroSingleAdd `json:"left"`
-	Right HeroSingleAdd `json:"right"`
+type HeroDouble struct {
+	Left  HeroSingle `json:"left"`
+	Right HeroSingle `json:"right"`
 }
 
-type HeroMainAdd struct {
-	SingleAdd HeroSingleAdd `json:"single_add"`
+type HeroMain struct {
+	Single      HeroSingle `json:"single_"`
+	Tag         string     `json:"tag"`
+	Description string     `json:"description"`
 }
 
 type HeroEntityInsert struct {
 	Type                HeroType                      `json:"type"`
-	SingleAdd           HeroSingleAddInsert           `json:"single_add"`
-	DoubleAdd           HeroDoubleAddInsert           `json:"double_add"`
-	MainAdd             HeroMainAddInsert             `json:"main_add"`
+	Single              HeroSingleInsert              `json:"single_"`
+	Double              HeroDoubleInsert              `json:"double_"`
+	Main                HeroMainInsert                `json:"main_"`
 	FeaturedProducts    HeroFeaturedProductsInsert    `json:"featured_products"`
 	FeaturedProductsTag HeroFeaturedProductsTagInsert `json:"featured_products_tag"`
 }
 
-type HeroSingleAddInsert struct {
+type HeroSingleInsert struct {
 	MediaId     int    `json:"media_id"`
+	Title       string `json:"title"`
 	ExploreLink string `json:"explore_link"`
 	ExploreText string `json:"explore_text"`
 }
 
-type HeroDoubleAddInsert struct {
-	Left  HeroSingleAddInsert `json:"left"`
-	Right HeroSingleAddInsert `json:"right"`
+type HeroDoubleInsert struct {
+	Left  HeroSingleInsert `json:"left"`
+	Right HeroSingleInsert `json:"right"`
 }
 
-type HeroMainAddInsert struct {
-	SingleAdd HeroSingleAddInsert `json:"single_add"`
+type HeroMainInsert struct {
+	Single      HeroSingleInsert `json:"single_"`
+	Tag         string           `json:"tag"`
+	Description string           `json:"description"`
 }
 
 type HeroFeaturedProducts struct {

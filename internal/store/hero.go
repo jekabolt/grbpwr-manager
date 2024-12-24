@@ -52,26 +52,36 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 				ExploreText: e.FeaturedProductsTag.ExploreText,
 				ExploreLink: e.FeaturedProductsTag.ExploreLink,
 			}})
-		case entity.HeroTypeMainAdd:
-			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, MainAdd: entity.HeroMainAddInsert{
-				SingleAdd: entity.HeroSingleAddInsert{
-					MediaId:     e.MainAdd.SingleAdd.Media.Id,
-					ExploreLink: e.MainAdd.SingleAdd.ExploreLink,
-					ExploreText: e.MainAdd.SingleAdd.ExploreText,
+		case entity.HeroTypeMain:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, Main: entity.HeroMainInsert{
+				Single: entity.HeroSingleInsert{
+					MediaId:     e.Main.Single.Media.Id,
+					ExploreLink: e.Main.Single.ExploreLink,
+					ExploreText: e.Main.Single.ExploreText,
 				},
+				Tag:         e.Main.Tag,
+				Description: e.Main.Description,
 			}})
-		case entity.HeroTypeSingleAdd:
-			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, SingleAdd: entity.HeroSingleAddInsert{
-				MediaId:     e.SingleAdd.Media.Id,
-				ExploreLink: e.SingleAdd.ExploreLink,
-				ExploreText: e.SingleAdd.ExploreText,
+		case entity.HeroTypeSingle:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, Single: entity.HeroSingleInsert{
+				MediaId:     e.Single.Media.Id,
+				Title:       e.Single.Title,
+				ExploreLink: e.Single.ExploreLink,
+				ExploreText: e.Single.ExploreText,
 			}})
-		case entity.HeroTypeDoubleAdd:
-			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, DoubleAdd: entity.HeroDoubleAddInsert{
-				Left: entity.HeroSingleAddInsert{
-					MediaId:     e.DoubleAdd.Left.Media.Id,
-					ExploreLink: e.DoubleAdd.Left.ExploreLink,
-					ExploreText: e.DoubleAdd.Left.ExploreText,
+		case entity.HeroTypeDouble:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, Double: entity.HeroDoubleInsert{
+				Left: entity.HeroSingleInsert{
+					MediaId:     e.Double.Left.Media.Id,
+					ExploreLink: e.Double.Left.ExploreLink,
+					ExploreText: e.Double.Left.ExploreText,
+					Title:       e.Double.Left.Title,
+				},
+				Right: entity.HeroSingleInsert{
+					MediaId:     e.Double.Right.Media.Id,
+					ExploreLink: e.Double.Right.ExploreLink,
+					ExploreText: e.Double.Right.ExploreText,
+					Title:       e.Double.Right.Title,
 				},
 			}})
 		}
@@ -214,73 +224,78 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					ExploreLink: e.FeaturedProductsTag.ExploreLink,
 				},
 			})
-		case entity.HeroTypeMainAdd:
+		case entity.HeroTypeMain:
 			// main add should be only on first position
 			if n != 0 {
 				continue
 			}
-			media, err := rep.Media().GetMediaById(ctx, e.MainAdd.SingleAdd.MediaId)
+			media, err := rep.Media().GetMediaById(ctx, e.Main.Single.MediaId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.MainAdd.SingleAdd.MediaId))
+					slog.Int("media_id", e.Main.Single.MediaId))
 				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
-				MainAdd: &entity.HeroMainAdd{
-					SingleAdd: entity.HeroSingleAdd{
+				Main: &entity.HeroMain{
+					Single: entity.HeroSingle{
 						Media:       *media,
-						ExploreLink: e.MainAdd.SingleAdd.ExploreLink,
-						ExploreText: e.MainAdd.SingleAdd.ExploreText,
+						ExploreLink: e.Main.Single.ExploreLink,
+						ExploreText: e.Main.Single.ExploreText,
 					},
+					Tag:         e.Main.Tag,
+					Description: e.Main.Description,
 				},
 			})
-		case entity.HeroTypeSingleAdd:
-			media, err := rep.Media().GetMediaById(ctx, e.SingleAdd.MediaId)
+		case entity.HeroTypeSingle:
+			media, err := rep.Media().GetMediaById(ctx, e.Single.MediaId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.SingleAdd.MediaId))
+					slog.Int("media_id", e.Single.MediaId))
 				continue
 			}
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
-				SingleAdd: &entity.HeroSingleAdd{
+				Single: &entity.HeroSingle{
 					Media:       *media,
-					ExploreLink: e.SingleAdd.ExploreLink,
-					ExploreText: e.SingleAdd.ExploreText,
+					Title:       e.Single.Title,
+					ExploreLink: e.Single.ExploreLink,
+					ExploreText: e.Single.ExploreText,
 				},
 			})
-		case entity.HeroTypeDoubleAdd:
-			leftMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Left.MediaId)
+		case entity.HeroTypeDouble:
+			leftMedia, err := rep.Media().GetMediaById(ctx, e.Double.Left.MediaId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.DoubleAdd.Left.MediaId))
+					slog.Int("media_id", e.Double.Left.MediaId))
 				continue
 			}
-			rightMedia, err := rep.Media().GetMediaById(ctx, e.DoubleAdd.Right.MediaId)
+			rightMedia, err := rep.Media().GetMediaById(ctx, e.Double.Right.MediaId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.DoubleAdd.Right.MediaId))
+					slog.Int("media_id", e.Double.Right.MediaId))
 				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
-				DoubleAdd: &entity.HeroDoubleAdd{
-					Left: entity.HeroSingleAdd{
+				Double: &entity.HeroDouble{
+					Left: entity.HeroSingle{
 						Media:       *leftMedia,
-						ExploreLink: e.DoubleAdd.Left.ExploreLink,
-						ExploreText: e.DoubleAdd.Left.ExploreText,
+						ExploreLink: e.Double.Left.ExploreLink,
+						ExploreText: e.Double.Left.ExploreText,
+						Title:       e.Double.Left.Title,
 					},
-					Right: entity.HeroSingleAdd{
+					Right: entity.HeroSingle{
 						Media:       *rightMedia,
-						ExploreLink: e.DoubleAdd.Right.ExploreLink,
-						ExploreText: e.DoubleAdd.Right.ExploreText,
+						ExploreLink: e.Double.Right.ExploreLink,
+						ExploreText: e.Double.Right.ExploreText,
+						Title:       e.Double.Right.Title,
 					},
 				},
 			})
