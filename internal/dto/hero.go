@@ -13,36 +13,36 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 	}
 
 	switch hi.Type {
-	case pb_common.HeroType_HERO_TYPE_SINGLE_ADD:
-		if hi.SingleAdd != nil {
-			result.SingleAdd = entity.HeroSingleAddInsert{
-				MediaId:     int(hi.SingleAdd.MediaId),
-				ExploreLink: hi.SingleAdd.ExploreLink,
-				ExploreText: hi.SingleAdd.ExploreText,
+	case pb_common.HeroType_HERO_TYPE_SINGLE:
+		if hi.Single != nil {
+			result.Single = entity.HeroSingleInsert{
+				MediaId:     int(hi.Single.MediaId),
+				ExploreLink: hi.Single.ExploreLink,
+				ExploreText: hi.Single.ExploreText,
 			}
 		}
-	case pb_common.HeroType_HERO_TYPE_DOUBLE_ADD:
-		if hi.DoubleAdd != nil {
-			result.DoubleAdd = entity.HeroDoubleAddInsert{
-				Left: entity.HeroSingleAddInsert{
-					MediaId:     int(hi.DoubleAdd.Left.MediaId),
-					ExploreLink: hi.DoubleAdd.Left.ExploreLink,
-					ExploreText: hi.DoubleAdd.Left.ExploreText,
+	case pb_common.HeroType_HERO_TYPE_DOUBLE:
+		if hi.Double != nil {
+			result.Double = entity.HeroDoubleInsert{
+				Left: entity.HeroSingleInsert{
+					MediaId:     int(hi.Double.Left.MediaId),
+					ExploreLink: hi.Double.Left.ExploreLink,
+					ExploreText: hi.Double.Left.ExploreText,
 				},
-				Right: entity.HeroSingleAddInsert{
-					MediaId:     int(hi.DoubleAdd.Right.MediaId),
-					ExploreLink: hi.DoubleAdd.Right.ExploreLink,
-					ExploreText: hi.DoubleAdd.Right.ExploreText,
+				Right: entity.HeroSingleInsert{
+					MediaId:     int(hi.Double.Right.MediaId),
+					ExploreLink: hi.Double.Right.ExploreLink,
+					ExploreText: hi.Double.Right.ExploreText,
 				},
 			}
 		}
-	case pb_common.HeroType_HERO_TYPE_MAIN_ADD:
-		if hi.MainAdd != nil && hi.MainAdd.SingleAdd != nil {
-			result.MainAdd = entity.HeroMainAddInsert{
-				SingleAdd: entity.HeroSingleAddInsert{
-					MediaId:     int(hi.MainAdd.SingleAdd.MediaId),
-					ExploreLink: hi.MainAdd.SingleAdd.ExploreLink,
-					ExploreText: hi.MainAdd.SingleAdd.ExploreText,
+	case pb_common.HeroType_HERO_TYPE_MAIN:
+		if hi.Main != nil && hi.Main.Single != nil {
+			result.Main = entity.HeroMainInsert{
+				Single: entity.HeroSingleInsert{
+					MediaId:     int(hi.Main.Single.MediaId),
+					ExploreLink: hi.Main.Single.ExploreLink,
+					ExploreText: hi.Main.Single.ExploreText,
 				},
 			}
 		}
@@ -102,17 +102,17 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 	}
 
 	switch he.Type {
-	case entity.HeroTypeSingleAdd:
-		if he.SingleAdd != nil {
-			result.SingleAdd = ConvertEntityHeroSingleAddToCommon(he.SingleAdd)
+	case entity.HeroTypeSingle:
+		if he.Single != nil {
+			result.Single = ConvertEntityHeroSingleToCommon(he.Single)
 		}
-	case entity.HeroTypeDoubleAdd:
-		if he.DoubleAdd != nil {
-			result.DoubleAdd = ConvertEntityHeroDoubleAddToCommon(he.DoubleAdd)
+	case entity.HeroTypeDouble:
+		if he.Double != nil {
+			result.Double = ConvertEntityHeroDoubleToCommon(he.Double)
 		}
-	case entity.HeroTypeMainAdd:
-		if he.MainAdd != nil {
-			result.MainAdd = ConvertEntityHeroMainAddToCommon(he.MainAdd)
+	case entity.HeroTypeMain:
+		if he.Main != nil {
+			result.Main = ConvertEntityHeroMainToCommon(he.Main)
 		}
 	case entity.HeroTypeFeaturedProducts:
 		if he.FeaturedProducts != nil {
@@ -135,33 +135,36 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 	return result, nil
 }
 
-func ConvertEntityHeroSingleAddToCommon(hsa *entity.HeroSingleAdd) *pb_common.HeroSingleAdd {
+func ConvertEntityHeroSingleToCommon(hsa *entity.HeroSingle) *pb_common.HeroSingle {
 	if hsa == nil {
 		return nil
 	}
-	return &pb_common.HeroSingleAdd{
+	return &pb_common.HeroSingle{
 		Media:       ConvertEntityToCommonMedia(&hsa.Media),
+		Title:       hsa.Title,
 		ExploreLink: hsa.ExploreLink,
 		ExploreText: hsa.ExploreText,
 	}
 }
 
-func ConvertEntityHeroDoubleAddToCommon(hda *entity.HeroDoubleAdd) *pb_common.HeroDoubleAdd {
+func ConvertEntityHeroDoubleToCommon(hda *entity.HeroDouble) *pb_common.HeroDouble {
 	if hda == nil {
 		return nil
 	}
-	return &pb_common.HeroDoubleAdd{
-		Left:  ConvertEntityHeroSingleAddToCommon(&hda.Left),
-		Right: ConvertEntityHeroSingleAddToCommon(&hda.Right),
+	return &pb_common.HeroDouble{
+		Left:  ConvertEntityHeroSingleToCommon(&hda.Left),
+		Right: ConvertEntityHeroSingleToCommon(&hda.Right),
 	}
 }
 
-func ConvertEntityHeroMainAddToCommon(hma *entity.HeroMainAdd) *pb_common.HeroMainAdd {
+func ConvertEntityHeroMainToCommon(hma *entity.HeroMain) *pb_common.HeroMain {
 	if hma == nil {
 		return nil
 	}
-	return &pb_common.HeroMainAdd{
-		SingleAdd: ConvertEntityHeroSingleAddToCommon(&hma.SingleAdd),
+	return &pb_common.HeroMain{
+		Single:      ConvertEntityHeroSingleToCommon(&hma.Single),
+		Tag:         hma.Tag,
+		Description: hma.Description,
 	}
 }
 
