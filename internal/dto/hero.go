@@ -48,6 +48,8 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 					ExploreText: hi.Main.Single.ExploreText,
 					Headline:    hi.Main.Single.Headline,
 				},
+				Tag:         hi.Main.Tag,
+				Description: hi.Main.Description,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_FEATURED_PRODUCTS:

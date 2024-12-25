@@ -244,6 +244,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 						Media:       *media,
 						ExploreLink: e.Main.Single.ExploreLink,
 						ExploreText: e.Main.Single.ExploreText,
+						Headline:    e.Main.Single.Headline,
 					},
 					Tag:         e.Main.Tag,
 					Description: e.Main.Description,
