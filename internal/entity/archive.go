@@ -3,14 +3,15 @@ package entity
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/asaskevich/govalidator"
 )
 
 type ArchiveFull struct {
-	Archive *Archive
-	Items   []ArchiveItemFull
+	Archive *Archive          `json:"archive"`
+	Items   []ArchiveItemFull `json:"items"`
 }
 
 type ArchiveNew struct {
@@ -19,15 +20,15 @@ type ArchiveNew struct {
 }
 
 type Archive struct {
-	Id        int       `db:"id"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Id        int       `db:"id" json:"id"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 	ArchiveBody
 }
 
 type ArchiveBody struct {
-	Heading string `db:"heading"`
-	Text    string `db:"text"`
+	Heading string `db:"heading" json:"heading"`
+	Text    string `db:"text" json:"text"`
 }
 
 type ArchiveItemFull struct {
@@ -39,26 +40,44 @@ type ArchiveItemFull struct {
 func (ai *ArchiveItemFull) UnmarshalJSON(data []byte) error {
 	type Alias ArchiveItemFull
 	aux := &struct {
-		URL  *string `json:"url"`
-		Name *string `json:"name"`
+		URL  interface{} `json:"url"`
+		Name interface{} `json:"name"`
 		*Alias
 	}{
 		Alias: (*Alias)(ai),
 	}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal archive item: %w", err)
 	}
 
-	if aux.URL != nil {
-		ai.URL = sql.NullString{String: *aux.URL, Valid: true}
-	} else {
+	switch v := aux.URL.(type) {
+	case string:
+		ai.URL = sql.NullString{String: v, Valid: true}
+	case map[string]interface{}:
+		if valid, ok := v["Valid"].(bool); ok && valid {
+			if str, ok := v["String"].(string); ok {
+				ai.URL = sql.NullString{String: str, Valid: true}
+			}
+		} else {
+			ai.URL = sql.NullString{Valid: false}
+		}
+	default:
 		ai.URL = sql.NullString{Valid: false}
 	}
 
-	if aux.Name != nil {
-		ai.Name = sql.NullString{String: *aux.Name, Valid: true}
-	} else {
+	switch v := aux.Name.(type) {
+	case string:
+		ai.Name = sql.NullString{String: v, Valid: true}
+	case map[string]interface{}:
+		if valid, ok := v["Valid"].(bool); ok && valid {
+			if str, ok := v["String"].(string); ok {
+				ai.Name = sql.NullString{String: str, Valid: true}
+			}
+		} else {
+			ai.Name = sql.NullString{Valid: false}
+		}
+	default:
 		ai.Name = sql.NullString{Valid: false}
 	}
 

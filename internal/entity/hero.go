@@ -17,6 +17,7 @@ const (
 	HeroTypeMain                HeroType = 3
 	HeroTypeFeaturedProducts    HeroType = 4
 	HeroTypeFeaturedProductsTag HeroType = 5
+	HeroTypeFeaturedArchive     HeroType = 6
 )
 
 type HeroEntity struct {
@@ -26,6 +27,7 @@ type HeroEntity struct {
 	Main                *HeroMain                `json:"main"`
 	FeaturedProducts    *HeroFeaturedProducts    `json:"featured_products"`
 	FeaturedProductsTag *HeroFeaturedProductsTag `json:"featured_products_tag"`
+	FeaturedArchive     *HeroFeaturedArchive     `json:"featured_archive"`
 }
 
 type HeroSingle struct {
@@ -53,6 +55,7 @@ type HeroEntityInsert struct {
 	Main                HeroMainInsert                `json:"main"`
 	FeaturedProducts    HeroFeaturedProductsInsert    `json:"featured_products"`
 	FeaturedProductsTag HeroFeaturedProductsTagInsert `json:"featured_products_tag"`
+	FeaturedArchive     HeroFeaturedArchiveInsert     `json:"featured_archive"`
 }
 
 type HeroSingleInsert struct {
@@ -100,4 +103,14 @@ type HeroFeaturedProductsTagInsert struct {
 	Headline    string `json:"headline"`
 	ExploreText string `json:"explore_text"`
 	ExploreLink string `json:"explore_link"`
+}
+
+type HeroFeaturedArchiveInsert struct {
+	ArchiveId int    `json:"archive_id"`
+	Tag       string `json:"tag"`
+}
+
+type HeroFeaturedArchive struct {
+	Archive ArchiveFull `json:"archive_full"`
+	Tag     string      `json:"tag"`
 }

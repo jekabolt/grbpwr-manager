@@ -73,6 +73,13 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 				ExploreLink: hi.FeaturedProductsTag.ExploreLink,
 			}
 		}
+	case pb_common.HeroType_HERO_TYPE_FEATURED_ARCHIVE:
+		if hi.FeaturedArchive != nil {
+			result.FeaturedArchive = entity.HeroFeaturedArchiveInsert{
+				ArchiveId: int(hi.FeaturedArchive.ArchiveId),
+				Tag:       hi.FeaturedArchive.Tag,
+			}
+		}
 	}
 
 	return result
@@ -136,9 +143,23 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 			}
 			result.FeaturedProductsTag = featuredProductsTag
 		}
+	case entity.HeroTypeFeaturedArchive:
+		if he.FeaturedArchive != nil {
+			result.FeaturedArchive = ConvertEntityHeroFeaturedArchiveToCommon(he.FeaturedArchive)
+		}
 	}
 
 	return result, nil
+}
+
+func ConvertEntityHeroFeaturedArchiveToCommon(he *entity.HeroFeaturedArchive) *pb_common.HeroFeaturedArchive {
+	if he == nil {
+		return nil
+	}
+	return &pb_common.HeroFeaturedArchive{
+		Archive: ConvertArchiveFullEntityToPb(&he.Archive),
+		Tag:     he.Tag,
+	}
 }
 
 func ConvertEntityHeroSingleToCommon(hsa *entity.HeroSingle) *pb_common.HeroSingle {
