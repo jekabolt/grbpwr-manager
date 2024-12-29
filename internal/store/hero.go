@@ -86,8 +86,10 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 			}})
 		case entity.HeroTypeFeaturedArchive:
 			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedArchive: entity.HeroFeaturedArchiveInsert{
-				ArchiveId: e.FeaturedArchive.Archive.Archive.Id,
-				Tag:       e.FeaturedArchive.Tag,
+				ArchiveId:   e.FeaturedArchive.Archive.Archive.Id,
+				Tag:         e.FeaturedArchive.Tag,
+				Headline:    e.FeaturedArchive.Headline,
+				ExploreText: e.FeaturedArchive.ExploreText,
 			}})
 		}
 	}
@@ -322,8 +324,10 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
 				FeaturedArchive: &entity.HeroFeaturedArchive{
-					Archive: *archive,
-					Tag:     e.FeaturedArchive.Tag,
+					Archive:     *archive,
+					Tag:         e.FeaturedArchive.Tag,
+					Headline:    e.FeaturedArchive.Headline,
+					ExploreText: e.FeaturedArchive.ExploreText,
 				},
 			})
 		}

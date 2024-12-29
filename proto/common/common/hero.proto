@@ -79,11 +79,15 @@ message HeroFeaturedProductsTag {
 message HeroFeaturedArchive {
   common.ArchiveFull archive = 1;
   string tag = 2;
+  string headline = 3;
+  string explore_text = 4;
 }
 
 message HeroFeaturedArchiveInsert {
   int32 archive_id = 1;
   string tag = 2;
+  string headline = 3;
+  string explore_text = 4;
 }
 
 message HeroFeaturedProductsInsert {
