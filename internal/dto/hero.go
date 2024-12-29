@@ -76,8 +76,10 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 	case pb_common.HeroType_HERO_TYPE_FEATURED_ARCHIVE:
 		if hi.FeaturedArchive != nil {
 			result.FeaturedArchive = entity.HeroFeaturedArchiveInsert{
-				ArchiveId: int(hi.FeaturedArchive.ArchiveId),
-				Tag:       hi.FeaturedArchive.Tag,
+				ArchiveId:   int(hi.FeaturedArchive.ArchiveId),
+				Tag:         hi.FeaturedArchive.Tag,
+				Headline:    hi.FeaturedArchive.Headline,
+				ExploreText: hi.FeaturedArchive.ExploreText,
 			}
 		}
 	}
@@ -157,8 +159,10 @@ func ConvertEntityHeroFeaturedArchiveToCommon(he *entity.HeroFeaturedArchive) *p
 		return nil
 	}
 	return &pb_common.HeroFeaturedArchive{
-		Archive: ConvertArchiveFullEntityToPb(&he.Archive),
-		Tag:     he.Tag,
+		Archive:     ConvertArchiveFullEntityToPb(&he.Archive),
+		Tag:         he.Tag,
+		Headline:    he.Headline,
+		ExploreText: he.ExploreText,
 	}
 }
 

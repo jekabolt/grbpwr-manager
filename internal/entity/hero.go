@@ -106,11 +106,15 @@ type HeroFeaturedProductsTagInsert struct {
 }
 
 type HeroFeaturedArchiveInsert struct {
-	ArchiveId int    `json:"archive_id"`
-	Tag       string `json:"tag"`
+	ArchiveId   int    `json:"archive_id"`
+	Tag         string `json:"tag"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
 }
 
 type HeroFeaturedArchive struct {
-	Archive ArchiveFull `json:"archive_full"`
-	Tag     string      `json:"tag"`
+	Archive     ArchiveFull `json:"archive_full"`
+	Tag         string      `json:"tag"`
+	Headline    string      `json:"headline"`
+	ExploreText string      `json:"explore_text"`
 }
