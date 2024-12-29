@@ -84,6 +84,11 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 					Headline:    e.Double.Right.Headline,
 				},
 			}})
+		case entity.HeroTypeFeaturedArchive:
+			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedArchive: entity.HeroFeaturedArchiveInsert{
+				ArchiveId: e.FeaturedArchive.Archive.Archive.Id,
+				Tag:       e.FeaturedArchive.Tag,
+			}})
 		}
 	}
 
@@ -140,9 +145,10 @@ func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 		return nil, fmt.Errorf("failed to get hero: %w", err)
 	}
 	heroFull := entity.HeroFull{}
+
 	err = json.Unmarshal(heroRaw.Data, &heroFull)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal hero data: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal hero data: %w %s", err, string(heroRaw.Data))
 	}
 
 	return &heroFull, nil
@@ -163,6 +169,82 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 	entities := make([]entity.HeroEntity, 0, len(heroInserts))
 	for n, e := range heroInserts {
 		switch e.Type {
+		case entity.HeroTypeSingle:
+			media, err := rep.Media().GetMediaById(ctx, e.Single.MediaId)
+			if err != nil {
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.Single.MediaId))
+				continue
+			}
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				Single: &entity.HeroSingle{
+					Media:       *media,
+					Headline:    e.Single.Headline,
+					ExploreLink: e.Single.ExploreLink,
+					ExploreText: e.Single.ExploreText,
+				},
+			})
+		case entity.HeroTypeDouble:
+			leftMedia, err := rep.Media().GetMediaById(ctx, e.Double.Left.MediaId)
+			if err != nil {
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.Double.Left.MediaId))
+				continue
+			}
+			rightMedia, err := rep.Media().GetMediaById(ctx, e.Double.Right.MediaId)
+			if err != nil {
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.Double.Right.MediaId))
+				continue
+			}
+
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				Double: &entity.HeroDouble{
+					Left: entity.HeroSingle{
+						Media:       *leftMedia,
+						ExploreLink: e.Double.Left.ExploreLink,
+						ExploreText: e.Double.Left.ExploreText,
+						Headline:    e.Double.Left.Headline,
+					},
+					Right: entity.HeroSingle{
+						Media:       *rightMedia,
+						ExploreLink: e.Double.Right.ExploreLink,
+						ExploreText: e.Double.Right.ExploreText,
+						Headline:    e.Double.Right.Headline,
+					},
+				},
+			})
+		case entity.HeroTypeMain:
+			// main add should be only on first position
+			if n != 0 {
+				continue
+			}
+			media, err := rep.Media().GetMediaById(ctx, e.Main.Single.MediaId)
+			if err != nil {
+				slog.Error("failed to get media by id",
+					slog.String("err", err.Error()),
+					slog.Int("media_id", e.Main.Single.MediaId))
+				continue
+			}
+
+			entities = append(entities, entity.HeroEntity{
+				Type: e.Type,
+				Main: &entity.HeroMain{
+					Single: entity.HeroSingle{
+						Media:       *media,
+						ExploreLink: e.Main.Single.ExploreLink,
+						ExploreText: e.Main.Single.ExploreText,
+						Headline:    e.Main.Single.Headline,
+					},
+					Tag:         e.Main.Tag,
+					Description: e.Main.Description,
+				},
+			})
 		case entity.HeroTypeFeaturedProducts:
 			if len(e.FeaturedProducts.ProductIDs) == 0 {
 				continue
@@ -224,80 +306,24 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroInserts [
 					ExploreLink: e.FeaturedProductsTag.ExploreLink,
 				},
 			})
-		case entity.HeroTypeMain:
-			// main add should be only on first position
-			if n != 0 {
+		case entity.HeroTypeFeaturedArchive:
+			if e.FeaturedArchive.ArchiveId == 0 {
 				continue
 			}
-			media, err := rep.Media().GetMediaById(ctx, e.Main.Single.MediaId)
+
+			archive, err := rep.Archive().GetArchiveById(ctx, e.FeaturedArchive.ArchiveId)
 			if err != nil {
-				slog.Error("failed to get media by id",
+				slog.Error("failed to get archive by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Main.Single.MediaId))
+					slog.Int("archive_id", e.FeaturedArchive.ArchiveId))
 				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
 				Type: e.Type,
-				Main: &entity.HeroMain{
-					Single: entity.HeroSingle{
-						Media:       *media,
-						ExploreLink: e.Main.Single.ExploreLink,
-						ExploreText: e.Main.Single.ExploreText,
-						Headline:    e.Main.Single.Headline,
-					},
-					Tag:         e.Main.Tag,
-					Description: e.Main.Description,
-				},
-			})
-		case entity.HeroTypeSingle:
-			media, err := rep.Media().GetMediaById(ctx, e.Single.MediaId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Single.MediaId))
-				continue
-			}
-			entities = append(entities, entity.HeroEntity{
-				Type: e.Type,
-				Single: &entity.HeroSingle{
-					Media:       *media,
-					Headline:    e.Single.Headline,
-					ExploreLink: e.Single.ExploreLink,
-					ExploreText: e.Single.ExploreText,
-				},
-			})
-		case entity.HeroTypeDouble:
-			leftMedia, err := rep.Media().GetMediaById(ctx, e.Double.Left.MediaId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Double.Left.MediaId))
-				continue
-			}
-			rightMedia, err := rep.Media().GetMediaById(ctx, e.Double.Right.MediaId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Double.Right.MediaId))
-				continue
-			}
-
-			entities = append(entities, entity.HeroEntity{
-				Type: e.Type,
-				Double: &entity.HeroDouble{
-					Left: entity.HeroSingle{
-						Media:       *leftMedia,
-						ExploreLink: e.Double.Left.ExploreLink,
-						ExploreText: e.Double.Left.ExploreText,
-						Headline:    e.Double.Left.Headline,
-					},
-					Right: entity.HeroSingle{
-						Media:       *rightMedia,
-						ExploreLink: e.Double.Right.ExploreLink,
-						ExploreText: e.Double.Right.ExploreText,
-						Headline:    e.Double.Right.Headline,
-					},
+				FeaturedArchive: &entity.HeroFeaturedArchive{
+					Archive: *archive,
+					Tag:     e.FeaturedArchive.Tag,
 				},
 			})
 		}
