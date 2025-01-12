@@ -255,7 +255,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetSlug(e.Product.Id, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
+		Slug:           GetProductSlug(e.Product.Id, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
 		ProductDisplay: pbProductDisplay,
 	}
 
@@ -319,7 +319,7 @@ func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag
 
 var reg = regexp.MustCompile("[^a-zA-Z0-9]+")
 
-func GetSlug(id int, brand, name, gender string) string {
+func GetProductSlug(id int, brand, name, gender string) string {
 	clean := func(part string) string {
 		// Replace all non-alphanumeric characters with an empty string
 		return reg.ReplaceAllString(part, "")
@@ -350,7 +350,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetSlug(e.Id, e.Brand, e.Name, e.TargetGender.String()),
+		Slug:      GetProductSlug(e.Id, e.Brand, e.Name, e.TargetGender.String()),
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
 				Preorder:         timestamppb.New(e.Preorder.Time),

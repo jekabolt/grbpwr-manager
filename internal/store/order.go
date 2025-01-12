@@ -105,7 +105,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 			ProductBrand:    prd.Brand,
 			Color:           prd.Color,
 			SKU:             prd.SKU,
-			Slug:            dto.GetSlug(prd.Id, prd.Brand, prd.Name, prd.TargetGender.String()),
+			Slug:            dto.GetProductSlug(prd.Id, prd.Brand, prd.Name, prd.TargetGender.String()),
 			CategoryId:      prd.CategoryId,
 		}
 
@@ -710,7 +710,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 	// Iterate over fetched order items and group them by order ID
 	for _, oi := range ois {
 		// Generate the slug for each order item
-		oi.Slug = dto.GetSlug(oi.ProductId, oi.ProductBrand, oi.ProductName, oi.TargetGender.String())
+		oi.Slug = dto.GetProductSlug(oi.ProductId, oi.ProductBrand, oi.ProductName, oi.TargetGender.String())
 		// Append the order item to the corresponding order ID group
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
 	}

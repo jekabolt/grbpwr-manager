@@ -479,7 +479,13 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 // ARCHIVE MANAGER
 
 func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest) (*pb_admin.AddArchiveResponse, error) {
-	an := dto.ConvertPbArchiveNewToEntity(req.ArchiveNew)
+	an, err := dto.ConvertPbArchiveInsertToEntity(req.ArchiveInsert)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert pb archive insert to entity archive insert",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert pb archive insert to entity archive insert")
+	}
 
 	archiveId, err := s.repo.Archive().AddArchive(ctx, an)
 	if err != nil {
@@ -496,12 +502,17 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 
 func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveRequest) (*pb_admin.UpdateArchiveResponse, error) {
 
-	upd := dto.ConvertPbArchiveNewToEntity(req.ArchiveUpdate)
+	upd, err := dto.ConvertPbArchiveInsertToEntity(req.ArchiveInsert)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert pb archive insert to entity archive insert",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert pb archive insert to entity archive insert")
+	}
 
-	err := s.repo.Archive().UpdateArchive(ctx,
+	err = s.repo.Archive().UpdateArchive(ctx,
 		int(req.Id),
-		upd.Archive,
-		upd.Items,
+		upd,
 	)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update archive",

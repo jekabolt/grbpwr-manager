@@ -373,7 +373,7 @@ message AddHeroResponse {}
 // ARCHIVE MANAGER
 
 message AddArchiveRequest {
-  common.ArchiveNew archive_new = 1;
+  common.ArchiveInsert archive_insert = 1;
 }
 
 message AddArchiveResponse {
@@ -382,7 +382,7 @@ message AddArchiveResponse {
 
 message UpdateArchiveRequest {
   int32 id = 1;
-  common.ArchiveNew archive_update = 2;
+  common.ArchiveInsert archive_insert = 2;
 }
 
 message UpdateArchiveResponse {}
@@ -391,9 +391,7 @@ message DeleteArchiveByIdRequest {
   int32 id = 1;
 }
 
-message DeleteArchiveByIdResponse {
-  string message = 1;
-}
+message DeleteArchiveByIdResponse {}
 
 // SETTINGS
 

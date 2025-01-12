@@ -101,7 +101,6 @@ message HeroFeaturedProductsTagInsert {
   string tag = 1;
   string headline = 2;
   string explore_text = 3;
-  string explore_link = 4;
 }
 
 message HeroSingleInsert {

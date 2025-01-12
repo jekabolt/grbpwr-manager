@@ -1,7 +1,10 @@
 package dto
 
 import (
-	"database/sql"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -9,52 +12,27 @@ import (
 )
 
 // Convert a protobuf ArchiveNew to an entity ArchiveNew
-func ConvertPbArchiveNewToEntity(pbArchiveNew *pb_common.ArchiveNew) *entity.ArchiveNew {
-	if pbArchiveNew == nil {
-		return nil
+func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*entity.ArchiveInsert, error) {
+	if pbArchiveInsert == nil {
+		return nil, errors.New("archive insert is nil")
 	}
 
-	archiveBody := &entity.ArchiveBody{
-		Heading: pbArchiveNew.Archive.Heading,
-		Text:    pbArchiveNew.Archive.Text,
+	if len(pbArchiveInsert.MediaIds) == 0 {
+		return nil, errors.New("archive media ids must not be empty")
 	}
 
-	entityItems := convertPbArchiveItemsInsertToEntity(pbArchiveNew.ItemsInsert)
-
-	return &entity.ArchiveNew{
-		Archive: archiveBody,
-		Items:   entityItems,
+	mids := make([]int, 0, len(pbArchiveInsert.MediaIds))
+	for _, mid := range pbArchiveInsert.MediaIds {
+		mids = append(mids, int(mid))
 	}
+
+	return &entity.ArchiveInsert{
+		Title:       pbArchiveInsert.Title,
+		Description: pbArchiveInsert.Description,
+		Tag:         pbArchiveInsert.Tag,
+		MediaIds:    mids,
+	}, nil
 }
-
-// Convert a slice of protobuf ArchiveItemInsert to a slice of entity ArchiveItemInsert
-func convertPbArchiveItemsInsertToEntity(pbItemsInsert []*pb_common.ArchiveItemInsert) []entity.ArchiveItemInsert {
-	if pbItemsInsert == nil {
-		return nil
-	}
-
-	var entityItems []entity.ArchiveItemInsert
-	for _, pbItem := range pbItemsInsert {
-		entityItem := entity.ArchiveItemInsert{
-			MediaId: int(pbItem.MediaId),
-			URL:     sql.NullString{String: pbItem.Url, Valid: pbItem.Url != ""},
-			Name:    sql.NullString{String: pbItem.Name, Valid: pbItem.Name != ""},
-		}
-		entityItems = append(entityItems, entityItem)
-	}
-	return entityItems
-}
-
-// Convert a protobuf ArchiveItem to an entity ArchiveItem
-func ConvertPbArchiveItemToEntity(i *pb_common.ArchiveItem) *entity.ArchiveItem {
-	return &entity.ArchiveItem{
-		Media: ConvertPbMediaFullToEntity(i.Media),
-		URL:   sql.NullString{String: i.Url, Valid: i.Url != ""},
-		Name:  sql.NullString{String: i.Name, Valid: i.Name != ""},
-	}
-}
-
-// Convert a protobuf MediaFull to an entity MediaFull
 
 // Convert an entity ArchiveFull to a protobuf ArchiveFull
 func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull {
@@ -62,42 +40,39 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		return nil
 	}
 
-	archivePb := &pb_common.Archive{
-		Id:        int32(af.Archive.Id),
-		CreatedAt: timestamppb.New(af.Archive.CreatedAt),
-		UpdatedAt: timestamppb.New(af.Archive.UpdatedAt),
-		ArchiveBody: &pb_common.ArchiveBody{
-			Heading: af.Archive.Heading,
-			Text:    af.Archive.Text,
-		},
+	mediaPb := make([]*pb_common.MediaFull, 0, len(af.Media))
+	for _, m := range af.Media {
+		mediaPb = append(mediaPb, ConvertEntityToCommonMedia(&m))
 	}
 
-	itemsPb := convertArchiveItemsToPb(af.Items)
-
 	return &pb_common.ArchiveFull{
-		Archive: archivePb,
-		Items:   itemsPb,
+		Title:       af.Title,
+		Description: af.Description,
+		Tag:         af.Tag,
+		CreatedAt:   timestamppb.New(af.CreatedAt),
+		Media:       mediaPb,
 	}
 }
 
-// Convert a slice of entity ArchiveItem to a slice of protobuf ArchiveItemFull
-func convertArchiveItemsToPb(items []entity.ArchiveItemFull) []*pb_common.ArchiveItemFull {
-	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(items))
-	for _, item := range items {
-		url := ""
-		if item.URL.Valid {
-			url = item.URL.String
-		}
-		itemPb := &pb_common.ArchiveItemFull{
-			Id:        int32(item.Id),
-			ArchiveId: int32(item.ArchiveID),
-			ArchiveItem: &pb_common.ArchiveItem{
-				Media: ConvertEntityToCommonMedia(&item.Media),
-				Url:   url,
-				Name:  item.Name.String,
-			},
-		}
-		itemsPb = append(itemsPb, itemPb)
+// TODO:
+var aSreg = regexp.MustCompile("[^a-zA-Z0-9]+")
+
+func GetArchiveSlug(id int, title, tag string) string {
+	clean := func(part string) string {
+		// Replace all non-alphanumeric characters with an empty string
+		return aSreg.ReplaceAllString(part, "")
 	}
-	return itemsPb
+
+	// Use strings.Builder for efficient string concatenation
+	var sb strings.Builder.
+	sb.WriteString("/archive/")
+	sb.WriteString(gender)
+	sb.WriteString("/")
+	sb.WriteString(clean(brand))
+	sb.WriteString("/")
+	sb.WriteString(clean(name))
+	sb.WriteString("/")
+	sb.WriteString(fmt.Sprint(id))
+
+	return sb.String()
 }
