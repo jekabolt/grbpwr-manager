@@ -2,12 +2,11 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
@@ -22,41 +21,36 @@ func (ms *MYSQLStore) Archive() dependency.Archive {
 	}
 }
 
-func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (int, error) {
+func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int, error) {
 
-	if len(aNew.Items) == 0 {
+	if len(aNew.MediaIds) == 0 {
 		return 0, errors.New("archive items must not be empty")
 	}
 
-	if aNew.Archive.Heading == "" {
-		return 0, errors.New("archive title must not be empty")
-	}
-
-	var archiveID int
+	var aid int
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `INSERT INTO archive (heading, text) VALUES (:heading, :text)`
-		archiveID, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"heading": aNew.Archive.Heading,
-			"text":    aNew.Archive.Text,
+
+		query := `INSERT INTO archive (title, description, tag) VALUES (:title, :description, :tag)`
+		aid, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+			"title":       aNew.Title,
+			"description": aNew.Description,
+			"tag":         aNew.Tag,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
 		}
 
-		rows := make([]map[string]any, 0, len(aNew.Items))
-		for i, archive := range aNew.Items {
+		rows := make([]map[string]any, 0, len(aNew.MediaIds))
+		for _, mid := range aNew.MediaIds {
 			row := map[string]any{
-				"media_id":        archive.MediaId,
-				"name":            archive.Name,
-				"url":             archive.URL,
-				"archive_id":      archiveID,
-				"sequence_number": i,
+				"archive_id": aid,
+				"media_id":   mid,
 			}
 			rows = append(rows, row)
 		}
 
-		err := BulkInsert(ctx, rep.DB(), "archive_item", rows)
+		err = BulkInsert(ctx, rep.DB(), "archive_item", rows)
 		if err != nil {
 			return fmt.Errorf("failed to add archive items: %w", err)
 		}
@@ -64,56 +58,53 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveNew) (
 		return nil
 	})
 	if err != nil {
-		return archiveID, fmt.Errorf("tx failed: %w", err)
+		return aid, fmt.Errorf("tx failed: %w", err)
 	}
 
-	return archiveID, nil
+	return aid, nil
 }
 
-func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aId int, aBody *entity.ArchiveBody, aItems []entity.ArchiveItemInsert) error {
+func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entity.ArchiveInsert) error {
 
-	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// If no items are provided, delete the archive and return
-		if len(aItems) == 0 {
-			query := `DELETE FROM archive WHERE id = :id`
-			_, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
-				"id": aId,
-			})
+		if len(aInsert.MediaIds) == 0 {
+			af, err := rep.Archive().GetArchiveById(ctx, aid)
 			if err != nil {
-				return fmt.Errorf("failed to delete archive with ID %d: %w", aId, err)
+				return fmt.Errorf("failed to get archive with ID %d: %w", aid, err)
 			}
-			return nil
+			if len(af.Media) == 0 {
+				return nil
+			}
 		}
 
 		// Delete existing archive items
 		query := `DELETE FROM archive_item WHERE archive_id = :archiveId`
 		_, err := rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
-			"archiveId": aId,
+			"archiveId": aid,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to delete archive items with archive Id %d: %w", aId, err)
+			return fmt.Errorf("failed to delete archive items with archive Id %d: %w", aid, err)
 		}
 
 		// Update the archive itself
-		query = `UPDATE archive SET heading = :heading, text = :text WHERE id = :id`
+		query = `UPDATE archive SET title = :title, description = :description, tag = :tag WHERE id = :id`
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
-			"id":      aId,
-			"heading": aBody.Heading,
-			"text":    aBody.Text,
+			"id":          aid,
+			"title":       aInsert.Title,
+			"description": aInsert.Description,
+			"tag":         aInsert.Tag,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update archive: %w", err)
 		}
 
 		// Insert new archive items
-		rows := make([]map[string]any, 0, len(aItems))
-		for i, archive := range aItems {
+		rows := make([]map[string]any, 0, len(aInsert.MediaIds))
+		for _, mid := range aInsert.MediaIds {
 			row := map[string]any{
-				"media_id":        archive.MediaId,
-				"name":            archive.Name,
-				"url":             archive.URL,
-				"archive_id":      aId,
-				"sequence_number": i,
+				"archive_id": aid,
+				"media_id":   mid,
 			}
 			rows = append(rows, row)
 		}
@@ -124,119 +115,67 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aId int, aBody *entity.
 		}
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("tx failed: %w", err)
+	}
+	return nil
 }
 
-type archiveJoin struct {
-	Id           int       `db:"id"`
-	CreatedAt    time.Time `db:"created_at"`
-	UpdatedAt    time.Time `db:"updated_at"`
-	Heading      string    `db:"heading"`
-	Text         string    `db:"text"`
-	ArchiveItems string    `db:"archive_items"`
-}
-
-func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error) {
+func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, int, error) {
 	if limit <= 0 || offset < 0 {
-		return nil, errors.New("invalid pagination parameters")
+		return nil, 0, errors.New("invalid pagination parameters")
 	}
-
-	query := fmt.Sprintf(
-		`SELECT 
-		a.id,
-		a.created_at,
-		a.updated_at,
-		a.heading,
-		a.text,
-		JSON_ARRAYAGG(
-			JSON_OBJECT(
-				'id', ai.id,
-				'media', JSON_OBJECT(
-					'id', m.id,
-					'full_size', m.full_size,
-					'full_size_width', m.full_size_width,
-					'full_size_height', m.full_size_height,
-					'thumbnail', m.thumbnail,
-					'thumbnail_width', m.thumbnail_width,
-					'thumbnail_height', m.thumbnail_height,
-					'compressed', m.compressed,
-					'compressed_width', m.compressed_width,
-					'compressed_height', m.compressed_height,
-					'blur_hash', m.blur_hash
-				),
-				'url', ai.url,
-				'name', ai.name,
-				'archive_id', ai.archive_id
-			)
-		) AS archive_items
-		FROM 
-			archive a
-		LEFT JOIN 
-			archive_item ai ON a.id = ai.archive_id
-		LEFT JOIN
-			media m ON ai.media_id = m.id
-		GROUP BY 
-			a.id
-		ORDER BY 
-			a.created_at %s
-		LIMIT 
-			? OFFSET ?`,
-		orderFactor.String(),
-	)
-
-	// Slice to store the joined data from the query
-	var archiveData []archiveJoin
-
-	// Execute the query with context and scan the results into the slice
-	err := ms.DB().SelectContext(ctx, &archiveData, query, limit, offset)
+	// Build and execute the queries
+	listQuery, countQuery := buildArchiveQuery(limit, offset)
+	count, err := QueryCountNamed(ctx, ms.db, countQuery, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get archives paged: %w", err)
+		return nil, 0, fmt.Errorf("can't get archive count: %w", err)
 	}
 
-	afs, err := convertArchiveJoinToArchiveFull(archiveData)
+	// Fetch products
+	afs, err := QueryListNamed[entity.ArchiveFull](ctx, ms.db, listQuery, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert archive json to entity %w", err)
+		return nil, 0, fmt.Errorf("can't get archives: %w", err)
 	}
 
-	return afs, err
+	for _, af := range afs {
+		af.Slug = dto.GetArchiveSlug()
+	}
+
+	return archives, count, nil
 
 }
 
-func convertArchiveJoinToArchiveFull(ajs []archiveJoin) ([]entity.ArchiveFull, error) {
-	result := make([]entity.ArchiveFull, len(ajs))
+// buildQuery refactored to use named parameters and to include limit and offset
+func buildArchiveQuery(limit int, offset int) (string, string) {
+	baseQuery := `
+	SELECT 
+		a.*,
+		m.full_size,
+		m.full_size_width,
+		m.full_size_height,
+		m.thumbnail,
+		m.thumbnail_width,
+		m.thumbnail_height,
+		m.compressed,
+		m.compressed_width,
+		m.compressed_height,
+		m.blur_hash
+	FROM 
+		archive a
+	JOIN 
+		archive_item ai
+	ON 
+		a.id = ai.archive_id
+	JOIN
+		media m ON ai.media_id = m.id
+	ORDER BY a.created_at DESC
+	LIMIT :limit OFFSET :offset
+	`
 
-	for i, aj := range ajs {
-		var archiveItems []entity.ArchiveItemFull
-		if err := json.Unmarshal([]byte(aj.ArchiveItems), &archiveItems); err != nil {
-			return nil, err
-		}
+	countQuery := "SELECT COUNT(*) FROM archive"
 
-		// Parse CreatedAt for each MediaFull in archiveItems
-		for j, item := range archiveItems {
-			createdAtStr := item.Media.CreatedAt.Format("2006-01-02 15:04:05.000000")
-			parsedTime, err := time.Parse("2006-01-02 15:04:05.000000", createdAtStr)
-			if err != nil {
-				return nil, err
-			}
-			archiveItems[j].Media.CreatedAt = parsedTime
-		}
-
-		archive := &entity.Archive{
-			Id:        aj.Id,
-			CreatedAt: aj.CreatedAt,
-			UpdatedAt: aj.UpdatedAt,
-			ArchiveBody: entity.ArchiveBody{
-				Heading: aj.Heading,
-				Text:    aj.Text,
-			},
-		}
-
-		result[i] = entity.ArchiveFull{
-			Archive: archive,
-			Items:   archiveItems,
-		}
-	}
-
-	return result, nil
+	return baseQuery, countQuery
 }
 
 func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
@@ -247,6 +186,14 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 		})
 		if err != nil {
 			return fmt.Errorf("failed to delete archive with ID %d: %w", id, err)
+		}
+
+		query = `DELETE FROM archive_item WHERE archive_id = :id`
+		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+			"id": id,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete archive items with ID %d: %w", id, err)
 		}
 
 		rowsAffected, err := res.RowsAffected()
@@ -263,62 +210,37 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 }
 
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
-	query := `
+
+	query := `SELECT * FROM archive a WHERE a.id = :id`
+	args := map[string]any{
+		"id": id,
+	}
+
+	// Fetch products
+	af, err := QueryNamedOne[entity.ArchiveFull](ctx, ms.db, query, args)
+	if err != nil {
+		return nil, fmt.Errorf("can't get archive full: %w", err)
+	}
+
+	// TODO: add next and prev
+	query = `
 	SELECT 
-		a.id,
-		a.created_at,
-		a.updated_at,
-		a.heading,
-		a.text,
-		JSON_ARRAYAGG(
-			JSON_OBJECT(
-				'id', ai.id,
-				'media', JSON_OBJECT(
-					'id', m.id,
-					'full_size', m.full_size,
-					'full_size_width', m.full_size_width,
-					'full_size_height', m.full_size_height,
-					'thumbnail', m.thumbnail,
-					'thumbnail_width', m.thumbnail_width,
-					'thumbnail_height', m.thumbnail_height,
-					'compressed', m.compressed,
-					'compressed_width', m.compressed_width,
-					'compressed_height', m.compressed_height,
-					'blur_hash', m.blur_hash
-				),
-				'url', ai.url,
-				'name', ai.name,
-				'archive_id', ai.archive_id
-			)
-		) AS archive_items
+		m.*
 	FROM 
-		archive a
-	LEFT JOIN 
-		archive_item ai ON a.id = ai.archive_id
-	LEFT JOIN
-		media m ON ai.media_id = m.id
+		archive_item ai
 	WHERE 
-		a.id = ?
-	GROUP BY 
-		a.id
+		ai.archive_id = :id
+	JOIN
+		media m 
+	ON 
+		ai.media_id = m.id
 	`
 
-	var archiveData []archiveJoin
-
-	// Execute the query with context and scan the results into the slice
-	err := ms.DB().SelectContext(ctx, &archiveData, query, id)
+	af.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get archive by ID %d: %w", id, err)
+		return nil, fmt.Errorf("can't get media items: %w", err)
 	}
 
-	if len(archiveData) == 0 {
-		return nil, fmt.Errorf("no archive found with ID %d", id)
-	}
+	return &af, nil
 
-	afs, err := convertArchiveJoinToArchiveFull(archiveData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert archive json to entity %w", err)
-	}
-
-	return &afs[0], nil
 }

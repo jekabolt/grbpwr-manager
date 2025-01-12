@@ -499,7 +499,7 @@ func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.Uns
 }
 
 func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchivesPagedRequest) (*pb_frontend.GetArchivesPagedResponse, error) {
-	afs, err := s.repo.Archive().GetArchivesPaged(ctx,
+	afs, count, err := s.repo.Archive().GetArchivesPaged(ctx,
 		int(req.Limit),
 		int(req.Offset),
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
@@ -519,6 +519,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 
 	return &pb_frontend.GetArchivesPagedResponse{
 		Archives: pbAfs,
+		Total:    int32(count),
 	}, nil
 
 }

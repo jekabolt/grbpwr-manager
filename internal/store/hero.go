@@ -86,7 +86,7 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 			}})
 		case entity.HeroTypeFeaturedArchive:
 			hei = append(hei, entity.HeroEntityInsert{Type: e.Type, FeaturedArchive: entity.HeroFeaturedArchiveInsert{
-				ArchiveId:   e.FeaturedArchive.Archive.Archive.Id,
+				ArchiveId:   e.FeaturedArchive.,
 				Tag:         e.FeaturedArchive.Tag,
 				Headline:    e.FeaturedArchive.Headline,
 				ExploreText: e.FeaturedArchive.ExploreText,

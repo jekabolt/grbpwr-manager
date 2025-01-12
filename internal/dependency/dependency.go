@@ -119,9 +119,9 @@ type (
 	}
 
 	Archive interface {
-		AddArchive(ctx context.Context, archiveNew *entity.ArchiveNew) (int, error)
-		UpdateArchive(ctx context.Context, id int, archiveUpd *entity.ArchiveBody, archiveItems []entity.ArchiveItemInsert) error
-		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, error)
+		AddArchive(ctx context.Context, archiveInsert *entity.ArchiveInsert) (int, error)
+		UpdateArchive(ctx context.Context, id int, archiveInsert *entity.ArchiveInsert) error
+		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveFull, int, error)
 		DeleteArchiveById(ctx context.Context, id int) error
 		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
 	}

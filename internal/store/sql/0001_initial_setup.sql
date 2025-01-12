@@ -319,18 +319,14 @@ CREATE TABLE admins (
 CREATE TABLE archive (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
-    heading VARCHAR(255) NOT NULL,
-    text TEXT NOT NULL 
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    tag VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE archive_item (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    media_id INT NOT NULL,
-    name VARCHAR(255),
-    url VARCHAR(255),
     archive_id INT NOT NULL,
-    sequence_number INT NOT NULL DEFAULT 0,
+    media_id INT NOT NULL,
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE,
     FOREIGN KEY (media_id) REFERENCES media(id)
 );
