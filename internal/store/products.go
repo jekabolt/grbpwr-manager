@@ -506,7 +506,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	ON 
 		p.thumbnail_id = m.id`
 
-	countQuery := "SELECT COUNT(*) FROM product"
+	countQuery := "SELECT COUNT(*) FROM product p JOIN media m ON p.thumbnail_id = m.id"
 
 	// Add WHERE clause if there are conditions
 	if len(whereClauses) > 0 {
