@@ -70,7 +70,6 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 				Tag:         hi.FeaturedProductsTag.Tag,
 				Headline:    hi.FeaturedProductsTag.Headline,
 				ExploreText: hi.FeaturedProductsTag.ExploreText,
-				ExploreLink: hi.FeaturedProductsTag.ExploreLink,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_FEATURED_ARCHIVE:

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -125,52 +127,143 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	if limit <= 0 || offset < 0 {
 		return nil, 0, errors.New("invalid pagination parameters")
 	}
-	// Build and execute the queries
-	listQuery, countQuery := buildArchiveQuery(limit, offset)
+
+	_, countQuery := buildArchiveQuery(limit, offset)
 	count, err := QueryCountNamed(ctx, ms.db, countQuery, map[string]any{})
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get archive count: %w", err)
 	}
 
-	// Fetch products
-	afs, err := QueryListNamed[entity.ArchiveFull](ctx, ms.db, listQuery, map[string]any{})
+	// Determine the actual limit to fetch
+	actualLimit := limit
+	if offset+limit < count {
+		actualLimit = limit + 1 // Fetch one extra to check for "next"
+	}
+
+	// Build the list query with the determined limit
+	listQuery, _ := buildArchiveQuery(actualLimit, offset)
+
+	type archive struct {
+		Id               int       `db:"id"`
+		CreatedAt        time.Time `db:"created_at"`
+		Title            string    `db:"title"`
+		Description      string    `db:"description"`
+		Tag              string    `db:"tag"`
+		FullSize         string    `db:"full_size"`
+		FullSizeWidth    int       `db:"full_size_width"`
+		FullSizeHeight   int       `db:"full_size_height"`
+		Thumbnail        string    `db:"thumbnail"`
+		ThumbnailWidth   int       `db:"thumbnail_width"`
+		ThumbnailHeight  int       `db:"thumbnail_height"`
+		Compressed       string    `db:"compressed"`
+		CompressedWidth  int       `db:"compressed_width"`
+		CompressedHeight int       `db:"compressed_height"`
+		BlurHash         string    `db:"blur_hash"`
+	}
+
+	archives, err := QueryListNamed[archive](ctx, ms.db, listQuery, map[string]any{
+		"limit":  limit,
+		"offset": offset,
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get archives: %w", err)
 	}
 
-	for _, af := range afs {
-		af.Slug = dto.GetArchiveSlug()
+	slog.Default().InfoContext(ctx, "archives", slog.Any("archives", archives))
+
+	afs := make([]entity.ArchiveFull, 0, len(archives))
+	for _, a := range archives {
+		afs = append(afs, entity.ArchiveFull{
+			Id:          a.Id,
+			Title:       a.Title,
+			Description: a.Description,
+			Tag:         a.Tag,
+			Slug:        dto.GetArchiveSlug(a.Id, a.Title, a.Tag),
+			NextSlug:    "",
+			CreatedAt:   a.CreatedAt,
+			Media: []entity.MediaFull{
+				{
+					Id:        a.Id,
+					CreatedAt: a.CreatedAt,
+					MediaItem: entity.MediaItem{
+						FullSizeMediaURL:   a.FullSize,
+						FullSizeWidth:      a.FullSizeWidth,
+						FullSizeHeight:     a.FullSizeHeight,
+						ThumbnailMediaURL:  a.Thumbnail,
+						ThumbnailWidth:     a.ThumbnailWidth,
+						ThumbnailHeight:    a.ThumbnailHeight,
+						CompressedMediaURL: a.Compressed,
+						CompressedWidth:    a.CompressedWidth,
+						CompressedHeight:   a.CompressedHeight,
+						BlurHash:           a.BlurHash,
+					},
+				},
+			},
+		})
 	}
 
-	return archives, count, nil
+	// slog.Default().InfoContext(ctx, "afs", slog.Any("afs", afs))
 
+	// Check if we fetched an extra record
+	hasMore := len(afs) > limit
+	if hasMore {
+		afs = afs[:limit] // Trim the extra record
+	}
+
+	// Generate Slug and NextSlug
+	for i := range afs {
+		afs[i].Slug = dto.GetArchiveSlug(afs[i].Id, afs[i].Title, afs[i].Tag)
+		if hasMore && i == len(afs)-1 { // Last item and there's more
+			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Title, afs[i].Tag)
+		} else if i+offset+1 < count { // General case: next archive exists
+			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Title, afs[i].Tag)
+		} else { // Last item with no more archives
+			afs[i].NextSlug = ""
+		}
+	}
+
+	return afs, count, nil
 }
 
 // buildQuery refactored to use named parameters and to include limit and offset
 func buildArchiveQuery(limit int, offset int) (string, string) {
 	baseQuery := `
 	SELECT 
-		a.*,
-		m.full_size,
-		m.full_size_width,
-		m.full_size_height,
-		m.thumbnail,
-		m.thumbnail_width,
-		m.thumbnail_height,
-		m.compressed,
-		m.compressed_width,
-		m.compressed_height,
-		m.blur_hash
-	FROM 
-		archive a
-	JOIN 
-		archive_item ai
-	ON 
-		a.id = ai.archive_id
-	JOIN
-		media m ON ai.media_id = m.id
-	ORDER BY a.created_at DESC
-	LIMIT :limit OFFSET :offset
+    a.id, 
+    a.created_at, 
+    a.title, 
+    a.description, 
+    a.tag,
+		MAX(single_media.full_size) AS full_size,
+		MAX(single_media.full_size_width) AS full_size_width,
+		MAX(single_media.full_size_height) AS full_size_height,
+		MAX(single_media.thumbnail) AS thumbnail,
+		MAX(single_media.thumbnail_width) AS thumbnail_width,
+		MAX(single_media.thumbnail_height) AS thumbnail_height,
+		MAX(single_media.compressed) AS compressed,
+		MAX(single_media.compressed_width) AS compressed_width,
+		MAX(single_media.compressed_height) AS compressed_height,
+		MAX(single_media.blur_hash) AS blur_hash
+	FROM archive a 
+	LEFT JOIN (
+		SELECT 
+			ai.archive_id, 
+			m.full_size,
+			m.full_size_width,
+			m.full_size_height,
+			m.thumbnail,
+			m.thumbnail_width,
+			m.thumbnail_height,
+			m.compressed,
+			m.compressed_width,
+			m.compressed_height,
+			m.blur_hash
+		FROM archive_item ai 
+		JOIN media m ON ai.media_id = m.id
+	) AS single_media ON a.id = single_media.archive_id
+	GROUP BY a.id, a.created_at, a.title, a.description, a.tag
+	ORDER BY a.created_at DESC 
+	LIMIT :limit OFFSET :offset;
 	`
 
 	countQuery := "SELECT COUNT(*) FROM archive"
@@ -211,35 +304,58 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 
-	query := `SELECT * FROM archive a WHERE a.id = :id`
+	query := `
+		SELECT a.* FROM archive a
+		CROSS JOIN (
+			SELECT created_at as target_date 
+			FROM archive 
+			WHERE id = :id
+		) t
+		WHERE a.created_at >= t.target_date
+		OR a.created_at = (
+			SELECT MIN(created_at) 
+			FROM archive
+		)
+		ORDER BY 
+			CASE WHEN a.created_at = t.target_date THEN 0 ELSE 1 END,
+			a.created_at
+		LIMIT 2
+	`
 	args := map[string]any{
 		"id": id,
 	}
 
-	// Fetch products
-	af, err := QueryNamedOne[entity.ArchiveFull](ctx, ms.db, query, args)
+	afs, err := QueryListNamed[entity.ArchiveFull](ctx, ms.db, query, args)
 	if err != nil {
 		return nil, fmt.Errorf("can't get archive full: %w", err)
 	}
 
+	if len(afs) == 0 {
+		return nil, fmt.Errorf("no archive found with ID %d", id)
+	}
+
+	if len(afs) != 2 {
+		return nil, fmt.Errorf("unexpected number of archives found with ID %d", id)
+	}
+
+	af := afs[0]
+	afNext := afs[1]
+
 	// TODO: add next and prev
 	query = `
-	SELECT 
-		m.*
-	FROM 
-		archive_item ai
-	WHERE 
-		ai.archive_id = :id
-	JOIN
-		media m 
-	ON 
-		ai.media_id = m.id
+	SELECT m.*
+	FROM archive_item ai
+	JOIN media m ON ai.media_id = m.id
+	WHERE ai.archive_id = :id;
 	`
 
 	af.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, args)
 	if err != nil {
 		return nil, fmt.Errorf("can't get media items: %w", err)
 	}
+
+	af.Slug = dto.GetArchiveSlug(af.Id, af.Title, af.Tag)
+	af.NextSlug = dto.GetArchiveSlug(afNext.Id, afNext.Title, afNext.Tag)
 
 	return &af, nil
 

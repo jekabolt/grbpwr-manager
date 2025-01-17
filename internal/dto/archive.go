@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -46,11 +48,14 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 	}
 
 	return &pb_common.ArchiveFull{
+		Id:          int32(af.Id),
 		Title:       af.Title,
 		Description: af.Description,
 		Tag:         af.Tag,
 		CreatedAt:   timestamppb.New(af.CreatedAt),
 		Media:       mediaPb,
+		Slug:        af.Slug,
+		NextSlug:    af.NextSlug,
 	}
 }
 
@@ -64,15 +69,25 @@ func GetArchiveSlug(id int, title, tag string) string {
 	}
 
 	// Use strings.Builder for efficient string concatenation
-	var sb strings.Builder.
+	var sb strings.Builder
 	sb.WriteString("/archive/")
-	sb.WriteString(gender)
+	sb.WriteString(clean(title))
 	sb.WriteString("/")
-	sb.WriteString(clean(brand))
-	sb.WriteString("/")
-	sb.WriteString(clean(name))
+	sb.WriteString(clean(tag))
 	sb.WriteString("/")
 	sb.WriteString(fmt.Sprint(id))
 
 	return sb.String()
+}
+
+func GetIdFromSlug(slug string) (int, error) {
+	parts := strings.Split(slug, "/")
+	if len(parts) < 4 {
+		return 0, errors.New("slug is too short")
+	}
+	id, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }

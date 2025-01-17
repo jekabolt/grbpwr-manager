@@ -89,7 +89,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 
 func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequest) (*pb_frontend.GetProductResponse, error) {
 
-	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductByNameNoHidden(ctx, int(req.Id), req.Name)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get product by full name",
 			slog.String("err", err.Error()),
@@ -524,16 +524,16 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 
 }
 
-func (s *Server) GetArchiveById(ctx context.Context, req *pb_frontend.GetArchiveByIdRequest) (*pb_frontend.GetArchiveByIdResponse, error) {
+func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequest) (*pb_frontend.GetArchiveResponse, error) {
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get archive by id", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't get archive by slug", slog.String("err", err.Error()))
 		return nil, err
 	}
 
 	pbAf := dto.ConvertArchiveFullEntityToPb(af)
 
-	return &pb_frontend.GetArchiveByIdResponse{
+	return &pb_frontend.GetArchiveResponse{
 		Archive: pbAf,
 	}, nil
 }
