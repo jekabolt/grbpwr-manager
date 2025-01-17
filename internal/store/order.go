@@ -33,7 +33,7 @@ func (ms *MYSQLStore) Order() dependency.Order {
 func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
 	// Check if there are no items provided
 	if len(items) == 0 {
-		return nil, errors.New("no items to validate")
+		return nil, errors.New("zero items to validate")
 	}
 
 	// Get product IDs from items
@@ -404,6 +404,8 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 	// adjust quantities if it exceeds the maxOrderItemPerSize
 	items = adjustQuantities(cache.GetMaxOrderItems(), items)
 
+	slog.Default().InfoContext(ctx, "items", slog.Any("items", items))
+
 	// validate items stock availability
 	validItems, err := validateOrderItemsStockAvailability(ctx, ms, items)
 	if err != nil {
@@ -437,7 +439,7 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 
 	// Return early if no valid items
 	if len(validItems) == 0 {
-		return nil, fmt.Errorf("no valid order items to insert")
+		return nil, fmt.Errorf("zero valid order items to insert")
 	}
 
 	// Convert valid items for further processing
