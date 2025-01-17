@@ -5,13 +5,14 @@ import (
 )
 
 type ArchiveFull struct {
-	Id          int         `db:"id" json:"id"`
-	Title       string      `db:"title" json:"title"`
-	Description string      `db:"description" json:"description"`
-	Tag         string      `db:"tag" json:"tag"`
-	Slug        string      `json:"slug"`
-	CreatedAt   time.Time   `db:"created_at" json:"created_at"`
-	Media       []MediaFull `json:"media"`
+	Id          int       `db:"id" json:"id"`
+	Title       string    `db:"title" json:"title"`
+	Description string    `db:"description" json:"description"`
+	Tag         string    `db:"tag" json:"tag"`
+	Slug        string    `json:"slug"`
+	NextSlug    string    `json:"next_slug"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
+	Media       []MediaFull
 }
 
 type ArchiveInsert struct {

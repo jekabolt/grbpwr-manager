@@ -13,9 +13,10 @@ message ArchiveFull {
   string description = 3;
   string tag = 4;
   string slug = 5;
-  google.protobuf.Timestamp created_at = 6;
-  common.MediaFull hero = 7;
-  repeated common.MediaFull media = 8;
+  string next_slug = 6;
+  google.protobuf.Timestamp created_at = 7;
+  common.MediaFull hero = 8;
+  repeated common.MediaFull media = 9;
 }
 
 message ArchiveInsert {
