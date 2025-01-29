@@ -24,10 +24,12 @@ message FilterConditions {
   string from = 1;
   string to = 2;
   bool on_sale = 3;
-  common.GenderEnum gender = 4;
+  repeated common.GenderEnum gender = 4;
   string color = 5;
-  repeated int32 category_ids = 6;
-  repeated int32 sizes_ids = 7;
-  bool preorder = 8;
-  string by_tag = 9;
+  repeated int32 top_category_ids = 6;
+  repeated int32 sub_category_ids = 7;
+  repeated int32 type_ids = 8;
+  repeated int32 sizes_ids = 9;
+  bool preorder = 10;
+  string by_tag = 11;
 }

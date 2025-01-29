@@ -29,27 +29,31 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, category_id, description, care_instructions, composition, hidden, target_gender)
-	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :categoryId, :description, :careInstructions, :composition, :hidden, :targetGender)`
+	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, description, care_instructions, composition, hidden, target_gender)
+	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :description, :careInstructions, :composition, :hidden, :targetGender)`
 
 	params := map[string]any{
-		"id":               id,
-		"preorder":         product.Preorder,
-		"name":             product.Name,
-		"brand":            product.Brand,
-		"sku":              product.SKU,
-		"color":            product.Color,
-		"colorHex":         product.ColorHex,
-		"countryOfOrigin":  product.CountryOfOrigin,
-		"thumbnailId":      product.ThumbnailMediaID,
-		"price":            product.Price,
-		"salePercentage":   product.SalePercentage,
-		"categoryId":       product.CategoryId,
-		"description":      product.Description,
-		"hidden":           product.Hidden,
-		"targetGender":     product.TargetGender,
-		"careInstructions": product.CareInstructions,
-		"composition":      product.Composition,
+		"id":                 id,
+		"preorder":           product.Preorder,
+		"name":               product.Name,
+		"brand":              product.Brand,
+		"sku":                product.SKU,
+		"color":              product.Color,
+		"colorHex":           product.ColorHex,
+		"countryOfOrigin":    product.CountryOfOrigin,
+		"thumbnailId":        product.ThumbnailMediaID,
+		"price":              product.Price,
+		"salePercentage":     product.SalePercentage,
+		"topCategoryId":      product.TopCategoryId,
+		"subCategoryId":      product.SubCategoryId,
+		"typeId":             product.TypeId,
+		"modelWearsHeightCm": product.ModelWearsHeightCm,
+		"modelWearsSizeId":   product.ModelWearsSizeId,
+		"description":        product.Description,
+		"hidden":             product.Hidden,
+		"targetGender":       product.TargetGender,
+		"careInstructions":   product.CareInstructions,
+		"composition":        product.Composition,
 	}
 
 	slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
@@ -254,7 +258,11 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		thumbnail_id = :thumbnailId, 
 		price = :price, 
 		sale_percentage = :salePercentage,
-		category_id = :categoryId, 
+		top_category_id = :topCategoryId, 
+		sub_category_id = :subCategoryId, 
+		type_id = :typeId, 
+		model_wears_height_cm = :modelWearsHeightCm, 
+		model_wears_size_id = :modelWearsSizeId, 
 		description = :description, 
 		hidden = :hidden,
 		target_gender = :targetGender,
@@ -263,23 +271,27 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"preorder":         prd.Preorder,
-		"name":             prd.Name,
-		"brand":            prd.Brand,
-		"sku":              prd.SKU,
-		"color":            prd.Color,
-		"colorHex":         prd.ColorHex,
-		"countryOfOrigin":  prd.CountryOfOrigin,
-		"thumbnailId":      prd.ThumbnailMediaID,
-		"price":            prd.Price,
-		"salePercentage":   prd.SalePercentage,
-		"categoryId":       prd.CategoryId,
-		"description":      prd.Description,
-		"hidden":           prd.Hidden,
-		"targetGender":     prd.TargetGender,
-		"careInstructions": prd.CareInstructions,
-		"composition":      prd.Composition,
-		"id":               id,
+		"preorder":           prd.Preorder,
+		"name":               prd.Name,
+		"brand":              prd.Brand,
+		"sku":                prd.SKU,
+		"color":              prd.Color,
+		"colorHex":           prd.ColorHex,
+		"countryOfOrigin":    prd.CountryOfOrigin,
+		"thumbnailId":        prd.ThumbnailMediaID,
+		"price":              prd.Price,
+		"salePercentage":     prd.SalePercentage,
+		"topCategoryId":      prd.TopCategoryId,
+		"subCategoryId":      prd.SubCategoryId,
+		"typeId":             prd.TypeId,
+		"modelWearsHeightCm": prd.ModelWearsHeightCm,
+		"modelWearsSizeId":   prd.ModelWearsSizeId,
+		"description":        prd.Description,
+		"hidden":             prd.Hidden,
+		"targetGender":       prd.TargetGender,
+		"careInstructions":   prd.CareInstructions,
+		"composition":        prd.Composition,
+		"id":                 id,
 	})
 }
 
@@ -355,17 +367,29 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		if filterConditions.OnSale {
 			whereClauses = append(whereClauses, "p.sale_percentage > 0")
 		}
-		if filterConditions.Gender != "" {
-			whereClauses = append(whereClauses, "p.target_gender = :targetGender")
-			args["targetGender"] = filterConditions.Gender.String()
+		if len(filterConditions.Gender) != 0 {
+			whereClauses = append(whereClauses, "p.target_gender IN (:targetGenders)")
+			genders := make([]string, len(filterConditions.Gender))
+			for i, g := range filterConditions.Gender {
+				genders[i] = string(g)
+			}
+			args["targetGenders"] = genders
 		}
 		if filterConditions.Color != "" {
 			whereClauses = append(whereClauses, "p.color = :color")
 			args["color"] = filterConditions.Color
 		}
-		if len(filterConditions.CategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.category_id IN (:categoryIds)")
-			args["categoryIds"] = filterConditions.CategoryIds
+		if len(filterConditions.TopCategoryIds) != 0 {
+			whereClauses = append(whereClauses, "p.top_category_id IN (:topCategoryIds)")
+			args["topCategoryIds"] = filterConditions.TopCategoryIds
+		}
+		if len(filterConditions.SubCategoryIds) != 0 {
+			whereClauses = append(whereClauses, "p.sub_category_id IN (:subCategoryIds)")
+			args["subCategoryIds"] = filterConditions.SubCategoryIds
+		}
+		if len(filterConditions.TypeIds) != 0 {
+			whereClauses = append(whereClauses, "p.type_id IN (:typeIds)")
+			args["typeIds"] = filterConditions.TypeIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
 			whereClauses = append(whereClauses, "p.id IN (SELECT ps.product_id FROM product_size ps WHERE ps.size_id IN (:sizes))")
@@ -574,7 +598,11 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 			p.country_of_origin,
 			p.price,
 			p.sale_percentage,
-			p.category_id,
+			p.top_category_id,
+			p.sub_category_id,
+			p.type_id,
+			p.model_wears_height_cm,
+			p.model_wears_size_id,
 			p.description,
 			p.hidden,
 			p.target_gender,
@@ -762,7 +790,7 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 	`
 	err := ExecNamed(ctx, ms.db, query, map[string]any{
 		"productId": productId,
-		"sizeId":    sz.Size.Id,
+		"sizeId":    sz.Id,
 		"quantity":  quantity,
 	})
 	if err != nil {
@@ -854,7 +882,11 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.country_of_origin,
 			p.price,
 			p.sale_percentage,
-			p.category_id,
+			p.top_category_id,
+			p.sub_category_id,
+			p.type_id,
+			p.model_wears_height_cm,
+			p.model_wears_size_id,
 			p.description,
 			p.hidden,
 			p.target_gender,

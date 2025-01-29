@@ -3,6 +3,7 @@ package bucket
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"image"
 	"io"
@@ -147,7 +148,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		ThumbnailMediaURL:  imgObj.Thumbnail.MediaUrl,
 		ThumbnailWidth:     int(imgObj.Thumbnail.Width),
 		ThumbnailHeight:    int(imgObj.Thumbnail.Height),
-		BlurHash:           h,
+		BlurHash:           sql.NullString{String: h, Valid: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add media to db: %v", err)

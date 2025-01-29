@@ -22,125 +22,25 @@ type ProductFull struct {
 	Tags         []ProductTag
 }
 
-type CategoryEnum string
-
-const (
-	TShirt    CategoryEnum = "t-shirt"
-	Jeans     CategoryEnum = "jeans"
-	Dress     CategoryEnum = "dress"
-	Jacket    CategoryEnum = "jacket"
-	Sweater   CategoryEnum = "sweater"
-	Pant      CategoryEnum = "pant"
-	Skirt     CategoryEnum = "skirt"
-	Short     CategoryEnum = "short"
-	Blazer    CategoryEnum = "blazer"
-	Coat      CategoryEnum = "coat"
-	Socks     CategoryEnum = "socks"
-	Underwear CategoryEnum = "underwear"
-	Bra       CategoryEnum = "bra"
-	Hat       CategoryEnum = "hat"
-	Scarf     CategoryEnum = "scarf"
-	Gloves    CategoryEnum = "gloves"
-	Shoes     CategoryEnum = "shoes"
-	Belt      CategoryEnum = "belt"
-	Bag       CategoryEnum = "bag"
-	Other     CategoryEnum = "other"
-)
-
-// ValidCategories is a map containing all valid categories.
-var ValidCategories = map[CategoryEnum]bool{
-	TShirt:    true,
-	Jeans:     true,
-	Dress:     true,
-	Jacket:    true,
-	Sweater:   true,
-	Pant:      true,
-	Skirt:     true,
-	Short:     true,
-	Blazer:    true,
-	Coat:      true,
-	Socks:     true,
-	Underwear: true,
-	Bra:       true,
-	Hat:       true,
-	Scarf:     true,
-	Gloves:    true,
-	Shoes:     true,
-	Belt:      true,
-	Bag:       true,
-	Other:     true,
-}
-
-// Category represents the category table
+// Category represents a hierarchical category structure
 type Category struct {
-	Id   int          `db:"id"`
-	Name CategoryEnum `db:"name"`
-}
-
-type SizeEnum string
-
-const (
-	XXS SizeEnum = "xxs"
-	XS  SizeEnum = "xs"
-	S   SizeEnum = "s"
-	M   SizeEnum = "m"
-	L   SizeEnum = "l"
-	XL  SizeEnum = "xl"
-	XXL SizeEnum = "xxl"
-	OS  SizeEnum = "os"
-)
-
-// ValidSizes is a map containing all the valid sizes.
-var ValidSizes = map[SizeEnum]bool{
-	XXS: true,
-	XS:  true,
-	S:   true,
-	M:   true,
-	L:   true,
-	XL:  true,
-	XXL: true,
-	OS:  true,
+	ID       int    `db:"category_id"`
+	Name     string `db:"category_name"`
+	LevelID  int    `db:"level_id"`
+	Level    string `db:"level_name"`
+	ParentID *int   `db:"parent_id"`
 }
 
 // Size represents the size table
 type Size struct {
-	Id   int      `db:"id"`
-	Name SizeEnum `db:"name"`
-}
-
-type MeasurementNameEnum string
-
-const (
-	Waist     MeasurementNameEnum = "waist"
-	Inseam    MeasurementNameEnum = "inseam"
-	Length    MeasurementNameEnum = "length"
-	Rise      MeasurementNameEnum = "rise"
-	Hips      MeasurementNameEnum = "hips"
-	Shoulders MeasurementNameEnum = "shoulders"
-	Bust      MeasurementNameEnum = "bust"
-	Sleeve    MeasurementNameEnum = "sleeve"
-	Width     MeasurementNameEnum = "width"
-	Height    MeasurementNameEnum = "height"
-)
-
-// ValidMeasurementNames is a map containing all the valid measurement names.
-var ValidMeasurementNames = map[MeasurementNameEnum]bool{
-	Waist:     true,
-	Inseam:    true,
-	Length:    true,
-	Rise:      true,
-	Hips:      true,
-	Shoulders: true,
-	Bust:      true,
-	Sleeve:    true,
-	Width:     true,
-	Height:    true,
+	Id   int    `db:"id"`
+	Name string `db:"name"`
 }
 
 // MeasurementName represents the measurement_name table
 type MeasurementName struct {
-	Id   int                 `db:"id"`
-	Name MeasurementNameEnum `db:"name"`
+	Id   int    `db:"id"`
+	Name string `db:"name"`
 }
 
 type GenderEnum string
@@ -177,21 +77,25 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 }
 
 type ProductBody struct {
-	Preorder         sql.NullTime        `db:"preorder" valid:"-"`
-	Name             string              `db:"name" valid:"required"`
-	Brand            string              `db:"brand" valid:"required"`
-	SKU              string              `db:"sku" valid:"required,alphanum"`
-	Color            string              `db:"color" valid:"required"`
-	ColorHex         string              `db:"color_hex" valid:"required,hexcolor"`
-	CountryOfOrigin  string              `db:"country_of_origin" valid:"required"`
-	Price            decimal.Decimal     `db:"price" valid:"required"`
-	SalePercentage   decimal.NullDecimal `db:"sale_percentage" valid:"-"`
-	CategoryId       int                 `db:"category_id" valid:"required"`
-	Description      string              `db:"description" valid:"required"`
-	Hidden           sql.NullBool        `db:"hidden" valid:"-"`
-	TargetGender     GenderEnum          `db:"target_gender"`
-	CareInstructions sql.NullString      `db:"care_instructions" valid:"-"`
-	Composition      sql.NullString      `db:"composition" valid:"-"`
+	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
+	Name               string              `db:"name" valid:"required"`
+	Brand              string              `db:"brand" valid:"required"`
+	SKU                string              `db:"sku" valid:"required,alphanum"`
+	Color              string              `db:"color" valid:"required"`
+	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
+	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
+	Price              decimal.Decimal     `db:"price" valid:"required"`
+	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
+	TopCategoryId      int                 `db:"top_category_id" valid:"required"`
+	SubCategoryId      sql.NullInt32       `db:"sub_category_id" valid:"-"`
+	TypeId             sql.NullInt32       `db:"type_id" valid:"-"`
+	ModelWearsHeightCm sql.NullInt32       `db:"model_wears_height_cm" valid:"-"`
+	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id" valid:"-"`
+	Description        string              `db:"description" valid:"required"`
+	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
+	TargetGender       GenderEnum          `db:"target_gender"`
+	CareInstructions   sql.NullString      `db:"care_instructions" valid:"-"`
+	Composition        sql.NullString      `db:"composition" valid:"-"`
 }
 
 func (pb *ProductBody) PriceDecimal() decimal.Decimal {

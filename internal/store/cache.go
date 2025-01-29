@@ -56,11 +56,14 @@ func (ms *MYSQLStore) GetDictionaryInfo(ctx context.Context) (*entity.Dictionary
 
 // Existing methods for fetching individual entities remain the same
 func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, error) {
-	query := `SELECT * FROM category`
+	query := `
+        SELECT category_id, category_name, level_id, level_name, parent_id FROM view_categories
+    `
 	categories, err := QueryListNamed[entity.Category](ctx, ms.db, query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get Category by id: %w", err)
 	}
+
 	return categories, nil
 }
 

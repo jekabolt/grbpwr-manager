@@ -100,13 +100,16 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		validItem := entity.OrderItem{
 			OrderItemInsert: item,
 			Thumbnail:       prd.ThumbnailMediaURL,
-			BlurHash:        prd.BlurHash,
+			BlurHash:        prd.BlurHash.String,
 			ProductName:     prd.Name,
 			ProductBrand:    prd.Brand,
 			Color:           prd.Color,
 			SKU:             prd.SKU,
 			Slug:            dto.GetProductSlug(prd.Id, prd.Brand, prd.Name, prd.TargetGender.String()),
-			CategoryId:      prd.CategoryId,
+			TopCategoryId:   prd.TopCategoryId,
+			SubCategoryId:   int(prd.SubCategoryId.Int32),
+			TypeId:          int(prd.TypeId.Int32),
+			TargetGender:    prd.TargetGender,
 		}
 
 		validItems = append(validItems, validItem)
@@ -690,7 +693,9 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			p.brand AS product_brand,
 			p.sku AS product_sku,
 			p.color AS color,
-			p.category_id AS category_id,
+			p.top_category_id AS top_category_id,
+			p.sub_category_id AS sub_category_id,
+			p.type_id AS type_id,
 			p.target_gender AS target_gender
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id

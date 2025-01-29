@@ -13,20 +13,32 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		sizes[i] = int32(v)
 	}
 
-	categories := make([]int32, len(fc.CategoryIds))
-	for i, v := range fc.CategoryIds {
-		categories[i] = int32(v)
+	topCategories := make([]int32, len(fc.TopCategoryIds))
+	for i, v := range fc.TopCategoryIds {
+		topCategories[i] = int32(v)
+	}
+
+	subCategories := make([]int32, len(fc.SubCategoryIds))
+	for i, v := range fc.SubCategoryIds {
+		subCategories[i] = int32(v)
+	}
+
+	types := make([]int32, len(fc.TypeIds))
+	for i, v := range fc.TypeIds {
+		types[i] = int32(v)
 	}
 
 	return &pb_common.FilterConditions{
-		From:        fc.From.String(),
-		To:          fc.To.String(),
-		OnSale:      fc.OnSale,
-		Color:       fc.Color,
-		CategoryIds: categories,
-		SizesIds:    sizes,
-		Preorder:    fc.Preorder,
-		ByTag:       fc.ByTag,
+		From:           fc.From.String(),
+		To:             fc.To.String(),
+		OnSale:         fc.OnSale,
+		Color:          fc.Color,
+		TopCategoryIds: topCategories,
+		SubCategoryIds: subCategories,
+		TypeIds:        types,
+		SizesIds:       sizes,
+		Preorder:       fc.Preorder,
+		ByTag:          fc.ByTag,
 	}
 }
 
@@ -69,9 +81,19 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		sizes[i] = int(v)
 	}
 
-	categories := make([]int, len(fc.CategoryIds))
-	for i, v := range fc.CategoryIds {
-		categories[i] = int(v)
+	topCategories := make([]int, len(fc.TopCategoryIds))
+	for i, v := range fc.TopCategoryIds {
+		topCategories[i] = int(v)
+	}
+
+	subCategories := make([]int, len(fc.SubCategoryIds))
+	for i, v := range fc.SubCategoryIds {
+		subCategories[i] = int(v)
+	}
+
+	types := make([]int, len(fc.TypeIds))
+	for i, v := range fc.TypeIds {
+		types[i] = int(v)
 	}
 
 	from, err := decimal.NewFromString(fc.From)
@@ -83,15 +105,22 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		to = decimal.Zero
 	}
 
+	genders := make([]entity.GenderEnum, len(fc.Gender))
+	for i, v := range fc.Gender {
+		genders[i] = genderPbEntityMap[v]
+	}
+
 	return &entity.FilterConditions{
-		From:        from,
-		To:          to,
-		OnSale:      fc.OnSale,
-		Gender:      genderPbEntityMap[fc.Gender],
-		Color:       fc.Color,
-		CategoryIds: categories,
-		SizesIds:    sizes,
-		Preorder:    fc.Preorder,
-		ByTag:       fc.ByTag,
+		From:           from,
+		To:             to,
+		OnSale:         fc.OnSale,
+		Gender:         genders,
+		Color:          fc.Color,
+		TopCategoryIds: topCategories,
+		SubCategoryIds: subCategories,
+		TypeIds:        types,
+		SizesIds:       sizes,
+		Preorder:       fc.Preorder,
+		ByTag:          fc.ByTag,
 	}
 }

@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"database/sql"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -36,7 +38,7 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 			Width:    int32(eMedia.CompressedWidth),
 			Height:   int32(eMedia.CompressedHeight),
 		},
-		Blurhash: eMedia.BlurHash,
+		Blurhash: eMedia.BlurHash.String,
 	}
 
 	return &pb_common.MediaFull{
@@ -66,6 +68,6 @@ func convertPbMediaItemToEntity(m *pb_common.MediaItem) entity.MediaItem {
 		CompressedMediaURL: m.Compressed.MediaUrl,
 		CompressedWidth:    int(m.Compressed.Width),
 		CompressedHeight:   int(m.Compressed.Height),
-		BlurHash:           m.Blurhash,
+		BlurHash:           sql.NullString{String: m.Blurhash, Valid: m.Blurhash != ""},
 	}
 }
