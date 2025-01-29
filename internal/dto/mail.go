@@ -37,16 +37,14 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 	for i, item := range items {
 		size, found := cache.GetSizeById(item.SizeId)
 		if !found {
-			size = cache.Size{
-				Size: entity.Size{
-					Name: "unknown",
-				},
+			size = entity.Size{
+				Name: "unknown",
 			}
 		}
 		oi[i] = OrderItem{
 			Name:        fmt.Sprintf("%s %s", item.ProductBrand, item.ProductName),
 			Thumbnail:   item.Thumbnail,
-			Size:        string(size.Size.Name),
+			Size:        size.Name,
 			Quantity:    int(item.Quantity.IntPart()),
 			Price:       item.OrderItemInsert.ProductPriceDecimal().String(),
 			SalePercent: item.OrderItemInsert.ProductSalePercentageDecimal().String(),

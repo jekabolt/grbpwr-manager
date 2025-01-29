@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -195,7 +196,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 						CompressedMediaURL: a.Compressed,
 						CompressedWidth:    a.CompressedWidth,
 						CompressedHeight:   a.CompressedHeight,
-						BlurHash:           a.BlurHash,
+						BlurHash:           sql.NullString{String: a.BlurHash, Valid: a.BlurHash != ""},
 					},
 				},
 			},

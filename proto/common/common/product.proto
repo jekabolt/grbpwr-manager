@@ -8,69 +8,23 @@ import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-enum CategoryEnum {
-  CATEGORY_ENUM_UNKNOWN = 0;
-  CATEGORY_ENUM_T_SHIRT = 1;
-  CATEGORY_ENUM_JEANS = 2;
-  CATEGORY_ENUM_DRESS = 3;
-  CATEGORY_ENUM_JACKET = 4;
-  CATEGORY_ENUM_SWEATER = 5;
-  CATEGORY_ENUM_PANT = 6;
-  CATEGORY_ENUM_SKIRT = 7;
-  CATEGORY_ENUM_SHORT = 8;
-  CATEGORY_ENUM_BLAZER = 9;
-  CATEGORY_ENUM_COAT = 10;
-  CATEGORY_ENUM_SOCKS = 11;
-  CATEGORY_ENUM_UNDERWEAR = 12;
-  CATEGORY_ENUM_BRA = 13;
-  CATEGORY_ENUM_HAT = 14;
-  CATEGORY_ENUM_SCARF = 15;
-  CATEGORY_ENUM_GLOVES = 16;
-  CATEGORY_ENUM_SHOES = 17;
-  CATEGORY_ENUM_BELT = 18;
-  CATEGORY_ENUM_BAG = 19;
-  CATEGORY_ENUM_OTHER = 20;
-}
-
+// Category represents a hierarchical category structure
 message Category {
   int32 id = 1;
-  CategoryEnum name = 2;
-}
-
-enum SizeEnum {
-  SIZE_ENUM_UNKNOWN = 0;
-  SIZE_ENUM_XXS = 1;
-  SIZE_ENUM_XS = 2;
-  SIZE_ENUM_S = 3;
-  SIZE_ENUM_M = 4;
-  SIZE_ENUM_L = 5;
-  SIZE_ENUM_XL = 6;
-  SIZE_ENUM_XXL = 7;
-  SIZE_ENUM_OS = 8;
+  string name = 2;
+  int32 level_id = 3;
+  string level = 4;
+  int32 parent_id = 5;
 }
 
 message Size {
   int32 id = 1;
-  SizeEnum name = 2;
-}
-
-enum MeasurementNameEnum {
-  MEASUREMENT_NAME_ENUM_UNKNOWN = 0;
-  MEASUREMENT_NAME_ENUM_WAIST = 1;
-  MEASUREMENT_NAME_ENUM_INSEAM = 2;
-  MEASUREMENT_NAME_ENUM_LENGTH = 3;
-  MEASUREMENT_NAME_ENUM_RISE = 4;
-  MEASUREMENT_NAME_ENUM_HIPS = 5;
-  MEASUREMENT_NAME_ENUM_SHOULDERS = 6;
-  MEASUREMENT_NAME_ENUM_BUST = 7;
-  MEASUREMENT_NAME_ENUM_SLEEVE = 8;
-  MEASUREMENT_NAME_ENUM_WIDTH = 9;
-  MEASUREMENT_NAME_ENUM_HEIGHT = 10;
+  string name = 2;
 }
 
 message MeasurementName {
   int32 id = 1;
-  MeasurementNameEnum name = 2;
+  string name = 2;
 }
 
 enum GenderEnum {
@@ -111,14 +65,18 @@ message ProductBody {
   string color = 5;
   string color_hex = 6;
   string country_of_origin = 7;
-  google.type.Decimal price = 9;
-  google.type.Decimal sale_percentage = 10;
-  int32 category_id = 11;
-  string description = 12;
-  string care_instructions = 13;
-  string composition = 14;
-  bool hidden = 15;
-  GenderEnum target_gender = 16;
+  google.type.Decimal price = 8;
+  google.type.Decimal sale_percentage = 9;
+  int32 top_category_id = 10;
+  int32 sub_category_id = 11;
+  int32 type_id = 12;
+  int32 model_wears_height_cm = 13;
+  int32 model_wears_size_id = 14;
+  string description = 15;
+  string care_instructions = 16;
+  string composition = 17;
+  bool hidden = 18;
+  GenderEnum target_gender = 19;
 }
 
 message ProductInsert {

@@ -9,11 +9,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type Category struct {
-	Category entity.Category
-	PB       pb_common.CategoryEnum
-}
-
 type Status struct {
 	Status entity.OrderStatus
 	PB     pb_common.OrderStatusEnum
@@ -21,7 +16,7 @@ type Status struct {
 
 type Measurement struct {
 	Measurement entity.MeasurementName
-	PB          pb_common.MeasurementNameEnum
+	PB          string
 }
 
 type PaymentMethod struct {
@@ -29,59 +24,7 @@ type PaymentMethod struct {
 	PB     pb_common.PaymentMethodNameEnum
 }
 
-type Size struct {
-	Size entity.Size
-	PB   pb_common.SizeEnum
-}
-
 var (
-
-	// Categories
-	CategoryTShirt    = Category{Category: entity.Category{Name: entity.TShirt}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_T_SHIRT}
-	CategoryJeans     = Category{Category: entity.Category{Name: entity.Jeans}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_JEANS}
-	CategoryDress     = Category{Category: entity.Category{Name: entity.Dress}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_DRESS}
-	CategoryJacket    = Category{Category: entity.Category{Name: entity.Jacket}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_JACKET}
-	CategorySweater   = Category{Category: entity.Category{Name: entity.Sweater}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SWEATER}
-	CategoryPant      = Category{Category: entity.Category{Name: entity.Pant}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_PANT}
-	CategorySkirt     = Category{Category: entity.Category{Name: entity.Skirt}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SKIRT}
-	CategoryShort     = Category{Category: entity.Category{Name: entity.Short}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SHORT}
-	CategoryBlazer    = Category{Category: entity.Category{Name: entity.Blazer}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BLAZER}
-	CategoryCoat      = Category{Category: entity.Category{Name: entity.Coat}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_COAT}
-	CategorySocks     = Category{Category: entity.Category{Name: entity.Socks}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SOCKS}
-	CategoryUnderwear = Category{Category: entity.Category{Name: entity.Underwear}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_UNDERWEAR}
-	CategoryBra       = Category{Category: entity.Category{Name: entity.Bra}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BRA}
-	CategoryHat       = Category{Category: entity.Category{Name: entity.Hat}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_HAT}
-	CategoryScarf     = Category{Category: entity.Category{Name: entity.Scarf}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SCARF}
-	CategoryGloves    = Category{Category: entity.Category{Name: entity.Gloves}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES}
-	CategoryShoes     = Category{Category: entity.Category{Name: entity.Shoes}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_SHOES}
-	CategoryBelt      = Category{Category: entity.Category{Name: entity.Belt}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BELT}
-	CategoryBag       = Category{Category: entity.Category{Name: entity.Bag}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_BAG}
-	CategoryOther     = Category{Category: entity.Category{Name: entity.Other}, PB: pb_common.CategoryEnum_CATEGORY_ENUM_OTHER}
-
-	categories = []*Category{
-		&CategoryTShirt,
-		&CategoryJeans,
-		&CategoryDress,
-		&CategoryJacket,
-		&CategorySweater,
-		&CategoryPant,
-		&CategorySkirt,
-		&CategoryShort,
-		&CategoryBlazer,
-		&CategoryCoat,
-		&CategorySocks,
-		&CategoryUnderwear,
-		&CategoryBra,
-		&CategoryHat,
-		&CategoryScarf,
-		&CategoryGloves,
-		&CategoryShoes,
-		&CategoryBelt,
-		&CategoryBag,
-		&CategoryOther,
-	}
-
-	entityCategories = []entity.Category{}
 
 	// Statuses
 	OrderStatusPlaced          = Status{Status: entity.OrderStatus{Name: entity.Placed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED}
@@ -107,29 +50,8 @@ var (
 	orderStatusesByName = map[entity.OrderStatusName]*Status{}
 
 	// Measurements
-	MeasurementWaist     = Measurement{Measurement: entity.MeasurementName{Name: entity.Waist}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WAIST}
-	MeasurementInseam    = Measurement{Measurement: entity.MeasurementName{Name: entity.Inseam}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_INSEAM}
-	MeasurementLength    = Measurement{Measurement: entity.MeasurementName{Name: entity.Length}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_LENGTH}
-	MeasurementRise      = Measurement{Measurement: entity.MeasurementName{Name: entity.Rise}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_RISE}
-	MeasurementHips      = Measurement{Measurement: entity.MeasurementName{Name: entity.Hips}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HIPS}
-	MeasurementShoulders = Measurement{Measurement: entity.MeasurementName{Name: entity.Shoulders}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SHOULDERS}
-	MeasurementBust      = Measurement{Measurement: entity.MeasurementName{Name: entity.Bust}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_BUST}
-	MeasurementSleeve    = Measurement{Measurement: entity.MeasurementName{Name: entity.Sleeve}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SLEEVE}
-	MeasurementWidth     = Measurement{Measurement: entity.MeasurementName{Name: entity.Width}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WIDTH}
-	MeasurementHeight    = Measurement{Measurement: entity.MeasurementName{Name: entity.Height}, PB: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HEIGHT}
 
-	measurements = []*Measurement{
-		&MeasurementWaist,
-		&MeasurementInseam,
-		&MeasurementLength,
-		&MeasurementRise,
-		&MeasurementHips,
-		&MeasurementShoulders,
-		&MeasurementBust,
-		&MeasurementSleeve,
-		&MeasurementWidth,
-		&MeasurementHeight,
-	}
+	entityCategories = []entity.Category{}
 
 	entityMeasurements = []entity.MeasurementName{}
 
@@ -184,27 +106,7 @@ var (
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: PaymentMethodUsdtTronTest.Method.Id,
 	}
 
-	// Sizes
-	SizeXXS = Size{Size: entity.Size{Name: entity.XXS}, PB: pb_common.SizeEnum_SIZE_ENUM_XXS}
-	SizeXS  = Size{Size: entity.Size{Name: entity.XS}, PB: pb_common.SizeEnum_SIZE_ENUM_XS}
-	SizeS   = Size{Size: entity.Size{Name: entity.S}, PB: pb_common.SizeEnum_SIZE_ENUM_S}
-	SizeM   = Size{Size: entity.Size{Name: entity.M}, PB: pb_common.SizeEnum_SIZE_ENUM_M}
-	SizeL   = Size{Size: entity.Size{Name: entity.L}, PB: pb_common.SizeEnum_SIZE_ENUM_L}
-	SizeXL  = Size{Size: entity.Size{Name: entity.XL}, PB: pb_common.SizeEnum_SIZE_ENUM_XL}
-	SizeXXL = Size{Size: entity.Size{Name: entity.XXL}, PB: pb_common.SizeEnum_SIZE_ENUM_XXL}
-	SizeOS  = Size{Size: entity.Size{Name: entity.OS}, PB: pb_common.SizeEnum_SIZE_ENUM_OS}
-
-	sizes = []*Size{
-		&SizeXXS,
-		&SizeXS,
-		&SizeS,
-		&SizeM,
-		&SizeL,
-		&SizeXL,
-		&SizeXXL,
-		&SizeOS,
-	}
-	sizeById = map[int]*Size{}
+	sizeById = map[int]entity.Size{}
 
 	entitySizes = []entity.Size{}
 
@@ -269,22 +171,11 @@ var (
 
 func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull) error {
 
-	for _, c := range dInfo.Categories {
-		for _, cat := range categories {
-			if c.Name == cat.Category.Name {
-				entityCategories = append(entityCategories, c)
-				cat.Category.Id = c.Id
-			}
-		}
-	}
-
-	for _, mn := range dInfo.Measurements {
-		for _, m := range measurements {
-			if mn.Name == m.Measurement.Name {
-				entityMeasurements = append(entityMeasurements, mn)
-				m.Measurement.Id = mn.Id
-			}
-		}
+	entityCategories = dInfo.Categories
+	entitySizes = dInfo.Sizes
+	entityMeasurements = dInfo.Measurements
+	for _, s := range entitySizes {
+		sizeById[s.Id] = s
 	}
 
 	for _, os := range dInfo.OrderStatuses {
@@ -309,16 +200,6 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 		}
 	}
 
-	for _, s := range dInfo.Sizes {
-		for _, size := range sizes {
-			if s.Name == size.Size.Name {
-				entitySizes = append(entitySizes, s)
-				size.Size.Id = s.Id
-				sizeById[s.Id] = size
-			}
-		}
-	}
-
 	for _, p := range dInfo.Promos {
 		promoCodes[p.Code] = p
 	}
@@ -335,24 +216,10 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 			return fmt.Errorf("order status %s not found", v.Status.Name)
 		}
 	}
-	for _, v := range measurements {
-		if v.Measurement.Id == 0 {
-			return fmt.Errorf("measurement %s not found", v.Measurement.Name)
-		}
-	}
-	for _, v := range categories {
-		if v.Category.Id == 0 {
-			return fmt.Errorf("category %s not found", v.Category.Name)
-		}
-	}
+
 	for _, v := range paymentMethods {
 		if v.Method.Id == 0 {
 			return fmt.Errorf("payment method %s not found", v.Method.Name)
-		}
-	}
-	for _, v := range sizes {
-		if v.Size.Id == 0 {
-			return fmt.Errorf("size %s not found", v.Size.Name)
 		}
 	}
 
@@ -458,9 +325,9 @@ func UpdatePaymentMethodAllowance(method entity.PaymentMethodName, allowed bool)
 	}
 }
 
-func GetSizeById(id int) (Size, bool) {
+func GetSizeById(id int) (entity.Size, bool) {
 	s, ok := sizeById[id]
-	return *s, ok
+	return s, ok
 }
 
 func GetHero() *entity.HeroFull {

@@ -22,78 +22,6 @@ type Dict struct {
 }
 
 var (
-	categoryEntityPbMap = map[entity.CategoryEnum]pb_common.CategoryEnum{
-		entity.TShirt:    pb_common.CategoryEnum_CATEGORY_ENUM_T_SHIRT,
-		entity.Jeans:     pb_common.CategoryEnum_CATEGORY_ENUM_JEANS,
-		entity.Dress:     pb_common.CategoryEnum_CATEGORY_ENUM_DRESS,
-		entity.Jacket:    pb_common.CategoryEnum_CATEGORY_ENUM_JACKET,
-		entity.Sweater:   pb_common.CategoryEnum_CATEGORY_ENUM_SWEATER,
-		entity.Pant:      pb_common.CategoryEnum_CATEGORY_ENUM_PANT,
-		entity.Skirt:     pb_common.CategoryEnum_CATEGORY_ENUM_SKIRT,
-		entity.Short:     pb_common.CategoryEnum_CATEGORY_ENUM_SHORT,
-		entity.Blazer:    pb_common.CategoryEnum_CATEGORY_ENUM_BLAZER,
-		entity.Coat:      pb_common.CategoryEnum_CATEGORY_ENUM_COAT,
-		entity.Socks:     pb_common.CategoryEnum_CATEGORY_ENUM_SOCKS,
-		entity.Underwear: pb_common.CategoryEnum_CATEGORY_ENUM_UNDERWEAR,
-		entity.Bra:       pb_common.CategoryEnum_CATEGORY_ENUM_BRA,
-		entity.Hat:       pb_common.CategoryEnum_CATEGORY_ENUM_HAT,
-		entity.Scarf:     pb_common.CategoryEnum_CATEGORY_ENUM_SCARF,
-		entity.Gloves:    pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES,
-		entity.Shoes:     pb_common.CategoryEnum_CATEGORY_ENUM_SHOES,
-		entity.Belt:      pb_common.CategoryEnum_CATEGORY_ENUM_BELT,
-		entity.Bag:       pb_common.CategoryEnum_CATEGORY_ENUM_BAG,
-		entity.Other:     pb_common.CategoryEnum_CATEGORY_ENUM_OTHER,
-	}
-
-	categoryPbEntityMap = map[pb_common.CategoryEnum]entity.CategoryEnum{
-		pb_common.CategoryEnum_CATEGORY_ENUM_T_SHIRT:   entity.TShirt,
-		pb_common.CategoryEnum_CATEGORY_ENUM_JEANS:     entity.Jeans,
-		pb_common.CategoryEnum_CATEGORY_ENUM_DRESS:     entity.Dress,
-		pb_common.CategoryEnum_CATEGORY_ENUM_JACKET:    entity.Jacket,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SWEATER:   entity.Sweater,
-		pb_common.CategoryEnum_CATEGORY_ENUM_PANT:      entity.Pant,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SKIRT:     entity.Skirt,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SHORT:     entity.Short,
-		pb_common.CategoryEnum_CATEGORY_ENUM_BLAZER:    entity.Blazer,
-		pb_common.CategoryEnum_CATEGORY_ENUM_COAT:      entity.Coat,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SOCKS:     entity.Socks,
-		pb_common.CategoryEnum_CATEGORY_ENUM_UNDERWEAR: entity.Underwear,
-		pb_common.CategoryEnum_CATEGORY_ENUM_BRA:       entity.Bra,
-		pb_common.CategoryEnum_CATEGORY_ENUM_HAT:       entity.Hat,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SCARF:     entity.Scarf,
-		pb_common.CategoryEnum_CATEGORY_ENUM_GLOVES:    entity.Gloves,
-		pb_common.CategoryEnum_CATEGORY_ENUM_SHOES:     entity.Shoes,
-		pb_common.CategoryEnum_CATEGORY_ENUM_BELT:      entity.Belt,
-		pb_common.CategoryEnum_CATEGORY_ENUM_BAG:       entity.Bag,
-		pb_common.CategoryEnum_CATEGORY_ENUM_OTHER:     entity.Other,
-	}
-
-	measurementEntityPbMap = map[entity.MeasurementNameEnum]pb_common.MeasurementNameEnum{
-		entity.Waist:     pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WAIST,
-		entity.Inseam:    pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_INSEAM,
-		entity.Length:    pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_LENGTH,
-		entity.Rise:      pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_RISE,
-		entity.Hips:      pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HIPS,
-		entity.Shoulders: pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SHOULDERS,
-		entity.Bust:      pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_BUST,
-		entity.Sleeve:    pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SLEEVE,
-		entity.Width:     pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WIDTH,
-		entity.Height:    pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HEIGHT,
-	}
-
-	measurementPbEntityMap = map[pb_common.MeasurementNameEnum]entity.MeasurementNameEnum{
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WAIST:     entity.Waist,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_INSEAM:    entity.Inseam,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_LENGTH:    entity.Length,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_RISE:      entity.Rise,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HIPS:      entity.Hips,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SHOULDERS: entity.Shoulders,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_BUST:      entity.Bust,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_SLEEVE:    entity.Sleeve,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_WIDTH:     entity.Width,
-		pb_common.MeasurementNameEnum_MEASUREMENT_NAME_ENUM_HEIGHT:    entity.Height,
-	}
-
 	orderStatusEntityPbMap = map[entity.OrderStatusName]pb_common.OrderStatusEnum{
 		entity.Placed:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
 		entity.AwaitingPayment: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
@@ -129,61 +57,7 @@ var (
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   entity.USDT_TRON,
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: entity.USDT_TRON_TEST,
 	}
-
-	sizeEntityPbMap = map[entity.SizeEnum]pb_common.SizeEnum{
-		entity.XXS: pb_common.SizeEnum_SIZE_ENUM_XXS,
-		entity.XS:  pb_common.SizeEnum_SIZE_ENUM_XS,
-		entity.S:   pb_common.SizeEnum_SIZE_ENUM_S,
-		entity.M:   pb_common.SizeEnum_SIZE_ENUM_M,
-		entity.L:   pb_common.SizeEnum_SIZE_ENUM_L,
-		entity.XL:  pb_common.SizeEnum_SIZE_ENUM_XL,
-		entity.XXL: pb_common.SizeEnum_SIZE_ENUM_XXL,
-		entity.OS:  pb_common.SizeEnum_SIZE_ENUM_OS,
-	}
-
-	sizePbEntityMap = map[pb_common.SizeEnum]entity.SizeEnum{
-		pb_common.SizeEnum_SIZE_ENUM_XXS: entity.XXS,
-		pb_common.SizeEnum_SIZE_ENUM_XS:  entity.XS,
-		pb_common.SizeEnum_SIZE_ENUM_S:   entity.S,
-		pb_common.SizeEnum_SIZE_ENUM_M:   entity.M,
-		pb_common.SizeEnum_SIZE_ENUM_L:   entity.L,
-		pb_common.SizeEnum_SIZE_ENUM_XL:  entity.XL,
-		pb_common.SizeEnum_SIZE_ENUM_XXL: entity.XXL,
-		pb_common.SizeEnum_SIZE_ENUM_OS:  entity.OS,
-	}
 )
-
-func ConvertPbToEntityCategory(c pb_common.CategoryEnum) (entity.CategoryEnum, bool) {
-	g, ok := categoryPbEntityMap[c]
-	if !ok {
-		return entity.CategoryEnum(""), false
-	}
-	return g, true
-}
-
-func ConvertEntityToPbCategory(c entity.CategoryEnum) (pb_common.CategoryEnum, bool) {
-	g, ok := categoryEntityPbMap[c]
-	if !ok {
-		return pb_common.CategoryEnum(0), false
-	}
-	return g, true
-}
-
-func ConvertPbToEntityMeasurement(m pb_common.MeasurementNameEnum) (entity.MeasurementNameEnum, bool) {
-	g, ok := measurementPbEntityMap[m]
-	if !ok {
-		return entity.MeasurementNameEnum(""), false
-	}
-	return g, true
-}
-
-func ConvertEntityToPbMeasurement(m entity.MeasurementNameEnum) (pb_common.MeasurementNameEnum, bool) {
-	g, ok := measurementEntityPbMap[m]
-	if !ok {
-		return pb_common.MeasurementNameEnum(0), false
-	}
-	return g, true
-}
 
 func ConvertPbToEntityOrderStatus(o pb_common.OrderStatusEnum) (entity.OrderStatusName, bool) {
 	g, ok := orderStatusPbEntityMap[o]
@@ -217,40 +91,16 @@ func ConvertEntityToPbPaymentMethod(p entity.PaymentMethodName) (pb_common.Payme
 	return g, true
 }
 
-func ConvertPbToEntitySize(s pb_common.SizeEnum) (entity.SizeEnum, bool) {
-	g, ok := sizePbEntityMap[s]
-	if !ok {
-		return entity.SizeEnum(""), false
-	}
-	return g, true
-}
-
-func ConvertEntityToPbSize(s entity.SizeEnum) (pb_common.SizeEnum, bool) {
-	g, ok := sizeEntityPbMap[s]
-	if !ok {
-		return pb_common.SizeEnum(0), false
-	}
-	return g, true
-}
-
 func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict := &pb_common.Dictionary{}
 
-	for _, c := range dict.Categories {
-		name, _ := ConvertEntityToPbCategory(c.Name)
-		commonDict.Categories = append(commonDict.Categories,
-			&pb_common.Category{
-				Id:   int32(c.Id),
-				Name: name,
-			})
-	}
+	commonDict.Categories = CategorySliceToProto(dict.Categories)
 
 	for _, m := range dict.Measurements {
-		name, _ := ConvertEntityToPbMeasurement(m.Name)
 		commonDict.Measurements = append(commonDict.Measurements,
 			&pb_common.MeasurementName{
 				Id:   int32(m.Id),
-				Name: name,
+				Name: m.Name,
 			})
 	}
 
@@ -288,11 +138,10 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	}
 
 	for _, sz := range dict.Sizes {
-		name, _ := ConvertEntityToPbSize(sz.Name)
 		commonDict.Sizes = append(commonDict.Sizes,
 			&pb_common.Size{
 				Id:   int32(sz.Id),
-				Name: *pb_common.SizeEnum(name).Enum(),
+				Name: sz.Name,
 			})
 	}
 	commonDict.SiteEnabled = dict.SiteEnabled
@@ -399,4 +248,70 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	}
 
 	return commonDict
+}
+
+func ConvertEntityToPbCategory(c *entity.Category) *pb_common.Category {
+	if c == nil {
+		return nil
+	}
+
+	proto := &pb_common.Category{
+		Id:      int32(c.ID),
+		Name:    c.Name,
+		LevelId: int32(c.LevelID),
+		Level:   c.Level,
+	}
+
+	// Handle optional parent ID
+	if c.ParentID != nil {
+		parentID := int32(*c.ParentID)
+		proto.ParentId = parentID
+	}
+
+	return proto
+}
+
+// FromProto converts a protobuf message to a Category model
+func CategoryFromProto(proto *pb_common.Category) *entity.Category {
+	if proto == nil {
+		return nil
+	}
+
+	category := &entity.Category{
+		ID:      int(proto.Id),
+		Name:    proto.Name,
+		LevelID: int(proto.LevelId),
+		Level:   proto.Level,
+	}
+
+	// Handle optional parent ID
+	if proto.ParentId != 0 {
+		parentID := int(proto.ParentId)
+		category.ParentID = &parentID
+	}
+
+	return category
+}
+
+// Helper functions for working with slices
+
+// CategorySliceToProto converts a slice of Categories to protobuf messages
+func CategorySliceToProto(categories []entity.Category) []*pb_common.Category {
+	result := make([]*pb_common.Category, len(categories))
+	for i, category := range categories {
+		categoryCopy := category // Create a copy to avoid issues with loop variable
+		result[i] = ConvertEntityToPbCategory(&categoryCopy)
+	}
+	return result
+}
+
+// CategorySliceFromProto converts a slice of protobuf messages to Categories
+func CategorySliceFromProto(protos []*pb_common.Category) []entity.Category {
+	result := make([]entity.Category, len(protos))
+	for i, proto := range protos {
+		if category := CategoryFromProto(proto); category != nil {
+			result[i] = *category
+		}
+	}
+	return result
 }

@@ -54,9 +54,11 @@ message OrderItem {
   string product_brand = 9;
   string slug = 10;
   string color = 11;
-  int32 category_id = 12;
-  string sku = 13;
-  OrderItemInsert order_item = 14;
+  int32 top_category_id = 12;
+  int32 sub_category_id = 13;
+  int32 type_id = 14;
+  string sku = 15;
+  OrderItemInsert order_item = 16;
 }
 
 message OrderItemInsert {
