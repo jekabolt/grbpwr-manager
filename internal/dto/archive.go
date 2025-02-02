@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -29,10 +30,11 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 	}
 
 	return &entity.ArchiveInsert{
-		Title:       pbArchiveInsert.Title,
+		Heading:     pbArchiveInsert.Heading,
 		Description: pbArchiveInsert.Description,
 		Tag:         pbArchiveInsert.Tag,
 		MediaIds:    mids,
+		VideoId:     sql.NullInt32{Int32: int32(pbArchiveInsert.VideoId), Valid: pbArchiveInsert.VideoId != 0},
 	}, nil
 }
 
@@ -49,13 +51,14 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 
 	return &pb_common.ArchiveFull{
 		Id:          int32(af.Id),
-		Title:       af.Title,
+		Heading:     af.Heading,
 		Description: af.Description,
 		Tag:         af.Tag,
 		CreatedAt:   timestamppb.New(af.CreatedAt),
 		Media:       mediaPb,
 		Slug:        af.Slug,
 		NextSlug:    af.NextSlug,
+		Video:       ConvertEntityToCommonMedia(&af.Video),
 	}
 }
 

@@ -712,14 +712,17 @@ CREATE TABLE admins (
 CREATE TABLE archive (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    title VARCHAR(255) NOT NULL,
+    heading VARCHAR(255) NOT NULL,
     description TEXT NOT NULL,
-    tag VARCHAR(255) NOT NULL
+    tag VARCHAR(255) NOT NULL,
+    FOREIGN KEY (video_id) REFERENCES media(id)
 );
 
 CREATE TABLE archive_item (
+    id INT PRIMARY KEY AUTO_INCREMENT,
     archive_id INT NOT NULL,
     media_id INT NOT NULL,
+    is_video BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE,
     FOREIGN KEY (media_id) REFERENCES media(id)
 );
