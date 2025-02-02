@@ -96,9 +96,9 @@ service FrontendService {
     option (google.api.http) = {get: "/api/frontend/archive/paged"};
   }
 
-  // GetArchive retrieves an archive by its title, tag and id.
+  // GetArchive retrieves an archive by its heading, tag and id.
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
-    option (google.api.http) = {get: "/api/frontend/archive/{title}/{tag}/{id}"};
+    option (google.api.http) = {get: "/api/frontend/archive/{heading}/{tag}/{id}"};
   }
 }
 
@@ -214,7 +214,7 @@ message GetArchivesPagedResponse {
 }
 
 message GetArchiveRequest {
-  string title = 1;
+  string heading = 1;
   string tag = 2;
   int32 id = 3;
 }

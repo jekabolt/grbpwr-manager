@@ -34,9 +34,9 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (title, description, tag) VALUES (:title, :description, :tag)`
+		query := `INSERT INTO archive (heading, description, tag) VALUES (:heading, :description, :tag)`
 		aid, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"title":       aNew.Title,
+			"heading":     aNew.Heading,
 			"description": aNew.Description,
 			"tag":         aNew.Tag,
 		})
@@ -49,8 +49,17 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 			row := map[string]any{
 				"archive_id": aid,
 				"media_id":   mid,
+				"is_video":   false,
 			}
 			rows = append(rows, row)
+		}
+
+		if aNew.VideoId.Valid {
+			rows = append(rows, map[string]any{
+				"archive_id": aid,
+				"media_id":   int(aNew.VideoId.Int32),
+				"is_video":   true,
+			})
 		}
 
 		err = BulkInsert(ctx, rep.DB(), "archive_item", rows)
@@ -91,10 +100,10 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 		}
 
 		// Update the archive itself
-		query = `UPDATE archive SET title = :title, description = :description, tag = :tag WHERE id = :id`
+		query = `UPDATE archive SET heading = :heading, description = :description, tag = :tag WHERE id = :id`
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
 			"id":          aid,
-			"title":       aInsert.Title,
+			"heading":     aInsert.Heading,
 			"description": aInsert.Description,
 			"tag":         aInsert.Tag,
 		})
@@ -108,8 +117,17 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 			row := map[string]any{
 				"archive_id": aid,
 				"media_id":   mid,
+				"is_video":   false,
 			}
 			rows = append(rows, row)
+		}
+
+		if aInsert.VideoId.Valid {
+			rows = append(rows, map[string]any{
+				"archive_id": aid,
+				"media_id":   int(aInsert.VideoId.Int32),
+				"is_video":   true,
+			})
 		}
 
 		err = BulkInsert(ctx, rep.DB(), "archive_item", rows)
@@ -147,7 +165,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	type archive struct {
 		Id               int       `db:"id"`
 		CreatedAt        time.Time `db:"created_at"`
-		Title            string    `db:"title"`
+		Heading          string    `db:"heading"`
 		Description      string    `db:"description"`
 		Tag              string    `db:"tag"`
 		FullSize         string    `db:"full_size"`
@@ -176,10 +194,10 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	for _, a := range archives {
 		afs = append(afs, entity.ArchiveFull{
 			Id:          a.Id,
-			Title:       a.Title,
+			Heading:     a.Heading,
 			Description: a.Description,
 			Tag:         a.Tag,
-			Slug:        dto.GetArchiveSlug(a.Id, a.Title, a.Tag),
+			Slug:        dto.GetArchiveSlug(a.Id, a.Heading, a.Tag),
 			NextSlug:    "",
 			CreatedAt:   a.CreatedAt,
 			Media: []entity.MediaFull{
@@ -213,11 +231,11 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 
 	// Generate Slug and NextSlug
 	for i := range afs {
-		afs[i].Slug = dto.GetArchiveSlug(afs[i].Id, afs[i].Title, afs[i].Tag)
+		afs[i].Slug = dto.GetArchiveSlug(afs[i].Id, afs[i].Heading, afs[i].Tag)
 		if hasMore && i == len(afs)-1 { // Last item and there's more
-			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Title, afs[i].Tag)
+			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Heading, afs[i].Tag)
 		} else if i+offset+1 < count { // General case: next archive exists
-			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Title, afs[i].Tag)
+			afs[i].NextSlug = dto.GetArchiveSlug(afs[i].Id+1, afs[i].Heading, afs[i].Tag)
 		} else { // Last item with no more archives
 			afs[i].NextSlug = ""
 		}
@@ -232,7 +250,7 @@ func buildArchiveQuery(limit int, offset int) (string, string) {
 	SELECT 
     a.id, 
     a.created_at, 
-    a.title, 
+    a.heading, 
     a.description, 
     a.tag,
 		MAX(single_media.full_size) AS full_size,
@@ -262,7 +280,7 @@ func buildArchiveQuery(limit int, offset int) (string, string) {
 		FROM archive_item ai 
 		JOIN media m ON ai.media_id = m.id
 	) AS single_media ON a.id = single_media.archive_id
-	GROUP BY a.id, a.created_at, a.title, a.description, a.tag
+	GROUP BY a.id, a.created_at, a.heading, a.description, a.tag
 	ORDER BY a.created_at DESC 
 	LIMIT :limit OFFSET :offset;
 	`
@@ -342,21 +360,65 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 	af := afs[0]
 	afNext := afs[1]
 
-	// TODO: add next and prev
 	query = `
-	SELECT m.*
+	SELECT m.*, ai.is_video
 	FROM archive_item ai
 	JOIN media m ON ai.media_id = m.id
-	WHERE ai.archive_id = :id;
+	WHERE ai.archive_id = :id
+	ORDER BY ai.id
 	`
 
-	af.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, args)
+	type media struct {
+		entity.MediaFull
+		IsVideo bool `db:"is_video"`
+	}
+
+	mediaItems, err := QueryListNamed[media](ctx, ms.db, query, args)
 	if err != nil {
 		return nil, fmt.Errorf("can't get media items: %w", err)
 	}
 
-	af.Slug = dto.GetArchiveSlug(af.Id, af.Title, af.Tag)
-	af.NextSlug = dto.GetArchiveSlug(afNext.Id, afNext.Title, afNext.Tag)
+	af.Media = make([]entity.MediaFull, 0, len(mediaItems))
+	for _, mi := range mediaItems {
+		if !mi.IsVideo {
+			af.Media = append(af.Media, entity.MediaFull{
+				Id:        mi.Id,
+				CreatedAt: mi.CreatedAt,
+				MediaItem: entity.MediaItem{
+					FullSizeMediaURL:   mi.FullSizeMediaURL,
+					FullSizeWidth:      mi.FullSizeWidth,
+					FullSizeHeight:     mi.FullSizeHeight,
+					ThumbnailMediaURL:  mi.ThumbnailMediaURL,
+					ThumbnailWidth:     mi.ThumbnailWidth,
+					ThumbnailHeight:    mi.ThumbnailHeight,
+					CompressedMediaURL: mi.CompressedMediaURL,
+					CompressedWidth:    mi.CompressedWidth,
+					CompressedHeight:   mi.CompressedHeight,
+					BlurHash:           mi.BlurHash,
+				},
+			})
+		} else {
+			af.Video = entity.MediaFull{
+				Id:        mi.Id,
+				CreatedAt: mi.CreatedAt,
+				MediaItem: entity.MediaItem{
+					FullSizeMediaURL:   mi.FullSizeMediaURL,
+					FullSizeWidth:      mi.FullSizeWidth,
+					FullSizeHeight:     mi.FullSizeHeight,
+					ThumbnailMediaURL:  mi.ThumbnailMediaURL,
+					ThumbnailWidth:     mi.ThumbnailWidth,
+					ThumbnailHeight:    mi.ThumbnailHeight,
+					CompressedMediaURL: mi.CompressedMediaURL,
+					CompressedWidth:    mi.CompressedWidth,
+					CompressedHeight:   mi.CompressedHeight,
+					BlurHash:           mi.BlurHash,
+				},
+			}
+		}
+	}
+
+	af.Slug = dto.GetArchiveSlug(af.Id, af.Heading, af.Tag)
+	af.NextSlug = dto.GetArchiveSlug(afNext.Id, afNext.Heading, afNext.Tag)
 
 	return &af, nil
 
