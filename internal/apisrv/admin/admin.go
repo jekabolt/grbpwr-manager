@@ -461,12 +461,9 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 
 func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb_admin.AddHeroResponse, error) {
 
-	entities := make([]entity.HeroEntityInsert, 0, len(req.Hero.Entities))
-	for _, e := range req.Hero.Entities {
-		entities = append(entities, dto.ConvertCommonHeroEntityInsertToEntity(e))
-	}
+	heroFull := dto.ConvertCommonHeroFullInsertToEntity(req.Hero)
 
-	err := s.repo.Hero().SetHero(ctx, entities)
+	err := s.repo.Hero().SetHero(ctx, heroFull)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't add hero",
 			slog.String("err", err.Error()),

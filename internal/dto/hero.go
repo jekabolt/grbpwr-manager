@@ -2,10 +2,45 @@ package dto
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
+
+func ConvertCommonHeroFullInsertToEntity(hi *pb_common.HeroFullInsert) entity.HeroFullInsert {
+	result := entity.HeroFullInsert{
+		Entities: make([]entity.HeroEntityInsert, len(hi.Entities)),
+	}
+
+	for i, entity := range hi.Entities {
+		result.Entities[i] = ConvertCommonHeroEntityInsertToEntity(entity)
+	}
+
+	if hi.NavFeatured != nil {
+		result.NavFeatured = ConvertCommonNavFeaturedInsertToEntity(hi.NavFeatured)
+	}
+
+	return result
+}
+
+func ConvertCommonNavFeaturedInsertToEntity(hi *pb_common.NavFeaturedInsert) entity.NavFeaturedInsert {
+	result := entity.NavFeaturedInsert{
+		Men:   ConvertCommonNavFeaturedEntityInsertToEntity(hi.Men),
+		Women: ConvertCommonNavFeaturedEntityInsertToEntity(hi.Women),
+	}
+	return result
+}
+
+func ConvertCommonNavFeaturedEntityInsertToEntity(hi *pb_common.NavFeaturedEntityInsert) entity.NavFeaturedEntityInsert {
+	result := entity.NavFeaturedEntityInsert{
+		MediaId:           int(hi.MediaId),
+		ExploreText:       hi.ExploreText,
+		FeaturedTag:       hi.FeaturedTag,
+		FeaturedArchiveId: int(hi.FeaturedArchiveId),
+	}
+	return result
+}
 
 func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entity.HeroEntityInsert {
 	result := entity.HeroEntityInsert{
@@ -16,26 +51,29 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 	case pb_common.HeroType_HERO_TYPE_SINGLE:
 		if hi.Single != nil {
 			result.Single = entity.HeroSingleInsert{
-				MediaId:     int(hi.Single.MediaId),
-				ExploreLink: hi.Single.ExploreLink,
-				ExploreText: hi.Single.ExploreText,
-				Headline:    hi.Single.Headline,
+				MediaPortraitId:  int(hi.Single.MediaPortraitId),
+				MediaLandscapeId: int(hi.Single.MediaLandscapeId),
+				ExploreLink:      hi.Single.ExploreLink,
+				ExploreText:      hi.Single.ExploreText,
+				Headline:         hi.Single.Headline,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_DOUBLE:
 		if hi.Double != nil {
 			result.Double = entity.HeroDoubleInsert{
 				Left: entity.HeroSingleInsert{
-					MediaId:     int(hi.Double.Left.MediaId),
-					ExploreLink: hi.Double.Left.ExploreLink,
-					ExploreText: hi.Double.Left.ExploreText,
-					Headline:    hi.Double.Left.Headline,
+					MediaPortraitId:  int(hi.Double.Left.MediaPortraitId),
+					MediaLandscapeId: int(hi.Double.Left.MediaLandscapeId),
+					ExploreLink:      hi.Double.Left.ExploreLink,
+					ExploreText:      hi.Double.Left.ExploreText,
+					Headline:         hi.Double.Left.Headline,
 				},
 				Right: entity.HeroSingleInsert{
-					MediaId:     int(hi.Double.Right.MediaId),
-					ExploreLink: hi.Double.Right.ExploreLink,
-					ExploreText: hi.Double.Right.ExploreText,
-					Headline:    hi.Double.Right.Headline,
+					MediaPortraitId:  int(hi.Double.Right.MediaPortraitId),
+					MediaLandscapeId: int(hi.Double.Right.MediaLandscapeId),
+					ExploreLink:      hi.Double.Right.ExploreLink,
+					ExploreText:      hi.Double.Right.ExploreText,
+					Headline:         hi.Double.Right.Headline,
 				},
 			}
 		}
@@ -43,10 +81,11 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 		if hi.Main != nil && hi.Main.Single != nil {
 			result.Main = entity.HeroMainInsert{
 				Single: entity.HeroSingleInsert{
-					MediaId:     int(hi.Main.Single.MediaId),
-					ExploreLink: hi.Main.Single.ExploreLink,
-					ExploreText: hi.Main.Single.ExploreText,
-					Headline:    hi.Main.Single.Headline,
+					MediaPortraitId:  int(hi.Main.Single.MediaPortraitId),
+					MediaLandscapeId: int(hi.Main.Single.MediaLandscapeId),
+					ExploreLink:      hi.Main.Single.ExploreLink,
+					ExploreText:      hi.Main.Single.ExploreText,
+					Headline:         hi.Main.Single.Headline,
 				},
 				Tag:         hi.Main.Tag,
 				Description: hi.Main.Description,
@@ -92,7 +131,8 @@ func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, er
 	}
 
 	result := &pb_common.HeroFull{
-		Entities: make([]*pb_common.HeroEntity, len(hf.Entities)),
+		Entities:    make([]*pb_common.HeroEntity, len(hf.Entities)),
+		NavFeatured: ConvertEntityNavFeaturedToCommon(&hf.NavFeatured),
 	}
 
 	for i, entity := range hf.Entities {
@@ -104,6 +144,28 @@ func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, er
 	}
 
 	return result, nil
+}
+
+func ConvertEntityNavFeaturedToCommon(nf *entity.NavFeatured) *pb_common.NavFeatured {
+	if nf == nil {
+		return nil
+	}
+	return &pb_common.NavFeatured{
+		Men:   ConvertEntityNavFeaturedEntityToCommon(&nf.Men),
+		Women: ConvertEntityNavFeaturedEntityToCommon(&nf.Women),
+	}
+}
+
+func ConvertEntityNavFeaturedEntityToCommon(ne *entity.NavFeaturedEntity) *pb_common.NavFeaturedEntity {
+	if ne == nil {
+		return nil
+	}
+	return &pb_common.NavFeaturedEntity{
+		Media:             ConvertEntityToCommonMedia(&ne.Media),
+		ExploreText:       ne.ExploreText,
+		FeaturedTag:       ne.FeaturedTag,
+		FeaturedArchiveId: strconv.Itoa(ne.FeaturedArchiveId),
+	}
 }
 
 func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEntity, error) {
@@ -170,10 +232,11 @@ func ConvertEntityHeroSingleToCommon(hsa *entity.HeroSingle) *pb_common.HeroSing
 		return nil
 	}
 	return &pb_common.HeroSingle{
-		Media:       ConvertEntityToCommonMedia(&hsa.Media),
-		Headline:    hsa.Headline,
-		ExploreLink: hsa.ExploreLink,
-		ExploreText: hsa.ExploreText,
+		MediaPortrait:  ConvertEntityToCommonMedia(&hsa.MediaPortrait),
+		MediaLandscape: ConvertEntityToCommonMedia(&hsa.MediaLandscape),
+		Headline:       hsa.Headline,
+		ExploreLink:    hsa.ExploreLink,
+		ExploreText:    hsa.ExploreText,
 	}
 }
 
