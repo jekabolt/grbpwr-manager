@@ -10,10 +10,36 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 
 message HeroFull {
   repeated HeroEntity entities = 1;
+  NavFeatured nav_featured = 2;
+}
+
+message NavFeatured {
+  NavFeaturedEntity men = 1;
+  NavFeaturedEntity women = 2;
+}
+
+message NavFeaturedInsert {
+  NavFeaturedEntityInsert men = 1;
+  NavFeaturedEntityInsert women = 2;
+}
+
+message NavFeaturedEntity {
+  common.MediaFull media = 1;
+  string explore_text = 2;
+  string featured_tag = 3;
+  string featured_archive_id = 4;
+}
+
+message NavFeaturedEntityInsert {
+  int32 media_id = 1;
+  string explore_text = 2;
+  string featured_tag = 3;
+  int32 featured_archive_id = 4;
 }
 
 message HeroFullInsert {
   repeated HeroEntityInsert entities = 1;
+  NavFeaturedInsert nav_featured = 2;
 }
 
 enum HeroType {
@@ -47,10 +73,11 @@ message HeroEntityInsert {
 }
 
 message HeroSingle {
-  common.MediaFull media = 1;
-  string headline = 2;
-  string explore_link = 3;
-  string explore_text = 4;
+  common.MediaFull media_portrait = 1;
+  common.MediaFull media_landscape = 2;
+  string headline = 3;
+  string explore_link = 4;
+  string explore_text = 5;
 }
 
 message HeroDouble {
@@ -104,10 +131,11 @@ message HeroFeaturedProductsTagInsert {
 }
 
 message HeroSingleInsert {
-  int32 media_id = 1;
-  string headline = 2;
-  string explore_link = 3;
-  string explore_text = 4;
+  int32 media_portrait_id = 1;
+  int32 media_landscape_id = 2;
+  string headline = 3;
+  string explore_link = 4;
+  string explore_text = 5;
 }
 
 message HeroDoubleInsert {

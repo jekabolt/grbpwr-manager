@@ -47,7 +47,7 @@ type (
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error
-		SetHero(ctx context.Context, hei []entity.HeroEntityInsert) error
+		SetHero(ctx context.Context, hfi entity.HeroFullInsert) error
 		GetHero(ctx context.Context) (*entity.HeroFull, error)
 	}
 

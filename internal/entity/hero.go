@@ -1,11 +1,13 @@
 package entity
 
 type HeroFull struct {
-	Entities []HeroEntity
+	Entities    []HeroEntity `json:"entities"`
+	NavFeatured NavFeatured  `json:"nav_featured"`
 }
 
 type HeroFullInsert struct {
-	Entities []HeroEntityInsert
+	Entities    []HeroEntityInsert
+	NavFeatured NavFeaturedInsert
 }
 
 type HeroType int32
@@ -31,10 +33,11 @@ type HeroEntity struct {
 }
 
 type HeroSingle struct {
-	Media       MediaFull `json:"media"`
-	Headline    string    `json:"headline"`
-	ExploreLink string    `json:"explore_link"`
-	ExploreText string    `json:"explore_text"`
+	MediaPortrait  MediaFull `json:"media_portrait"`
+	MediaLandscape MediaFull `json:"media_landscape"`
+	Headline       string    `json:"headline"`
+	ExploreLink    string    `json:"explore_link"`
+	ExploreText    string    `json:"explore_text"`
 }
 
 type HeroDouble struct {
@@ -59,10 +62,11 @@ type HeroEntityInsert struct {
 }
 
 type HeroSingleInsert struct {
-	MediaId     int    `json:"media_id"`
-	Headline    string `json:"headline"`
-	ExploreLink string `json:"explore_link"`
-	ExploreText string `json:"explore_text"`
+	MediaPortraitId  int    `json:"media_portrait_id"`
+	MediaLandscapeId int    `json:"media_landscape_id"`
+	Headline         string `json:"headline"`
+	ExploreLink      string `json:"explore_link"`
+	ExploreText      string `json:"explore_text"`
 }
 
 type HeroDoubleInsert struct {
@@ -117,4 +121,28 @@ type HeroFeaturedArchive struct {
 	Tag         string      `json:"tag"`
 	Headline    string      `json:"headline"`
 	ExploreText string      `json:"explore_text"`
+}
+
+type NavFeatured struct {
+	Men   NavFeaturedEntity `json:"men"`
+	Women NavFeaturedEntity `json:"women"`
+}
+
+type NavFeaturedInsert struct {
+	Men   NavFeaturedEntityInsert `json:"men"`
+	Women NavFeaturedEntityInsert `json:"women"`
+}
+
+type NavFeaturedEntity struct {
+	Media             MediaFull `json:"media"`
+	ExploreText       string    `json:"explore_text"`
+	FeaturedTag       string    `json:"featured_tag"`
+	FeaturedArchiveId int       `json:"featured_archive_id"`
+}
+
+type NavFeaturedEntityInsert struct {
+	MediaId           int    `json:"media_id"`
+	ExploreText       string `json:"explore_text"`
+	FeaturedTag       string `json:"featured_tag"`
+	FeaturedArchiveId int    `json:"featured_archive_id"`
 }
