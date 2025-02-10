@@ -32,8 +32,7 @@ INSERT INTO category (name, level_id, parent_id) VALUES
     ('accessories', 1, NULL),
     ('shoes', 1, NULL),
     ('bags', 1, NULL),
-    ('home', 1, NULL),
-    ('body', 1, NULL);
+    ('objects', 1, NULL);
 
 -- Outerwear sub-categories and types
 INSERT INTO category (name, level_id, parent_id) 
@@ -50,7 +49,9 @@ SELECT 'rain', 3, id FROM category WHERE name = 'jackets'
 UNION ALL
 SELECT 'softshell', 3, id FROM category WHERE name = 'jackets'
 UNION ALL
-SELECT 'hardshell', 3, id FROM category WHERE name = 'jackets';
+SELECT 'hardshell', 3, id FROM category WHERE name = 'jackets'
+UNION ALL
+SELECT 'blazer', 3, id FROM category WHERE name = 'jackets';
 
 INSERT INTO category (name, level_id, parent_id)
 SELECT 'coats', 2, id FROM category WHERE name = 'outerwear';
@@ -232,6 +233,18 @@ UNION ALL
 SELECT 'mesh', 3, id FROM category WHERE name = 'bralettes';
 
 INSERT INTO category (name, level_id, parent_id)
+SELECT 'briefs', 2, id FROM category WHERE name = 'loungewear_sleepwear';
+
+INSERT INTO category (name, level_id, parent_id)
+SELECT 'lace', 3, id FROM category WHERE name = 'briefs'
+UNION ALL
+SELECT 'sports', 3, id FROM category WHERE name = 'briefs'
+UNION ALL
+SELECT 'mesh', 3, id FROM category WHERE name = 'briefs'
+UNION ALL
+SELECT 'cotton', 3, id FROM category WHERE name = 'briefs';
+
+INSERT INTO category (name, level_id, parent_id)
 SELECT 'robes', 2, id FROM category WHERE name = 'loungewear_sleepwear';
 
 INSERT INTO category (name, level_id, parent_id)
@@ -365,6 +378,13 @@ SELECT 'shoulder', 2, id FROM category WHERE name = 'bags';
 
 INSERT INTO category (name, level_id, parent_id)
 SELECT 'tote', 2, id FROM category WHERE name = 'bags';
+
+INSERT INTO category (name, level_id, parent_id)
+SELECT 'home', 2, id FROM category WHERE name = 'objects'
+UNION ALL
+SELECT 'body', 2, id FROM category WHERE name = 'objects'
+UNION ALL
+SELECT 'other', 2, id FROM category WHERE name = 'objects';
 
 CREATE VIEW view_categories AS
 SELECT 
