@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -56,7 +55,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"composition":        product.Composition,
 	}
 
-	slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
+	// slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
 
 	id, err := ExecNamedLastId(ctx, rep.DB(), query, params)
 	if err != nil {
@@ -206,7 +205,7 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// product
-		slog.Default().DebugContext(ctx, "product", slog.Any("product", prd.Product.Preorder))
+		// slog.Default().DebugContext(ctx, "product", slog.Any("product", prd.Product.Preorder))
 		err := updateProduct(ctx, rep, prd.Product, id)
 		if err != nil {
 			return fmt.Errorf("can't update product: %w", err)
@@ -411,7 +410,7 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		return nil, 0, fmt.Errorf("can't get product count: %w", err)
 	}
 
-	slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
+	// slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
 
 	// Set limit and offset
 	args["limit"] = limit
@@ -638,8 +637,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		CreatedAt   time.Time `db:"thumbnail_created_at"`
 	}
 
-	slog.Default().DebugContext(ctx, "query", slog.String("query", query))
-	slog.Default().DebugContext(ctx, "params", slog.Any("params", params))
 	prd, err := QueryNamedOne[product](ctx, ms.db, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)
