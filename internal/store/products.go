@@ -561,11 +561,10 @@ func (ms *MYSQLStore) GetProductByIdShowHidden(ctx context.Context, id int) (*en
 	return ms.getProductDetails(ctx, map[string]any{"id": id}, true) // No year filter needed
 }
 
-// GetProductByNameNoHidden returns a product by its name, excluding hidden products.
-func (ms *MYSQLStore) GetProductByNameNoHidden(ctx context.Context, id int, name string) (*entity.ProductFull, error) {
+// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
+func (ms *MYSQLStore) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
 	filters := map[string]any{
-		"name": name,
-		"id":   id,
+		"id": id,
 	}
 	return ms.getProductDetails(ctx, filters, false)
 }
@@ -575,62 +574,63 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	var productInfo entity.ProductFull
 
 	// Building the WHERE clause of the query with named parameters to prevent SQL injection
+	// Building the WHERE clause of the query with named parameters to prevent SQL injection
 	whereClauses := []string{}
 	params := map[string]interface{}{}
 	for key, value := range filters {
 		keyCamel := toCamelCase(key)
-		whereClause := fmt.Sprintf("%s = :%s", key, keyCamel)
+		whereClause := fmt.Sprintf("p.%s = :%s", keyCamel, keyCamel) // Corrected column reference
 		whereClauses = append(whereClauses, whereClause)
 		params[keyCamel] = value
 	}
 
 	query := fmt.Sprintf(`
-		SELECT 
-			p.id,
-			p.created_at,
-			p.updated_at,
-			p.preorder,
-			p.name,
-			p.brand,
-			p.sku,
-			p.color,
-			p.color_hex,
-			p.country_of_origin,
-			p.price,
-			p.sale_percentage,
-			p.top_category_id,
-			p.sub_category_id,
-			p.type_id,
-			p.model_wears_height_cm,
-			p.model_wears_size_id,
-			p.description,
-			p.hidden,
-			p.target_gender,
-			p.care_instructions,
-			p.composition,
-			m.id AS thumbnail_id,
-			m.created_at AS thumbnail_created_at, 
-			m.full_size,
-			m.full_size_width,
-			m.full_size_height,
-			m.thumbnail,
-			m.thumbnail_width,
-			m.thumbnail_height,
-			m.compressed,
-			m.compressed_width,
-			m.compressed_height,
-			m.blur_hash
-		FROM 
-			product p
-		JOIN 
-			media m
-		ON 
-			p.thumbnail_id = m.id 
-		WHERE p.%s`, strings.Join(whereClauses, " AND "))
+	SELECT 
+		p.id,
+		p.created_at,
+		p.updated_at,
+		p.preorder,
+		p.name,
+		p.brand,
+		p.sku,
+		p.color,
+		p.color_hex,
+		p.country_of_origin,
+		p.price,
+		p.sale_percentage,
+		p.top_category_id,
+		p.sub_category_id,
+		p.type_id,
+		p.model_wears_height_cm,
+		p.model_wears_size_id,
+		p.description,
+		p.hidden,
+		p.target_gender,
+		p.care_instructions,
+		p.composition,
+		m.id AS thumbnail_id,
+		m.created_at AS thumbnail_created_at, 
+		m.full_size,
+		m.full_size_width,
+		m.full_size_height,
+		m.thumbnail,
+		m.thumbnail_width,
+		m.thumbnail_height,
+		m.compressed,
+		m.compressed_width,
+		m.compressed_height,
+		m.blur_hash
+	FROM 
+		product p
+	JOIN 
+		media m
+	ON 
+		p.thumbnail_id = m.id 
+	WHERE %s`, strings.Join(whereClauses, " AND "))
 
 	// Include or exclude hidden products based on the showHidden flag
 	if !showHidden {
-		query += " AND hidden = false"
+		query += " AND p.hidden = false"
 	}
 	type product struct {
 		entity.Product
@@ -638,6 +638,8 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		CreatedAt   time.Time `db:"thumbnail_created_at"`
 	}
 
+	slog.Default().DebugContext(ctx, "query", slog.String("query", query))
+	slog.Default().DebugContext(ctx, "params", slog.Any("params", params))
 	prd, err := QueryNamedOne[product](ctx, ms.db, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)
