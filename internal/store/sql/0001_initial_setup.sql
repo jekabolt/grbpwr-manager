@@ -469,6 +469,12 @@ VALUES
     ('bust'),
     ('sleeve'),
     ('width'),
+    ('leg-opening'),
+    ('hip'),
+    ('bottom-width'),
+    ('depth'),
+    ('start-fit-length'),
+    ('end-fit-length'),
     ('height');
 
 CREATE TABLE payment_method (
