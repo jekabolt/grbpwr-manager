@@ -110,6 +110,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 			SubCategoryId:   int(prd.SubCategoryId.Int32),
 			TypeId:          int(prd.TypeId.Int32),
 			TargetGender:    prd.TargetGender,
+			Preorder:        prd.Preorder,
 		}
 
 		validItems = append(validItems, validItem)
@@ -696,7 +697,8 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			p.top_category_id AS top_category_id,
 			p.sub_category_id AS sub_category_id,
 			p.type_id AS type_id,
-			p.target_gender AS target_gender
+			p.target_gender AS target_gender,
+			oi.preorder AS preorder
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
 		JOIN media m ON p.thumbnail_id = m.id
