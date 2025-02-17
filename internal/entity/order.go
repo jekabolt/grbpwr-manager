@@ -66,6 +66,7 @@ type OrderItem struct {
 	TargetGender  GenderEnum `db:"target_gender"`
 	SKU           string     `db:"product_sku"`
 	Slug          string
+	Preorder      sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 

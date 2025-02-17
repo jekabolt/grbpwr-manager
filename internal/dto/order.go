@@ -175,6 +175,7 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderIte
 		TypeId:                int32(orderItem.TypeId),
 		ProductBrand:          orderItem.ProductBrand,
 		Sku:                   orderItem.SKU,
+		Preorder:              timestamppb.New(orderItem.Preorder.Time),
 		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
 	}
 }
@@ -261,6 +262,7 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		Sku:                   e.SKU,
 		Color:                 e.Color,
 		Slug:                  e.Slug,
+		Preorder:              timestamppb.New(e.Preorder.Time),
 		OrderItem:             convertOrderItemInsert(e.OrderItemInsert),
 	}
 }

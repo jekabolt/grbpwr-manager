@@ -58,7 +58,8 @@ message OrderItem {
   int32 sub_category_id = 13;
   int32 type_id = 14;
   string sku = 15;
-  OrderItemInsert order_item = 16;
+  google.protobuf.Timestamp preorder = 16;
+  OrderItemInsert order_item = 17;
 }
 
 message OrderItemInsert {
