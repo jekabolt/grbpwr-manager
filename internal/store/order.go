@@ -698,7 +698,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			p.sub_category_id AS sub_category_id,
 			p.type_id AS type_id,
 			p.target_gender AS target_gender,
-			oi.preorder AS preorder
+			p.preorder AS preorder
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
 		JOIN media m ON p.thumbnail_id = m.id
