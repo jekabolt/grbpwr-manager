@@ -466,7 +466,7 @@ VALUES
     ('rise'),
     ('hips'),
     ('shoulders'),
-    ('bust'),
+    ('chest'),
     ('sleeve'),
     ('width'),
     ('leg-opening'),
