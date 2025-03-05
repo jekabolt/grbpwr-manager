@@ -685,7 +685,8 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 			m.blur_hash
 		FROM media m
 		INNER JOIN product_media pm ON m.id = pm.media_id
-		WHERE pm.product_id = :id;
+		WHERE pm.product_id = :id
+		ORDER BY pm.id;
 	`
 	productInfo.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, map[string]interface{}{
 		"id": prd.Id,
