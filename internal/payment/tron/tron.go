@@ -151,38 +151,35 @@ func (p *Processor) freeAddress(orderUUID string) error {
 }
 
 // GetOrderInvoice returns the payment details for the given order and expiration date.
-func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error) {
+func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, error) {
 
 	var payment *entity.Payment
-	expiration := time.Now()
 	var err error
 
 	payment, err = p.rep.Order().GetPaymentByOrderUUID(ctx, orderUUID)
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't get payment by order id: %w", err)
+		return nil, fmt.Errorf("can't get payment by order id: %w", err)
 	}
 
 	// If the payment is already done, return it immediately.
 	if payment.IsTransactionDone {
-		expiration = payment.ModifiedAt
-		return &payment.PaymentInsert, expiration, nil
+		return &payment.PaymentInsert, nil
 	}
 
 	// Order has unexpired invoice, return it.
 	if payment.Payee.Valid && payment.Payee.String != "" {
-		expiration = payment.ModifiedAt.Add(p.c.InvoiceExpiration)
-		return &payment.PaymentInsert, expiration, nil
+		return &payment.PaymentInsert, nil
 	}
 
 	// If the payment is not done and the address is not set, generate a new invoice.
 	pAddr, err := p.getFreeAddress()
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't get free address: %w", err)
+		return nil, fmt.Errorf("can't get free address: %w", err)
 	}
 
 	of, err := p.rep.Order().InsertCryptoInvoice(ctx, orderUUID, pAddr, p.pm)
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't insert order invoice: %w", err)
+		return nil, fmt.Errorf("can't insert order invoice: %w", err)
 	}
 	payment.PaymentInsert.Payee = sql.NullString{
 		String: pAddr,
@@ -191,7 +188,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	// convert base currency to payment currency in this case to USD
 	totalUSD, err := p.rates.ConvertFromBaseCurrency(dto.USD, of.Order.TotalPriceDecimal())
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't convert from base currency: %w", err)
+		return nil, fmt.Errorf("can't convert from base currency: %w", err)
 	}
 	totalUSD = totalUSD.Round(2)
 
@@ -223,7 +220,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 
 	go p.monitorPayment(context.TODO(), orderUUID, payment)
 
-	return &payment.PaymentInsert, expiration, err
+	return &payment.PaymentInsert, nil
 }
 
 func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, payment *entity.Payment) {
@@ -438,4 +435,8 @@ func convertToBlockchainFormat(amount decimal.Decimal, decimals int) decimal.Dec
 
 	// Multiply the transaction amount by the scale factor to get the amount in blockchain format.
 	return amount.Mul(scaleFactor)
+}
+
+func (p *Processor) ExpirationDuration() time.Duration {
+	return p.c.InvoiceExpiration
 }

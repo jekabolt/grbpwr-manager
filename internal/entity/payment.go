@@ -30,6 +30,7 @@ type PaymentInsert struct {
 	Payee                            sql.NullString  `db:"payee"`
 	ClientSecret                     sql.NullString  `db:"client_secret"`
 	IsTransactionDone                bool            `db:"is_transaction_done"`
+	ExpiredAt                        sql.NullTime    `db:"expired_at"`
 }
 
 type PaymentMethodName string

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"log/slog"
 
@@ -270,16 +271,17 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 	return nil
 }
 
-func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethodId, orderId int) error {
+func insertPaymentRecord(ctx context.Context, rep dependency.Repository, paymentMethodId, orderId int, expiredAt time.Time) error {
 
 	insertQuery := `
-		INSERT INTO payment (order_id, payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done)
-		VALUES (:orderId, :paymentMethodId, 0, 0, false);
+		INSERT INTO payment (order_id, payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done, expired_at)
+		VALUES (:orderId, :paymentMethodId, 0, 0, false, :expiredAt);
 	`
 
 	err := ExecNamed(ctx, rep.DB(), insertQuery, map[string]interface{}{
 		"orderId":         orderId,
 		"paymentMethodId": paymentMethodId,
+		"expiredAt":       sql.NullTime{Time: expiredAt, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("can't insert payment record: %w", err)
@@ -541,7 +543,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 }
 
 // CreateOrder creates a new order with the provided details
-func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error) {
+func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool, expiredAt time.Time) (*entity.Order, bool, error) {
 
 	// Validate order input
 	if err := validateOrderInput(orderNew); err != nil {
@@ -605,7 +607,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		// Insert payment record
-		err = insertPaymentRecord(ctx, rep, paymentMethod.Method.Id, order.Id)
+		err = insertPaymentRecord(ctx, rep, paymentMethod.Method.Id, order.Id, expiredAt)
 		if err != nil {
 			return fmt.Errorf("error while inserting payment record: %w", err)
 		}

@@ -26,6 +26,7 @@ func ConvertToEntityPaymentInsert(pbPayment *pb_common.PaymentInsert) (*entity.P
 		Payer:             sql.NullString{String: pbPayment.Payer, Valid: pbPayment.Payer != ""},
 		Payee:             sql.NullString{String: pbPayment.Payee, Valid: pbPayment.Payee != ""},
 		IsTransactionDone: pbPayment.IsTransactionDone,
+		ExpiredAt:         sql.NullTime{Time: pbPayment.ExpiredAt.AsTime(), Valid: pbPayment.ExpiredAt != nil},
 	}, nil
 }
 
@@ -60,6 +61,7 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 		Payee:                            p.Payee.String,
 		ClientSecret:                     p.ClientSecret.String,
 		IsTransactionDone:                p.IsTransactionDone,
+		ExpiredAt:                        timestamppb.New(p.ExpiredAt.Time),
 	}, nil
 }
 
