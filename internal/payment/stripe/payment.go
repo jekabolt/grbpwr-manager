@@ -165,37 +165,34 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 }
 
 // GetOrderInvoice returns the payment details for the given order and expiration date.
-func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error) {
+func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, error) {
 
 	payment := &entity.Payment{}
-	expiration := time.Now()
 	var err error
 
 	payment, err = p.rep.Order().GetPaymentByOrderUUID(ctx, orderUUID)
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't get payment by order id: %w", err)
+		return nil, fmt.Errorf("can't get payment by order id: %w", err)
 	}
 
 	of, err := p.rep.Order().GetOrderFullByUUID(ctx, orderUUID)
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't get order by id: %w", err)
+		return nil, fmt.Errorf("can't get order by id: %w", err)
 	}
 
 	// If the payment is already done, return it immediately.
 	if payment.IsTransactionDone {
-		expiration = payment.ModifiedAt
-		return &payment.PaymentInsert, expiration, nil
+		return &payment.PaymentInsert, nil
 	}
 
 	// Order has unexpired invoice, return it.
 	if payment.ClientSecret.Valid && payment.Payee.String != "" {
-		expiration = payment.ModifiedAt.Add(p.c.InvoiceExpiration)
-		return &payment.PaymentInsert, expiration, nil
+		return &payment.PaymentInsert, nil
 	}
 
 	pi, err := p.createPaymentIntent(*of)
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't create payment intent: %w", err)
+		return nil, fmt.Errorf("can't create payment intent: %w", err)
 	}
 
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -220,12 +217,12 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	})
 
 	if err != nil {
-		return nil, expiration, fmt.Errorf("can't insert fiat invoice: %w", err)
+		return nil, fmt.Errorf("can't insert fiat invoice: %w", err)
 	}
 
 	go p.monitorPayment(context.TODO(), orderUUID, payment)
 
-	return &payment.PaymentInsert, expiration, err
+	return &payment.PaymentInsert, nil
 }
 
 func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, payment *entity.Payment) {
@@ -280,6 +277,10 @@ func (p *Processor) CancelMonitorPayment(orderUUID string) error {
 		return nil
 	}
 	return fmt.Errorf("no monitoring process found for order ID: %s", orderUUID)
+}
+
+func (p *Processor) ExpirationDuration() time.Duration {
+	return p.c.InvoiceExpiration
 }
 
 func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error) {

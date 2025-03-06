@@ -59,7 +59,7 @@ type (
 	}
 
 	Order interface {
-		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool) (*entity.Order, bool, error)
+		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool, expiredAt time.Time) (*entity.Order, bool, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
 		InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod) (*entity.OrderFull, error)
@@ -82,18 +82,15 @@ type (
 
 	// TODO: invoice to separate interface
 	Invoicer interface {
-		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
+		GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, error)
 		CancelMonitorPayment(orderUUID string) error
 		CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error)
+		ExpirationDuration() time.Duration
 	}
 
 	StripePayment interface {
 		CreatePaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error)
 	}
-
-	// Invoice interface {
-	// 	GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, time.Time, error)
-	// }
 
 	Trongrid interface {
 		GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error)

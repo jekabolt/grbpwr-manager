@@ -21,7 +21,6 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server implements handlers for frontend requests.
@@ -160,7 +159,28 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
 	}
 
-	order, sendEmail, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo)
+	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
+
+	pme, ok := cache.GetPaymentMethodByName(pm)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
+		return nil, status.Errorf(codes.Internal, "internal error")
+	}
+	if !pme.Method.Allowed {
+		slog.Default().ErrorContext(ctx, "payment method not allowed")
+		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
+	}
+	handler, err := s.getPaymentHandler(ctx, pm)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get payment handler",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get payment handler")
+	}
+
+	expirationDuration := handler.ExpirationDuration()
+
+	order, sendEmail, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo, time.Now().Add(expirationDuration))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
@@ -177,22 +197,10 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		}
 	}
 
-	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
-
-	pme, ok := cache.GetPaymentMethodByName(pm)
-	if !ok {
-		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
-		return nil, status.Errorf(codes.Internal, "internal error")
-	}
-	if !pme.Method.Allowed {
-		slog.Default().ErrorContext(ctx, "payment method not allowed")
-		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
-	}
-
-	invoice, err := s.getInvoiceByPaymentMethod(ctx, pm, order.UUID)
+	pi, err := s.getInvoiceByPaymentMethod(ctx, handler, order.UUID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "can't get order invoice")
 	}
 
 	eos, ok := cache.GetOrderStatusById(order.OrderStatusId)
@@ -207,7 +215,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "internal error")
 	}
 
-	pbPi, err := dto.ConvertEntityToPbPaymentInsert(invoice.Payment)
+	pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -217,7 +225,6 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	return &pb_frontend.SubmitOrderResponse{
 		OrderUuid:   order.UUID,
 		OrderStatus: os,
-		ExpiredAt:   timestamppb.New(invoice.ExpiredAt),
 		Payment:     pbPi,
 	}, nil
 }
@@ -248,24 +255,15 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 			return nil, status.Errorf(codes.Internal, "can't get payment method by id")
 		}
 
-		var checker dependency.Invoicer
-		switch pm.Method.Name {
-		case entity.USDT_TRON:
-			checker = s.usdtTron
-		case entity.USDT_TRON_TEST:
-			checker = s.usdtTronTestnet
-		case entity.CARD:
-			checker = s.stripePayment
-		case entity.CARD_TEST:
-			checker = s.stripePaymentTest
-		default:
-			slog.Default().ErrorContext(ctx, "payment method is not allowed",
-				slog.Any("paymentMethod", pm),
+		handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment handler",
+				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Unimplemented, "payment method is not allowed")
+			return nil, status.Errorf(codes.Internal, "can't get payment handler")
 		}
 
-		payment, err := checker.CheckForTransactions(ctx, o.Order.UUID, o.Payment)
+		payment, err := handler.CheckForTransactions(ctx, o.Order.UUID, o.Payment)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't check for transactions",
 				slog.String("err", err.Error()),
@@ -381,12 +379,21 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
 
-	invoice, err := s.getInvoiceByPaymentMethod(ctx, pm, req.OrderUuid)
+	handler, err := s.getPaymentHandler(ctx, pm)
 	if err != nil {
-		return nil, err
+		slog.Default().ErrorContext(ctx, "can't get payment handler",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get payment handler")
 	}
 
-	pbPi, err := dto.ConvertEntityToPbPaymentInsert(invoice.Payment)
+	pi, err := s.getInvoiceByPaymentMethod(ctx, handler, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get order invoice")
+	}
+
+	pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
@@ -394,42 +401,34 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 	pbPi.PaymentMethod = req.PaymentMethod
 
 	return &pb_frontend.GetOrderInvoiceResponse{
-		Payment:   pbPi,
-		ExpiredAt: timestamppb.New(invoice.ExpiredAt),
+		Payment: pbPi,
 	}, nil
 }
 
-type InvoiceDetails struct {
-	Payment   *entity.PaymentInsert
-	ExpiredAt time.Time
-}
+func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, handler dependency.Invoicer, orderUuid string) (*entity.PaymentInsert, error) {
 
-func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, pm entity.PaymentMethodName, orderUuid string) (*InvoiceDetails, error) {
-	var handler dependency.Invoicer
-	switch pm {
-	case entity.USDT_TRON:
-		handler = s.usdtTron
-	case entity.USDT_TRON_TEST:
-		handler = s.usdtTronTestnet
-	case entity.CARD:
-		handler = s.stripePayment
-	case entity.CARD_TEST:
-		handler = s.stripePaymentTest
-	default:
-		slog.Default().ErrorContext(ctx, "payment method unimplemented")
-		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
-	}
-
-	pi, expire, err := handler.GetOrderInvoice(ctx, orderUuid)
+	pi, err := handler.GetOrderInvoice(ctx, orderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't get order invoice")
 	}
 
-	return &InvoiceDetails{
-		Payment:   pi,
-		ExpiredAt: expire,
-	}, nil
+	return pi, nil
+}
+
+func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
+	switch pm {
+	case entity.USDT_TRON:
+		return s.usdtTron, nil
+	case entity.USDT_TRON_TEST:
+		return s.usdtTronTestnet, nil
+	case entity.CARD:
+		return s.stripePayment, nil
+	case entity.CARD_TEST:
+		return s.stripePaymentTest, nil
+	default:
+		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
+	}
 }
 
 func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.CancelOrderInvoiceRequest) (*pb_frontend.CancelOrderInvoiceResponse, error) {

@@ -23,6 +23,7 @@ message PaymentInsert {
   string payee = 6;
   string client_secret = 7;
   bool is_transaction_done = 8;
+  google.protobuf.Timestamp expired_at = 9;
 }
 
 enum PaymentMethodNameEnum {
