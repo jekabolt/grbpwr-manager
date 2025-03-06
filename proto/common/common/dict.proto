@@ -24,8 +24,6 @@ message Dictionary {
   bool site_enabled = 10;
   int32 max_order_items = 11;
   string base_currency = 12;
-  map<string, string> care_instructions = 13;
-  map<string, string> composition = 14;
 }
 
 message Genders {

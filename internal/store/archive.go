@@ -353,12 +353,13 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 		return nil, fmt.Errorf("no archive found with ID %d", id)
 	}
 
-	if len(afs) != 2 {
-		return nil, fmt.Errorf("unexpected number of archives found with ID %d", id)
-	}
-
 	af := afs[0]
-	afNext := afs[1]
+
+	// Handle next slug only if we have more than one archive
+	if len(afs) > 1 {
+		afNext := afs[1]
+		af.NextSlug = dto.GetArchiveSlug(afNext.Id, afNext.Heading, afNext.Tag)
+	}
 
 	query = `
 	SELECT m.*, ai.is_video
@@ -418,7 +419,6 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 	}
 
 	af.Slug = dto.GetArchiveSlug(af.Id, af.Heading, af.Tag)
-	af.NextSlug = dto.GetArchiveSlug(afNext.Id, afNext.Heading, afNext.Tag)
 
 	return &af, nil
 
