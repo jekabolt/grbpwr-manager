@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -41,7 +42,9 @@ func TestAuth(t *testing.T) {
 	pwHashNew, err := authsrv.pwhash.HashPassword(newPassword)
 	assert.NoError(t, err)
 
-	as.EXPECT().AddAdmin(mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	// Username is converted to lowercase in the Create method
+	lowercaseUsername := strings.ToLower(username)
+	as.EXPECT().AddAdmin(mock.Anything, lowercaseUsername, mock.Anything).Return(nil)
 
 	_, err = authsrv.Create(ctx, &pb_auth.CreateRequest{
 		MasterPassword: masterPassword,
@@ -52,8 +55,8 @@ func TestAuth(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	as.EXPECT().PasswordHashByUsername(ctx, mock.Anything).Return(pwHash, nil).Once()
-	as.EXPECT().ChangePassword(ctx, mock.Anything, mock.Anything).Return(nil)
+	as.EXPECT().PasswordHashByUsername(ctx, lowercaseUsername).Return(pwHash, nil).Once()
+	as.EXPECT().ChangePassword(ctx, lowercaseUsername, mock.Anything).Return(nil)
 
 	_, err = authsrv.ChangePassword(ctx, &pb_auth.ChangePasswordRequest{
 		Username:        username,
@@ -62,9 +65,7 @@ func TestAuth(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	fmt.Printf(" \n\n test hash new %v ", pwHashNew)
-	fmt.Printf(" \n\n test hash old %v ", pwHash)
-	as.EXPECT().PasswordHashByUsername(mock.Anything, mock.Anything).Return(pwHashNew, nil).Once()
+	as.EXPECT().PasswordHashByUsername(ctx, lowercaseUsername).Return(pwHashNew, nil).Once()
 	resp, err := authsrv.Login(ctx, &pb_auth.LoginRequest{
 		Username: username,
 		Password: newPassword,
@@ -95,7 +96,7 @@ func TestAuth(t *testing.T) {
 	handlerAuth.ServeHTTP(rec, req)
 	assert.Equal(t, rec.Code, http.StatusUnauthorized)
 
-	as.EXPECT().DeleteAdmin(mock.Anything, mock.Anything).Return(nil)
+	as.EXPECT().DeleteAdmin(mock.Anything, lowercaseUsername).Return(nil)
 	_, err = authsrv.Delete(ctx, &pb_auth.DeleteRequest{
 		Username:       username,
 		MasterPassword: c.MasterPassword,

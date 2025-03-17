@@ -1,0 +1,139 @@
+---
+description: Guidelines for writing mysql
+globs: **/*.sql
+alwaysApply: false
+---
+Here's the rewritten MySQL style guide based on the provided PostgreSQL style guide:
+
+## MySQL Style Guide
+
+### General
+
+- Use lowercase for SQL reserved words to maintain consistency and readability.
+- Employ consistent, descriptive identifiers for tables, columns, and other database objects.
+- Use white space and indentation to enhance the readability of your code.
+- Store dates in ISO 8601 format (yyyy-mm-dd hh:mm:ss).
+- Include comments for complex logic, using '/* ... */' for block comments and '#' for line comments.
+
+### Naming Conventions
+
+- Avoid SQL reserved words and ensure names are unique and under 64 characters.
+- Use snake_case for tables and columns.
+- Prefer plurals for table names.
+- Prefer singular names for columns.
+
+### Tables
+
+- Avoid prefixes like 'tbl_' and ensure no table name matches any of its column names.
+- Always add an id column of type INT AUTO_INCREMENT unless otherwise specified.
+- Create all tables in the specified database unless otherwise specified.
+- Always specify the database name in SQL queries for clarity.
+- Use COMMENT to describe what the table does. The comment can be up to 2048 characters.
+
+### Columns
+
+- Use singular names and avoid generic names like 'id'.
+- For references to foreign tables, use the singular of the table name with the _id suffix. For example user_id to reference the users table.
+- Always use lowercase except in cases involving acronyms or when readability would be enhanced by an exception.
+
+### Examples:
+
+```sql
+CREATE TABLE books (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  author_id INT,
+  FOREIGN KEY (author_id) REFERENCES authors(id)
+) COMMENT 'A list of all the books in the library.';
+```
+
+### Queries
+
+When the query is shorter keep it on just a few lines. As it gets larger start adding newlines for readability. Add spaces for readability.
+
+Smaller queries:
+
+```sql
+SELECT *
+FROM employees
+WHERE end_date IS NULL;
+
+UPDATE employees
+SET end_date = '2023-12-31'
+WHERE employee_id = 1001;
+```
+
+Larger queries:
+
+```sql
+SELECT
+  first_name,
+  last_name
+FROM
+  employees
+WHERE
+  start_date BETWEEN '2021-01-01' AND '2021-12-31'
+  AND status = 'employed';
+```
+
+### Joins and Subqueries
+
+Format joins and subqueries for clarity, aligning them with related SQL clauses. Prefer full table names when referencing tables. This helps for readability.
+
+```sql
+SELECT
+  employees.employee_name,
+  departments.department_name
+FROM
+  employees
+JOIN
+  departments ON employees.department_id = departments.department_id
+WHERE
+  employees.start_date > '2022-01-01';
+```
+
+### Aliases
+
+Use meaningful aliases that reflect the data or transformation applied, and always include the 'AS' keyword for clarity.
+
+```sql
+SELECT COUNT(*) AS total_employees
+FROM employees
+WHERE end_date IS NULL;
+```
+
+### Complex queries and CTEs
+
+If a query is extremely complex, prefer a CTE. Make sure the CTE is clear and linear. Prefer readability over performance. Add comments to each block.
+
+```sql
+WITH department_employees AS (
+  # Get all employees and their departments
+  SELECT
+    employees.department_id,
+    employees.first_name,
+    employees.last_name,
+    departments.department_name
+  FROM
+    employees
+  JOIN
+    departments ON employees.department_id = departments.department_id
+),
+employee_counts AS (
+  # Count how many employees in each department
+  SELECT
+    department_name,
+    COUNT(*) AS num_employees
+  FROM
+    department_employees
+  GROUP BY
+    department_name
+)
+SELECT
+  department_name,
+  num_employees
+FROM
+  employee_counts
+ORDER BY
+  department_name;
+```
