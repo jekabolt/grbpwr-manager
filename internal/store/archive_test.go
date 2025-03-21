@@ -66,12 +66,44 @@ func TestArchiveCRUD(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	store, err := New(ctx, *testCfg)
+	// Initialize store with migrations
+	cfg := *testCfg
+	cfg.Automigrate = true
+	store, err := NewForTest(ctx, cfg)
 	require.NoError(t, err)
 	defer store.Close()
 
 	// Create test media first
 	mediaIds, err := createTestMedia(ctx, store, 11) // We need 11 media items for all our tests
+	require.NoError(t, err)
+
+	// Initialize hero data
+	err = store.Hero().SetHero(ctx, entity.HeroFullInsert{
+		Entities: []entity.HeroEntityInsert{
+			{
+				Type: entity.HeroTypeSingle,
+				Single: entity.HeroSingleInsert{
+					MediaPortraitId:  mediaIds[0],
+					MediaLandscapeId: mediaIds[1],
+					Headline:         "Test Hero",
+					ExploreLink:      "/test",
+					ExploreText:      "Explore",
+				},
+			},
+		},
+		NavFeatured: entity.NavFeaturedInsert{
+			Men: entity.NavFeaturedEntityInsert{
+				MediaId:     mediaIds[2],
+				ExploreText: "Men's Collection",
+				FeaturedTag: "men",
+			},
+			Women: entity.NavFeaturedEntityInsert{
+				MediaId:     mediaIds[3],
+				ExploreText: "Women's Collection",
+				FeaturedTag: "women",
+			},
+		},
+	})
 	require.NoError(t, err)
 
 	var archiveIds []int
