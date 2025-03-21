@@ -98,6 +98,34 @@ func Migrate(db *sql.DB) error {
 	return nil
 }
 
+// NewForTest creates a new store instance for testing without initializing cache
+func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
+	d, err := sqlx.Open("mysql", cfg.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't open database : %v", err)
+	}
+
+	if cfg.Automigrate {
+		slog.Default().InfoContext(ctx, "applying migrations")
+		if err := Migrate(d.Unsafe().DB); err != nil {
+			return nil, err
+		}
+	}
+
+	ctx, c := context.WithCancel(ctx)
+	ss := &MYSQLStore{
+		db:    d,
+		close: c,
+	}
+
+	go func() {
+		<-ctx.Done()
+		d.Close()
+	}()
+
+	return ss, nil
+}
+
 func (ms *MYSQLStore) Close() {
 	ms.close()
 }

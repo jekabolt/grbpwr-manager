@@ -484,14 +484,14 @@ CREATE TABLE payment_method (
 );
 
 INSERT INTO
-    payment_method (name)
+    payment_method (name, allowed)
 VALUES
-    ('card'),
-    ('card-test'),
-    ('eth'),
-    ('eth-test'),
-    ('usdt-tron'),
-    ('usdt-shasta');
+    ('card', true),
+    ('card-test', true),
+    ('eth', true),
+    ('eth-test', true),
+    ('usdt-tron', true),
+    ('usdt-shasta', true);
 
 CREATE TABLE order_status (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -742,6 +742,7 @@ CREATE TABLE archive (
     heading VARCHAR(255) NOT NULL,
     description TEXT NOT NULL,
     tag VARCHAR(255) NOT NULL,
+    video_id INT,
     FOREIGN KEY (video_id) REFERENCES media(id)
 );
 

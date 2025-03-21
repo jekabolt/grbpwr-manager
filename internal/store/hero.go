@@ -110,7 +110,28 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 	return nil
 }
 
+func isValidHeroType(t entity.HeroType) bool {
+	switch t {
+	case entity.HeroTypeSingle,
+		entity.HeroTypeDouble,
+		entity.HeroTypeMain,
+		entity.HeroTypeFeaturedProducts,
+		entity.HeroTypeFeaturedProductsTag,
+		entity.HeroTypeFeaturedArchive:
+		return true
+	default:
+		return false
+	}
+}
+
 func (hs *heroStore) SetHero(ctx context.Context, hfi entity.HeroFullInsert) error {
+	// Validate hero types
+	for _, e := range hfi.Entities {
+		if !isValidHeroType(e.Type) {
+			return fmt.Errorf("invalid hero type: %d", e.Type)
+		}
+	}
+
 	return hs.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Delete existing hero data
 		err := deleteExistingHeroData(ctx, rep)
@@ -150,7 +171,7 @@ func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	heroRaw, err := QueryNamedOne[hero](ctx, hs.DB(), query, nil)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return &entity.HeroFull{}, nil
+			return nil, fmt.Errorf("no hero data found")
 		}
 		return nil, fmt.Errorf("failed to get hero: %w", err)
 	}

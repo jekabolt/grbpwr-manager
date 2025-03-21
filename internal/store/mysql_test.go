@@ -2,115 +2,305 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log/slog"
+	"os"
 	"testing"
+	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func loadConfig(cfgFile string) (*Config, error) {
+var testDB *sql.DB
+var testCfg *Config
+
+func loadTestConfig(cfgFile string) (*Config, error) {
+	// Check if running in CI
+	if os.Getenv("CI") != "" {
+		// Use CI environment variables
+		return &Config{
+			DSN: fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
+				os.Getenv("MYSQL_USER"),
+				os.Getenv("MYSQL_PASSWORD"),
+				os.Getenv("MYSQL_HOST"),
+				os.Getenv("MYSQL_PORT"),
+				os.Getenv("MYSQL_DATABASE"),
+			),
+			Automigrate:        false,
+			MaxOpenConnections: 10,
+			MaxIdleConnections: 5,
+		}, nil
+	}
+
+	// Local environment - use config file
+	viper.Reset()
 	viper.SetConfigType("toml")
 	viper.SetConfigFile(cfgFile)
-	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
-	} else {
-		viper.SetConfigName("config")
-		viper.AddConfigPath("../../config")
-		viper.AddConfigPath("/usr/local/config")
-	}
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config: %v", err)
 	}
 
 	var config Config
-
-	err := viper.UnmarshalKey("mysql", &config)
-	if err != nil {
+	if err := viper.UnmarshalKey("mysql", &config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
 	}
 
-	// fmt.Printf("conf---- %+v", config)
 	return &config, nil
 }
 
-func newTestDB(t *testing.T) *MYSQLStore {
+func TestMain(m *testing.M) {
+	var err error
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	cfg, err := loadConfig("")
-	assert.NoError(t, err)
+	// Set config path based on environment
+	configPath := "../../config/config.toml"
+	if os.Getenv("CI") != "" {
+		slog.Info("running in CI environment")
+	} else {
+		slog.Info("running in local environment")
+	}
 
-	db, err := New(context.Background(), *cfg)
-	assert.NoError(t, err)
+	testCfg, err = loadTestConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load test config", "error", err)
+		os.Exit(1)
+	}
 
-	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 0")
-	assert.NoError(t, err)
+	// Replace direct connection with retry logic
+	testDB, err = connectWithRetry(testCfg.DSN, 5, time.Second)
+	if err != nil {
+		slog.Error("failed to connect to test database", "error", err)
+		os.Exit(1)
+	}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_tag")
-	assert.NoError(t, err)
+	// Configure connection pool
+	testDB.SetMaxOpenConns(testCfg.MaxOpenConnections)
+	testDB.SetMaxIdleConns(testCfg.MaxIdleConnections)
+	testDB.SetConnMaxLifetime(time.Minute)
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_media")
-	assert.NoError(t, err)
+	// Run migrations with timeout
+	_, cancel = context.WithTimeout(ctx, 30*time.Second)
+	if err := Migrate(testDB); err != nil {
+		slog.Error("failed to run migrations", "error", err)
+		testDB.Close()
+		cancel()
+		os.Exit(1)
+	}
+	cancel()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product")
-	assert.NoError(t, err)
+	// Run tests
+	code := m.Run()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM promo_code")
-	assert.NoError(t, err)
+	// Cleanup
+	if err := cleanup(testDB); err != nil {
+		slog.Error("failed to cleanup test database", "error", err)
+	}
+	testDB.Close()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM size_measurement")
-	assert.NoError(t, err)
+	os.Exit(code)
+}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM product_size")
-	assert.NoError(t, err)
+func getTableNames(db *sql.DB) ([]string, error) {
+	rows, err := db.Query("SHOW TABLES")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tables: %v", err)
+	}
+	defer rows.Close()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM shipment")
-	assert.NoError(t, err)
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %v", err)
+		}
+		tables = append(tables, table)
+	}
+	return tables, rows.Err()
+}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM order_item")
-	assert.NoError(t, err)
+func cleanup(db *sql.DB) error {
+	// Disable foreign key checks temporarily
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("failed to disable foreign key checks: %v", err)
+	}
+	defer db.Exec("SET FOREIGN_KEY_CHECKS = 1")
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM customer_order")
-	assert.NoError(t, err)
+	// Drop all views first
+	views, err := db.Query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = DATABASE()")
+	if err != nil {
+		return fmt.Errorf("failed to get views: %v", err)
+	}
+	defer views.Close()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM payment")
-	assert.NoError(t, err)
+	for views.Next() {
+		var view string
+		if err := views.Scan(&view); err != nil {
+			return fmt.Errorf("failed to scan view name: %v", err)
+		}
+		if _, err := db.Exec(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", view)); err != nil {
+			return fmt.Errorf("failed to drop view %s: %v", view, err)
+		}
+	}
+	if err = views.Err(); err != nil {
+		return fmt.Errorf("error iterating views: %v", err)
+	}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM buyer")
-	assert.NoError(t, err)
+	// Drop all tables
+	tables, err := getTableNames(db)
+	if err != nil {
+		return err
+	}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM address")
-	assert.NoError(t, err)
+	for _, table := range tables {
+		if _, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", table)); err != nil {
+			return fmt.Errorf("failed to drop table %s: %v", table, err)
+		}
+	}
+	return nil
+}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM subscriber")
-	assert.NoError(t, err)
+func connectWithRetry(dsn string, maxRetries int, retryDelay time.Duration) (*sql.DB, error) {
+	var db *sql.DB
+	var err error
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero")
-	assert.NoError(t, err)
+	for i := 0; i < maxRetries; i++ {
+		db, err = sql.Open("mysql", dsn)
+		if err != nil {
+			time.Sleep(retryDelay)
+			continue
+		}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM send_email_request")
-	assert.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM hero_product")
-	assert.NoError(t, err)
+		if err == nil {
+			return db, nil
+		}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM admins")
-	assert.NoError(t, err)
+		db.Close()
+		time.Sleep(retryDelay)
+	}
+	return nil, fmt.Errorf("failed to connect after %d retries: %v", maxRetries, err)
+}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM archive")
-	assert.NoError(t, err)
+func TestNew(t *testing.T) {
+	t.Parallel()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM archive_item")
-	assert.NoError(t, err)
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name:    "successful connection and migration",
+			cfg:     testCfg,
+			wantErr: false,
+		},
+		{
+			name: "invalid DSN",
+			cfg: &Config{
+				DSN:         "invalid-dsn",
+				Automigrate: false,
+			},
+			wantErr: true,
+		},
+	}
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM media")
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-	_, err = db.db.ExecContext(context.Background(), "DELETE FROM currency_rate")
-	assert.NoError(t, err)
+			store, err := New(ctx, *tt.cfg)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
 
-	_, err = db.db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
-	assert.NoError(t, err)
+			require.NoError(t, err)
+			require.NotNil(t, store)
+			defer store.Close()
 
-	return db
+			_, err = store.GetDictionaryInfo(ctx)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestMigrate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name:    "successful migration",
+			cfg:     testCfg,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := New(ctx, *tt.cfg)
+			require.NoError(t, err)
+			defer store.Close()
+
+			di, err := store.GetDictionaryInfo(ctx)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, di)
+
+			hero, err := store.Hero().GetHero(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, hero)
+		})
+	}
+}
+
+func TestGetDictionaryInfo(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(ctx, *testCfg)
+	require.NoError(t, err)
+	require.NotNil(t, store)
+
+	// Test getting dictionary info
+	di, err := store.GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, di)
+
+	// Verify all fields are populated
+	assert.NotNil(t, di.Categories, "Categories should not be nil")
+	assert.NotNil(t, di.Measurements, "Measurements should not be nil")
+	assert.NotNil(t, di.PaymentMethods, "PaymentMethods should not be nil")
+	assert.NotNil(t, di.OrderStatuses, "OrderStatuses should not be nil")
+	assert.NotNil(t, di.ShipmentCarriers, "ShipmentCarriers should not be nil")
+	assert.NotNil(t, di.Sizes, "Sizes should not be nil")
+
+	// Test with cancelled context
+	ctxCancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = store.GetDictionaryInfo(ctxCancelled)
+	assert.Error(t, err, "Should return error with cancelled context")
+
+	// Test with timeout context
+	ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(2 * time.Nanosecond) // Ensure timeout occurs
+	_, err = store.GetDictionaryInfo(ctxTimeout)
+	assert.Error(t, err, "Should return error with timed out context")
 }

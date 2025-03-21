@@ -3,664 +3,912 @@ package store
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"math/rand"
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
-func getRandomPaymentMethod(db *MYSQLStore) (*entity.PaymentMethod, error) {
-	pms := db.cache.GetDict().PaymentMethods
-	if len(pms) == 0 {
-		return nil, fmt.Errorf("no payment methods found")
-	}
-
-	index := rand.Intn(len(pms))
-	pm := pms[index]
-
-	// Safe return by copying the struct before taking its address
-	copiedPM := pm
-	return &copiedPM, nil
+type OrderTestSuite struct {
+	suite.Suite
+	store   *MYSQLStore
+	ctx     context.Context
+	product entity.Product
+	cleanup func()
 }
 
-func getRandomShipmentCarrier(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
-	scs := db.cache.GetDict().ShipmentCarriers
-	if len(scs) == 0 {
-		return nil, fmt.Errorf("no shipment carriers found")
+func (s *OrderTestSuite) SetupTest() {
+	store, ctx := setupTestOrder(s.T())
+	s.store = store
+	s.ctx = ctx
+
+	// Clean up any existing test data
+	err := cleanupOrders(ctx, store)
+	require.NoError(s.T(), err)
+	err = cleanupProducts(ctx, store)
+	require.NoError(s.T(), err)
+	err = cleanupPayments(ctx, store)
+	require.NoError(s.T(), err)
+
+	s.product = createTestProduct(s.T(), store)
+	s.cleanup = func() {
+		err := cleanupOrders(ctx, store)
+		require.NoError(s.T(), err)
+		err = cleanupProducts(ctx, store)
+		require.NoError(s.T(), err)
+		err = cleanupPayments(ctx, store)
+		require.NoError(s.T(), err)
+		store.Close()
 	}
-
-	index := rand.Intn(len(scs))
-	sc := scs[index]
-
-	// Safe return by copying the struct before taking its address
-	copiedSC := sc
-	return &copiedSC, nil
 }
 
-func getShipmentCarrierPaid(db *MYSQLStore) (*entity.ShipmentCarrier, error) {
-	scs := db.cache.GetDict().ShipmentCarriers
-	for _, sc := range scs {
-		if sc.Allowed && !sc.Price.Equal(decimal.NewFromInt(0)) {
-			return &sc, nil
+func (s *OrderTestSuite) TearDownTest() {
+	if s.cleanup != nil {
+		s.cleanup()
+	}
+}
+
+func setupTestOrder(t *testing.T) (*MYSQLStore, context.Context) {
+	ctx := context.Background()
+	store, err := NewForTest(ctx, *testCfg)
+	require.NoError(t, err)
+
+	// Create test media for hero
+	mediaIds, err := createTestMedia(ctx, store, 4)
+	require.NoError(t, err)
+
+	// Create hero data
+	heroInsert := entity.HeroFullInsert{
+		Entities: []entity.HeroEntityInsert{
+			{
+				Type: entity.HeroTypeMain,
+				Main: entity.HeroMainInsert{
+					Single: entity.HeroSingleInsert{
+						MediaPortraitId:  mediaIds[0],
+						MediaLandscapeId: mediaIds[1],
+						ExploreLink:      "https://example.com",
+						ExploreText:      "Explore Now",
+						Headline:         "Test Headline",
+					},
+					Tag:         "test-tag",
+					Description: "Test Description",
+				},
+			},
+			{
+				Type: entity.HeroTypeSingle,
+				Single: entity.HeroSingleInsert{
+					MediaPortraitId:  mediaIds[2],
+					MediaLandscapeId: mediaIds[3],
+					Headline:         "Single Test",
+					ExploreLink:      "https://single.com",
+					ExploreText:      "View Single",
+				},
+			},
+		},
+		NavFeatured: entity.NavFeaturedInsert{
+			Men: entity.NavFeaturedEntityInsert{
+				MediaId:           mediaIds[0],
+				ExploreText:       "Men's Collection",
+				FeaturedTag:       "men",
+				FeaturedArchiveId: 1,
+			},
+			Women: entity.NavFeaturedEntityInsert{
+				MediaId:           mediaIds[1],
+				ExploreText:       "Women's Collection",
+				FeaturedTag:       "women",
+				FeaturedArchiveId: 2,
+			},
+		},
+	}
+
+	err = store.Hero().SetHero(ctx, heroInsert)
+	require.NoError(t, err)
+
+	// Initialize cache with dictionary info
+	di, err := store.GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, di.OrderStatuses, "order statuses should not be empty")
+	require.NotEmpty(t, di.PaymentMethods, "payment methods should not be empty")
+
+	hf, err := store.Hero().GetHero(ctx)
+	require.NoError(t, err)
+
+	// Ensure order statuses are properly initialized in the database
+	for _, status := range di.OrderStatuses {
+		if status.Name == entity.AwaitingPayment {
+			require.NotZero(t, status.Id, "awaiting payment status ID should not be zero")
+		}
+		if status.Name == entity.Shipped {
+			require.NotZero(t, status.Id, "shipped status ID should not be zero")
 		}
 	}
-	return nil, fmt.Errorf("no paid shipment carrier found")
+
+	// Ensure payment methods are properly initialized in the database
+	for _, pm := range di.PaymentMethods {
+		if pm.Name == entity.CARD_TEST {
+			require.NotZero(t, pm.Id, "card test payment method ID should not be zero")
+			require.True(t, pm.Allowed, "card test payment method should be allowed")
+		}
+		if pm.Name == entity.USDT_TRON_TEST {
+			require.NotZero(t, pm.Id, "USDT Tron test payment method ID should not be zero")
+			require.True(t, pm.Allowed, "USDT Tron test payment method should be allowed")
+		}
+	}
+
+	err = cache.InitConsts(ctx, di, hf)
+	require.NoError(t, err)
+
+	// Verify cache initialization
+	awaitingPaymentStatus, ok := cache.GetOrderStatusByName(entity.AwaitingPayment)
+	require.True(t, ok, "awaiting payment status should be initialized")
+	require.NotZero(t, awaitingPaymentStatus.Status.Id, "awaiting payment status ID should not be zero")
+
+	cardTestMethod := cache.PaymentMethodCardTest
+	require.NotZero(t, cardTestMethod.Method.Id, "card test payment method ID should not be zero")
+	require.True(t, cardTestMethod.Method.Allowed, "card test payment method should be allowed")
+
+	usdtTronTestMethod := cache.PaymentMethodUsdtTronTest
+	require.NotZero(t, usdtTronTestMethod.Method.Id, "USDT Tron test payment method ID should not be zero")
+	require.True(t, usdtTronTestMethod.Method.Allowed, "USDT Tron test payment method should be allowed")
+
+	// Print available sizes for debugging
+	type Size struct {
+		Id   int    `db:"id"`
+		Name string `db:"name"`
+	}
+	sizes, err := QueryListNamed[Size](ctx, store.DB(), "SELECT id, name FROM size", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, sizes, "no sizes found in database")
+
+	return store, ctx
 }
 
-func newOrder(ctx context.Context, db *MYSQLStore, items []entity.OrderItemInsert, promoCode string, i int) (*entity.OrderNew, *entity.ShipmentCarrier, error) {
-	addr := &entity.AddressInsert{
-		Street:          "123 Billing St",
-		HouseNumber:     "Apt 4B",
-		City:            "New York",
-		State:           "NY",
-		Country:         "USA",
-		PostalCode:      "10001",
-		ApartmentNumber: "",
+func createTestProduct(t *testing.T, store *MYSQLStore) entity.Product {
+	// Create media first
+	ctx := context.Background()
+	media := entity.MediaItem{
+		FullSizeMediaURL:   "test.jpg",
+		FullSizeWidth:      1000,
+		FullSizeHeight:     1000,
+		ThumbnailMediaURL:  "test_thumb.jpg",
+		ThumbnailWidth:     100,
+		ThumbnailHeight:    100,
+		CompressedMediaURL: "test_comp.jpg",
+		CompressedWidth:    500,
+		CompressedHeight:   500,
+		BlurHash:           sql.NullString{String: "test-blur-hash", Valid: true},
+	}
+	mediaID, err := store.Media().AddMedia(ctx, &media)
+	require.NoError(t, err)
+
+	// Get valid size ID from cache
+	di, err := store.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, di.Sizes, "no sizes found in dictionary")
+
+	// Find size "m" for testing
+	var validSizeID int32
+	for _, size := range di.Sizes {
+		if size.Name == "m" {
+			validSizeID = int32(size.Id)
+			break
+		}
+	}
+	require.NotZero(t, validSizeID, "size 'm' not found in dictionary")
+
+	// Generate unique SKU using timestamp
+	sku := "TEST-SKU-" + time.Now().Format("20060102150405")
+
+	product := entity.Product{
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ProductDisplay: entity.ProductDisplay{
+			ProductBody: entity.ProductBody{
+				Preorder:           sql.NullTime{Time: time.Now(), Valid: true},
+				Name:               "Test Product",
+				Brand:              "Test Brand",
+				SKU:                sku,
+				Color:              "Black",
+				ColorHex:           "#000000",
+				CountryOfOrigin:    "Test Country",
+				Price:              decimal.NewFromFloat(100.00),
+				SalePercentage:     decimal.NullDecimal{Decimal: decimal.Zero, Valid: true},
+				TopCategoryId:      1,
+				SubCategoryId:      sql.NullInt32{Int32: 1, Valid: true},
+				TypeId:             sql.NullInt32{Int32: 1, Valid: true},
+				ModelWearsHeightCm: sql.NullInt32{Int32: 180, Valid: true},
+				ModelWearsSizeId:   sql.NullInt32{Int32: validSizeID, Valid: true},
+				Description:        "Test Description",
+				Hidden:             sql.NullBool{Bool: false, Valid: true},
+				TargetGender:       entity.Unisex,
+				CareInstructions:   sql.NullString{String: "MWN,GW,BA", Valid: true},
+				Composition:        sql.NullString{String: "COTTON:100", Valid: true},
+			},
+			MediaFull: entity.MediaFull{
+				Id:        mediaID,
+				CreatedAt: time.Now(),
+				MediaItem: media,
+			},
+			ThumbnailMediaID: mediaID,
+		},
 	}
 
-	buyer := &entity.BuyerInsert{
-		FirstName:          fmt.Sprintf("order-%d", i),
-		LastName:           "Doe",
-		Email:              fmt.Sprintf("%d_test@test.com", i),
-		Phone:              "1234567890",
-		ReceivePromoEmails: true,
-	}
+	// Create product in the database
+	productID, err := store.Products().AddProduct(ctx, &entity.ProductNew{
+		Product: &entity.ProductInsert{
+			ProductBody:      product.ProductBody,
+			ThumbnailMediaID: product.ThumbnailMediaID,
+		},
+		SizeMeasurements: []entity.SizeWithMeasurementInsert{
+			{
+				ProductSize: entity.ProductSizeInsert{
+					Quantity: decimal.NewFromInt(10),
+					SizeId:   int(validSizeID),
+				},
+			},
+		},
+		MediaIds: []int{mediaID},
+		Tags:     []entity.ProductTagInsert{{Tag: "test"}},
+	})
+	require.NoError(t, err)
 
-	pm, err := getRandomPaymentMethod(db)
-	if err != nil {
-		return nil, nil, err
-	}
+	// Insert product size with quantity
+	err = store.Products().UpdateProductSizeStock(ctx, productID, int(validSizeID), 10)
+	require.NoError(t, err)
 
-	sc, err := getRandomShipmentCarrier(db)
-	if err != nil {
-		return nil, nil, err
+	product.Id = productID
+	return product
+}
+
+func createTestOrderNew(t *testing.T, store *MYSQLStore, product entity.Product) *entity.OrderNew {
+	// Get valid size ID from cache
+	ctx := context.Background()
+	di, err := store.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, di.Sizes, "no sizes found in dictionary")
+
+	// Find size "m" for testing
+	var validSizeID int
+	for _, size := range di.Sizes {
+		if size.Name == "m" {
+			validSizeID = size.Id
+			break
+		}
 	}
+	require.NotZero(t, validSizeID, "size 'm' not found in dictionary")
 
 	return &entity.OrderNew{
-		Items:             items,
-		ShippingAddress:   addr,
-		BillingAddress:    addr,
-		Buyer:             buyer,
-		PaymentMethodId:   pm.ID,
-		ShipmentCarrierId: sc.ID,
-		PromoCode:         promoCode,
-	}, sc, nil
-
+		Items: []entity.OrderItemInsert{
+			{
+				ProductId: product.Id,
+				Quantity:  decimal.NewFromInt(1),
+				SizeId:    validSizeID,
+			},
+		},
+		ShippingAddress: &entity.AddressInsert{
+			Country:        "Test Country",
+			State:          sql.NullString{String: "Test State", Valid: true},
+			City:           "Test City",
+			AddressLineOne: "123 Test St",
+			PostalCode:     "12345",
+		},
+		BillingAddress: &entity.AddressInsert{
+			Country:        "Test Country",
+			State:          sql.NullString{String: "Test State", Valid: true},
+			City:           "Test City",
+			AddressLineOne: "123 Test St",
+			PostalCode:     "12345",
+		},
+		Buyer: &entity.BuyerInsert{
+			FirstName: "Test",
+			LastName:  "User",
+			Email:     "test@example.com",
+			Phone:     "1234567890",
+		},
+		PaymentMethod:     entity.CARD_TEST,
+		ShipmentCarrierId: 1,
+		PromoCode:         "",
+	}
 }
 
-func TestCreateOrder(t *testing.T) {
-	// Initialize the product store
-	db := newTestDB(t)
-	ps := db.Products()
-	ctx := context.Background()
+func TestOrderLifecycle(t *testing.T) {
+	store, ctx := setupTestOrder(t)
+	defer store.Close()
 
-	np, err := randomProductInsert(db, 1)
-	assert.NoError(t, err)
+	// Clean up any existing test data
+	err := cleanupOrders(ctx, store)
+	require.NoError(t, err)
+	err = cleanupProducts(ctx, store)
+	require.NoError(t, err)
+	err = cleanupPayments(ctx, store)
+	require.NoError(t, err)
 
-	xlSize, ok := db.cache.GetSizesByName(entity.XL)
-	assert.True(t, ok)
+	product := createTestProduct(t, store)
+	orderNew := createTestOrderNew(t, store, product)
 
-	lSize, ok := db.cache.GetSizesByName(entity.L)
-	assert.True(t, ok)
+	t.Run("ValidateOrderItemsInsert", func(t *testing.T) {
+		// Test with invalid quantity
+		invalidQuantityOrder := createTestOrderNew(t, store, product)
+		invalidQuantityOrder.Items[0].Quantity = decimal.NewFromInt(-1)
+		_, err := store.Order().ValidateOrderItemsInsert(ctx, invalidQuantityOrder.Items)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "quantity for product ID")
+		require.Contains(t, err.Error(), "is not positive")
 
-	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(10),
-				SizeID:   xlSize.ID,
+		// Test with non-existent product
+		nonExistentProductOrder := createTestOrderNew(t, store, product)
+		nonExistentProductOrder.Items[0].ProductId = 99999
+		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentProductOrder.Items)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "error while validating order items")
+		require.Contains(t, err.Error(), "no valid order items to insert")
+
+		// Test with non-existent size
+		nonExistentSizeOrder := createTestOrderNew(t, store, product)
+		nonExistentSizeOrder.Items[0].SizeId = 99999
+		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentSizeOrder.Items)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "error while validating order items")
+		require.Contains(t, err.Error(), "no valid order items to insert")
+
+		// Test with quantity exceeding stock
+		exceedingStockOrder := createTestOrderNew(t, store, product)
+		exceedingStockOrder.Items[0].Quantity = decimal.NewFromInt(100)
+		adjustedItems, err := store.Order().ValidateOrderItemsInsert(ctx, exceedingStockOrder.Items)
+		require.NoError(t, err)
+		require.NotNil(t, adjustedItems)
+		require.NotEmpty(t, adjustedItems.ValidItems)
+		require.Equal(t, decimal.NewFromInt(3), adjustedItems.ValidItems[0].Quantity) // Adjusted to maxOrderItemPerSize from cache
+		require.False(t, adjustedItems.Subtotal.IsZero())
+
+		// Test valid order items
+		validOrder := createTestOrderNew(t, store, product)
+		validItems, err := store.Order().ValidateOrderItemsInsert(ctx, validOrder.Items)
+		require.NoError(t, err)
+		require.NotNil(t, validItems)
+		require.NotEmpty(t, validItems.ValidItems)
+		require.False(t, validItems.Subtotal.IsZero())
+	})
+
+	// Normal payment flow
+	t.Run("Normal_Payment_Flow", func(t *testing.T) {
+		// Create and validate order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+		require.NotNil(t, order)
+
+		// Check initial status is Placed
+		status, ok := cache.GetOrderStatusById(order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Placed, status.Status.Name)
+
+		// Insert fiat invoice and check status change to AwaitingPayment
+		orderFull, err := store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+		status, ok = cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.AwaitingPayment, status.Status.Name)
+
+		// Complete payment and check status change to Confirmed
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_normal", Valid: true},
+				TransactionAmount:                decimal.NewFromFloat(100.00),
+				TransactionAmountPaymentCurrency: decimal.NewFromFloat(100.00),
+				IsTransactionDone:                true,
 			},
-		},
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(15),
-				SizeID:   lSize.ID,
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
+
+		orderFull, err = store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok = cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Confirmed, status.Status.Name)
+	})
+
+	t.Run("Crypto_Payment_Flow", func(t *testing.T) {
+		cryptoOrderNew := createTestOrderNew(t, store, product)
+		cryptoOrderNew.PaymentMethod = entity.USDT_TRON_TEST
+
+		// Create and validate order
+		order, _, err := store.Order().CreateOrder(ctx, cryptoOrderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+
+		// Insert crypto invoice
+		orderFull, err := store.Order().InsertCryptoInvoice(ctx, order.UUID, "test-tron-address", entity.PaymentMethod{
+			Id:      cache.PaymentMethodUsdtTronTest.Method.Id,
+			Name:    entity.USDT_TRON_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "test-tron-address", orderFull.Payment.Payee.String)
+
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.AwaitingPayment, status.Status.Name)
+	})
+
+	t.Run("Payment_Expiration_Flow", func(t *testing.T) {
+		// Create order with short expiration
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Second))
+		require.NoError(t, err)
+
+		// Insert fiat invoice
+		orderFull, err := store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.AwaitingPayment, status.Status.Name)
+
+		// Wait for expiration
+		time.Sleep(2 * time.Second)
+
+		// Expire the payment
+		payment, err := store.Order().ExpireOrderPayment(ctx, order.UUID)
+		require.NoError(t, err)
+		require.True(t, payment.ExpiredAt.Valid)
+
+		orderFull, err = store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok = cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Cancelled, status.Status.Name)
+	})
+
+	t.Run("Shipping_Flow", func(t *testing.T) {
+		// Create and pay for order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+
+		// Insert fiat invoice
+		_, err = store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_shipping", Valid: true},
+				TransactionAmount:                decimal.NewFromFloat(100.00),
+				TransactionAmountPaymentCurrency: decimal.NewFromFloat(100.00),
+				IsTransactionDone:                true,
 			},
-		},
-	}
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
 
-	// Insert new product
-	prd, err := ps.AddProduct(ctx, np)
-	assert.NoError(t, err)
+		// Set tracking number and verify status change to Shipped
+		orderFull, err := store.Order().SetTrackingNumber(ctx, order.UUID, "TRACK123")
+		require.NoError(t, err)
+		require.Equal(t, "TRACK123", orderFull.Shipment.TrackingCode.String)
 
-	p, err := ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-
-	// order store
-	os := db.Order()
-
-	// creating new order with one product in xl size and quantity 1
-	items := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    xlSize.ID,
-		},
-	}
-	// new order without promo code
-	newOrder, sc, err := newOrder(ctx, db, items, "", 1)
-	assert.NoError(t, err)
-
-	order, err := os.CreateOrder(ctx, newOrder)
-	assert.NoError(t, err)
-	assert.True(t, order.TotalPrice.Equal(p.Product.Price.Add(sc.ShipmentCarrierInsert.Price)))
-
-	// promo free shipping
-
-	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
-		Code:         "freeShip",
-		FreeShipping: true,
-		Discount:     decimal.NewFromInt(0),
-		Expiration:   time.Now().Add(time.Hour * 24),
-		Allowed:      true,
-	})
-	assert.NoError(t, err)
-
-	newTotal, err := os.ApplyPromoCode(ctx, order.ID, "freeShip")
-	assert.NoError(t, err)
-	assert.True(t, newTotal.Equal(p.Product.Price), newTotal.String())
-
-	// promo 10% off + free shipping
-
-	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
-		Code:         "freeShip10off",
-		FreeShipping: true,
-		Discount:     decimal.NewFromInt(10),
-		Expiration:   time.Now().Add(time.Hour * 24),
-		Allowed:      true,
-	})
-	assert.NoError(t, err)
-
-	newTotal, err = os.ApplyPromoCode(ctx, order.ID, "freeShip10off")
-	assert.NoError(t, err)
-	assert.True(t, newTotal.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9))))
-
-	// new order items with one product size and quantity 2
-
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    lSize.ID,
-		},
-	})
-	assert.NoError(t, err)
-
-	orderFull, err := os.GetOrderById(ctx, order.ID)
-	assert.NoError(t, err)
-
-	orderFull, err = os.GetOrderByUUID(ctx, orderFull.Order.UUID)
-	assert.NoError(t, err)
-
-	assert.Equal(t, 1, len(orderFull.OrderItems))
-	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
-	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(2))))
-
-	// new order items with one product size but passed as two separate items
-
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    lSize.ID,
-		},
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    lSize.ID,
-		},
-	})
-	assert.NoError(t, err)
-
-	orderFull, err = os.GetOrderById(ctx, order.ID)
-	assert.NoError(t, err)
-
-	assert.Equal(t, 1, len(orderFull.OrderItems))
-	assert.Equal(t, 4, int(orderFull.OrderItems[0].Quantity.IntPart()))
-	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(4))))
-
-	// new order items with two product sizes
-
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    lSize.ID,
-		},
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    xlSize.ID,
-		},
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Shipped, status.Status.Name)
 	})
 
-	assert.NoError(t, err)
+	t.Run("Cancellation_Flow", func(t *testing.T) {
+		// Create order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
 
-	orderFull, err = os.GetOrderById(ctx, order.ID)
-	assert.NoError(t, err)
+		// Try to cancel order in Placed status
+		err = store.Order().CancelOrder(ctx, order.UUID)
+		require.NoError(t, err)
 
-	assert.Equal(t, 2, len(orderFull.OrderItems))
-	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
-	assert.Equal(t, 2, int(orderFull.OrderItems[1].Quantity.IntPart()))
-	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(4))))
-
-	// new order items with two product sizes with one size quantity 0
-
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(2),
-			SizeID:    lSize.ID,
-		},
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(0),
-			SizeID:    xlSize.ID,
-		},
+		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Cancelled, status.Status.Name)
 	})
 
-	assert.NoError(t, err)
+	t.Run("Refund_Flow", func(t *testing.T) {
+		// Create and pay for order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
 
-	orderFull, err = os.GetOrderById(ctx, order.ID)
-	assert.NoError(t, err)
+		// Insert fiat invoice
+		_, err = store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
 
-	assert.Equal(t, 1, len(orderFull.OrderItems))
-	assert.Equal(t, 2, int(orderFull.OrderItems[0].Quantity.IntPart()))
-	assert.True(t, orderFull.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat(0.9)).Mul(decimal.NewFromInt32(2))))
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_refund", Valid: true},
+				TransactionAmount:                decimal.NewFromFloat(100.00),
+				TransactionAmountPaymentCurrency: decimal.NewFromFloat(100.00),
+				IsTransactionDone:                true,
+			},
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
 
-	// update shipment carrier to paid, disable promo check
-	// if amount calculated correctly
+		// Set tracking number to move to Shipped status
+		_, err = store.Order().SetTrackingNumber(ctx, order.UUID, "TRACK123")
+		require.NoError(t, err)
 
-	paidSc, err := getShipmentCarrierPaid(db)
-	assert.NoError(t, err)
+		// Mark as delivered
+		err = store.Order().DeliveredOrder(ctx, order.UUID)
+		require.NoError(t, err)
 
-	_, err = os.UpdateOrderShippingCarrier(ctx, order.ID, paidSc.ID)
-	assert.NoError(t, err)
+		// Refund order
+		err = store.Order().RefundOrder(ctx, order.UUID)
+		require.NoError(t, err)
 
-	err = db.Promo().AddPromo(ctx, &entity.PromoCodeInsert{
-		Code:         "noPromo",
-		FreeShipping: false,
-		Discount:     decimal.NewFromInt(0),
-		Expiration:   time.Now().Add(time.Hour * 24),
-		Allowed:      true,
+		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Refunded, status.Status.Name)
 	})
 
-	assert.NoError(t, err)
+	t.Run("Delivery_Flow", func(t *testing.T) {
+		// Create and pay for order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
 
-	newTotal, err = os.ApplyPromoCode(ctx, order.ID, "noPromo")
-	assert.NoError(t, err)
-	assert.True(t, newTotal.Equal(p.Product.Price.Mul(decimal.NewFromInt32(2)).Add(paidSc.ShipmentCarrierInsert.Price)))
+		// Insert fiat invoice
+		_, err = store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
 
-	// new order items with two product sizes with both sizes quantity 0
-	// to trigger cancellation
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_delivery", Valid: true},
+				TransactionAmount:                decimal.NewFromFloat(100.00),
+				TransactionAmountPaymentCurrency: decimal.NewFromFloat(100.00),
+				IsTransactionDone:                true,
+			},
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
 
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(0),
-			SizeID:    lSize.ID,
-		},
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(0),
-			SizeID:    xlSize.ID,
-		},
+		// Set tracking number to move to Shipped status
+		_, err = store.Order().SetTrackingNumber(ctx, order.UUID, "TRACK123")
+		require.NoError(t, err)
+
+		// Mark as delivered
+		err = store.Order().DeliveredOrder(ctx, order.UUID)
+		require.NoError(t, err)
+
+		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Delivered, status.Status.Name)
 	})
 
-	assert.NoError(t, err)
+	t.Run("ValidateOrderByUUID_Flow", func(t *testing.T) {
+		// Create initial order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
 
-	orderFull, err = os.GetOrderById(ctx, order.ID)
-	assert.NoError(t, err)
+		// Test validation when order is in Placed status
+		orderFull, err := store.Order().ValidateOrderByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderFull)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.Placed, status.Status.Name)
 
-	assert.True(t, orderFull.OrderStatus.Name == entity.Cancelled)
+		// Move order to AwaitingPayment status
+		_, err = store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
 
-	// new order items trigger error because of status cancelled
+		// Test validation when order is not in Placed status
+		orderFull, err = store.Order().ValidateOrderByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderFull)
+		status, ok = cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.AwaitingPayment, status.Status.Name)
 
-	_, err = os.UpdateOrderItems(ctx, order.ID, []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(0),
-			SizeID:    lSize.ID,
-		},
+		// Create another order to test validation with stock changes
+		orderNew2 := createTestOrderNew(t, store, product)
+		orderNew2.Items[0].Quantity = decimal.NewFromInt(5) // Set higher quantity
+		order2, _, err := store.Order().CreateOrder(ctx, orderNew2, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+
+		// Reduce stock to force quantity adjustment during validation
+		err = store.Products().UpdateProductSizeStock(ctx, product.Id, orderNew2.Items[0].SizeId, 2)
+		require.NoError(t, err)
+
+		// Test validation with stock changes
+		_, err = store.Order().ValidateOrderByUUID(ctx, order2.UUID)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "order items are not valid and were updated")
+
+		// Verify the order was updated with adjusted quantity
+		updatedOrder, err := store.Order().GetOrderFullByUUID(ctx, order2.UUID)
+		require.NoError(t, err)
+		require.Equal(t, decimal.NewFromInt(2), updatedOrder.OrderItems[0].Quantity)
 	})
-	assert.Error(t, err)
+
+	t.Run("GetOrderById_Flow", func(t *testing.T) {
+		// Create and pay for order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+		require.NotNil(t, order)
+
+		// Get order by ID
+		orderFull, err := store.Order().GetOrderById(ctx, order.Id)
+		require.NoError(t, err)
+		require.NotNil(t, orderFull)
+
+		// Verify order details
+		require.Equal(t, order.Id, orderFull.Order.Id)
+		require.Equal(t, order.UUID, orderFull.Order.UUID)
+		require.Equal(t, order.TotalPrice.String(), orderFull.Order.TotalPrice.String())
+
+		// Verify order items
+		require.NotEmpty(t, orderFull.OrderItems)
+		require.Equal(t, orderNew.Items[0].ProductId, orderFull.OrderItems[0].ProductId)
+		require.Equal(t, orderNew.Items[0].Quantity.String(), orderFull.OrderItems[0].Quantity.String())
+		require.Equal(t, orderNew.Items[0].SizeId, orderFull.OrderItems[0].SizeId)
+
+		// Verify buyer details
+		require.NotNil(t, orderFull.Buyer)
+		require.Equal(t, orderNew.Buyer.FirstName, orderFull.Buyer.FirstName)
+		require.Equal(t, orderNew.Buyer.LastName, orderFull.Buyer.LastName)
+		require.Equal(t, orderNew.Buyer.Email, orderFull.Buyer.Email)
+		require.Equal(t, orderNew.Buyer.Phone, orderFull.Buyer.Phone)
+
+		// Verify shipping address
+		require.NotNil(t, orderFull.Shipping)
+		require.Equal(t, orderNew.ShippingAddress.Country, orderFull.Shipping.Country)
+		require.Equal(t, orderNew.ShippingAddress.City, orderFull.Shipping.City)
+		require.Equal(t, orderNew.ShippingAddress.AddressLineOne, orderFull.Shipping.AddressLineOne)
+		require.Equal(t, orderNew.ShippingAddress.PostalCode, orderFull.Shipping.PostalCode)
+
+		// Test non-existent order ID
+		_, err = store.Order().GetOrderById(ctx, 99999)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "order is not found")
+	})
+
+	t.Run("GetOrderByUUID_Flow", func(t *testing.T) {
+		// Create and pay for order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+		require.NotNil(t, order)
+
+		// Get order by UUID
+		orderByUUID, err := store.Order().GetOrderByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderByUUID)
+
+		// Verify order details
+		require.Equal(t, order.Id, orderByUUID.Id)
+		require.Equal(t, order.UUID, orderByUUID.UUID)
+		require.Equal(t, order.TotalPrice.String(), orderByUUID.TotalPrice.String())
+		require.Equal(t, order.OrderStatusId, orderByUUID.OrderStatusId)
+		require.Equal(t, order.PromoId, orderByUUID.PromoId)
+
+		// Test non-existent order UUID
+		_, err = store.Order().GetOrderByUUID(ctx, "non-existent-uuid")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "sql: no rows in result set")
+	})
+
+	t.Run("GetOrderFullByUUID_Flow", func(t *testing.T) {
+		// Clean up any existing test data
+		err := cleanupOrders(ctx, store)
+		require.NoError(t, err)
+		err = cleanupProducts(ctx, store)
+		require.NoError(t, err)
+		err = cleanupPayments(ctx, store)
+		require.NoError(t, err)
+
+		// Create test product and get its actual ID
+		product := createTestProduct(t, store)
+		orderNew := createTestOrderNew(t, store, product) // Create a fresh orderNew for this test
+
+		// Create order
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+		require.NotNil(t, order)
+
+		// Get full order by UUID before adding payment
+		orderFullBeforePayment, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderFullBeforePayment)
+		require.Equal(t, cache.OrderStatusPlaced.Status.Id, orderFullBeforePayment.Order.OrderStatusId)
+		require.NotZero(t, orderFullBeforePayment.Payment.Id)               // Payment record should exist
+		require.False(t, orderFullBeforePayment.Payment.ClientSecret.Valid) // But should not have client secret yet
+		require.False(t, orderFullBeforePayment.Payment.IsTransactionDone)  // And transaction should not be done
+
+		// Insert fiat invoice to create payment record
+		orderWithInvoice, err := store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, orderWithInvoice)
+
+		// Get full order by UUID after adding payment
+		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderFull)
+
+		// Verify order details
+		require.Equal(t, order.Id, orderFull.Order.Id)
+		require.Equal(t, order.UUID, orderFull.Order.UUID)
+		require.Equal(t, order.TotalPrice.String(), orderFull.Order.TotalPrice.String())
+		require.Equal(t, cache.OrderStatusAwaitingPayment.Status.Id, orderFull.Order.OrderStatusId)
+		require.Equal(t, order.PromoId, orderFull.Order.PromoId)
+
+		// Verify order items
+		require.NotEmpty(t, orderFull.OrderItems)
+		require.Len(t, orderFull.OrderItems, 1)
+		require.Equal(t, product.Id, orderFull.OrderItems[0].ProductId)
+		require.Equal(t, orderNew.Items[0].SizeId, orderFull.OrderItems[0].SizeId)
+		require.True(t, orderNew.Items[0].Quantity.Equal(orderFull.OrderItems[0].Quantity))
+		require.Equal(t, product.Price.String(), orderFull.OrderItems[0].ProductPrice.String())
+
+		// Verify buyer details
+		require.NotNil(t, orderFull.Buyer)
+		require.Equal(t, orderNew.Buyer.FirstName, orderFull.Buyer.FirstName)
+		require.Equal(t, orderNew.Buyer.LastName, orderFull.Buyer.LastName)
+		require.Equal(t, orderNew.Buyer.Email, orderFull.Buyer.Email)
+		require.Equal(t, orderNew.Buyer.Phone, orderFull.Buyer.Phone)
+
+		// Verify shipping address
+		require.NotNil(t, orderFull.Shipping)
+		require.Equal(t, orderNew.ShippingAddress.Country, orderFull.Shipping.Country)
+		require.Equal(t, orderNew.ShippingAddress.City, orderFull.Shipping.City)
+		require.Equal(t, orderNew.ShippingAddress.AddressLineOne, orderFull.Shipping.AddressLineOne)
+		require.Equal(t, orderNew.ShippingAddress.PostalCode, orderFull.Shipping.PostalCode)
+
+		// Verify payment details
+		require.NotNil(t, orderFull.Payment)
+		require.NotZero(t, orderFull.Payment.Id)
+		require.Equal(t, cache.PaymentMethodCardTest.Method.Id, orderFull.Payment.PaymentMethodID)
+		require.Equal(t, "test-client-secret", orderFull.Payment.ClientSecret.String)
+		require.False(t, orderFull.Payment.IsTransactionDone)
+		require.Empty(t, orderFull.Payment.TransactionID.String)
+
+		// Complete the payment
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_test", Valid: true},
+				TransactionAmount:                orderFull.Order.TotalPrice,
+				TransactionAmountPaymentCurrency: orderFull.Order.TotalPrice,
+				IsTransactionDone:                true,
+			},
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
+
+		// Get full order after payment completion
+		orderFullAfterPayment, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, orderFullAfterPayment)
+		require.True(t, orderFullAfterPayment.Payment.IsTransactionDone)
+		require.Equal(t, "tx_123_test", orderFullAfterPayment.Payment.TransactionID.String)
+		require.Equal(t, cache.OrderStatusConfirmed.Status.Id, orderFullAfterPayment.Order.OrderStatusId)
+
+		// Test non-existent order UUID
+		_, err = store.Order().GetOrderFullByUUID(ctx, "non-existent-uuid")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "sql: no rows in result set")
+	})
+
+	t.Run("GetPaymentByOrderUUID_Flow", func(t *testing.T) {
+		// Clean up any existing test data
+		err := cleanupOrders(ctx, store)
+		require.NoError(t, err)
+		err = cleanupProducts(ctx, store)
+		require.NoError(t, err)
+		err = cleanupPayments(ctx, store)
+		require.NoError(t, err)
+
+		// Create a fresh product and order for this test
+		product := createTestProduct(t, store)
+		orderNew := createTestOrderNew(t, store, product)
+
+		// Create order with payment
+		order, _, err := store.Order().CreateOrder(ctx, orderNew, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+		require.NotNil(t, order)
+
+		// Insert fiat invoice to create payment record
+		orderFull, err := store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, orderFull)
+
+		// Get payment by order UUID
+		payment, err := store.Order().GetPaymentByOrderUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.NotNil(t, payment)
+
+		// Verify payment details
+		require.Equal(t, orderFull.Payment.Id, payment.Id)
+		require.Equal(t, orderFull.Payment.OrderId, payment.OrderId)
+		require.Equal(t, orderFull.Payment.PaymentMethodID, payment.PaymentMethodID)
+		require.Equal(t, orderFull.Payment.TransactionAmount.String(), payment.TransactionAmount.String())
+		require.Equal(t, orderFull.Payment.ClientSecret.String, payment.ClientSecret.String)
+		require.Equal(t, orderFull.Payment.IsTransactionDone, payment.IsTransactionDone)
+
+		// Test with non-existent order UUID
+		_, err = store.Order().GetPaymentByOrderUUID(ctx, "non-existent-uuid")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to get payment by order UUID")
+
+		// Test with completed payment
+		payment.IsTransactionDone = true
+		payment.TransactionID = sql.NullString{String: "tx_123", Valid: true}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
+
+		// Verify payment is marked as done
+		updatedPayment, err := store.Order().GetPaymentByOrderUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.True(t, updatedPayment.IsTransactionDone)
+		require.Equal(t, "tx_123", updatedPayment.TransactionID.String)
+	})
 }
 
-func TestPurchase(t *testing.T) {
-	// Initialize the product store
-	db := newTestDB(t)
-	ps := db.Products()
-	ctx := context.Background()
-
-	np, err := randomProductInsert(db, 1)
-	assert.NoError(t, err)
-
-	xlSize, ok := db.cache.GetSizesByName(entity.XL)
-	assert.True(t, ok)
-
-	lSize, ok := db.cache.GetSizesByName(entity.L)
-	assert.True(t, ok)
-
-	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(1),
-				SizeID:   xlSize.ID,
-			},
-		},
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(1),
-				SizeID:   lSize.ID,
-			},
-		},
-	}
-
-	// Insert new product
-	prd, err := ps.AddProduct(ctx, np)
-	assert.NoError(t, err)
-
-	p, err := ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-
-	// order store
-	os := db.Order()
-
-	// creating new order with one product in xl size and quantity 1
-	itemsXL := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    xlSize.ID,
-		},
-	}
-	itemsL := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    lSize.ID,
-		},
-	}
-
-	newOrderXL, scXL, err := newOrder(ctx, db, itemsXL, "", 1)
-	assert.NoError(t, err)
-
-	newOrderL, scL, err := newOrder(ctx, db, itemsL, "", 1)
-	assert.NoError(t, err)
-
-	orderXL, err := os.CreateOrder(ctx, newOrderXL)
-	assert.NoError(t, err)
-	assert.True(t, orderXL.TotalPrice.Equal(p.Product.Price.Add(scXL.ShipmentCarrierInsert.Price)))
-
-	statusPlaced, ok := db.cache.GetOrderStatusByName(entity.Placed)
-	assert.True(t, ok)
-	assert.Equal(t, orderXL.OrderStatusID, statusPlaced.ID)
-
-	orderL, err := os.CreateOrder(ctx, newOrderL)
-	assert.NoError(t, err)
-	assert.True(t, orderL.TotalPrice.Equal(p.Product.Price.Add(scL.ShipmentCarrierInsert.Price)))
-
-	// getting product by id to check if quantity is not updated
-
-	p, err = ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-	assert.True(t, len(p.Sizes) == 2)
-	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
-	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
-
-	// purchase order with xl size
-
-	pi := &entity.PaymentInsert{
-		TransactionID: sql.NullString{
-			String: "1234567890",
-			Valid:  true,
-		},
-		TransactionAmount: orderXL.TotalPrice,
-		Payer: sql.NullString{
-			String: "payer",
-			Valid:  true,
-		},
-		Payee: sql.NullString{
-			String: "payee",
-			Valid:  true,
-		},
-		IsTransactionDone: true,
-	}
-
-	pmXL, err := getRandomPaymentMethod(db)
-	assert.NoError(t, err)
-
-	pi.PaymentMethodID = pmXL.ID
-	pi.TransactionAmount = orderXL.TotalPrice
-
-	err = os.OrderPaymentDone(ctx, orderXL.UUID, pi)
-	assert.NoError(t, err)
-
-	// purchase order with l size
-
-	pmL, err := getRandomPaymentMethod(db)
-	assert.NoError(t, err)
-
-	pi.PaymentMethodID = pmL.ID
-	pi.TransactionAmount = orderL.TotalPrice
-
-	err = os.OrderPaymentDone(ctx, orderL.UUID, pi)
-	assert.NoError(t, err)
-
-	// now make sure that orders has status confirmed
-
-	// for xl
-	statusConfirmed, ok := db.cache.GetOrderStatusByName(entity.Confirmed)
-	assert.True(t, ok)
-
-	orderFullXL, err := os.GetOrderById(ctx, orderXL.ID)
-	assert.NoError(t, err)
-
-	assert.Equal(t, orderFullXL.OrderStatus.ID, statusConfirmed.ID)
-
-	// for l
-	orderFullL, err := os.GetOrderById(ctx, orderL.ID)
-	assert.NoError(t, err)
-
-	assert.Equal(t, orderFullL.OrderStatus.ID, statusConfirmed.ID)
-
-	// than make sure that product quantity is updated
-
-	p, err = ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-
-	assert.True(t, len(p.Sizes) == 2)
-	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(0)))
-	assert.True(t, p.Sizes[1].Quantity.Equal(decimal.NewFromInt(0)))
-
-	// try to create order with out of stock item to trigger error
-
-	itemsOutOfStock := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    lSize.ID,
-		},
-	}
-
-	newOrderOutOfStock, _, err := newOrder(ctx, db, itemsOutOfStock, "", 1)
-	assert.NoError(t, err)
-
-	_, err = os.CreateOrder(ctx, newOrderOutOfStock)
-	assert.Error(t, err)
-
+func cleanupOrders(ctx context.Context, store *MYSQLStore) error {
+	_, err := store.DB().ExecContext(ctx, "DELETE FROM customer_order")
+	return err
 }
 
-func TestOrderOutOfStock(t *testing.T) {
-	// Initialize the product store
-	db := newTestDB(t)
-	ps := db.Products()
-	ctx := context.Background()
-
-	np, err := randomProductInsert(db, 1)
-	assert.NoError(t, err)
-
-	xlSize, ok := db.cache.GetSizesByName(entity.XL)
-	assert.True(t, ok)
-
-	lSize, ok := db.cache.GetSizesByName(entity.L)
-	assert.True(t, ok)
-
-	np.SizeMeasurements = []entity.SizeWithMeasurementInsert{
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(1),
-				SizeID:   xlSize.ID,
-			},
-		},
-		{
-			ProductSize: entity.ProductSizeInsert{
-				Quantity: decimal.NewFromInt(1),
-				SizeID:   lSize.ID,
-			},
-		},
+func cleanupProducts(ctx context.Context, store *MYSQLStore) error {
+	_, err := store.DB().ExecContext(ctx, "DELETE FROM product")
+	if err != nil {
+		return err
 	}
-
-	// Insert new product
-	prd, err := ps.AddProduct(ctx, np)
-	assert.NoError(t, err)
-
-	p, err := ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-
-	// order store
-	os := db.Order()
-
-	// creating new order with one product in xl size and quantity 1
-	items := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    xlSize.ID,
-		},
+	_, err = store.DB().ExecContext(ctx, "DELETE FROM product_size")
+	if err != nil {
+		return err
 	}
+	_, err = store.DB().ExecContext(ctx, "DELETE FROM product_tag")
+	return err
+}
 
-	itemsToClean := []entity.OrderItemInsert{
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    xlSize.ID,
-		},
-		{
-			ProductID: p.Product.ID,
-			Quantity:  decimal.NewFromInt32(1),
-			SizeID:    lSize.ID,
-		},
-	}
-
-	// ok order with would be fulfilled
-
-	newOrderOK, scOK, err := newOrder(ctx, db, items, "", 1)
-	assert.NoError(t, err)
-
-	orderOk, err := os.CreateOrder(ctx, newOrderOK)
-	assert.NoError(t, err)
-	assert.True(t, orderOk.TotalPrice.Equal(p.Product.Price.Add(scOK.ShipmentCarrierInsert.Price)))
-
-	// bad order with would not be fulfilled because of out of stock
-	newOrderBad, scBad, err := newOrder(ctx, db, items, "", 1)
-	assert.NoError(t, err)
-
-	orderBad, err := os.CreateOrder(ctx, newOrderBad)
-	assert.NoError(t, err)
-	assert.True(t, orderBad.TotalPrice.Equal(p.Product.Price.Add(scBad.ShipmentCarrierInsert.Price)))
-
-	// order to clean up
-	newOrderToClean, scClean, err := newOrder(ctx, db, itemsToClean, "", 1)
-	assert.NoError(t, err)
-
-	orderToClean, err := os.CreateOrder(ctx, newOrderToClean)
-	assert.NoError(t, err)
-	assert.True(t, orderToClean.TotalPrice.Equal(p.Product.Price.Mul(decimal.NewFromFloat32(2)).Add(scClean.ShipmentCarrierInsert.Price)))
-
-	// check that both orders has status placed
-	statusPlaced, ok := db.cache.GetOrderStatusByName(entity.Placed)
-	assert.True(t, ok)
-	assert.Equal(t, orderOk.OrderStatusID, statusPlaced.ID)
-	assert.Equal(t, orderBad.OrderStatusID, statusPlaced.ID)
-	assert.Equal(t, orderToClean.OrderStatusID, statusPlaced.ID)
-
-	// getting product by id to check if quantity is not updated
-	p, err = ps.GetProductByIdShowHidden(ctx, prd.Product.ID)
-	assert.NoError(t, err)
-	assert.True(t, len(p.Sizes) == 2, len(p.Sizes))
-	assert.True(t, p.Sizes[0].Quantity.Equal(decimal.NewFromInt(1)))
-
-	// purchase first order
-
-	pi := &entity.PaymentInsert{
-		TransactionID: sql.NullString{
-			String: "1234567890",
-			Valid:  true,
-		},
-		TransactionAmount: orderOk.TotalPrice,
-		Payer: sql.NullString{
-			String: "payer",
-			Valid:  true,
-		},
-		Payee: sql.NullString{
-			String: "payee",
-			Valid:  true,
-		},
-		IsTransactionDone: true,
-	}
-
-	pm, err := getRandomPaymentMethod(db)
-	assert.NoError(t, err)
-
-	pi.PaymentMethodID = pm.ID
-	pi.TransactionAmount = orderOk.TotalPrice
-
-	// try to pay for ok order
-	err = os.OrderPaymentDone(ctx, orderOk.UUID, pi)
-	assert.NoError(t, err)
-
-	// try to pay for bad order where product is out of stock
-	// must trigger error and change status to cancelled
-	// cause every order item is out of stock
-	pi.TransactionAmount = orderBad.TotalPrice
-
-	err = os.OrderPaymentDone(ctx, orderBad.UUID, pi)
-	assert.Error(t, err)
-
-	// try to pay for bad order where product is out of stock
-	// must trigger error and clean up order items
-	// i.e remove order items with quantity 0
-
-	pi.TransactionAmount = orderToClean.TotalPrice
-	err = os.OrderPaymentDone(ctx, orderToClean.UUID, pi)
-	assert.Error(t, err)
-
-	// on second try order would be cleaned up and can be paid
-
-	err = os.OrderPaymentDone(ctx, orderToClean.UUID, pi)
-	assert.NoError(t, err)
-
-	// orders by status
-
-	// one cancelled - bad order
-	orders, err := os.GetOrdersByStatus(ctx, entity.Cancelled)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, len(orders))
-
-	email := orders[0].Buyer.Email
-
-	// two confirmed - ok order and order to clean up
-	orders, err = os.GetOrdersByStatus(ctx, entity.Confirmed)
-	assert.NoError(t, err)
-	assert.Equal(t, 2, len(orders))
-
-	// by email 3 orders - ok order, order to clean up and bad order
-
-	orders, err = os.GetOrdersByEmail(ctx, email)
-	assert.NoError(t, err)
-	assert.Equal(t, 3, len(orders))
+func cleanupPayments(ctx context.Context, store *MYSQLStore) error {
+	_, err := store.DB().ExecContext(ctx, "DELETE FROM payment")
+	return err
 }
