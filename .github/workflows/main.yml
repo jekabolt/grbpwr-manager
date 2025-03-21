@@ -63,9 +63,7 @@ jobs:
 
       - name: Generate Mocks
         run: |
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          # Generate mocks for dependency interfaces
-          mockery --all --dir internal/dependency --output internal/dependency/mocks
+          go generate ./...
 
       - name: Generate Proto
         run: |
