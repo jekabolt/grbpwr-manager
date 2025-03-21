@@ -324,7 +324,8 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 
 	query := `
-		SELECT a.* FROM archive a
+		SELECT a.*, ai.media_id as video_id FROM archive a
+		LEFT JOIN archive_item ai ON a.id = ai.archive_id AND ai.is_video = true
 		CROSS JOIN (
 			SELECT created_at as target_date 
 			FROM archive 

@@ -1018,6 +1018,12 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		return nil, customErr
 	}
 
+	// Refresh order details after updating status
+	orderFull, err = ms.GetOrderFullByUUID(ctx, orderUUID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot refresh order details: %w", err)
+	}
+
 	return orderFull, nil
 }
 
@@ -1130,6 +1136,13 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderUUID string, t
 	if err != nil {
 		return nil, fmt.Errorf("can't set tracking number: %w", err)
 	}
+
+	// Refresh order details after updating status
+	order, err = getOrderByUUID(ctx, ms, orderUUID)
+	if err != nil {
+		return nil, fmt.Errorf("can't refresh order details: %w", err)
+	}
+
 	return &entity.OrderBuyerShipment{
 		Order:    order,
 		Buyer:    buyer,
@@ -1199,10 +1212,8 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
-	// Check if all order IDs were found
-	if len(payments) != len(orderIds) {
-		return nil, fmt.Errorf("not all order IDs were found: expected %d, got %d", len(orderIds), len(payments))
-	}
+	// We don't need to check if all order IDs were found because payments might not exist yet
+	// for newly created orders
 
 	return payments, nil
 }
@@ -1951,16 +1962,6 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 			return fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
 	}
-
-	// err := deleteOrderItems(ctx, rep, orderFull.Order.ID)
-	// if err != nil {
-	// 	return fmt.Errorf("can't delete order items: %w", err)
-	// }
-
-	// err = setZeroTotal(ctx, rep, orderFull.Order.ID)
-	// if err != nil {
-	// 	return fmt.Errorf("can't set zero total: %w", err)
-	// }
 
 	if order.PromoId.Int32 != 0 {
 		err := removePromo(ctx, rep, int(order.PromoId.Int32))

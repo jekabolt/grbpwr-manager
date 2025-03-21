@@ -3,78 +3,148 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSetHero(t *testing.T) {
-	db := newTestDB(t)
+func TestHeroOperations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	ps := db.Products()
-	hs := db.Hero()
-	ctx := context.Background()
+	// Initialize store with migrations
+	cfg := *testCfg
+	cfg.Automigrate = true
+	store, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer store.Close()
 
-	main := entity.HeroInsert{
-		ContentLink: "example.com/content-left",
-		ContentType: "text/html",
-		ExploreLink: "example.com/explore-left",
-		ExploreText: "Explore more on left",
-	}
-
-	ads := []entity.HeroInsert{
-		{
-			ContentLink: "example.com/content-1",
-			ContentType: "text/html",
-			ExploreLink: "example.com/explore-1",
-			ExploreText: "Explore more on 1",
-		},
-		{
-			ContentLink: "example.com/content-2",
-			ContentType: "text/html",
-			ExploreLink: "example.com/explore-2",
-			ExploreText: "Explore more on 2",
-		},
-	}
-
-	np, err := randomProductInsert(db, 1)
-	np.Product.Name = "first product"
-	assert.NoError(t, err)
-
-	// Insert new product
-	newPrd, err := ps.AddProduct(ctx, np)
-	assert.NoError(t, err)
-
-	err = hs.SetHero(ctx, main, ads, []int{newPrd.Product.ID})
-	assert.NoError(t, err)
-
-	hero, err := db.GetHero(ctx)
-	assert.NoError(t, err)
-
-	assert.Equal(t, hero.Main.ContentLink, main.ContentLink)
-	assert.Equal(t, hero.Main.ContentType, main.ContentType)
-	assert.Equal(t, hero.Main.ExploreLink, main.ExploreLink)
-	assert.Equal(t, hero.Main.ExploreText, main.ExploreText)
-
-	assert.Len(t, hero.ProductsFeatured, 1)
-
-	prdIds := []int{newPrd.Product.ID}
-	for i := 0; i < 10; i++ {
-		np, err := randomProductInsert(db, i)
+	// Create test media first
+	mediaIds, err := createTestMedia(ctx, store, 4) // We need 4 media items for our test
+	require.NoError(t, err)
+	defer func() {
+		err = cleanupMedia(ctx, store, mediaIds)
 		assert.NoError(t, err)
+	}()
 
-		// Insert new product
-		newPrd, err := ps.AddProduct(ctx, np)
-		assert.NoError(t, err)
+	heroStore := store.Hero()
 
-		prdIds = append(prdIds, newPrd.Product.ID)
+	// Test error cases first
+	t.Run("GetHero_NoData", func(t *testing.T) {
+		// Clean up existing hero data
+		err := deleteExistingHeroData(ctx, store)
+		require.NoError(t, err)
+
+		// Try to get hero when no data exists
+		hero, err := heroStore.GetHero(ctx)
+		assert.Error(t, err)
+		assert.Nil(t, hero)
+	})
+
+	t.Run("SetHero_InvalidData", func(t *testing.T) {
+		invalidHero := entity.HeroFullInsert{
+			Entities: []entity.HeroEntityInsert{
+				{
+					Type: entity.HeroType(999), // Invalid type
+					Main: entity.HeroMainInsert{},
+				},
+			},
+		}
+
+		err := heroStore.SetHero(ctx, invalidHero)
+		assert.Error(t, err)
+	})
+
+	// Test data
+	heroInsert := entity.HeroFullInsert{
+		Entities: []entity.HeroEntityInsert{
+			{
+				Type: entity.HeroTypeMain,
+				Main: entity.HeroMainInsert{
+					Single: entity.HeroSingleInsert{
+						MediaPortraitId:  mediaIds[0],
+						MediaLandscapeId: mediaIds[1],
+						ExploreLink:      "https://example.com",
+						ExploreText:      "Explore Now",
+						Headline:         "Test Headline",
+					},
+					Tag:         "test-tag",
+					Description: "Test Description",
+				},
+			},
+			{
+				Type: entity.HeroTypeSingle,
+				Single: entity.HeroSingleInsert{
+					MediaPortraitId:  mediaIds[2],
+					MediaLandscapeId: mediaIds[3],
+					Headline:         "Single Test",
+					ExploreLink:      "https://single.com",
+					ExploreText:      "View Single",
+				},
+			},
+		},
+		NavFeatured: entity.NavFeaturedInsert{
+			Men: entity.NavFeaturedEntityInsert{
+				MediaId:           mediaIds[0],
+				ExploreText:       "Men's Collection",
+				FeaturedTag:       "men",
+				FeaturedArchiveId: 1,
+			},
+			Women: entity.NavFeaturedEntityInsert{
+				MediaId:           mediaIds[1],
+				ExploreText:       "Women's Collection",
+				FeaturedTag:       "women",
+				FeaturedArchiveId: 2,
+			},
+		},
 	}
 
-	err = hs.SetHero(ctx, main, ads, prdIds)
-	assert.NoError(t, err)
+	// Test SetHero
+	t.Run("SetHero", func(t *testing.T) {
+		err := heroStore.SetHero(ctx, heroInsert)
+		require.NoError(t, err)
+	})
 
-	hero, err = db.GetHero(ctx)
-	assert.NoError(t, err)
-	assert.Len(t, hero.ProductsFeatured, 11)
+	// Test GetHero
+	t.Run("GetHero", func(t *testing.T) {
+		hero, err := heroStore.GetHero(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, hero)
 
+		// Verify the data
+		assert.Len(t, hero.Entities, 2)
+		assert.Equal(t, entity.HeroTypeMain, hero.Entities[0].Type)
+		assert.Equal(t, entity.HeroTypeSingle, hero.Entities[1].Type)
+
+		// Check main entity
+		mainEntity := hero.Entities[0]
+		assert.Equal(t, "test-tag", mainEntity.Main.Tag)
+		assert.Equal(t, "Test Description", mainEntity.Main.Description)
+		assert.Equal(t, "Test Headline", mainEntity.Main.Single.Headline)
+
+		// Check single entity
+		singleEntity := hero.Entities[1]
+		assert.Equal(t, "Single Test", singleEntity.Single.Headline)
+		assert.Equal(t, "https://single.com", singleEntity.Single.ExploreLink)
+
+		// Check NavFeatured
+		assert.Equal(t, "Men's Collection", hero.NavFeatured.Men.ExploreText)
+		assert.Equal(t, "men", hero.NavFeatured.Men.FeaturedTag)
+		assert.Equal(t, "Women's Collection", hero.NavFeatured.Women.ExploreText)
+		assert.Equal(t, "women", hero.NavFeatured.Women.FeaturedTag)
+	})
+
+	// Test RefreshHero
+	t.Run("RefreshHero", func(t *testing.T) {
+		err := heroStore.RefreshHero(ctx)
+		require.NoError(t, err)
+
+		// Verify the hero data is still accessible after refresh
+		hero, err := heroStore.GetHero(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, hero)
+		assert.Len(t, hero.Entities, 2)
+	})
 }
