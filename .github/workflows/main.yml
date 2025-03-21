@@ -63,6 +63,11 @@ jobs:
 
       - name: Generate Mocks
         run: |
+          # Ensure mockery is in PATH
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          # Generate mocks for all interfaces
+          mockery --all --keeptree --inpackage --with-expecter
+          # Run any other go generate commands
           go generate ./...
 
       - name: Generate Proto
