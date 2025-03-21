@@ -61,6 +61,12 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
           buf generate
 
+      - name: Generate OpenAPI
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          mkdir -p openapi/gen/resend
+          oapi-codegen -package resend -generate types,client -o openapi/gen/resend/resend.gen.go openapi/resend/openapi.yaml
+
       - name: Run tests
         run: go test -v ./...
         env:
