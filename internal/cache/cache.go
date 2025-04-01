@@ -117,6 +117,8 @@ var (
 	maxOrderItems          = 3
 	siteEnabled            = true
 	defaultCurrency        = ""
+	bigMenu                = false
+	topCategoriesCount     = []entity.TopCategoryCount{}
 )
 
 var (
@@ -169,7 +171,7 @@ var (
 	}
 )
 
-func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull) error {
+func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull, topCategories []entity.TopCategoryCount) error {
 
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
@@ -222,6 +224,8 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 			return fmt.Errorf("payment method %s not found", v.Method.Name)
 		}
 	}
+
+	topCategoriesCount = topCategories
 
 	return nil
 }
@@ -341,6 +345,10 @@ func SetMaxOrderItems(n int) {
 	maxOrderItems = n
 }
 
+func SetBigMenu(enabled bool) {
+	bigMenu = enabled
+}
+
 func SetDefaultCurrency(c string) {
 	defaultCurrency = c
 }
@@ -355,6 +363,18 @@ func GetSiteAvailability() bool {
 
 func GetBaseCurrency() string {
 	return defaultCurrency
+}
+
+func GetBigMenu() bool {
+	return bigMenu
+}
+
+func GetTopCategoriesCount() []entity.TopCategoryCount {
+	return topCategoriesCount
+}
+
+func SetTopCategoriesCount(tc []entity.TopCategoryCount) {
+	topCategoriesCount = tc
 }
 
 func GetCategories() []entity.Category {

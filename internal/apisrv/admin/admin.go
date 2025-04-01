@@ -346,6 +346,8 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			SiteEnabled:      cache.GetSiteAvailability(),
 			MaxOrderItems:    cache.GetMaxOrderItems(),
 			BaseCurrency:     cache.GetBaseCurrency(),
+			BigMenu:          cache.GetBigMenu(),
+			TopCategories:    cache.GetTopCategoriesCount(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -586,6 +588,14 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 	err = s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't set max order items",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	err = s.repo.Settings().SetBigMenu(ctx, req.BigMenu)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't set big menu",
 			slog.String("err", err.Error()),
 		)
 		return nil, err

@@ -400,6 +400,7 @@ message UpdateSettingsRequest {
   repeated PaymentMethodAllowance payment_methods = 2;
   bool site_available = 3;
   int32 max_order_items = 4;
+  bool big_menu = 5;
 }
 
 message UpdateSettingsResponse {}

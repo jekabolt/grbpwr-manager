@@ -24,6 +24,8 @@ message Dictionary {
   bool site_enabled = 10;
   int32 max_order_items = 11;
   string base_currency = 12;
+  bool big_menu = 13;
+  repeated TopCategoryCount top_categories = 14;
 }
 
 message Genders {
@@ -50,4 +52,10 @@ message CurrencyRate {
 // CurrencyMap represents a map of currency codes to their rates.
 message CurrencyMap {
   map<string, CurrencyRate> currencies = 1;
+}
+
+message TopCategoryCount {
+  int32 category_id = 1;
+  string category_name = 2;
+  int32 count = 3;
 }

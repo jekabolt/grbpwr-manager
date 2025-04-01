@@ -44,6 +44,8 @@ type (
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
+		// GetTopCategoriesProductCount returns the count of products for each top category.
+		GetTopCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.TopCategoryCount, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error
@@ -142,6 +144,7 @@ type (
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
+		SetBigMenu(ctx context.Context, bigMenu bool) error
 	}
 
 	Repository interface {

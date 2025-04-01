@@ -19,6 +19,8 @@ type Dict struct {
 	SiteEnabled      bool
 	MaxOrderItems    int
 	BaseCurrency     string
+	BigMenu          bool
+	TopCategories    []entity.TopCategoryCount
 }
 
 var (
@@ -147,6 +149,15 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.SiteEnabled = dict.SiteEnabled
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency
+	commonDict.BigMenu = dict.BigMenu
+
+	for _, tc := range dict.TopCategories {
+		commonDict.TopCategories = append(commonDict.TopCategories, &pb_common.TopCategoryCount{
+			CategoryId:   int32(tc.CategoryId),
+			CategoryName: tc.CategoryName,
+			Count:        int32(tc.Count),
+		})
+	}
 
 	return commonDict
 }
