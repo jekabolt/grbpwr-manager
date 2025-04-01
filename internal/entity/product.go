@@ -192,3 +192,9 @@ type ProductTag struct {
 type ProductTagInsert struct {
 	Tag string `db:"tag"`
 }
+
+type TopCategoryCount struct {
+	CategoryId   int    `db:"category_id"`
+	CategoryName string `db:"category_name"`
+	Count        int    `db:"count"`
+}

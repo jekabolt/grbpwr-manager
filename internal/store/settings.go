@@ -86,3 +86,8 @@ func (ms *MYSQLStore) SetMaxOrderItems(ctx context.Context, count int) error {
 	cache.SetMaxOrderItems(count)
 	return nil
 }
+
+func (ms *MYSQLStore) SetBigMenu(ctx context.Context, bigMenu bool) error {
+	cache.SetBigMenu(bigMenu)
+	return nil
+}
