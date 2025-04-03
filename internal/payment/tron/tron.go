@@ -203,6 +203,10 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 
 	payment.TransactionAmountPaymentCurrency = totalBlockchainValue
 	payment.TransactionAmount = of.Order.TotalPriceDecimal()
+	payment.PaymentInsert.ExpiredAt = sql.NullTime{
+		Time:  time.Now().Add(p.c.InvoiceExpiration),
+		Valid: true,
+	}
 
 	p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
@@ -252,7 +256,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, paymen
 	}
 
 	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
-	expirationDuration := time.Until(payment.ModifiedAt.Add(p.c.InvoiceExpiration))
+	expirationDuration := time.Until(payment.PaymentInsert.ExpiredAt.Time)
 
 	ticker := time.NewTicker(p.c.CheckIncomingTxInterval)
 	defer ticker.Stop()

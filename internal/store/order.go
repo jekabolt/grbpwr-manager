@@ -867,6 +867,8 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"expiredAt":                        payment.ExpiredAt,
 	}
 
+	slog.Default().InfoContext(ctx, "update order payment", "params", params, "query", query)
+
 	_, err := rep.DB().NamedExecContext(ctx, query, params)
 	if err != nil {
 		return fmt.Errorf("failed to update payment: %w", err)

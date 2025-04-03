@@ -219,6 +219,10 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	if err != nil {
 		return nil, fmt.Errorf("can't insert fiat invoice: %w", err)
 	}
+	payment.PaymentInsert.ExpiredAt = sql.NullTime{
+		Time:  time.Now().Add(p.c.InvoiceExpiration),
+		Valid: true,
+	}
 
 	go p.monitorPayment(context.TODO(), orderUUID, payment)
 
@@ -243,7 +247,10 @@ func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, paymen
 	}
 
 	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
-	expirationDuration := time.Until(payment.ModifiedAt.Add(p.c.InvoiceExpiration))
+	expirationDuration := time.Until(time.Now().Add(p.c.InvoiceExpiration))
+	if payment.PaymentInsert.ExpiredAt.Valid {
+		expirationDuration = time.Until(payment.PaymentInsert.ExpiredAt.Time)
+	}
 
 	expirationTimer := time.NewTimer(expirationDuration)
 	defer expirationTimer.Stop()
