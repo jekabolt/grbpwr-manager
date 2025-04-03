@@ -850,7 +850,8 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		payment_method_id = :paymentMethodId,
 		payer = :payer,
 		payee = :payee,
-		client_secret = :clientSecret
+		client_secret = :clientSecret,
+		expired_at = :expiredAt
 	WHERE order_id = :orderId`
 
 	params := map[string]any{
@@ -863,6 +864,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"payee":                            payment.Payee,
 		"clientSecret":                     payment.ClientSecret,
 		"orderId":                          orderId,
+		"expiredAt":                        payment.ExpiredAt,
 	}
 
 	_, err := rep.DB().NamedExecContext(ctx, query, params)
@@ -949,7 +951,7 @@ func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, order
 	return nil
 }
 
-func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, addrOrSecret string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
+func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, addrOrSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error) {
 	// Retrieve payment method from cache and check validity
 	if !pm.Allowed {
 		return nil, fmt.Errorf("payment method does not exist or is not allowed: payment method id %v", pm.Id)
@@ -1009,7 +1011,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		}
 
 		// Update order payment details based on the payment method
-		return ms.processPayment(ctx, rep, orderFull, addrOrSecret, pm)
+		return ms.processPayment(ctx, rep, orderFull, addrOrSecret, pm, expiredAt)
 	})
 	if err != nil {
 		return nil, err
@@ -1028,11 +1030,12 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 }
 
 // processPayment processes payment details based on the payment method
-func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Repository, orderFull *entity.OrderFull, addrOrSecret string, pm entity.PaymentMethod) error {
+func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Repository, orderFull *entity.OrderFull, addrOrSecret string, pm entity.PaymentMethod, expiredAt time.Time) error {
 	orderFull.Payment.PaymentMethodID = pm.Id
 	orderFull.Payment.IsTransactionDone = false
 	orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
 	orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
+	orderFull.Payment.ExpiredAt = sql.NullTime{Time: expiredAt, Valid: true}
 
 	switch pm.Name {
 
@@ -1057,13 +1060,13 @@ func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Reposit
 }
 
 // InsertCryptoInvoice handles crypto-specific invoice insertion
-func (ms *MYSQLStore) InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
-	return ms.insertOrderInvoice(ctx, orderUUID, payeeAddress, pm)
+func (ms *MYSQLStore) InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error) {
+	return ms.insertOrderInvoice(ctx, orderUUID, payeeAddress, pm, expiredAt)
 }
 
 // InsertFiatInvoice handles fiat-specific invoice insertion
-func (ms *MYSQLStore) InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod) (*entity.OrderFull, error) {
-	return ms.insertOrderInvoice(ctx, orderUUID, clientSecret, pm)
+func (ms *MYSQLStore) InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error) {
+	return ms.insertOrderInvoice(ctx, orderUUID, clientSecret, pm, expiredAt)
 }
 
 func updateOrderShipment(ctx context.Context, rep dependency.Repository, shipment *entity.Shipment) error {
