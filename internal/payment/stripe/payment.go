@@ -196,7 +196,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	}
 
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm)
+		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.c.InvoiceExpiration))
 		if err != nil {
 			return fmt.Errorf("can't insert fiat invoice: %w", err)
 		}

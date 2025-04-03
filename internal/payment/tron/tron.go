@@ -177,7 +177,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, fmt.Errorf("can't get free address: %w", err)
 	}
 
-	of, err := p.rep.Order().InsertCryptoInvoice(ctx, orderUUID, pAddr, p.pm)
+	of, err := p.rep.Order().InsertCryptoInvoice(ctx, orderUUID, pAddr, p.pm, time.Now().Add(p.c.InvoiceExpiration))
 	if err != nil {
 		return nil, fmt.Errorf("can't insert order invoice: %w", err)
 	}
