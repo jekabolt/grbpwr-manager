@@ -1035,7 +1035,7 @@ func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Reposit
 	orderFull.Payment.IsTransactionDone = false
 	orderFull.Payment.TransactionAmount = orderFull.Order.TotalPriceDecimal()
 	orderFull.Payment.TransactionAmountPaymentCurrency = orderFull.Order.TotalPriceDecimal()
-	orderFull.Payment.ExpiredAt = sql.NullTime{Time: expiredAt, Valid: true}
+	orderFull.Payment.PaymentInsert.ExpiredAt = sql.NullTime{Time: expiredAt, Valid: true}
 
 	switch pm.Name {
 
