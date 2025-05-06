@@ -10,6 +10,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/promo.proto";
+import "common/support.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
@@ -99,6 +100,14 @@ service FrontendService {
   // GetArchive retrieves an archive by its heading, tag and id.
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
     option (google.api.http) = {get: "/api/frontend/archive/{heading}/{tag}/{id}"};
+  }
+
+  // Submit a support ticket
+  rpc SubmitSupportTicket(SubmitSupportTicketRequest) returns (SubmitSupportTicketResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/support/ticket"
+      body: "*"
+    };
   }
 }
 
@@ -221,3 +230,9 @@ message GetArchiveRequest {
 message GetArchiveResponse {
   common.ArchiveFull archive = 1;
 }
+
+message SubmitSupportTicketRequest {
+  common.SupportTicketInsert ticket = 1;
+}
+
+message SubmitSupportTicketResponse {}

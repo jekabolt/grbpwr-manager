@@ -782,6 +782,22 @@ CREATE TABLE currency_rate (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL
 );
 
+CREATE TABLE support_ticket (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    topic VARCHAR(255) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    civility VARCHAR(255) NOT NULL, 
+    email VARCHAR(255) NOT NULL,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    order_reference VARCHAR(255) NOT NULL,
+    notes TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
+    status BOOLEAN DEFAULT FALSE,
+    resolved_at TIMESTAMP NULL DEFAULT NULL
+);
+
 
 CREATE INDEX idx_product_id_on_product_size ON product_size(product_id);
 

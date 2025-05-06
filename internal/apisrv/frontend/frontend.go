@@ -538,3 +538,13 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 		Archive: pbAf,
 	}, nil
 }
+
+func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.SubmitSupportTicketRequest) (*pb_frontend.SubmitSupportTicketResponse, error) {
+	err := s.repo.Support().SubmitTicket(ctx, dto.ConvertPbSupportTicketInsertToEntity(req.Ticket))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't create support ticket", slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	return &pb_frontend.SubmitSupportTicketResponse{}, nil
+}

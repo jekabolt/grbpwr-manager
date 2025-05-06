@@ -604,3 +604,32 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 	return &pb_admin.UpdateSettingsResponse{}, nil
 
 }
+
+// SUPPORT MANAGER
+
+func (s *Server) GetSupportTicketsPaged(ctx context.Context, req *pb_admin.GetSupportTicketsPagedRequest) (*pb_admin.GetSupportTicketsPagedResponse, error) {
+
+	tickets, err := s.repo.Support().GetSupportTicketsPaged(ctx, int(req.Limit), int(req.Offset), dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor), req.Resolved)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get support tickets paged",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get support tickets paged")
+	}
+
+	return &pb_admin.GetSupportTicketsPagedResponse{
+		Tickets: dto.ConvertEntitySupportTicketsToPb(tickets),
+	}, nil
+}
+
+func (s *Server) UpdateSupportTicketStatus(ctx context.Context, req *pb_admin.UpdateSupportTicketStatusRequest) (*pb_admin.UpdateSupportTicketStatusResponse, error) {
+	err := s.repo.Support().UpdateStatus(ctx, int(req.Id), req.Status)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't update support ticket status",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update support ticket status")
+	}
+
+	return &pb_admin.UpdateSupportTicketStatusResponse{}, nil
+}
