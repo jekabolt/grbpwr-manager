@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+message SupportTicketInsert {
+  string topic = 1;
+  string subject = 2;
+  string civility = 3;
+  string email = 4;
+  string first_name = 5;
+  string last_name = 6;
+  string order_reference = 7;
+  string notes = 8;
+}
+
+message SupportTicket {
+  int32 id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  bool status = 4;
+  google.protobuf.Timestamp resolved_at = 5;
+  SupportTicketInsert support_ticket_insert = 6;
+}

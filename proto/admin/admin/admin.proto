@@ -11,6 +11,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/promo.proto";
+import "common/support.proto";
 import "google/api/annotations.proto";
 import "google/type/decimal.proto";
 
@@ -192,6 +193,19 @@ service AdminService {
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse) {
     option (google.api.http) = {
       post: "/api/admin/settings/update"
+      body: "*"
+    };
+  }
+
+  // SUPPORT MANAGER
+
+  rpc GetSupportTicketsPaged(GetSupportTicketsPagedRequest) returns (GetSupportTicketsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/support/tickets/paged"};
+  }
+
+  rpc UpdateSupportTicketStatus(UpdateSupportTicketStatusRequest) returns (UpdateSupportTicketStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/support/tickets/{id}/update-status"
       body: "*"
     };
   }
@@ -415,3 +429,23 @@ message PaymentMethodAllowance {
   common.PaymentMethodNameEnum payment_method = 1;
   bool allow = 2;
 }
+
+// SUPPORT MANAGER
+
+message GetSupportTicketsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+  bool resolved = 4;
+}
+
+message GetSupportTicketsPagedResponse {
+  repeated common.SupportTicket tickets = 1;
+}
+
+message UpdateSupportTicketStatusRequest {
+  int32 id = 1;
+  bool status = 2;
+}
+
+message UpdateSupportTicketStatusResponse {}

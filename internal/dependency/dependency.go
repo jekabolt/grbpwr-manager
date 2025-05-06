@@ -103,6 +103,12 @@ type (
 		IsSubscribed(ctx context.Context, email string) (bool, error)
 	}
 
+	Support interface {
+		GetSupportTicketsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, status bool) ([]entity.SupportTicket, error)
+		UpdateStatus(ctx context.Context, id int, status bool) error
+		SubmitTicket(ctx context.Context, ticket entity.SupportTicketInsert) error
+	}
+
 	Promo interface {
 		AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) error
 		ListPromos(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.PromoCode, error)
@@ -160,6 +166,7 @@ type (
 		Subscribers() Subscribers
 		Media() Media
 		Settings() Settings
+		Support() Support
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
