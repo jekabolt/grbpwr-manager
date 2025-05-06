@@ -5,13 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 	"time"
 
 	"log/slog"
 
-	"github.com/google/uuid"
+	"crypto/rand"
+
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -337,6 +339,25 @@ func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.S
 	return nil
 }
 
+// generateOrderReference generates a short, human-friendly, unique order reference (ORD-XXXXXXX)
+func generateOrderReference() string {
+	const (
+		prefix   = "ORD-"
+		length   = 7
+		alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		base     = int64(len(alphabet))
+	)
+	b := make([]byte, length)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(base))
+		if err != nil {
+			panic(err) // Should never happen
+		}
+		b[i] = alphabet[n.Int64()]
+	}
+	return prefix + string(b)
+}
+
 func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.Order) (int, string, error) {
 	var err error
 	query := `
@@ -345,9 +366,9 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	 VALUES (:uuid, :totalPrice, :orderStatusId, :promoId)
 	 `
 
-	uuid := uuid.New().String()
+	orderRef := generateOrderReference()
 	order.Id, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
-		"uuid":          uuid,
+		"uuid":          orderRef,
 		"totalPrice":    order.TotalPriceDecimal(),
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
@@ -355,7 +376,7 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)
 	}
-	return order.Id, uuid, nil
+	return order.Id, orderRef, nil
 }
 
 // mergeOrderItems merges the order items by summing up the quantities of items with the same product ID and size ID.
