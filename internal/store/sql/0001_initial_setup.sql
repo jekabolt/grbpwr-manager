@@ -557,10 +557,7 @@ CREATE TABLE product (
         care_instructions IS NULL OR 
         care_instructions REGEXP '^(\s*|((MW(N|30|40|50|60|95)|GW|VGW|HW|DNW|BA|NCB|DNB|TD(N|L|M|H|D)|LD|DF|DD|DIS|LDS|DFS|DDS|I(L|M|H)|DN(S|I)|DC(AS|PS|ASE)|GD?C|VG?DC|PWC|G?PWC|DN(DC|WC))(\s*,\s*(MW(N|30|40|50|60|95)|GW|VGW|HW|DNW|BA|NCB|DNB|TD(N|L|M|H|D)|LD|DF|DD|DIS|LDS|DFS|DDS|I(L|M|H)|DN(S|I)|DC(AS|PS|ASE)|GD?C|VG?DC|PWC|G?PWC|DN(DC|WC)))*\s*))$'
     ),
-    composition VARCHAR(255) NULL CHECK (
-        composition IS NULL OR 
-        composition REGEXP '^([A-Z]+(?:-[A-Z]+)*:(100|[1-9][0-9]?))(,\s*[A-Z]+(?:-[A-Z]+)*:(100|[1-9][0-9]?))*$'
-    ),
+    composition JSON NULL,
     FOREIGN KEY (top_category_id) REFERENCES category(id),
     FOREIGN KEY (sub_category_id) REFERENCES category(id),
     FOREIGN KEY (type_id) REFERENCES category(id),
