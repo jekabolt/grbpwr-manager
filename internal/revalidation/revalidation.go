@@ -169,7 +169,7 @@ func (v *Revalidator) RevalidateAll(ctx context.Context, revalidationData *dto.R
 	}
 
 	if len(errs) > 0 {
-		slog.Default().Error("revalidation failed for %d deployments: %w", len(errs), errors.Join(errs...))
+		slog.Default().Error("revalidation failed", "failed_deployments", len(errs), "errors", errors.Join(errs...))
 	}
 
 	return nil
