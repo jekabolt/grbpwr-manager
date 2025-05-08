@@ -216,6 +216,10 @@ type (
 		ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error)
 	}
 
+	RevalidationService interface {
+		RevalidateAll(ctx context.Context, revalidationData *dto.RevalidationData) error
+	}
+
 	Mailer interface {
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
 		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error

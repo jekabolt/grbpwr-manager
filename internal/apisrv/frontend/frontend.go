@@ -33,6 +33,7 @@ type Server struct {
 	usdtTronTestnet   dependency.Invoicer
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
+	re                dependency.RevalidationService
 }
 
 // New creates a new server with frontend handlers.
@@ -44,6 +45,7 @@ func New(
 	usdtTronTestnet dependency.Invoicer,
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
+	re dependency.RevalidationService,
 ) *Server {
 	return &Server{
 		repo:              r,
@@ -53,6 +55,7 @@ func New(
 		usdtTronTestnet:   usdtTronTestnet,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
+		re:                re,
 	}
 }
 
@@ -223,6 +226,20 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
 	}
 	pbPi.PaymentMethod = req.Order.PaymentMethod
+
+	for _, item := range orderNew.Items {
+		err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+			Product: dto.RevalidationProduct{
+				ID: int(item.ProductId),
+			},
+		})
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't revalidate product",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't revalidate product")
+		}
+	}
 
 	return &pb_frontend.SubmitOrderResponse{
 		OrderUuid:   order.UUID,
