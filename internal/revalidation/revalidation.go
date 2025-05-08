@@ -120,60 +120,57 @@ func (v *Revalidator) revalidate(ctx context.Context, deploymentURL string, reva
 }
 
 func (v *Revalidator) RevalidateAll(ctx context.Context, revalidationData *dto.RevalidationData) error {
-	go func() {
-		deployments, err := v.getDeployments(ctx)
-		if err != nil {
-			slog.Default().Error("failed to get deployments", "error", err)
-			return
-		}
+	deployments, err := v.getDeployments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get deployments: %w", err)
+	}
 
-		deployments = append(deployments, &dto.Deployment{
-			URL: "https://grbpwr-com-dusky.vercel.app",
-		}, &dto.Deployment{
-			URL: "https://grbpwr.com",
-		})
+	deployments = append(deployments, &dto.Deployment{
+		URL: "https://grbpwr-com-dusky.vercel.app",
+	}, &dto.Deployment{
+		URL: "https://grbpwr.com",
+	})
 
-		const maxRetries = 3
-		const maxConcurrent = 5
+	const maxRetries = 3
+	const maxConcurrent = 5
 
-		errChan := make(chan error, len(deployments))
-		semaphore := make(chan struct{}, maxConcurrent)
+	errChan := make(chan error, len(deployments))
+	semaphore := make(chan struct{}, maxConcurrent)
 
-		var wg sync.WaitGroup
-		for _, deployment := range deployments {
-			wg.Add(1)
-			go func(d *dto.Deployment) {
-				defer wg.Done()
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
+	var wg sync.WaitGroup
+	for _, deployment := range deployments {
+		wg.Add(1)
+		go func(d *dto.Deployment) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
 
-				var revalidateErr error
-				for attempt := 1; attempt <= maxRetries; attempt++ {
-					slog.Default().Info("Revalidating", "deploymentURL", d.URL, "attempt", attempt)
-					err := v.revalidate(ctx, d.URL, revalidationData)
-					if err == nil {
-						return
-					}
-					revalidateErr = err
-					slog.Default().Error("Revalidation failed", "deploymentURL", d.URL, "attempt", attempt, "error", err)
-					time.Sleep(time.Duration(attempt) * time.Second)
+			var revalidateErr error
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				slog.Default().Info("Revalidating", "deploymentURL", d.URL, "attempt", attempt)
+				err := v.revalidate(ctx, d.URL, revalidationData)
+				if err == nil {
+					return
 				}
-				errChan <- fmt.Errorf("deployment %s: %w", d.URL, revalidateErr)
-			}(deployment)
-		}
+				revalidateErr = err
+				slog.Default().Error("Revalidation failed", "deploymentURL", d.URL, "attempt", attempt, "error", err)
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+			errChan <- fmt.Errorf("deployment %s: %w", d.URL, revalidateErr)
+		}(deployment)
+	}
 
-		wg.Wait()
-		close(errChan)
+	wg.Wait()
+	close(errChan)
 
-		var errs []error
-		for err := range errChan {
-			errs = append(errs, err)
-		}
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
 
-		if len(errs) > 0 {
-			slog.Default().Error("revalidation failed for some deployments", "count", len(errs), "errors", errors.Join(errs...))
-		}
-	}()
+	if len(errs) > 0 {
+		slog.Default().Error("revalidation failed for %d deployments: %w", len(errs), errors.Join(errs...))
+	}
 
 	return nil
 }
