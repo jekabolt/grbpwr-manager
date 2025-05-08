@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/payment/tron"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
+	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
 
@@ -30,6 +31,7 @@ type App struct {
 	b    dependency.FileStore
 	ma   dependency.Mailer
 	r    dependency.RatesService
+	re   dependency.RevalidationService
 	c    *config.Config
 	done chan struct{}
 }
@@ -132,9 +134,16 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, a.r)
+	a.re, err = revalidation.New(ctx, &a.c.Revalidation)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed create new revalidation service",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	adminS := admin.New(a.db, a.b, a.ma, a.r, a.re)
 
-	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest)
+	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest, a.re)
 
 	// start API server
 	a.hs = httpapi.New(&a.c.HTTP)

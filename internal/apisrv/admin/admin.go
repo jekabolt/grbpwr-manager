@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"log/slog"
@@ -28,6 +29,7 @@ type Server struct {
 	bucket dependency.FileStore
 	mailer dependency.Mailer
 	rates  dependency.RatesService
+	re     dependency.RevalidationService
 }
 
 // New creates a new server with admin handlers.
@@ -36,12 +38,14 @@ func New(
 	b dependency.FileStore,
 	m dependency.Mailer,
 	rates dependency.RatesService,
+	re dependency.RevalidationService,
 ) *Server {
 	return &Server{
 		repo:   r,
 		bucket: b,
 		mailer: m,
 		rates:  rates,
+		re:     re,
 	}
 }
 
@@ -168,6 +172,22 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		return nil, status.Errorf(codes.Internal, "can't refresh hero")
 	}
 
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Product: dto.RevalidationProduct{
+			ID: int(id),
+		},
+		Hero: dto.RevalidationHero{
+			Changed: true,
+		},
+	})
+
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate product",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate product")
+	}
+
 	return &pb_admin.UpsertProductResponse{
 		Id: int32(id),
 	}, nil
@@ -180,6 +200,18 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete product")
+	}
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Product: dto.RevalidationProduct{
+			ID: int(req.Id),
+		},
+	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate product",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate product")
 	}
 	return &pb_admin.DeleteProductByIDResponse{}, nil
 }
@@ -253,6 +285,18 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
+	}
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Product: dto.RevalidationProduct{
+			ID: int(req.ProductId),
+		},
+	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate product",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate product")
 	}
 	return &pb_admin.UpdateProductSizeStockResponse{}, nil
 }
@@ -472,6 +516,19 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 		)
 		return nil, status.Errorf(codes.Internal, "can't add hero")
 	}
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Hero: dto.RevalidationHero{
+			Changed: true,
+		},
+	})
+
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
+	}
 	return &pb_admin.AddHeroResponse{}, nil
 }
 
@@ -492,6 +549,19 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't add archive")
+	}
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Archive: dto.RevalidationArchive{
+			ID: strconv.Itoa(archiveId),
+		},
+	})
+
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate archive",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
 	}
 
 	return &pb_admin.AddArchiveResponse{
@@ -520,6 +590,18 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 		return nil, status.Errorf(codes.Internal, "can't update archive")
 	}
 
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Archive: dto.RevalidationArchive{
+			ID: strconv.Itoa(int(req.Id)),
+		},
+	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate archive",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
+	}
+
 	return &pb_admin.UpdateArchiveResponse{}, nil
 }
 
@@ -530,6 +612,19 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 			slog.String("err", err.Error()),
 		)
 		return nil, err
+	}
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Archive: dto.RevalidationArchive{
+			ID: strconv.Itoa(int(req.Id)),
+		},
+	})
+
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate archive",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
 	}
 
 	return &pb_admin.DeleteArchiveByIdResponse{}, nil
@@ -601,6 +696,18 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, err
 	}
 
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Hero: dto.RevalidationHero{
+			Changed: true,
+		},
+	})
+
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate hero",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
+	}
 	return &pb_admin.UpdateSettingsResponse{}, nil
 
 }
