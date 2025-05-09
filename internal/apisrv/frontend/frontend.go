@@ -3,6 +3,7 @@ package frontend
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"slices"
@@ -248,8 +249,16 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}, nil
 }
 
-func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderByUUIDRequest) (*pb_frontend.GetOrderByUUIDResponse, error) {
-	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
+func (s *Server) GetOrderByUUIDAndEmail(ctx context.Context, req *pb_frontend.GetOrderByUUIDAndEmailRequest) (*pb_frontend.GetOrderByUUIDAndEmailResponse, error) {
+	email, err := base64.StdEncoding.DecodeString(req.B64Email)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't decode email",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "can't decode email")
+	}
+
+	o, err := s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, string(email))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order by uuid",
 			slog.String("err", err.Error()),
@@ -301,7 +310,7 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_frontend.GetOrderBy
 		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
 	}
 
-	return &pb_frontend.GetOrderByUUIDResponse{
+	return &pb_frontend.GetOrderByUUIDAndEmailResponse{
 		Order: oPb,
 	}, nil
 }

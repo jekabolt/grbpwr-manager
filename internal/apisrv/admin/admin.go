@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -25,11 +27,15 @@ import (
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo   dependency.Repository
-	bucket dependency.FileStore
-	mailer dependency.Mailer
-	rates  dependency.RatesService
-	re     dependency.RevalidationService
+	repo              dependency.Repository
+	bucket            dependency.FileStore
+	mailer            dependency.Mailer
+	rates             dependency.RatesService
+	usdtTron          dependency.Invoicer
+	usdtTronTestnet   dependency.Invoicer
+	stripePayment     dependency.Invoicer
+	stripePaymentTest dependency.Invoicer
+	re                dependency.RevalidationService
 }
 
 // New creates a new server with admin handlers.
@@ -38,14 +44,22 @@ func New(
 	b dependency.FileStore,
 	m dependency.Mailer,
 	rates dependency.RatesService,
+	usdtTron dependency.Invoicer,
+	usdtTronTestnet dependency.Invoicer,
+	stripePayment dependency.Invoicer,
+	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
 ) *Server {
 	return &Server{
-		repo:   r,
-		bucket: b,
-		mailer: m,
-		rates:  rates,
-		re:     re,
+		repo:              r,
+		bucket:            b,
+		mailer:            m,
+		rates:             rates,
+		usdtTron:          usdtTron,
+		usdtTronTestnet:   usdtTronTestnet,
+		stripePayment:     stripePayment,
+		stripePaymentTest: stripePaymentTest,
+		re:                re,
 	}
 }
 
@@ -397,6 +411,64 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 	}, nil
 }
 
+func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUIDRequest) (*pb_admin.GetOrderByUUIDResponse, error) {
+	o, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order by uuid",
+			slog.String("err", err.Error()),
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "order not found")
+		}
+		return nil, status.Errorf(codes.Internal, "can't get order by uuid")
+	}
+
+	os, ok := cache.GetOrderStatusById(o.Order.OrderStatusId)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "can't get order status by id")
+	}
+
+	if os.Status.Name == entity.AwaitingPayment {
+		pm, ok := cache.GetPaymentMethodById(o.Payment.PaymentMethodID)
+		if !ok {
+			slog.Default().ErrorContext(ctx, "can't get payment method by id",
+				slog.Any("paymentMethodId", o.Payment.PaymentMethodID),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get payment method by id")
+		}
+
+		handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment handler",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get payment handler")
+		}
+
+		payment, err := handler.CheckForTransactions(ctx, o.Order.UUID, o.Payment)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't check for transactions",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't check for transactions")
+		}
+
+		o.Payment = *payment
+	}
+
+	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert entity order full to pb order full")
+	}
+
+	return &pb_admin.GetOrderByUUIDResponse{
+		Order: oPb,
+	}, nil
+}
+
 func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackingNumberRequest) (*pb_admin.SetTrackingNumberResponse, error) {
 	if req.TrackingCode == "" {
 		slog.Default().ErrorContext(ctx, "tracking code is empty")
@@ -739,4 +811,19 @@ func (s *Server) UpdateSupportTicketStatus(ctx context.Context, req *pb_admin.Up
 	}
 
 	return &pb_admin.UpdateSupportTicketStatusResponse{}, nil
+}
+
+func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
+	switch pm {
+	case entity.USDT_TRON:
+		return s.usdtTron, nil
+	case entity.USDT_TRON_TEST:
+		return s.usdtTronTestnet, nil
+	case entity.CARD:
+		return s.stripePayment, nil
+	case entity.CARD_TEST:
+		return s.stripePaymentTest, nil
+	default:
+		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
+	}
 }
