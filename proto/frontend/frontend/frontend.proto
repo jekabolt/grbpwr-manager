@@ -42,8 +42,8 @@ service FrontendService {
   }
 
   // Retrieves an order by its ID
-  rpc GetOrderByUUID(GetOrderByUUIDRequest) returns (GetOrderByUUIDResponse) {
-    option (google.api.http) = {get: "/api/frontend/order/{order_uuid}"};
+  rpc GetOrderByUUIDAndEmail(GetOrderByUUIDAndEmailRequest) returns (GetOrderByUUIDAndEmailResponse) {
+    option (google.api.http) = {get: "/api/frontend/order/{order_uuid}/{b64_email}"};
   }
 
   rpc ValidateOrderItemsInsert(ValidateOrderItemsInsertRequest) returns (ValidateOrderItemsInsertResponse) {
@@ -152,11 +152,12 @@ message SubmitOrderResponse {
   common.PaymentInsert payment = 4;
 }
 
-message GetOrderByUUIDRequest {
+message GetOrderByUUIDAndEmailRequest {
   string order_uuid = 1;
+  string b64_email = 2;
 }
 
-message GetOrderByUUIDResponse {
+message GetOrderByUUIDAndEmailResponse {
   common.OrderFull order = 1;
 }
 

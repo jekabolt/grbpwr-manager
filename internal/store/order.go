@@ -1648,6 +1648,30 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 	return &ofs[0], nil
 }
 
+func (ms *MYSQLStore) GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, email string) (*entity.OrderFull, error) {
+	query := `
+		SELECT co.*
+		FROM customer_order co
+		INNER JOIN buyer b ON co.id = b.order_id
+		WHERE co.uuid = :orderUUID AND b.email = :email
+	`
+
+	order, err := QueryNamedOne[entity.Order](ctx, ms.DB(), query, map[string]interface{}{
+		"orderUUID": orderUUID,
+		"email":     email,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get order by uuid and email: %w", err)
+	}
+
+	ofs, err := fetchOrderInfo(ctx, ms, []entity.Order{order})
+	if err != nil {
+		return nil, fmt.Errorf("can't fetch order info: %w", err)
+	}
+
+	return &ofs[0], nil
+}
+
 func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	ctx context.Context,
 	email string,
