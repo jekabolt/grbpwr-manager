@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"log/slog"
@@ -187,12 +186,8 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Product: dto.RevalidationProduct{
-			ID: int(id),
-		},
-		Hero: dto.RevalidationHero{
-			Changed: true,
-		},
+		Products: []int{id},
+		Hero:     true,
 	})
 
 	if err != nil {
@@ -217,9 +212,8 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Product: dto.RevalidationProduct{
-			ID: int(req.Id),
-		},
+		Products: []int{int(req.Id)},
+		Hero:     true,
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't revalidate product",
@@ -302,9 +296,8 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Product: dto.RevalidationProduct{
-			ID: int(req.ProductId),
-		},
+		Products: []int{int(req.ProductId)},
+		Hero:     true,
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't revalidate product",
@@ -590,9 +583,7 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Hero: dto.RevalidationHero{
-			Changed: true,
-		},
+		Hero: true,
 	})
 
 	if err != nil {
@@ -624,9 +615,7 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Archive: dto.RevalidationArchive{
-			ID: strconv.Itoa(archiveId),
-		},
+		Archive: archiveId,
 	})
 
 	if err != nil {
@@ -663,9 +652,8 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Archive: dto.RevalidationArchive{
-			ID: strconv.Itoa(int(req.Id)),
-		},
+		Archive: int(req.Id),
+		Hero:    true,
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't revalidate archive",
@@ -687,9 +675,8 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Archive: dto.RevalidationArchive{
-			ID: strconv.Itoa(int(req.Id)),
-		},
+		Archive: int(req.Id),
+		Hero:    true,
 	})
 
 	if err != nil {
@@ -769,9 +756,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Hero: dto.RevalidationHero{
-			Changed: true,
-		},
+		Hero: true,
 	})
 
 	if err != nil {
