@@ -228,19 +228,15 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}
 	pbPi.PaymentMethod = req.Order.PaymentMethod
 
+	pids := make([]int, 0, len(orderNew.Items))
 	for _, item := range orderNew.Items {
-		err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-			Product: dto.RevalidationProduct{
-				ID: int(item.ProductId),
-			},
-		})
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't revalidate product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't revalidate product")
-		}
+		pids = append(pids, int(item.ProductId))
 	}
+
+	s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Products: pids,
+		Hero:     true,
+	})
 
 	return &pb_frontend.SubmitOrderResponse{
 		OrderUuid:   order.UUID,

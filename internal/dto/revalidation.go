@@ -7,22 +7,10 @@ type Deployment struct {
 	URL string `json:"url"`
 }
 
-type RevalidationProduct struct {
-	ID int `json:"id"`
-}
-
-type RevalidationHero struct {
-	Changed bool `json:"changed"`
-}
-
-type RevalidationArchive struct {
-	ID string `json:"id"`
-}
-
 type RevalidationData struct {
-	Product RevalidationProduct `json:"product"`
-	Hero    RevalidationHero    `json:"hero"`
-	Archive RevalidationArchive `json:"archive"`
+	Products []int `json:"products"`
+	Hero     bool  `json:"hero"`
+	Archive  int   `json:"archive"`
 }
 
 type RevalidationResponse struct {
