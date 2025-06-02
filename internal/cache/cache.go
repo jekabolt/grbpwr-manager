@@ -326,6 +326,15 @@ func UpdatePaymentMethodAllowance(method entity.PaymentMethodName, allowed bool)
 	if ok {
 		pm.Method.Allowed = allowed
 		paymentMethodsByName[method] = pm
+		for _, v := range paymentMethods {
+			if v.Method.Name == method {
+				v.Method.Allowed = allowed
+				paymentMethodsById[v.Method.Id] = v
+				break
+			}
+		}
+		paymentMethodsById[pm.Method.Id] = pm
+
 	}
 }
 
@@ -423,4 +432,12 @@ func GetPaymentMethodIdByPbId(pbId pb_common.PaymentMethodNameEnum) int {
 		return 0
 	}
 	return id
+}
+
+// RefreshEntityPaymentMethods updates the exported entityPaymentMethods slice from the current paymentMethodsById map.
+func RefreshEntityPaymentMethods() {
+	entityPaymentMethods = entityPaymentMethods[:0]
+	for _, pm := range paymentMethodsById {
+		entityPaymentMethods = append(entityPaymentMethods, pm.Method)
+	}
 }

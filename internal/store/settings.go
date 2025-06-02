@@ -58,6 +58,7 @@ func (ms *MYSQLStore) SetShipmentCarrierPrice(ctx context.Context, carrier strin
 	}
 	return nil
 }
+
 func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `UPDATE payment_method SET allowed = :allowed WHERE name = :method`
@@ -69,6 +70,7 @@ func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMeth
 			return fmt.Errorf("failed to update payment method allowance: %w", err)
 		}
 		cache.UpdatePaymentMethodAllowance(paymentMethod, allowance)
+		cache.RefreshEntityPaymentMethods()
 		return nil
 	})
 	if err != nil {
