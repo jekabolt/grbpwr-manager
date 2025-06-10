@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -34,7 +33,8 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		Description: pbArchiveInsert.Description,
 		Tag:         pbArchiveInsert.Tag,
 		MediaIds:    mids,
-		VideoId:     sql.NullInt32{Int32: int32(pbArchiveInsert.VideoId), Valid: pbArchiveInsert.VideoId != 0},
+		MainMediaId: int(pbArchiveInsert.MainMediaId),
+		ThumbnailId: int(pbArchiveInsert.ThumbnailId),
 	}, nil
 }
 
@@ -50,15 +50,26 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 	}
 
 	return &pb_common.ArchiveFull{
-		Id:          int32(af.Id),
-		Heading:     af.Heading,
-		Description: af.Description,
-		Tag:         af.Tag,
-		CreatedAt:   timestamppb.New(af.CreatedAt),
+		ArchiveList: ConvertEntityToCommonArchiveList(&af.ArchiveList),
+		MainMedia:   ConvertEntityToCommonMedia(&af.MainMedia),
 		Media:       mediaPb,
-		Slug:        af.Slug,
-		NextSlug:    af.NextSlug,
-		Video:       ConvertEntityToCommonMedia(&af.Video),
+	}
+}
+
+func ConvertEntityToCommonArchiveList(al *entity.ArchiveList) *pb_common.ArchiveList {
+	if al == nil {
+		return nil
+	}
+
+	return &pb_common.ArchiveList{
+		Id:          int32(al.Id),
+		Heading:     al.Heading,
+		Description: al.Description,
+		Tag:         al.Tag,
+		Slug:        al.Slug,
+		NextSlug:    al.NextSlug,
+		CreatedAt:   timestamppb.New(al.CreatedAt),
+		Thumbnail:   ConvertEntityToCommonMedia(&al.Thumbnail),
 	}
 }
 
