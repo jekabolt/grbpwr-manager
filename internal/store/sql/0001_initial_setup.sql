@@ -739,15 +739,16 @@ CREATE TABLE archive (
     heading VARCHAR(255) NOT NULL,
     description TEXT NOT NULL,
     tag VARCHAR(255) NOT NULL,
-    video_id INT,
-    FOREIGN KEY (video_id) REFERENCES media(id)
+    main_media_id INT,
+    thumbnail_id INT NOT NULL,
+    FOREIGN KEY (main_media_id) REFERENCES media(id),
+    FOREIGN KEY (thumbnail_id) REFERENCES media(id)
 );
 
 CREATE TABLE archive_item (
     id INT PRIMARY KEY AUTO_INCREMENT,
     archive_id INT NOT NULL,
     media_id INT NOT NULL,
-    is_video BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (archive_id) REFERENCES archive(id) ON DELETE CASCADE,
     FOREIGN KEY (media_id) REFERENCES media(id)
 );
