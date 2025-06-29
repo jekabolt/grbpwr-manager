@@ -126,9 +126,9 @@ func (v *Revalidator) RevalidateAll(ctx context.Context, revalidationData *dto.R
 	}
 
 	deployments = append(deployments, &dto.Deployment{
-		URL: "https://grbpwr-com-dusky.vercel.app",
+		URL: "grbpwr-com-dusky.vercel.app",
 	}, &dto.Deployment{
-		URL: "https://grbpwr.com",
+		URL: "grbpwr.com",
 	})
 
 	const maxRetries = 3

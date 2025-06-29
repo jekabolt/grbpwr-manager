@@ -384,6 +384,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 				slog.Error("failed to get archive by id",
 					slog.String("err", err.Error()),
 					slog.Int("archive_id", e.FeaturedArchive.ArchiveId))
+				continue
 			}
 
 			entities = append(entities, entity.HeroEntity{
