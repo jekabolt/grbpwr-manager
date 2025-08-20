@@ -45,7 +45,9 @@ type (
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// GetTopCategoriesProductCount returns the count of products for each top category.
-		GetTopCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.TopCategoryCount, error)
+		GetTopCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.CategoryCount, error)
+		// GetSubCategoriesProductCount returns the count of products for each sub category.
+		GetSubCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.CategoryCount, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error

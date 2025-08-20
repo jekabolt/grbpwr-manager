@@ -87,6 +87,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			BaseCurrency:     cache.GetBaseCurrency(),
 			BigMenu:          cache.GetBigMenu(),
 			TopCategories:    cache.GetTopCategoriesCount(),
+			SubCategories:    cache.GetSubCategoriesCount(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
