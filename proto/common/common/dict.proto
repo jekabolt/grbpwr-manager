@@ -25,7 +25,8 @@ message Dictionary {
   int32 max_order_items = 11;
   string base_currency = 12;
   bool big_menu = 13;
-  repeated TopCategoryCount top_categories = 14;
+  repeated CategoryCount top_categories = 14;
+  repeated CategoryCount sub_categories = 15;
 }
 
 message Genders {
@@ -54,7 +55,7 @@ message CurrencyMap {
   map<string, CurrencyRate> currencies = 1;
 }
 
-message TopCategoryCount {
+message CategoryCount {
   int32 category_id = 1;
   string category_name = 2;
   int32 count = 3;

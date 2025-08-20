@@ -118,7 +118,8 @@ var (
 	siteEnabled            = true
 	defaultCurrency        = ""
 	bigMenu                = false
-	topCategoriesCount     = []entity.TopCategoryCount{}
+	topCategoriesCount     = []entity.CategoryCount{}
+	subCategoriesCount     = []entity.CategoryCount{}
 )
 
 var (
@@ -171,7 +172,7 @@ var (
 	}
 )
 
-func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull, topCategories []entity.TopCategoryCount) error {
+func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull, topCategories []entity.CategoryCount, subCategories []entity.CategoryCount) error {
 
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
@@ -226,6 +227,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	}
 
 	topCategoriesCount = topCategories
+	subCategoriesCount = subCategories
 
 	return nil
 }
@@ -378,12 +380,20 @@ func GetBigMenu() bool {
 	return bigMenu
 }
 
-func GetTopCategoriesCount() []entity.TopCategoryCount {
+func GetTopCategoriesCount() []entity.CategoryCount {
 	return topCategoriesCount
 }
 
-func SetTopCategoriesCount(tc []entity.TopCategoryCount) {
+func SetTopCategoriesCount(tc []entity.CategoryCount) {
 	topCategoriesCount = tc
+}
+
+func GetSubCategoriesCount() []entity.CategoryCount {
+	return subCategoriesCount
+}
+
+func SetSubCategoriesCount(sc []entity.CategoryCount) {
+	subCategoriesCount = sc
 }
 
 func GetCategories() []entity.Category {

@@ -986,7 +986,7 @@ func getProductIdsFromItems(items []entity.OrderItemInsert) []int {
 	return ids
 }
 
-func (ms *MYSQLStore) GetTopCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.TopCategoryCount, error) {
+func (ms *MYSQLStore) GetTopCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.CategoryCount, error) {
 	query := `
 	SELECT 
 		c.id as category_id,
@@ -1009,9 +1009,40 @@ func (ms *MYSQLStore) GetTopCategoriesProductCount(ctx context.Context, showHidd
 	ORDER BY 
 		c.name ASC`
 
-	counts, err := QueryListNamed[entity.TopCategoryCount](ctx, ms.db, query, map[string]any{})
+	counts, err := QueryListNamed[entity.CategoryCount](ctx, ms.db, query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get top categories product count: %w", err)
+	}
+
+	return counts, nil
+}
+
+func (ms *MYSQLStore) GetSubCategoriesProductCount(ctx context.Context, showHidden bool) ([]entity.CategoryCount, error) {
+	query := `
+	SELECT 
+		c.id as category_id,
+		c.name as category_name,
+		COUNT(p.id) as count
+	FROM 
+		category c
+	LEFT JOIN 
+		product p ON c.id = p.sub_category_id`
+
+	if !showHidden {
+		query += ` AND p.hidden = 0`
+	}
+
+	query += `
+	WHERE 
+		c.level_id = 2
+	GROUP BY 
+		c.id, c.name
+	ORDER BY 
+		c.name ASC`
+
+	counts, err := QueryListNamed[entity.CategoryCount](ctx, ms.db, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get sub categories product count: %w", err)
 	}
 
 	return counts, nil
