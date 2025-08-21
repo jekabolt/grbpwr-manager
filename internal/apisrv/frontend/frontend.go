@@ -497,9 +497,10 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 		slog.Default().ErrorContext(ctx, "can't subscribe", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.AlreadyExists, "can't subscribe")
 	}
+	slog.Default().DebugContext(ctx, "isSubscribed", slog.Bool("isSubscribed", isSubscribed))
 
 	// Send new subscriber mail.
-	if isSubscribed {
+	if !isSubscribed {
 		err = s.mailer.SendNewSubscriber(ctx, s.repo, req.Email)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't send new subscriber mail",
