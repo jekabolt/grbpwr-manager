@@ -32,26 +32,25 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Subscr
 	return subscribers, nil
 }
 
-func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, receivePromo bool) error {
-	// Corrected SQL query that inserts a new subscriber or updates an existing one if the email already exists.
-	query := `
-		INSERT INTO subscriber (email, receive_promo_emails)
-		VALUES (:email, :receivePromoEmails)
-		ON DUPLICATE KEY UPDATE receive_promo_emails = VALUES(receive_promo_emails)
-    `
-
-	// Prepare the parameters for the query
-	params := map[string]interface{}{
-		"email":              email,
-		"receivePromoEmails": receivePromo,
-	}
-
-	// Execute the query with named parameters
-	err := ExecNamed(ctx, ms.DB(), query, params)
+func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, receivePromo bool) (bool, error) {
+	isSubscribed, err := ms.IsSubscribed(ctx, email)
 	if err != nil {
-		return fmt.Errorf("failed to subscribe: %w", err)
+		return false, fmt.Errorf("failed to check if email exists: %w", err)
 	}
-	return nil
+
+	// Insert new subscriber only if email doesn't exist or receivePromo is false ie unsubscribe
+	if !isSubscribed || !receivePromo {
+		query := `INSERT INTO subscriber (email, receive_promo_emails) VALUES (:email, :receivePromoEmails)`
+		params := map[string]interface{}{
+			"email":              email,
+			"receivePromoEmails": receivePromo,
+		}
+		err = ExecNamed(ctx, ms.DB(), query, params)
+		if err != nil {
+			return false, fmt.Errorf("failed to insert subscriber: %w", err)
+		}
+	}
+	return isSubscribed, nil
 }
 
 func (ms *MYSQLStore) IsSubscribed(ctx context.Context, email string) (bool, error) {

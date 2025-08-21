@@ -399,6 +399,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			BaseCurrency:     cache.GetBaseCurrency(),
 			BigMenu:          cache.GetBigMenu(),
 			TopCategories:    cache.GetTopCategoriesCount(),
+			SubCategories:    cache.GetSubCategoriesCount(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
