@@ -681,16 +681,18 @@ func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Rep
 
 // Helper function to handle promotional subscription
 func (ms *MYSQLStore) handlePromoSubscription(ctx context.Context, email string, sendEmail *bool) error {
-	subscribed, err := ms.Subscribers().IsSubscribed(ctx, email)
+
+	*sendEmail = true
+
+	isSubscribed, err := ms.Subscribers().UpsertSubscription(ctx, email, true)
 	if err != nil {
-		return fmt.Errorf("error while checking subscription: %w", err)
+		return fmt.Errorf("error while upserting subscription: %w", err)
 	}
-	if !subscribed {
-		*sendEmail = true
-		if err := ms.Subscribers().UpsertSubscription(ctx, email, true); err != nil {
-			return fmt.Errorf("error while upserting subscription: %w", err)
-		}
+
+	if !isSubscribed {
+		*sendEmail = false
 	}
+
 	return nil
 }
 

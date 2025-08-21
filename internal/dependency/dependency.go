@@ -102,7 +102,7 @@ type (
 
 	Subscribers interface {
 		GetActiveSubscribers(ctx context.Context) ([]entity.Subscriber, error)
-		UpsertSubscription(ctx context.Context, email string, receivePromo bool) error
+		UpsertSubscription(ctx context.Context, email string, receivePromo bool) (bool, error)
 		IsSubscribed(ctx context.Context, email string) (bool, error)
 	}
 
