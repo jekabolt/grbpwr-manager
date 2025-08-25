@@ -18,15 +18,11 @@ message Dictionary {
   repeated PaymentMethod payment_methods = 4;
   repeated ShipmentCarrier shipment_carriers = 5;
   repeated Size sizes = 6;
-  repeated Genders genders = 7;
-  repeated OrderFactors order_factors = 8;
-  repeated SortFactors sort_factors = 9;
-  bool site_enabled = 10;
-  int32 max_order_items = 11;
-  string base_currency = 12;
-  bool big_menu = 13;
-  repeated CategoryCount top_categories = 14;
-  repeated CategoryCount sub_categories = 15;
+  bool site_enabled = 7;
+  int32 max_order_items = 8;
+  string base_currency = 9;
+  bool big_menu = 10;
+  string announce = 11;
 }
 
 message Genders {
@@ -53,10 +49,4 @@ message CurrencyRate {
 // CurrencyMap represents a map of currency codes to their rates.
 message CurrencyMap {
   map<string, CurrencyRate> currencies = 1;
-}
-
-message CategoryCount {
-  int32 category_id = 1;
-  string category_name = 2;
-  int32 count = 3;
 }

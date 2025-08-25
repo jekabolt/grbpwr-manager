@@ -24,11 +24,13 @@ type ProductFull struct {
 
 // Category represents a hierarchical category structure
 type Category struct {
-	ID       int    `db:"category_id"`
-	Name     string `db:"category_name"`
-	LevelID  int    `db:"level_id"`
-	Level    string `db:"level_name"`
-	ParentID *int   `db:"parent_id"`
+	ID         int    `db:"category_id"`
+	Name       string `db:"category_name"`
+	LevelID    int    `db:"level_id"`
+	Level      string `db:"level_name"`
+	ParentID   *int   `db:"parent_id"`
+	CountMen   int
+	CountWomen int
 }
 
 // Size represents the size table
@@ -191,10 +193,4 @@ type ProductTag struct {
 // ProductTag represents the product_tag table
 type ProductTagInsert struct {
 	Tag string `db:"tag"`
-}
-
-type CategoryCount struct {
-	CategoryId   int    `db:"category_id"`
-	CategoryName string `db:"category_name"`
-	Count        int    `db:"count"`
 }

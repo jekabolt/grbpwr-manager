@@ -20,8 +20,7 @@ type Dict struct {
 	MaxOrderItems    int
 	BaseCurrency     string
 	BigMenu          bool
-	TopCategories    []entity.CategoryCount
-	SubCategories    []entity.CategoryCount
+	Announce         string
 }
 
 var (
@@ -151,22 +150,8 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency
 	commonDict.BigMenu = dict.BigMenu
+	commonDict.Announce = dict.Announce
 
-	for _, tc := range dict.TopCategories {
-		commonDict.TopCategories = append(commonDict.TopCategories, &pb_common.CategoryCount{
-			CategoryId:   int32(tc.CategoryId),
-			CategoryName: tc.CategoryName,
-			Count:        int32(tc.Count),
-		})
-	}
-
-	for _, sc := range dict.SubCategories {
-		commonDict.SubCategories = append(commonDict.SubCategories, &pb_common.CategoryCount{
-			CategoryId:   int32(sc.CategoryId),
-			CategoryName: sc.CategoryName,
-			Count:        int32(sc.Count),
-		})
-	}
 	return commonDict
 }
 
@@ -176,10 +161,12 @@ func ConvertEntityToPbCategory(c *entity.Category) *pb_common.Category {
 	}
 
 	proto := &pb_common.Category{
-		Id:      int32(c.ID),
-		Name:    c.Name,
-		LevelId: int32(c.LevelID),
-		Level:   c.Level,
+		Id:         int32(c.ID),
+		Name:       c.Name,
+		LevelId:    int32(c.LevelID),
+		Level:      c.Level,
+		CountMen:   int32(c.CountMen),
+		CountWomen: int32(c.CountWomen),
 	}
 
 	// Handle optional parent ID

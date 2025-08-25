@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/base64"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -29,6 +30,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 		HasFreeShipping:     of.PromoCode.FreeShipping,
 		ShippingPrice:       sc.PriceDecimal().String(),
 		ShipmentCarrier:     sc.Carrier,
+		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
 }
 
@@ -64,6 +66,7 @@ type OrderConfirmed struct {
 	HasFreeShipping     bool
 	ShippingPrice       string
 	ShipmentCarrier     string
+	EmailB64            string
 }
 
 type OrderItem struct {

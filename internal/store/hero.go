@@ -30,16 +30,8 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get hero: %w", err)
 	}
-	topCategories, err := hs.Products().GetTopCategoriesProductCount(ctx, false)
-	if err != nil {
-		return fmt.Errorf("failed to get top categories product count: %w", err)
-	}
-	subCategories, err := hs.Products().GetSubCategoriesProductCount(ctx, false)
-	if err != nil {
-		return fmt.Errorf("failed to get sub categories product count: %w", err)
-	}
-	cache.SetTopCategoriesCount(topCategories)
-	cache.SetSubCategoriesCount(subCategories)
+
+	//TODO: update categories count
 
 	heroInsert := entity.HeroFullInsert{
 		Entities:    []entity.HeroEntityInsert{},
