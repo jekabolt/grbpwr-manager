@@ -20,7 +20,7 @@
         </header>
         <main class="content">
             <p>Hello {{html .FullName}},</p>
-            <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been placed successfully.</p>
+            <p>Thank you for your order! We are excited to let you know that your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}/{{.EmailB64}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been placed successfully.</p>
             <h2>Order Details:</h2>
             {{range .OrderItems}}
             <div>

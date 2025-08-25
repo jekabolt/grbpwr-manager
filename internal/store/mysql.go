@@ -65,18 +65,8 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("can't get hero: %w", err)
 	}
 
-	topCategories, err := ss.Products().GetTopCategoriesProductCount(ctx, false)
-	if err != nil {
-		return nil, fmt.Errorf("can't get top categories product count: %w", err)
-	}
-
-	subCategories, err := ss.Products().GetSubCategoriesProductCount(ctx, false)
-	if err != nil {
-		return nil, fmt.Errorf("can't get sub categories product count: %w", err)
-	}
-
 	// cache initialization
-	err = cache.InitConsts(ctx, di, hf, topCategories, subCategories)
+	err = cache.InitConsts(ctx, di, hf)
 	if err != nil {
 		return nil, fmt.Errorf("can't init consts: %w", err)
 	}

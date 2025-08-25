@@ -118,8 +118,7 @@ var (
 	siteEnabled            = true
 	defaultCurrency        = ""
 	bigMenu                = false
-	topCategoriesCount     = []entity.CategoryCount{}
-	subCategoriesCount     = []entity.CategoryCount{}
+	announce               = ""
 )
 
 var (
@@ -172,7 +171,7 @@ var (
 	}
 )
 
-func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull, topCategories []entity.CategoryCount, subCategories []entity.CategoryCount) error {
+func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull) error {
 
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
@@ -225,9 +224,6 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 			return fmt.Errorf("payment method %s not found", v.Method.Name)
 		}
 	}
-
-	topCategoriesCount = topCategories
-	subCategoriesCount = subCategories
 
 	return nil
 }
@@ -360,6 +356,10 @@ func SetBigMenu(enabled bool) {
 	bigMenu = enabled
 }
 
+func SetAnnounce(a string) {
+	announce = a
+}
+
 func SetDefaultCurrency(c string) {
 	defaultCurrency = c
 }
@@ -380,20 +380,8 @@ func GetBigMenu() bool {
 	return bigMenu
 }
 
-func GetTopCategoriesCount() []entity.CategoryCount {
-	return topCategoriesCount
-}
-
-func SetTopCategoriesCount(tc []entity.CategoryCount) {
-	topCategoriesCount = tc
-}
-
-func GetSubCategoriesCount() []entity.CategoryCount {
-	return subCategoriesCount
-}
-
-func SetSubCategoriesCount(sc []entity.CategoryCount) {
-	subCategoriesCount = sc
+func GetAnnounce() string {
+	return announce
 }
 
 func GetCategories() []entity.Category {

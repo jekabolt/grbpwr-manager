@@ -93,3 +93,8 @@ func (ms *MYSQLStore) SetBigMenu(ctx context.Context, bigMenu bool) error {
 	cache.SetBigMenu(bigMenu)
 	return nil
 }
+
+func (ms *MYSQLStore) SetAnnounce(ctx context.Context, announce string) error {
+	cache.SetAnnounce(announce)
+	return nil
+}
