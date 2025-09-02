@@ -32,14 +32,13 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (heading, description, tag, main_media_id, thumbnail_id) 
-		VALUES (:heading, :description, :tag, :main_media_id, :thumbnail_id)`
+		query := `INSERT INTO archive (heading, description, tag, main_media_id, thumbnail_id) VALUES (:heading, :description, :tag, :mainMediaId, :thumbnailId)`
 		aid, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 			"heading":       aNew.Heading,
 			"description":   aNew.Description,
 			"tag":           aNew.Tag,
-			"main_media_id": aNew.MainMediaId,
-			"thumbnail_id":  aNew.ThumbnailId,
+			"mainMediaId": aNew.MainMediaId,
+			"thumbnailId":  aNew.ThumbnailId,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
