@@ -84,7 +84,7 @@ func GetArchiveSlug(id int, title, tag string) string {
 
 	// Use strings.Builder for efficient string concatenation
 	var sb strings.Builder
-	sb.WriteString("/archive/")
+	sb.WriteString("/timeline/")
 	sb.WriteString(clean(title))
 	sb.WriteString("/")
 	sb.WriteString(clean(tag))
