@@ -106,6 +106,7 @@ func TestUploadContentImage(t *testing.T) {
 
 	jpg, err := fileToB64ByPath(jpgFilePath)
 	assert.NoError(t, err)
+	fmt.Println("jpg ", jpg)
 
 	i, err := tb.fs.UploadContentImage(ctx, jpg, "test", "test")
 	assert.NoError(t, err)

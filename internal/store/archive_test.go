@@ -179,14 +179,14 @@ func TestArchiveCRUD(t *testing.T) {
 				}
 
 				// Test invalid pagination
-				_, _, err = store.Archive().GetArchivesPaged(ctx, 0, 0, entity.Descending)
+				_, _, err = store.Archive().GetArchivesPaged(ctx, 1, 0, 0, entity.Descending)
 				assert.Error(t, err, "should fail with invalid limit")
 
-				_, _, err = store.Archive().GetArchivesPaged(ctx, 10, -1, entity.Descending)
+				_, _, err = store.Archive().GetArchivesPaged(ctx, 1, 10, -1, entity.Descending)
 				assert.Error(t, err, "should fail with invalid offset")
 
 				// Test valid pagination
-				results, count, err := store.Archive().GetArchivesPaged(ctx, 2, 0, entity.Descending)
+				results, count, err := store.Archive().GetArchivesPaged(ctx, 1, 2, 0, entity.Descending)
 				require.NoError(t, err)
 				assert.Equal(t, 3, count) // Total count should be 3 (1 original + 2 additional)
 				assert.Len(t, results, 2) // Should return 2 items due to limit
@@ -234,7 +234,7 @@ func TestArchiveCRUD(t *testing.T) {
 						assert.Error(t, err, "should fail to get deleted archive")
 
 						// Verify all archives are deleted
-						results, count, err := store.Archive().GetArchivesPaged(ctx, 10, 0, entity.Descending)
+						results, count, err := store.Archive().GetArchivesPaged(ctx, 1, 10, 0, entity.Descending)
 						require.NoError(t, err)
 						assert.Equal(t, 0, count)
 						assert.Len(t, results, 0)

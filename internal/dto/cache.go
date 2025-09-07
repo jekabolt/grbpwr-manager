@@ -13,6 +13,7 @@ type Dict struct {
 	PaymentMethods   []entity.PaymentMethod
 	ShipmentCarriers []entity.ShipmentCarrier
 	Sizes            []entity.Size
+	Languages        []entity.Language
 	Genders          []pb_common.Genders
 	SortFactors      []pb_common.SortFactors
 	OrderFactors     []pb_common.OrderFactors
@@ -99,11 +100,22 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.Categories = CategorySliceToProto(dict.Categories)
 
 	for _, m := range dict.Measurements {
-		commonDict.Measurements = append(commonDict.Measurements,
-			&pb_common.MeasurementName{
-				Id:   int32(m.Id),
-				Name: m.Name,
+
+		pbMeasurement := &pb_common.MeasurementName{
+			Id:           int32(m.Id),
+			Translations: make([]*pb_common.MeasurementNameTranslation, 0),
+		}
+
+		for _, translation := range m.Translations {
+			pbMeasurement.Translations = append(pbMeasurement.Translations, &pb_common.MeasurementNameTranslation{
+				Id:                int32(translation.ID),
+				MeasurementNameId: int32(translation.MeasurementNameID),
+				LanguageId:        int32(translation.LanguageID),
+				Name:              translation.Name,
 			})
+		}
+
+		commonDict.Measurements = append(commonDict.Measurements, pbMeasurement)
 	}
 
 	for _, o := range dict.OrderStatuses {
@@ -146,6 +158,18 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 				Name: sz.Name,
 			})
 	}
+
+	for _, lang := range dict.Languages {
+		commonDict.Languages = append(commonDict.Languages,
+			&pb_common.Language{
+				Id:        int32(lang.Id),
+				Code:      lang.Code,
+				Name:      lang.Name,
+				IsDefault: lang.IsDefault,
+				IsActive:  lang.IsActive,
+			})
+	}
+
 	commonDict.SiteEnabled = dict.SiteEnabled
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency
@@ -162,11 +186,20 @@ func ConvertEntityToPbCategory(c *entity.Category) *pb_common.Category {
 
 	proto := &pb_common.Category{
 		Id:         int32(c.ID),
-		Name:       c.Name,
 		LevelId:    int32(c.LevelID),
 		Level:      c.Level,
 		CountMen:   int32(c.CountMen),
 		CountWomen: int32(c.CountWomen),
+	}
+
+	// Convert translations
+	for _, translation := range c.Translations {
+		proto.Translations = append(proto.Translations, &pb_common.CategoryTranslation{
+			Id:         int32(translation.ID),
+			CategoryId: int32(translation.CategoryID),
+			LanguageId: int32(translation.LanguageID),
+			Name:       translation.Name,
+		})
 	}
 
 	// Handle optional parent ID
@@ -185,10 +218,21 @@ func CategoryFromProto(proto *pb_common.Category) *entity.Category {
 	}
 
 	category := &entity.Category{
-		ID:      int(proto.Id),
-		Name:    proto.Name,
-		LevelID: int(proto.LevelId),
-		Level:   proto.Level,
+		ID:         int(proto.Id),
+		LevelID:    int(proto.LevelId),
+		Level:      proto.Level,
+		CountMen:   int(proto.CountMen),
+		CountWomen: int(proto.CountWomen),
+	}
+
+	// Convert translations
+	for _, protoTranslation := range proto.Translations {
+		category.Translations = append(category.Translations, entity.CategoryTranslation{
+			ID:         int(protoTranslation.Id),
+			CategoryID: int(protoTranslation.CategoryId),
+			LanguageID: int(protoTranslation.LanguageId),
+			Name:       protoTranslation.Name,
+		})
 	}
 
 	// Handle optional parent ID

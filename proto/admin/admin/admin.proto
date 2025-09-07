@@ -6,6 +6,7 @@ import "common/archive.proto";
 import "common/dict.proto";
 import "common/filter.proto";
 import "common/hero.proto";
+import "common/language.proto";
 import "common/media.proto";
 import "common/order.proto";
 import "common/payment.proto";
@@ -191,6 +192,10 @@ service AdminService {
   // DeleteArchiveById deletes an archive by ID.
   rpc DeleteArchiveById(DeleteArchiveByIdRequest) returns (DeleteArchiveByIdResponse) {
     option (google.api.http) = {delete: "/api/admin/archive/{id}"};
+  }
+
+  rpc GetArchiveByID(GetArchiveByIDRequest) returns (GetArchiveByIDResponse) {
+    option (google.api.http) = {get: "/api/admin/archive/{id}"};
   }
 
   // SETTINGS
@@ -410,6 +415,14 @@ message AddArchiveResponse {
 message UpdateArchiveRequest {
   int32 id = 1;
   common.ArchiveInsert archive_insert = 2;
+}
+
+message GetArchiveByIDRequest {
+  int32 id = 1;
+}
+
+message GetArchiveByIDResponse {
+  common.ArchiveFull archive = 1;
 }
 
 message UpdateArchiveResponse {}

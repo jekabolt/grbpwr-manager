@@ -113,7 +113,7 @@ service FrontendService {
 
 message GetHeroRequest {}
 message GetHeroResponse {
-  common.HeroFull hero = 1;
+  common.HeroFullWithTranslations hero = 1;
   common.Dictionary dictionary = 2;
   common.CurrencyMap rates = 3;
 }

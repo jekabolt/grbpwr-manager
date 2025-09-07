@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -45,37 +46,28 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 				ids = append(ids, p.Id)
 			}
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedProducts: entity.HeroFeaturedProductsInsert{
-				ProductIDs:  ids,
-				Headline:    e.FeaturedProducts.Headline,
-				ExploreText: e.FeaturedProducts.ExploreText,
-				ExploreLink: e.FeaturedProducts.ExploreLink,
+				ProductIDs:   ids,
+				ExploreLink:  e.FeaturedProducts.ExploreLink,
+				Translations: e.FeaturedProducts.Translations,
 			}})
 		case entity.HeroTypeFeaturedProductsTag:
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedProductsTag: entity.HeroFeaturedProductsTagInsert{
-				Tag:         e.FeaturedProductsTag.Tag,
-				Headline:    e.FeaturedProductsTag.Headline,
-				ExploreText: e.FeaturedProductsTag.ExploreText,
-				ExploreLink: e.FeaturedProductsTag.ExploreLink,
+				Tag:          e.FeaturedProductsTag.Tag,
+				Translations: e.FeaturedProductsTag.Translations,
 			}})
 		case entity.HeroTypeMain:
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Main: entity.HeroMainInsert{
-				Single: entity.HeroSingleInsert{
-					MediaPortraitId:  e.Main.Single.MediaPortrait.Id,
-					MediaLandscapeId: e.Main.Single.MediaLandscape.Id,
-					ExploreLink:      e.Main.Single.ExploreLink,
-					ExploreText:      e.Main.Single.ExploreText,
-					Headline:         e.Main.Single.Headline,
-				},
-				Tag:         e.Main.Tag,
-				Description: e.Main.Description,
+				MediaPortraitId:  e.Main.Single.MediaPortrait.Id,
+				MediaLandscapeId: e.Main.Single.MediaLandscape.Id,
+				ExploreLink:      e.Main.Single.ExploreLink,
+				Translations:     e.Main.Translations,
 			}})
 		case entity.HeroTypeSingle:
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Single: entity.HeroSingleInsert{
 				MediaPortraitId:  e.Single.MediaPortrait.Id,
 				MediaLandscapeId: e.Single.MediaLandscape.Id,
-				Headline:         e.Single.Headline,
 				ExploreLink:      e.Single.ExploreLink,
-				ExploreText:      e.Single.ExploreText,
+				Translations:     e.Single.Translations,
 			}})
 		case entity.HeroTypeDouble:
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Double: entity.HeroDoubleInsert{
@@ -83,23 +75,20 @@ func (hs *heroStore) RefreshHero(ctx context.Context) error {
 					MediaPortraitId:  e.Double.Left.MediaPortrait.Id,
 					MediaLandscapeId: e.Double.Left.MediaLandscape.Id,
 					ExploreLink:      e.Double.Left.ExploreLink,
-					ExploreText:      e.Double.Left.ExploreText,
-					Headline:         e.Double.Left.Headline,
+					Translations:     e.Double.Left.Translations,
 				},
 				Right: entity.HeroSingleInsert{
 					MediaPortraitId:  e.Double.Right.MediaPortrait.Id,
 					MediaLandscapeId: e.Double.Right.MediaLandscape.Id,
 					ExploreLink:      e.Double.Right.ExploreLink,
-					ExploreText:      e.Double.Right.ExploreText,
-					Headline:         e.Double.Right.Headline,
+					Translations:     e.Double.Right.Translations,
 				},
 			}})
 		case entity.HeroTypeFeaturedArchive:
 			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedArchive: entity.HeroFeaturedArchiveInsert{
-				ArchiveId:   e.FeaturedArchive.Archive.ArchiveList.Id,
-				Tag:         e.FeaturedArchive.Tag,
-				Headline:    e.FeaturedArchive.Headline,
-				ExploreText: e.FeaturedArchive.ExploreText,
+				ArchiveId:    e.FeaturedArchive.Archive.ArchiveList.Id,
+				Tag:          e.FeaturedArchive.Tag,
+				Translations: e.FeaturedArchive.Translations,
 			}})
 		}
 	}
@@ -145,6 +134,7 @@ func (hs *heroStore) SetHero(ctx context.Context, hfi entity.HeroFullInsert) err
 		if err != nil {
 			return fmt.Errorf("failed to build hero data: %w", err)
 		}
+		slog.Info("heroFull", "heroFull", heroFull)
 
 		if err := insertHeroData(ctx, rep, heroFull); err != nil {
 			return fmt.Errorf("failed to insert hero data: %w", err)
@@ -161,7 +151,7 @@ func (hs *heroStore) SetHero(ctx context.Context, hfi entity.HeroFullInsert) err
 	})
 }
 
-func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
+func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error) {
 	query := `SELECT data FROM hero`
 
 	type hero struct {
@@ -173,11 +163,12 @@ func (hs *heroStore) GetHero(ctx context.Context) (*entity.HeroFull, error) {
 	heroRaw, err := QueryNamedOne[hero](ctx, hs.DB(), query, nil)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("no hero data found")
+			slog.Error("no hero data found")
+			return &entity.HeroFullWithTranslations{}, nil
 		}
 		return nil, fmt.Errorf("failed to get hero: %w", err)
 	}
-	heroFull := entity.HeroFull{}
+	heroFull := entity.HeroFullWithTranslations{}
 
 	err = json.Unmarshal(heroRaw.Data, &heroFull)
 	if err != nil {
@@ -197,10 +188,11 @@ func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) erro
 	return nil
 }
 
-func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInsert entity.HeroFullInsert) (*entity.HeroFull, error) {
+func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInsert entity.HeroFullInsert) (*entity.HeroFullWithTranslations, error) {
 
-	entities := make([]entity.HeroEntity, 0, len(heroFullInsert.Entities))
+	entities := make([]entity.HeroEntityWithTranslations, 0, len(heroFullInsert.Entities))
 	for n, e := range heroFullInsert.Entities {
+
 		switch e.Type {
 		case entity.HeroTypeSingle:
 			portraitMedia, err := rep.Media().GetMediaById(ctx, e.Single.MediaPortraitId)
@@ -217,21 +209,21 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 					slog.Int("media_id", e.Single.MediaLandscapeId))
 				continue
 			}
-			entities = append(entities, entity.HeroEntity{
+
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				Single: &entity.HeroSingle{
+				Single: &entity.HeroSingleWithTranslations{
 					MediaPortrait:  *portraitMedia,
 					MediaLandscape: *landscapeMedia,
-					Headline:       e.Single.Headline,
 					ExploreLink:    e.Single.ExploreLink,
-					ExploreText:    e.Single.ExploreText,
+					Translations:   e.Single.Translations,
 				},
 			})
 		case entity.HeroTypeDouble:
 
 			leftMediaId := e.Double.Left.MediaPortraitId
 			if leftMediaId == 0 {
-				leftMediaId = e.Double.Right.MediaPortraitId
+				leftMediaId = e.Double.Left.MediaLandscapeId
 			}
 
 			leftMedia, err := rep.Media().GetMediaById(ctx, leftMediaId)
@@ -244,7 +236,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 
 			rightMediaId := e.Double.Right.MediaPortraitId
 			if rightMediaId == 0 {
-				rightMediaId = e.Double.Left.MediaPortraitId
+				rightMediaId = e.Double.Right.MediaLandscapeId
 			}
 
 			rightMedia, err := rep.Media().GetMediaById(ctx, rightMediaId)
@@ -255,22 +247,20 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 				continue
 			}
 
-			entities = append(entities, entity.HeroEntity{
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				Double: &entity.HeroDouble{
-					Left: entity.HeroSingle{
+				Double: &entity.HeroDoubleWithTranslations{
+					Left: entity.HeroSingleWithTranslations{
 						MediaPortrait:  *leftMedia,
-						MediaLandscape: *rightMedia,
-						ExploreLink:    e.Double.Left.ExploreLink,
-						ExploreText:    e.Double.Left.ExploreText,
-						Headline:       e.Double.Left.Headline,
-					},
-					Right: entity.HeroSingle{
-						MediaPortrait:  *rightMedia,
 						MediaLandscape: *leftMedia,
+						ExploreLink:    e.Double.Left.ExploreLink,
+						Translations:   e.Double.Left.Translations,
+					},
+					Right: entity.HeroSingleWithTranslations{
+						MediaPortrait:  *rightMedia,
+						MediaLandscape: *rightMedia,
 						ExploreLink:    e.Double.Right.ExploreLink,
-						ExploreText:    e.Double.Right.ExploreText,
-						Headline:       e.Double.Right.Headline,
+						Translations:   e.Double.Right.Translations,
 					},
 				},
 			})
@@ -279,47 +269,48 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 			if n != 0 {
 				continue
 			}
-			portraitMedia, err := rep.Media().GetMediaById(ctx, e.Main.Single.MediaPortraitId)
+			portraitMedia, err := rep.Media().GetMediaById(ctx, e.Main.MediaPortraitId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Main.Single.MediaPortraitId))
+					slog.Int("media_id", e.Main.MediaPortraitId))
 				continue
 			}
 
-			landscapeMedia, err := rep.Media().GetMediaById(ctx, e.Main.Single.MediaLandscapeId)
+			landscapeMedia, err := rep.Media().GetMediaById(ctx, e.Main.MediaLandscapeId)
 			if err != nil {
 				slog.Error("failed to get media by id",
 					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Main.Single.MediaLandscapeId))
+					slog.Int("media_id", e.Main.MediaLandscapeId))
 				continue
 			}
 
-			entities = append(entities, entity.HeroEntity{
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				Main: &entity.HeroMain{
-					Single: entity.HeroSingle{
+				Main: &entity.HeroMainWithTranslations{
+					Single: entity.HeroSingleWithTranslations{
 						MediaPortrait:  *portraitMedia,
 						MediaLandscape: *landscapeMedia,
-						ExploreLink:    e.Main.Single.ExploreLink,
-						ExploreText:    e.Main.Single.ExploreText,
-						Headline:       e.Main.Single.Headline,
+						ExploreLink:    e.Main.ExploreLink,
+						Translations:   []entity.HeroSingleInsertTranslation{}, // Main doesn't use single translations
 					},
-					Tag:         e.Main.Tag,
-					Description: e.Main.Description,
+					Translations: e.Main.Translations,
 				},
 			})
 		case entity.HeroTypeFeaturedProducts:
 			if len(e.FeaturedProducts.ProductIDs) == 0 {
+				slog.Error("no product ids provided for featured products skipping",
+					slog.Int("product_ids", len(e.FeaturedProducts.ProductIDs)))
 				continue
 			}
+
 			products, err := rep.Products().GetProductsByIds(ctx, e.FeaturedProducts.ProductIDs)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get products by ids: %w", err)
 			}
 			prds := make([]entity.Product, 0, len(products))
 			for _, p := range products {
-				if p.Hidden.Valid && p.Hidden.Bool {
+				if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
 					continue
 				}
 				prds = append(prds, p)
@@ -329,13 +320,12 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 				continue
 			}
 
-			entities = append(entities, entity.HeroEntity{
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				FeaturedProducts: &entity.HeroFeaturedProducts{
-					Products:    prds,
-					Headline:    e.FeaturedProducts.Headline,
-					ExploreText: e.FeaturedProducts.ExploreText,
-					ExploreLink: e.FeaturedProducts.ExploreLink,
+				FeaturedProducts: &entity.HeroFeaturedProductsWithTranslations{
+					Products:     prds,
+					ExploreLink:  e.FeaturedProducts.ExploreLink,
+					Translations: e.FeaturedProducts.Translations,
 				},
 			})
 		case entity.HeroTypeFeaturedProductsTag:
@@ -350,7 +340,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 
 			prds := make([]entity.Product, 0, len(products))
 			for _, p := range products {
-				if p.Hidden.Valid && p.Hidden.Bool {
+				if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
 					continue
 				}
 				prds = append(prds, p)
@@ -360,14 +350,16 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 				continue
 			}
 
-			entities = append(entities, entity.HeroEntity{
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				FeaturedProductsTag: &entity.HeroFeaturedProductsTag{
-					Products:    prds,
-					Tag:         e.FeaturedProductsTag.Tag,
-					Headline:    e.FeaturedProductsTag.Headline,
-					ExploreText: e.FeaturedProductsTag.ExploreText,
-					ExploreLink: e.FeaturedProductsTag.ExploreLink,
+				FeaturedProductsTag: &entity.HeroFeaturedProductsTagWithTranslations{
+					Tag: e.FeaturedProductsTag.Tag,
+					Products: entity.HeroFeaturedProductsWithTranslations{
+						Products:     prds,
+						ExploreLink:  "",                                               // No explore link for tag-based products
+						Translations: []entity.HeroFeaturedProductsInsertTranslation{}, // Products has its own translations
+					},
+					Translations: e.FeaturedProductsTag.Translations,
 				},
 			})
 		case entity.HeroTypeFeaturedArchive:
@@ -384,29 +376,30 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 				continue
 			}
 
-			entities = append(entities, entity.HeroEntity{
+			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
-				FeaturedArchive: &entity.HeroFeaturedArchive{
-					Archive:     *archive,
-					Tag:         e.FeaturedArchive.Tag,
-					Headline:    e.FeaturedArchive.Headline,
-					ExploreText: e.FeaturedArchive.ExploreText,
+				FeaturedArchive: &entity.HeroFeaturedArchiveWithTranslations{
+					Archive:      *archive,
+					Tag:          e.FeaturedArchive.Tag,
+					Headline:     "", // Will be populated from translations when needed
+					ExploreText:  "", // Will be populated from translations when needed
+					Translations: e.FeaturedArchive.Translations,
 				},
 			})
 		}
 	}
-	heroFull := entity.HeroFull{
+	heroFull := entity.HeroFullWithTranslations{
 		Entities: entities,
-		NavFeatured: entity.NavFeatured{
-			Men: entity.NavFeaturedEntity{
-				ExploreText:       heroFullInsert.NavFeatured.Men.ExploreText,
+		NavFeatured: entity.NavFeaturedWithTranslations{
+			Men: entity.NavFeaturedEntityWithTranslations{
 				FeaturedTag:       heroFullInsert.NavFeatured.Men.FeaturedTag,
-				FeaturedArchiveId: heroFullInsert.NavFeatured.Men.FeaturedArchiveId,
+				FeaturedArchiveId: strconv.Itoa(heroFullInsert.NavFeatured.Men.FeaturedArchiveId),
+				Translations:      heroFullInsert.NavFeatured.Men.Translations,
 			},
-			Women: entity.NavFeaturedEntity{
-				ExploreText:       heroFullInsert.NavFeatured.Women.ExploreText,
+			Women: entity.NavFeaturedEntityWithTranslations{
 				FeaturedTag:       heroFullInsert.NavFeatured.Women.FeaturedTag,
-				FeaturedArchiveId: heroFullInsert.NavFeatured.Women.FeaturedArchiveId,
+				FeaturedArchiveId: strconv.Itoa(heroFullInsert.NavFeatured.Women.FeaturedArchiveId),
+				Translations:      heroFullInsert.NavFeatured.Women.Translations,
 			},
 		},
 	}
@@ -435,7 +428,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 	return &heroFull, nil
 }
 
-func insertHeroData(ctx context.Context, rep dependency.Repository, hf *entity.HeroFull) error {
+func insertHeroData(ctx context.Context, rep dependency.Repository, hf *entity.HeroFullWithTranslations) error {
 	jsonData, err := json.Marshal(hf)
 	if err != nil {
 		return fmt.Errorf("failed to marshal hero data: %w", err)

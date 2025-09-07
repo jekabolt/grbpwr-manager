@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "common/language.proto";
 import "common/media.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -9,13 +10,11 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 
 message ArchiveList {
   int32 id = 1;
-  string heading = 2;
-  string description = 3;
-  string tag = 4;
-  string slug = 5;
-  string next_slug = 6;
-  google.protobuf.Timestamp created_at = 7;
-  common.MediaFull thumbnail = 8;
+  repeated common.ArchiveInsertTranslation translations = 2;
+  string tag = 3;
+  string slug = 4;
+  google.protobuf.Timestamp created_at = 5;
+  common.MediaFull thumbnail = 6;
 }
 
 message ArchiveFull {
@@ -25,10 +24,9 @@ message ArchiveFull {
 }
 
 message ArchiveInsert {
-  string heading = 1;
-  string description = 2;
-  string tag = 3;
-  repeated int32 media_ids = 4;
-  int32 main_media_id = 5;
-  int32 thumbnail_id = 6;
+  string tag = 1;
+  repeated int32 media_ids = 2;
+  int32 main_media_id = 3;
+  int32 thumbnail_id = 4;
+  repeated common.ArchiveInsertTranslation translations = 5;
 }

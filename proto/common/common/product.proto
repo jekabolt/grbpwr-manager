@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "common/language.proto";
 import "common/media.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
@@ -11,7 +12,7 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 // Category represents a hierarchical category structure
 message Category {
   int32 id = 1;
-  string name = 2;
+  repeated CategoryTranslation translations = 2;
   int32 level_id = 3;
   string level = 4;
   int32 parent_id = 5;
@@ -26,7 +27,7 @@ message Size {
 
 message MeasurementName {
   int32 id = 1;
-  string name = 2;
+  repeated common.MeasurementNameTranslation translations = 2;
 }
 
 enum GenderEnum {
@@ -60,30 +61,34 @@ message Product {
 }
 
 message ProductBody {
+  ProductBodyInsert product_body_insert = 1;
+  repeated ProductInsertTranslation translations = 2;
+}
+
+message ProductBodyInsert {
   google.protobuf.Timestamp preorder = 1;
-  string name = 2;
-  string brand = 3;
-  string sku = 4;
-  string color = 5;
-  string color_hex = 6;
-  string country_of_origin = 7;
-  google.type.Decimal price = 8;
-  google.type.Decimal sale_percentage = 9;
-  int32 top_category_id = 10;
-  int32 sub_category_id = 11;
-  int32 type_id = 12;
-  int32 model_wears_height_cm = 13;
-  int32 model_wears_size_id = 14;
-  string description = 15;
-  string care_instructions = 16;
-  string composition = 17;
-  bool hidden = 18;
-  GenderEnum target_gender = 19;
+  string brand = 2;
+  string sku = 3;
+  string color = 4;
+  string color_hex = 5;
+  string country_of_origin = 6;
+  google.type.Decimal price = 7;
+  google.type.Decimal sale_percentage = 8;
+  int32 top_category_id = 9;
+  int32 sub_category_id = 10;
+  int32 type_id = 11;
+  int32 model_wears_height_cm = 12;
+  int32 model_wears_size_id = 13;
+  string care_instructions = 14;
+  string composition = 15;
+  bool hidden = 16;
+  GenderEnum target_gender = 17;
 }
 
 message ProductInsert {
-  ProductBody product_body = 1;
+  ProductBodyInsert product_body_insert = 1;
   int32 thumbnail_media_id = 2;
+  repeated common.ProductInsertTranslation translations = 3;
 }
 
 message ProductDisplay {

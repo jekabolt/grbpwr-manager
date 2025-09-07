@@ -48,7 +48,7 @@ type (
 	Hero interface {
 		RefreshHero(ctx context.Context) error
 		SetHero(ctx context.Context, hfi entity.HeroFullInsert) error
-		GetHero(ctx context.Context) (*entity.HeroFull, error)
+		GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error)
 	}
 
 	Mail interface {
@@ -127,6 +127,14 @@ type (
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveList, int, error)
 		DeleteArchiveById(ctx context.Context, id int) error
 		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
+		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
+	}
+
+	Language interface {
+		GetAllLanguages(ctx context.Context) ([]entity.Language, error)
+		GetActiveLanguages(ctx context.Context) ([]entity.Language, error)
+		GetLanguageByCode(ctx context.Context, code string) (*entity.Language, error)
+		GetDefaultLanguage(ctx context.Context) (*entity.Language, error)
 	}
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
@@ -167,6 +175,7 @@ type (
 		Media() Media
 		Settings() Settings
 		Support() Support
+		Language() Language
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error

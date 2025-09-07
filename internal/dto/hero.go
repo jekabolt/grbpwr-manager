@@ -2,7 +2,6 @@ package dto
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -35,10 +34,18 @@ func ConvertCommonNavFeaturedInsertToEntity(hi *pb_common.NavFeaturedInsert) ent
 func ConvertCommonNavFeaturedEntityInsertToEntity(hi *pb_common.NavFeaturedEntityInsert) entity.NavFeaturedEntityInsert {
 	result := entity.NavFeaturedEntityInsert{
 		MediaId:           int(hi.MediaId),
-		ExploreText:       hi.ExploreText,
 		FeaturedTag:       hi.FeaturedTag,
 		FeaturedArchiveId: int(hi.FeaturedArchiveId),
+		Translations:      make([]entity.NavFeaturedEntityInsertTranslation, len(hi.Translations)),
 	}
+
+	for i, trans := range hi.Translations {
+		result.Translations[i] = entity.NavFeaturedEntityInsertTranslation{
+			LanguageId:  int(trans.LanguageId),
+			ExploreText: trans.ExploreText,
+		}
+	}
+
 	return result
 }
 
@@ -54,50 +61,87 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 				MediaPortraitId:  int(hi.Single.MediaPortraitId),
 				MediaLandscapeId: int(hi.Single.MediaLandscapeId),
 				ExploreLink:      hi.Single.ExploreLink,
-				ExploreText:      hi.Single.ExploreText,
-				Headline:         hi.Single.Headline,
+				Translations:     make([]entity.HeroSingleInsertTranslation, len(hi.Single.Translations)),
+			}
+
+			for i, trans := range hi.Single.Translations {
+				result.Single.Translations[i] = entity.HeroSingleInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_DOUBLE:
 		if hi.Double != nil {
+			leftTranslations := make([]entity.HeroSingleInsertTranslation, len(hi.Double.Left.Translations))
+			for i, trans := range hi.Double.Left.Translations {
+				leftTranslations[i] = entity.HeroSingleInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
+			rightTranslations := make([]entity.HeroSingleInsertTranslation, len(hi.Double.Right.Translations))
+			for i, trans := range hi.Double.Right.Translations {
+				rightTranslations[i] = entity.HeroSingleInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
 			result.Double = entity.HeroDoubleInsert{
 				Left: entity.HeroSingleInsert{
 					MediaPortraitId:  int(hi.Double.Left.MediaPortraitId),
 					MediaLandscapeId: int(hi.Double.Left.MediaLandscapeId),
 					ExploreLink:      hi.Double.Left.ExploreLink,
-					ExploreText:      hi.Double.Left.ExploreText,
-					Headline:         hi.Double.Left.Headline,
+					Translations:     leftTranslations,
 				},
 				Right: entity.HeroSingleInsert{
 					MediaPortraitId:  int(hi.Double.Right.MediaPortraitId),
 					MediaLandscapeId: int(hi.Double.Right.MediaLandscapeId),
 					ExploreLink:      hi.Double.Right.ExploreLink,
-					ExploreText:      hi.Double.Right.ExploreText,
-					Headline:         hi.Double.Right.Headline,
+					Translations:     rightTranslations,
 				},
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_MAIN:
-		if hi.Main != nil && hi.Main.Single != nil {
+		if hi.Main != nil {
+			translations := make([]entity.HeroMainInsertTranslation, len(hi.Main.Translations))
+			for i, trans := range hi.Main.Translations {
+				translations[i] = entity.HeroMainInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Tag:         trans.Tag,
+					Description: trans.Description,
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
 			result.Main = entity.HeroMainInsert{
-				Single: entity.HeroSingleInsert{
-					MediaPortraitId:  int(hi.Main.Single.MediaPortraitId),
-					MediaLandscapeId: int(hi.Main.Single.MediaLandscapeId),
-					ExploreLink:      hi.Main.Single.ExploreLink,
-					ExploreText:      hi.Main.Single.ExploreText,
-					Headline:         hi.Main.Single.Headline,
-				},
-				Tag:         hi.Main.Tag,
-				Description: hi.Main.Description,
+				MediaPortraitId:  int(hi.Main.MediaPortraitId),
+				MediaLandscapeId: int(hi.Main.MediaLandscapeId),
+				ExploreLink:      hi.Main.ExploreLink,
+				Translations:     translations,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_FEATURED_PRODUCTS:
 		if hi.FeaturedProducts != nil {
+			translations := make([]entity.HeroFeaturedProductsInsertTranslation, len(hi.FeaturedProducts.Translations))
+			for i, trans := range hi.FeaturedProducts.Translations {
+				translations[i] = entity.HeroFeaturedProductsInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
 			result.FeaturedProducts = entity.HeroFeaturedProductsInsert{
-				ProductIDs:  make([]int, len(hi.FeaturedProducts.ProductIds)),
-				Headline:    hi.FeaturedProducts.Headline,
-				ExploreText: hi.FeaturedProducts.ExploreText,
-				ExploreLink: hi.FeaturedProducts.ExploreLink,
+				ProductIDs:   make([]int, len(hi.FeaturedProducts.ProductIds)),
+				ExploreLink:  hi.FeaturedProducts.ExploreLink,
+				Translations: translations,
 			}
 			for i, id := range hi.FeaturedProducts.ProductIds {
 				result.FeaturedProducts.ProductIDs[i] = int(id)
@@ -105,19 +149,35 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 		}
 	case pb_common.HeroType_HERO_TYPE_FEATURED_PRODUCTS_TAG:
 		if hi.FeaturedProductsTag != nil {
+			translations := make([]entity.HeroFeaturedProductsTagInsertTranslation, len(hi.FeaturedProductsTag.Translations))
+			for i, trans := range hi.FeaturedProductsTag.Translations {
+				translations[i] = entity.HeroFeaturedProductsTagInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
 			result.FeaturedProductsTag = entity.HeroFeaturedProductsTagInsert{
-				Tag:         hi.FeaturedProductsTag.Tag,
-				Headline:    hi.FeaturedProductsTag.Headline,
-				ExploreText: hi.FeaturedProductsTag.ExploreText,
+				Tag:          hi.FeaturedProductsTag.Tag,
+				Translations: translations,
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_FEATURED_ARCHIVE:
 		if hi.FeaturedArchive != nil {
+			translations := make([]entity.HeroFeaturedArchiveInsertTranslation, len(hi.FeaturedArchive.Translations))
+			for i, trans := range hi.FeaturedArchive.Translations {
+				translations[i] = entity.HeroFeaturedArchiveInsertTranslation{
+					LanguageId:  int(trans.LanguageId),
+					Headline:    trans.Headline,
+					ExploreText: trans.ExploreText,
+				}
+			}
+
 			result.FeaturedArchive = entity.HeroFeaturedArchiveInsert{
-				ArchiveId:   int(hi.FeaturedArchive.ArchiveId),
-				Tag:         hi.FeaturedArchive.Tag,
-				Headline:    hi.FeaturedArchive.Headline,
-				ExploreText: hi.FeaturedArchive.ExploreText,
+				ArchiveId:    int(hi.FeaturedArchive.ArchiveId),
+				Tag:          hi.FeaturedArchive.Tag,
+				Translations: translations,
 			}
 		}
 	}
@@ -125,18 +185,19 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 	return result
 }
 
-func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, error) {
+// ConvertEntityHeroFullToCommonWithTranslations converts entity.HeroFull to pb_common.HeroFullWithTranslations
+func ConvertEntityHeroFullToCommonWithTranslations(hf *entity.HeroFullWithTranslations) (*pb_common.HeroFullWithTranslations, error) {
 	if hf == nil {
 		return nil, nil
 	}
 
-	result := &pb_common.HeroFull{
-		Entities:    make([]*pb_common.HeroEntity, len(hf.Entities)),
-		NavFeatured: ConvertEntityNavFeaturedToCommon(&hf.NavFeatured),
+	result := &pb_common.HeroFullWithTranslations{
+		Entities:    make([]*pb_common.HeroEntityWithTranslations, len(hf.Entities)),
+		NavFeatured: ConvertEntityNavFeaturedToCommonWithTranslations(&hf.NavFeatured),
 	}
 
 	for i, entity := range hf.Entities {
-		commonEntity, err := ConvertEntityHeroEntityToCommon(&entity)
+		commonEntity, err := ConvertEntityHeroEntityToCommonWithTranslations(&entity)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert entity at index %d: %w", i, err)
 		}
@@ -146,53 +207,62 @@ func ConvertEntityHeroFullToCommon(hf *entity.HeroFull) (*pb_common.HeroFull, er
 	return result, nil
 }
 
-func ConvertEntityNavFeaturedToCommon(nf *entity.NavFeatured) *pb_common.NavFeatured {
+func ConvertEntityNavFeaturedToCommonWithTranslations(nf *entity.NavFeaturedWithTranslations) *pb_common.NavFeaturedWithTranslations {
 	if nf == nil {
 		return nil
 	}
-	return &pb_common.NavFeatured{
-		Men:   ConvertEntityNavFeaturedEntityToCommon(&nf.Men),
-		Women: ConvertEntityNavFeaturedEntityToCommon(&nf.Women),
+	return &pb_common.NavFeaturedWithTranslations{
+		Men:   ConvertEntityNavFeaturedEntityToCommonWithTranslations(&nf.Men),
+		Women: ConvertEntityNavFeaturedEntityToCommonWithTranslations(&nf.Women),
 	}
 }
 
-func ConvertEntityNavFeaturedEntityToCommon(ne *entity.NavFeaturedEntity) *pb_common.NavFeaturedEntity {
+func ConvertEntityNavFeaturedEntityToCommonWithTranslations(ne *entity.NavFeaturedEntityWithTranslations) *pb_common.NavFeaturedEntityWithTranslations {
 	if ne == nil {
 		return nil
 	}
-	return &pb_common.NavFeaturedEntity{
+
+	translations := make([]*pb_common.NavFeaturedEntityInsertTranslation, len(ne.Translations))
+	for i, trans := range ne.Translations {
+		translations[i] = &pb_common.NavFeaturedEntityInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	return &pb_common.NavFeaturedEntityWithTranslations{
 		Media:             ConvertEntityToCommonMedia(&ne.Media),
-		ExploreText:       ne.ExploreText,
 		FeaturedTag:       ne.FeaturedTag,
-		FeaturedArchiveId: strconv.Itoa(ne.FeaturedArchiveId),
+		FeaturedArchiveId: ne.FeaturedArchiveId,
+		Translations:      translations,
 	}
 }
 
-func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEntity, error) {
+func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTranslations) (*pb_common.HeroEntityWithTranslations, error) {
 	if he == nil {
 		return nil, nil
 	}
 
-	result := &pb_common.HeroEntity{
+	result := &pb_common.HeroEntityWithTranslations{
 		Type: pb_common.HeroType(he.Type),
 	}
 
 	switch he.Type {
 	case entity.HeroTypeSingle:
 		if he.Single != nil {
-			result.Single = ConvertEntityHeroSingleToCommon(he.Single)
+			result.Single = ConvertEntityHeroSingleToCommonWithTranslations(he.Single)
 		}
 	case entity.HeroTypeDouble:
 		if he.Double != nil {
-			result.Double = ConvertEntityHeroDoubleToCommon(he.Double)
+			result.Double = ConvertEntityHeroDoubleToCommonWithTranslations(he.Double)
 		}
 	case entity.HeroTypeMain:
 		if he.Main != nil {
-			result.Main = ConvertEntityHeroMainToCommon(he.Main)
+			result.Main = ConvertEntityHeroMainToCommonWithTranslations(he.Main)
 		}
 	case entity.HeroTypeFeaturedProducts:
 		if he.FeaturedProducts != nil {
-			featuredProducts, err := ConvertEntityHeroFeaturedProductsToCommon(he.FeaturedProducts)
+			featuredProducts, err := ConvertEntityHeroFeaturedProductsToCommonWithTranslations(he.FeaturedProducts)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert featured products: %w", err)
 			}
@@ -200,7 +270,7 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 		}
 	case entity.HeroTypeFeaturedProductsTag:
 		if he.FeaturedProductsTag != nil {
-			featuredProductsTag, err := ConvertEntityHeroFeaturedProductsTagToCommon(he.FeaturedProductsTag)
+			featuredProductsTag, err := ConvertEntityHeroFeaturedProductsTagToCommonWithTranslations(he.FeaturedProductsTag)
 			if err != nil {
 				return nil, err
 			}
@@ -208,68 +278,85 @@ func ConvertEntityHeroEntityToCommon(he *entity.HeroEntity) (*pb_common.HeroEnti
 		}
 	case entity.HeroTypeFeaturedArchive:
 		if he.FeaturedArchive != nil {
-			result.FeaturedArchive = ConvertEntityHeroFeaturedArchiveToCommon(he.FeaturedArchive)
+			result.FeaturedArchive = ConvertEntityHeroFeaturedArchiveToCommonWithTranslations(he.FeaturedArchive)
 		}
 	}
 
 	return result, nil
 }
 
-func ConvertEntityHeroFeaturedArchiveToCommon(he *entity.HeroFeaturedArchive) *pb_common.HeroFeaturedArchive {
-	if he == nil {
-		return nil
-	}
-	return &pb_common.HeroFeaturedArchive{
-		Archive:     ConvertArchiveFullEntityToPb(&he.Archive),
-		Tag:         he.Tag,
-		Headline:    he.Headline,
-		ExploreText: he.ExploreText,
-	}
-}
-
-func ConvertEntityHeroSingleToCommon(hsa *entity.HeroSingle) *pb_common.HeroSingle {
+func ConvertEntityHeroSingleToCommonWithTranslations(hsa *entity.HeroSingleWithTranslations) *pb_common.HeroSingleWithTranslations {
 	if hsa == nil {
 		return nil
 	}
-	return &pb_common.HeroSingle{
+
+	translations := make([]*pb_common.HeroSingleInsertTranslation, len(hsa.Translations))
+	for i, trans := range hsa.Translations {
+		translations[i] = &pb_common.HeroSingleInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Headline:    trans.Headline,
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	return &pb_common.HeroSingleWithTranslations{
 		MediaPortrait:  ConvertEntityToCommonMedia(&hsa.MediaPortrait),
 		MediaLandscape: ConvertEntityToCommonMedia(&hsa.MediaLandscape),
-		Headline:       hsa.Headline,
 		ExploreLink:    hsa.ExploreLink,
-		ExploreText:    hsa.ExploreText,
+		Translations:   translations,
 	}
 }
 
-func ConvertEntityHeroDoubleToCommon(hda *entity.HeroDouble) *pb_common.HeroDouble {
+func ConvertEntityHeroDoubleToCommonWithTranslations(hda *entity.HeroDoubleWithTranslations) *pb_common.HeroDoubleWithTranslations {
 	if hda == nil {
 		return nil
 	}
-	return &pb_common.HeroDouble{
-		Left:  ConvertEntityHeroSingleToCommon(&hda.Left),
-		Right: ConvertEntityHeroSingleToCommon(&hda.Right),
+	return &pb_common.HeroDoubleWithTranslations{
+		Left:  ConvertEntityHeroSingleToCommonWithTranslations(&hda.Left),
+		Right: ConvertEntityHeroSingleToCommonWithTranslations(&hda.Right),
 	}
 }
 
-func ConvertEntityHeroMainToCommon(hma *entity.HeroMain) *pb_common.HeroMain {
+func ConvertEntityHeroMainToCommonWithTranslations(hma *entity.HeroMainWithTranslations) *pb_common.HeroMainWithTranslations {
 	if hma == nil {
 		return nil
 	}
-	return &pb_common.HeroMain{
-		Single:      ConvertEntityHeroSingleToCommon(&hma.Single),
-		Tag:         hma.Tag,
-		Description: hma.Description,
+
+	translations := make([]*pb_common.HeroMainInsertTranslation, len(hma.Translations))
+	for i, trans := range hma.Translations {
+		translations[i] = &pb_common.HeroMainInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Tag:         trans.Tag,
+			Description: trans.Description,
+			Headline:    trans.Headline,
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	return &pb_common.HeroMainWithTranslations{
+		Single:       ConvertEntityHeroSingleToCommonWithTranslations(&hma.Single),
+		Translations: translations,
 	}
 }
 
-func ConvertEntityHeroFeaturedProductsToCommon(hfp *entity.HeroFeaturedProducts) (*pb_common.HeroFeaturedProducts, error) {
+func ConvertEntityHeroFeaturedProductsToCommonWithTranslations(hfp *entity.HeroFeaturedProductsWithTranslations) (*pb_common.HeroFeaturedProductsWithTranslations, error) {
 	if hfp == nil {
 		return nil, nil
 	}
-	result := &pb_common.HeroFeaturedProducts{
-		Products:    make([]*pb_common.Product, len(hfp.Products)),
-		Headline:    hfp.Headline,
-		ExploreText: hfp.ExploreText,
-		ExploreLink: hfp.ExploreLink,
+
+	translations := make([]*pb_common.HeroFeaturedProductsInsertTranslation, len(hfp.Translations))
+	for i, trans := range hfp.Translations {
+		translations[i] = &pb_common.HeroFeaturedProductsInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Headline:    trans.Headline,
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	result := &pb_common.HeroFeaturedProductsWithTranslations{
+		Products:     make([]*pb_common.Product, len(hfp.Products)),
+		ExploreLink:  hfp.ExploreLink,
+		Translations: translations,
 	}
 	for i, product := range hfp.Products {
 		commonProduct, err := ConvertEntityProductToCommon(&product)
@@ -281,21 +368,50 @@ func ConvertEntityHeroFeaturedProductsToCommon(hfp *entity.HeroFeaturedProducts)
 	return result, nil
 }
 
-func ConvertEntityHeroFeaturedProductsTagToCommon(hfp *entity.HeroFeaturedProductsTag) (*pb_common.HeroFeaturedProductsTag, error) {
+func ConvertEntityHeroFeaturedProductsTagToCommonWithTranslations(hfp *entity.HeroFeaturedProductsTagWithTranslations) (*pb_common.HeroFeaturedProductsTagWithTranslations, error) {
 	if hfp == nil {
 		return nil, nil
 	}
-	commonProducts, err := ConvertEntityHeroFeaturedProductsToCommon(&entity.HeroFeaturedProducts{
-		Products:    hfp.Products,
-		Headline:    hfp.Headline,
-		ExploreText: hfp.ExploreText,
-		ExploreLink: hfp.ExploreLink,
-	})
+	commonProducts, err := ConvertEntityHeroFeaturedProductsToCommonWithTranslations(&hfp.Products)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert featured products: %w", err)
 	}
-	return &pb_common.HeroFeaturedProductsTag{
-		Tag:      hfp.Tag,
-		Products: commonProducts,
+
+	translations := make([]*pb_common.HeroFeaturedProductsTagInsertTranslation, len(hfp.Translations))
+	for i, trans := range hfp.Translations {
+		translations[i] = &pb_common.HeroFeaturedProductsTagInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Headline:    trans.Headline,
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	return &pb_common.HeroFeaturedProductsTagWithTranslations{
+		Tag:          hfp.Tag,
+		Products:     commonProducts,
+		Translations: translations,
 	}, nil
+}
+
+func ConvertEntityHeroFeaturedArchiveToCommonWithTranslations(he *entity.HeroFeaturedArchiveWithTranslations) *pb_common.HeroFeaturedArchiveWithTranslations {
+	if he == nil {
+		return nil
+	}
+
+	translations := make([]*pb_common.HeroFeaturedArchiveInsertTranslation, len(he.Translations))
+	for i, trans := range he.Translations {
+		translations[i] = &pb_common.HeroFeaturedArchiveInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Headline:    trans.Headline,
+			ExploreText: trans.ExploreText,
+		}
+	}
+
+	return &pb_common.HeroFeaturedArchiveWithTranslations{
+		Archive:      ConvertArchiveFullEntityToPb(&he.Archive),
+		Tag:          he.Tag,
+		Headline:     he.Headline,
+		ExploreText:  he.ExploreText,
+		Translations: translations,
+	}
 }
