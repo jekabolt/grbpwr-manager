@@ -116,6 +116,7 @@ type ProductBodyInsert struct {
 	Composition        sql.NullString      `db:"composition" valid:"-"`
 	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
+	Version            string              `db:"version" valid:"-"`
 }
 
 type ProductBody struct {

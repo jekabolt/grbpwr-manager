@@ -83,6 +83,7 @@ message ProductBodyInsert {
   string composition = 15;
   bool hidden = 16;
   GenderEnum target_gender = 17;
+  string version = 18;
 }
 
 message ProductInsert {

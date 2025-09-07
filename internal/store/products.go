@@ -29,8 +29,8 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender)
-	VALUES (:id, :preorder, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender)`
+	(id, preorder, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version)
+	VALUES (:id, :preorder, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version)`
 
 	params := map[string]any{
 		"id":                 id,
@@ -52,6 +52,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"targetGender":       product.ProductBodyInsert.TargetGender,
 		"careInstructions":   product.ProductBodyInsert.CareInstructions,
 		"composition":        product.ProductBodyInsert.Composition,
+		"version":            product.ProductBodyInsert.Version,
 	}
 
 	// slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
@@ -508,6 +509,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.version,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -584,6 +586,7 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.version,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -655,6 +658,7 @@ type productQueryResult struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id"`
 	CareInstructions   sql.NullString      `db:"care_instructions"`
 	Composition        sql.NullString      `db:"composition"`
+	Version            string              `db:"version"`
 	Hidden             sql.NullBool        `db:"hidden"`
 	TargetGender       entity.GenderEnum   `db:"target_gender"`
 
@@ -702,6 +706,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					ModelWearsSizeId:   pqr.ModelWearsSizeId,
 					CareInstructions:   pqr.CareInstructions,
 					Composition:        pqr.Composition,
+					Version:            pqr.Version,
 					Hidden:             pqr.Hidden,
 					TargetGender:       pqr.TargetGender,
 				},
@@ -779,6 +784,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.version,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -870,6 +876,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.version,
 		m.created_at AS thumbnail_created_at, 
 		m.full_size,
 		m.full_size_width,
@@ -1162,6 +1169,7 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.care_instructions,
 			p.composition,
 			p.thumbnail_id,
+			p.version,
 			m.created_at AS thumbnail_created_at, 
 			m.full_size,
 			m.full_size_width,
