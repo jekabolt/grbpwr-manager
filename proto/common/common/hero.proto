@@ -3,43 +3,28 @@ syntax = "proto3";
 package common;
 
 import "common/archive.proto";
+import "common/language.proto";
 import "common/media.proto";
 import "common/product.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-message HeroFull {
-  repeated HeroEntity entities = 1;
-  NavFeatured nav_featured = 2;
+// Extended hero structures with translations
+message HeroFullWithTranslations {
+  repeated HeroEntityWithTranslations entities = 1;
+  NavFeaturedWithTranslations nav_featured = 2;
 }
 
-message NavFeatured {
-  NavFeaturedEntity men = 1;
-  NavFeaturedEntity women = 2;
+message NavFeaturedWithTranslations {
+  NavFeaturedEntityWithTranslations men = 1;
+  NavFeaturedEntityWithTranslations women = 2;
 }
 
-message NavFeaturedInsert {
-  NavFeaturedEntityInsert men = 1;
-  NavFeaturedEntityInsert women = 2;
-}
-
-message NavFeaturedEntity {
+message NavFeaturedEntityWithTranslations {
   common.MediaFull media = 1;
-  string explore_text = 2;
-  string featured_tag = 3;
-  string featured_archive_id = 4;
-}
-
-message NavFeaturedEntityInsert {
-  int32 media_id = 1;
-  string explore_text = 2;
-  string featured_tag = 3;
-  int32 featured_archive_id = 4;
-}
-
-message HeroFullInsert {
-  repeated HeroEntityInsert entities = 1;
-  NavFeaturedInsert nav_featured = 2;
+  string featured_tag = 2;
+  string featured_archive_id = 3;
+  repeated common.NavFeaturedEntityInsertTranslation translations = 4;
 }
 
 enum HeroType {
@@ -52,14 +37,68 @@ enum HeroType {
   HERO_TYPE_FEATURED_ARCHIVE = 6;
 }
 
-message HeroEntity {
+message HeroEntityWithTranslations {
   HeroType type = 1;
-  HeroSingle single = 2;
-  HeroDouble double = 3;
-  HeroMain main = 4;
-  HeroFeaturedProducts featured_products = 5;
-  HeroFeaturedProductsTag featured_products_tag = 6;
-  HeroFeaturedArchive featured_archive = 7;
+  HeroSingleWithTranslations single = 2;
+  HeroDoubleWithTranslations double = 3;
+  HeroMainWithTranslations main = 4;
+  HeroFeaturedProductsWithTranslations featured_products = 5;
+  HeroFeaturedProductsTagWithTranslations featured_products_tag = 6;
+  HeroFeaturedArchiveWithTranslations featured_archive = 7;
+}
+
+message HeroSingleWithTranslations {
+  common.MediaFull media_portrait = 1;
+  common.MediaFull media_landscape = 2;
+  string explore_link = 3;
+  repeated common.HeroSingleInsertTranslation translations = 4;
+}
+
+message HeroDoubleWithTranslations {
+  HeroSingleWithTranslations left = 1;
+  HeroSingleWithTranslations right = 2;
+}
+
+message HeroMainWithTranslations {
+  HeroSingleWithTranslations single = 1;
+  repeated common.HeroMainInsertTranslation translations = 2;
+}
+
+message HeroFeaturedProductsWithTranslations {
+  repeated common.Product products = 1;
+  string explore_link = 2;
+  repeated common.HeroFeaturedProductsInsertTranslation translations = 3;
+}
+
+message HeroFeaturedProductsTagWithTranslations {
+  string tag = 1;
+  HeroFeaturedProductsWithTranslations products = 2;
+  repeated common.HeroFeaturedProductsTagInsertTranslation translations = 3;
+}
+
+message HeroFeaturedArchiveWithTranslations {
+  common.ArchiveFull archive = 1;
+  string tag = 2;
+  string headline = 3;
+  string explore_text = 4;
+  repeated common.HeroFeaturedArchiveInsertTranslation translations = 5;
+}
+
+message NavFeaturedInsert {
+  NavFeaturedEntityInsert men = 1;
+  NavFeaturedEntityInsert women = 2;
+}
+
+message NavFeaturedEntityInsert {
+  int32 media_id = 1;
+  string featured_tag = 3;
+  int32 featured_archive_id = 4;
+  repeated common.NavFeaturedEntityInsertTranslation translations = 5;
+}
+
+message HeroFullInsert {
+  repeated HeroEntityInsert entities = 1;
+  NavFeaturedInsert nav_featured = 2;
 }
 
 message HeroEntityInsert {
@@ -72,70 +111,28 @@ message HeroEntityInsert {
   HeroFeaturedArchiveInsert featured_archive = 7;
 }
 
-message HeroSingle {
-  common.MediaFull media_portrait = 1;
-  common.MediaFull media_landscape = 2;
-  string headline = 3;
-  string explore_link = 4;
-  string explore_text = 5;
-}
-
-message HeroDouble {
-  HeroSingle left = 1;
-  HeroSingle right = 2;
-}
-
-message HeroMain {
-  HeroSingle single = 1;
-  string tag = 2;
-  string description = 3;
-}
-
-message HeroFeaturedProducts {
-  repeated common.Product products = 1;
-  string headline = 2;
-  string explore_text = 3;
-  string explore_link = 4;
-}
-
-message HeroFeaturedProductsTag {
-  string tag = 1;
-  HeroFeaturedProducts products = 2;
-}
-
-message HeroFeaturedArchive {
-  common.ArchiveFull archive = 1;
-  string tag = 2;
-  string headline = 3;
-  string explore_text = 4;
-}
-
 message HeroFeaturedArchiveInsert {
   int32 archive_id = 1;
   string tag = 2;
-  string headline = 3;
-  string explore_text = 4;
+  repeated common.HeroFeaturedArchiveInsertTranslation translations = 3;
 }
 
 message HeroFeaturedProductsInsert {
   repeated int32 product_ids = 1;
-  string headline = 2;
-  string explore_text = 3;
-  string explore_link = 4;
+  string explore_link = 2;
+  repeated common.HeroFeaturedProductsInsertTranslation translations = 3;
 }
 
 message HeroFeaturedProductsTagInsert {
   string tag = 1;
-  string headline = 2;
-  string explore_text = 3;
+  repeated common.HeroFeaturedProductsTagInsertTranslation translations = 2;
 }
 
 message HeroSingleInsert {
   int32 media_portrait_id = 1;
   int32 media_landscape_id = 2;
-  string headline = 3;
-  string explore_link = 4;
-  string explore_text = 5;
+  string explore_link = 3;
+  repeated common.HeroSingleInsertTranslation translations = 4;
 }
 
 message HeroDoubleInsert {
@@ -144,7 +141,8 @@ message HeroDoubleInsert {
 }
 
 message HeroMainInsert {
-  HeroSingleInsert single = 1;
-  string tag = 2;
-  string description = 3;
+  int32 media_portrait_id = 1;
+  int32 media_landscape_id = 2;
+  string explore_link = 3;
+  repeated common.HeroMainInsertTranslation translations = 4;
 }

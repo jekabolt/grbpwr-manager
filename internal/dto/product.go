@@ -51,45 +51,110 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 }
 
 func convertProductBody(pbProductBody *pb_common.ProductBody) (*entity.ProductBody, error) {
-	price, err := convertDecimal(pbProductBody.Price.Value)
+	if pbProductBody.ProductBodyInsert == nil {
+		return nil, fmt.Errorf("ProductBodyInsert is nil")
+	}
+
+	price, err := convertDecimal(pbProductBody.ProductBodyInsert.Price.Value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert product price: %w", err)
 	}
 
-	salePercentage, err := convertDecimal(pbProductBody.SalePercentage.Value)
+	salePercentage, err := convertDecimal(pbProductBody.ProductBodyInsert.SalePercentage.Value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
 	}
 
-	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductBody.TargetGender)
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductBody.ProductBodyInsert.TargetGender)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert translations
+	var translations []entity.ProductTranslationInsert
+	for _, trans := range pbProductBody.Translations {
+		translations = append(translations, entity.ProductTranslationInsert{
+			LanguageId:  int(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
+	pb := &entity.ProductBody{
+		ProductBodyInsert: entity.ProductBodyInsert{
+			Preorder:           sql.NullTime{Time: pbProductBody.ProductBodyInsert.Preorder.AsTime(), Valid: pbProductBody.ProductBodyInsert.Preorder.IsValid()},
+			Brand:              pbProductBody.ProductBodyInsert.Brand,
+			SKU:                pbProductBody.ProductBodyInsert.Sku,
+			Color:              pbProductBody.ProductBodyInsert.Color,
+			ColorHex:           pbProductBody.ProductBodyInsert.ColorHex,
+			CountryOfOrigin:    pbProductBody.ProductBodyInsert.CountryOfOrigin,
+			Price:              price,
+			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBody.ProductBodyInsert.SalePercentage.Value != ""},
+			TopCategoryId:      int(pbProductBody.ProductBodyInsert.TopCategoryId),
+			SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBody.ProductBodyInsert.SubCategoryId), Valid: pbProductBody.ProductBodyInsert.SubCategoryId != 0},
+			TypeId:             sql.NullInt32{Int32: int32(pbProductBody.ProductBodyInsert.TypeId), Valid: pbProductBody.ProductBodyInsert.TypeId != 0},
+			ModelWearsHeightCm: sql.NullInt32{Int32: int32(pbProductBody.ProductBodyInsert.ModelWearsHeightCm), Valid: pbProductBody.ProductBodyInsert.ModelWearsHeightCm != 0},
+			ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBody.ProductBodyInsert.ModelWearsSizeId), Valid: pbProductBody.ProductBodyInsert.ModelWearsSizeId != 0},
+			Hidden:             sql.NullBool{Bool: pbProductBody.ProductBodyInsert.Hidden, Valid: true},
+			TargetGender:       targetGender,
+			CareInstructions:   sql.NullString{String: pbProductBody.ProductBodyInsert.CareInstructions, Valid: pbProductBody.ProductBodyInsert.CareInstructions != ""},
+			Composition:        sql.NullString{String: pbProductBody.ProductBodyInsert.Composition, Valid: pbProductBody.ProductBodyInsert.Composition != ""},
+		},
+		Translations: translations,
+	}
+
+	if pbProductBody.ProductBodyInsert.Preorder.AsTime().Year() < time.Now().Year() {
+		pb.ProductBodyInsert.Preorder.Valid = false
+	}
+
+	return pb, nil
+}
+
+func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ProductBodyInsert) (*entity.ProductBody, error) {
+	if pbProductBodyInsert == nil {
+		return nil, fmt.Errorf("ProductBodyInsert is nil")
+	}
+
+	price, err := convertDecimal(pbProductBodyInsert.Price.Value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert product price: %w", err)
+	}
+
+	salePercentage, err := convertDecimal(pbProductBodyInsert.SalePercentage.Value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+	}
+
+	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductBodyInsert.TargetGender)
 	if err != nil {
 		return nil, err
 	}
 
 	pb := &entity.ProductBody{
-		Preorder:           sql.NullTime{Time: pbProductBody.Preorder.AsTime(), Valid: pbProductBody.Preorder.IsValid()},
-		Name:               pbProductBody.Name,
-		Brand:              pbProductBody.Brand,
-		SKU:                pbProductBody.Sku,
-		Color:              pbProductBody.Color,
-		ColorHex:           pbProductBody.ColorHex,
-		CountryOfOrigin:    pbProductBody.CountryOfOrigin,
-		Price:              price,
-		SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBody.SalePercentage.Value != ""},
-		TopCategoryId:      int(pbProductBody.TopCategoryId),
-		SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBody.SubCategoryId), Valid: pbProductBody.SubCategoryId != 0},
-		TypeId:             sql.NullInt32{Int32: int32(pbProductBody.TypeId), Valid: pbProductBody.TypeId != 0},
-		ModelWearsHeightCm: sql.NullInt32{Int32: int32(pbProductBody.ModelWearsHeightCm), Valid: pbProductBody.ModelWearsHeightCm != 0},
-		ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBody.ModelWearsSizeId), Valid: pbProductBody.ModelWearsSizeId != 0},
-		Description:        pbProductBody.Description,
-		Hidden:             sql.NullBool{Bool: pbProductBody.Hidden, Valid: true},
-		TargetGender:       targetGender,
-		CareInstructions:   sql.NullString{String: pbProductBody.CareInstructions, Valid: pbProductBody.CareInstructions != ""},
-		Composition:        sql.NullString{String: pbProductBody.Composition, Valid: pbProductBody.Composition != ""},
+		ProductBodyInsert: entity.ProductBodyInsert{
+			Preorder:           sql.NullTime{Time: pbProductBodyInsert.Preorder.AsTime(), Valid: pbProductBodyInsert.Preorder.IsValid()},
+			Brand:              pbProductBodyInsert.Brand,
+			SKU:                pbProductBodyInsert.Sku,
+			Color:              pbProductBodyInsert.Color,
+			ColorHex:           pbProductBodyInsert.ColorHex,
+			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
+			Price:              price,
+			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBodyInsert.SalePercentage.Value != ""},
+			TopCategoryId:      int(pbProductBodyInsert.TopCategoryId),
+			SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBodyInsert.SubCategoryId), Valid: pbProductBodyInsert.SubCategoryId != 0},
+			TypeId:             sql.NullInt32{Int32: int32(pbProductBodyInsert.TypeId), Valid: pbProductBodyInsert.TypeId != 0},
+			ModelWearsHeightCm: sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsHeightCm), Valid: pbProductBodyInsert.ModelWearsHeightCm != 0},
+			ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsSizeId), Valid: pbProductBodyInsert.ModelWearsSizeId != 0},
+			Hidden:             sql.NullBool{Bool: pbProductBodyInsert.Hidden, Valid: true},
+			TargetGender:       targetGender,
+			CareInstructions:   sql.NullString{String: pbProductBodyInsert.CareInstructions, Valid: pbProductBodyInsert.CareInstructions != ""},
+			Composition:        sql.NullString{String: pbProductBodyInsert.Composition, Valid: pbProductBodyInsert.Composition != ""},
+		},
+		Translations: []entity.ProductTranslationInsert{}, // Will be set by caller if needed
 	}
 
-	if pbProductBody.Preorder.AsTime().Year() < time.Now().Year() {
-		pb.Preorder.Valid = false
+	if pbProductBodyInsert.Preorder.AsTime().Year() < time.Now().Year() {
+		pb.ProductBodyInsert.Preorder.Valid = false
 	}
 
 	return pb, nil
@@ -100,14 +165,29 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
 
-	productBody, err := convertProductBody(pbProductNew.ProductBody)
+	// Create a ProductBody from ProductBodyInsert
+	productBody, err := convertProductBodyInsertToProductBody(pbProductNew.ProductBodyInsert)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert translations
+	var translations []entity.ProductTranslationInsert
+	for _, trans := range pbProductNew.Translations {
+		translations = append(translations, entity.ProductTranslationInsert{
+			LanguageId:  int(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
+	// Set translations on the product body
+	productBody.Translations = translations
+
 	return &entity.ProductInsert{
-		ProductBody:      *productBody,
-		ThumbnailMediaID: int(pbProductNew.ThumbnailMediaId),
+		ProductBodyInsert: productBody.ProductBodyInsert,
+		ThumbnailMediaID:  int(pbProductNew.ThumbnailMediaId),
+		Translations:      translations,
 	}, nil
 }
 
@@ -138,14 +218,29 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
 
-	productBody, err := convertProductBody(pbProductNew.Product.ProductBody)
+	// Create a ProductBody from ProductBodyInsert
+	productBody, err := convertProductBodyInsertToProductBody(pbProductNew.Product.ProductBodyInsert)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert translations
+	var translations []entity.ProductTranslationInsert
+	for _, trans := range pbProductNew.Product.Translations {
+		translations = append(translations, entity.ProductTranslationInsert{
+			LanguageId:  int(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
+	// Set translations on the product body
+	productBody.Translations = translations
+
 	productInsert := &entity.ProductInsert{
-		ProductBody:      *productBody,
-		ThumbnailMediaID: int(pbProductNew.Product.ThumbnailMediaId),
+		ProductBodyInsert: productBody.ProductBodyInsert,
+		ThumbnailMediaID:  int(pbProductNew.Product.ThumbnailMediaId),
+		Translations:      translations,
 	}
 
 	sizeMeasurements, err := convertSizeMeasurements(pbProductNew.SizeMeasurements)
@@ -229,41 +324,61 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		return nil, nil
 	}
 
-	tg, err := ConvertEntityGenderToPbGenderEnum(e.Product.TargetGender)
+	productBody := &e.Product.ProductDisplay.ProductBody
+	productBodyInsert := &productBody.ProductBodyInsert
+
+	tg, err := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert translations to protobuf format
+	var pbTranslations []*pb_common.ProductInsertTranslation
+	for _, trans := range productBody.Translations {
+		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
 	pbProductDisplay := &pb_common.ProductDisplay{
 		ProductBody: &pb_common.ProductBody{
-			Preorder:           timestamppb.New(e.Product.Preorder.Time),
-			Name:               e.Product.Name,
-			Brand:              e.Product.Brand,
-			Sku:                e.Product.SKU,
-			Color:              e.Product.Color,
-			ColorHex:           e.Product.ColorHex,
-			CountryOfOrigin:    e.Product.CountryOfOrigin,
-			Price:              &pb_decimal.Decimal{Value: e.Product.Price.String()},
-			SalePercentage:     &pb_decimal.Decimal{Value: e.Product.SalePercentage.Decimal.String()},
-			TopCategoryId:      int32(e.Product.TopCategoryId),
-			SubCategoryId:      int32(e.Product.SubCategoryId.Int32),
-			TypeId:             int32(e.Product.TypeId.Int32),
-			ModelWearsHeightCm: int32(e.Product.ModelWearsHeightCm.Int32),
-			ModelWearsSizeId:   int32(e.Product.ModelWearsSizeId.Int32),
-			Description:        e.Product.Description,
-			Hidden:             e.Product.Hidden.Bool,
-			TargetGender:       tg,
-			CareInstructions:   e.Product.CareInstructions.String,
-			Composition:        e.Product.Composition.String,
+			ProductBodyInsert: &pb_common.ProductBodyInsert{
+				Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
+				Brand:              productBodyInsert.Brand,
+				Sku:                productBodyInsert.SKU,
+				Color:              productBodyInsert.Color,
+				ColorHex:           productBodyInsert.ColorHex,
+				CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
+				Price:              &pb_decimal.Decimal{Value: productBodyInsert.Price.String()},
+				SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
+				TopCategoryId:      int32(productBodyInsert.TopCategoryId),
+				SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),
+				TypeId:             int32(productBodyInsert.TypeId.Int32),
+				ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
+				ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
+				Hidden:             productBodyInsert.Hidden.Bool,
+				TargetGender:       tg,
+				CareInstructions:   productBodyInsert.CareInstructions.String,
+				Composition:        productBodyInsert.Composition.String,
+			},
+			Translations: pbTranslations,
 		},
-		Thumbnail: ConvertEntityToCommonMedia(&e.Product.MediaFull),
+		Thumbnail: ConvertEntityToCommonMedia(&e.Product.ProductDisplay.Thumbnail),
+	}
+
+	// Get first translation for slug generation (or empty strings if no translations)
+	var firstTranslationName string
+	if len(productBody.Translations) > 0 {
+		firstTranslationName = productBody.Translations[0].Name
 	}
 
 	pbProduct := &pb_common.Product{
 		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetProductSlug(e.Product.Id, e.Product.Brand, e.Product.Name, e.Product.TargetGender.String()),
+		Slug:           GetProductSlug(e.Product.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
 		ProductDisplay: pbProductDisplay,
 	}
 
@@ -349,39 +464,59 @@ func GetProductSlug(id int, brand, name, gender string) string {
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
 func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error) {
-	tg, err := ConvertEntityGenderToPbGenderEnum(e.TargetGender)
+	productBody := &e.ProductDisplay.ProductBody
+	productBodyInsert := &productBody.ProductBodyInsert
+
+	tg, err := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
 	if err != nil {
 		return nil, err
+	}
+
+	// Convert translations to protobuf format
+	var pbTranslations []*pb_common.ProductInsertTranslation
+	for _, trans := range productBody.Translations {
+		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
+	// Get first translation for slug generation (or empty strings if no translations)
+	var firstTranslationName string
+	if len(productBody.Translations) > 0 {
+		firstTranslationName = productBody.Translations[0].Name
 	}
 
 	pbProduct := &pb_common.Product{
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetProductSlug(e.Id, e.Brand, e.Name, e.TargetGender.String()),
+		Slug:      GetProductSlug(e.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
-				Preorder:           timestamppb.New(e.Preorder.Time),
-				Name:               e.Name,
-				Brand:              e.Brand,
-				Sku:                e.SKU,
-				Color:              e.Color,
-				ColorHex:           e.ColorHex,
-				CountryOfOrigin:    e.CountryOfOrigin,
-				Price:              &pb_decimal.Decimal{Value: e.Price.String()},
-				SalePercentage:     &pb_decimal.Decimal{Value: e.SalePercentage.Decimal.String()},
-				TopCategoryId:      int32(e.TopCategoryId),
-				SubCategoryId:      int32(e.SubCategoryId.Int32),
-				TypeId:             int32(e.TypeId.Int32),
-				ModelWearsHeightCm: int32(e.ModelWearsHeightCm.Int32),
-				ModelWearsSizeId:   int32(e.ModelWearsSizeId.Int32),
-				Description:        e.Description,
-				Hidden:             e.Hidden.Bool,
-				TargetGender:       tg,
-				CareInstructions:   e.CareInstructions.String,
-				Composition:        e.Composition.String,
+				ProductBodyInsert: &pb_common.ProductBodyInsert{
+					Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
+					Brand:              productBodyInsert.Brand,
+					Sku:                productBodyInsert.SKU,
+					Color:              productBodyInsert.Color,
+					ColorHex:           productBodyInsert.ColorHex,
+					CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
+					Price:              &pb_decimal.Decimal{Value: productBodyInsert.Price.String()},
+					SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
+					TopCategoryId:      int32(productBodyInsert.TopCategoryId),
+					SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),
+					TypeId:             int32(productBodyInsert.TypeId.Int32),
+					ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
+					ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
+					Hidden:             productBodyInsert.Hidden.Bool,
+					TargetGender:       tg,
+					CareInstructions:   productBodyInsert.CareInstructions.String,
+					Composition:        productBodyInsert.Composition.String,
+				},
+				Translations: pbTranslations,
 			},
-			Thumbnail: ConvertEntityToCommonMedia(&e.MediaFull),
+			Thumbnail: ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
 		},
 	}
 

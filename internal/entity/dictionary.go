@@ -8,4 +8,5 @@ type DictionaryInfo struct {
 	Promos           []PromoCode
 	ShipmentCarriers []ShipmentCarrier
 	Sizes            []Size
+	Languages        []Language
 }

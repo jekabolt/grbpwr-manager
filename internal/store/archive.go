@@ -32,13 +32,11 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (heading, description, tag, main_media_id, thumbnail_id) VALUES (:heading, :description, :tag, :mainMediaId, :thumbnailId)`
+		query := `INSERT INTO archive (tag, main_media_id, thumbnail_id) VALUES (:tag, :mainMediaId, :thumbnailId)`
 		aid, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"heading":       aNew.Heading,
-			"description":   aNew.Description,
-			"tag":           aNew.Tag,
+			"tag":         aNew.Tag,
 			"mainMediaId": aNew.MainMediaId,
-			"thumbnailId":  aNew.ThumbnailId,
+			"thumbnailId": aNew.ThumbnailId,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
@@ -56,6 +54,23 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 		err = BulkInsert(ctx, rep.DB(), "archive_item", rows)
 		if err != nil {
 			return fmt.Errorf("failed to add archive items: %w", err)
+		}
+
+		// Insert translations
+		rows = make([]map[string]any, 0, len(aNew.Translations))
+		for _, t := range aNew.Translations {
+			row := map[string]any{
+				"archive_id":  aid,
+				"language_id": t.LanguageId,
+				"heading":     t.Heading,
+				"description": t.Description,
+			}
+			rows = append(rows, row)
+		}
+
+		err = BulkInsert(ctx, rep.DB(), "archive_translation", rows)
+		if err != nil {
+			return fmt.Errorf("failed to add archive translations: %w", err)
 		}
 
 		return nil
@@ -92,8 +107,6 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 		// Update the archive itself
 		query = `
 		UPDATE archive SET 
-			heading = :heading,
-			description = :description, 
 			tag = :tag,
 			main_media_id = :main_media_id,
 			thumbnail_id = :thumbnail_id 
@@ -101,8 +114,6 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
 			"id":            aid,
-			"heading":       aInsert.Heading,
-			"description":   aInsert.Description,
 			"tag":           aInsert.Tag,
 			"main_media_id": aInsert.MainMediaId,
 			"thumbnail_id":  aInsert.ThumbnailId,
@@ -125,6 +136,33 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 		if err != nil {
 			return fmt.Errorf("failed to add archive items: %w", err)
 		}
+
+		// Delete existing translations
+		query = `DELETE FROM archive_translation WHERE archive_id = :archiveId`
+		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+			"archiveId": aid,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete archive translations with archive Id %d: %w", aid, err)
+		}
+
+		// Insert new translations
+		rows = make([]map[string]any, 0, len(aInsert.Translations))
+		for _, t := range aInsert.Translations {
+			row := map[string]any{
+				"archive_id":  aid,
+				"language_id": t.LanguageId,
+				"heading":     t.Heading,
+				"description": t.Description,
+			}
+			rows = append(rows, row)
+		}
+
+		err = BulkInsert(ctx, rep.DB(), "archive_translation", rows)
+		if err != nil {
+			return fmt.Errorf("failed to add archive translations: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -142,7 +180,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	}
 
 	// Query for total count
-	countQuery := `SELECT COUNT(*) FROM archive`
+	countQuery := `SELECT COUNT(DISTINCT a.id) FROM archive a`
 	total, err := QueryCountNamed(ctx, ms.DB(), countQuery, map[string]any{})
 	if err != nil {
 		return nil, 0, err
@@ -151,7 +189,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 	// Query for paged archives with joined media
 	query := `
 	SELECT 
-		a.id, a.heading, a.description, a.tag, a.created_at,
+		a.id, a.tag, a.created_at,
 		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash
 	FROM archive a
 	LEFT JOIN media mt ON a.thumbnail_id = mt.id
@@ -176,7 +214,7 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 		var thumbnailBlurHash sql.NullString
 
 		err := rows.Scan(
-			&al.Id, &al.Heading, &al.Description, &al.Tag, &al.CreatedAt,
+			&al.Id, &al.Tag, &al.CreatedAt,
 			&thumbnail.Id,
 			&thumbnail.MediaItem.FullSizeMediaURL, &thumbnail.MediaItem.FullSizeWidth, &thumbnail.MediaItem.FullSizeHeight, &thumbnail.MediaItem.ThumbnailMediaURL, &thumbnail.MediaItem.ThumbnailWidth, &thumbnail.MediaItem.ThumbnailHeight, &thumbnail.MediaItem.CompressedMediaURL, &thumbnail.MediaItem.CompressedWidth, &thumbnail.MediaItem.CompressedHeight, &thumbnailBlurHash,
 		)
@@ -191,22 +229,27 @@ func (ms *MYSQLStore) GetArchivesPaged(ctx context.Context, limit, offset int, o
 		}
 
 		al.Thumbnail = thumbnail
-		al.Slug = dto.GetArchiveSlug(al.Id, al.Heading, al.Tag)
 		archives = append(archives, al)
 	}
 
-	// Set NextSlug for each archive
-	for i := 0; i < len(archives) && i < limit; i++ {
-		if i+1 < len(archives) && i+1 < limit {
-			archives[i].NextSlug = archives[i+1].Slug
+	// Fetch translations for each archive
+	for i := range archives {
+		translations, err := ms.GetArchiveTranslations(ctx, archives[i].Id)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to get translations for archive %d: %w", archives[i].Id, err)
+		}
+		archives[i].Translations = translations
+
+		// Generate slug using first translation's heading if available
+		if len(translations) > 0 {
+			archives[i].Slug = dto.GetArchiveSlug(archives[i].Id, translations[0].Heading, archives[i].Tag)
 		} else {
-			archives[i].NextSlug = ""
+			archives[i].Slug = dto.GetArchiveSlug(archives[i].Id, "", archives[i].Tag)
 		}
 	}
 
-	// If we have more than limit, set NextSlug for the last archive to the extra one's slug
+	// Trim to limit if we fetched extra records
 	if len(archives) > limit {
-		archives[limit-1].NextSlug = archives[limit].Slug
 		archives = archives[:limit]
 	}
 
@@ -231,6 +274,14 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 			return fmt.Errorf("failed to delete archive items with ID %d: %w", id, err)
 		}
 
+		query = `DELETE FROM archive_translation WHERE archive_id = :id`
+		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+			"id": id,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete archive translations with ID %d: %w", id, err)
+		}
+
 		rowsAffected, err := res.RowsAffected()
 		if err != nil {
 			return fmt.Errorf("error getting rows affected for archive with ID %d: %w", id, err)
@@ -247,7 +298,7 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 	query := `
 	SELECT 
-		a.id, a.heading, a.description, a.tag, a.created_at, a.main_media_id, a.thumbnail_id,
+		a.id, a.tag, a.created_at, a.main_media_id, a.thumbnail_id,
 		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash,
 		mm.id AS main_media_id, mm.full_size AS main_media_full_size, mm.full_size_width AS main_media_full_size_width, mm.full_size_height AS main_media_full_size_height, mm.thumbnail AS main_media_thumbnail, mm.thumbnail_width AS main_media_thumbnail_width, mm.thumbnail_height AS main_media_thumbnail_height, mm.compressed AS main_media_compressed, mm.compressed_width AS main_media_compressed_width, mm.compressed_height AS main_media_compressed_height, mm.blur_hash AS main_media_blur_hash
 	FROM archive a
@@ -287,7 +338,7 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 	}
 	var mainMediaS mainMediaScan
 	err = rows.Scan(
-		&al.Id, &al.Heading, &al.Description, &al.Tag, &al.CreatedAt, &mainMediaId, &thumbnail.Id,
+		&al.Id, &al.Tag, &al.CreatedAt, &mainMediaId, &thumbnail.Id,
 		&thumbnail.Id, &thumbnail.MediaItem.FullSizeMediaURL, &thumbnail.MediaItem.FullSizeWidth, &thumbnail.MediaItem.FullSizeHeight, &thumbnail.MediaItem.ThumbnailMediaURL, &thumbnail.MediaItem.ThumbnailWidth, &thumbnail.MediaItem.ThumbnailHeight, &thumbnail.MediaItem.CompressedMediaURL, &thumbnail.MediaItem.CompressedWidth, &thumbnail.MediaItem.CompressedHeight, &thumbnail.MediaItem.BlurHash,
 		&mainMediaId,
 		&mainMediaS.FullSizeMediaURL, &mainMediaS.FullSizeWidth, &mainMediaS.FullSizeHeight, &mainMediaS.ThumbnailMediaURL, &mainMediaS.ThumbnailWidth, &mainMediaS.ThumbnailHeight, &mainMediaS.CompressedMediaURL, &mainMediaS.CompressedWidth, &mainMediaS.CompressedHeight, &mainMediaS.BlurHash,
@@ -312,8 +363,20 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 		mainMedia = entity.MediaFull{}
 	}
 	al.Thumbnail = thumbnail
-	al.Slug = dto.GetArchiveSlug(al.Id, al.Heading, al.Tag)
-	al.NextSlug = ""
+
+	// Fetch translations for this archive
+	translations, err := ms.GetArchiveTranslations(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get translations for archive %d: %w", id, err)
+	}
+	al.Translations = translations
+
+	// Generate slug using first translation's heading if available
+	if len(translations) > 0 {
+		al.Slug = dto.GetArchiveSlug(al.Id, translations[0].Heading, al.Tag)
+	} else {
+		al.Slug = dto.GetArchiveSlug(al.Id, "", al.Tag)
+	}
 
 	// Query all media for this archive
 	mediaQuery := `
@@ -332,4 +395,17 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 		MainMedia:   mainMedia,
 		Media:       media,
 	}, nil
+}
+
+func (ms *MYSQLStore) GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error) {
+	query := `
+	SELECT 
+		at.language_id, at.heading, at.description
+	FROM archive_translation at
+	WHERE at.archive_id = :id`
+	translations, err := QueryListNamed[entity.ArchiveTranslation](ctx, ms.DB(), query, map[string]any{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	return translations, nil
 }

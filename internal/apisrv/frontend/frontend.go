@@ -61,8 +61,10 @@ func New(
 }
 
 func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (*pb_frontend.GetHeroResponse, error) {
+	// Use cached hero for default language since GetHeroRequest doesn't have language field
+	heroFull := cache.GetHero()
 
-	h, err := dto.ConvertEntityHeroFullToCommon(cache.GetHero())
+	h, err := dto.ConvertEntityHeroFullToCommonWithTranslations(heroFull)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
 			slog.String("err", err.Error()),
@@ -80,6 +82,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			ShipmentCarriers: cache.GetShipmentCarriers(),
 			Sizes:            cache.GetSizes(),
 			Genders:          cache.GetGenders(),
+			Languages:        cache.GetLanguages(),
 			SortFactors:      cache.GetSortFactors(),
 			OrderFactors:     cache.GetOrderFactors(),
 			SiteEnabled:      cache.GetSiteAvailability(),
@@ -524,6 +527,7 @@ func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.Uns
 }
 
 func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchivesPagedRequest) (*pb_frontend.GetArchivesPagedResponse, error) {
+
 	afs, count, err := s.repo.Archive().GetArchivesPaged(ctx,
 		int(req.Limit),
 		int(req.Offset),
@@ -550,6 +554,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 }
 
 func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequest) (*pb_frontend.GetArchiveResponse, error) {
+
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get archive by slug", slog.String("err", err.Error()))

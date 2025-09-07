@@ -110,10 +110,12 @@ var (
 
 	entitySizes = []entity.Size{}
 
+	entityLanguages = []entity.Language{}
+
 	promoCodes             = make(map[string]entity.PromoCode)
 	shipmentCarriersById   = make(map[int]entity.ShipmentCarrier)
 	entityShipmentCarriers = []entity.ShipmentCarrier{}
-	hero                   = &entity.HeroFull{}
+	hero                   = &entity.HeroFullWithTranslations{}
 	maxOrderItems          = 3
 	siteEnabled            = true
 	defaultCurrency        = ""
@@ -171,11 +173,13 @@ var (
 	}
 )
 
-func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFull) error {
+func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.HeroFullWithTranslations) error {
 
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
 	entityMeasurements = dInfo.Measurements
+	entityLanguages = dInfo.Languages
+
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
 	}
@@ -237,7 +241,7 @@ func GetOrderStatusByName(n entity.OrderStatusName) (Status, bool) {
 	st, ok := orderStatusesByName[n]
 	return *st, ok
 }
-func UpdateHero(hf *entity.HeroFull) {
+func UpdateHero(hf *entity.HeroFullWithTranslations) {
 	hero = hf
 }
 
@@ -341,7 +345,7 @@ func GetSizeById(id int) (entity.Size, bool) {
 	return s, ok
 }
 
-func GetHero() *entity.HeroFull {
+func GetHero() *entity.HeroFullWithTranslations {
 	return hero
 }
 func GetMaxOrderItems() int {
@@ -422,6 +426,10 @@ func GetShipmentCarriers() []entity.ShipmentCarrier {
 		scs = append(scs, sc)
 	}
 	return scs
+}
+
+func GetLanguages() []entity.Language {
+	return entityLanguages
 }
 
 func GetPaymentMethodIdByPbId(pbId pb_common.PaymentMethodNameEnum) int {

@@ -42,6 +42,8 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 	// Get product IDs from items
 	prdIds := getProductIdsFromItems(items)
 
+	// We no longer need default language as we return all translations
+
 	// Get product details by IDs
 	prds, err := getProductsByIds(ctx, rep, prdIds)
 	if err != nil {
@@ -92,28 +94,35 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		}
 
 		// Set price and sale percentage from product details
-		item.ProductPrice = prd.PriceDecimal()
-		if prd.SalePercentageDecimal().GreaterThan(decimal.Zero) {
-			item.ProductSalePercentage = prd.SalePercentageDecimal()
-			item.ProductPriceWithSale = prd.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(prd.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
+		productBody := &prd.ProductDisplay.ProductBody
+		item.ProductPrice = productBody.PriceDecimal()
+		if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
+			item.ProductSalePercentage = productBody.SalePercentageDecimal()
+			item.ProductPriceWithSale = productBody.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(productBody.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
 		} else {
-			item.ProductPriceWithSale = prd.PriceDecimal()
+			item.ProductPriceWithSale = productBody.PriceDecimal()
+		}
+
+		// Get the first translation for display (or empty string if no translations)
+		var productName string
+		if len(productBody.Translations) > 0 {
+			productName = productBody.Translations[0].Name
 		}
 
 		validItem := entity.OrderItem{
 			OrderItemInsert: item,
-			Thumbnail:       prd.ThumbnailMediaURL,
-			BlurHash:        prd.BlurHash.String,
-			ProductName:     prd.Name,
-			ProductBrand:    prd.Brand,
-			Color:           prd.Color,
-			SKU:             prd.SKU,
-			Slug:            dto.GetProductSlug(prd.Id, prd.Brand, prd.Name, prd.TargetGender.String()),
-			TopCategoryId:   prd.TopCategoryId,
-			SubCategoryId:   int(prd.SubCategoryId.Int32),
-			TypeId:          prd.TypeId,
-			TargetGender:    prd.TargetGender,
-			Preorder:        prd.Preorder,
+			Thumbnail:       prd.ProductDisplay.Thumbnail.ThumbnailMediaURL,
+			BlurHash:        prd.ProductDisplay.Thumbnail.BlurHash.String,
+			ProductName:     productName,
+			ProductBrand:    productBody.ProductBodyInsert.Brand,
+			Color:           productBody.ProductBodyInsert.Color,
+			SKU:             productBody.ProductBodyInsert.SKU,
+			Slug:            dto.GetProductSlug(prd.Id, productBody.ProductBodyInsert.Brand, productName, productBody.ProductBodyInsert.TargetGender.String()),
+			TopCategoryId:   productBody.ProductBodyInsert.TopCategoryId,
+			SubCategoryId:   int(productBody.ProductBodyInsert.SubCategoryId.Int32),
+			TypeId:          productBody.ProductBodyInsert.TypeId,
+			TargetGender:    productBody.ProductBodyInsert.TargetGender,
+			Preorder:        productBody.ProductBodyInsert.Preorder,
 		}
 
 		validItems = append(validItems, validItem)

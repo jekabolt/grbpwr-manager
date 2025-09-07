@@ -24,13 +24,22 @@ type ProductFull struct {
 
 // Category represents a hierarchical category structure
 type Category struct {
-	ID         int    `db:"category_id"`
-	Name       string `db:"category_name"`
-	LevelID    int    `db:"level_id"`
-	Level      string `db:"level_name"`
-	ParentID   *int   `db:"parent_id"`
-	CountMen   int
-	CountWomen int
+	ID           int                   `db:"category_id"`
+	Translations []CategoryTranslation `db:"translations"`
+	LevelID      int                   `db:"level_id"`
+	Level        string                `db:"level_name"`
+	ParentID     *int                  `db:"parent_id"`
+	CountMen     int
+	CountWomen   int
+}
+
+type CategoryTranslation struct {
+	ID         int       `db:"id"`
+	CategoryID int       `db:"category_id"`
+	LanguageID int       `db:"language_id"`
+	Name       string    `db:"name"`
+	CreatedAt  time.Time `db:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at"`
 }
 
 // Size represents the size table
@@ -41,8 +50,19 @@ type Size struct {
 
 // MeasurementName represents the measurement_name table
 type MeasurementName struct {
-	Id   int    `db:"id"`
-	Name string `db:"name"`
+	Id           int                          `db:"id"`
+	Translations []MeasurementNameTranslation `db:"translations"`
+	CreatedAt    time.Time                    `db:"created_at"`
+	UpdatedAt    time.Time                    `db:"updated_at"`
+}
+
+type MeasurementNameTranslation struct {
+	ID                int       `db:"id"`
+	MeasurementNameID int       `db:"measurement_name_id"`
+	LanguageID        int       `db:"language_id"`
+	Name              string    `db:"name"`
+	CreatedAt         time.Time `db:"created_at"`
+	UpdatedAt         time.Time `db:"updated_at"`
 }
 
 type GenderEnum string
@@ -78,9 +98,8 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 	Unisex: true,
 }
 
-type ProductBody struct {
+type ProductBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
-	Name               string              `db:"name" valid:"required"`
 	Brand              string              `db:"brand" valid:"required"`
 	SKU                string              `db:"sku" valid:"required,alphanum"`
 	Color              string              `db:"color" valid:"required"`
@@ -93,41 +112,46 @@ type ProductBody struct {
 	TypeId             sql.NullInt32       `db:"type_id" valid:"-"`
 	ModelWearsHeightCm sql.NullInt32       `db:"model_wears_height_cm" valid:"-"`
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id" valid:"-"`
-	Description        string              `db:"description" valid:"required"`
-	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
-	TargetGender       GenderEnum          `db:"target_gender"`
 	CareInstructions   sql.NullString      `db:"care_instructions" valid:"-"`
 	Composition        sql.NullString      `db:"composition" valid:"-"`
+	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
+	TargetGender       GenderEnum          `db:"target_gender"`
+}
+
+type ProductBody struct {
+	ProductBodyInsert ProductBodyInsert          `valid:"required"`
+	Translations      []ProductTranslationInsert `valid:"required"`
 }
 
 func (pb *ProductBody) PriceDecimal() decimal.Decimal {
-	return pb.Price.Round(2)
+	return pb.ProductBodyInsert.Price.Round(2)
 }
 
 func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
-	if pb.SalePercentage.Valid {
-		return pb.SalePercentage.Decimal.Round(2)
+	if pb.ProductBodyInsert.SalePercentage.Valid {
+		return pb.ProductBodyInsert.SalePercentage.Decimal.Round(2)
 	}
 	return decimal.Zero
 }
 
 // Product represents the product table
 type Product struct {
-	Id        int       `db:"id"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
-	ProductDisplay
+	Id             int            `db:"id"`
+	CreatedAt      time.Time      `db:"created_at"`
+	UpdatedAt      time.Time      `db:"updated_at"`
+	Slug           string         `db:"slug"`
+	ProductDisplay ProductDisplay `valid:"required"`
 }
 
 type ProductInsert struct {
-	ProductBody
-	ThumbnailMediaID int `db:"thumbnail_id"`
+	ProductBodyInsert ProductBodyInsert          `valid:"required"`
+	ThumbnailMediaID  int                        `db:"thumbnail_media_id" valid:"required"`
+	Translations      []ProductTranslationInsert `valid:"required"`
 }
 
 type ProductDisplay struct {
-	ProductBody
-	MediaFull
-	ThumbnailMediaID int `db:"thumbnail_id"`
+	ProductBody ProductBody `valid:"required"`
+	Thumbnail   MediaFull   `valid:"required"`
 }
 
 type ProductMeasurementUpdate struct {
@@ -193,4 +217,22 @@ type ProductTag struct {
 // ProductTag represents the product_tag table
 type ProductTagInsert struct {
 	Tag string `db:"tag"`
+}
+
+// ProductTranslation represents the product_translation table
+type ProductTranslation struct {
+	Id          int       `db:"id"`
+	ProductId   int       `db:"product_id"`
+	LanguageId  int       `db:"language_id"`
+	Name        string    `db:"name"`
+	Description string    `db:"description"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
+}
+
+// ProductTranslationInsert represents the product_translation table for insert operations
+type ProductTranslationInsert struct {
+	LanguageId  int    `db:"language_id" json:"language_id" valid:"required"`
+	Name        string `db:"name" json:"name" valid:"required"`
+	Description string `db:"description" json:"description" valid:"required"`
 }

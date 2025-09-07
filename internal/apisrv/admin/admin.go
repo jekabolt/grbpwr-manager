@@ -225,6 +225,7 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 }
 
 func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
+
 	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get product by id",
@@ -687,6 +688,21 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 	}
 
 	return &pb_admin.DeleteArchiveByIdResponse{}, nil
+}
+
+func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByIDRequest) (*pb_admin.GetArchiveByIDResponse, error) {
+
+	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get archive by id",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get archive by id")
+	}
+
+	return &pb_admin.GetArchiveByIDResponse{
+		Archive: dto.ConvertArchiveFullEntityToPb(af),
+	}, nil
 }
 
 // SETTINGS MANAGER

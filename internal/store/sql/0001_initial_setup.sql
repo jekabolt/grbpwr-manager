@@ -529,7 +529,7 @@ CREATE TABLE product (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
     preorder TIMESTAMP NULL,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL, -- TODO: rm
     brand VARCHAR(255) NOT NULL,
     sku VARCHAR(255) NOT NULL UNIQUE,
     color VARCHAR(255) NOT NULL,
@@ -548,7 +548,7 @@ CREATE TABLE product (
     type_id INT NULL,
     model_wears_height_cm INT NULL,
     model_wears_size_id INT NULL REFERENCES size(id),
-    description TEXT NOT NULL,
+    description TEXT NOT NULL, -- TODO: rm
     hidden BOOLEAN DEFAULT FALSE,
     target_gender VARCHAR(255) NOT NULL CHECK (
         target_gender REGEXP '^(male|female|unisex)$'
@@ -736,8 +736,8 @@ CREATE TABLE admins (
 CREATE TABLE archive (
     id INT PRIMARY KEY AUTO_INCREMENT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    heading VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
+    heading VARCHAR(255) NOT NULL, -- TODO: rm
+    description TEXT NOT NULL, -- TODO: rm
     tag VARCHAR(255) NOT NULL,
     main_media_id INT,
     thumbnail_id INT NOT NULL,

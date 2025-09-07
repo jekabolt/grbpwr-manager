@@ -28,13 +28,21 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		mids = append(mids, int(mid))
 	}
 
+	translations := make([]entity.ArchiveTranslation, 0, len(pbArchiveInsert.Translations))
+	for _, translation := range pbArchiveInsert.Translations {
+		translations = append(translations, entity.ArchiveTranslation{
+			LanguageId:  int(translation.LanguageId),
+			Heading:     translation.Heading,
+			Description: translation.Description,
+		})
+	}
+
 	return &entity.ArchiveInsert{
-		Heading:     pbArchiveInsert.Heading,
-		Description: pbArchiveInsert.Description,
-		Tag:         pbArchiveInsert.Tag,
-		MediaIds:    mids,
-		MainMediaId: int(pbArchiveInsert.MainMediaId),
-		ThumbnailId: int(pbArchiveInsert.ThumbnailId),
+		Translations: translations,
+		Tag:          pbArchiveInsert.Tag,
+		MediaIds:     mids,
+		MainMediaId:  int(pbArchiveInsert.MainMediaId),
+		ThumbnailId:  int(pbArchiveInsert.ThumbnailId),
 	}, nil
 }
 
@@ -61,15 +69,22 @@ func ConvertEntityToCommonArchiveList(al *entity.ArchiveList) *pb_common.Archive
 		return nil
 	}
 
+	translations := make([]*pb_common.ArchiveInsertTranslation, 0, len(al.Translations))
+	for _, t := range al.Translations {
+		translations = append(translations, &pb_common.ArchiveInsertTranslation{
+			LanguageId:  int32(t.LanguageId),
+			Heading:     t.Heading,
+			Description: t.Description,
+		})
+	}
+
 	return &pb_common.ArchiveList{
-		Id:          int32(al.Id),
-		Heading:     al.Heading,
-		Description: al.Description,
-		Tag:         al.Tag,
-		Slug:        al.Slug,
-		NextSlug:    al.NextSlug,
-		CreatedAt:   timestamppb.New(al.CreatedAt),
-		Thumbnail:   ConvertEntityToCommonMedia(&al.Thumbnail),
+		Id:           int32(al.Id),
+		Translations: translations,
+		Tag:          al.Tag,
+		Slug:         al.Slug,
+		CreatedAt:    timestamppb.New(al.CreatedAt),
+		Thumbnail:    ConvertEntityToCommonMedia(&al.Thumbnail),
 	}
 }
 

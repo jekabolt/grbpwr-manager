@@ -1,8 +1,105 @@
 package entity
 
-type HeroFull struct {
-	Entities    []HeroEntity `json:"entities"`
-	NavFeatured NavFeatured  `json:"nav_featured"`
+// WithTranslations structs to match proto definitions
+type HeroFullWithTranslations struct {
+	Entities    []HeroEntityWithTranslations `json:"entities"`
+	NavFeatured NavFeaturedWithTranslations  `json:"nav_featured"`
+}
+
+type NavFeaturedWithTranslations struct {
+	Men   NavFeaturedEntityWithTranslations `json:"men"`
+	Women NavFeaturedEntityWithTranslations `json:"women"`
+}
+
+type NavFeaturedEntityWithTranslations struct {
+	Media             MediaFull                            `json:"media"`
+	FeaturedTag       string                               `json:"featured_tag"`
+	FeaturedArchiveId string                               `json:"featured_archive_id"` // Changed to string to match proto
+	Translations      []NavFeaturedEntityInsertTranslation `json:"translations"`
+}
+
+type HeroEntityWithTranslations struct {
+	Type                HeroType                                 `json:"type"`
+	Single              *HeroSingleWithTranslations              `json:"single"`
+	Double              *HeroDoubleWithTranslations              `json:"double"`
+	Main                *HeroMainWithTranslations                `json:"main"`
+	FeaturedProducts    *HeroFeaturedProductsWithTranslations    `json:"featured_products"`
+	FeaturedProductsTag *HeroFeaturedProductsTagWithTranslations `json:"featured_products_tag"`
+	FeaturedArchive     *HeroFeaturedArchiveWithTranslations     `json:"featured_archive"`
+}
+
+type HeroSingleWithTranslations struct {
+	MediaPortrait  MediaFull                     `json:"media_portrait"`
+	MediaLandscape MediaFull                     `json:"media_landscape"`
+	ExploreLink    string                        `json:"explore_link"`
+	Translations   []HeroSingleInsertTranslation `json:"translations"`
+}
+
+type HeroDoubleWithTranslations struct {
+	Left  HeroSingleWithTranslations `json:"left"`
+	Right HeroSingleWithTranslations `json:"right"`
+}
+
+type HeroMainWithTranslations struct {
+	Single       HeroSingleWithTranslations  `json:"single"`
+	Translations []HeroMainInsertTranslation `json:"translations"`
+}
+
+type HeroFeaturedProductsWithTranslations struct {
+	Products     []Product                               `json:"products"`
+	ExploreLink  string                                  `json:"explore_link"`
+	Translations []HeroFeaturedProductsInsertTranslation `json:"translations"`
+}
+
+type HeroFeaturedProductsTagWithTranslations struct {
+	Tag          string                                     `json:"tag"`
+	Products     HeroFeaturedProductsWithTranslations       `json:"products"`
+	Translations []HeroFeaturedProductsTagInsertTranslation `json:"translations"`
+}
+
+type HeroFeaturedArchiveWithTranslations struct {
+	Archive      ArchiveFull                            `json:"archive"`
+	Tag          string                                 `json:"tag"`
+	Headline     string                                 `json:"headline"`
+	ExploreText  string                                 `json:"explore_text"`
+	Translations []HeroFeaturedArchiveInsertTranslation `json:"translations"`
+}
+
+type HeroSingleInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
+}
+
+type HeroMainInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	Tag         string `json:"tag"`
+	Description string `json:"description"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
+}
+
+type HeroFeaturedProductsInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
+}
+
+type HeroFeaturedProductsTagInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
+}
+
+type HeroFeaturedArchiveInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	Headline    string `json:"headline"`
+	ExploreText string `json:"explore_text"`
+}
+
+type NavFeaturedEntityInsertTranslation struct {
+	LanguageId  int    `json:"language_id"`
+	ExploreText string `json:"explore_text"`
 }
 
 type HeroFullInsert struct {
@@ -22,35 +119,6 @@ const (
 	HeroTypeFeaturedArchive     HeroType = 6
 )
 
-type HeroEntity struct {
-	Type                HeroType                 `json:"type"`
-	Single              *HeroSingle              `json:"single"`
-	Double              *HeroDouble              `json:"double"`
-	Main                *HeroMain                `json:"main"`
-	FeaturedProducts    *HeroFeaturedProducts    `json:"featured_products"`
-	FeaturedProductsTag *HeroFeaturedProductsTag `json:"featured_products_tag"`
-	FeaturedArchive     *HeroFeaturedArchive     `json:"featured_archive"`
-}
-
-type HeroSingle struct {
-	MediaPortrait  MediaFull `json:"media_portrait"`
-	MediaLandscape MediaFull `json:"media_landscape"`
-	Headline       string    `json:"headline"`
-	ExploreLink    string    `json:"explore_link"`
-	ExploreText    string    `json:"explore_text"`
-}
-
-type HeroDouble struct {
-	Left  HeroSingle `json:"left"`
-	Right HeroSingle `json:"right"`
-}
-
-type HeroMain struct {
-	Single      HeroSingle `json:"single"`
-	Tag         string     `json:"tag"`
-	Description string     `json:"description"`
-}
-
 type HeroEntityInsert struct {
 	Type                HeroType                      `json:"type"`
 	Single              HeroSingleInsert              `json:"single"`
@@ -62,11 +130,10 @@ type HeroEntityInsert struct {
 }
 
 type HeroSingleInsert struct {
-	MediaPortraitId  int    `json:"media_portrait_id"`
-	MediaLandscapeId int    `json:"media_landscape_id"`
-	Headline         string `json:"headline"`
-	ExploreLink      string `json:"explore_link"`
-	ExploreText      string `json:"explore_text"`
+	MediaPortraitId  int                           `json:"media_portrait_id"`
+	MediaLandscapeId int                           `json:"media_landscape_id"`
+	ExploreLink      string                        `json:"explore_link"`
+	Translations     []HeroSingleInsertTranslation `json:"translations"`
 }
 
 type HeroDoubleInsert struct {
@@ -75,9 +142,10 @@ type HeroDoubleInsert struct {
 }
 
 type HeroMainInsert struct {
-	Single      HeroSingleInsert `json:"single"`
-	Tag         string           `json:"tag"`
-	Description string           `json:"description"`
+	MediaPortraitId  int                         `json:"media_portrait_id"`
+	MediaLandscapeId int                         `json:"media_landscape_id"`
+	ExploreLink      string                      `json:"explore_link"`
+	Translations     []HeroMainInsertTranslation `json:"translations"`
 }
 
 type HeroFeaturedProducts struct {
@@ -88,44 +156,25 @@ type HeroFeaturedProducts struct {
 }
 
 type HeroFeaturedProductsTag struct {
-	Products    []Product `json:"products"`
-	Tag         string    `json:"tag"`
-	Headline    string    `json:"headline"`
-	ExploreText string    `json:"explore_text"`
-	ExploreLink string    `json:"explore_link"`
+	Tag      string               `json:"tag"`
+	Products HeroFeaturedProducts `json:"products"`
 }
 
 type HeroFeaturedProductsInsert struct {
-	ProductIDs  []int  `json:"product_ids"`
-	Headline    string `json:"headline"`
-	ExploreText string `json:"explore_text"`
-	ExploreLink string `json:"explore_link"`
+	ProductIDs   []int                                   `json:"product_ids"`
+	ExploreLink  string                                  `json:"explore_link"`
+	Translations []HeroFeaturedProductsInsertTranslation `json:"translations"`
 }
 
 type HeroFeaturedProductsTagInsert struct {
-	Tag         string `json:"tag"`
-	Headline    string `json:"headline"`
-	ExploreText string `json:"explore_text"`
-	ExploreLink string `json:"explore_link"`
+	Tag          string                                     `json:"tag"`
+	Translations []HeroFeaturedProductsTagInsertTranslation `json:"translations"`
 }
 
 type HeroFeaturedArchiveInsert struct {
-	ArchiveId   int    `json:"archive_id"`
-	Tag         string `json:"tag"`
-	Headline    string `json:"headline"`
-	ExploreText string `json:"explore_text"`
-}
-
-type HeroFeaturedArchive struct {
-	Archive     ArchiveFull `json:"archive_full"`
-	Tag         string      `json:"tag"`
-	Headline    string      `json:"headline"`
-	ExploreText string      `json:"explore_text"`
-}
-
-type NavFeatured struct {
-	Men   NavFeaturedEntity `json:"men"`
-	Women NavFeaturedEntity `json:"women"`
+	ArchiveId    int                                    `json:"archive_id"`
+	Tag          string                                 `json:"tag"`
+	Translations []HeroFeaturedArchiveInsertTranslation `json:"translations"`
 }
 
 type NavFeaturedInsert struct {
@@ -133,16 +182,9 @@ type NavFeaturedInsert struct {
 	Women NavFeaturedEntityInsert `json:"women"`
 }
 
-type NavFeaturedEntity struct {
-	Media             MediaFull `json:"media"`
-	ExploreText       string    `json:"explore_text"`
-	FeaturedTag       string    `json:"featured_tag"`
-	FeaturedArchiveId int       `json:"featured_archive_id"`
-}
-
 type NavFeaturedEntityInsert struct {
-	MediaId           int    `json:"media_id"`
-	ExploreText       string `json:"explore_text"`
-	FeaturedTag       string `json:"featured_tag"`
-	FeaturedArchiveId int    `json:"featured_archive_id"`
+	MediaId           int                                  `json:"media_id"`
+	FeaturedTag       string                               `json:"featured_tag"`
+	FeaturedArchiveId int                                  `json:"featured_archive_id"`
+	Translations      []NavFeaturedEntityInsertTranslation `json:"translations"`
 }

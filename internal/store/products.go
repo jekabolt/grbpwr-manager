@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -28,31 +29,29 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, name, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, description, care_instructions, composition, hidden, target_gender)
-	VALUES (:id, :preorder, :name, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :description, :careInstructions, :composition, :hidden, :targetGender)`
+	(id, preorder, brand, sku, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender)
+	VALUES (:id, :preorder, :brand, :sku, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender)`
 
 	params := map[string]any{
 		"id":                 id,
-		"preorder":           product.Preorder,
-		"name":               product.Name,
-		"brand":              product.Brand,
-		"sku":                product.SKU,
-		"color":              product.Color,
-		"colorHex":           product.ColorHex,
-		"countryOfOrigin":    product.CountryOfOrigin,
+		"preorder":           product.ProductBodyInsert.Preorder,
+		"brand":              product.ProductBodyInsert.Brand,
+		"sku":                product.ProductBodyInsert.SKU,
+		"color":              product.ProductBodyInsert.Color,
+		"colorHex":           product.ProductBodyInsert.ColorHex,
+		"countryOfOrigin":    product.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":        product.ThumbnailMediaID,
-		"price":              product.Price,
-		"salePercentage":     product.SalePercentage,
-		"topCategoryId":      product.TopCategoryId,
-		"subCategoryId":      product.SubCategoryId,
-		"typeId":             product.TypeId,
-		"modelWearsHeightCm": product.ModelWearsHeightCm,
-		"modelWearsSizeId":   product.ModelWearsSizeId,
-		"description":        product.Description,
-		"hidden":             product.Hidden,
-		"targetGender":       product.TargetGender,
-		"careInstructions":   product.CareInstructions,
-		"composition":        product.Composition,
+		"price":              product.ProductBodyInsert.Price,
+		"salePercentage":     product.ProductBodyInsert.SalePercentage,
+		"topCategoryId":      product.ProductBodyInsert.TopCategoryId,
+		"subCategoryId":      product.ProductBodyInsert.SubCategoryId,
+		"typeId":             product.ProductBodyInsert.TypeId,
+		"modelWearsHeightCm": product.ProductBodyInsert.ModelWearsHeightCm,
+		"modelWearsSizeId":   product.ProductBodyInsert.ModelWearsSizeId,
+		"hidden":             product.ProductBodyInsert.Hidden,
+		"targetGender":       product.ProductBodyInsert.TargetGender,
+		"careInstructions":   product.ProductBodyInsert.CareInstructions,
+		"composition":        product.ProductBodyInsert.Composition,
 	}
 
 	// slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
@@ -63,6 +62,35 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 	}
 
 	return id, nil
+}
+
+func insertProductTranslations(ctx context.Context, rep dependency.Repository, productId int, translations []entity.ProductTranslationInsert) error {
+	if len(translations) == 0 {
+		return fmt.Errorf("translations array cannot be empty")
+	}
+
+	rows := make([]map[string]any, 0, len(translations))
+	for _, t := range translations {
+		row := map[string]any{
+			"product_id":  productId,
+			"language_id": t.LanguageId,
+			"name":        t.Name,
+			"description": t.Description,
+		}
+		rows = append(rows, row)
+	}
+
+	// Delete existing translations first
+	deleteQuery := "DELETE FROM product_translation WHERE product_id = :productId"
+	err := ExecNamed(ctx, rep.DB(), deleteQuery, map[string]any{
+		"productId": productId,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete existing translations: %w", err)
+	}
+
+	// Insert new translations
+	return BulkInsert(ctx, rep.DB(), "product_translation", rows)
 }
 
 func deleteSizeMeasurements(ctx context.Context, rep dependency.Repository, productID int) error {
@@ -165,8 +193,8 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 	var prdId int
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
-		if !prd.Product.SalePercentage.Valid || prd.Product.SalePercentage.Decimal.LessThan(decimal.Zero) {
-			prd.Product.SalePercentage = decimal.NullDecimal{
+		if !prd.Product.ProductBodyInsert.SalePercentage.Valid || prd.Product.ProductBodyInsert.SalePercentage.Decimal.LessThan(decimal.Zero) {
+			prd.Product.ProductBodyInsert.SalePercentage = decimal.NullDecimal{
 				Valid:   true,
 				Decimal: decimal.NewFromFloat(0),
 			}
@@ -176,6 +204,12 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		prdId, err = insertProduct(ctx, rep, prd.Product, int(id))
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
+		}
+
+		// Insert translations
+		err = insertProductTranslations(ctx, rep, prdId, prd.Product.Translations)
+		if err != nil {
+			return fmt.Errorf("can't insert product translations: %w", err)
 		}
 
 		err = insertSizeMeasurements(ctx, rep, prd.SizeMeasurements, prdId)
@@ -209,6 +243,12 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 		err := updateProduct(ctx, rep, prd.Product, id)
 		if err != nil {
 			return fmt.Errorf("can't update product: %w", err)
+		}
+
+		// Update translations
+		err = insertProductTranslations(ctx, rep, id, prd.Product.Translations)
+		if err != nil {
+			return fmt.Errorf("can't update product translations: %w", err)
 		}
 
 		// measurements
@@ -248,7 +288,6 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	UPDATE product 
 	SET 
 		preorder = :preorder, 
-		name = :name, 
 		brand = :brand, 
 		sku = :sku, 
 		color = :color, 
@@ -262,7 +301,6 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		type_id = :typeId, 
 		model_wears_height_cm = :modelWearsHeightCm, 
 		model_wears_size_id = :modelWearsSizeId, 
-		description = :description, 
 		hidden = :hidden,
 		target_gender = :targetGender,
 		care_instructions = :careInstructions,
@@ -270,32 +308,31 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"preorder":           prd.Preorder,
-		"name":               prd.Name,
-		"brand":              prd.Brand,
-		"sku":                prd.SKU,
-		"color":              prd.Color,
-		"colorHex":           prd.ColorHex,
-		"countryOfOrigin":    prd.CountryOfOrigin,
+		"preorder":           prd.ProductBodyInsert.Preorder,
+		"brand":              prd.ProductBodyInsert.Brand,
+		"sku":                prd.ProductBodyInsert.SKU,
+		"color":              prd.ProductBodyInsert.Color,
+		"colorHex":           prd.ProductBodyInsert.ColorHex,
+		"countryOfOrigin":    prd.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":        prd.ThumbnailMediaID,
-		"price":              prd.Price,
-		"salePercentage":     prd.SalePercentage,
-		"topCategoryId":      prd.TopCategoryId,
-		"subCategoryId":      prd.SubCategoryId,
-		"typeId":             prd.TypeId,
-		"modelWearsHeightCm": prd.ModelWearsHeightCm,
-		"modelWearsSizeId":   prd.ModelWearsSizeId,
-		"description":        prd.Description,
-		"hidden":             prd.Hidden,
-		"targetGender":       prd.TargetGender,
-		"careInstructions":   prd.CareInstructions,
-		"composition":        prd.Composition,
+		"price":              prd.ProductBodyInsert.Price,
+		"salePercentage":     prd.ProductBodyInsert.SalePercentage,
+		"topCategoryId":      prd.ProductBodyInsert.TopCategoryId,
+		"subCategoryId":      prd.ProductBodyInsert.SubCategoryId,
+		"typeId":             prd.ProductBodyInsert.TypeId,
+		"modelWearsHeightCm": prd.ProductBodyInsert.ModelWearsHeightCm,
+		"modelWearsSizeId":   prd.ProductBodyInsert.ModelWearsSizeId,
+		"hidden":             prd.ProductBodyInsert.Hidden,
+		"targetGender":       prd.ProductBodyInsert.TargetGender,
+		"careInstructions":   prd.ProductBodyInsert.CareInstructions,
+		"composition":        prd.ProductBodyInsert.Composition,
 		"id":                 id,
 	})
 }
 
 // GetProductsPaged
 // Parameters:
+//   - languageId: The language ID for translations
 //   - limit: The maximum number of products per page.
 //   - offset: The starting offset for retrieving products.
 //   - sortFactors: Sorting factors
@@ -410,16 +447,34 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		return nil, 0, fmt.Errorf("can't get product count: %w", err)
 	}
 
-	// slog.Default().DebugContext(ctx, "listQuery", slog.String("listQuery", listQuery))
-
 	// Set limit and offset
 	args["limit"] = limit
 	args["offset"] = offset
 
-	// Fetch products
-	prds, err := QueryListNamed[entity.Product](ctx, ms.db, listQuery, args)
+	// Fetch products using intermediate struct
+	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, listQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get products: %w", err)
+	}
+
+	// Extract product IDs to fetch translations
+	productIds := make([]int, 0, len(prdResults))
+	for _, prdResult := range prdResults {
+		productIds = append(productIds, prdResult.Id)
+	}
+
+	// Fetch all translations for these products
+	translationMap, err := fetchProductTranslations(ctx, ms.db, productIds)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	// Convert to final Product structs
+	prds := make([]entity.Product, 0, len(prdResults))
+	for _, prdResult := range prdResults {
+		translations := translationMap[prdResult.Id] // Get translations for this product
+		product := prdResult.toProduct(translations)
+		prds = append(prds, product)
 	}
 
 	return prds, count, nil
@@ -432,7 +487,27 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 
 	query := `
 	SELECT 
-		p.*,
+		p.id,
+		p.created_at,
+		p.updated_at,
+		p.preorder,
+		p.brand,
+		p.sku,
+		p.color,
+		p.color_hex,
+		p.country_of_origin,
+		p.price,
+		p.sale_percentage,
+		p.top_category_id,
+		p.sub_category_id,
+		p.type_id,
+		p.model_wears_height_cm,
+		p.model_wears_size_id,
+		p.hidden,
+		p.target_gender,
+		p.care_instructions,
+		p.composition,
+		p.thumbnail_id,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -449,17 +524,25 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		media m ON p.thumbnail_id = m.id 
 	WHERE p.id IN (:ids) AND p.hidden = 0`
 
-	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
+	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
 		"ids": ids,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
 
-	// Create a map for quick lookup
+	// Fetch all translations for these products
+	translationMap, err := fetchProductTranslations(ctx, ms.db, ids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	// Convert to final Product structs and create a map for quick lookup
 	prdMap := make(map[int]entity.Product)
-	for _, p := range prds {
-		prdMap[p.Id] = p
+	for _, prdResult := range prdResults {
+		translations := translationMap[prdResult.Id]
+		product := prdResult.toProduct(translations)
+		prdMap[product.Id] = product
 	}
 
 	// Create the result slice in the order of input ids
@@ -480,7 +563,27 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 
 	query := `
 	SELECT 
-		p.*,
+		p.id,
+		p.created_at,
+		p.updated_at,
+		p.preorder,
+		p.brand,
+		p.sku,
+		p.color,
+		p.color_hex,
+		p.country_of_origin,
+		p.price,
+		p.sale_percentage,
+		p.top_category_id,
+		p.sub_category_id,
+		p.type_id,
+		p.model_wears_height_cm,
+		p.model_wears_size_id,
+		p.hidden,
+		p.target_gender,
+		p.care_instructions,
+		p.composition,
+		p.thumbnail_id,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -495,23 +598,187 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		product p
 	JOIN 
 		media m ON p.thumbnail_id = m.id 
-	WHERE p.id IN (SELECT pt.product_id FROM product_tag pt WHERE pt.tag = :tag) AND p.hidden = 0`
+	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0`
 
-	prds, err := QueryListNamed[entity.Product](ctx, ms.db, query, map[string]any{
+	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
 		"tag": tag,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("can't get products by ids: %w", err)
+		return nil, fmt.Errorf("can't get products by tag: %w", err)
+	}
+
+	// Extract product IDs to fetch translations
+	productIds := make([]int, 0, len(prdResults))
+	for _, prdResult := range prdResults {
+		productIds = append(productIds, prdResult.Id)
+	}
+
+	// Fetch all translations for these products
+	translationMap, err := fetchProductTranslations(ctx, ms.db, productIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	// Convert to final Product structs
+	prds := make([]entity.Product, 0, len(prdResults))
+	for _, prdResult := range prdResults {
+		translations := translationMap[prdResult.Id]
+		product := prdResult.toProduct(translations)
+		prds = append(prds, product)
 	}
 
 	return prds, nil
 }
 
 // buildQuery refactored to use named parameters and to include limit and offset
+// productQueryResult represents the flat database result that needs to be mapped to the nested Product structure
+type productQueryResult struct {
+	// Basic product fields
+	Id        int       `db:"id"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+	Slug      string    `db:"slug"`
+
+	// Product body fields (from product table)
+	Preorder           sql.NullTime        `db:"preorder"`
+	Brand              string              `db:"brand"`
+	SKU                string              `db:"sku"`
+	Color              string              `db:"color"`
+	ColorHex           string              `db:"color_hex"`
+	CountryOfOrigin    string              `db:"country_of_origin"`
+	Price              decimal.Decimal     `db:"price"`
+	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
+	TopCategoryId      int                 `db:"top_category_id"`
+	SubCategoryId      sql.NullInt32       `db:"sub_category_id"`
+	TypeId             sql.NullInt32       `db:"type_id"`
+	ModelWearsHeightCm sql.NullInt32       `db:"model_wears_height_cm"`
+	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id"`
+	CareInstructions   sql.NullString      `db:"care_instructions"`
+	Composition        sql.NullString      `db:"composition"`
+	Hidden             sql.NullBool        `db:"hidden"`
+	TargetGender       entity.GenderEnum   `db:"target_gender"`
+
+	// Translation fields - these will be populated separately
+	// Name        string `db:"name"`
+	// Description string `db:"description"`
+
+	// Thumbnail media fields
+	ThumbnailId          int    `db:"thumbnail_id"`
+	ThumbnailFullSize    string `db:"full_size"`
+	ThumbnailFullSizeW   int    `db:"full_size_width"`
+	ThumbnailFullSizeH   int    `db:"full_size_height"`
+	ThumbnailThumb       string `db:"thumbnail"`
+	ThumbnailThumbW      int    `db:"thumbnail_width"`
+	ThumbnailThumbH      int    `db:"thumbnail_height"`
+	ThumbnailCompressed  string `db:"compressed"`
+	ThumbnailCompressedW int    `db:"compressed_width"`
+	ThumbnailCompressedH int    `db:"compressed_height"`
+	ThumbnailBlurHash    string `db:"blur_hash"`
+}
+
+// toProduct converts the flat database result to the nested Product structure
+// Translations will be populated separately
+func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslationInsert) entity.Product {
+	return entity.Product{
+		Id:        pqr.Id,
+		CreatedAt: pqr.CreatedAt,
+		UpdatedAt: pqr.UpdatedAt,
+		Slug:      pqr.Slug,
+		ProductDisplay: entity.ProductDisplay{
+			ProductBody: entity.ProductBody{
+				ProductBodyInsert: entity.ProductBodyInsert{
+					Preorder:           pqr.Preorder,
+					Brand:              pqr.Brand,
+					SKU:                pqr.SKU,
+					Color:              pqr.Color,
+					ColorHex:           pqr.ColorHex,
+					CountryOfOrigin:    pqr.CountryOfOrigin,
+					Price:              pqr.Price,
+					SalePercentage:     pqr.SalePercentage,
+					TopCategoryId:      pqr.TopCategoryId,
+					SubCategoryId:      pqr.SubCategoryId,
+					TypeId:             pqr.TypeId,
+					ModelWearsHeightCm: pqr.ModelWearsHeightCm,
+					ModelWearsSizeId:   pqr.ModelWearsSizeId,
+					CareInstructions:   pqr.CareInstructions,
+					Composition:        pqr.Composition,
+					Hidden:             pqr.Hidden,
+					TargetGender:       pqr.TargetGender,
+				},
+				Translations: translations,
+			},
+			Thumbnail: entity.MediaFull{
+				Id:        pqr.ThumbnailId,
+				CreatedAt: pqr.CreatedAt, // Using product created_at as fallback
+				MediaItem: entity.MediaItem{
+					FullSizeMediaURL:   pqr.ThumbnailFullSize,
+					FullSizeWidth:      pqr.ThumbnailFullSizeW,
+					FullSizeHeight:     pqr.ThumbnailFullSizeH,
+					ThumbnailMediaURL:  pqr.ThumbnailThumb,
+					ThumbnailWidth:     pqr.ThumbnailThumbW,
+					ThumbnailHeight:    pqr.ThumbnailThumbH,
+					CompressedMediaURL: pqr.ThumbnailCompressed,
+					CompressedWidth:    pqr.ThumbnailCompressedW,
+					CompressedHeight:   pqr.ThumbnailCompressedH,
+					BlurHash:           sql.NullString{String: pqr.ThumbnailBlurHash, Valid: pqr.ThumbnailBlurHash != ""},
+				},
+			},
+		},
+	}
+}
+
+// fetchProductTranslations fetches all translations for given product IDs
+func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductTranslationInsert, error) {
+	if len(productIds) == 0 {
+		return map[int][]entity.ProductTranslationInsert{}, nil
+	}
+
+	query := `SELECT product_id, language_id, name, description FROM product_translation WHERE product_id IN (:productIds) ORDER BY product_id, language_id`
+
+	translations, err := QueryListNamed[entity.ProductTranslation](ctx, db, query, map[string]any{
+		"productIds": productIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	// Group translations by product ID
+	translationMap := make(map[int][]entity.ProductTranslationInsert)
+	for _, t := range translations {
+		translationMap[t.ProductId] = append(translationMap[t.ProductId], entity.ProductTranslationInsert{
+			LanguageId:  t.LanguageId,
+			Name:        t.Name,
+			Description: t.Description,
+		})
+	}
+
+	return translationMap, nil
+}
+
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
 	baseQuery := `
 	SELECT 
-		p.*,
+		p.id,
+		p.created_at,
+		p.updated_at,
+		p.preorder,
+		p.brand,
+		p.sku,
+		p.color,
+		p.color_hex,
+		p.country_of_origin,
+		p.price,
+		p.sale_percentage,
+		p.top_category_id,
+		p.sub_category_id,
+		p.type_id,
+		p.model_wears_height_cm,
+		p.model_wears_size_id,
+		p.hidden,
+		p.target_gender,
+		p.care_instructions,
+		p.composition,
+		p.thumbnail_id,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -525,11 +792,10 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	FROM 
 		product p
 	JOIN 
-		media m
-	ON 
-		p.thumbnail_id = m.id`
+		media m ON p.thumbnail_id = m.id`
 
-	countQuery := "SELECT COUNT(*) FROM product p JOIN media m ON p.thumbnail_id = m.id"
+	countQuery := `SELECT COUNT(*) FROM product p 
+		JOIN media m ON p.thumbnail_id = m.id`
 
 	// Add WHERE clause if there are conditions
 	if len(whereClauses) > 0 {
@@ -557,7 +823,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 
 // GetProductByIdShowHidden returns a product by its ID, potentially including hidden products.
 func (ms *MYSQLStore) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
-	return ms.getProductDetails(ctx, map[string]any{"id": id}, true) // No year filter needed
+	return ms.getProductDetails(ctx, map[string]any{"id": id}, true)
 }
 
 // GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
@@ -572,8 +838,6 @@ func (ms *MYSQLStore) GetProductByIdNoHidden(ctx context.Context, id int) (*enti
 func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ProductFull, error) {
 	var productInfo entity.ProductFull
 
-	// Building the WHERE clause of the query with named parameters to prevent SQL injection
-	// Building the WHERE clause of the query with named parameters to prevent SQL injection
 	whereClauses := []string{}
 	params := map[string]interface{}{}
 	for key, value := range filters {
@@ -589,7 +853,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.created_at,
 		p.updated_at,
 		p.preorder,
-		p.name,
 		p.brand,
 		p.sku,
 		p.color,
@@ -602,12 +865,11 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.type_id,
 		p.model_wears_height_cm,
 		p.model_wears_size_id,
-		p.description,
 		p.hidden,
 		p.target_gender,
 		p.care_instructions,
 		p.composition,
-		m.id AS thumbnail_id,
+		p.thumbnail_id,
 		m.created_at AS thumbnail_created_at, 
 		m.full_size,
 		m.full_size_width,
@@ -622,35 +884,43 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	FROM 
 		product p
 	JOIN 
-		media m
-	ON 
-		p.thumbnail_id = m.id 
+		media m ON p.thumbnail_id = m.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
 	// Include or exclude hidden products based on the showHidden flag
 	if !showHidden {
 		query += " AND p.hidden = false"
 	}
-	type product struct {
-		entity.Product
-		ThumbnailID int       `db:"thumbnail_id"`
-		CreatedAt   time.Time `db:"thumbnail_created_at"`
+
+	type productDetailsResult struct {
+		productQueryResult
+		ThumbnailCreatedAt time.Time `db:"thumbnail_created_at"`
 	}
 
-	prd, err := QueryNamedOne[product](ctx, ms.db, query, params)
+	prdResult, err := QueryNamedOne[productDetailsResult](ctx, ms.db, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't get product: %w", err)
 	}
-	prd.Product.MediaFull.Id = prd.ThumbnailID
-	prd.Product.MediaFull.CreatedAt = prd.CreatedAt
 
-	productInfo.Product = &prd.Product
+	// Fetch all translations for this product
+	translationMap, err := fetchProductTranslations(ctx, ms.db, []int{prdResult.Id})
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	// Convert to Product struct
+	translations := translationMap[prdResult.Id]
+	product := prdResult.toProduct(translations)
+	// Set the correct thumbnail created_at
+	product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+
+	productInfo.Product = &product
 
 	// fetch sizes
 	query = `SELECT * FROM product_size WHERE product_id = :id`
 
 	sizes, err := QueryListNamed[entity.ProductSize](ctx, ms.db, query, map[string]any{
-		"id": prd.Id,
+		"id": product.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get sizes: %w", err)
@@ -661,7 +931,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	query = `SELECT * FROM size_measurement	WHERE product_id = :id`
 
 	measurements, err := QueryListNamed[entity.ProductMeasurement](ctx, ms.db, query, map[string]any{
-		"id": prd.Id,
+		"id": product.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get measurements: %w", err)
@@ -689,7 +959,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		ORDER BY pm.id;
 	`
 	productInfo.Media, err = QueryListNamed[entity.MediaFull](ctx, ms.db, query, map[string]interface{}{
-		"id": prd.Id,
+		"id": product.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get media: %w", err)
@@ -698,11 +968,12 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	// Fetch Tags
 	query = "SELECT * FROM product_tag WHERE product_id = :id"
 	productInfo.Tags, err = QueryListNamed[entity.ProductTag](ctx, ms.db, query, map[string]interface{}{
-		"id": prd.Id,
+		"id": product.Id,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get tags: %w", err)
 	}
+
 	return &productInfo, nil
 }
 
@@ -874,7 +1145,6 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.created_at,
 			p.updated_at,
 			p.preorder,
-			p.name,
 			p.brand,
 			p.sku,
 			p.color,
@@ -887,12 +1157,11 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.type_id,
 			p.model_wears_height_cm,
 			p.model_wears_size_id,
-			p.description,
 			p.hidden,
 			p.target_gender,
 			p.care_instructions,
 			p.composition,
-			m.id AS thumbnail_id,
+			p.thumbnail_id,
 			m.created_at AS thumbnail_created_at, 
 			m.full_size,
 			m.full_size_width,
@@ -907,32 +1176,36 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 		FROM 
 			product p
 		JOIN 
-			media m
-		ON 
-			p.thumbnail_id = m.id 
-		WHERE p.id IN (:productIds)`
+			media m ON p.thumbnail_id = m.id
+	WHERE p.id IN (:productIds)`
 
-	type product struct {
-		entity.Product
-		ThumbnailID int       `db:"thumbnail_id"`
-		CreatedAt   time.Time `db:"thumbnail_created_at"`
+	type productOrderResult struct {
+		productQueryResult
+		ThumbnailCreatedAt time.Time `db:"thumbnail_created_at"`
 	}
 
-	prds, err := QueryListNamed[product](ctx, rep.DB(), query, map[string]any{
+	prdResults, err := QueryListNamed[productOrderResult](ctx, rep.DB(), query, map[string]any{
 		"productIds": productIds,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query hero products: %w", err)
 	}
 
-	products := make([]entity.Product, 0, len(prds))
+	// Fetch all translations for these products
+	translationMap, err := fetchProductTranslations(ctx, rep.DB(), productIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
 
-	for _, p := range prds {
-		prd := p.Product
-		prd.MediaFull.Id = p.ThumbnailID
-		prd.MediaFull.CreatedAt = p.CreatedAt
+	products := make([]entity.Product, 0, len(prdResults))
 
-		products = append(products, prd)
+	for _, prdResult := range prdResults {
+		translations := translationMap[prdResult.Id]
+		product := prdResult.toProduct(translations)
+		// Set the correct thumbnail created_at
+		product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+
+		products = append(products, product)
 	}
 	return products, nil
 }
