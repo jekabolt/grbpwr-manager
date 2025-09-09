@@ -57,7 +57,8 @@ message Product {
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   string slug = 4;
-  ProductDisplay product_display = 5;
+  string sku = 5;
+  ProductDisplay product_display = 6;
 }
 
 message ProductBody {
@@ -68,22 +69,22 @@ message ProductBody {
 message ProductBodyInsert {
   google.protobuf.Timestamp preorder = 1;
   string brand = 2;
-  string sku = 3;
-  string color = 4;
-  string color_hex = 5;
-  string country_of_origin = 6;
-  google.type.Decimal price = 7;
-  google.type.Decimal sale_percentage = 8;
-  int32 top_category_id = 9;
-  int32 sub_category_id = 10;
-  int32 type_id = 11;
-  int32 model_wears_height_cm = 12;
-  int32 model_wears_size_id = 13;
-  string care_instructions = 14;
-  string composition = 15;
-  bool hidden = 16;
-  GenderEnum target_gender = 17;
-  string version = 18;
+  string color = 3;
+  string color_hex = 4;
+  string country_of_origin = 5;
+  google.type.Decimal price = 6;
+  google.type.Decimal sale_percentage = 7;
+  int32 top_category_id = 8;
+  int32 sub_category_id = 9;
+  int32 type_id = 10;
+  int32 model_wears_height_cm = 11;
+  int32 model_wears_size_id = 12;
+  string care_instructions = 13;
+  string composition = 14;
+  bool hidden = 15;
+  GenderEnum target_gender = 16;
+  string version = 17;
+  string collection = 18;
 }
 
 message ProductInsert {
