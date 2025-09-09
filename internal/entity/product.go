@@ -101,7 +101,6 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 type ProductBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
-	SKU                string              `db:"sku" valid:"required,alphanum"`
 	Color              string              `db:"color" valid:"required"`
 	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
@@ -117,6 +116,7 @@ type ProductBodyInsert struct {
 	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
 	Version            string              `db:"version" valid:"-"`
+	Collection         string              `db:"collection" valid:"-"`
 }
 
 type ProductBody struct {
@@ -141,6 +141,7 @@ type Product struct {
 	CreatedAt      time.Time      `db:"created_at"`
 	UpdatedAt      time.Time      `db:"updated_at"`
 	Slug           string         `db:"slug"`
+	SKU            string         `db:"sku"`
 	ProductDisplay ProductDisplay `valid:"required"`
 }
 

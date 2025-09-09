@@ -74,7 +74,6 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		ProductBodyInsert: entity.ProductBodyInsert{
 			Preorder:           sql.NullTime{Time: pbProductBodyInsert.Preorder.AsTime(), Valid: pbProductBodyInsert.Preorder.IsValid()},
 			Brand:              pbProductBodyInsert.Brand,
-			SKU:                pbProductBodyInsert.Sku,
 			Color:              pbProductBodyInsert.Color,
 			ColorHex:           pbProductBodyInsert.ColorHex,
 			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
@@ -90,6 +89,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			CareInstructions:   sql.NullString{String: pbProductBodyInsert.CareInstructions, Valid: pbProductBodyInsert.CareInstructions != ""},
 			Composition:        sql.NullString{String: pbProductBodyInsert.Composition, Valid: pbProductBodyInsert.Composition != ""},
 			Version:            pbProductBodyInsert.Version,
+			Collection:         pbProductBodyInsert.Collection,
 		},
 		Translations: []entity.ProductTranslationInsert{}, // Will be set by caller if needed
 	}
@@ -288,7 +288,6 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 			ProductBodyInsert: &pb_common.ProductBodyInsert{
 				Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
 				Brand:              productBodyInsert.Brand,
-				Sku:                productBodyInsert.SKU,
 				Color:              productBodyInsert.Color,
 				ColorHex:           productBodyInsert.ColorHex,
 				CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
@@ -304,6 +303,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 				CareInstructions:   productBodyInsert.CareInstructions.String,
 				Composition:        productBodyInsert.Composition.String,
 				Version:            productBodyInsert.Version,
+				Collection:         productBodyInsert.Collection,
 			},
 			Translations: pbTranslations,
 		},
@@ -321,6 +321,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
 		Slug:           GetProductSlug(e.Product.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
+		Sku:            e.Product.SKU,
 		ProductDisplay: pbProductDisplay,
 	}
 
@@ -435,12 +436,12 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
 		Slug:      GetProductSlug(e.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
+		Sku:       e.SKU,
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
 				ProductBodyInsert: &pb_common.ProductBodyInsert{
 					Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
 					Brand:              productBodyInsert.Brand,
-					Sku:                productBodyInsert.SKU,
 					Color:              productBodyInsert.Color,
 					ColorHex:           productBodyInsert.ColorHex,
 					CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
@@ -456,6 +457,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 					CareInstructions:   productBodyInsert.CareInstructions.String,
 					Composition:        productBodyInsert.Composition.String,
 					Version:            productBodyInsert.Version,
+					Collection:         productBodyInsert.Collection,
 				},
 				Translations: pbTranslations,
 			},
