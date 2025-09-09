@@ -392,6 +392,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			PaymentMethods:   cache.GetPaymentMethods(),
 			ShipmentCarriers: cache.GetShipmentCarriers(),
 			Sizes:            cache.GetSizes(),
+			Languages:        cache.GetLanguages(),
 			Genders:          cache.GetGenders(),
 			SortFactors:      cache.GetSortFactors(),
 			OrderFactors:     cache.GetOrderFactors(),
