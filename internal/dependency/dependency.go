@@ -15,7 +15,7 @@ import (
 	"github.com/stripe/stripe-go/v79"
 )
 
-//go:generate mockery --with-expecter --case underscore --all --output=./mocks
+//go:generate mockery --log-level=warn
 type (
 	ContextStore interface {
 		Tx(ctx context.Context, fn func(ctx context.Context, store Repository) error) error
