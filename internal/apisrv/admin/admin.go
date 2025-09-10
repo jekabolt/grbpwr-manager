@@ -162,7 +162,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 			slog.Default().ErrorContext(ctx, "can't create a product",
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Internal, "can't create a product")
+			return nil, status.Errorf(codes.Internal, "can't create a product: %v", err)
 		}
 	}
 
@@ -173,7 +173,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 			slog.Default().ErrorContext(ctx, "can't update a product",
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Internal, "can't update a product")
+			return nil, status.Errorf(codes.Internal, "can't update a product: %v", err)
 		}
 	}
 
@@ -182,7 +182,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		slog.Default().ErrorContext(ctx, "can't refresh hero",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't refresh hero")
+		return nil, status.Errorf(codes.Internal, "can't refresh hero: %v", err)
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
@@ -194,7 +194,7 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		slog.Default().ErrorContext(ctx, "can't revalidate product",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate product")
+		return nil, status.Errorf(codes.Internal, "can't revalidate product: %v", err)
 	}
 
 	return &pb_admin.UpsertProductResponse{

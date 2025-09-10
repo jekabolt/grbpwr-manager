@@ -114,36 +114,48 @@ func deleteSizeMeasurements(ctx context.Context, rep dependency.Repository, prod
 }
 
 func insertSizeMeasurements(ctx context.Context, rep dependency.Repository, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) error {
-
-	rowsPrdSizes := make([]map[string]any, 0, len(sizeMeasurements))
-	rowsPrdMeasurements := make([]map[string]any, 0, len(sizeMeasurements))
+	// Validate measurement_name_id values are not zero
 	for _, sm := range sizeMeasurements {
-		row := map[string]any{
-			"product_id": productID,
-			"size_id":    sm.ProductSize.SizeId,
-			"quantity":   sm.ProductSize.QuantityDecimal(),
+		for _, m := range sm.Measurements {
+			if m.MeasurementNameId == 0 {
+				return fmt.Errorf("invalid measurement_name_id: cannot be 0")
+			}
 		}
-		rowsPrdSizes = append(rowsPrdSizes, row)
+	}
 
+	// Insert product sizes one by one to get their IDs, then collect measurements
+	rowsPrdMeasurements := make([]map[string]any, 0)
+
+	for _, sm := range sizeMeasurements {
+		// Insert product size and get the generated ID
+		query := `INSERT INTO product_size (product_id, size_id, quantity) VALUES (:productId, :sizeId, :quantity)`
+		productSizeID, err := ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
+			"productId": productID,
+			"sizeId":    sm.ProductSize.SizeId,
+			"quantity":  sm.ProductSize.QuantityDecimal(),
+		})
+		if err != nil {
+			return fmt.Errorf("can't insert product size: %w", err)
+		}
+
+		// Now add measurements using the correct product_size_id
 		for _, m := range sm.Measurements {
 			row := map[string]any{
 				"product_id":          productID,
-				"product_size_id":     sm.ProductSize.SizeId,
+				"product_size_id":     productSizeID,
 				"measurement_name_id": m.MeasurementNameId,
 				"measurement_value":   m.MeasurementValue,
 			}
 			rowsPrdMeasurements = append(rowsPrdMeasurements, row)
 		}
-
-	}
-	err := BulkInsert(ctx, rep.DB(), "product_size", rowsPrdSizes)
-	if err != nil {
-		return fmt.Errorf("can't insert product sizes: %w", err)
 	}
 
-	err = BulkInsert(ctx, rep.DB(), "size_measurement", rowsPrdMeasurements)
-	if err != nil {
-		return fmt.Errorf("can't insert product measurements: %w", err)
+	// Bulk insert all measurements at once
+	if len(rowsPrdMeasurements) > 0 {
+		err := BulkInsert(ctx, rep.DB(), "size_measurement", rowsPrdMeasurements)
+		if err != nil {
+			return fmt.Errorf("can't insert product measurements: %w", err)
+		}
 	}
 
 	return nil
