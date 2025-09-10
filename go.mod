@@ -1,6 +1,6 @@
 module github.com/jekabolt/grbpwr-manager
 
-go 1.23.0
+go 1.24
 
 require (
 	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
@@ -13,7 +13,6 @@ require (
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/golang-migrate/migrate/v4 v4.15.2
 	github.com/golang/protobuf v1.5.4
-	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.0.0-rc.5
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/jmoiron/sqlx v1.3.5
@@ -52,6 +51,7 @@ require (
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
