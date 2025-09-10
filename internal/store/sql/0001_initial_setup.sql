@@ -829,3 +829,45 @@ CREATE INDEX idx_product_target_gender ON product(target_gender);
 CREATE INDEX idx_product_media_product_id_media_id ON product_media(product_id, media_id);
 
 CREATE INDEX idx_product_thumbnail_id ON product(thumbnail_id);
+
+-- +migrate Down
+-- Drop all tables and indexes in reverse order of creation
+DROP INDEX IF EXISTS idx_product_thumbnail_id;
+DROP INDEX IF EXISTS idx_product_media_product_id_media_id;
+DROP INDEX IF EXISTS idx_product_target_gender;
+DROP INDEX IF EXISTS idx_product_tag_tag_product_id;
+DROP INDEX IF EXISTS idx_product_size_size_id_product_id;
+DROP INDEX IF EXISTS idx_buyer_order_email;
+DROP INDEX IF EXISTS idx_payment_method_order;
+DROP INDEX IF EXISTS idx_customer_order_promo_id;
+DROP INDEX IF EXISTS idx_buyer_email;
+DROP INDEX IF EXISTS idx_payment_method_id;
+DROP INDEX IF EXISTS idx_customer_order_status_id;
+DROP INDEX IF EXISTS idx_order_item_order_id;
+DROP INDEX IF EXISTS idx_product_size_id_on_size_measurement;
+DROP INDEX IF EXISTS idx_product_id_on_product_tag;
+DROP INDEX IF EXISTS idx_product_id_on_product_media;
+DROP INDEX IF EXISTS idx_product_id_on_product_size;
+
+DROP TABLE IF EXISTS size_measurement;
+DROP TABLE IF EXISTS product_tag;
+DROP TABLE IF EXISTS product_media;
+DROP TABLE IF EXISTS product_size;
+DROP TABLE IF EXISTS order_item;
+DROP TABLE IF EXISTS shipment;
+DROP TABLE IF EXISTS payment;
+DROP TABLE IF EXISTS buyer;
+DROP TABLE IF EXISTS customer_order;
+DROP TABLE IF EXISTS product_translation;
+DROP TABLE IF EXISTS product;
+DROP TABLE IF EXISTS media;
+DROP TABLE IF EXISTS order_status;
+DROP TABLE IF EXISTS payment_method;
+DROP TABLE IF EXISTS promo;
+DROP TABLE IF EXISTS category_translation;
+DROP TABLE IF EXISTS category;
+DROP TABLE IF EXISTS measurement_name_translation;
+DROP TABLE IF EXISTS measurement_name;
+DROP TABLE IF EXISTS language;
+DROP TABLE IF EXISTS size;
+DROP TABLE IF EXISTS shipment_carrier;
