@@ -302,7 +302,6 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	SET 
 		preorder = :preorder, 
 		brand = :brand, 
-		sku = :sku, 
 		color = :color, 
 		color_hex = :colorHex, 
 		country_of_origin = :countryOfOrigin, 
@@ -317,7 +316,9 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		hidden = :hidden,
 		target_gender = :targetGender,
 		care_instructions = :careInstructions,
-		composition = :composition
+		composition = :composition,
+		version = :version,
+		collection = :collection
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, rep.DB(), query, map[string]any{
@@ -338,6 +339,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"targetGender":       prd.ProductBodyInsert.TargetGender,
 		"careInstructions":   prd.ProductBodyInsert.CareInstructions,
 		"composition":        prd.ProductBodyInsert.Composition,
+		"version":            prd.ProductBodyInsert.Version,
 		"collection":         prd.ProductBodyInsert.Collection,
 		"id":                 id,
 	})
