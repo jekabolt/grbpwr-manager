@@ -24,7 +24,7 @@ message Dictionary {
   int32 max_order_items = 9;
   string base_currency = 10;
   bool big_menu = 11;
-  string announce = 12;
+  repeated AnnounceTranslation announce_translations = 12;
 }
 
 message Genders {

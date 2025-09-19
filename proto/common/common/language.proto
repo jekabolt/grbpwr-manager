@@ -76,3 +76,8 @@ message NavFeaturedEntityInsertTranslation {
   int32 language_id = 1;
   string explore_text = 2;
 }
+
+message AnnounceTranslation {
+  int32 language_id = 1;
+  string text = 2;
+}

@@ -158,7 +158,8 @@ type (
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
 		SetBigMenu(ctx context.Context, bigMenu bool) error
-		SetAnnounce(ctx context.Context, announce string) error
+		SetAnnounceTranslations(ctx context.Context, translations []entity.AnnounceTranslation) error
+		GetAnnounceTranslations(ctx context.Context) ([]entity.AnnounceTranslation, error)
 	}
 
 	Repository interface {

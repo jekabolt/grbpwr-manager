@@ -386,21 +386,21 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:       cache.GetCategories(),
-			Measurements:     cache.GetMeasurements(),
-			OrderStatuses:    cache.GetOrderStatuses(),
-			PaymentMethods:   cache.GetPaymentMethods(),
-			ShipmentCarriers: cache.GetShipmentCarriers(),
-			Sizes:            cache.GetSizes(),
-			Languages:        cache.GetLanguages(),
-			Genders:          cache.GetGenders(),
-			SortFactors:      cache.GetSortFactors(),
-			OrderFactors:     cache.GetOrderFactors(),
-			SiteEnabled:      cache.GetSiteAvailability(),
-			MaxOrderItems:    cache.GetMaxOrderItems(),
-			BaseCurrency:     cache.GetBaseCurrency(),
-			BigMenu:          cache.GetBigMenu(),
-			Announce:         cache.GetAnnounce(),
+			Categories:           cache.GetCategories(),
+			Measurements:         cache.GetMeasurements(),
+			OrderStatuses:        cache.GetOrderStatuses(),
+			PaymentMethods:       cache.GetPaymentMethods(),
+			ShipmentCarriers:     cache.GetShipmentCarriers(),
+			Sizes:                cache.GetSizes(),
+			Languages:            cache.GetLanguages(),
+			Genders:              cache.GetGenders(),
+			SortFactors:          cache.GetSortFactors(),
+			OrderFactors:         cache.GetOrderFactors(),
+			SiteEnabled:          cache.GetSiteAvailability(),
+			MaxOrderItems:        cache.GetMaxOrderItems(),
+			BaseCurrency:         cache.GetBaseCurrency(),
+			BigMenu:              cache.GetBigMenu(),
+			AnnounceTranslations: cache.GetAnnounceTranslations(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -772,9 +772,18 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, err
 	}
 
-	err = s.repo.Settings().SetAnnounce(ctx, req.Announce)
+	// Convert protobuf announce translations to entity format
+	var announceTranslations []entity.AnnounceTranslation
+	for _, pbTranslation := range req.AnnounceTranslations {
+		announceTranslations = append(announceTranslations, entity.AnnounceTranslation{
+			LanguageId: int(pbTranslation.LanguageId),
+			Text:       pbTranslation.Text,
+		})
+	}
+
+	err = s.repo.Settings().SetAnnounceTranslations(ctx, announceTranslations)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set announce",
+		slog.Default().ErrorContext(ctx, "can't set announce translations",
 			slog.String("err", err.Error()),
 		)
 		return nil, err

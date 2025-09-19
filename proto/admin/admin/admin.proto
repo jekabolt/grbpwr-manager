@@ -441,7 +441,7 @@ message UpdateSettingsRequest {
   bool site_available = 3;
   int32 max_order_items = 4;
   bool big_menu = 5;
-  string announce = 6;
+  repeated common.AnnounceTranslation announce_translations = 6;
 }
 
 message UpdateSettingsResponse {}

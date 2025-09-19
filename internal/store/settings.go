@@ -94,7 +94,43 @@ func (ms *MYSQLStore) SetBigMenu(ctx context.Context, bigMenu bool) error {
 	return nil
 }
 
-func (ms *MYSQLStore) SetAnnounce(ctx context.Context, announce string) error {
-	cache.SetAnnounce(announce)
+func (ms *MYSQLStore) SetAnnounceTranslations(ctx context.Context, translations []entity.AnnounceTranslation) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// First, delete all existing announce translations
+		query := `DELETE FROM announce_translation`
+		err := ExecNamed(ctx, ms.DB(), query, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("failed to delete existing announce translations: %w", err)
+		}
+
+		// Insert new translations
+		for _, translation := range translations {
+			insertQuery := `INSERT INTO announce_translation (language_id, text) VALUES (:languageId, :text)`
+			err := ExecNamed(ctx, ms.DB(), insertQuery, map[string]any{
+				"languageId": translation.LanguageId,
+				"text":       translation.Text,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to insert announce translation: %w", err)
+			}
+		}
+
+		cache.SetAnnounceTranslations(translations)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update announce translations: %w", err)
+	}
 	return nil
+}
+
+func (ms *MYSQLStore) GetAnnounceTranslations(ctx context.Context) ([]entity.AnnounceTranslation, error) {
+	query := `SELECT id, language_id, text, created_at, updated_at FROM announce_translation ORDER BY language_id`
+
+	translations, err := QueryListNamed[entity.AnnounceTranslation](ctx, ms.DB(), query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get announce translations: %w", err)
+	}
+
+	return translations, nil
 }
