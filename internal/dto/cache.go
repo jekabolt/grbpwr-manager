@@ -7,21 +7,21 @@ import (
 )
 
 type Dict struct {
-	Categories       []entity.Category
-	Measurements     []entity.MeasurementName
-	OrderStatuses    []entity.OrderStatus
-	PaymentMethods   []entity.PaymentMethod
-	ShipmentCarriers []entity.ShipmentCarrier
-	Sizes            []entity.Size
-	Languages        []entity.Language
-	Genders          []pb_common.Genders
-	SortFactors      []pb_common.SortFactors
-	OrderFactors     []pb_common.OrderFactors
-	SiteEnabled      bool
-	MaxOrderItems    int
-	BaseCurrency     string
-	BigMenu          bool
-	Announce         string
+	Categories           []entity.Category
+	Measurements         []entity.MeasurementName
+	OrderStatuses        []entity.OrderStatus
+	PaymentMethods       []entity.PaymentMethod
+	ShipmentCarriers     []entity.ShipmentCarrier
+	Sizes                []entity.Size
+	Languages            []entity.Language
+	Genders              []pb_common.Genders
+	SortFactors          []pb_common.SortFactors
+	OrderFactors         []pb_common.OrderFactors
+	SiteEnabled          bool
+	MaxOrderItems        int
+	BaseCurrency         string
+	BigMenu              bool
+	AnnounceTranslations []entity.AnnounceTranslation
 }
 
 var (
@@ -174,7 +174,14 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency
 	commonDict.BigMenu = dict.BigMenu
-	commonDict.Announce = dict.Announce
+
+	// Convert announce translations to protobuf format
+	for _, trans := range dict.AnnounceTranslations {
+		commonDict.AnnounceTranslations = append(commonDict.AnnounceTranslations, &pb_common.AnnounceTranslation{
+			LanguageId: int32(trans.LanguageId),
+			Text:       trans.Text,
+		})
+	}
 
 	return commonDict
 }

@@ -56,6 +56,10 @@ func (ms *MYSQLStore) GetDictionaryInfo(ctx context.Context) (*entity.Dictionary
 		return nil, fmt.Errorf("failed to get languages: %w", err)
 	}
 
+	if dict.AnnounceTranslations, err = ms.Settings().GetAnnounceTranslations(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get announce translations: %w", err)
+	}
+
 	return &dict, nil
 }
 
