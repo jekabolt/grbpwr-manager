@@ -3,6 +3,7 @@ syntax = "proto3";
 package common;
 
 import "common/buyer.proto";
+import "common/language.proto";
 import "common/payment.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
@@ -47,19 +48,19 @@ message OrderItem {
   int32 order_id = 2;
   string thumbnail = 3;
   string blurhash = 4;
-  string product_name = 5;
-  string product_price = 6;
-  string product_price_with_sale = 7;
-  string product_sale_percentage = 8;
-  string product_brand = 9;
-  string slug = 10;
-  string color = 11;
-  int32 top_category_id = 12;
-  int32 sub_category_id = 13;
-  int32 type_id = 14;
-  string sku = 15;
-  google.protobuf.Timestamp preorder = 16;
-  OrderItemInsert order_item = 17;
+  string product_price = 5;
+  string product_price_with_sale = 6;
+  string product_sale_percentage = 7;
+  string product_brand = 8;
+  string slug = 9;
+  string color = 10;
+  int32 top_category_id = 11;
+  int32 sub_category_id = 12;
+  int32 type_id = 13;
+  string sku = 14;
+  google.protobuf.Timestamp preorder = 15;
+  OrderItemInsert order_item = 16;
+  repeated ProductInsertTranslation translations = 17;
 }
 
 message OrderItemInsert {

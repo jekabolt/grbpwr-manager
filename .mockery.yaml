@@ -1,14 +1,9 @@
-with-expecter: true
-resolve-type-alias: false
-disable-version-string: true
-issue-845-fix: true
 log-level: error
 packages:
   github.com/jekabolt/grbpwr-manager/internal/dependency:
     config:
       filename: "mock_{{.InterfaceName}}.go"
       dir: "{{.InterfaceDir}}/mocks"
-      mockname: "{{.InterfaceName}}"
     interfaces:
       ContextStore:
       Products:

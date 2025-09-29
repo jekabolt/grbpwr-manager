@@ -43,8 +43,14 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 				Name: "unknown",
 			}
 		}
+		// Get product name from first translation or use default
+		productName := "Product"
+		if len(item.Translations) > 0 {
+			productName = item.Translations[0].Name
+		}
+
 		oi[i] = OrderItem{
-			Name:        fmt.Sprintf("%s %s", item.ProductBrand, item.ProductName),
+			Name:        fmt.Sprintf("%s %s", item.ProductBrand, productName),
 			Thumbnail:   item.Thumbnail,
 			Size:        size.Name,
 			Quantity:    int(item.Quantity.IntPart()),
