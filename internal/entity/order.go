@@ -53,20 +53,20 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	Id            int           `db:"id"`
-	OrderId       int           `db:"order_id"`
-	Thumbnail     string        `db:"thumbnail"`
-	BlurHash      string        `db:"blur_hash"`
-	ProductName   string        `db:"product_name"`
-	ProductBrand  string        `db:"product_brand"`
-	Color         string        `db:"color"`
-	TopCategoryId int           `db:"top_category_id"`
-	SubCategoryId int           `db:"sub_category_id"`
-	TypeId        sql.NullInt32 `db:"type_id"`
-	TargetGender  GenderEnum    `db:"target_gender"`
-	SKU           string        `db:"product_sku"`
+	Id            int                           `db:"id"`
+	OrderId       int                           `db:"order_id"`
+	Thumbnail     string                        `db:"thumbnail"`
+	Translations  []ProductTranslationInsert    `db:"translations"`
+	BlurHash      string                        `db:"blur_hash"`
+	ProductBrand  string                        `db:"product_brand"`
+	Color         string                        `db:"color"`
+	TopCategoryId int                           `db:"top_category_id"`
+	SubCategoryId int                           `db:"sub_category_id"`
+	TypeId        sql.NullInt32                 `db:"type_id"`
+	TargetGender  GenderEnum                    `db:"target_gender"`
+	SKU           string                        `db:"product_sku"`
 	Slug          string
-	Preorder      sql.NullTime `db:"preorder"`
+	Preorder      sql.NullTime                  `db:"preorder"`
 	OrderItemInsert
 }
 

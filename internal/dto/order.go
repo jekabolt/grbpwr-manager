@@ -159,12 +159,21 @@ func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_com
 }
 
 func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderItem {
+	// Convert translations to protobuf format
+	var pbTranslations []*pb_common.ProductInsertTranslation
+	for _, trans := range orderItem.Translations {
+		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
 	return &pb_common.OrderItem{
 		Id:                    int32(orderItem.Id),
 		OrderId:               int32(orderItem.OrderId),
 		Thumbnail:             orderItem.Thumbnail,
 		Blurhash:              orderItem.BlurHash,
-		ProductName:           orderItem.ProductName,
 		ProductPrice:          orderItem.ProductPriceDecimal().String(),
 		ProductSalePercentage: orderItem.ProductSalePercentageDecimal().String(),
 		ProductPriceWithSale:  orderItem.ProductPriceWithSaleDecimal().String(),
@@ -177,6 +186,7 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderIte
 		Sku:                   orderItem.SKU,
 		Preorder:              timestamppb.New(orderItem.Preorder.Time),
 		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
+		Translations:          pbTranslations,
 	}
 }
 
@@ -245,13 +255,21 @@ func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem) ([]*pb_comm
 
 // convertOrderItem converts an individual entity.OrderItem to a pb_common.OrderItem
 func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
-	// Replace the following with actual conversion logic based on the structure of entity.OrderItem
+	// Convert translations to protobuf format
+	var pbTranslations []*pb_common.ProductInsertTranslation
+	for _, trans := range e.Translations {
+		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+			LanguageId:  int32(trans.LanguageId),
+			Name:        trans.Name,
+			Description: trans.Description,
+		})
+	}
+
 	return &pb_common.OrderItem{
 		Id:                    int32(e.Id),
 		OrderId:               int32(e.OrderId),
 		Thumbnail:             e.Thumbnail,
 		Blurhash:              e.BlurHash,
-		ProductName:           e.ProductName,
 		ProductPrice:          e.ProductPriceDecimal().String(),
 		ProductPriceWithSale:  e.ProductPriceWithSaleDecimal().String(),
 		ProductSalePercentage: e.ProductSalePercentageDecimal().String(),
@@ -264,6 +282,7 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		Slug:                  e.Slug,
 		Preorder:              timestamppb.New(e.Preorder.Time),
 		OrderItem:             convertOrderItemInsert(e.OrderItemInsert),
+		Translations:          pbTranslations,
 	}
 }
 

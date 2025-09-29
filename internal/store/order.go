@@ -113,7 +113,6 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 			OrderItemInsert: item,
 			Thumbnail:       prd.ProductDisplay.Thumbnail.ThumbnailMediaURL,
 			BlurHash:        prd.ProductDisplay.Thumbnail.BlurHash.String,
-			ProductName:     productName,
 			ProductBrand:    productBody.ProductBodyInsert.Brand,
 			Color:           productBody.ProductBodyInsert.Color,
 			SKU:             prd.SKU,
@@ -123,6 +122,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 			TypeId:          productBody.ProductBodyInsert.TypeId,
 			TargetGender:    productBody.ProductBodyInsert.TargetGender,
 			Preorder:        productBody.ProductBodyInsert.Preorder,
+			Translations:    productBody.Translations,
 		}
 
 		validItems = append(validItems, validItem)
@@ -724,7 +724,6 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
 			m.blur_hash,
-			p.name AS product_name,
 			p.brand AS product_brand,
 			p.sku AS product_sku,
 			p.color AS color,
@@ -747,13 +746,33 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []i
 		return nil, err
 	}
 
+	// Extract product IDs to fetch translations
+	productIds := make([]int, 0, len(ois))
+	for _, oi := range ois {
+		productIds = append(productIds, oi.ProductId)
+	}
+
+	// Fetch all translations for these products
+	translationMap, err := fetchProductTranslations(ctx, rep.DB(), productIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
 	// Create a map with initial capacity to reduce memory allocations
 	orderItemsMap := make(map[int][]entity.OrderItem, len(orderIds))
 
 	// Iterate over fetched order items and group them by order ID
 	for _, oi := range ois {
+		// Set translations for this order item
+		oi.Translations = translationMap[oi.ProductId]
+
+		productName := "product"
+		if len(translationMap[oi.ProductId]) > 0 {
+			productName = translationMap[oi.ProductId][0].Name
+		}
+
 		// Generate the slug for each order item
-		oi.Slug = dto.GetProductSlug(oi.ProductId, oi.ProductBrand, oi.ProductName, oi.TargetGender.String())
+		oi.Slug = dto.GetProductSlug(oi.ProductId, oi.ProductBrand, productName, oi.TargetGender.String())
 		// Append the order item to the corresponding order ID group
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
 	}
