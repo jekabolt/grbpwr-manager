@@ -85,6 +85,7 @@ message ProductBodyInsert {
   GenderEnum target_gender = 16;
   string version = 17;
   string collection = 18;
+  string fit = 19;
 }
 
 message ProductInsert {
