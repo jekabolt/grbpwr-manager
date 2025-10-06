@@ -117,6 +117,7 @@ type ProductBodyInsert struct {
 	TargetGender       GenderEnum          `db:"target_gender"`
 	Version            string              `db:"version" valid:"-"`
 	Collection         string              `db:"collection" valid:"-"`
+	Fit                sql.NullString      `db:"fit" valid:"-"`
 }
 
 type ProductBody struct {

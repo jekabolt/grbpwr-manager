@@ -90,6 +90,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Composition:        sql.NullString{String: pbProductBodyInsert.Composition, Valid: pbProductBodyInsert.Composition != ""},
 			Version:            pbProductBodyInsert.Version,
 			Collection:         pbProductBodyInsert.Collection,
+			Fit:                sql.NullString{String: pbProductBodyInsert.Fit, Valid: pbProductBodyInsert.Fit != ""},
 		},
 		Translations: []entity.ProductTranslationInsert{}, // Will be set by caller if needed
 	}
@@ -304,6 +305,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 				Composition:        productBodyInsert.Composition.String,
 				Version:            productBodyInsert.Version,
 				Collection:         productBodyInsert.Collection,
+				Fit:                productBodyInsert.Fit.String,
 			},
 			Translations: pbTranslations,
 		},
@@ -458,6 +460,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 					Composition:        productBodyInsert.Composition.String,
 					Version:            productBodyInsert.Version,
 					Collection:         productBodyInsert.Collection,
+					Fit:                productBodyInsert.Fit.String,
 				},
 				Translations: pbTranslations,
 			},
