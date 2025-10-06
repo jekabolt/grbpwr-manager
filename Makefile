@@ -6,8 +6,16 @@ GO_LINT_VERSION := v1.53.3
 
 init: clean install proto generate
 	
-generate: generate-resend-client
+generate: generate-resend-client generate-mocks
 	go generate ./...
+
+generate-mocks:
+	mockery
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		find internal/dependency/mocks -name "*.go" -type f -exec sed -i '' 's/^package dependency$$/package mocks/' {} \; ; \
+	else \
+		find internal/dependency/mocks -name "*.go" -type f -exec sed -i 's/^package dependency$$/package mocks/' {} \; ; \
+	fi
 
 proto: format-proto
 	buf generate 

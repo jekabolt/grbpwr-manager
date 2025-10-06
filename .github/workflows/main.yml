@@ -57,29 +57,19 @@ jobs:
           go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest
           go install golang.org/x/text/cmd/gotext@latest
           go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
-          go install github.com/vektra/mockery/v2@v2.43.2
+          go install github.com/vektra/mockery/v2@latest
           go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest
           go install github.com/bufbuild/buf/cmd/buf@latest
-
-      - name: Generate Mocks
-        run: |
-          # Ensure mockery is in PATH
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          # Generate mocks for all interfaces
-          mockery --all --keeptree --inpackage --with-expecter
-          # Run any other go generate commands
-          go generate ./...
 
       - name: Generate Proto
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          buf generate
+          make proto
 
-      - name: Generate OpenAPI
+      - name: Generate code (mocks, OpenAPI, etc.)
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          mkdir -p openapi/gen/resend
-          oapi-codegen -package resend -generate types,client -o openapi/gen/resend/resend.gen.go openapi/resend/openapi.yaml
+          make generate
 
       - name: Run tests
         run: go test -v ./...
