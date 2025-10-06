@@ -1,33 +1,6 @@
-log-level: error
 packages:
   github.com/jekabolt/grbpwr-manager/internal/dependency:
     config:
-      filename: "mock_{{.InterfaceName}}.go"
-      dir: "{{.InterfaceDir}}/mocks"
-    interfaces:
-      ContextStore:
-      Products:
-      Hero:
-      Mail:
-      Order:
-      Invoicer:
-      StripePayment:
-      Trongrid:
-      Subscribers:
-      Support:
-      Promo:
-      Rates:
-      Archive:
-      Language:
-      Media:
-      Admin:
-      Settings:
-      Repository:
-      Cache:
-      DB:
-      FileStore:
-      RatesService:
-      RevalidationService:
-      Mailer:
-      Sender:
-      PaymentPool:
+      all: true
+      dir: '{{.InterfaceDir}}/mocks'
+      filename: 'mock_{{.InterfaceName}}.go'
