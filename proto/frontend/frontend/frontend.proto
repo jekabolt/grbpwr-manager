@@ -76,6 +76,14 @@ service FrontendService {
     };
   }
 
+  // Cancel order by user with reason
+  rpc CancelOrderByUser(CancelOrderByUserRequest) returns (CancelOrderByUserResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/{order_uuid}/{b64_email}/cancel"
+      body: "*"
+    };
+  }
+
   // Subscribe to the newsletter
   rpc SubscribeNewsletter(SubscribeNewsletterRequest) returns (SubscribeNewsletterResponse) {
     option (google.api.http) = {
@@ -198,6 +206,16 @@ message CancelOrderInvoiceRequest {
 }
 
 message CancelOrderInvoiceResponse {}
+
+message CancelOrderByUserRequest {
+  string order_uuid = 1;
+  string b64_email = 2;
+  string reason = 3;
+}
+
+message CancelOrderByUserResponse {
+  common.OrderFull order = 1;
+}
 
 message SubscribeNewsletterRequest {
   string email = 1;

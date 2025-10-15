@@ -130,6 +130,14 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)
 	}
 
+	if eOrder.RefundReason.Valid {
+		pbOrder.RefundReason = eOrder.RefundReason.String
+	}
+
+	if eOrder.OrderComment.Valid {
+		pbOrder.OrderComment = eOrder.OrderComment.String
+	}
+
 	return pbOrder, nil
 }
 

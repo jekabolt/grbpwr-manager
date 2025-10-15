@@ -492,6 +492,52 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
 }
 
+func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelOrderByUserRequest) (*pb_frontend.CancelOrderByUserResponse, error) {
+	// Decode base64 email
+	email, err := base64.StdEncoding.DecodeString(req.B64Email)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't decode email",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "can't decode email")
+	}
+
+	// Validate reason
+	if req.Reason == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "reason is required")
+	}
+
+	// Cancel order by user
+	orderFull, err := s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, string(email), req.Reason)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't cancel order by user",
+			slog.String("err", err.Error()),
+			slog.String("orderUuid", req.OrderUuid),
+			slog.String("email", string(email)),
+		)
+		return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+	}
+
+	// Convert entity to protobuf
+	pbOrder, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert order to protobuf",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't convert order")
+	}
+
+	slog.Default().InfoContext(ctx, "order cancelled by user",
+		slog.String("orderUuid", req.OrderUuid),
+		slog.String("email", string(email)),
+		slog.String("reason", req.Reason),
+	)
+
+	return &pb_frontend.CancelOrderByUserResponse{
+		Order: pbOrder,
+	}, nil
+}
+
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
 	// Subscribe the user.
 	isSubscribed, err := s.repo.Subscribers().UpsertSubscription(ctx, req.Email, true)

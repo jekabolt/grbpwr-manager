@@ -41,6 +41,8 @@ message Order {
   google.type.Decimal total_price = 5;
   int32 order_status_id = 6;
   int32 promo_id = 7;
+  string refund_reason = 8;
+  string order_comment = 9;
 }
 
 message OrderItem {
@@ -77,7 +79,9 @@ enum OrderStatusEnum {
   ORDER_STATUS_ENUM_SHIPPED = 4;
   ORDER_STATUS_ENUM_DELIVERED = 5;
   ORDER_STATUS_ENUM_CANCELLED = 6;
-  ORDER_STATUS_ENUM_REFUNDED = 7;
+  ORDER_STATUS_ENUM_PENDING_RETURN = 7;
+  ORDER_STATUS_ENUM_REFUND_IN_PROGRESS = 8;
+  ORDER_STATUS_ENUM_REFUNDED = 9;
 }
 
 message OrderStatus {

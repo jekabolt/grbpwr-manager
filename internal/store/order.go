@@ -2083,3 +2083,110 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 
 	return nil
 }
+
+// CancelOrderByUser allows a user to cancel or request a refund for their order
+func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error) {
+	// Get order by UUID and email to verify ownership
+	orderFull, err := ms.GetOrderByUUIDAndEmail(ctx, orderUUID, email)
+	if err != nil {
+		return nil, fmt.Errorf("order not found: %w", err)
+	}
+
+	// Get current order status
+	orderStatus, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+	if !ok {
+		return nil, fmt.Errorf("order status does not exist: order status id %d", orderFull.Order.OrderStatusId)
+	}
+
+	currentStatus := orderStatus.Status.Name
+
+	// Check if order is already in a refund/cancellation state
+	if currentStatus == entity.Cancelled ||
+		currentStatus == entity.PendingReturn ||
+		currentStatus == entity.RefundInProgress ||
+		currentStatus == entity.Refunded {
+		return nil, fmt.Errorf("order already in refund progress or refunded: current status %s", currentStatus)
+	}
+
+	// Determine new status based on current status
+	var newStatus *cache.Status
+	switch currentStatus {
+	case entity.Placed, entity.AwaitingPayment:
+		// Set to Cancelled
+		newStatus = &cache.OrderStatusCancelled
+	case entity.Confirmed:
+		// Set to RefundInProgress
+		newStatus = &cache.OrderStatusRefundInProgress
+	case entity.Shipped, entity.Delivered:
+		// Set to PendingReturn
+		newStatus = &cache.OrderStatusPendingReturn
+	default:
+		return nil, fmt.Errorf("cannot cancel order with status: %s", currentStatus)
+	}
+
+	// Update order status and reason in transaction
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Update order status and refund reason
+		query := `
+			UPDATE customer_order
+			SET order_status_id = :orderStatusId,
+				refund_reason = :refundReason
+			WHERE id = :orderId`
+
+		err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+			"orderId":       orderFull.Order.Id,
+			"orderStatusId": newStatus.Status.Id,
+			"refundReason":  reason,
+		})
+		if err != nil {
+			return fmt.Errorf("can't update order status and reason: %w", err)
+		}
+
+		// If order was in AwaitingPayment, restore stock
+		if currentStatus == entity.AwaitingPayment {
+			orderItems := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
+			err := rep.Products().RestoreStockForProductSizes(ctx, orderItems)
+			if err != nil {
+				return fmt.Errorf("can't restore stock for product sizes: %w", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Refresh order details after update
+	orderFull, err = ms.GetOrderByUUIDAndEmail(ctx, orderUUID, email)
+	if err != nil {
+		return nil, fmt.Errorf("can't refresh order details: %w", err)
+	}
+
+	return orderFull, nil
+}
+
+// AddOrderComment adds a comment to an order
+func (ms *MYSQLStore) AddOrderComment(ctx context.Context, orderUUID string, comment string) error {
+	// Get order by UUID to verify it exists
+	_, err := getOrderByUUID(ctx, ms, orderUUID)
+	if err != nil {
+		return fmt.Errorf("can't get order by UUID: %w", err)
+	}
+
+	// Update order comment
+	query := `
+		UPDATE customer_order
+		SET order_comment = :comment
+		WHERE uuid = :uuid`
+
+	err = ExecNamed(ctx, ms.db, query, map[string]any{
+		"comment": comment,
+		"uuid":    orderUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order comment: %w", err)
+	}
+
+	return nil
+}

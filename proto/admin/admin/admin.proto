@@ -162,6 +162,14 @@ service AdminService {
     };
   }
 
+  // Adds a comment to an order
+  rpc AddOrderComment(AddOrderCommentRequest) returns (AddOrderCommentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/{order_uuid}/comment"
+      body: "*"
+    };
+  }
+
   // HERO MANAGER
 
   // Adds a new hero
@@ -393,6 +401,13 @@ message CancelOrderRequest {
 }
 
 message CancelOrderResponse {}
+
+message AddOrderCommentRequest {
+  string order_uuid = 1;
+  string comment = 2;
+}
+
+message AddOrderCommentResponse {}
 
 // HERO MANAGER
 
