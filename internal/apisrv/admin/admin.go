@@ -570,6 +570,30 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 	return &pb_admin.CancelOrderResponse{}, nil
 }
 
+func (s *Server) AddOrderComment(ctx context.Context, req *pb_admin.AddOrderCommentRequest) (*pb_admin.AddOrderCommentResponse, error) {
+	// Validate comment
+	if req.Comment == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "comment is required")
+	}
+
+	err := s.repo.Order().AddOrderComment(ctx, req.OrderUuid, req.Comment)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't add order comment",
+			slog.String("err", err.Error()),
+			slog.String("orderUuid", req.OrderUuid),
+			slog.String("comment", req.Comment),
+		)
+		return nil, status.Errorf(codes.Internal, "can't add order comment: %v", err)
+	}
+
+	slog.Default().InfoContext(ctx, "order comment added",
+		slog.String("orderUuid", req.OrderUuid),
+		slog.String("comment", req.Comment),
+	)
+
+	return &pb_admin.AddOrderCommentResponse{}, nil
+}
+
 // HERO MANAGER
 
 func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb_admin.AddHeroResponse, error) {

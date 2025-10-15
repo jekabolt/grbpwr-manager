@@ -27,13 +27,15 @@ type PaymentMethod struct {
 var (
 
 	// Statuses
-	OrderStatusPlaced          = Status{Status: entity.OrderStatus{Name: entity.Placed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED}
-	OrderStatusAwaitingPayment = Status{Status: entity.OrderStatus{Name: entity.AwaitingPayment}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT}
-	OrderStatusConfirmed       = Status{Status: entity.OrderStatus{Name: entity.Confirmed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED}
-	OrderStatusShipped         = Status{Status: entity.OrderStatus{Name: entity.Shipped}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED}
-	OrderStatusDelivered       = Status{Status: entity.OrderStatus{Name: entity.Delivered}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED}
-	OrderStatusCancelled       = Status{Status: entity.OrderStatus{Name: entity.Cancelled}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED}
-	OrderStatusRefunded        = Status{Status: entity.OrderStatus{Name: entity.Refunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED}
+	OrderStatusPlaced           = Status{Status: entity.OrderStatus{Name: entity.Placed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED}
+	OrderStatusAwaitingPayment  = Status{Status: entity.OrderStatus{Name: entity.AwaitingPayment}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT}
+	OrderStatusConfirmed        = Status{Status: entity.OrderStatus{Name: entity.Confirmed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED}
+	OrderStatusShipped          = Status{Status: entity.OrderStatus{Name: entity.Shipped}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED}
+	OrderStatusDelivered        = Status{Status: entity.OrderStatus{Name: entity.Delivered}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED}
+	OrderStatusCancelled        = Status{Status: entity.OrderStatus{Name: entity.Cancelled}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED}
+	OrderStatusPendingReturn    = Status{Status: entity.OrderStatus{Name: entity.PendingReturn}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN}
+	OrderStatusRefundInProgress = Status{Status: entity.OrderStatus{Name: entity.RefundInProgress}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS}
+	OrderStatusRefunded         = Status{Status: entity.OrderStatus{Name: entity.Refunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED}
 
 	orderStatuses = []*Status{
 		&OrderStatusPlaced,
@@ -42,6 +44,8 @@ var (
 		&OrderStatusShipped,
 		&OrderStatusDelivered,
 		&OrderStatusCancelled,
+		&OrderStatusPendingReturn,
+		&OrderStatusRefundInProgress,
 		&OrderStatusRefunded,
 	}
 

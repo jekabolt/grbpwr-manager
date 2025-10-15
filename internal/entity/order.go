@@ -37,6 +37,8 @@ type Order struct {
 	TotalPrice    decimal.Decimal `db:"total_price"`
 	OrderStatusId int             `db:"order_status_id"`
 	PromoId       sql.NullInt32   `db:"promo_id"`
+	RefundReason  sql.NullString  `db:"refund_reason"`
+	OrderComment  sql.NullString  `db:"order_comment"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
@@ -53,20 +55,20 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	Id            int                           `db:"id"`
-	OrderId       int                           `db:"order_id"`
-	Thumbnail     string                        `db:"thumbnail"`
-	Translations  []ProductTranslationInsert    `db:"translations"`
-	BlurHash      string                        `db:"blur_hash"`
-	ProductBrand  string                        `db:"product_brand"`
-	Color         string                        `db:"color"`
-	TopCategoryId int                           `db:"top_category_id"`
-	SubCategoryId int                           `db:"sub_category_id"`
-	TypeId        sql.NullInt32                 `db:"type_id"`
-	TargetGender  GenderEnum                    `db:"target_gender"`
-	SKU           string                        `db:"product_sku"`
+	Id            int                        `db:"id"`
+	OrderId       int                        `db:"order_id"`
+	Thumbnail     string                     `db:"thumbnail"`
+	Translations  []ProductTranslationInsert `db:"translations"`
+	BlurHash      string                     `db:"blur_hash"`
+	ProductBrand  string                     `db:"product_brand"`
+	Color         string                     `db:"color"`
+	TopCategoryId int                        `db:"top_category_id"`
+	SubCategoryId int                        `db:"sub_category_id"`
+	TypeId        sql.NullInt32              `db:"type_id"`
+	TargetGender  GenderEnum                 `db:"target_gender"`
+	SKU           string                     `db:"product_sku"`
 	Slug          string
-	Preorder      sql.NullTime                  `db:"preorder"`
+	Preorder      sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 
@@ -160,24 +162,28 @@ func (osn *OrderStatusName) String() string {
 }
 
 const (
-	Placed          OrderStatusName = "placed"
-	AwaitingPayment OrderStatusName = "awaiting_payment"
-	Confirmed       OrderStatusName = "confirmed"
-	Shipped         OrderStatusName = "shipped"
-	Delivered       OrderStatusName = "delivered"
-	Cancelled       OrderStatusName = "cancelled"
-	Refunded        OrderStatusName = "refunded"
+	Placed           OrderStatusName = "placed"
+	AwaitingPayment  OrderStatusName = "awaiting_payment"
+	Confirmed        OrderStatusName = "confirmed"
+	Shipped          OrderStatusName = "shipped"
+	Delivered        OrderStatusName = "delivered"
+	Cancelled        OrderStatusName = "cancelled"
+	PendingReturn    OrderStatusName = "pending_return"
+	RefundInProgress OrderStatusName = "refund_in_progress"
+	Refunded         OrderStatusName = "refunded"
 )
 
 // ValidOrderStatusNames is a set of valid order status names
 var ValidOrderStatusNames = map[OrderStatusName]bool{
-	Placed:          true,
-	AwaitingPayment: true,
-	Confirmed:       true,
-	Shipped:         true,
-	Delivered:       true,
-	Cancelled:       true,
-	Refunded:        true,
+	Placed:           true,
+	AwaitingPayment:  true,
+	Confirmed:        true,
+	Shipped:          true,
+	Delivered:        true,
+	Cancelled:        true,
+	PendingReturn:    true,
+	RefundInProgress: true,
+	Refunded:         true,
 }
 
 // OrderStatus represents the order_status table

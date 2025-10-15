@@ -78,6 +78,8 @@ type (
 		RefundOrder(ctx context.Context, orderUUID string) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
+		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
+		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
 	}
 
 	// TODO: invoice to separate interface
