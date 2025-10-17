@@ -63,7 +63,7 @@ type OrderItem struct {
 	ProductBrand  string                     `db:"product_brand"`
 	Color         string                     `db:"color"`
 	TopCategoryId int                        `db:"top_category_id"`
-	SubCategoryId int                        `db:"sub_category_id"`
+	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
 	TypeId        sql.NullInt32              `db:"type_id"`
 	TargetGender  GenderEnum                 `db:"target_gender"`
 	SKU           string                     `db:"product_sku"`

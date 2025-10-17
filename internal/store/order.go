@@ -118,7 +118,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 			SKU:             prd.SKU,
 			Slug:            dto.GetProductSlug(prd.Id, productBody.ProductBodyInsert.Brand, productName, productBody.ProductBodyInsert.TargetGender.String()),
 			TopCategoryId:   productBody.ProductBodyInsert.TopCategoryId,
-			SubCategoryId:   int(productBody.ProductBodyInsert.SubCategoryId.Int32),
+			SubCategoryId:   productBody.ProductBodyInsert.SubCategoryId,
 			TypeId:          productBody.ProductBodyInsert.TypeId,
 			TargetGender:    productBody.ProductBodyInsert.TargetGender,
 			Preorder:        productBody.ProductBodyInsert.Preorder,
