@@ -34,7 +34,7 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repositor
 	data := struct {
 		Preheader string
 	}{
-		Preheader: "Welcome to GRBPWR",
+		Preheader: "WELCOME TO GRBPWR",
 	}
 	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {

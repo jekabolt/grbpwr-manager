@@ -20,9 +20,14 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 			},
 		}
 	}
+
+	// Calculate subtotal (total - shipping)
+	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
+
 	return &OrderConfirmed{
-		Preheader:           "Your GRBPWR order has been confirmed",
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 		OrderUUID:           of.Order.UUID,
+		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
 		PromoExist:          of.PromoCode.Id != 0,
@@ -43,11 +48,16 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 			},
 		}
 	}
+
+	// Calculate subtotal (total - shipping)
+	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
+
 	return &OrderShipment{
-		Preheader:           "Your GRBPWR order has been shipped",
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
 		OrderUUID:           of.Order.UUID,
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
+		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
@@ -58,7 +68,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 
 func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
 	return &OrderCancelled{
-		Preheader: "Your GRBPWR order has been cancelled",
+		Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
@@ -66,7 +76,7 @@ func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
 
 func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated {
 	return &OrderRefundInitiated{
-		Preheader: "Your GRBPWR refund has been initiated",
+		Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
@@ -102,6 +112,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 type OrderConfirmed struct {
 	Preheader           string
 	OrderUUID           string
+	SubtotalPrice       string
 	TotalPrice          string
 	OrderItems          []OrderItem
 	PromoExist          bool
@@ -130,6 +141,7 @@ type OrderShipment struct {
 	OrderUUID           string
 	EmailB64            string
 	OrderItems          []OrderItem
+	SubtotalPrice       string
 	TotalPrice          string
 	PromoExist          bool
 	PromoDiscountAmount string
