@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"log/slog"
 
@@ -470,7 +469,7 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
 
-	obs, err := s.repo.Order().SetTrackingNumber(ctx, req.OrderUuid, req.TrackingCode)
+	_, err := s.repo.Order().SetTrackingNumber(ctx, req.OrderUuid, req.TrackingCode)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update tracking number info",
 			slog.String("err", err.Error()),
@@ -478,11 +477,17 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
 	}
 
-	err = s.mailer.SendOrderShipped(ctx, s.repo, obs.Buyer.Email, &dto.OrderShipment{
-		Name:         fmt.Sprintf("%s %s", obs.Buyer.FirstName, obs.Buyer.LastName),
-		OrderUUID:    obs.Order.UUID,
-		ShippingDate: time.Now().Format("2006-01-02"),
-	})
+	// Get full order details for email
+	orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order full by uuid",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get order details")
+	}
+
+	shipmentDetails := dto.OrderFullToOrderShipment(orderFull)
+	err = s.mailer.SendOrderShipped(ctx, s.repo, orderFull.Buyer.Email, shipmentDetails)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't send order shipped email",
 			slog.String("err", err.Error()),

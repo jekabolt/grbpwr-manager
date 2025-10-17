@@ -5,7 +5,6 @@ import (
 	"embed"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"text/template"
 	"time"
@@ -21,7 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-//go:embed templates/*.gohtml
+//go:embed templates/*.gohtml templates/partials/*.gohtml
 var templatesFS embed.FS
 
 const (
@@ -95,32 +94,46 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 }
 
 func (m *Mailer) parseTemplates() error {
-	// Define the template directory path
-	templateDir := "templates"
+	// First, parse all partials into a base template
+	partials, err := template.ParseFS(templatesFS, "templates/partials/*.gohtml")
+	if err != nil {
+		return fmt.Errorf("error parsing partial templates: %w", err)
+	}
 
-	// Read the directory entries from the embedded filesystem
-	dirEntries, err := templatesFS.ReadDir(templateDir)
+	// Read the directory entries from the embedded filesystem to get template names
+	dirEntries, err := templatesFS.ReadDir("templates")
 	if err != nil {
 		return fmt.Errorf("error reading template directory: %w", err)
 	}
 
-	// Iterate over each file in the directory
+	// Iterate over each file in the templates directory (not subdirectories)
 	for _, entry := range dirEntries {
-		// Skip directories
+		// Skip directories (like partials/)
 		if entry.IsDir() {
 			continue
 		}
 
-		// Construct the full path of the template file
-		templatePath := filepath.Join(templateDir, entry.Name())
+		fileName := entry.Name()
 
-		// Parse the template file
-		tmpl, err := template.ParseFS(templatesFS, templatePath)
+		// Clone the partials for each main template
+		tmpl, err := partials.Clone()
 		if err != nil {
-			return fmt.Errorf("error parsing template '%s': %w", entry.Name(), err)
+			return fmt.Errorf("error cloning partials: %w", err)
 		}
 
-		m.templates[templateName(entry.Name())] = tmpl
+		// Read the specific template file content
+		content, err := templatesFS.ReadFile("templates/" + fileName)
+		if err != nil {
+			return fmt.Errorf("error reading template %s: %w", fileName, err)
+		}
+
+		// Parse the content and name it
+		tmpl, err = tmpl.New(fileName).Parse(string(content))
+		if err != nil {
+			return fmt.Errorf("error parsing template %s: %w", fileName, err)
+		}
+
+		m.templates[templateName(fileName)] = tmpl
 	}
 
 	return nil
@@ -138,7 +151,8 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	}
 
 	body := &strings.Builder{}
-	if err := tmpl.Execute(body, data); err != nil {
+	// Execute the template by its filename
+	if err := tmpl.ExecuteTemplate(body, string(tn), data); err != nil {
 		return nil, fmt.Errorf("error executing template: %w", err)
 	}
 
