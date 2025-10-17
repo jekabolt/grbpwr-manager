@@ -1,8 +1,8 @@
 {{define "email_footer"}}
             <!-- Contact and footer section -->
-            <tr><td style="height:32px; line-height:32px; font-size:0;">&nbsp;</td></tr>
-            <tr><td style="border-top:1px solid #e5e5e5; height:0; line-height:0; font-size:0;">&nbsp;</td></tr>
-            <tr><td style="height:18px; line-height:18px; font-size:0;">&nbsp;</td></tr>
+            {{template "spacer_32"}}
+            {{template "divider"}}
+            {{template "spacer_18"}}
 
             <!-- Contact -->
             <tr>
@@ -11,12 +11,11 @@
                 <div style="font-size:16px; line-height:24px; padding-top:6px;">
                   <a href="mailto:customer@grbpwr.com" style="color:#000000; text-decoration:none;">customer@grbpwr.com</a>
                 </div>
-                <div style="font-size:14px; line-height:22px; padding-top:14px;">[ CUSTOMER SERVICE ]</div>
               </td>
             </tr>
 
             <!-- Social -->
-            <tr><td style="height:28px; line-height:28px; font-size:0;">&nbsp;</td></tr>
+            {{template "spacer_28"}}
             <tr>
               <td align="center">
                 <table role="presentation" border="0" cellspacing="0" cellpadding="0">
@@ -38,7 +37,7 @@
               </td>
             </tr>
 
-            <tr><td style="height:56px; line-height:56px; font-size:0;">&nbsp;</td></tr>
+            {{template "spacer_56"}}
           </table>
 
         </td>
