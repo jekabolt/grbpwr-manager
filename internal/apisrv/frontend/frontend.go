@@ -527,6 +527,20 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 		return nil, status.Errorf(codes.Internal, "can't convert order")
 	}
 
+	// Send refund initiated email if order status is RefundInProgress or PendingReturn
+	orderStatus, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+	if ok && (orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn) {
+		refundDetails := dto.OrderFullToOrderRefundInitiated(orderFull)
+		err = s.mailer.SendRefundInitiated(ctx, s.repo, orderFull.Buyer.Email, refundDetails)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't send refund initiated email",
+				slog.String("err", err.Error()),
+				slog.String("orderUuid", req.OrderUuid),
+			)
+			// Don't fail the cancellation if email fails
+		}
+	}
+
 	slog.Default().InfoContext(ctx, "order cancelled by user",
 		slog.String("orderUuid", req.OrderUuid),
 		slog.String("email", string(email)),

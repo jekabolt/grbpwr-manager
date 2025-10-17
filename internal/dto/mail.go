@@ -21,16 +21,54 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 		}
 	}
 	return &OrderConfirmed{
+		Preheader:           "Your GRBPWR order has been confirmed",
 		OrderUUID:           of.Order.UUID,
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
-		FullName:            fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName),
 		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
 		ShippingPrice:       sc.PriceDecimal().String(),
-		ShipmentCarrier:     sc.Carrier,
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
+	}
+}
+
+func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
+	sc, ok := cache.GetShipmentCarrierById(of.Shipment.CarrierId)
+	if !ok {
+		sc = entity.ShipmentCarrier{
+			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
+				Price:   decimal.Zero,
+				Carrier: "unknown",
+			},
+		}
+	}
+	return &OrderShipment{
+		Preheader:           "Your GRBPWR order has been shipped",
+		OrderUUID:           of.Order.UUID,
+		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
+		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
+		TotalPrice:          of.Order.TotalPriceDecimal().String(),
+		PromoExist:          of.PromoCode.Id != 0,
+		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
+		HasFreeShipping:     of.PromoCode.FreeShipping,
+		ShippingPrice:       sc.PriceDecimal().String(),
+	}
+}
+
+func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
+	return &OrderCancelled{
+		Preheader: "Your GRBPWR order has been cancelled",
+		OrderUUID: of.Order.UUID,
+		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
+	}
+}
+
+func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated {
+	return &OrderRefundInitiated{
+		Preheader: "Your GRBPWR refund has been initiated",
+		OrderUUID: of.Order.UUID,
+		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
 }
 
@@ -50,12 +88,11 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 		}
 
 		oi[i] = OrderItem{
-			Name:        fmt.Sprintf("%s %s", item.ProductBrand, productName),
-			Thumbnail:   item.Thumbnail,
-			Size:        size.Name,
-			Quantity:    int(item.Quantity.IntPart()),
-			Price:       item.OrderItemInsert.ProductPriceDecimal().String(),
-			SalePercent: item.OrderItemInsert.ProductSalePercentageDecimal().String(),
+			Name:      fmt.Sprintf("%s %s", item.ProductBrand, productName),
+			Thumbnail: item.Thumbnail,
+			Size:      size.Name,
+			Quantity:  int(item.Quantity.IntPart()),
+			Price:     item.OrderItemInsert.ProductPriceDecimal().String(),
 		}
 	}
 
@@ -63,46 +100,53 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 }
 
 type OrderConfirmed struct {
+	Preheader           string
 	OrderUUID           string
 	TotalPrice          string
 	OrderItems          []OrderItem
-	FullName            string
 	PromoExist          bool
 	PromoDiscountAmount string
 	HasFreeShipping     bool
 	ShippingPrice       string
-	ShipmentCarrier     string
 	EmailB64            string
 }
 
 type OrderItem struct {
-	Name        string
-	Thumbnail   string
-	Size        string
-	Quantity    int
-	Price       string
-	SalePercent string
+	Name      string
+	Thumbnail string
+	Size      string
+	Quantity  int
+	Price     string
 }
 
 type OrderCancelled struct {
-	Name             string
-	OrderID          string
-	CancellationDate string
-	RefundAmount     float64
-	PaymentMethod    string
-	PaymentCurrency  string
+	Preheader string
+	OrderUUID string
+	EmailB64  string
 }
 
 type OrderShipment struct {
-	Name         string
-	OrderUUID    string
-	ShippingDate string
+	Preheader           string
+	OrderUUID           string
+	EmailB64            string
+	OrderItems          []OrderItem
+	TotalPrice          string
+	PromoExist          bool
+	PromoDiscountAmount string
+	HasFreeShipping     bool
+	ShippingPrice       string
 }
+
+type OrderRefundInitiated struct {
+	Preheader string
+	OrderUUID string
+	EmailB64  string
+}
+
 type PromoCodeDetails struct {
-	PromoCode       string
-	HasFreeShipping bool
-	DiscountAmount  int
-	ExpirationDate  string
+	Preheader      string
+	PromoCode      string
+	DiscountAmount int
 }
 
 func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest) (*entity.SendEmailRequest, error) {

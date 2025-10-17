@@ -1,308 +1,526 @@
 package mail
 
-// import (
-// 	"context"
-// 	"fmt"
-// 	"net/http"
-// 	"os"
-// 	"testing"
-// 	"time"
+import (
+	"context"
+	"encoding/base64"
+	"strings"
+	"testing"
 
-// 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
-// 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-// 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-// 	"github.com/spf13/viper"
-// 	"github.com/stretchr/testify/assert"
-// 	"github.com/stretchr/testify/mock"
-// )
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
 
-// func loadConfig(cfgFile string) (*Config, error) {
-// 	viper.SetConfigType("toml")
-// 	viper.SetConfigFile(cfgFile)
-// 	if cfgFile != "" {
-// 		viper.SetConfigFile(cfgFile)
-// 	} else {
-// 		viper.SetConfigName("config")
-// 		viper.AddConfigPath("../../config")
-// 		viper.AddConfigPath("/usr/local/config")
-// 	}
+func createTestMailer(t *testing.T) *Mailer {
+	config := &Config{
+		APIKey:    "test-api-key",
+		FromEmail: "test@example.com",
+		FromName:  "Test Mailer",
+		ReplyTo:   "reply@example.com",
+	}
 
-// 	if err := viper.ReadInConfig(); err != nil {
-// 		return nil, fmt.Errorf("failed to read config: %v", err)
-// 	}
+	mailDBMock := mocks.NewMockMail(t)
+	mailer, err := new(config, mailDBMock)
+	require.NoError(t, err)
 
-// 	var config Config
+	return mailer
+}
 
-// 	err := viper.UnmarshalKey("mailer", &config)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
-// 	}
+func TestNew(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		config := &Config{
+			APIKey:    "test-api-key",
+			FromEmail: "test@example.com",
+			FromName:  "Test Mailer",
+			ReplyTo:   "reply@example.com",
+		}
 
-// 	fmt.Printf("conf---- %+v", config)
-// 	return &config, nil
-// }
+		mailDBMock := mocks.NewMockMail(t)
+		mailer, err := New(config, mailDBMock)
 
-// func skipCI(t *testing.T) {
-// 	if os.Getenv("CI") != "" {
-// 		t.Skip("Skipping testing in CI environment")
-// 	}
-// }
+		assert.NoError(t, err)
+		assert.NotNil(t, mailer)
+	})
 
-// func TestMailer(t *testing.T) {
-// 	skipCI(t)
+	t.Run("Empty API Key", func(t *testing.T) {
+		config := &Config{
+			APIKey:    "",
+			FromEmail: "test@example.com",
+			FromName:  "Test Mailer",
+		}
 
-// 	conf, err := loadConfig("")
-// 	assert.NoError(t, err)
+		mailDBMock := mocks.NewMockMail(t)
+		mailer, err := New(config, mailDBMock)
 
-// 	mailDBMock := mocks.NewMail(t)
+		assert.Error(t, err)
+		assert.Nil(t, mailer)
+		assert.Contains(t, err.Error(), "incomplete config")
+	})
 
-// 	repMock := mocks.NewRepository(t)
+	t.Run("Empty From Email", func(t *testing.T) {
+		config := &Config{
+			APIKey:    "test-api-key",
+			FromEmail: "",
+			FromName:  "Test Mailer",
+		}
 
-// 	m, err := New(conf, mailDBMock)
-// 	ctx := context.Background()
-// 	assert.NoError(t, err)
+		mailDBMock := mocks.NewMockMail(t)
+		mailer, err := New(config, mailDBMock)
 
-// 	repMock.EXPECT().Mail().Return(mailDBMock)
+		assert.Error(t, err)
+		assert.Nil(t, mailer)
+	})
+}
 
-// 	mailDBMock.EXPECT().AddMail(ctx, mock.Anything).Return(1, nil)
+func TestParseTemplates(t *testing.T) {
+	mailer := createTestMailer(t)
 
-// 	to := "jekabolt@yahoo.com"
+	// Verify all main templates are loaded
+	expectedTemplates := []templateName{
+		"new_subscriber.gohtml",
+		"order_cancelled.gohtml",
+		"order_confirmed.gohtml",
+		"order_shipped.gohtml",
+		"promo_code.gohtml",
+		"refund_initiated.gohtml",
+	}
 
-// 	// err = m.SendOrderConfirmation(ctx, repMock, to, &dto.OrderConfirmed{
-// 	// 	OrderUUID:  "testuuid",
-// 	// 	TotalPrice: "123",
-// 	// 	OrderItems: []dto.OrderItem{
-// 	// 		{
-// 	// 			Name:        "shirt",
-// 	// 			Thumbnail:   "https://files.grbpwr.com/grbpwr-com/grbpwr-com/2024/april/20240425215239809-thumb.webp",
-// 	// 			Size:        "M",
-// 	// 			Quantity:    1,
-// 	// 			Price:       "100",
-// 	// 			SalePercent: "0",
-// 	// 		},
-// 	// 	},
-// 	// 	FullName:            "jeka bolt",
-// 	// 	PromoExist:          false,
-// 	// 	PromoDiscountAmount: "0",
-// 	// 	HasFreeShipping:     false,
-// 	// 	ShippingPrice:       10,
-// 	// 	ShipmentCarrier:     "DHL",
-// 	// })
-// 	// assert.NoError(t, err)
+	for _, tmplName := range expectedTemplates {
+		tmpl, exists := mailer.templates[tmplName]
+		assert.True(t, exists, "Template %s should be loaded", tmplName)
+		assert.NotNil(t, tmpl, "Template %s should not be nil", tmplName)
+	}
 
-// 	err = m.SendOrderShipped(ctx, repMock, to, &dto.OrderShipment{
-// 		Name:         "jeka bolt",
-// 		OrderUUID:    "testuuid",
-// 		ShippingDate: "2021-09-01",
-// 	})
-// 	assert.NoError(t, err)
+	// Verify partials are not in main templates map
+	partialTemplates := []string{
+		"email_header.gohtml",
+		"email_footer.gohtml",
+		"order_items_list.gohtml",
+		"order_totals.gohtml",
+		"divider.gohtml",
+		"spacer.gohtml",
+		"signature.gohtml",
+		"order_track_link.gohtml",
+	}
 
-// 	// _, err = m.SendOrderConfirmation(ctx, to, &dto.OrderConfirmed{
-// 	// 	OrderID:         "123",
-// 	// 	Name:            "jekabolt",
-// 	// 	OrderDate:       "2021-09-01",
-// 	// 	TotalAmount:     100,
-// 	// 	PaymentMethod:   string(entity.Card),
-// 	// 	PaymentCurrency: "EUR",
-// 	// })
-// 	// assert.NoError(t, err)
+	for _, partial := range partialTemplates {
+		_, exists := mailer.templates[templateName(partial)]
+		assert.False(t, exists, "Partial %s should not be in main templates map", partial)
+	}
+}
 
-// 	// _, err = m.SendOrderCancellation(ctx, to, &dto.OrderCancelled{
-// 	// 	OrderID:          "123",
-// 	// 	Name:             "jekabolt",
-// 	// 	CancellationDate: "2021-09-01",
-// 	// 	RefundAmount:     100,
-// 	// 	PaymentMethod:    string(entity.Eth),
-// 	// 	PaymentCurrency:  "ETH",
-// 	// })
-// 	// assert.NoError(t, err)
+func TestSendNewSubscriber(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
 
-// 	// _, err = m.SendOrderShipped(ctx, to, &dto.OrderShipment{
-// 	// 	OrderID:        "123",
-// 	// 	Name:           "jekabolt",
-// 	// 	ShippingDate:   "2021-09-01",
-// 	// 	TotalAmount:    100,
-// 	// 	TrackingNumber: "123456789",
-// 	// 	TrackingURL:    "https://www.tracking.grbpwr.com/",
-// 	// })
-// 	// assert.NoError(t, err)
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
 
-// 	// _, err = m.SendPromoCode(ctx, to, &dto.PromoCodeDetails{
-// 	// 	PromoCode:       "test",
-// 	// 	HasFreeShipping: true,
-// 	// 	DiscountAmount:  100,
-// 	// 	ExpirationDate:  "2021-09-01",
-// 	// })
-// 	// assert.NoError(t, err)
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
 
-// }
+	// Mock the sender
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
-// func TestMailerStartStop(t *testing.T) {
-// 	// Mock the MailDB dependency
-// 	mailDBMock := mocks.NewMail(t)
+	err := mailer.SendNewSubscriber(ctx, repMock, "test@example.com")
 
-// 	ctx := context.Background()
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
+}
 
-// 	conf, err := loadConfig("")
-// 	assert.NoError(t, err)
+func TestSendOrderConfirmation(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
 
-// 	// Create a new Mailer instance
-// 	mailer, err := New(conf, mailDBMock)
-// 	assert.NoError(t, err, "Failed to create Mailer instance")
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
 
-// 	err = mailer.Stop()
-// 	assert.Error(t, err)
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
 
-// 	// Start the Mailer
-// 	err = mailer.Start(ctx)
-// 	assert.NoError(t, err, "Mailer should start without error")
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
-// 	// Allow some time for the goroutine to run
-// 	time.Sleep(100 * time.Millisecond) // Adjust time as needed
+	orderDetails := &dto.OrderConfirmed{
+		Preheader:           "Your GRBPWR order has been confirmed",
+		OrderUUID:           "test-uuid-123",
+		TotalPrice:          "100.00",
+		OrderItems:          []dto.OrderItem{},
+		PromoExist:          false,
+		PromoDiscountAmount: "0",
+		HasFreeShipping:     false,
+		ShippingPrice:       "10.00",
+		EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+	}
 
-// 	// Stop the Mailer
-// 	err = mailer.Stop()
-// 	assert.NoError(t, err, "Mailer should stop without error")
-// 	// Attempt to stop the Mailer again
-// 	err = mailer.Stop()
-// 	assert.Error(t, err)
+	err := mailer.SendOrderConfirmation(ctx, repMock, "test@example.com", orderDetails)
 
-// }
-// func TestMailerLimit(t *testing.T) {
-// 	// Mock the MailDB and Sender dependencies
-// 	mailDBMock := mocks.NewMail(t)
-// 	senderMock := mocks.NewSender(t)
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
 
-// 	conf, err := loadConfig("")
-// 	assert.NoError(t, err)
-// 	conf.WorkerInterval = time.Millisecond * 50
+	t.Run("Empty OrderUUID", func(t *testing.T) {
+		invalidDetails := &dto.OrderConfirmed{
+			OrderUUID: "",
+		}
 
-// 	ctx := context.Background()
-// 	ser := entity.SendEmailRequest{
-// 		Id:      1,
-// 		To:      "test@test.com",
-// 		Subject: "test",
-// 		Html:    "<html><body>test</body></html>",
-// 		From:    conf.FromEmail,
-// 		ReplyTo: conf.ReplyTo,
-// 		Sent:    false,
-// 	}
+		err := mailer.SendOrderConfirmation(ctx, repMock, "test@example.com", invalidDetails)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete order details")
+	})
+}
 
-// 	// Setup the mock to return a list of unsent emails
-// 	mailDBMock.EXPECT().GetAllUnsent(mock.Anything, false).Return([]entity.SendEmailRequest{ser}, nil)
+func TestSendOrderCancellation(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
 
-// 	// Mock the sender to return StatusTooManyRequests
-// 	senderMock.EXPECT().PostEmails(mock.Anything, mock.Anything, mock.Anything).Return(&http.Response{
-// 		StatusCode: http.StatusTooManyRequests,
-// 	}, nil)
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
 
-// 	// Act
-// 	// Create a new Mailer instance
-// 	mailer, err := new(conf, mailDBMock)
-// 	assert.NoError(t, err, "Failed to create Mailer instance")
-// 	mailer.cli = senderMock
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
 
-// 	// Start the Mailer
-// 	err = mailer.Start(ctx)
-// 	assert.NoError(t, err, "Mailer should start without error")
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
-// 	time.Sleep(500 * time.Millisecond) // Adjust time as needed
-// 	// Stop the Mailer
-// 	err = mailer.Stop()
-// 	assert.NoError(t, err, "Mailer should stop without error")
+	cancelDetails := &dto.OrderCancelled{
+		Preheader: "Your GRBPWR order has been cancelled",
+		OrderUUID: "test-uuid-cancel",
+		EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+	}
 
-// }
+	err := mailer.SendOrderCancellation(ctx, repMock, "test@example.com", cancelDetails)
 
-// func TestMailerSuccess(t *testing.T) {
-// 	// Mock the MailDB and Sender dependencies
-// 	mailDBMock := mocks.NewMail(t)
-// 	senderMock := mocks.NewSender(t)
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
+}
 
-// 	conf, err := loadConfig("")
-// 	assert.NoError(t, err)
-// 	conf.WorkerInterval = time.Millisecond * 50
+func TestSendOrderShipped(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
 
-// 	ctx := context.Background()
-// 	ser := entity.SendEmailRequest{
-// 		Id:      1,
-// 		To:      "test@test.com",
-// 		Subject: "test",
-// 		Html:    "<html><body>test</body></html>",
-// 		From:    conf.FromEmail,
-// 		ReplyTo: conf.ReplyTo,
-// 		Sent:    false,
-// 	}
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
 
-// 	// Setup the mock to return a list of unsent emails
-// 	mailDBMock.EXPECT().GetAllUnsent(mock.Anything, false).Return([]entity.SendEmailRequest{ser}, nil)
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
 
-// 	mailDBMock.EXPECT().UpdateSent(mock.Anything, ser.Id).Return(nil)
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
-// 	// Mock the sender to return StatusTooManyRequests
-// 	senderMock.EXPECT().PostEmails(mock.Anything, mock.Anything, mock.Anything).Return(&http.Response{
-// 		StatusCode: http.StatusOK,
-// 	}, nil)
+	shipmentDetails := &dto.OrderShipment{
+		Preheader:           "Your GRBPWR order has been shipped",
+		OrderUUID:           "test-uuid-shipped",
+		EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+		OrderItems:          []dto.OrderItem{},
+		TotalPrice:          "150.00",
+		PromoExist:          true,
+		PromoDiscountAmount: "10",
+		HasFreeShipping:     true,
+		ShippingPrice:       "0.00",
+	}
 
-// 	// Act
-// 	// Create a new Mailer instance
-// 	mailer, err := new(conf, mailDBMock)
-// 	assert.NoError(t, err, "Failed to create Mailer instance")
-// 	mailer.cli = senderMock
+	err := mailer.SendOrderShipped(ctx, repMock, "test@example.com", shipmentDetails)
 
-// 	// Start the Mailer
-// 	err = mailer.Start(ctx)
-// 	assert.NoError(t, err, "Mailer should start without error")
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
 
-// 	time.Sleep(500 * time.Millisecond) // Adjust time as needed
-// 	// Stop the Mailer
-// 	err = mailer.Stop()
-// 	assert.NoError(t, err, "Mailer should stop without error")
+	t.Run("Empty OrderUUID", func(t *testing.T) {
+		invalidDetails := &dto.OrderShipment{
+			OrderUUID: "",
+		}
 
-// }
+		err := mailer.SendOrderShipped(ctx, repMock, "test@example.com", invalidDetails)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete shipment details")
+	})
+}
 
-// func TestMailerError(t *testing.T) {
-// 	// Mock the MailDB and Sender dependencies
-// 	mailDBMock := mocks.NewMail(t)
-// 	senderMock := mocks.NewSender(t)
+func TestSendRefundInitiated(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
 
-// 	conf, err := loadConfig("")
-// 	assert.NoError(t, err)
-// 	conf.WorkerInterval = time.Millisecond * 50
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
 
-// 	ctx := context.Background()
-// 	ser := entity.SendEmailRequest{
-// 		Id:      1,
-// 		To:      "test@test.com",
-// 		Subject: "test",
-// 		Html:    "<html><body>test</body></html>",
-// 		From:    conf.FromEmail,
-// 		ReplyTo: conf.ReplyTo,
-// 		Sent:    false,
-// 	}
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
 
-// 	// Setup the mock to return a list of unsent emails
-// 	mailDBMock.EXPECT().GetAllUnsent(mock.Anything, false).Return([]entity.SendEmailRequest{ser}, nil)
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
-// 	mailDBMock.EXPECT().AddError(mock.Anything, ser.Id, mock.Anything).Return(nil)
+	refundDetails := &dto.OrderRefundInitiated{
+		Preheader: "Your GRBPWR refund has been initiated",
+		OrderUUID: "test-uuid-refund",
+		EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+	}
 
-// 	// Mock the sender to return StatusTooManyRequests
-// 	senderMock.EXPECT().PostEmails(mock.Anything, mock.Anything, mock.Anything).Return(&http.Response{
-// 		StatusCode: http.StatusBadRequest,
-// 	}, nil)
+	err := mailer.SendRefundInitiated(ctx, repMock, "test@example.com", refundDetails)
 
-// 	// Act
-// 	// Create a new Mailer instance
-// 	mailer, err := new(conf, mailDBMock)
-// 	assert.NoError(t, err, "Failed to create Mailer instance")
-// 	mailer.cli = senderMock
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
 
-// 	// Start the Mailer
-// 	err = mailer.Start(ctx)
-// 	assert.NoError(t, err, "Mailer should start without error")
+	t.Run("Empty OrderUUID", func(t *testing.T) {
+		invalidDetails := &dto.OrderRefundInitiated{
+			OrderUUID: "",
+		}
 
-// 	time.Sleep(500 * time.Millisecond) // Adjust time as needed
-// 	// Stop the Mailer
-// 	err = mailer.Stop()
-// 	assert.NoError(t, err, "Mailer should stop without error")
+		err := mailer.SendRefundInitiated(ctx, repMock, "test@example.com", invalidDetails)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete refund details")
+	})
+}
 
-// }
+func TestSendPromoCode(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
+
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
+
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+	mailDBMock.On("UpdateSent", ctx, 1).Return(nil)
+
+	senderMock := mocks.NewMockSender(t)
+	mailer.cli = senderMock
+	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
+
+	promoDetails := &dto.PromoCodeDetails{
+		Preheader:      "Your GRBPWR promo code",
+		PromoCode:      "TESTPROMO10",
+		DiscountAmount: 10,
+	}
+
+	err := mailer.SendPromoCode(ctx, repMock, "test@example.com", promoDetails)
+
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
+
+	t.Run("Empty PromoCode", func(t *testing.T) {
+		invalidDetails := &dto.PromoCodeDetails{
+			PromoCode: "",
+		}
+
+		err := mailer.SendPromoCode(ctx, repMock, "test@example.com", invalidDetails)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete promo code details")
+	})
+}
+
+func TestBuildSendMailRequest(t *testing.T) {
+	mailer := createTestMailer(t)
+
+	t.Run("Valid Template", func(t *testing.T) {
+		data := struct {
+			Preheader string
+		}{
+			Preheader: "Welcome to GRBPWR",
+		}
+		req, err := mailer.buildSendMailRequest("test@example.com", NewSubscriber, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, []string{"test@example.com"}, req.To)
+		assert.Equal(t, "Welcome to GRBPWR", req.Subject)
+		assert.NotNil(t, req.Html)
+		assert.True(t, strings.Contains(*req.Html, "WELCOME"))
+	})
+
+	t.Run("Invalid Template", func(t *testing.T) {
+		data := struct {
+			Preheader string
+		}{
+			Preheader: "Test",
+		}
+		req, err := mailer.buildSendMailRequest("test@example.com", "nonexistent.gohtml", data)
+
+		assert.Error(t, err)
+		assert.Nil(t, req)
+		assert.Contains(t, err.Error(), "template not found")
+	})
+
+	t.Run("Order Confirmation Template", func(t *testing.T) {
+		data := &dto.OrderConfirmed{
+			Preheader:           "Your GRBPWR order has been confirmed",
+			OrderUUID:           "test-123",
+			TotalPrice:          "100.00",
+			OrderItems:          []dto.OrderItem{},
+			PromoExist:          false,
+			PromoDiscountAmount: "0",
+			HasFreeShipping:     false,
+			ShippingPrice:       "10.00",
+			EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", OrderConfirmed, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, "Your order has been confirmed", req.Subject)
+		assert.Contains(t, *req.Html, "test-123")
+		assert.Contains(t, *req.Html, "HAS BEEN PLACED")
+	})
+
+	t.Run("Order Cancellation Template", func(t *testing.T) {
+		data := &dto.OrderCancelled{
+			Preheader: "Your GRBPWR order has been cancelled",
+			OrderUUID: "cancel-456",
+			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", OrderCancelled, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, "Your order has been cancelled", req.Subject)
+		assert.Contains(t, *req.Html, "cancel-456")
+		assert.Contains(t, *req.Html, "HAS BEEN CANCELED")
+	})
+
+	t.Run("Refund Initiated Template", func(t *testing.T) {
+		data := &dto.OrderRefundInitiated{
+			Preheader: "Your GRBPWR refund has been initiated",
+			OrderUUID: "refund-789",
+			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", OrderRefundInitiated, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, "Your refund has been initiated", req.Subject)
+		assert.Contains(t, *req.Html, "refund-789")
+		assert.Contains(t, *req.Html, "REFUND HAS BEEN INITIATED")
+	})
+
+	t.Run("Promo Code Template", func(t *testing.T) {
+		data := &dto.PromoCodeDetails{
+			Preheader:      "Your GRBPWR promo code",
+			PromoCode:      "SAVE20",
+			DiscountAmount: 20,
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", PromoCode, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, "Your promo code", req.Subject)
+		assert.Contains(t, *req.Html, "SAVE20")
+		assert.Contains(t, *req.Html, "20")
+	})
+}
+
+func TestTemplateSubjects(t *testing.T) {
+	expectedSubjects := map[templateName]string{
+		NewSubscriber:        "Welcome to GRBPWR",
+		OrderCancelled:       "Your order has been cancelled",
+		OrderConfirmed:       "Your order has been confirmed",
+		OrderShipped:         "Your order has been shipped",
+		OrderRefundInitiated: "Your refund has been initiated",
+		PromoCode:            "Your promo code",
+	}
+
+	for tmplName, expectedSubject := range expectedSubjects {
+		subject, exists := templateSubjects[tmplName]
+		assert.True(t, exists, "Subject should exist for template %s", tmplName)
+		assert.Equal(t, expectedSubject, subject, "Subject mismatch for template %s", tmplName)
+	}
+}
+
+func TestTemplateRendering(t *testing.T) {
+	mailer := createTestMailer(t)
+
+	t.Run("Order Confirmed with Items", func(t *testing.T) {
+		data := &dto.OrderConfirmed{
+			Preheader:  "Your GRBPWR order has been confirmed",
+			OrderUUID:  "uuid-123",
+			TotalPrice: "200.00",
+			OrderItems: []dto.OrderItem{
+				{
+					Name:      "Test Product",
+					Thumbnail: "https://example.com/image.jpg",
+					Size:      "M",
+					Quantity:  2,
+					Price:     "100.00",
+				},
+			},
+			PromoExist:          true,
+			PromoDiscountAmount: "10",
+			HasFreeShipping:     true,
+			ShippingPrice:       "0.00",
+			EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", OrderConfirmed, data)
+
+		require.NoError(t, err)
+		html := *req.Html
+
+		// Check order details
+		assert.Contains(t, html, "uuid-123")
+		assert.Contains(t, html, "200.00")
+
+		// Check product item
+		assert.Contains(t, html, "Test Product")
+		assert.Contains(t, html, "https://example.com/image.jpg")
+		assert.Contains(t, html, "M")
+
+		// Check promo
+		assert.Contains(t, html, "DISCOUNT")
+		assert.Contains(t, html, "10")
+
+		// Check free shipping
+		assert.Contains(t, html, "FREE")
+	})
+
+	t.Run("Order Shipped with Items", func(t *testing.T) {
+		data := &dto.OrderShipment{
+			Preheader: "Your GRBPWR order has been shipped",
+			OrderUUID: "ship-456",
+			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+			OrderItems: []dto.OrderItem{
+				{
+					Name:      "Shipped Product",
+					Thumbnail: "https://example.com/shipped.jpg",
+					Size:      "L",
+					Quantity:  1,
+					Price:     "50.00",
+				},
+			},
+			TotalPrice:          "60.00",
+			PromoExist:          false,
+			PromoDiscountAmount: "0",
+			HasFreeShipping:     false,
+			ShippingPrice:       "10.00",
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", OrderShipped, data)
+
+		require.NoError(t, err)
+		html := *req.Html
+
+		assert.Contains(t, html, "ship-456")
+		assert.Contains(t, html, "HAS BEEN SHIPPED")
+		assert.Contains(t, html, "Shipped Product")
+		assert.Contains(t, html, "TRACK YOUR ORDER")
+	})
+}

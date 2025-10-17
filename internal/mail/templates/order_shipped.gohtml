@@ -1,34 +1,25 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Order Shipped</title>
-    <style>
-        @media screen and (max-width: 600px) {
-            .container { width: 100%; }
-        }
-        body { font-family: Arial, sans-serif; }
-        .container { width: 80%; margin: auto; padding: 20px; }
-        .header { background-color: #f8f8f8; padding: 10px; text-align: center; }
-        .content { margin-top: 20px; }
-        .footer { margin-top: 30px; font-size: small; text-align: center; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header class="header">
-            <h1>GRBPWR</h1>
-        </header>
-        <main class="content">
-            <p>Hello {{.Name}},</p>
-            <p>Great news! Your order <b><a href="https://grbpwr.com/order/{{.OrderUUID}}" style="text-decoration: none;">#{{.OrderUUID}}</a></b> has been shipped.</p>
-            <h2>Shipping Details:</h2>
-            <p><b>Date Shipped:</b> {{.ShippingDate}}</p>
-            <p>You can track your shipment by clicking on the tracking number or visiting the courier's website. We hope your order arrives soon!</p>
-        </main>
-        <footer class="footer">
-            <p>Thank you for choosing GRBPWR!</p>
-            <p>If you have any questions about your shipment, please contact us at <a href="mailto:info@grbpwr.com">info@grbpwr.com</a>.</p>
-        </footer>
-    </div>
-</body>
-</html>
+{{template "email_header" .}}
+
+            <!-- Header copy -->
+            <tr>
+              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
+                <div style="font-size:26px; line-height:38px; text-transform:uppercase; letter-spacing:1px;">
+                  <a href="https://grbpwr.com/order/{{.OrderUUID}}/{{.EmailB64}}" style="color:#000000; text-decoration:none;">ORDER #{{.OrderUUID}}</a>
+                </div>
+                <div style="font-size:16px; line-height:26px; text-transform:uppercase; padding-top:10px;">HAS BEEN SHIPPED</div>
+                {{template "order_track_link" .}}
+              </td>
+            </tr>
+
+            {{template "spacer_24"}}
+            {{template "divider"}}
+
+            {{template "order_items_list" .}}
+
+            {{template "spacer_24"}}
+
+            {{template "order_totals" .}}
+
+            {{template "spacer_48"}}
+
+            {{template "email_footer" .}}

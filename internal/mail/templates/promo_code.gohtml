@@ -1,44 +1,29 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Special Offer For You!</title>
-    <style>
-        /* Styles omitted for brevity */
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header class="header">
-            <h1>Exclusive Offer from Our Store!</h1>
-        </header>
-        <main class="content">
-            <p>Hello,</p>
-            <p>We're excited to offer you a special promotion as our valued customer:</p>
+{{template "email_header" .}}
 
-            {{if .HasFreeShipping}}
-                <p><strong>Enjoy Free Shipping on Your Next Order!</strong></p>
-                {{/* Ensure .DiscountAmount is of a type comparable with integer */}}
-                {{if gt (.DiscountAmount) 0}}
-                    <p>Plus, get an additional discount of <strong>{{.DiscountAmount}}%</strong> on your purchase!</p>
-                {{end}}
-            {{else if gt (.DiscountAmount) 0}}
-                <p>Get an exclusive <strong>{{.DiscountAmount}}% discount</strong> on your next purchase!</p>
-            {{end}}
+            <!-- Intro copy -->
+            <tr>
+              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
+                <div style="font-size:14px; line-height:22px; text-transform:uppercase;">YOUR GRBPWR GIFT CARD IS HERE</div>
+                <div style="font-size:14px; line-height:22px; text-transform:uppercase;">THANK YOU FOR YOUR PURCHASE</div>
+              </td>
+            </tr>
 
-            <h2>Your Promo Code:</h2>
-            <p style="font-size: larger; font-weight: bold;">{{.PromoCode}}</p>
-            <p>Use this code at checkout to avail the offer.</p>
+            <!-- Card details -->
+            {{template "spacer_36"}}
+            <tr>
+              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
+                <div style="font-size:24px; line-height:34px; text-transform:uppercase;">CARD NUMBER: {{.PromoCode}}</div>
+                <div style="font-size:24px; line-height:34px; text-transform:uppercase; padding-top:10px;">VALUE: {{.DiscountAmount}}%</div>
+              </td>
+            </tr>
 
-            {{if .ExpirationDate}}
-                <p><strong>Offer Expires on: {{.ExpirationDate}}</strong></p>
-            {{end}}
+            <!-- Signature -->
+            {{template "spacer_32"}}
+            {{template "signature_sincerely"}}
 
-            <p>Don't forget, this offer is valid for a limited time only. Make sure to take advantage before it expires!</p>
-        </main>
-        <footer class="footer">
-            <p>If you have any questions or need assistance, feel free to contact us at <a href="mailto:support@ourstore.com">support@ourstore.com</a>.</p>
-            <p>Thank you for shopping with us!</p>
-        </footer>
-    </div>
-</body>
-</html>
+            <!-- Divider -->
+            {{template "spacer_36"}}
+            {{template "divider"}}
+            {{template "spacer_18"}}
+
+            {{template "email_footer" .}}

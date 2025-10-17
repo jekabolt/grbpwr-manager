@@ -11,25 +11,32 @@ import (
 type templateName string
 
 const (
-	NewSubscriber  templateName = "new_subscriber.gohtml"
-	OrderCancelled templateName = "order_cancelled.gohtml"
-	OrderConfirmed templateName = "order_confirmed.gohtml"
-	OrderShipped   templateName = "order_shipped.gohtml"
-	PromoCode      templateName = "promo_code.gohtml"
+	NewSubscriber        templateName = "new_subscriber.gohtml"
+	OrderCancelled       templateName = "order_cancelled.gohtml"
+	OrderConfirmed       templateName = "order_confirmed.gohtml"
+	OrderShipped         templateName = "order_shipped.gohtml"
+	OrderRefundInitiated templateName = "refund_initiated.gohtml"
+	PromoCode            templateName = "promo_code.gohtml"
 )
 
 // Define a map for template names to subjects
 var templateSubjects = map[templateName]string{
-	NewSubscriber:  "Welcome to GRBPWR",
-	OrderCancelled: "Your order has been cancelled",
-	OrderConfirmed: "Your order has been confirmed",
-	OrderShipped:   "Your order has been shipped",
-	PromoCode:      "Your promo code",
+	NewSubscriber:        "Welcome to GRBPWR",
+	OrderCancelled:       "Your order has been cancelled",
+	OrderConfirmed:       "Your order has been confirmed",
+	OrderShipped:         "Your order has been shipped",
+	OrderRefundInitiated: "Your refund has been initiated",
+	PromoCode:            "Your promo code",
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.
 func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repository, to string) error {
-	ser, err := m.buildSendMailRequest(to, NewSubscriber, struct{}{})
+	data := struct {
+		Preheader string
+	}{
+		Preheader: "Welcome to GRBPWR",
+	}
+	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for new subscriber: %w", err)
 	}
@@ -38,7 +45,7 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repositor
 
 // SendOrderConfirmation sends an order confirmation email.
 func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repository, to string, orderDetails *dto.OrderConfirmed) error {
-	if orderDetails.OrderUUID == "" || orderDetails.FullName == "" {
+	if orderDetails.OrderUUID == "" {
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 
@@ -50,9 +57,9 @@ func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repos
 	return m.sendWithInsert(ctx, rep, ser)
 }
 
-// SendOrderConfirmation sends an order cancellation email.
+// SendOrderCancellation sends an order cancellation email.
 func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repository, to string, orderDetails *dto.OrderCancelled) error {
-	if orderDetails.OrderID == "" || orderDetails.Name == "" {
+	if orderDetails.OrderUUID == "" {
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 	ser, err := m.buildSendMailRequest(to, OrderCancelled, orderDetails)
@@ -65,9 +72,27 @@ func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repos
 
 // SendOrderShipped sends an order shipped email.
 func (m *Mailer) SendOrderShipped(ctx context.Context, rep dependency.Repository, to string, shipmentDetails *dto.OrderShipment) error {
+	if shipmentDetails.OrderUUID == "" {
+		return fmt.Errorf("incomplete shipment details: %+v", shipmentDetails)
+	}
+
 	ser, err := m.buildSendMailRequest(to, OrderShipped, shipmentDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order shipped: %w", err)
+	}
+
+	return m.sendWithInsert(ctx, rep, ser)
+}
+
+// SendRefundInitiated sends a refund initiated email.
+func (m *Mailer) SendRefundInitiated(ctx context.Context, rep dependency.Repository, to string, refundDetails *dto.OrderRefundInitiated) error {
+	if refundDetails.OrderUUID == "" {
+		return fmt.Errorf("incomplete refund details: %+v", refundDetails)
+	}
+
+	ser, err := m.buildSendMailRequest(to, OrderRefundInitiated, refundDetails)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for refund initiated: %w", err)
 	}
 
 	return m.sendWithInsert(ctx, rep, ser)
