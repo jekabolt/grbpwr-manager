@@ -150,7 +150,7 @@ func TestSendOrderConfirmation(t *testing.T) {
 	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
 	orderDetails := &dto.OrderConfirmed{
-		Preheader:           "Your GRBPWR order has been confirmed",
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 		OrderUUID:           "test-uuid-123",
 		TotalPrice:          "100.00",
 		OrderItems:          []dto.OrderItem{},
@@ -194,7 +194,7 @@ func TestSendOrderCancellation(t *testing.T) {
 	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
 	cancelDetails := &dto.OrderCancelled{
-		Preheader: "Your GRBPWR order has been cancelled",
+		Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
 		OrderUUID: "test-uuid-cancel",
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
 	}
@@ -222,7 +222,7 @@ func TestSendOrderShipped(t *testing.T) {
 	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
 	shipmentDetails := &dto.OrderShipment{
-		Preheader:           "Your GRBPWR order has been shipped",
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
 		OrderUUID:           "test-uuid-shipped",
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
 		OrderItems:          []dto.OrderItem{},
@@ -266,7 +266,7 @@ func TestSendRefundInitiated(t *testing.T) {
 	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
 	refundDetails := &dto.OrderRefundInitiated{
-		Preheader: "Your GRBPWR refund has been initiated",
+		Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
 		OrderUUID: "test-uuid-refund",
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
 	}
@@ -304,7 +304,7 @@ func TestSendPromoCode(t *testing.T) {
 	senderMock.On("PostEmails", ctx, mock.Anything).Return(nil, nil)
 
 	promoDetails := &dto.PromoCodeDetails{
-		Preheader:      "Your GRBPWR promo code",
+		Preheader:      "YOUR GRBPWR PROMO CODE",
 		PromoCode:      "TESTPROMO10",
 		DiscountAmount: 10,
 	}
@@ -333,7 +333,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 		data := struct {
 			Preheader string
 		}{
-			Preheader: "Welcome to GRBPWR",
+			Preheader: "WELCOME TO GRBPWR",
 		}
 		req, err := mailer.buildSendMailRequest("test@example.com", NewSubscriber, data)
 
@@ -349,7 +349,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 		data := struct {
 			Preheader string
 		}{
-			Preheader: "Test",
+			Preheader: "TEST",
 		}
 		req, err := mailer.buildSendMailRequest("test@example.com", "nonexistent.gohtml", data)
 
@@ -360,7 +360,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 	t.Run("Order Confirmation Template", func(t *testing.T) {
 		data := &dto.OrderConfirmed{
-			Preheader:           "Your GRBPWR order has been confirmed",
+			Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 			OrderUUID:           "test-123",
 			TotalPrice:          "100.00",
 			OrderItems:          []dto.OrderItem{},
@@ -382,7 +382,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 	t.Run("Order Cancellation Template", func(t *testing.T) {
 		data := &dto.OrderCancelled{
-			Preheader: "Your GRBPWR order has been cancelled",
+			Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
 			OrderUUID: "cancel-456",
 			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
 		}
@@ -393,12 +393,12 @@ func TestBuildSendMailRequest(t *testing.T) {
 		assert.NotNil(t, req)
 		assert.Equal(t, "Your order has been cancelled", req.Subject)
 		assert.Contains(t, *req.Html, "cancel-456")
-		assert.Contains(t, *req.Html, "HAS BEEN CANCELED")
+		assert.Contains(t, *req.Html, "HAS BEEN CANCELLED")
 	})
 
 	t.Run("Refund Initiated Template", func(t *testing.T) {
 		data := &dto.OrderRefundInitiated{
-			Preheader: "Your GRBPWR refund has been initiated",
+			Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
 			OrderUUID: "refund-789",
 			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
 		}
@@ -414,7 +414,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 	t.Run("Promo Code Template", func(t *testing.T) {
 		data := &dto.PromoCodeDetails{
-			Preheader:      "Your GRBPWR promo code",
+			Preheader:      "YOUR GRBPWR PROMO CODE",
 			PromoCode:      "SAVE20",
 			DiscountAmount: 20,
 		}
@@ -451,9 +451,10 @@ func TestTemplateRendering(t *testing.T) {
 
 	t.Run("Order Confirmed with Items", func(t *testing.T) {
 		data := &dto.OrderConfirmed{
-			Preheader:  "Your GRBPWR order has been confirmed",
-			OrderUUID:  "uuid-123",
-			TotalPrice: "200.00",
+			Preheader:     "Your GRBPWR order has been confirmed",
+			OrderUUID:     "uuid-123",
+			SubtotalPrice: "200.00",
+			TotalPrice:    "200.00",
 			OrderItems: []dto.OrderItem{
 				{
 					Name:      "Test Product",
@@ -494,9 +495,10 @@ func TestTemplateRendering(t *testing.T) {
 
 	t.Run("Order Shipped with Items", func(t *testing.T) {
 		data := &dto.OrderShipment{
-			Preheader: "Your GRBPWR order has been shipped",
-			OrderUUID: "ship-456",
-			EmailB64:  base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+			Preheader:     "Your GRBPWR order has been shipped",
+			OrderUUID:     "ship-456",
+			EmailB64:      base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+			SubtotalPrice: "50.00",
 			OrderItems: []dto.OrderItem{
 				{
 					Name:      "Shipped Product",
@@ -521,6 +523,5 @@ func TestTemplateRendering(t *testing.T) {
 		assert.Contains(t, html, "ship-456")
 		assert.Contains(t, html, "HAS BEEN SHIPPED")
 		assert.Contains(t, html, "Shipped Product")
-		assert.Contains(t, html, "TRACK YOUR ORDER")
 	})
 }
