@@ -65,10 +65,11 @@ func (ms *MYSQLStore) GetDictionaryInfo(ctx context.Context) (*entity.Dictionary
 
 // Existing methods for fetching individual entities remain the same
 func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, error) {
-	// Get basic category info
+	// Get category info with English name directly
 	query := `
         SELECT 
-            c.id as category_id, 
+            c.id as category_id,
+            c.name as category_name,
             c.level_id, 
             cl.name as level_name, 
             c.parent_id
@@ -78,30 +79,6 @@ func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, err
 	categories, err := QueryListNamed[entity.Category](ctx, ms.db, query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get categories: %w", err)
-	}
-
-	// Get all translations for all categories in one query
-	translationsQuery := `
-		SELECT 
-			ct.id,
-			ct.category_id,
-			ct.language_id,
-			ct.name,
-			ct.created_at,
-			ct.updated_at
-		FROM category_translation ct
-		ORDER BY ct.category_id, ct.language_id
-	`
-
-	translations, err := QueryListNamed[entity.CategoryTranslation](ctx, ms.db, translationsQuery, map[string]interface{}{})
-	if err != nil {
-		return nil, fmt.Errorf("can't get category translations: %w", err)
-	}
-
-	// Group translations by category ID
-	translationsByCategory := make(map[int][]entity.CategoryTranslation)
-	for _, translation := range translations {
-		translationsByCategory[translation.CategoryID] = append(translationsByCategory[translation.CategoryID], translation)
 	}
 
 	// Get category counts efficiently in bulk
@@ -115,13 +92,8 @@ func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, err
 		return nil, fmt.Errorf("failed to get women counts: %w", err)
 	}
 
-	// Map translations and counts to categories
+	// Map counts to categories
 	for i := range categories {
-		// Add translations
-		if categoryTranslations, exists := translationsByCategory[categories[i].ID]; exists {
-			categories[i].Translations = categoryTranslations
-		}
-
 		// Add counts
 		if count, exists := categoryMenCounts[categories[i].ID]; exists {
 			categories[i].CountMen = count
@@ -135,46 +107,16 @@ func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, err
 }
 
 func (ms *MYSQLStore) getMeasurements(ctx context.Context) ([]entity.MeasurementName, error) {
-	// Get basic measurement info
+	// Get measurement info with English name directly
 	query := `
 		SELECT 
-			mn.id
+			mn.id,
+			mn.name
 		FROM measurement_name mn
 	`
 	measurements, err := QueryListNamed[entity.MeasurementName](ctx, ms.db, query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get measurements: %w", err)
-	}
-
-	// Get all translations for all measurements in one query
-	translationsQuery := `
-		SELECT 
-			mnt.id,
-			mnt.measurement_name_id,
-			mnt.language_id,
-			mnt.name,
-			mnt.created_at,
-			mnt.updated_at
-		FROM measurement_name_translation mnt
-		ORDER BY mnt.measurement_name_id, mnt.language_id
-	`
-
-	translations, err := QueryListNamed[entity.MeasurementNameTranslation](ctx, ms.db, translationsQuery, map[string]interface{}{})
-	if err != nil {
-		return nil, fmt.Errorf("can't get measurement name translations: %w", err)
-	}
-
-	// Group translations by measurement name ID
-	translationsByMeasurement := make(map[int][]entity.MeasurementNameTranslation)
-	for _, translation := range translations {
-		translationsByMeasurement[translation.MeasurementNameID] = append(translationsByMeasurement[translation.MeasurementNameID], translation)
-	}
-
-	// Map translations to measurements
-	for i := range measurements {
-		if measurementTranslations, exists := translationsByMeasurement[measurements[i].Id]; exists {
-			measurements[i].Translations = measurementTranslations
-		}
 	}
 
 	return measurements, nil
