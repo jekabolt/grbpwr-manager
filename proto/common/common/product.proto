@@ -12,7 +12,7 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 // Category represents a hierarchical category structure
 message Category {
   int32 id = 1;
-  repeated CategoryTranslation translations = 2;
+  string name = 2;
   int32 level_id = 3;
   string level = 4;
   int32 parent_id = 5;
@@ -27,7 +27,7 @@ message Size {
 
 message MeasurementName {
   int32 id = 1;
-  repeated common.MeasurementNameTranslation translations = 2;
+  string name = 2;
 }
 
 enum GenderEnum {

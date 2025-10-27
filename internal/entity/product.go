@@ -24,22 +24,13 @@ type ProductFull struct {
 
 // Category represents a hierarchical category structure
 type Category struct {
-	ID           int                   `db:"category_id"`
-	Translations []CategoryTranslation `db:"translations"`
-	LevelID      int                   `db:"level_id"`
-	Level        string                `db:"level_name"`
-	ParentID     *int                  `db:"parent_id"`
-	CountMen     int
-	CountWomen   int
-}
-
-type CategoryTranslation struct {
-	ID         int       `db:"id"`
-	CategoryID int       `db:"category_id"`
-	LanguageID int       `db:"language_id"`
-	Name       string    `db:"name"`
-	CreatedAt  time.Time `db:"created_at"`
-	UpdatedAt  time.Time `db:"updated_at"`
+	ID         int    `db:"category_id"`
+	Name       string `db:"category_name"`
+	LevelID    int    `db:"level_id"`
+	Level      string `db:"level_name"`
+	ParentID   *int   `db:"parent_id"`
+	CountMen   int
+	CountWomen int
 }
 
 // Size represents the size table
@@ -50,19 +41,8 @@ type Size struct {
 
 // MeasurementName represents the measurement_name table
 type MeasurementName struct {
-	Id           int                          `db:"id"`
-	Translations []MeasurementNameTranslation `db:"translations"`
-	CreatedAt    time.Time                    `db:"created_at"`
-	UpdatedAt    time.Time                    `db:"updated_at"`
-}
-
-type MeasurementNameTranslation struct {
-	ID                int       `db:"id"`
-	MeasurementNameID int       `db:"measurement_name_id"`
-	LanguageID        int       `db:"language_id"`
-	Name              string    `db:"name"`
-	CreatedAt         time.Time `db:"created_at"`
-	UpdatedAt         time.Time `db:"updated_at"`
+	Id   int    `db:"id"`
+	Name string `db:"name"`
 }
 
 type GenderEnum string
