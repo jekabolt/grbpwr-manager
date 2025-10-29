@@ -71,6 +71,7 @@ type (
 		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
 		GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, email string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, orderUUID string) (*entity.Order, error)
+		GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId string) (*entity.OrderFull, error)
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
@@ -92,6 +93,8 @@ type (
 		CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error)
 		// UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
 		UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
+		// UpdatePaymentIntentWithOrderNew updates a PaymentIntent with order data from OrderNew (optimized, no DB query)
+		UpdatePaymentIntentWithOrderNew(ctx context.Context, paymentIntentID string, orderUUID string, orderNew *entity.OrderNew) error
 		// StartMonitoringPayment starts monitoring an existing payment
 		StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment)
 	}

@@ -456,6 +456,11 @@ func (p *Processor) UpdatePaymentIntentWithOrder(ctx context.Context, paymentInt
 	return fmt.Errorf("UpdatePaymentIntentWithOrder is not supported for Tron payments")
 }
 
+// UpdatePaymentIntentWithOrderNew is not supported for Tron payments
+func (p *Processor) UpdatePaymentIntentWithOrderNew(ctx context.Context, paymentIntentID string, orderUUID string, orderNew *entity.OrderNew) error {
+	return fmt.Errorf("UpdatePaymentIntentWithOrderNew is not supported for Tron payments")
+}
+
 // StartMonitoringPayment starts monitoring an existing payment
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
 	go p.monitorPayment(ctx, orderUUID, &payment)

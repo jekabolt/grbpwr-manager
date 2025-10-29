@@ -1646,6 +1646,38 @@ func (ms *MYSQLStore) GetPaymentByOrderUUID(ctx context.Context, orderUUID strin
 	return &payment, nil
 }
 
+// GetOrderByPaymentIntentId retrieves an order by its PaymentIntent ID (client_secret) for idempotency
+func (ms *MYSQLStore) GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId string) (*entity.OrderFull, error) {
+	query := `
+    SELECT co.*
+    FROM customer_order co
+    JOIN payment p ON p.order_id = co.id
+    WHERE p.client_secret = :paymentIntentId;`
+
+	order, err := QueryNamedOne[entity.Order](ctx, ms.DB(), query, map[string]interface{}{
+		"paymentIntentId": paymentIntentId,
+	})
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // Return nil if not found (not an error for idempotency check)
+		}
+		return nil, fmt.Errorf("failed to get order by payment intent ID: %w", err)
+	}
+
+	// Fetch full order details
+	ofs, err := fetchOrderInfo(ctx, ms, []entity.Order{order})
+	if err != nil {
+		return nil, fmt.Errorf("can't fetch order info: %w", err)
+	}
+
+	if len(ofs) == 0 {
+		return nil, fmt.Errorf("order not found")
+	}
+
+	return &ofs[0], nil
+}
+
 // GetOrderItems retrieves all order items for a given order.
 func (ms *MYSQLStore) GetOrderById(ctx context.Context, orderId int) (*entity.OrderFull, error) {
 	order, err := getOrderById(ctx, ms, orderId)

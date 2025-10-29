@@ -189,6 +189,51 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	expirationDuration := handler.ExpirationDuration()
 
+	// Check for idempotency: if PaymentIntent ID is provided, check if order already exists
+	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {
+		existingOrder, err := s.repo.Order().GetOrderByPaymentIntentId(ctx, req.PaymentIntentId)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "error checking for existing order",
+				slog.String("err", err.Error()),
+				slog.String("paymentIntentId", req.PaymentIntentId),
+			)
+			return nil, status.Errorf(codes.Internal, "error checking for existing order")
+		}
+
+		// If order already exists with this PaymentIntent, return it (idempotent)
+		if existingOrder != nil {
+			slog.Default().InfoContext(ctx, "returning existing order for PaymentIntent (idempotent)",
+				slog.String("orderUUID", existingOrder.Order.UUID),
+				slog.String("paymentIntentId", req.PaymentIntentId),
+			)
+
+			eos, ok := cache.GetOrderStatusById(existingOrder.Order.OrderStatusId)
+			if !ok {
+				slog.Default().ErrorContext(ctx, "failed to retrieve order status")
+				return nil, status.Errorf(codes.Internal, "internal error")
+			}
+
+			os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
+			if !ok {
+				slog.Default().ErrorContext(ctx, "failed to convert order status")
+				return nil, status.Errorf(codes.Internal, "internal error")
+			}
+
+			pbPi, err := dto.ConvertEntityToPbPaymentInsert(&existingOrder.Payment.PaymentInsert)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
+				return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+			}
+			pbPi.PaymentMethod = req.Order.PaymentMethod
+
+			return &pb_frontend.SubmitOrderResponse{
+				OrderUuid:   existingOrder.Order.UUID,
+				OrderStatus: os,
+				Payment:     pbPi,
+			}, nil
+		}
+	}
+
 	order, sendEmail, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo, time.Now().Add(expirationDuration))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't create order",
@@ -210,20 +255,15 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	// Handle pre-created PaymentIntent for card payments
 	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {
-		// Update existing PaymentIntent with order details
-		orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, order.UUID)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order full by uuid", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't get order full by uuid")
-		}
-
-		err = handler.UpdatePaymentIntentWithOrder(ctx, req.PaymentIntentId, *orderFull)
+		// Update existing PaymentIntent with order details (using data we already have - no DB query!)
+		err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't update payment intent with order", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
 		}
 
 		// Associate PaymentIntent with order in database
+		var orderFull *entity.OrderFull
 		err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 			orderFull, err = s.repo.Order().InsertFiatInvoice(ctx, order.UUID, req.PaymentIntentId, pme.Method, time.Now().Add(expirationDuration))
 			if err != nil {

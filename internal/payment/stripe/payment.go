@@ -398,6 +398,40 @@ func (p *Processor) UpdatePaymentIntentWithOrder(ctx context.Context, paymentInt
 	return nil
 }
 
+// UpdatePaymentIntentWithOrderNew updates a PaymentIntent using OrderNew data (optimized, no DB query needed)
+func (p *Processor) UpdatePaymentIntentWithOrderNew(ctx context.Context, paymentIntentID string, orderUUID string, orderNew *entity.OrderNew) error {
+	params := &stripe.PaymentIntentParams{
+		Description:  stripe.String(fmt.Sprintf("order #%s", orderUUID)),
+		ReceiptEmail: stripe.String(orderNew.Buyer.Email),
+		Metadata: map[string]string{
+			"order_id": orderUUID,
+		},
+		Shipping: &stripe.ShippingDetailsParams{
+			Address: &stripe.AddressParams{
+				City:       &orderNew.ShippingAddress.City,
+				Country:    &orderNew.ShippingAddress.Country,
+				Line1:      &orderNew.ShippingAddress.AddressLineOne,
+				Line2:      &orderNew.ShippingAddress.AddressLineTwo.String,
+				PostalCode: &orderNew.ShippingAddress.PostalCode,
+				State:      &orderNew.ShippingAddress.State.String,
+			},
+			Name: stripe.String(fmt.Sprintf("%s %s", orderNew.Buyer.FirstName, orderNew.Buyer.LastName)),
+		},
+	}
+
+	_, err := p.stripeClient.PaymentIntents.Update(paymentIntentID, params)
+	if err != nil {
+		return fmt.Errorf("failed to update PaymentIntent with order details: %w", err)
+	}
+
+	slog.Default().InfoContext(ctx, "updated PaymentIntent with order details",
+		slog.String("payment_intent_id", paymentIntentID),
+		slog.String("order_uuid", orderUUID),
+	)
+
+	return nil
+}
+
 // StartMonitoringPayment starts monitoring an existing payment
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
 	go p.monitorPayment(ctx, orderUUID, &payment)
