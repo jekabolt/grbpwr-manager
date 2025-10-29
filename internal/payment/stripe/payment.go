@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/log"
+	"github.com/shopspring/decimal"
 
 	"github.com/stripe/stripe-go/v79"
 	"github.com/stripe/stripe-go/v79/client"
@@ -328,4 +329,76 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 
 	return &payment, nil
 
+}
+
+// CreatePreOrderPaymentIntent creates a PaymentIntent before order submission
+func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error) {
+	// Convert amount to cents
+	amountCents := amount.Mul(decimal.NewFromInt(100)).IntPart()
+
+	params := &stripe.PaymentIntentParams{
+		Amount:   stripe.Int64(amountCents),
+		Currency: stripe.String(currency),
+		AutomaticPaymentMethods: &stripe.PaymentIntentAutomaticPaymentMethodsParams{
+			Enabled: stripe.Bool(true),
+		},
+		Metadata: map[string]string{
+			"pre_order": "true",
+			"country":   country,
+		},
+	}
+
+	// Create the PaymentIntent
+	pi, err := p.stripeClient.PaymentIntents.New(params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pre-order PaymentIntent: %w", err)
+	}
+
+	slog.Default().InfoContext(ctx, "created pre-order PaymentIntent",
+		slog.String("payment_intent_id", pi.ID),
+		slog.Int64("amount_cents", amountCents),
+		slog.String("currency", currency),
+		slog.String("country", country),
+	)
+
+	return pi, nil
+}
+
+// UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
+func (p *Processor) UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error {
+	params := &stripe.PaymentIntentParams{
+		Description:  stripe.String(fmt.Sprintf("order #%s", order.Order.UUID)),
+		ReceiptEmail: stripe.String(order.Buyer.Email),
+		Metadata: map[string]string{
+			"order_id": order.Order.UUID,
+		},
+		Shipping: &stripe.ShippingDetailsParams{
+			Address: &stripe.AddressParams{
+				City:       &order.Shipping.City,
+				Country:    &order.Shipping.Country,
+				Line1:      &order.Shipping.AddressLineOne,
+				Line2:      &order.Shipping.AddressLineTwo.String,
+				PostalCode: &order.Shipping.PostalCode,
+				State:      &order.Shipping.State.String,
+			},
+			Name: stripe.String(fmt.Sprintf("%s %s", order.Buyer.FirstName, order.Buyer.LastName)),
+		},
+	}
+
+	_, err := p.stripeClient.PaymentIntents.Update(paymentIntentID, params)
+	if err != nil {
+		return fmt.Errorf("failed to update PaymentIntent with order details: %w", err)
+	}
+
+	slog.Default().InfoContext(ctx, "updated PaymentIntent with order details",
+		slog.String("payment_intent_id", paymentIntentID),
+		slog.String("order_uuid", order.Order.UUID),
+	)
+
+	return nil
+}
+
+// StartMonitoringPayment starts monitoring an existing payment
+func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
+	go p.monitorPayment(ctx, orderUUID, &payment)
 }

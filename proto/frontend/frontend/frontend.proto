@@ -152,6 +152,7 @@ message GetProductsPagedResponse {
 
 message SubmitOrderRequest {
   common.OrderNew order = 1;
+  string payment_intent_id = 2; // optional, for pre-created PaymentIntent
 }
 
 message SubmitOrderResponse {
@@ -173,6 +174,9 @@ message ValidateOrderItemsInsertRequest {
   repeated common.OrderItemInsert items = 1;
   string promo_code = 2;
   int32 shipment_carrier_id = 3;
+  string country = 4; // ISO country code for automatic_payment_methods
+  common.PaymentMethodNameEnum payment_method = 5; // to determine if PaymentIntent needed
+  string currency = 6; // ISO currency code (e.g., "usd", "eur")
 }
 
 message ValidateOrderItemsInsertResponse {
@@ -181,6 +185,8 @@ message ValidateOrderItemsInsertResponse {
   google.type.Decimal subtotal = 3;
   google.type.Decimal total_sale = 4;
   common.PromoCodeInsert promo = 5;
+  string client_secret = 6; // Stripe client_secret for payment element
+  string payment_intent_id = 7; // Stripe PaymentIntent ID
 }
 
 message ValidateOrderByUUIDRequest {

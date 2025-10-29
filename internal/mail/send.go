@@ -43,6 +43,20 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repositor
 	return m.sendWithInsert(ctx, rep, ser)
 }
 
+// QueueNewSubscriber queues a welcome email to a new subscriber for asynchronous sending.
+func (m *Mailer) QueueNewSubscriber(ctx context.Context, rep dependency.Repository, to string) error {
+	data := struct {
+		Preheader string
+	}{
+		Preheader: "WELCOME TO GRBPWR",
+	}
+	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for new subscriber: %w", err)
+	}
+	return m.queueEmail(ctx, rep, ser)
+}
+
 // SendOrderConfirmation sends an order confirmation email.
 func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repository, to string, orderDetails *dto.OrderConfirmed) error {
 	if orderDetails.OrderUUID == "" {

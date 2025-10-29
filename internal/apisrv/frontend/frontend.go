@@ -198,18 +198,62 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}
 
 	if sendEmail {
-		err := s.mailer.SendNewSubscriber(ctx, s.repo, orderNew.Buyer.Email)
+		err := s.mailer.QueueNewSubscriber(ctx, s.repo, orderNew.Buyer.Email)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't send new subscriber mail",
+			slog.Default().ErrorContext(ctx, "can't queue new subscriber mail",
 				slog.String("err", err.Error()),
 			)
 		}
 	}
 
-	pi, err := s.getInvoiceByPaymentMethod(ctx, handler, order.UUID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "can't get order invoice")
+	var pi *entity.PaymentInsert
+
+	// Handle pre-created PaymentIntent for card payments
+	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {
+		// Update existing PaymentIntent with order details
+		orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, order.UUID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get order full by uuid", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get order full by uuid")
+		}
+
+		err = handler.UpdatePaymentIntentWithOrder(ctx, req.PaymentIntentId, *orderFull)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't update payment intent with order", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
+		}
+
+		// Associate PaymentIntent with order in database
+		err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			orderFull, err = s.repo.Order().InsertFiatInvoice(ctx, order.UUID, req.PaymentIntentId, pme.Method, time.Now().Add(expirationDuration))
+			if err != nil {
+				return fmt.Errorf("can't insert fiat invoice: %w", err)
+			}
+
+			err = s.repo.Order().UpdateTotalPaymentCurrency(ctx, order.UUID, orderFull.Order.TotalPriceDecimal())
+			if err != nil {
+				return fmt.Errorf("can't update total payment currency: %w", err)
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't associate payment intent with order", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
+		}
+
+		pi = &orderFull.Payment.PaymentInsert
+
+		// Start monitoring the payment
+		handler.StartMonitoringPayment(ctx, order.UUID, orderFull.Payment)
+	} else {
+		// Legacy flow: create PaymentIntent/invoice during order submission
+		pi, err = s.getInvoiceByPaymentMethod(ctx, handler, order.UUID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		}
 	}
 
 	eos, ok := cache.GetOrderStatusById(order.OrderStatusId)
@@ -236,10 +280,19 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		pids = append(pids, int(item.ProductId))
 	}
 
-	s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Products: pids,
-		Hero:     true,
-	})
+	// Revalidate cache asynchronously - no need to block the response
+	go func() {
+		revalidateCtx := context.Background() // Use background context to avoid cancellation when request completes
+		if err := s.re.RevalidateAll(revalidateCtx, &dto.RevalidationData{
+			Products: pids,
+			Hero:     true,
+		}); err != nil {
+			slog.Default().ErrorContext(revalidateCtx, "async revalidation failed",
+				slog.String("err", err.Error()),
+				slog.String("orderUUID", order.UUID),
+			)
+		}
+	}()
 
 	return &pb_frontend.SubmitOrderResponse{
 		OrderUuid:   order.UUID,
@@ -363,13 +416,56 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		}
 	}
 
-	return &pb_frontend.ValidateOrderItemsInsertResponse{
+	response := &pb_frontend.ValidateOrderItemsInsertResponse{
 		ValidItems: pbOii,
 		HasChanged: oiv.HasChanged,
 		Subtotal:   &pb_decimal.Decimal{Value: oiv.SubtotalDecimal().String()},
 		TotalSale:  &pb_decimal.Decimal{Value: totalSale.Round(2).String()},
 		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
-	}, nil
+	}
+
+	// Create PaymentIntent if payment method is CARD
+	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
+	if pm == entity.CARD || pm == entity.CARD_TEST {
+		handler, err := s.getPaymentHandler(ctx, pm)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment handler",
+				slog.String("err", err.Error()),
+			)
+			// Don't fail the validation, just log the error and return without client_secret
+			return response, nil
+		}
+
+		// Use provided currency or fall back to base currency from cache
+		currency := req.Currency
+		if currency == "" {
+			currency = cache.GetBaseCurrency()
+		}
+
+		// Validate currency
+		currencyTicker, ok := dto.VerifyCurrencyTicker(currency)
+		if !ok {
+			slog.Default().ErrorContext(ctx, "invalid currency",
+				slog.String("currency", currency),
+			)
+			return response, nil
+		}
+
+		// Create pre-order PaymentIntent
+		pi, err := handler.CreatePreOrderPaymentIntent(ctx, totalSale.Round(2), currencyTicker.String(), req.Country)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't create pre-order payment intent",
+				slog.String("err", err.Error()),
+			)
+			// Don't fail the validation, just log the error and return without client_secret
+			return response, nil
+		}
+
+		response.ClientSecret = pi.ClientSecret
+		response.PaymentIntentId = pi.ID
+	}
+
+	return response, nil
 
 }
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.ValidateOrderByUUIDRequest) (*pb_frontend.ValidateOrderByUUIDResponse, error) {

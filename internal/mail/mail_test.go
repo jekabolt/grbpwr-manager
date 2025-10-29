@@ -134,6 +134,25 @@ func TestSendNewSubscriber(t *testing.T) {
 	mailDBMock.AssertExpectations(t)
 }
 
+func TestQueueNewSubscriber(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
+
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
+
+	repMock.On("Mail").Return(mailDBMock)
+	// Queue method should only insert, not send or update
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+
+	err := mailer.QueueNewSubscriber(ctx, repMock, "test@example.com")
+
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
+	// Verify that UpdateSent was NOT called (email is queued, not sent immediately)
+}
+
 func TestSendOrderConfirmation(t *testing.T) {
 	ctx := context.Background()
 	mailer := createTestMailer(t)

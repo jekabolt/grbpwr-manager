@@ -88,6 +88,12 @@ type (
 		CancelMonitorPayment(orderUUID string) error
 		CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error)
 		ExpirationDuration() time.Duration
+		// CreatePreOrderPaymentIntent creates a PaymentIntent before order submission (for card payments)
+		CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error)
+		// UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
+		UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
+		// StartMonitoringPayment starts monitoring an existing payment
+		StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment)
 	}
 
 	StripePayment interface {
@@ -234,6 +240,7 @@ type (
 
 	Mailer interface {
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
+		QueueNewSubscriber(ctx context.Context, rep Repository, to string) error
 		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
 		SendOrderCancellation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderCancelled) error
 		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error

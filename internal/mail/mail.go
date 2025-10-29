@@ -230,3 +230,19 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 
 	return nil
 }
+
+// queueEmail queues an email for sending without attempting to send immediately.
+// The background worker will pick it up and send it asynchronously.
+func (m *Mailer) queueEmail(ctx context.Context, rep dependency.Repository, ser *resend.SendEmailRequest) error {
+	eser, err := dto.ResendSendEmailRequestToEntity(ser)
+	if err != nil {
+		return fmt.Errorf("error converting email: %w", err)
+	}
+
+	_, err = rep.Mail().AddMail(ctx, eser)
+	if err != nil {
+		return fmt.Errorf("error inserting email: %w", err)
+	}
+
+	return nil
+}
