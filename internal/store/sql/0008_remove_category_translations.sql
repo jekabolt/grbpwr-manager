@@ -2,27 +2,27 @@
 -- Remove category and measurement name translations and return to English-only names
 -- This migration simplifies the structure by removing multilingual support
 
--- -- Add name column back to category table
--- ALTER TABLE category
--- ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'English category name';
+-- Add name column back to category table
+ALTER TABLE category
+ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'English category name';
 
--- -- Populate name column with English translations from category_translation
--- UPDATE category c
--- JOIN category_translation ct ON c.id = ct.category_id
--- JOIN language l ON ct.language_id = l.id
--- SET c.name = ct.name
--- WHERE l.code = 'en';
+-- Populate name column with English translations from category_translation
+UPDATE category c
+JOIN category_translation ct ON c.id = ct.category_id
+JOIN language l ON ct.language_id = l.id
+SET c.name = ct.name
+WHERE l.code = 'en';
 
--- -- Add name column back to measurement_name table
--- ALTER TABLE measurement_name
--- ADD COLUMN name VARCHAR(50) NOT NULL DEFAULT '' COMMENT 'English measurement name';
+-- Add name column back to measurement_name table
+ALTER TABLE measurement_name
+ADD COLUMN name VARCHAR(50) NOT NULL DEFAULT '' COMMENT 'English measurement name';
 
--- -- Populate name column with English translations from measurement_name_translation
--- UPDATE measurement_name mn
--- JOIN measurement_name_translation mnt ON mn.id = mnt.measurement_name_id
--- JOIN language l ON mnt.language_id = l.id
--- SET mn.name = mnt.name
--- WHERE l.code = 'en';
+-- Populate name column with English translations from measurement_name_translation
+UPDATE measurement_name mn
+JOIN measurement_name_translation mnt ON mn.id = mnt.measurement_name_id
+JOIN language l ON mnt.language_id = l.id
+SET mn.name = mnt.name
+WHERE l.code = 'en';
 
 -- Drop the translation tables
 -- This will automatically drop all indexes and foreign key constraints
