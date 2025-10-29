@@ -122,7 +122,7 @@ var (
 	hero                   = &entity.HeroFullWithTranslations{}
 	maxOrderItems          = 3
 	siteEnabled            = true
-	defaultCurrency        = ""
+	defaultCurrency        = "EUR"
 	bigMenu                = false
 	announceTranslations   = []entity.AnnounceTranslation{}
 )

@@ -15,6 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+	"github.com/stripe/stripe-go/v79"
 )
 
 type Config struct {
@@ -443,4 +444,19 @@ func convertToBlockchainFormat(amount decimal.Decimal, decimals int) decimal.Dec
 
 func (p *Processor) ExpirationDuration() time.Duration {
 	return p.c.InvoiceExpiration
+}
+
+// CreatePreOrderPaymentIntent is not supported for Tron payments
+func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error) {
+	return nil, fmt.Errorf("CreatePreOrderPaymentIntent is not supported for Tron payments")
+}
+
+// UpdatePaymentIntentWithOrder is not supported for Tron payments
+func (p *Processor) UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error {
+	return fmt.Errorf("UpdatePaymentIntentWithOrder is not supported for Tron payments")
+}
+
+// StartMonitoringPayment starts monitoring an existing payment
+func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
+	go p.monitorPayment(ctx, orderUUID, &payment)
 }
