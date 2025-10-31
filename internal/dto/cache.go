@@ -147,8 +147,10 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	for _, sz := range dict.Sizes {
 		commonDict.Sizes = append(commonDict.Sizes,
 			&pb_common.Size{
-				Id:   int32(sz.Id),
-				Name: sz.Name,
+				Id:         int32(sz.Id),
+				Name:       sz.Name,
+				CountMen:   int32(sz.CountMen),
+				CountWomen: int32(sz.CountWomen),
 			})
 	}
 

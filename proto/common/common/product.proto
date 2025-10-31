@@ -23,6 +23,8 @@ message Category {
 message Size {
   int32 id = 1;
   string name = 2;
+  int32 count_men = 3;
+  int32 count_women = 4;
 }
 
 message MeasurementName {

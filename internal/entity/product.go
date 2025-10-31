@@ -35,8 +35,10 @@ type Category struct {
 
 // Size represents the size table
 type Size struct {
-	Id   int    `db:"id"`
-	Name string `db:"name"`
+	Id         int    `db:"id"`
+	Name       string `db:"name"`
+	CountMen   int
+	CountWomen int
 }
 
 // MeasurementName represents the measurement_name table

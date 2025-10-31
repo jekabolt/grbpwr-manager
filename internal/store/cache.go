@@ -252,5 +252,63 @@ func (ms *MYSQLStore) getSizes(ctx context.Context) ([]entity.Size, error) {
 	if err != nil {
 		return nil, fmt.Errorf("can't get size by id: %w", err)
 	}
+
+	// Get size counts efficiently in bulk
+	sizeMenCounts, err := ms.getSizeCountsByGender(ctx, "male")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get men counts: %w", err)
+	}
+
+	sizeWomenCounts, err := ms.getSizeCountsByGender(ctx, "female")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get women counts: %w", err)
+	}
+
+	// Map counts to sizes
+	for i := range sizes {
+		// Add counts
+		if count, exists := sizeMenCounts[sizes[i].Id]; exists {
+			sizes[i].CountMen = count
+		}
+		if count, exists := sizeWomenCounts[sizes[i].Id]; exists {
+			sizes[i].CountWomen = count
+		}
+	}
+
 	return sizes, nil
+}
+
+// getSizeCountsByGender returns a map of size ID to product count for a specific gender
+func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender string) (map[int]int, error) {
+	query := `
+		SELECT 
+			size_id, 
+			COUNT(*) as count
+		FROM (
+			SELECT DISTINCT ps.size_id, p.id as product_id
+			FROM product_size ps
+			JOIN product p ON ps.product_id = p.id
+			WHERE p.hidden = 0 AND p.target_gender IN (:gender, 'unisex')
+		) AS size_products
+		GROUP BY size_id
+	`
+
+	type sizeCount struct {
+		SizeID int `db:"size_id"`
+		Count  int `db:"count"`
+	}
+
+	results, err := QueryListNamed[sizeCount](ctx, ms.db, query, map[string]interface{}{
+		"gender": gender,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get %s counts by size: %w", gender, err)
+	}
+
+	counts := make(map[int]int)
+	for _, result := range results {
+		counts[result.SizeID] = result.Count
+	}
+
+	return counts, nil
 }
