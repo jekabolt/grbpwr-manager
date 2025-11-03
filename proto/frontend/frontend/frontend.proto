@@ -100,6 +100,14 @@ service FrontendService {
     };
   }
 
+  // NotifyMe adds an email to the waitlist for a specific product/size when out of stock
+  rpc NotifyMe(NotifyMeRequest) returns (NotifyMeResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/notify-me"
+      body: "*"
+    };
+  }
+
   // GetArchivesPaged retrieves paged archives.
   rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
     option (google.api.http) = {get: "/api/frontend/archive/paged"};
@@ -234,6 +242,14 @@ message UnsubscribeNewsletterRequest {
 }
 
 message UnsubscribeNewsletterResponse {}
+
+message NotifyMeRequest {
+  string email = 1;
+  int32 product_id = 2;
+  int32 size_id = 3;
+}
+
+message NotifyMeResponse {}
 
 message GetArchivesPagedRequest {
   int32 limit = 1;

@@ -44,6 +44,18 @@ type (
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
+		// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
+		GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error)
+		// AddToWaitlist adds an email to the waitlist for a specific product/size combination.
+		AddToWaitlist(ctx context.Context, productId int, sizeId int, email string) error
+		// GetWaitlistEntriesByProductSize retrieves all waitlist entries for a specific product/size combination.
+		GetWaitlistEntriesByProductSize(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntry, error)
+		// RemoveFromWaitlist removes a specific waitlist entry.
+		RemoveFromWaitlist(ctx context.Context, productId int, sizeId int, email string) error
+		// RemoveFromWaitlistBatch removes all waitlist entries for a specific product/size combination.
+		RemoveFromWaitlistBatch(ctx context.Context, productId int, sizeId int) error
+		// GetWaitlistEntriesWithBuyerNames retrieves waitlist entries with buyer names in a single query.
+		GetWaitlistEntriesWithBuyerNames(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntryWithBuyer, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error
@@ -173,6 +185,13 @@ type (
 		GetAnnounceTranslations(ctx context.Context) ([]entity.AnnounceTranslation, error)
 	}
 
+	Waitlist interface {
+		AddToWaitlist(ctx context.Context, productId int, sizeId int, email string) error
+		GetWaitlistEntriesByProductSize(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntry, error)
+		RemoveFromWaitlist(ctx context.Context, productId int, sizeId int, email string) error
+		RemoveFromWaitlistBatch(ctx context.Context, productId int, sizeId int) error
+		GetWaitlistEntriesWithBuyerNames(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntryWithBuyer, error)
+	}
 	Repository interface {
 		Products() Products
 		Hero() Hero
@@ -249,6 +268,7 @@ type (
 		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error
 		SendRefundInitiated(ctx context.Context, rep Repository, to string, refundDetails *dto.OrderRefundInitiated) error
 		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error
+		SendBackInStock(ctx context.Context, rep Repository, to string, productDetails *dto.BackInStock) error
 		Start(ctx context.Context) error
 		Stop() error
 	}

@@ -114,6 +114,8 @@ var (
 
 	entitySizes = []entity.Size{}
 
+	entityCollections = []entity.Collection{}
+
 	entityLanguages = []entity.Language{}
 
 	promoCodes             = make(map[string]entity.PromoCode)
@@ -181,6 +183,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
+	entityCollections = dInfo.Collections
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
 	announceTranslations = dInfo.AnnounceTranslations
@@ -423,6 +426,10 @@ func GetPaymentMethods() []entity.PaymentMethod {
 
 func GetSizes() []entity.Size {
 	return entitySizes
+}
+
+func GetCollections() []entity.Collection {
+	return entityCollections
 }
 
 func GetShipmentCarriers() []entity.ShipmentCarrier {

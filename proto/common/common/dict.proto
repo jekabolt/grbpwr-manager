@@ -19,12 +19,19 @@ message Dictionary {
   repeated PaymentMethod payment_methods = 4;
   repeated ShipmentCarrier shipment_carriers = 5;
   repeated Size sizes = 6;
+  repeated Collection collections = 13;
   repeated Language languages = 7;
   bool site_enabled = 8;
   int32 max_order_items = 9;
   string base_currency = 10;
   bool big_menu = 11;
   repeated AnnounceTranslation announce_translations = 12;
+}
+
+message Collection {
+  string name = 1;
+  int32 count_men = 2;
+  int32 count_women = 3;
 }
 
 message Genders {

@@ -52,6 +52,10 @@ func (ms *MYSQLStore) GetDictionaryInfo(ctx context.Context) (*entity.Dictionary
 		return nil, fmt.Errorf("failed to get sizes: %w", err)
 	}
 
+	if dict.Collections, err = ms.getCollections(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get collections: %w", err)
+	}
+
 	if dict.Languages, err = ms.Language().GetAllLanguages(ctx); err != nil {
 		return nil, fmt.Errorf("failed to get languages: %w", err)
 	}
@@ -82,12 +86,12 @@ func (ms *MYSQLStore) getCategories(ctx context.Context) ([]entity.Category, err
 	}
 
 	// Get category counts efficiently in bulk
-	categoryMenCounts, err := ms.getCategoriesMenCounts(ctx)
+	categoryMenCounts, err := ms.getCategoriesCountsByGender(ctx, entity.Male)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get men counts: %w", err)
 	}
 
-	categoryWomenCounts, err := ms.getCategoriesWomenCounts(ctx)
+	categoryWomenCounts, err := ms.getCategoriesCountsByGender(ctx, entity.Female)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get women counts: %w", err)
 	}
@@ -140,8 +144,8 @@ func (ms *MYSQLStore) getOrderStatuses(ctx context.Context) ([]entity.OrderStatu
 	return orderStatuses, nil
 }
 
-// getCategoriesMenCounts returns a map of category ID to men's product count
-func (ms *MYSQLStore) getCategoriesMenCounts(ctx context.Context) (map[int]int, error) {
+// getCategoriesCountsByGender returns a map of category ID to product count for a specific gender
+func (ms *MYSQLStore) getCategoriesCountsByGender(ctx context.Context, gender entity.GenderEnum) (map[int]int, error) {
 	query := `
 		SELECT 
 			category_id, 
@@ -149,19 +153,19 @@ func (ms *MYSQLStore) getCategoriesMenCounts(ctx context.Context) (map[int]int, 
 		FROM (
 			SELECT DISTINCT p.top_category_id as category_id, p.id as product_id
 			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('male', 'unisex')
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex')
 			
 			UNION
 			
 			SELECT DISTINCT p.sub_category_id as category_id, p.id as product_id
 			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('male', 'unisex') AND p.sub_category_id IS NOT NULL
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex') AND p.sub_category_id IS NOT NULL
 			
 			UNION
 			
 			SELECT DISTINCT p.type_id as category_id, p.id as product_id
 			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('male', 'unisex') AND p.type_id IS NOT NULL
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex') AND p.type_id IS NOT NULL
 		) AS category_products
 		GROUP BY category_id
 	`
@@ -171,53 +175,11 @@ func (ms *MYSQLStore) getCategoriesMenCounts(ctx context.Context) (map[int]int, 
 		Count      int `db:"count"`
 	}
 
-	results, err := QueryListNamed[categoryCount](ctx, ms.db, query, map[string]interface{}{})
+	results, err := QueryListNamed[categoryCount](ctx, ms.db, query, map[string]interface{}{
+		"gender": gender.String(),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("can't get men counts by category: %w", err)
-	}
-
-	counts := make(map[int]int)
-	for _, result := range results {
-		counts[result.CategoryID] = result.Count
-	}
-
-	return counts, nil
-}
-
-// getCategoriesWomenCounts returns a map of category ID to women's product count
-func (ms *MYSQLStore) getCategoriesWomenCounts(ctx context.Context) (map[int]int, error) {
-	query := `
-		SELECT 
-			category_id, 
-			COUNT(*) as count
-		FROM (
-			SELECT DISTINCT p.top_category_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('female', 'unisex')
-			
-			UNION
-			
-			SELECT DISTINCT p.sub_category_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('female', 'unisex') AND p.sub_category_id IS NOT NULL
-			
-			UNION
-			
-			SELECT DISTINCT p.type_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.target_gender IN ('female', 'unisex') AND p.type_id IS NOT NULL
-		) AS category_products
-		GROUP BY category_id
-	`
-
-	type categoryCount struct {
-		CategoryID int `db:"category_id"`
-		Count      int `db:"count"`
-	}
-
-	results, err := QueryListNamed[categoryCount](ctx, ms.db, query, map[string]interface{}{})
-	if err != nil {
-		return nil, fmt.Errorf("can't get women counts by category: %w", err)
+		return nil, fmt.Errorf("can't get %s counts by category: %w", gender, err)
 	}
 
 	counts := make(map[int]int)
@@ -254,12 +216,12 @@ func (ms *MYSQLStore) getSizes(ctx context.Context) ([]entity.Size, error) {
 	}
 
 	// Get size counts efficiently in bulk
-	sizeMenCounts, err := ms.getSizeCountsByGender(ctx, "male")
+	sizeMenCounts, err := ms.getSizeCountsByGender(ctx, entity.Male)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get men counts: %w", err)
 	}
 
-	sizeWomenCounts, err := ms.getSizeCountsByGender(ctx, "female")
+	sizeWomenCounts, err := ms.getSizeCountsByGender(ctx, entity.Female)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get women counts: %w", err)
 	}
@@ -279,7 +241,7 @@ func (ms *MYSQLStore) getSizes(ctx context.Context) ([]entity.Size, error) {
 }
 
 // getSizeCountsByGender returns a map of size ID to product count for a specific gender
-func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender string) (map[int]int, error) {
+func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender entity.GenderEnum) (map[int]int, error) {
 	query := `
 		SELECT 
 			size_id, 
@@ -288,7 +250,7 @@ func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender string) 
 			SELECT DISTINCT ps.size_id, p.id as product_id
 			FROM product_size ps
 			JOIN product p ON ps.product_id = p.id
-			WHERE p.hidden = 0 AND p.target_gender IN (:gender, 'unisex')
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex')
 		) AS size_products
 		GROUP BY size_id
 	`
@@ -299,7 +261,7 @@ func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender string) 
 	}
 
 	results, err := QueryListNamed[sizeCount](ctx, ms.db, query, map[string]interface{}{
-		"gender": gender,
+		"gender": gender.String(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get %s counts by size: %w", gender, err)
@@ -308,6 +270,95 @@ func (ms *MYSQLStore) getSizeCountsByGender(ctx context.Context, gender string) 
 	counts := make(map[int]int)
 	for _, result := range results {
 		counts[result.SizeID] = result.Count
+	}
+
+	return counts, nil
+}
+
+func (ms *MYSQLStore) getCollections(ctx context.Context) ([]entity.Collection, error) {
+	// Get distinct collections from products
+	query := `
+		SELECT DISTINCT 
+			p.collection as name
+		FROM product p
+		WHERE p.collection IS NOT NULL 
+			AND p.collection != ''
+			AND p.hidden = 0 
+			AND p.deleted_at IS NULL
+		ORDER BY p.collection
+	`
+
+	type collectionResult struct {
+		Name string `db:"name"`
+	}
+
+	results, err := QueryListNamed[collectionResult](ctx, ms.db, query, map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get collections: %w", err)
+	}
+
+	// Get collection counts efficiently in bulk
+	collectionMenCounts, err := ms.getCollectionCountsByGender(ctx, entity.Male)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get men counts: %w", err)
+	}
+
+	collectionWomenCounts, err := ms.getCollectionCountsByGender(ctx, entity.Female)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get women counts: %w", err)
+	}
+
+	// Convert to Collection entities and map counts
+	collections := make([]entity.Collection, 0, len(results))
+	for _, result := range results {
+		collection := entity.Collection{
+			Name: result.Name,
+		}
+
+		// Add counts
+		if count, exists := collectionMenCounts[result.Name]; exists {
+			collection.CountMen = count
+		}
+		if count, exists := collectionWomenCounts[result.Name]; exists {
+			collection.CountWomen = count
+		}
+
+		collections = append(collections, collection)
+	}
+
+	return collections, nil
+}
+
+// getCollectionCountsByGender returns a map of collection name to product count for a specific gender
+func (ms *MYSQLStore) getCollectionCountsByGender(ctx context.Context, gender entity.GenderEnum) (map[string]int, error) {
+	query := `
+		SELECT 
+			p.collection as name, 
+			COUNT(DISTINCT p.id) as count
+		FROM product p
+		WHERE p.collection IS NOT NULL 
+			AND p.collection != ''
+			AND p.hidden = 0 
+			AND p.deleted_at IS NULL 
+			AND p.target_gender IN (:gender, 'unisex')
+		GROUP BY p.collection
+	`
+
+	type collectionCount struct {
+		Name  string `db:"name"`
+		Count int    `db:"count"`
+	}
+
+	results, err := QueryListNamed[collectionCount](ctx, ms.db, query, map[string]interface{}{
+		"gender": gender.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get %s counts by collection: %w", gender, err)
+	}
+
+	counts := make(map[string]int)
+	for _, result := range results {
+		counts[result.Name] = result.Count
 	}
 
 	return counts, nil

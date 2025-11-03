@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -381,6 +382,9 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	var whereClauses []string
 	args := make(map[string]interface{})
 
+	// Always filter out deleted products
+	whereClauses = append(whereClauses, "p.deleted_at IS NULL")
+
 	// Handle hidden products
 	if !showHidden {
 		whereClauses = append(whereClauses, "p.hidden = :isHidden")
@@ -456,6 +460,10 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			whereClauses = append(whereClauses, "p.id IN (SELECT pt.product_id FROM product_tag pt WHERE pt.tag = :tag)")
 			args["tag"] = filterConditions.ByTag
 		}
+		if filterConditions.Collection != "" {
+			whereClauses = append(whereClauses, "p.collection = :collection")
+			args["collection"] = filterConditions.Collection
+		}
 	}
 
 	// Build and execute the queries
@@ -508,6 +516,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		p.id,
 		p.created_at,
 		p.updated_at,
+		p.deleted_at,
 		p.preorder,
 		p.brand,
 		p.sku,
@@ -543,7 +552,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		product p
 	JOIN
 		media m ON p.thumbnail_id = m.id 
-	WHERE p.id IN (:ids) AND p.hidden = 0`
+	WHERE p.id IN (:ids) AND p.hidden = 0 AND p.deleted_at IS NULL`
 
 	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
 		"ids": ids,
@@ -587,6 +596,7 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		p.id,
 		p.created_at,
 		p.updated_at,
+		p.deleted_at,
 		p.preorder,
 		p.brand,
 		p.sku,
@@ -622,7 +632,7 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		product p
 	JOIN 
 		media m ON p.thumbnail_id = m.id 
-	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0`
+	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0 AND p.deleted_at IS NULL`
 
 	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
 		"tag": tag,
@@ -658,10 +668,11 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 // productQueryResult represents the flat database result that needs to be mapped to the nested Product structure
 type productQueryResult struct {
 	// Basic product fields
-	Id        int       `db:"id"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
-	Slug      string    `db:"slug"`
+	Id        int          `db:"id"`
+	CreatedAt time.Time    `db:"created_at"`
+	UpdatedAt time.Time    `db:"updated_at"`
+	DeletedAt sql.NullTime `db:"deleted_at"`
+	Slug      string       `db:"slug"`
 
 	// Product body fields (from product table)
 	Preorder           sql.NullTime        `db:"preorder"`
@@ -710,6 +721,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		Id:        pqr.Id,
 		CreatedAt: pqr.CreatedAt,
 		UpdatedAt: pqr.UpdatedAt,
+		DeletedAt: pqr.DeletedAt,
 		Slug:      pqr.Slug,
 		SKU:       pqr.SKU,
 		ProductDisplay: entity.ProductDisplay{
@@ -791,6 +803,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.id,
 		p.created_at,
 		p.updated_at,
+		p.deleted_at,
 		p.preorder,
 		p.brand,
 		p.sku,
@@ -885,6 +898,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.id,
 		p.created_at,
 		p.updated_at,
+		p.deleted_at,
 		p.preorder,
 		p.brand,
 		p.sku,
@@ -922,6 +936,9 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	JOIN 
 		media m ON p.thumbnail_id = m.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
+
+	// Always filter out deleted products
+	query += " AND p.deleted_at IS NULL"
 
 	// Include or exclude hidden products based on the showHidden flag
 	if !showHidden {
@@ -1029,9 +1046,9 @@ func toCamelCase(s string) string {
 	return strings.Join(parts, "")
 }
 
-// DeleteProductById deletes a product by its ID.
+// DeleteProductById soft deletes a product by its ID by setting deleted_at timestamp.
 func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
-	query := "DELETE FROM product WHERE id = :id"
+	query := "UPDATE product SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id AND deleted_at IS NULL"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
 		"id": id,
 	})
@@ -1079,6 +1096,30 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		}
 	}
 	return nil
+}
+
+// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
+// Returns the quantity and a boolean indicating if the product_size entry exists.
+func (ms *MYSQLStore) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
+	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
+	params := map[string]any{
+		"productId": productId,
+		"sizeId":    sizeId,
+	}
+
+	type ProductSizeQuantity struct {
+		Quantity decimal.Decimal `db:"quantity"`
+	}
+
+	productSize, err := QueryNamedOne[ProductSizeQuantity](ctx, ms.db, query, params)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return decimal.Zero, false, nil // Product size doesn't exist
+		}
+		return decimal.Zero, false, fmt.Errorf("can't get product size stock: %w", err)
+	}
+
+	return productSize.Quantity, true, nil
 }
 
 func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
@@ -1180,6 +1221,7 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.id,
 			p.created_at,
 			p.updated_at,
+			p.deleted_at,
 			p.preorder,
 			p.brand,
 			p.sku,
@@ -1216,7 +1258,7 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			product p
 		JOIN 
 			media m ON p.thumbnail_id = m.id
-	WHERE p.id IN (:productIds)`
+	WHERE p.id IN (:productIds) AND p.deleted_at IS NULL`
 
 	type productOrderResult struct {
 		productQueryResult

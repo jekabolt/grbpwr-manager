@@ -41,6 +41,13 @@ type Size struct {
 	CountWomen int
 }
 
+// Collection represents a product collection with counts
+type Collection struct {
+	Name       string `db:"name"`
+	CountMen   int
+	CountWomen int
+}
+
 // MeasurementName represents the measurement_name table
 type MeasurementName struct {
 	Id   int    `db:"id"`
@@ -123,6 +130,7 @@ type Product struct {
 	Id             int            `db:"id"`
 	CreatedAt      time.Time      `db:"created_at"`
 	UpdatedAt      time.Time      `db:"updated_at"`
+	DeletedAt      sql.NullTime   `db:"deleted_at"`
 	Slug           string         `db:"slug"`
 	SKU            string         `db:"sku"`
 	ProductDisplay ProductDisplay `valid:"required"`

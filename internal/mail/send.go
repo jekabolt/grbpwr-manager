@@ -17,6 +17,7 @@ const (
 	OrderShipped         templateName = "order_shipped.gohtml"
 	OrderRefundInitiated templateName = "refund_initiated.gohtml"
 	PromoCode            templateName = "promo_code.gohtml"
+	BackInStock          templateName = "back_in_stock.gohtml"
 )
 
 // Define a map for template names to subjects
@@ -27,14 +28,17 @@ var templateSubjects = map[templateName]string{
 	OrderShipped:         "Your order has been shipped",
 	OrderRefundInitiated: "Your refund has been initiated",
 	PromoCode:            "Your promo code",
+	BackInStock:          "Your waitlist item is back in stock",
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.
 func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repository, to string) error {
-	data := struct {
+	data := &struct {
 		Preheader string
+		EmailB64  string
 	}{
 		Preheader: "WELCOME TO GRBPWR",
+		EmailB64:  " ", // Non-empty marker to prevent injection - template will check and not show unsubscribe
 	}
 	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
@@ -45,10 +49,12 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repositor
 
 // QueueNewSubscriber queues a welcome email to a new subscriber for asynchronous sending.
 func (m *Mailer) QueueNewSubscriber(ctx context.Context, rep dependency.Repository, to string) error {
-	data := struct {
+	data := &struct {
 		Preheader string
+		EmailB64  string
 	}{
 		Preheader: "WELCOME TO GRBPWR",
+		EmailB64:  " ", // Non-empty marker to prevent injection - template will check and not show unsubscribe
 	}
 	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
@@ -124,4 +130,20 @@ func (m *Mailer) SendPromoCode(ctx context.Context, rep dependency.Repository, t
 	}
 
 	return m.sendWithInsert(ctx, rep, ser)
+}
+
+// SendBackInStock sends a back-in-stock notification email.
+// It queues the email for asynchronous sending to avoid blocking operations.
+func (m *Mailer) SendBackInStock(ctx context.Context, rep dependency.Repository, to string, productDetails *dto.BackInStock) error {
+	if productDetails.ProductURL == "" {
+		return fmt.Errorf("incomplete product details: %+v", productDetails)
+	}
+
+	ser, err := m.buildSendMailRequest(to, BackInStock, productDetails)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for back in stock: %w", err)
+	}
+
+	// Queue email for async sending (better for batch operations)
+	return m.queueEmail(ctx, rep, ser)
 }
