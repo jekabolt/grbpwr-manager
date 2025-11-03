@@ -287,7 +287,21 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 }
 
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
-	err := s.repo.Products().UpdateProductSizeStock(ctx, int(req.ProductId), int(req.SizeId), int(req.Quantity))
+	productId := int(req.ProductId)
+	sizeId := int(req.SizeId)
+	newQuantity := int(req.Quantity)
+
+	// Get previous quantity to detect stock transition
+	previousQuantity, _, err := s.repo.Products().GetProductSizeStock(ctx, productId, sizeId)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get previous product size quantity",
+			slog.String("err", err.Error()),
+		)
+		// Continue anyway, we'll just skip waitlist notifications
+		previousQuantity = decimal.Zero
+	}
+
+	err = s.repo.Products().UpdateProductSizeStock(ctx, productId, sizeId, newQuantity)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
@@ -295,8 +309,15 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
 	}
 
+	// Check if stock transitioned from 0 to >0
+	newQuantityDecimal := decimal.NewFromInt(int64(newQuantity))
+	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
+		// Trigger waitlist notifications asynchronously
+		go s.notifyWaitlist(ctx, productId, sizeId)
+	}
+
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
-		Products: []int{int(req.ProductId)},
+		Products: []int{productId},
 		Hero:     true,
 	})
 	if err != nil {
@@ -306,6 +327,73 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		return nil, status.Errorf(codes.Internal, "can't revalidate product")
 	}
 	return &pb_admin.UpdateProductSizeStockResponse{}, nil
+}
+
+// notifyWaitlist processes waitlist entries and sends back-in-stock notifications
+func (s *Server) notifyWaitlist(ctx context.Context, productId int, sizeId int) {
+	notifyCtx := context.Background() // Use background context to avoid cancellation
+
+	// Get product details
+	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId)
+	if err != nil {
+		slog.Default().ErrorContext(notifyCtx, "can't get product for waitlist notification",
+			slog.String("err", err.Error()),
+			slog.Int("productId", productId),
+		)
+		return
+	}
+
+	// Get waitlist entries with buyer names in a single query
+	entriesWithNames, err := s.repo.Products().GetWaitlistEntriesWithBuyerNames(notifyCtx, productId, sizeId)
+	if err != nil {
+		slog.Default().ErrorContext(notifyCtx, "can't get waitlist entries with buyer names",
+			slog.String("err", err.Error()),
+			slog.Int("productId", productId),
+			slog.Int("sizeId", sizeId),
+		)
+		return
+	}
+
+	if len(entriesWithNames) == 0 {
+		return
+	}
+
+	// Send emails to all waitlist entries and remove them
+	for _, entry := range entriesWithNames {
+		// Build buyer name from the entry data
+		buyerName := ""
+		if entry.FirstName.Valid && entry.FirstName.String != "" {
+			buyerName = entry.FirstName.String
+			if entry.LastName.Valid && entry.LastName.String != "" {
+				buyerName = fmt.Sprintf("%s %s", entry.FirstName.String, entry.LastName.String)
+			}
+		}
+
+		// Convert to back-in-stock DTO with buyer name
+		productDetails := dto.ProductFullToBackInStock(product, sizeId, buyerName, entry.Email)
+
+		err = s.mailer.SendBackInStock(notifyCtx, s.repo, entry.Email, productDetails)
+		if err != nil {
+			slog.Default().ErrorContext(notifyCtx, "can't send back in stock email",
+				slog.String("err", err.Error()),
+				slog.String("email", entry.Email),
+				slog.Int("productId", productId),
+				slog.Int("sizeId", sizeId),
+			)
+			// Continue processing other entries even if one fails
+		} else {
+			// Remove from waitlist after successful email queue
+			err = s.repo.Products().RemoveFromWaitlist(notifyCtx, productId, sizeId, entry.Email)
+			if err != nil {
+				slog.Default().ErrorContext(notifyCtx, "can't remove from waitlist",
+					slog.String("err", err.Error()),
+					slog.String("email", entry.Email),
+					slog.Int("productId", productId),
+					slog.Int("sizeId", sizeId),
+				)
+			}
+		}
+	}
 }
 
 // PROMO MANAGER
@@ -391,6 +479,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			PaymentMethods:       cache.GetPaymentMethods(),
 			ShipmentCarriers:     cache.GetShipmentCarriers(),
 			Sizes:                cache.GetSizes(),
+			Collections:          cache.GetCollections(),
 			Languages:            cache.GetLanguages(),
 			Genders:              cache.GetGenders(),
 			SortFactors:          cache.GetSortFactors(),

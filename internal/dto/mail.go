@@ -24,8 +24,15 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 	// Calculate subtotal (total - shipping)
 	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
 
+	// Build buyer name (first name, or first + last if both available)
+	buyerName := of.Buyer.FirstName
+	if of.Buyer.LastName != "" {
+		buyerName = fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName)
+	}
+
 	return &OrderConfirmed{
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
+		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
 		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
@@ -52,8 +59,15 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 	// Calculate subtotal (total - shipping)
 	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
 
+	// Build buyer name (first name, or first + last if both available)
+	buyerName := of.Buyer.FirstName
+	if of.Buyer.LastName != "" {
+		buyerName = fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName)
+	}
+
 	return &OrderShipment{
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
+		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
@@ -67,16 +81,30 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 }
 
 func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
+	// Build buyer name (first name, or first + last if both available)
+	buyerName := of.Buyer.FirstName
+	if of.Buyer.LastName != "" {
+		buyerName = fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName)
+	}
+
 	return &OrderCancelled{
 		Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
+		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
 }
 
 func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated {
+	// Build buyer name (first name, or first + last if both available)
+	buyerName := of.Buyer.FirstName
+	if of.Buyer.LastName != "" {
+		buyerName = fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName)
+	}
+
 	return &OrderRefundInitiated{
 		Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
+		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
@@ -111,6 +139,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 
 type OrderConfirmed struct {
 	Preheader           string
+	BuyerName           string // First name or full name if available
 	OrderUUID           string
 	SubtotalPrice       string
 	TotalPrice          string
@@ -132,12 +161,14 @@ type OrderItem struct {
 
 type OrderCancelled struct {
 	Preheader string
+	BuyerName string // First name or full name if available
 	OrderUUID string
 	EmailB64  string
 }
 
 type OrderShipment struct {
 	Preheader           string
+	BuyerName           string // First name or full name if available
 	OrderUUID           string
 	EmailB64            string
 	OrderItems          []OrderItem
@@ -151,14 +182,28 @@ type OrderShipment struct {
 
 type OrderRefundInitiated struct {
 	Preheader string
+	BuyerName string // First name or full name if available
 	OrderUUID string
 	EmailB64  string
 }
 
 type PromoCodeDetails struct {
 	Preheader      string
+	BuyerName      string // First name or full name if available
 	PromoCode      string
 	DiscountAmount int
+	EmailB64       string
+}
+
+// CreatePromoCodeDetails creates a PromoCodeDetails DTO with EmailB64 set
+func CreatePromoCodeDetails(preheader, buyerName, promoCode, email string, discountAmount int) *PromoCodeDetails {
+	return &PromoCodeDetails{
+		Preheader:      preheader,
+		BuyerName:      buyerName,
+		PromoCode:      promoCode,
+		DiscountAmount: discountAmount,
+		EmailB64:       base64.StdEncoding.EncodeToString([]byte(email)),
+	}
 }
 
 func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest) (*entity.SendEmailRequest, error) {

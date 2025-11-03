@@ -13,6 +13,7 @@ type Dict struct {
 	PaymentMethods       []entity.PaymentMethod
 	ShipmentCarriers     []entity.ShipmentCarrier
 	Sizes                []entity.Size
+	Collections          []entity.Collection
 	Languages            []entity.Language
 	Genders              []pb_common.Genders
 	SortFactors          []pb_common.SortFactors
@@ -151,6 +152,15 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 				Name:       sz.Name,
 				CountMen:   int32(sz.CountMen),
 				CountWomen: int32(sz.CountWomen),
+			})
+	}
+
+	for _, col := range dict.Collections {
+		commonDict.Collections = append(commonDict.Collections,
+			&pb_common.Collection{
+				Name:       col.Name,
+				CountMen:   int32(col.CountMen),
+				CountWomen: int32(col.CountWomen),
 			})
 	}
 

@@ -59,4 +59,5 @@ type FilterConditions struct {
 	SizesIds       []int
 	Preorder       bool
 	ByTag          string
+	Collection     string
 }

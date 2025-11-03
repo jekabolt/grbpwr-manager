@@ -39,6 +39,7 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		SizesIds:       sizes,
 		Preorder:       fc.Preorder,
 		ByTag:          fc.ByTag,
+		Collection:     fc.Collection,
 	}
 }
 
@@ -122,5 +123,6 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		SizesIds:       sizes,
 		Preorder:       fc.Preorder,
 		ByTag:          fc.ByTag,
+		Collection:     fc.Collection,
 	}
 }
