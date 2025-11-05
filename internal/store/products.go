@@ -460,9 +460,9 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			whereClauses = append(whereClauses, "p.id IN (SELECT pt.product_id FROM product_tag pt WHERE pt.tag = :tag)")
 			args["tag"] = filterConditions.ByTag
 		}
-		if filterConditions.Collection != "" {
-			whereClauses = append(whereClauses, "p.collection = :collection")
-			args["collection"] = filterConditions.Collection
+		if len(filterConditions.Collections) != 0 {
+			whereClauses = append(whereClauses, "p.collection IN (:collections)")
+			args["collections"] = filterConditions.Collections
 		}
 	}
 

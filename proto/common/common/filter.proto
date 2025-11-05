@@ -32,5 +32,5 @@ message FilterConditions {
   repeated int32 sizes_ids = 9;
   bool preorder = 10;
   string by_tag = 11;
-  string collection = 12;
+  repeated string collections = 12;
 }
