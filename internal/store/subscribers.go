@@ -33,33 +33,43 @@ func (ms *MYSQLStore) GetActiveSubscribers(ctx context.Context) ([]entity.Subscr
 }
 
 func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, receivePromo bool) (bool, error) {
-	isSubscribed, err := ms.IsSubscribed(ctx, email)
+	subscriber, err := ms.getSubscriberByEmail(ctx, email)
 	if err != nil {
-		return false, fmt.Errorf("failed to check if email exists: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			query := `INSERT INTO subscriber (email, receive_promo_emails) VALUES (:email, :receivePromoEmails)`
+			params := map[string]interface{}{
+				"email":              email,
+				"receivePromoEmails": receivePromo,
+			}
+
+			if err := ExecNamed(ctx, ms.DB(), query, params); err != nil {
+				return false, fmt.Errorf("failed to insert subscriber: %w", err)
+			}
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get subscriber: %w", err)
 	}
 
-	// Insert new subscriber only if email doesn't exist or receivePromo is false ie unsubscribe
-	if !isSubscribed || !receivePromo {
-		query := `INSERT INTO subscriber (email, receive_promo_emails) VALUES (:email, :receivePromoEmails)`
-		params := map[string]interface{}{
-			"email":              email,
-			"receivePromoEmails": receivePromo,
-		}
-		err = ExecNamed(ctx, ms.DB(), query, params)
-		if err != nil {
-			return false, fmt.Errorf("failed to insert subscriber: %w", err)
-		}
+	wasSubscribed := subscriber.ReceivePromoEmails
+	if wasSubscribed == receivePromo {
+		return wasSubscribed, nil
 	}
-	return isSubscribed, nil
+
+	query := `UPDATE subscriber SET receive_promo_emails = :receivePromoEmails WHERE email = :email`
+	params := map[string]interface{}{
+		"email":              email,
+		"receivePromoEmails": receivePromo,
+	}
+
+	if err := ExecNamed(ctx, ms.DB(), query, params); err != nil {
+		return wasSubscribed, fmt.Errorf("failed to update subscriber: %w", err)
+	}
+
+	return wasSubscribed, nil
 }
 
 func (ms *MYSQLStore) IsSubscribed(ctx context.Context, email string) (bool, error) {
-	query := `SELECT * FROM subscriber WHERE email = :email`
-	params := map[string]interface{}{
-		"email": email,
-	}
-
-	subscriber, err := QueryNamedOne[entity.Subscriber](ctx, ms.DB(), query, params)
+	subscriber, err := ms.getSubscriberByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -67,4 +77,18 @@ func (ms *MYSQLStore) IsSubscribed(ctx context.Context, email string) (bool, err
 		return false, fmt.Errorf("failed to check subscription: %w", err)
 	}
 	return subscriber.ReceivePromoEmails, nil
+}
+
+func (ms *MYSQLStore) getSubscriberByEmail(ctx context.Context, email string) (*entity.Subscriber, error) {
+	query := `SELECT * FROM subscriber WHERE email = :email`
+	params := map[string]interface{}{
+		"email": email,
+	}
+
+	subscriber, err := QueryNamedOne[entity.Subscriber](ctx, ms.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+
+	return &subscriber, nil
 }
