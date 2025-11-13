@@ -15,6 +15,7 @@ type OrderNew struct {
 	PaymentMethod     PaymentMethodName `valid:"required"`
 	ShipmentCarrierId int               `valid:"required"`
 	PromoCode         string            `valid:"-"`
+	Currency          string            `valid:"required,length(3|3)"` // ISO 4217 currency code
 }
 
 type OrderFull struct {
@@ -35,6 +36,7 @@ type Order struct {
 	Placed        time.Time       `db:"placed"`
 	Modified      time.Time       `db:"modified"`
 	TotalPrice    decimal.Decimal `db:"total_price"`
+	Currency      string          `db:"currency"` // ISO 4217 currency code
 	OrderStatusId int             `db:"order_status_id"`
 	PromoId       sql.NullInt32   `db:"promo_id"`
 	RefundReason  sql.NullString  `db:"refund_reason"`

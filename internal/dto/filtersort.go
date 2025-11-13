@@ -31,6 +31,7 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 	return &pb_common.FilterConditions{
 		From:           fc.From.String(),
 		To:             fc.To.String(),
+		Currency:       fc.Currency,
 		OnSale:         fc.OnSale,
 		Color:          fc.Color,
 		TopCategoryIds: topCategories,
@@ -114,6 +115,7 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	return &entity.FilterConditions{
 		From:           from,
 		To:             to,
+		Currency:       fc.Currency,
 		OnSale:         fc.OnSale,
 		Gender:         genders,
 		Color:          fc.Color,

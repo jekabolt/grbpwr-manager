@@ -30,8 +30,8 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
-	VALUES (:id, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
+	(id, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
+	VALUES (:id, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
 
 	params := map[string]any{
 		"id":                   id,
@@ -42,7 +42,6 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          product.ThumbnailMediaID,
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
-		"price":                product.ProductBodyInsert.Price,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
 		"topCategoryId":        product.ProductBodyInsert.TopCategoryId,
 		"subCategoryId":        product.ProductBodyInsert.SubCategoryId,
@@ -322,7 +321,6 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		country_of_origin = :countryOfOrigin, 
 		thumbnail_id = :thumbnailId, 
 		secondary_thumbnail_id = :secondaryThumbnailId,
-		price = :price, 
 		sale_percentage = :salePercentage,
 		top_category_id = :topCategoryId, 
 		sub_category_id = :subCategoryId, 
@@ -346,7 +344,6 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          prd.ThumbnailMediaID,
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
-		"price":                prd.ProductBodyInsert.Price,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
 		"topCategoryId":        prd.ProductBodyInsert.TopCategoryId,
 		"subCategoryId":        prd.ProductBodyInsert.SubCategoryId,
@@ -432,6 +429,18 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		}
 	}
 
+	// Check if price sorting is requested - requires currency
+	var priceSortRequested bool
+	for _, sf := range sortFactors {
+		if sf == entity.Price {
+			priceSortRequested = true
+			if filterConditions == nil || filterConditions.Currency == "" {
+				return nil, 0, fmt.Errorf("price sorting requires currency to be specified in filter conditions")
+			}
+			break
+		}
+	}
+
 	var whereClauses []string
 	args := make(map[string]interface{})
 
@@ -444,8 +453,19 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		args["isHidden"] = 0
 	}
 
-	// Handle price filtering
-	if filterConditions != nil {
+	// Handle price filtering with multi-currency support
+	// Price JOIN is required for price filtering OR price sorting
+	var priceJoinRequired bool
+	if priceSortRequested {
+		priceJoinRequired = true
+		// Add currency filter for price sorting (if not already added by price range filtering)
+		if filterConditions.Currency != "" && filterConditions.From.IsZero() && filterConditions.To.IsZero() {
+			whereClauses = append(whereClauses, "pp.currency = :currency")
+			args["currency"] = filterConditions.Currency
+		}
+	}
+
+	if filterConditions != nil && filterConditions.Currency != "" {
 		if filterConditions.From.LessThan(decimal.Zero) {
 			return nil, 0, fmt.Errorf("price range cannot be negative")
 		}
@@ -453,23 +473,33 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 			return nil, 0, fmt.Errorf("invalid price range: from cannot be greater than to unless to is unset")
 		}
 
+		// Calculate effective price with sale percentage
+		priceExpr := "pp.price * (1 - COALESCE(p.sale_percentage, 0) / 100)"
+
 		switch {
 		case filterConditions.From.IsZero() && filterConditions.To.GreaterThan(decimal.Zero):
 			// Case 1: from = nil & to = x > 0
-			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) BETWEEN 0 AND :priceTo")
+			whereClauses = append(whereClauses, fmt.Sprintf("pp.currency = :currency AND %s BETWEEN 0 AND :priceTo", priceExpr))
+			args["currency"] = filterConditions.Currency
 			args["priceTo"] = filterConditions.To
+			priceJoinRequired = true
 		case filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.IsZero():
 			// Case 2: from = x > 0 & to = nil
-			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) >= :priceFrom")
+			whereClauses = append(whereClauses, fmt.Sprintf("pp.currency = :currency AND %s >= :priceFrom", priceExpr))
+			args["currency"] = filterConditions.Currency
 			args["priceFrom"] = filterConditions.From
+			priceJoinRequired = true
 		case filterConditions.From.IsZero() && filterConditions.To.IsZero():
-			// Case 3: from = nil & to = nil
-			// No additional filtering needed
+			// Case 3: from = nil & to = nil - no price filtering, just currency presence
+			// This case means: "show products that have a price in this currency"
+			// We don't add it here, it's handled by the JOIN itself
 		case filterConditions.From.GreaterThan(decimal.Zero) && filterConditions.To.GreaterThan(decimal.Zero):
 			// Case 4: from > 0 & to > 0
-			whereClauses = append(whereClauses, "p.price * (1 - COALESCE(p.sale_percentage, 0) / 100) BETWEEN :priceFrom AND :priceTo")
+			whereClauses = append(whereClauses, fmt.Sprintf("pp.currency = :currency AND %s BETWEEN :priceFrom AND :priceTo", priceExpr))
+			args["currency"] = filterConditions.Currency
 			args["priceFrom"] = filterConditions.From
 			args["priceTo"] = filterConditions.To
+			priceJoinRequired = true
 		}
 	}
 
@@ -520,7 +550,7 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 	}
 
 	// Build and execute the queries
-	listQuery, countQuery := buildQuery(sortFactors, orderFactor, whereClauses, limit, offset)
+	listQuery, countQuery := buildQuery(sortFactors, orderFactor, whereClauses, limit, offset, priceJoinRequired)
 	count, err := QueryCountNamed(ctx, ms.db, countQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get product count: %w", err)
@@ -583,7 +613,6 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		p.color,
 		p.color_hex,
 		p.country_of_origin,
-		p.price,
 		p.sale_percentage,
 		p.top_category_id,
 		p.sub_category_id,
@@ -684,7 +713,6 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		p.color,
 		p.color_hex,
 		p.country_of_origin,
-		p.price,
 		p.sale_percentage,
 		p.top_category_id,
 		p.sub_category_id,
@@ -783,7 +811,6 @@ type productQueryResult struct {
 	Color              string              `db:"color"`
 	ColorHex           string              `db:"color_hex"`
 	CountryOfOrigin    string              `db:"country_of_origin"`
-	Price              decimal.Decimal     `db:"price"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
 	TopCategoryId      int                 `db:"top_category_id"`
 	SubCategoryId      sql.NullInt32       `db:"sub_category_id"`
@@ -871,7 +898,6 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					Color:              pqr.Color,
 					ColorHex:           pqr.ColorHex,
 					CountryOfOrigin:    pqr.CountryOfOrigin,
-					Price:              pqr.Price,
 					SalePercentage:     pqr.SalePercentage,
 					TopCategoryId:      pqr.TopCategoryId,
 					SubCategoryId:      pqr.SubCategoryId,
@@ -960,7 +986,13 @@ func fetchProductPrices(ctx context.Context, db dependency.DB, productIds []int)
 	return priceMap, nil
 }
 
-func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
+func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int, priceJoinRequired bool) (string, string) {
+	// Build JOIN clause for product_price if needed
+	priceJoin := ""
+	if priceJoinRequired {
+		priceJoin = "\n\tJOIN product_price pp ON p.id = pp.product_id"
+	}
+
 	baseQuery := `
 	SELECT 
 		p.id,
@@ -973,7 +1005,6 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.color,
 		p.color_hex,
 		p.country_of_origin,
-		p.price,
 		p.sale_percentage,
 		p.top_category_id,
 		p.sub_category_id,
@@ -1015,11 +1046,11 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	JOIN 
 		media m ON p.thumbnail_id = m.id
 	LEFT JOIN 
-		media sm ON p.secondary_thumbnail_id = sm.id`
+		media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
-	countQuery := `SELECT COUNT(*) FROM product p 
+	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p 
 		JOIN media m ON p.thumbnail_id = m.id
-		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id`
+		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
 	// Add WHERE clause if there are conditions
 	if len(whereClauses) > 0 {
@@ -1030,7 +1061,17 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 
 	// Add ORDER BY clause if sorting factors are provided
 	if len(sortFactors) > 0 {
-		ordering := " ORDER BY " + strings.Join(entity.SortFactorsToSS(sortFactors), ", ")
+		// Build ORDER BY clause, replacing "price" with price expression if needed
+		var orderFields []string
+		for _, sf := range sortFactors {
+			if sf == entity.Price && priceJoinRequired {
+				// Use effective price with sale calculation
+				orderFields = append(orderFields, "pp.price * (1 - COALESCE(p.sale_percentage, 0) / 100)")
+			} else {
+				orderFields = append(orderFields, string(sf))
+			}
+		}
+		ordering := " ORDER BY " + strings.Join(orderFields, ", ")
 		if orderFactor != "" {
 			ordering += " " + string(orderFactor)
 		} else {
@@ -1083,7 +1124,6 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.color,
 		p.color_hex,
 		p.country_of_origin,
-		p.price,
 		p.sale_percentage,
 		p.top_category_id,
 		p.sub_category_id,
@@ -1162,6 +1202,17 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
 	}
 
+	// Fetch Prices using the same helper function as other methods
+	priceMap, err := fetchProductPrices(ctx, ms.db, []int{product.Id})
+	if err != nil {
+		return nil, fmt.Errorf("can't get prices: %w", err)
+	}
+	if prices, ok := priceMap[product.Id]; ok {
+		product.Prices = prices
+	} else {
+		product.Prices = []entity.ProductPrice{}
+	}
+
 	productInfo.Product = &product
 
 	// fetch sizes
@@ -1222,14 +1273,8 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		return nil, fmt.Errorf("can't get tags: %w", err)
 	}
 
-	// Fetch Prices
-	query = "SELECT * FROM product_price WHERE product_id = :id"
-	productInfo.Prices, err = QueryListNamed[entity.ProductPrice](ctx, ms.db, query, map[string]interface{}{
-		"id": product.Id,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("can't get prices: %w", err)
-	}
+	// Set prices on ProductFull as well (used by DTO conversion)
+	productInfo.Prices = product.Prices
 
 	return &productInfo, nil
 }
@@ -1432,7 +1477,6 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.color,
 			p.color_hex,
 			p.country_of_origin,
-			p.price,
 			p.sale_percentage,
 			p.top_category_id,
 			p.sub_category_id,

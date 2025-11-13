@@ -55,11 +55,6 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		return nil, fmt.Errorf("ProductBodyInsert is nil")
 	}
 
-	price, err := convertDecimal(pbProductBodyInsert.Price.Value)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert product price: %w", err)
-	}
-
 	salePercentage, err := convertDecimal(pbProductBodyInsert.SalePercentage.Value)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
@@ -77,7 +72,6 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Color:              pbProductBodyInsert.Color,
 			ColorHex:           pbProductBodyInsert.ColorHex,
 			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
-			Price:              price,
 			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBodyInsert.SalePercentage.Value != ""},
 			TopCategoryId:      int(pbProductBodyInsert.TopCategoryId),
 			SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBodyInsert.SubCategoryId), Valid: pbProductBodyInsert.SubCategoryId != 0},
@@ -330,12 +324,12 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	pbProductDisplay := &pb_common.ProductDisplay{
 		ProductBody: &pb_common.ProductBody{
 			ProductBodyInsert: &pb_common.ProductBodyInsert{
-				Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
-				Brand:              productBodyInsert.Brand,
-				Color:              productBodyInsert.Color,
-				ColorHex:           productBodyInsert.ColorHex,
-				CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
-				Price:              &pb_decimal.Decimal{Value: productBodyInsert.Price.String()},
+				Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
+				Brand:           productBodyInsert.Brand,
+				Color:           productBodyInsert.Color,
+				ColorHex:        productBodyInsert.ColorHex,
+				CountryOfOrigin: productBodyInsert.CountryOfOrigin,
+
 				SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
 				TopCategoryId:      int32(productBodyInsert.TopCategoryId),
 				SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),
@@ -356,7 +350,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		SecondaryThumbnail: pbSecondaryThumbnail,
 	}
 
-	// Convert prices
+	// Convert prices - place prices inside nested Product
 	pbPrices := convertEntityPricesToPb(e.Prices)
 
 	// Get first translation for slug generation (or empty strings if no translations)
@@ -372,6 +366,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Slug:           GetProductSlug(e.Product.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
 		Sku:            e.Product.SKU,
 		ProductDisplay: pbProductDisplay,
+		Prices:         pbPrices, // Prices are in nested Product
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
@@ -385,7 +380,6 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Measurements: pbMeasurements,
 		Media:        pbMedia,
 		Tags:         pbTags,
-		Prices:       pbPrices,
 	}, nil
 }
 
@@ -509,12 +503,12 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
 				ProductBodyInsert: &pb_common.ProductBodyInsert{
-					Preorder:           timestamppb.New(productBodyInsert.Preorder.Time),
-					Brand:              productBodyInsert.Brand,
-					Color:              productBodyInsert.Color,
-					ColorHex:           productBodyInsert.ColorHex,
-					CountryOfOrigin:    productBodyInsert.CountryOfOrigin,
-					Price:              &pb_decimal.Decimal{Value: productBodyInsert.Price.String()},
+					Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
+					Brand:           productBodyInsert.Brand,
+					Color:           productBodyInsert.Color,
+					ColorHex:        productBodyInsert.ColorHex,
+					CountryOfOrigin: productBodyInsert.CountryOfOrigin,
+
 					SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
 					TopCategoryId:      int32(productBodyInsert.TopCategoryId),
 					SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),

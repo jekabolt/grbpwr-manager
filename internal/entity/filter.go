@@ -50,6 +50,7 @@ func SortFactorsToSS(factors []SortFactor) []string {
 type FilterConditions struct {
 	From           decimal.Decimal
 	To             decimal.Decimal
+	Currency       string // ISO 4217 currency code for price filtering (e.g., USD, EUR, JPY)
 	OnSale         bool
 	Gender         []GenderEnum
 	Color          string
