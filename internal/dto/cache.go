@@ -22,7 +22,7 @@ type Dict struct {
 	MaxOrderItems        int
 	BaseCurrency         string
 	BigMenu              bool
-	AnnounceTranslations []entity.AnnounceTranslation
+	Announce             *entity.AnnounceWithTranslations
 }
 
 var (
@@ -180,12 +180,19 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.BaseCurrency = dict.BaseCurrency
 	commonDict.BigMenu = dict.BigMenu
 
-	// Convert announce translations to protobuf format
-	for _, trans := range dict.AnnounceTranslations {
-		commonDict.AnnounceTranslations = append(commonDict.AnnounceTranslations, &pb_common.AnnounceTranslation{
-			LanguageId: int32(trans.LanguageId),
-			Text:       trans.Text,
-		})
+	// Convert announce to protobuf format
+	if dict.Announce != nil {
+		pbAnnounce := &pb_common.Announce{
+			Link:         dict.Announce.Link,
+			Translations: make([]*pb_common.AnnounceTranslation, 0, len(dict.Announce.Translations)),
+		}
+		for _, trans := range dict.Announce.Translations {
+			pbAnnounce.Translations = append(pbAnnounce.Translations, &pb_common.AnnounceTranslation{
+				LanguageId: int32(trans.LanguageId),
+				Text:       trans.Text,
+			})
+		}
+		commonDict.Announce = pbAnnounce
 	}
 
 	return commonDict

@@ -126,7 +126,7 @@ var (
 	siteEnabled            = true
 	defaultCurrency        = "EUR"
 	bigMenu                = false
-	announceTranslations   = []entity.AnnounceTranslation{}
+	announce               = &entity.AnnounceWithTranslations{}
 )
 
 var (
@@ -186,7 +186,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityCollections = dInfo.Collections
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
-	announceTranslations = dInfo.AnnounceTranslations
+	announce = dInfo.Announce
 
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
@@ -368,8 +368,11 @@ func SetBigMenu(enabled bool) {
 	bigMenu = enabled
 }
 
-func SetAnnounceTranslations(translations []entity.AnnounceTranslation) {
-	announceTranslations = translations
+func SetAnnounce(link string, translations []entity.AnnounceTranslation) {
+	announce = &entity.AnnounceWithTranslations{
+		Link:         link,
+		Translations: translations,
+	}
 }
 
 func SetDefaultCurrency(c string) {
@@ -392,8 +395,8 @@ func GetBigMenu() bool {
 	return bigMenu
 }
 
-func GetAnnounceTranslations() []entity.AnnounceTranslation {
-	return announceTranslations
+func GetAnnounce() *entity.AnnounceWithTranslations {
+	return announce
 }
 
 func GetCategories() []entity.Category {

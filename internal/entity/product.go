@@ -137,14 +137,16 @@ type Product struct {
 }
 
 type ProductInsert struct {
-	ProductBodyInsert ProductBodyInsert          `valid:"required"`
-	ThumbnailMediaID  int                        `db:"thumbnail_media_id" valid:"required"`
-	Translations      []ProductTranslationInsert `valid:"required"`
+	ProductBodyInsert         ProductBodyInsert          `valid:"required"`
+	ThumbnailMediaID          int                        `db:"thumbnail_media_id" valid:"required"`
+	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
+	Translations              []ProductTranslationInsert `valid:"required"`
 }
 
 type ProductDisplay struct {
-	ProductBody ProductBody `valid:"required"`
-	Thumbnail   MediaFull   `valid:"required"`
+	ProductBody        ProductBody `valid:"required"`
+	Thumbnail          MediaFull   `valid:"required"`
+	SecondaryThumbnail *MediaFull  `valid:"-"`
 }
 
 type ProductMeasurementUpdate struct {

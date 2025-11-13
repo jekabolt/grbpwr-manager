@@ -94,11 +94,20 @@ func (ms *MYSQLStore) SetBigMenu(ctx context.Context, bigMenu bool) error {
 	return nil
 }
 
-func (ms *MYSQLStore) SetAnnounceTranslations(ctx context.Context, translations []entity.AnnounceTranslation) error {
+func (ms *MYSQLStore) SetAnnounce(ctx context.Context, link string, translations []entity.AnnounceTranslation) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// First, delete all existing announce translations
-		query := `DELETE FROM announce_translation`
-		err := ExecNamed(ctx, ms.DB(), query, map[string]any{})
+		// Update link
+		linkQuery := `UPDATE announce SET link = :link WHERE id = 1`
+		err := ExecNamed(ctx, ms.DB(), linkQuery, map[string]any{
+			"link": link,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update announce link: %w", err)
+		}
+
+		// Delete all existing announce translations
+		deleteQuery := `DELETE FROM announce_translation`
+		err = ExecNamed(ctx, ms.DB(), deleteQuery, map[string]any{})
 		if err != nil {
 			return fmt.Errorf("failed to delete existing announce translations: %w", err)
 		}
@@ -115,22 +124,32 @@ func (ms *MYSQLStore) SetAnnounceTranslations(ctx context.Context, translations 
 			}
 		}
 
-		cache.SetAnnounceTranslations(translations)
+		cache.SetAnnounce(link, translations)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to update announce translations: %w", err)
+		return fmt.Errorf("failed to update announce: %w", err)
 	}
 	return nil
 }
 
-func (ms *MYSQLStore) GetAnnounceTranslations(ctx context.Context) ([]entity.AnnounceTranslation, error) {
-	query := `SELECT id, language_id, text, created_at, updated_at FROM announce_translation ORDER BY language_id`
+func (ms *MYSQLStore) GetAnnounce(ctx context.Context) (*entity.AnnounceWithTranslations, error) {
+	// Get the announce link
+	linkQuery := `SELECT link FROM announce WHERE id = 1`
+	announce, err := QueryNamedOne[entity.Announce](ctx, ms.DB(), linkQuery, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get announce link: %w", err)
+	}
 
-	translations, err := QueryListNamed[entity.AnnounceTranslation](ctx, ms.DB(), query, map[string]any{})
+	// Get the translations
+	translationsQuery := `SELECT id, language_id, text, created_at, updated_at FROM announce_translation ORDER BY language_id`
+	translations, err := QueryListNamed[entity.AnnounceTranslation](ctx, ms.DB(), translationsQuery, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get announce translations: %w", err)
 	}
 
-	return translations, nil
+	return &entity.AnnounceWithTranslations{
+		Link:         announce.Link,
+		Translations: translations,
+	}, nil
 }

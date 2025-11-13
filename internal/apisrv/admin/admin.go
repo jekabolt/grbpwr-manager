@@ -485,10 +485,10 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			SortFactors:          cache.GetSortFactors(),
 			OrderFactors:         cache.GetOrderFactors(),
 			SiteEnabled:          cache.GetSiteAvailability(),
-			MaxOrderItems:        cache.GetMaxOrderItems(),
-			BaseCurrency:         cache.GetBaseCurrency(),
-			BigMenu:              cache.GetBigMenu(),
-			AnnounceTranslations: cache.GetAnnounceTranslations(),
+			MaxOrderItems: cache.GetMaxOrderItems(),
+			BaseCurrency:  cache.GetBaseCurrency(),
+			BigMenu:       cache.GetBigMenu(),
+			Announce:      cache.GetAnnounce(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -890,18 +890,22 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, err
 	}
 
-	// Convert protobuf announce translations to entity format
+	// Convert protobuf announce to entity format
+	var announceLink string
 	var announceTranslations []entity.AnnounceTranslation
-	for _, pbTranslation := range req.AnnounceTranslations {
-		announceTranslations = append(announceTranslations, entity.AnnounceTranslation{
-			LanguageId: int(pbTranslation.LanguageId),
-			Text:       pbTranslation.Text,
-		})
+	if req.Announce != nil {
+		announceLink = req.Announce.Link
+		for _, pbTranslation := range req.Announce.Translations {
+			announceTranslations = append(announceTranslations, entity.AnnounceTranslation{
+				LanguageId: int(pbTranslation.LanguageId),
+				Text:       pbTranslation.Text,
+			})
+		}
 	}
 
-	err = s.repo.Settings().SetAnnounceTranslations(ctx, announceTranslations)
+	err = s.repo.Settings().SetAnnounce(ctx, announceLink, announceTranslations)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set announce translations",
+		slog.Default().ErrorContext(ctx, "can't set announce",
 			slog.String("err", err.Error()),
 		)
 		return nil, err
