@@ -33,7 +33,18 @@ func (ms *MYSQLStore) Order() dependency.Order {
 	}
 }
 
-func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
+// getProductPrice returns the price for the specified currency from the product's prices array
+// Returns an error if the currency is not found
+func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, error) {
+	for _, price := range prd.Prices {
+		if price.Currency == currency {
+			return price.Price, nil
+		}
+	}
+	return decimal.Zero, fmt.Errorf("product %d does not have a price in currency %s", prd.Id, currency)
+}
+
+func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, error) {
 	// Check if there are no items provided
 	if len(items) == 0 {
 		return nil, errors.New("zero items to validate")
@@ -95,12 +106,16 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 
 		// Set price and sale percentage from product details
 		productBody := &prd.ProductDisplay.ProductBody
-		item.ProductPrice = productBody.PriceDecimal()
+		productPrice, err := getProductPrice(&prd, currency)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get product %d price: %w", prd.Id, err)
+		}
+		item.ProductPrice = productPrice
 		if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
 			item.ProductSalePercentage = productBody.SalePercentageDecimal()
-			item.ProductPriceWithSale = productBody.PriceDecimal().Mul(decimal.NewFromInt(100).Sub(productBody.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
+			item.ProductPriceWithSale = productPrice.Mul(decimal.NewFromInt(100).Sub(productBody.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
 		} else {
-			item.ProductPriceWithSale = productBody.PriceDecimal()
+			item.ProductPriceWithSale = productPrice
 		}
 
 		// Get the first translation for display (or empty string if no translations)
@@ -371,14 +386,15 @@ func insertOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, order_status_id, promo_id)
-	 VALUES (:uuid, :totalPrice, :orderStatusId, :promoId)
-	 `
+	 (uuid, total_price, currency, order_status_id, promo_id)
+	 VALUES (:uuid, :totalPrice, :currency, :orderStatusId, :promoId)
+	`
 
 	orderRef := generateOrderReference()
 	order.Id, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]interface{}{
 		"uuid":          orderRef,
 		"totalPrice":    order.TotalPriceDecimal(),
+		"currency":      order.Currency,
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
 	})
@@ -486,7 +502,7 @@ func validateAndUpdateOrderIfNeeded(
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 
 	// Validate the order items
-	oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items)
+	oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items, orderFull.Order.Currency)
 	if err != nil {
 		// If validation fails and we should cancel, do it
 		if cancelOnValidationFailure {
@@ -600,7 +616,7 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) [
 	return items
 }
 
-func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) ([]entity.OrderItem, error) {
+func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, error) {
 
 	// adjust quantities if it exceeds the maxOrderItemPerSize
 	items = adjustQuantities(cache.GetMaxOrderItems(), items)
@@ -608,18 +624,19 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 	slog.Default().InfoContext(ctx, "items", slog.Any("items", items))
 
 	// validate items stock availability
-	validItems, err := validateOrderItemsStockAvailability(ctx, ms, items)
+	validItems, err := validateOrderItemsStockAvailability(ctx, ms, items, currency)
 	if err != nil {
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 	if len(validItems) == 0 {
 		return nil, fmt.Errorf("no valid order items to insert")
 	}
+
 	return validItems, nil
 }
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
-func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert) (*entity.OrderItemValidation, error) {
+func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error) {
 	// Return early if there are no items
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no order items to insert")
@@ -632,8 +649,8 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	// Merge order items by product id and size id on the copied items
 	mergedItems := mergeOrderItems(copiedItems)
 
-	// Validate the merged order items
-	validItems, err := ms.validateOrderItemsInsert(ctx, mergedItems)
+	// Validate the merged order items with the specified currency
+	validItems, err := ms.validateOrderItemsInsert(ctx, mergedItems, currency)
 	if err != nil {
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
@@ -744,16 +761,25 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			Valid: promo.Id > 0,
 		}
 
-		oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, orderNew.Items)
+		// Validate order items with currency-specific pricing
+		validItems, err := ms.validateOrderItemsInsert(ctx, orderNew.Items, orderNew.Currency)
 		if err != nil {
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
-		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
 
-		totalPrice := promo.SubtotalWithPromo(oiv.Subtotal, shipmentCarrier.PriceDecimal())
+		// Calculate total from validated items
+		providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
+		subtotal, err := calculateTotalAmount(ctx, rep, providers)
+		if err != nil {
+			return fmt.Errorf("error while calculating total amount: %w", err)
+		}
+
+		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentCarrier.PriceDecimal())
 
 		order = &entity.Order{
 			TotalPrice:    totalPrice,
+			Currency:      orderNew.Currency,
 			PromoId:       prId,
 			OrderStatusId: cache.OrderStatusPlaced.Status.Id,
 		}

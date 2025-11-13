@@ -12,7 +12,7 @@ type ProductNew struct {
 	SizeMeasurements []SizeWithMeasurementInsert `valid:"required"`
 	MediaIds         []int                       `valid:"required"`
 	Tags             []ProductTagInsert          `valid:"required"`
-	Prices           []ProductPriceInsert        `valid:"-"`
+	Prices           []ProductPriceInsert        `valid:"required"` // At least one price required
 }
 
 type ProductFull struct {
@@ -95,7 +95,6 @@ type ProductBodyInsert struct {
 	Color              string              `db:"color" valid:"required"`
 	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
-	Price              decimal.Decimal     `db:"price" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
 	TopCategoryId      int                 `db:"top_category_id" valid:"required"`
 	SubCategoryId      sql.NullInt32       `db:"sub_category_id" valid:"-"`
@@ -132,10 +131,6 @@ type ProductBody struct {
 	Translations      []ProductTranslationInsert `valid:"required"`
 }
 
-func (pb *ProductBody) PriceDecimal() decimal.Decimal {
-	return pb.ProductBodyInsert.Price.Round(2)
-}
-
 func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
 	if pb.ProductBodyInsert.SalePercentage.Valid {
 		return pb.ProductBodyInsert.SalePercentage.Decimal.Round(2)
@@ -160,7 +155,7 @@ type ProductInsert struct {
 	ThumbnailMediaID          int                        `db:"thumbnail_media_id" valid:"required"`
 	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
 	Translations              []ProductTranslationInsert `valid:"required"`
-	Prices                    []ProductPriceInsert       `valid:"-"`
+	Prices                    []ProductPriceInsert       `valid:"required"` // At least one price required
 }
 
 type ProductDisplay struct {

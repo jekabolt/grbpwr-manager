@@ -20,6 +20,7 @@ message OrderNew {
   common.PaymentMethodNameEnum payment_method = 5;
   int32 shipment_carrier_id = 6;
   string promo_code = 7;
+  string currency = 8; // ISO 4217 currency code (e.g., USD, EUR, JPY, CNY, KRW)
 }
 
 message OrderFull {
@@ -39,10 +40,11 @@ message Order {
   google.protobuf.Timestamp placed = 3;
   google.protobuf.Timestamp modified = 4;
   google.type.Decimal total_price = 5;
-  int32 order_status_id = 6;
-  int32 promo_id = 7;
-  string refund_reason = 8;
-  string order_comment = 9;
+  string currency = 6; // ISO 4217 currency code (e.g., USD, EUR, JPY, CNY, KRW)
+  int32 order_status_id = 7;
+  int32 promo_id = 8;
+  string refund_reason = 9;
+  string order_comment = 10;
 }
 
 message OrderItem {

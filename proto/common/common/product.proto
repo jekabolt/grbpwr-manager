@@ -53,7 +53,6 @@ message ProductFull {
   repeated ProductMeasurement measurements = 3;
   repeated common.MediaFull media = 4;
   repeated ProductTag tags = 5;
-  repeated ProductPrice prices = 6;
 }
 
 message Product {
@@ -77,20 +76,19 @@ message ProductBodyInsert {
   string color = 3;
   string color_hex = 4;
   string country_of_origin = 5;
-  google.type.Decimal price = 6;
-  google.type.Decimal sale_percentage = 7;
-  int32 top_category_id = 8;
-  int32 sub_category_id = 9;
-  int32 type_id = 10;
-  int32 model_wears_height_cm = 11;
-  int32 model_wears_size_id = 12;
-  string care_instructions = 13;
-  string composition = 14;
-  bool hidden = 15;
-  GenderEnum target_gender = 16;
-  string version = 17;
-  string collection = 18;
-  string fit = 19;
+  google.type.Decimal sale_percentage = 6;
+  int32 top_category_id = 7;
+  int32 sub_category_id = 8;
+  int32 type_id = 9;
+  int32 model_wears_height_cm = 10;
+  int32 model_wears_size_id = 11;
+  string care_instructions = 12;
+  string composition = 13;
+  bool hidden = 14;
+  GenderEnum target_gender = 15;
+  string version = 16;
+  string collection = 17;
+  string fit = 18;
 }
 
 message ProductInsert {

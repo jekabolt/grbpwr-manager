@@ -87,6 +87,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 		PaymentMethod:     ConvertPbPaymentMethodToEntity(commonOrder.PaymentMethod),
 		ShipmentCarrierId: int(commonOrder.ShipmentCarrierId),
 		PromoCode:         commonOrder.PromoCode,
+		Currency:          commonOrder.Currency,
 	}, commonOrder.Buyer.ReceivePromoEmails
 }
 
@@ -123,6 +124,7 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		Placed:        timestamppb.New(eOrder.Placed),
 		Modified:      timestamppb.New(eOrder.Modified),
 		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
+		Currency:      eOrder.Currency,
 		OrderStatusId: int32(eOrder.OrderStatusId),
 	}
 

@@ -75,22 +75,22 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	return &pb_frontend.GetHeroResponse{
 		Hero: h,
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:           cache.GetCategories(),
-			Measurements:         cache.GetMeasurements(),
-			OrderStatuses:        cache.GetOrderStatuses(),
-			PaymentMethods:       cache.GetPaymentMethods(),
-			ShipmentCarriers:     cache.GetShipmentCarriers(),
-			Sizes:                cache.GetSizes(),
-			Collections:          cache.GetCollections(),
-			Genders:              cache.GetGenders(),
-			Languages:            cache.GetLanguages(),
-			SortFactors:          cache.GetSortFactors(),
-			OrderFactors:         cache.GetOrderFactors(),
-			SiteEnabled:          cache.GetSiteAvailability(),
-			MaxOrderItems: cache.GetMaxOrderItems(),
-			BaseCurrency:  cache.GetBaseCurrency(),
-			BigMenu:       cache.GetBigMenu(),
-			Announce:      cache.GetAnnounce(),
+			Categories:       cache.GetCategories(),
+			Measurements:     cache.GetMeasurements(),
+			OrderStatuses:    cache.GetOrderStatuses(),
+			PaymentMethods:   cache.GetPaymentMethods(),
+			ShipmentCarriers: cache.GetShipmentCarriers(),
+			Sizes:            cache.GetSizes(),
+			Collections:      cache.GetCollections(),
+			Genders:          cache.GetGenders(),
+			Languages:        cache.GetLanguages(),
+			SortFactors:      cache.GetSortFactors(),
+			OrderFactors:     cache.GetOrderFactors(),
+			SiteEnabled:      cache.GetSiteAvailability(),
+			MaxOrderItems:    cache.GetMaxOrderItems(),
+			BaseCurrency:     cache.GetBaseCurrency(),
+			BigMenu:          cache.GetBigMenu(),
+			Announce:         cache.GetAnnounce(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -421,7 +421,13 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		itemsToInsert = append(itemsToInsert, *oii)
 	}
 
-	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert)
+	currency := req.Currency
+	if currency == "" {
+		slog.Default().ErrorContext(ctx, "currency is required")
+		return nil, status.Errorf(codes.InvalidArgument, "currency is required")
+	}
+
+	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert, currency)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
