@@ -242,6 +242,12 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 			return fmt.Errorf("can't insert tags: %w", err)
 		}
 
+		// Insert product prices
+		err = insertProductPrices(ctx, rep, prdId, prd.Prices)
+		if err != nil {
+			return fmt.Errorf("can't insert product prices: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -288,6 +294,12 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 		err = updateProductTags(ctx, rep, id, prd.Tags)
 		if err != nil {
 			return fmt.Errorf("can't update product tags: %w", err)
+		}
+
+		// prices
+		err = upsertProductPrices(ctx, rep, id, prd.Prices)
+		if err != nil {
+			return fmt.Errorf("can't update product prices: %w", err)
 		}
 
 		return nil
@@ -350,6 +362,44 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"fit":                  prd.ProductBodyInsert.Fit,
 		"id":                   id,
 	})
+}
+
+// insertProductPrices inserts product prices for a given product
+func insertProductPrices(ctx context.Context, rep dependency.Repository, productId int, prices []entity.ProductPriceInsert) error {
+	if len(prices) == 0 {
+		return nil // No prices to insert
+	}
+
+	rows := make([]map[string]any, 0, len(prices))
+	for _, p := range prices {
+		row := map[string]any{
+			"product_id": productId,
+			"currency":   p.Currency,
+			"price":      p.Price,
+		}
+		rows = append(rows, row)
+	}
+
+	return BulkInsert(ctx, rep.DB(), "product_price", rows)
+}
+
+// deleteProductPrices deletes all prices for a given product
+func deleteProductPrices(ctx context.Context, rep dependency.Repository, productId int) error {
+	query := "DELETE FROM product_price WHERE product_id = :productId"
+	return ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"productId": productId,
+	})
+}
+
+// upsertProductPrices updates or inserts product prices
+func upsertProductPrices(ctx context.Context, rep dependency.Repository, productId int, prices []entity.ProductPriceInsert) error {
+	// Delete existing prices first
+	if err := deleteProductPrices(ctx, rep, productId); err != nil {
+		return fmt.Errorf("failed to delete existing prices: %w", err)
+	}
+
+	// Insert new prices
+	return insertProductPrices(ctx, rep, productId, prices)
 }
 
 // GetProductsPaged
@@ -498,11 +548,18 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		return nil, 0, fmt.Errorf("can't get product translations: %w", err)
 	}
 
+	// Fetch all prices for these products
+	priceMap, err := fetchProductPrices(ctx, ms.db, productIds)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't get product prices: %w", err)
+	}
+
 	// Convert to final Product structs
 	prds := make([]entity.Product, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id] // Get translations for this product
 		product := prdResult.toProduct(translations)
+		product.Prices = priceMap[prdResult.Id] // Assign prices
 		prds = append(prds, product)
 	}
 
@@ -584,11 +641,18 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		return nil, fmt.Errorf("can't get product translations: %w", err)
 	}
 
+	// Fetch all prices for these products
+	priceMap, err := fetchProductPrices(ctx, ms.db, ids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product prices: %w", err)
+	}
+
 	// Convert to final Product structs and create a map for quick lookup
 	prdMap := make(map[int]entity.Product)
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
+		product.Prices = priceMap[prdResult.Id] // Assign prices
 		prdMap[product.Id] = product
 	}
 
@@ -684,11 +748,18 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		return nil, fmt.Errorf("can't get product translations: %w", err)
 	}
 
+	// Fetch all prices for these products
+	priceMap, err := fetchProductPrices(ctx, ms.db, productIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product prices: %w", err)
+	}
+
 	// Convert to final Product structs
 	prds := make([]entity.Product, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
+		product.Prices = priceMap[prdResult.Id] // Assign prices
 		prds = append(prds, product)
 	}
 
@@ -863,6 +934,30 @@ func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds 
 	}
 
 	return translationMap, nil
+}
+
+// fetchProductPrices fetches all prices for given product IDs
+func fetchProductPrices(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductPrice, error) {
+	if len(productIds) == 0 {
+		return map[int][]entity.ProductPrice{}, nil
+	}
+
+	query := `SELECT id, product_id, currency, price, created_at, updated_at FROM product_price WHERE product_id IN (:productIds) ORDER BY product_id, currency`
+
+	prices, err := QueryListNamed[entity.ProductPrice](ctx, db, query, map[string]any{
+		"productIds": productIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get product prices: %w", err)
+	}
+
+	// Group prices by product ID
+	priceMap := make(map[int][]entity.ProductPrice)
+	for _, p := range prices {
+		priceMap[p.ProductId] = append(priceMap[p.ProductId], p)
+	}
+
+	return priceMap, nil
 }
 
 func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, whereClauses []string, limit int, offset int) (string, string) {
@@ -1125,6 +1220,15 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get tags: %w", err)
+	}
+
+	// Fetch Prices
+	query = "SELECT * FROM product_price WHERE product_id = :id"
+	productInfo.Prices, err = QueryListNamed[entity.ProductPrice](ctx, ms.db, query, map[string]interface{}{
+		"id": product.Id,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get prices: %w", err)
 	}
 
 	return &productInfo, nil
