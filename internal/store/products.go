@@ -30,31 +30,32 @@ func (ms *MYSQLStore) Products() dependency.Products {
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
-	VALUES (:id, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
+	(id, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, price, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
+	VALUES (:id, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :price, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
 
 	params := map[string]any{
-		"id":                 id,
-		"preorder":           product.ProductBodyInsert.Preorder,
-		"brand":              product.ProductBodyInsert.Brand,
-		"color":              product.ProductBodyInsert.Color,
-		"colorHex":           product.ProductBodyInsert.ColorHex,
-		"countryOfOrigin":    product.ProductBodyInsert.CountryOfOrigin,
-		"thumbnailId":        product.ThumbnailMediaID,
-		"price":              product.ProductBodyInsert.Price,
-		"salePercentage":     product.ProductBodyInsert.SalePercentage,
-		"topCategoryId":      product.ProductBodyInsert.TopCategoryId,
-		"subCategoryId":      product.ProductBodyInsert.SubCategoryId,
-		"typeId":             product.ProductBodyInsert.TypeId,
-		"modelWearsHeightCm": product.ProductBodyInsert.ModelWearsHeightCm,
-		"modelWearsSizeId":   product.ProductBodyInsert.ModelWearsSizeId,
-		"hidden":             product.ProductBodyInsert.Hidden,
-		"targetGender":       product.ProductBodyInsert.TargetGender,
-		"careInstructions":   product.ProductBodyInsert.CareInstructions,
-		"composition":        product.ProductBodyInsert.Composition,
-		"version":            product.ProductBodyInsert.Version,
-		"collection":         product.ProductBodyInsert.Collection,
-		"fit":                product.ProductBodyInsert.Fit,
+		"id":                   id,
+		"preorder":             product.ProductBodyInsert.Preorder,
+		"brand":                product.ProductBodyInsert.Brand,
+		"color":                product.ProductBodyInsert.Color,
+		"colorHex":             product.ProductBodyInsert.ColorHex,
+		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
+		"thumbnailId":          product.ThumbnailMediaID,
+		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
+		"price":                product.ProductBodyInsert.Price,
+		"salePercentage":       product.ProductBodyInsert.SalePercentage,
+		"topCategoryId":        product.ProductBodyInsert.TopCategoryId,
+		"subCategoryId":        product.ProductBodyInsert.SubCategoryId,
+		"typeId":               product.ProductBodyInsert.TypeId,
+		"modelWearsHeightCm":   product.ProductBodyInsert.ModelWearsHeightCm,
+		"modelWearsSizeId":     product.ProductBodyInsert.ModelWearsSizeId,
+		"hidden":               product.ProductBodyInsert.Hidden,
+		"targetGender":         product.ProductBodyInsert.TargetGender,
+		"careInstructions":     product.ProductBodyInsert.CareInstructions,
+		"composition":          product.ProductBodyInsert.Composition,
+		"version":              product.ProductBodyInsert.Version,
+		"collection":           product.ProductBodyInsert.Collection,
+		"fit":                  product.ProductBodyInsert.Fit,
 	}
 
 	// slog.Default().Error("insertProduct", slog.Any("query", query), slog.Any("params", params))
@@ -308,6 +309,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		color_hex = :colorHex, 
 		country_of_origin = :countryOfOrigin, 
 		thumbnail_id = :thumbnailId, 
+		secondary_thumbnail_id = :secondaryThumbnailId,
 		price = :price, 
 		sale_percentage = :salePercentage,
 		top_category_id = :topCategoryId, 
@@ -325,27 +327,28 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	WHERE id = :id
 	`
 	return ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"preorder":           prd.ProductBodyInsert.Preorder,
-		"brand":              prd.ProductBodyInsert.Brand,
-		"color":              prd.ProductBodyInsert.Color,
-		"colorHex":           prd.ProductBodyInsert.ColorHex,
-		"countryOfOrigin":    prd.ProductBodyInsert.CountryOfOrigin,
-		"thumbnailId":        prd.ThumbnailMediaID,
-		"price":              prd.ProductBodyInsert.Price,
-		"salePercentage":     prd.ProductBodyInsert.SalePercentage,
-		"topCategoryId":      prd.ProductBodyInsert.TopCategoryId,
-		"subCategoryId":      prd.ProductBodyInsert.SubCategoryId,
-		"typeId":             prd.ProductBodyInsert.TypeId,
-		"modelWearsHeightCm": prd.ProductBodyInsert.ModelWearsHeightCm,
-		"modelWearsSizeId":   prd.ProductBodyInsert.ModelWearsSizeId,
-		"hidden":             prd.ProductBodyInsert.Hidden,
-		"targetGender":       prd.ProductBodyInsert.TargetGender,
-		"careInstructions":   prd.ProductBodyInsert.CareInstructions,
-		"composition":        prd.ProductBodyInsert.Composition,
-		"version":            prd.ProductBodyInsert.Version,
-		"collection":         prd.ProductBodyInsert.Collection,
-		"fit":                prd.ProductBodyInsert.Fit,
-		"id":                 id,
+		"preorder":             prd.ProductBodyInsert.Preorder,
+		"brand":                prd.ProductBodyInsert.Brand,
+		"color":                prd.ProductBodyInsert.Color,
+		"colorHex":             prd.ProductBodyInsert.ColorHex,
+		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
+		"thumbnailId":          prd.ThumbnailMediaID,
+		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
+		"price":                prd.ProductBodyInsert.Price,
+		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
+		"topCategoryId":        prd.ProductBodyInsert.TopCategoryId,
+		"subCategoryId":        prd.ProductBodyInsert.SubCategoryId,
+		"typeId":               prd.ProductBodyInsert.TypeId,
+		"modelWearsHeightCm":   prd.ProductBodyInsert.ModelWearsHeightCm,
+		"modelWearsSizeId":     prd.ProductBodyInsert.ModelWearsSizeId,
+		"hidden":               prd.ProductBodyInsert.Hidden,
+		"targetGender":         prd.ProductBodyInsert.TargetGender,
+		"careInstructions":     prd.ProductBodyInsert.CareInstructions,
+		"composition":          prd.ProductBodyInsert.Composition,
+		"version":              prd.ProductBodyInsert.Version,
+		"collection":           prd.ProductBodyInsert.Collection,
+		"fit":                  prd.ProductBodyInsert.Fit,
+		"id":                   id,
 	})
 }
 
@@ -535,6 +538,7 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.secondary_thumbnail_id,
 		p.version,
 		p.collection,
 		p.fit,
@@ -547,11 +551,24 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		m.compressed,
 		m.compressed_width,
 		m.compressed_height,
-		m.blur_hash
+		m.blur_hash,
+		sm.created_at AS secondary_thumbnail_created_at,
+		sm.full_size AS secondary_full_size,
+		sm.full_size_width AS secondary_full_size_width,
+		sm.full_size_height AS secondary_full_size_height,
+		sm.thumbnail AS secondary_thumbnail,
+		sm.thumbnail_width AS secondary_thumbnail_width,
+		sm.thumbnail_height AS secondary_thumbnail_height,
+		sm.compressed AS secondary_compressed,
+		sm.compressed_width AS secondary_compressed_width,
+		sm.compressed_height AS secondary_compressed_height,
+		sm.blur_hash AS secondary_blur_hash
 	FROM 
 		product p
 	JOIN
 		media m ON p.thumbnail_id = m.id 
+	LEFT JOIN
+		media sm ON p.secondary_thumbnail_id = sm.id 
 	WHERE p.id IN (:ids) AND p.hidden = 0 AND p.deleted_at IS NULL`
 
 	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
@@ -615,6 +632,7 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.secondary_thumbnail_id,
 		p.version,
 		p.collection,
 		p.fit,
@@ -627,11 +645,24 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		m.compressed,
 		m.compressed_width,
 		m.compressed_height,
-		m.blur_hash
+		m.blur_hash,
+		sm.created_at AS secondary_thumbnail_created_at,
+		sm.full_size AS secondary_full_size,
+		sm.full_size_width AS secondary_full_size_width,
+		sm.full_size_height AS secondary_full_size_height,
+		sm.thumbnail AS secondary_thumbnail,
+		sm.thumbnail_width AS secondary_thumbnail_width,
+		sm.thumbnail_height AS secondary_thumbnail_height,
+		sm.compressed AS secondary_compressed,
+		sm.compressed_width AS secondary_compressed_width,
+		sm.compressed_height AS secondary_compressed_height,
+		sm.blur_hash AS secondary_blur_hash
 	FROM 
 		product p
 	JOIN 
 		media m ON p.thumbnail_id = m.id 
+	LEFT JOIN 
+		media sm ON p.secondary_thumbnail_id = sm.id 
 	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0 AND p.deleted_at IS NULL`
 
 	prdResults, err := QueryListNamed[productQueryResult](ctx, ms.db, query, map[string]any{
@@ -701,22 +732,58 @@ type productQueryResult struct {
 	// Description string `db:"description"`
 
 	// Thumbnail media fields
-	ThumbnailId          int    `db:"thumbnail_id"`
-	ThumbnailFullSize    string `db:"full_size"`
-	ThumbnailFullSizeW   int    `db:"full_size_width"`
-	ThumbnailFullSizeH   int    `db:"full_size_height"`
-	ThumbnailThumb       string `db:"thumbnail"`
-	ThumbnailThumbW      int    `db:"thumbnail_width"`
-	ThumbnailThumbH      int    `db:"thumbnail_height"`
-	ThumbnailCompressed  string `db:"compressed"`
-	ThumbnailCompressedW int    `db:"compressed_width"`
-	ThumbnailCompressedH int    `db:"compressed_height"`
-	ThumbnailBlurHash    string `db:"blur_hash"`
+	ThumbnailId                 int            `db:"thumbnail_id"`
+	SecondaryThumbnailId        sql.NullInt32  `db:"secondary_thumbnail_id"`
+	SecondaryThumbnailCreatedAt sql.NullTime   `db:"secondary_thumbnail_created_at"`
+	ThumbnailFullSize           string         `db:"full_size"`
+	ThumbnailFullSizeW          int            `db:"full_size_width"`
+	ThumbnailFullSizeH          int            `db:"full_size_height"`
+	ThumbnailThumb              string         `db:"thumbnail"`
+	ThumbnailThumbW             int            `db:"thumbnail_width"`
+	ThumbnailThumbH             int            `db:"thumbnail_height"`
+	ThumbnailCompressed         string         `db:"compressed"`
+	ThumbnailCompressedW        int            `db:"compressed_width"`
+	ThumbnailCompressedH        int            `db:"compressed_height"`
+	ThumbnailBlurHash           string         `db:"blur_hash"`
+	SecondaryFullSize           sql.NullString `db:"secondary_full_size"`
+	SecondaryFullSizeW          sql.NullInt32  `db:"secondary_full_size_width"`
+	SecondaryFullSizeH          sql.NullInt32  `db:"secondary_full_size_height"`
+	SecondaryThumb              sql.NullString `db:"secondary_thumbnail"`
+	SecondaryThumbW             sql.NullInt32  `db:"secondary_thumbnail_width"`
+	SecondaryThumbH             sql.NullInt32  `db:"secondary_thumbnail_height"`
+	SecondaryCompressed         sql.NullString `db:"secondary_compressed"`
+	SecondaryCompressedW        sql.NullInt32  `db:"secondary_compressed_width"`
+	SecondaryCompressedH        sql.NullInt32  `db:"secondary_compressed_height"`
+	SecondaryBlurHash           sql.NullString `db:"secondary_blur_hash"`
 }
 
 // toProduct converts the flat database result to the nested Product structure
 // Translations will be populated separately
 func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslationInsert) entity.Product {
+	var secondaryThumbnail *entity.MediaFull
+	if pqr.SecondaryThumbnailId.Valid {
+		secondaryCreatedAt := pqr.CreatedAt
+		if pqr.SecondaryThumbnailCreatedAt.Valid {
+			secondaryCreatedAt = pqr.SecondaryThumbnailCreatedAt.Time
+		}
+		secondaryThumbnail = &entity.MediaFull{
+			Id:        int(pqr.SecondaryThumbnailId.Int32),
+			CreatedAt: secondaryCreatedAt,
+			MediaItem: entity.MediaItem{
+				FullSizeMediaURL:   pqr.SecondaryFullSize.String,
+				FullSizeWidth:      int(pqr.SecondaryFullSizeW.Int32),
+				FullSizeHeight:     int(pqr.SecondaryFullSizeH.Int32),
+				ThumbnailMediaURL:  pqr.SecondaryThumb.String,
+				ThumbnailWidth:     int(pqr.SecondaryThumbW.Int32),
+				ThumbnailHeight:    int(pqr.SecondaryThumbH.Int32),
+				CompressedMediaURL: pqr.SecondaryCompressed.String,
+				CompressedWidth:    int(pqr.SecondaryCompressedW.Int32),
+				CompressedHeight:   int(pqr.SecondaryCompressedH.Int32),
+				BlurHash:           pqr.SecondaryBlurHash,
+			},
+		}
+	}
+
 	return entity.Product{
 		Id:        pqr.Id,
 		CreatedAt: pqr.CreatedAt,
@@ -765,6 +832,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					BlurHash:           sql.NullString{String: pqr.ThumbnailBlurHash, Valid: pqr.ThumbnailBlurHash != ""},
 				},
 			},
+			SecondaryThumbnail: secondaryThumbnail,
 		},
 	}
 }
@@ -822,6 +890,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.secondary_thumbnail_id,
 		p.version,
 		p.collection,
 		p.fit,
@@ -834,14 +903,28 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		m.compressed,
 		m.compressed_width,
 		m.compressed_height,
-		m.blur_hash
+		m.blur_hash,
+		sm.created_at AS secondary_thumbnail_created_at,
+		sm.full_size AS secondary_full_size,
+		sm.full_size_width AS secondary_full_size_width,
+		sm.full_size_height AS secondary_full_size_height,
+		sm.thumbnail AS secondary_thumbnail,
+		sm.thumbnail_width AS secondary_thumbnail_width,
+		sm.thumbnail_height AS secondary_thumbnail_height,
+		sm.compressed AS secondary_compressed,
+		sm.compressed_width AS secondary_compressed_width,
+		sm.compressed_height AS secondary_compressed_height,
+		sm.blur_hash AS secondary_blur_hash
 	FROM 
 		product p
 	JOIN 
-		media m ON p.thumbnail_id = m.id`
+		media m ON p.thumbnail_id = m.id
+	LEFT JOIN 
+		media sm ON p.secondary_thumbnail_id = sm.id`
 
 	countQuery := `SELECT COUNT(*) FROM product p 
-		JOIN media m ON p.thumbnail_id = m.id`
+		JOIN media m ON p.thumbnail_id = m.id
+		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id`
 
 	// Add WHERE clause if there are conditions
 	if len(whereClauses) > 0 {
@@ -917,6 +1000,7 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.care_instructions,
 		p.composition,
 		p.thumbnail_id,
+		p.secondary_thumbnail_id,
 		p.version,
 		p.collection,
 		p.fit,
@@ -930,11 +1014,24 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		m.compressed,
 		m.compressed_width,
 		m.compressed_height,
-		m.blur_hash
+		m.blur_hash,
+		sm.created_at AS secondary_thumbnail_created_at,
+		sm.full_size AS secondary_full_size,
+		sm.full_size_width AS secondary_full_size_width,
+		sm.full_size_height AS secondary_full_size_height,
+		sm.thumbnail AS secondary_thumbnail,
+		sm.thumbnail_width AS secondary_thumbnail_width,
+		sm.thumbnail_height AS secondary_thumbnail_height,
+		sm.compressed AS secondary_compressed,
+		sm.compressed_width AS secondary_compressed_width,
+		sm.compressed_height AS secondary_compressed_height,
+		sm.blur_hash AS secondary_blur_hash
 	FROM 
 		product p
 	JOIN 
 		media m ON p.thumbnail_id = m.id
+	LEFT JOIN 
+		media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
 	// Always filter out deleted products
@@ -966,6 +1063,9 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 	product := prdResult.toProduct(translations)
 	// Set the correct thumbnail created_at
 	product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+	if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
+		product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
+	}
 
 	productInfo.Product = &product
 
@@ -1240,6 +1340,7 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			p.care_instructions,
 			p.composition,
 			p.thumbnail_id,
+			p.secondary_thumbnail_id,
 			p.version,
 			p.collection,
 			p.fit,
@@ -1253,11 +1354,24 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			m.compressed,
 			m.compressed_width,
 			m.compressed_height,
-			m.blur_hash
+			m.blur_hash,
+			sm.created_at AS secondary_thumbnail_created_at,
+			sm.full_size AS secondary_full_size,
+			sm.full_size_width AS secondary_full_size_width,
+			sm.full_size_height AS secondary_full_size_height,
+			sm.thumbnail AS secondary_thumbnail,
+			sm.thumbnail_width AS secondary_thumbnail_width,
+			sm.thumbnail_height AS secondary_thumbnail_height,
+			sm.compressed AS secondary_compressed,
+			sm.compressed_width AS secondary_compressed_width,
+			sm.compressed_height AS secondary_compressed_height,
+			sm.blur_hash AS secondary_blur_hash
 		FROM 
 			product p
 		JOIN 
 			media m ON p.thumbnail_id = m.id
+		LEFT JOIN 
+			media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE p.id IN (:productIds) AND p.deleted_at IS NULL`
 
 	type productOrderResult struct {
@@ -1285,6 +1399,9 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 		product := prdResult.toProduct(translations)
 		// Set the correct thumbnail created_at
 		product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+		if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
+			product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
+		}
 
 		products = append(products, product)
 	}

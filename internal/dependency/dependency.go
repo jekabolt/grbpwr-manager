@@ -181,8 +181,8 @@ type (
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
 		SetBigMenu(ctx context.Context, bigMenu bool) error
-		SetAnnounceTranslations(ctx context.Context, translations []entity.AnnounceTranslation) error
-		GetAnnounceTranslations(ctx context.Context) ([]entity.AnnounceTranslation, error)
+		SetAnnounce(ctx context.Context, link string, translations []entity.AnnounceTranslation) error
+		GetAnnounce(ctx context.Context) (*entity.AnnounceWithTranslations, error)
 	}
 
 	Waitlist interface {

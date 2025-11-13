@@ -67,3 +67,8 @@ message AnnounceTranslation {
   int32 language_id = 1;
   string text = 2;
 }
+
+message Announce {
+  string link = 1;
+  repeated AnnounceTranslation translations = 2;
+}

@@ -15,6 +15,14 @@ type Language struct {
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
+// Announce represents global announcement settings
+type Announce struct {
+	Id        int       `db:"id" json:"id"`
+	Link      string    `db:"link" json:"link"` // Single link URL for all announcement translations
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
 // AnnounceTranslation represents site announcement translations
 type AnnounceTranslation struct {
 	Id         int       `db:"id" json:"id"`
@@ -22,4 +30,10 @@ type AnnounceTranslation struct {
 	Text       string    `db:"text" json:"text"`
 	CreatedAt  time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// AnnounceWithTranslations combines announce settings with translations
+type AnnounceWithTranslations struct {
+	Link         string
+	Translations []AnnounceTranslation
 }

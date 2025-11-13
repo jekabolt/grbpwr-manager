@@ -126,10 +126,19 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	// Set translations on the product body
 	productBody.Translations = translations
 
+	var secondaryThumbnailID sql.NullInt32
+	if pbProductNew.SecondaryThumbnailMediaId != 0 {
+		secondaryThumbnailID = sql.NullInt32{
+			Int32: pbProductNew.SecondaryThumbnailMediaId,
+			Valid: true,
+		}
+	}
+
 	return &entity.ProductInsert{
-		ProductBodyInsert: productBody.ProductBodyInsert,
-		ThumbnailMediaID:  int(pbProductNew.ThumbnailMediaId),
-		Translations:      translations,
+		ProductBodyInsert:         productBody.ProductBodyInsert,
+		ThumbnailMediaID:          int(pbProductNew.ThumbnailMediaId),
+		SecondaryThumbnailMediaID: secondaryThumbnailID,
+		Translations:              translations,
 	}, nil
 }
 
@@ -182,7 +191,11 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 	productInsert := &entity.ProductInsert{
 		ProductBodyInsert: productBody.ProductBodyInsert,
 		ThumbnailMediaID:  int(pbProductNew.Product.ThumbnailMediaId),
-		Translations:      translations,
+		SecondaryThumbnailMediaID: sql.NullInt32{
+			Int32: pbProductNew.Product.SecondaryThumbnailMediaId,
+			Valid: pbProductNew.Product.SecondaryThumbnailMediaId != 0,
+		},
+		Translations: translations,
 	}
 
 	sizeMeasurements, err := convertSizeMeasurements(pbProductNew.SizeMeasurements)
@@ -284,6 +297,11 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		})
 	}
 
+	var pbSecondaryThumbnail *pb_common.MediaFull
+	if e.Product.ProductDisplay.SecondaryThumbnail != nil {
+		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.Product.ProductDisplay.SecondaryThumbnail)
+	}
+
 	pbProductDisplay := &pb_common.ProductDisplay{
 		ProductBody: &pb_common.ProductBody{
 			ProductBodyInsert: &pb_common.ProductBodyInsert{
@@ -309,7 +327,8 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 			},
 			Translations: pbTranslations,
 		},
-		Thumbnail: ConvertEntityToCommonMedia(&e.Product.ProductDisplay.Thumbnail),
+		Thumbnail:          ConvertEntityToCommonMedia(&e.Product.ProductDisplay.Thumbnail),
+		SecondaryThumbnail: pbSecondaryThumbnail,
 	}
 
 	// Get first translation for slug generation (or empty strings if no translations)
@@ -433,6 +452,11 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		firstTranslationName = productBody.Translations[0].Name
 	}
 
+	var pbSecondaryThumbnail *pb_common.MediaFull
+	if e.ProductDisplay.SecondaryThumbnail != nil {
+		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.ProductDisplay.SecondaryThumbnail)
+	}
+
 	pbProduct := &pb_common.Product{
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
@@ -464,7 +488,8 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 				},
 				Translations: pbTranslations,
 			},
-			Thumbnail: ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
+			Thumbnail:          ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
+			SecondaryThumbnail: pbSecondaryThumbnail,
 		},
 	}
 

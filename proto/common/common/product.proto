@@ -94,11 +94,13 @@ message ProductInsert {
   ProductBodyInsert product_body_insert = 1;
   int32 thumbnail_media_id = 2;
   repeated common.ProductInsertTranslation translations = 3;
+  int32 secondary_thumbnail_media_id = 4;
 }
 
 message ProductDisplay {
   ProductBody product_body = 1;
   common.MediaFull thumbnail = 2;
+  common.MediaFull secondary_thumbnail = 3;
 }
 
 message ProductMeasurementUpdate {
