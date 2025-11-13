@@ -134,12 +134,34 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 		}
 	}
 
+	// Convert prices
+	prices := convertPrices(pbProductNew.Prices)
+
 	return &entity.ProductInsert{
 		ProductBodyInsert:         productBody.ProductBodyInsert,
 		ThumbnailMediaID:          int(pbProductNew.ThumbnailMediaId),
 		SecondaryThumbnailMediaID: secondaryThumbnailID,
 		Translations:              translations,
+		Prices:                    prices,
 	}, nil
+}
+
+func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPriceInsert {
+	var prices []entity.ProductPriceInsert
+	for _, pbPrice := range pbPrices {
+		if pbPrice == nil || pbPrice.Price == nil {
+			continue
+		}
+		priceVal, err := convertDecimal(pbPrice.Price.Value)
+		if err != nil {
+			continue // Skip invalid prices
+		}
+		prices = append(prices, entity.ProductPriceInsert{
+			Currency: pbPrice.Currency,
+			Price:    priceVal,
+		})
+	}
+	return prices
 }
 
 func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpdate) ([]entity.ProductMeasurementUpdate, error) {
@@ -196,6 +218,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 			Valid: pbProductNew.Product.SecondaryThumbnailMediaId != 0,
 		},
 		Translations: translations,
+		Prices:       convertPrices(pbProductNew.Prices),
 	}
 
 	sizeMeasurements, err := convertSizeMeasurements(pbProductNew.SizeMeasurements)
@@ -205,12 +228,14 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 
 	mediaIds := convertMediaIds(pbProductNew.MediaIds)
 	tags := convertTags(pbProductNew.Tags)
+	prices := convertPrices(pbProductNew.Prices)
 
 	return &entity.ProductNew{
 		Product:          productInsert,
 		SizeMeasurements: sizeMeasurements,
 		MediaIds:         mediaIds,
 		Tags:             tags,
+		Prices:           prices,
 	}, nil
 }
 
@@ -331,6 +356,9 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		SecondaryThumbnail: pbSecondaryThumbnail,
 	}
 
+	// Convert prices
+	pbPrices := convertEntityPricesToPb(e.Prices)
+
 	// Get first translation for slug generation (or empty strings if no translations)
 	var firstTranslationName string
 	if len(productBody.Translations) > 0 {
@@ -357,7 +385,19 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Measurements: pbMeasurements,
 		Media:        pbMedia,
 		Tags:         pbTags,
+		Prices:       pbPrices,
 	}, nil
+}
+
+func convertEntityPricesToPb(prices []entity.ProductPrice) []*pb_common.ProductPrice {
+	var pbPrices []*pb_common.ProductPrice
+	for _, price := range prices {
+		pbPrices = append(pbPrices, &pb_common.ProductPrice{
+			Currency: price.Currency,
+			Price:    &pb_decimal.Decimal{Value: price.Price.String()},
+		})
+	}
+	return pbPrices
 }
 
 func convertEntitySizesToPbSizes(sizes []entity.ProductSize) []*pb_common.ProductSize {
@@ -457,6 +497,9 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.ProductDisplay.SecondaryThumbnail)
 	}
 
+	// Convert prices
+	pbPrices := convertEntityPricesToPb(e.Prices)
+
 	pbProduct := &pb_common.Product{
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
@@ -491,6 +534,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 			Thumbnail:          ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
 			SecondaryThumbnail: pbSecondaryThumbnail,
 		},
+		Prices: pbPrices,
 	}
 
 	return pbProduct, nil

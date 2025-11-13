@@ -12,6 +12,7 @@ type ProductNew struct {
 	SizeMeasurements []SizeWithMeasurementInsert `valid:"required"`
 	MediaIds         []int                       `valid:"required"`
 	Tags             []ProductTagInsert          `valid:"required"`
+	Prices           []ProductPriceInsert        `valid:"-"`
 }
 
 type ProductFull struct {
@@ -20,6 +21,7 @@ type ProductFull struct {
 	Measurements []ProductMeasurement
 	Media        []MediaFull
 	Tags         []ProductTag
+	Prices       []ProductPrice
 }
 
 // Category represents a hierarchical category structure
@@ -109,6 +111,22 @@ type ProductBodyInsert struct {
 	Fit                sql.NullString      `db:"fit" valid:"-"`
 }
 
+// ProductPrice represents a product price in a specific currency
+type ProductPrice struct {
+	Id        int             `db:"id"`
+	ProductId int             `db:"product_id"`
+	Currency  string          `db:"currency"`
+	Price     decimal.Decimal `db:"price"`
+	CreatedAt time.Time       `db:"created_at"`
+	UpdatedAt time.Time       `db:"updated_at"`
+}
+
+// ProductPriceInsert for inserting/updating product prices
+type ProductPriceInsert struct {
+	Currency string          `db:"currency" valid:"required,length(3|3)"`
+	Price    decimal.Decimal `db:"price" valid:"required"`
+}
+
 type ProductBody struct {
 	ProductBodyInsert ProductBodyInsert          `valid:"required"`
 	Translations      []ProductTranslationInsert `valid:"required"`
@@ -134,6 +152,7 @@ type Product struct {
 	Slug           string         `db:"slug"`
 	SKU            string         `db:"sku"`
 	ProductDisplay ProductDisplay `valid:"required"`
+	Prices         []ProductPrice // Multi-currency prices
 }
 
 type ProductInsert struct {
@@ -141,6 +160,7 @@ type ProductInsert struct {
 	ThumbnailMediaID          int                        `db:"thumbnail_media_id" valid:"required"`
 	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
 	Translations              []ProductTranslationInsert `valid:"required"`
+	Prices                    []ProductPriceInsert       `valid:"-"`
 }
 
 type ProductDisplay struct {

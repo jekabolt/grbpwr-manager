@@ -44,6 +44,7 @@ message ProductNew {
   repeated SizeWithMeasurementInsert size_measurements = 2;
   repeated int32 media_ids = 3;
   repeated ProductTagInsert tags = 4;
+  repeated ProductPriceInsert prices = 5;
 }
 
 message ProductFull {
@@ -52,6 +53,7 @@ message ProductFull {
   repeated ProductMeasurement measurements = 3;
   repeated common.MediaFull media = 4;
   repeated ProductTag tags = 5;
+  repeated ProductPrice prices = 6;
 }
 
 message Product {
@@ -61,6 +63,7 @@ message Product {
   string slug = 4;
   string sku = 5;
   ProductDisplay product_display = 6;
+  repeated ProductPrice prices = 7;
 }
 
 message ProductBody {
@@ -95,6 +98,7 @@ message ProductInsert {
   int32 thumbnail_media_id = 2;
   repeated common.ProductInsertTranslation translations = 3;
   int32 secondary_thumbnail_media_id = 4;
+  repeated ProductPriceInsert prices = 5;
 }
 
 message ProductDisplay {
@@ -152,4 +156,14 @@ message ProductTag {
 
 message ProductTagInsert {
   string tag = 1;
+}
+
+message ProductPrice {
+  string currency = 1;
+  google.type.Decimal price = 2;
+}
+
+message ProductPriceInsert {
+  string currency = 1;
+  google.type.Decimal price = 2;
 }
