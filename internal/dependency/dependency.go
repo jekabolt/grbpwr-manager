@@ -176,7 +176,7 @@ type (
 
 	Settings interface {
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
-		SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error
+		SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error

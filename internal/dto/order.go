@@ -322,13 +322,25 @@ func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) 
 		return nil, fmt.Errorf("empty entity.ShipmentCarrier")
 	}
 
+	// Convert prices to protobuf format
+	pbPrices := make([]*pb_common.ShipmentCarrierPrice, 0, len(s.Prices))
+	for _, price := range s.Prices {
+		pbPrices = append(pbPrices, &pb_common.ShipmentCarrierPrice{
+			Currency: price.Currency,
+			Price: &pb_decimal.Decimal{
+				Value: price.Price.String(),
+			},
+		})
+	}
+
 	return &pb_common.ShipmentCarrier{
 		Id: int32(s.Id),
 		ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
-			Carrier: s.Carrier,
-			Price:   &pb_decimal.Decimal{Value: s.Price.String()},
-			Allowed: s.Allowed,
+			Carrier:     s.Carrier,
+			Allowed:     s.Allowed,
+			Description: s.Description,
 		},
+		Prices: pbPrices,
 	}, nil
 }
 

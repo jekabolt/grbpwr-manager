@@ -7,16 +7,21 @@ import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
+message ShipmentCarrierPrice {
+  string currency = 1;
+  google.type.Decimal price = 2;
+}
+
 message ShipmentCarrierInsert {
   string carrier = 1;
-  google.type.Decimal price = 2;
-  bool allowed = 3;
-  string description = 4;
+  bool allowed = 2;
+  string description = 3;
 }
 
 message ShipmentCarrier {
   int32 id = 1;
   ShipmentCarrierInsert shipment_carrier = 2;
+  repeated ShipmentCarrierPrice prices = 3; // Multi-currency prices
 }
 
 // Shipment represents the shipment table

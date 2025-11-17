@@ -15,14 +15,19 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 	if !ok {
 		sc = entity.ShipmentCarrier{
 			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
-				Price:   decimal.Zero,
 				Carrier: "unknown",
 			},
 		}
 	}
 
+	// Get shipping price for the order's currency
+	shippingPrice, err := sc.PriceDecimal(of.Order.Currency)
+	if err != nil {
+		shippingPrice = decimal.Zero
+	}
+
 	// Calculate subtotal (total - shipping)
-	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
+	subtotal := of.Order.TotalPriceDecimal().Sub(shippingPrice)
 
 	// Build buyer name (first name, or first + last if both available)
 	buyerName := of.Buyer.FirstName
@@ -40,7 +45,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
-		ShippingPrice:       sc.PriceDecimal().String(),
+		ShippingPrice:       shippingPrice.String(),
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 	}
 }
@@ -50,14 +55,19 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 	if !ok {
 		sc = entity.ShipmentCarrier{
 			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
-				Price:   decimal.Zero,
 				Carrier: "unknown",
 			},
 		}
 	}
 
+	// Get shipping price for the order's currency
+	shippingPrice, err := sc.PriceDecimal(of.Order.Currency)
+	if err != nil {
+		shippingPrice = decimal.Zero
+	}
+
 	// Calculate subtotal (total - shipping)
-	subtotal := of.Order.TotalPriceDecimal().Sub(sc.PriceDecimal())
+	subtotal := of.Order.TotalPriceDecimal().Sub(shippingPrice)
 
 	// Build buyer name (first name, or first + last if both available)
 	buyerName := of.Buyer.FirstName
@@ -76,7 +86,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
-		ShippingPrice:       sc.PriceDecimal().String(),
+		ShippingPrice:       shippingPrice.String(),
 	}
 }
 
