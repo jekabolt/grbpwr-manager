@@ -107,6 +107,10 @@ type (
 		UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
 		// UpdatePaymentIntentWithOrderNew updates a PaymentIntent with order data from OrderNew (optimized, no DB query)
 		UpdatePaymentIntentWithOrderNew(ctx context.Context, paymentIntentID string, orderUUID string, orderNew *entity.OrderNew) error
+		// GetPaymentIntentByID retrieves a PaymentIntent by its ID
+		GetPaymentIntentByID(ctx context.Context, paymentIntentID string) (*stripe.PaymentIntent, error)
+		// UpdatePaymentIntentAmount updates the amount of an existing PaymentIntent
+		UpdatePaymentIntentAmount(ctx context.Context, paymentIntentID string, amount decimal.Decimal, currency string) error
 		// StartMonitoringPayment starts monitoring an existing payment
 		StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment)
 	}

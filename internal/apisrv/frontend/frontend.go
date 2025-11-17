@@ -287,6 +287,42 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
 		}
 
+		// Validate and update PaymentIntent amount to match final order total (including delivery)
+		stripePi, err := handler.GetPaymentIntentByID(ctx, req.PaymentIntentId)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment intent for validation", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get payment intent for validation")
+		}
+
+		// Convert PaymentIntent amount from cents to decimal
+		piAmount := decimal.NewFromInt(stripePi.Amount).Div(decimal.NewFromInt(100))
+		orderTotal := orderFull.Order.TotalPriceDecimal()
+
+		// Check if amounts match (with small tolerance for rounding)
+		if !piAmount.Equal(orderTotal) {
+			slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch, updating",
+				slog.String("payment_intent_id", req.PaymentIntentId),
+				slog.String("pi_amount", piAmount.String()),
+				slog.String("order_total", orderTotal.String()),
+			)
+
+			// Update PaymentIntent amount to match order total
+			err = handler.UpdatePaymentIntentAmount(ctx, req.PaymentIntentId, orderTotal, orderFull.Order.Currency)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't update payment intent amount",
+					slog.String("err", err.Error()),
+					slog.String("payment_intent_id", req.PaymentIntentId),
+					slog.String("expected_amount", orderTotal.String()),
+				)
+				return nil, status.Errorf(codes.Internal, "payment amount mismatch: expected %s but PaymentIntent has %s", orderTotal.String(), piAmount.String())
+			}
+
+			slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
+				slog.String("payment_intent_id", req.PaymentIntentId),
+				slog.String("new_amount", orderTotal.String()),
+			)
+		}
+
 		pi = &orderFull.Payment.PaymentInsert
 
 		// Start monitoring the payment

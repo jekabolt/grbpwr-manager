@@ -1,6 +1,7 @@
 package stripe
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -67,6 +68,32 @@ func (p *Processor) cancelPaymentIntent(paymentSecret string) (*stripe.PaymentIn
 	}
 
 	return pi, nil
+}
+
+// GetPaymentIntentByID retrieves a PaymentIntent by its ID
+func (p *Processor) GetPaymentIntentByID(ctx context.Context, paymentIntentID string) (*stripe.PaymentIntent, error) {
+	pi, err := p.stripeClient.PaymentIntents.Get(paymentIntentID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to retrieve payment intent: %v", err)
+	}
+	return pi, nil
+}
+
+// UpdatePaymentIntentAmount updates the amount of an existing PaymentIntent
+func (p *Processor) UpdatePaymentIntentAmount(ctx context.Context, paymentIntentID string, amount decimal.Decimal, currency string) error {
+	amountCents := amount.Mul(decimal.NewFromInt(100)).IntPart()
+
+	params := &stripe.PaymentIntentParams{
+		Amount:   stripe.Int64(amountCents),
+		Currency: stripe.String(currency),
+	}
+
+	_, err := p.stripeClient.PaymentIntents.Update(paymentIntentID, params)
+	if err != nil {
+		return fmt.Errorf("failed to update PaymentIntent amount: %w", err)
+	}
+
+	return nil
 }
 
 func trimSecret(s string) string {
