@@ -473,22 +473,22 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:           cache.GetCategories(),
-			Measurements:         cache.GetMeasurements(),
-			OrderStatuses:        cache.GetOrderStatuses(),
-			PaymentMethods:       cache.GetPaymentMethods(),
-			ShipmentCarriers:     cache.GetShipmentCarriers(),
-			Sizes:                cache.GetSizes(),
-			Collections:          cache.GetCollections(),
-			Languages:            cache.GetLanguages(),
-			Genders:              cache.GetGenders(),
-			SortFactors:          cache.GetSortFactors(),
-			OrderFactors:         cache.GetOrderFactors(),
-			SiteEnabled:          cache.GetSiteAvailability(),
-			MaxOrderItems: cache.GetMaxOrderItems(),
-			BaseCurrency:  cache.GetBaseCurrency(),
-			BigMenu:       cache.GetBigMenu(),
-			Announce:      cache.GetAnnounce(),
+			Categories:       cache.GetCategories(),
+			Measurements:     cache.GetMeasurements(),
+			OrderStatuses:    cache.GetOrderStatuses(),
+			PaymentMethods:   cache.GetPaymentMethods(),
+			ShipmentCarriers: cache.GetShipmentCarriers(),
+			Sizes:            cache.GetSizes(),
+			Collections:      cache.GetCollections(),
+			Languages:        cache.GetLanguages(),
+			Genders:          cache.GetGenders(),
+			SortFactors:      cache.GetSortFactors(),
+			OrderFactors:     cache.GetOrderFactors(),
+			SiteEnabled:      cache.GetSiteAvailability(),
+			MaxOrderItems:    cache.GetMaxOrderItems(),
+			BaseCurrency:     cache.GetBaseCurrency(),
+			BigMenu:          cache.GetBigMenu(),
+			Announce:         cache.GetAnnounce(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -837,21 +837,31 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 			continue
 		}
 
-		price, err := decimal.NewFromString(sc.Price.Value)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert string to decimal",
-				slog.String("err", err.Error()),
-			)
-			continue
+		// Use prices map
+		prices := make(map[string]decimal.Decimal)
+		if sc.Prices != nil && len(sc.Prices) > 0 {
+			// Use the prices map
+			for currency, pbPrice := range sc.Prices {
+				price, err := decimal.NewFromString(pbPrice.Value)
+				if err != nil {
+					slog.Default().ErrorContext(ctx, "can't convert string to decimal",
+						slog.String("currency", currency),
+						slog.String("err", err.Error()),
+					)
+					continue
+				}
+				prices[currency] = price.Round(2)
+			}
 		}
-		price = price.Round(2)
 
-		err = s.repo.Settings().SetShipmentCarrierPrice(ctx, sc.Carrier, price)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't set shipment carrier price",
-				slog.String("err", err.Error()),
-			)
-			continue
+		if len(prices) > 0 {
+			err = s.repo.Settings().SetShipmentCarrierPrices(ctx, sc.Carrier, prices)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't set shipment carrier prices",
+					slog.String("err", err.Error()),
+				)
+				continue
+			}
 		}
 	}
 

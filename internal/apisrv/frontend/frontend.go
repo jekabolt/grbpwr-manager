@@ -180,6 +180,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
 	}
+
 	handler, err := s.getPaymentHandler(ctx, pm)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get payment handler",
@@ -271,6 +272,8 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 				return fmt.Errorf("can't insert fiat invoice: %w", err)
 			}
 
+			// Payment currency amount is the same as order currency amount since we use order currency in PaymentIntent
+			// Prices are stored per currency, so no conversion needed
 			err = s.repo.Order().UpdateTotalPaymentCurrency(ctx, order.UUID, orderFull.Order.TotalPriceDecimal())
 			if err != nil {
 				return fmt.Errorf("can't update total payment currency: %w", err)
@@ -448,12 +451,28 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
 	if scOk && shipmentCarrier.Allowed {
-		oiv.Subtotal = oiv.SubtotalDecimal().Add(shipmentCarrier.PriceDecimal()).Round(2)
+		shipmentPrice, err := shipmentCarrier.PriceDecimal(currency)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get shipment carrier price",
+				slog.String("currency", currency),
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get shipment carrier price for currency %s", currency)
+		}
+		oiv.Subtotal = oiv.SubtotalDecimal().Add(shipmentPrice).Round(2)
 	}
 
 	promo, ok := cache.GetPromoByCode(req.PromoCode)
 	if ok && promo.Allowed && promo.FreeShipping && scOk {
-		oiv.Subtotal = oiv.SubtotalDecimal().Sub(shipmentCarrier.PriceDecimal()).Round(2)
+		shipmentPrice, err := shipmentCarrier.PriceDecimal(currency)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get shipment carrier price",
+				slog.String("currency", currency),
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get shipment carrier price for currency %s", currency)
+		}
+		oiv.Subtotal = oiv.SubtotalDecimal().Sub(shipmentPrice).Round(2)
 	}
 
 	totalSale := oiv.SubtotalDecimal()

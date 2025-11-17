@@ -40,21 +40,46 @@ func (ms *MYSQLStore) SetShipmentCarrierAllowance(ctx context.Context, carrier s
 	return nil
 
 }
-func (ms *MYSQLStore) SetShipmentCarrierPrice(ctx context.Context, carrier string, price decimal.Decimal) error {
+
+func (ms *MYSQLStore) SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `UPDATE shipment_carrier SET price = :price WHERE carrier = :carrier`
-		err := ExecNamed(ctx, ms.DB(), query, map[string]any{
-			"carrier": carrier,
-			"price":   price,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to update shipment carrier price: %w", err)
+		// Get carrier ID
+		type CarrierId struct {
+			Id int `db:"id"`
 		}
-		cache.UpdateShipmentCarrierCost(carrier, price)
+		query := `SELECT id FROM shipment_carrier WHERE carrier = :carrier`
+		carrierResult, err := QueryNamedOne[CarrierId](ctx, ms.DB(), query, map[string]any{"carrier": carrier})
+		if err != nil {
+			return fmt.Errorf("failed to get shipment carrier ID: %w", err)
+		}
+		carrierId := carrierResult.Id
+
+		// Upsert prices for each currency
+		for currency, price := range prices {
+			upsertQuery := `
+				INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price)
+				VALUES (:carrierId, :currency, :price)
+				ON DUPLICATE KEY UPDATE price = :price, updated_at = NOW()`
+			err := ExecNamed(ctx, ms.DB(), upsertQuery, map[string]any{
+				"carrierId": carrierId,
+				"currency":  currency,
+				"price":     price,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to upsert shipment carrier price for currency %s: %w", currency, err)
+			}
+		}
+
+		// Refresh cache
+		carriers, err := ms.getShipmentCarriers(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to refresh shipment carriers: %w", err)
+		}
+		cache.UpdateShipmentCarriers(carriers)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to update shipment carrier price: %w", err)
+		return fmt.Errorf("failed to update shipment carrier prices: %w", err)
 	}
 	return nil
 }

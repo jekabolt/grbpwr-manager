@@ -312,10 +312,14 @@ func UpdateShipmentCarrierAllowance(carrier string, allowed bool) {
 	}
 }
 
+// UpdateShipmentCarrierCost is deprecated. Use UpdateShipmentCarriers instead.
 func UpdateShipmentCarrierCost(carrier string, price decimal.Decimal) {
 	for _, sc := range shipmentCarriersById {
 		if sc.Carrier == carrier {
-			sc.Price = price
+			// Update all prices to the same value (for backward compatibility)
+			for i := range sc.Prices {
+				sc.Prices[i].Price = price
+			}
 			shipmentCarriersById[sc.Id] = sc
 		}
 	}

@@ -464,7 +464,7 @@ message UpdateSettingsResponse {}
 message ShipmentCarrierAllowancePrice {
   string carrier = 1;
   bool allow = 2;
-  google.type.Decimal price = 3;
+  map<string, google.type.Decimal> prices = 3; // Map of currency code to price (e.g., "EUR" -> price)
 }
 
 message PaymentMethodAllowance {

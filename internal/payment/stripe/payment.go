@@ -196,6 +196,10 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, fmt.Errorf("can't create payment intent: %w", err)
 	}
 
+	// Get the actual amount charged from PaymentIntent (in payment currency)
+	// PaymentIntent.Amount is in smallest currency unit (cents), so convert back to decimal
+	paymentCurrencyAmount := decimal.NewFromInt(pi.Amount).Div(decimal.NewFromInt(100))
+
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.c.InvoiceExpiration))
 		if err != nil {
@@ -206,10 +210,11 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 			Valid:  true,
 		}
 
-		payment.TransactionAmountPaymentCurrency = of.Order.TotalPriceDecimal()
+		// Set transaction amounts: order currency amount and payment currency amount (what was actually charged)
 		payment.TransactionAmount = of.Order.TotalPriceDecimal()
+		payment.TransactionAmountPaymentCurrency = paymentCurrencyAmount
 
-		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderUUID, payment.TransactionAmount)
+		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderUUID, paymentCurrencyAmount)
 		if err != nil {
 			return fmt.Errorf("can't update total payment currency: %w", err)
 		}

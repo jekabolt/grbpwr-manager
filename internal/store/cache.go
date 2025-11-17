@@ -201,12 +201,55 @@ func (ms *MYSQLStore) getPromos(ctx context.Context) ([]entity.PromoCode, error)
 }
 
 func (ms *MYSQLStore) getShipmentCarriers(ctx context.Context) ([]entity.ShipmentCarrier, error) {
-	query := `SELECT * FROM shipment_carrier`
+	query := `SELECT id, carrier, tracking_url, allowed, description FROM shipment_carrier`
 	shipmentCarriers, err := QueryListNamed[entity.ShipmentCarrier](ctx, ms.db, query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get ShipmentCarrier by id: %w", err)
 	}
+
+	// Load prices for all shipment carriers
+	if len(shipmentCarriers) > 0 {
+		carrierIds := make([]int, len(shipmentCarriers))
+		for i := range shipmentCarriers {
+			carrierIds[i] = shipmentCarriers[i].Id
+		}
+
+		prices, err := ms.fetchShipmentCarrierPrices(ctx, carrierIds)
+		if err != nil {
+			return nil, fmt.Errorf("can't get shipment carrier prices: %w", err)
+		}
+
+		// Assign prices to carriers
+		for i := range shipmentCarriers {
+			shipmentCarriers[i].Prices = prices[shipmentCarriers[i].Id]
+		}
+	}
+
 	return shipmentCarriers, nil
+}
+
+// fetchShipmentCarrierPrices fetches all prices for given shipment carrier IDs
+func (ms *MYSQLStore) fetchShipmentCarrierPrices(ctx context.Context, carrierIds []int) (map[int][]entity.ShipmentCarrierPrice, error) {
+	if len(carrierIds) == 0 {
+		return map[int][]entity.ShipmentCarrierPrice{}, nil
+	}
+
+	query := `SELECT id, shipment_carrier_id, currency, price, created_at, updated_at FROM shipment_carrier_price WHERE shipment_carrier_id IN (:carrierIds) ORDER BY shipment_carrier_id, currency`
+
+	prices, err := QueryListNamed[entity.ShipmentCarrierPrice](ctx, ms.db, query, map[string]any{
+		"carrierIds": carrierIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get shipment carrier prices: %w", err)
+	}
+
+	// Group prices by carrier ID
+	priceMap := make(map[int][]entity.ShipmentCarrierPrice)
+	for _, p := range prices {
+		priceMap[p.ShipmentCarrierId] = append(priceMap[p.ShipmentCarrierId], p)
+	}
+
+	return priceMap, nil
 }
 
 func (ms *MYSQLStore) getSizes(ctx context.Context) ([]entity.Size, error) {

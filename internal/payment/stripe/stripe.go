@@ -11,19 +11,13 @@ import (
 
 // createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types
 func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error) {
-
-	// Convert the order total to the stripe payment base currency
-	total, err := p.rates.ConvertFromBaseCurrency(p.baseCurrency, order.Order.TotalPrice)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert order total to base currency: %v", err)
-	}
-
-	// Calculate the order amount in cents
-	amountCents := total.Mul(decimal.NewFromInt(100)).IntPart()
+	// Use the order total directly - prices are already stored in the correct currency
+	// Calculate the order amount in cents (smallest currency unit)
+	amountCents := order.Order.TotalPrice.Mul(decimal.NewFromInt(100)).IntPart()
 
 	params := &stripe.PaymentIntentParams{
 		Amount:             stripe.Int64(amountCents),                                 // Amount to charge in the smallest currency unit (e.g., cents for USD)
-		Currency:           stripe.String(p.baseCurrency.String()),                    // Currency in which to charge the payment
+		Currency:           stripe.String(order.Order.Currency),                       // Currency in which to charge the payment (use order currency)
 		PaymentMethodTypes: stripe.StringSlice(PaymentMethodTypes),                    // Types of payment methods (e.g., "card")
 		ReceiptEmail:       stripe.String(order.Buyer.Email),                          // Email to send the receipt to
 		Description:        stripe.String(fmt.Sprintf("order #%s", order.Order.UUID)), // Description of the payment

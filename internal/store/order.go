@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"strings"
 	"time"
 
 	"log/slog"
@@ -185,50 +184,26 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 		return decimal.Zero, errors.New("no items to calculate total amount")
 	}
 
-	// Merge items by ProductId, ignoring size
-	itemsNoSizeId := make([]entity.OrderItemInsert, 0, len(items))
-	for _, item := range items {
-		itemsNoSizeId = append(itemsNoSizeId, entity.OrderItemInsert{
-			ProductId: item.GetProductId(),
-			Quantity:  item.GetQuantity(),
-		})
-	}
-	itemsNoSizeId = mergeOrderItems(itemsNoSizeId)
-
-	// Build SQL query
-	var (
-		caseBuilder strings.Builder
-		idsBuilder  strings.Builder
-	)
-
-	caseBuilder.Grow(len(itemsNoSizeId) * 20) // Pre-allocate space
-	idsBuilder.Grow(len(itemsNoSizeId) * 10)  // Pre-allocate space
-
-	first := true
-	for _, item := range itemsNoSizeId {
-		if !item.QuantityDecimal().IsPositive() {
-			return decimal.Zero, fmt.Errorf("quantity for product ID %d is not positive", item.ProductId)
-		}
-
-		if !first {
-			caseBuilder.WriteString(" ")
-			idsBuilder.WriteString(", ")
-		}
-		first = false
-
-		caseBuilder.WriteString(fmt.Sprintf("WHEN product.id = %d THEN %s", item.ProductId, item.QuantityDecimal().String()))
-		idsBuilder.WriteString(fmt.Sprintf("%d", item.ProductId))
-	}
-
-	query := fmt.Sprintf(`
-		SELECT SUM(price * (1 - COALESCE(sale_percentage, 0) / 100) * CASE %s END) AS total_amount
-		FROM product
-		WHERE id IN (%s) AND deleted_at IS NULL
-	`, caseBuilder.String(), idsBuilder.String())
-
+	// Calculate total directly from items (which already have validated prices)
+	// Formula: price * (1 - sale_percentage / 100) * quantity
 	var totalAmount decimal.Decimal
-	if err := rep.DB().GetContext(ctx, &totalAmount, query); err != nil {
-		return decimal.Zero, err
+
+	for _, item := range items {
+		if !item.GetQuantity().IsPositive() {
+			return decimal.Zero, fmt.Errorf("quantity for product ID %d is not positive", item.GetProductId())
+		}
+
+		// Get the base price
+		price := item.GetProductPrice()
+
+		// Apply sale percentage if present
+		salePercentage := item.GetProductSalePercentage()
+		if salePercentage.GreaterThan(decimal.Zero) {
+			price = price.Mul(decimal.NewFromInt(100).Sub(salePercentage).Div(decimal.NewFromInt(100)))
+		}
+
+		// Multiply by quantity and add to total
+		totalAmount = totalAmount.Add(price.Mul(item.GetQuantity()))
 	}
 
 	return totalAmount.Round(2), nil
@@ -347,15 +322,19 @@ func deleteOrderItems(ctx context.Context, rep dependency.Repository, orderId in
 	return nil
 }
 
-func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.ShipmentCarrier, orderId int) error {
+func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.ShipmentCarrier, orderId int, currency string) error {
+	price, err := sc.PriceDecimal(currency)
+	if err != nil {
+		return fmt.Errorf("can't get shipment carrier price for currency %s: %w", currency, err)
+	}
 	query := `
 	INSERT INTO shipment (carrier_id, order_id, cost)
 	VALUES (:carrierId, :orderId, :cost)
 	`
-	err := ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
+	err = ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
 		"carrierId": sc.Id,
 		"orderId":   orderId,
-		"cost":      sc.PriceDecimal(),
+		"cost":      price,
 	})
 	if err != nil {
 		return fmt.Errorf("can't insert shipment: %w", err)
@@ -775,7 +754,11 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 			return fmt.Errorf("error while calculating total amount: %w", err)
 		}
 
-		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentCarrier.PriceDecimal())
+		shipmentPrice, err := shipmentCarrier.PriceDecimal(orderNew.Currency)
+		if err != nil {
+			return fmt.Errorf("can't get shipment carrier price for currency %s: %w", orderNew.Currency, err)
+		}
+		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentPrice)
 
 		order = &entity.Order{
 			TotalPrice:    totalPrice,
@@ -835,7 +818,7 @@ func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Rep
 	if err = insertOrderItems(ctx, rep, validItemsInsert, order.Id); err != nil {
 		return fmt.Errorf("error while inserting order items: %w", err)
 	}
-	if err = insertShipment(ctx, rep, carrier, order.Id); err != nil {
+	if err = insertShipment(ctx, rep, carrier, order.Id, order.Currency); err != nil {
 		return fmt.Errorf("error while inserting shipment: %w", err)
 	}
 	shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep, orderNew.ShippingAddress, orderNew.BillingAddress)

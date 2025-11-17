@@ -241,6 +241,12 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 			return fmt.Errorf("can't insert tags: %w", err)
 		}
 
+		// Validate required currencies are present
+		err = validateRequiredCurrencies(prd.Prices)
+		if err != nil {
+			return fmt.Errorf("price validation failed: %w", err)
+		}
+
 		// Insert product prices
 		err = insertProductPrices(ctx, rep, prdId, prd.Prices)
 		if err != nil {
@@ -293,6 +299,12 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 		err = updateProductTags(ctx, rep, id, prd.Tags)
 		if err != nil {
 			return fmt.Errorf("can't update product tags: %w", err)
+		}
+
+		// Validate required currencies are present
+		err = validateRequiredCurrencies(prd.Prices)
+		if err != nil {
+			return fmt.Errorf("price validation failed: %w", err)
 		}
 
 		// prices
@@ -359,6 +371,47 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"fit":                  prd.ProductBodyInsert.Fit,
 		"id":                   id,
 	})
+}
+
+// validateRequiredCurrencies validates that all required currencies are present in the prices and not zero
+func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
+	requiredCurrencies := map[string]bool{
+		"EUR": true,
+		"USD": true,
+		"JPY": true,
+		"CNY": true,
+		"KRW": true,
+		"GBP": true,
+	}
+
+	providedCurrencies := make(map[string]bool)
+	var zeroPriceCurrencies []string
+	for _, price := range prices {
+		currency := strings.ToUpper(price.Currency)
+		providedCurrencies[currency] = true
+
+		// Check if price is zero or negative
+		if price.Price.LessThanOrEqual(decimal.Zero) {
+			zeroPriceCurrencies = append(zeroPriceCurrencies, currency)
+		}
+	}
+
+	var missingCurrencies []string
+	for currency := range requiredCurrencies {
+		if !providedCurrencies[currency] {
+			missingCurrencies = append(missingCurrencies, currency)
+		}
+	}
+
+	if len(missingCurrencies) > 0 {
+		return fmt.Errorf("missing required currencies: %s", strings.Join(missingCurrencies, ", "))
+	}
+
+	if len(zeroPriceCurrencies) > 0 {
+		return fmt.Errorf("prices must be greater than zero for currencies: %s", strings.Join(zeroPriceCurrencies, ", "))
+	}
+
+	return nil
 }
 
 // insertProductPrices inserts product prices for a given product
@@ -1540,11 +1593,19 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 		return nil, fmt.Errorf("can't get product translations: %w", err)
 	}
 
+	// Fetch all prices for these products
+	priceMap, err := fetchProductPrices(ctx, rep.DB(), productIds)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product prices: %w", err)
+	}
+
 	products := make([]entity.Product, 0, len(prdResults))
 
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
+		// Assign prices to the product
+		product.Prices = priceMap[prdResult.Id]
 		// Set the correct thumbnail created_at
 		product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
 		if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
