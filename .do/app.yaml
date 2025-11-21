@@ -21,6 +21,10 @@ services:
   
   envs:
   # MySQL (from DO managed database)
+  # Note: DigitalOcean automatically injects db.* env vars (db.HOSTNAME, db.PORT, etc.)
+  # including db.CA_CERT when a managed database is connected.
+  # The app now supports both db.* (preferred) and MYSQL_* (backward compatibility) formats.
+  # Keeping MYSQL_* mappings for backward compatibility, but db.* will be checked first.
   - key: MYSQL_HOST
     scope: RUN_TIME
     type: SECRET

@@ -79,16 +79,30 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	// Handle MySQL DSN construction from individual env vars if DSN is not set
+	// Supports both MYSQL_* env vars and DigitalOcean's db.* env vars
 	if config.DB.DSN == "" {
-		if mysqlHost := os.Getenv("MYSQL_HOST"); mysqlHost != "" {
-			mysqlPort := os.Getenv("MYSQL_PORT")
+		var mysqlHost, mysqlPort, mysqlUser, mysqlPassword, mysqlDatabase string
+
+		// Check for DigitalOcean's db.* env vars first
+		if dbHost := os.Getenv("db.HOSTNAME"); dbHost != "" {
+			mysqlHost = dbHost
+			mysqlPort = os.Getenv("db.PORT")
+			mysqlUser = os.Getenv("db.USERNAME")
+			mysqlPassword = os.Getenv("db.PASSWORD")
+			mysqlDatabase = os.Getenv("db.DATABASE")
+		} else {
+			// Fall back to MYSQL_* env vars
+			mysqlHost = os.Getenv("MYSQL_HOST")
+			mysqlPort = os.Getenv("MYSQL_PORT")
+			mysqlUser = os.Getenv("MYSQL_USER")
+			mysqlPassword = os.Getenv("MYSQL_PASSWORD")
+			mysqlDatabase = os.Getenv("MYSQL_DATABASE")
+		}
+
+		if mysqlHost != "" {
 			if mysqlPort == "" {
 				mysqlPort = "3306"
 			}
-			mysqlUser := os.Getenv("MYSQL_USER")
-			mysqlPassword := os.Getenv("MYSQL_PASSWORD")
-			mysqlDatabase := os.Getenv("MYSQL_DATABASE")
-
 			if mysqlUser != "" && mysqlPassword != "" && mysqlDatabase != "" {
 				// Construct DSN for DO managed database (with TLS)
 				config.DB.DSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true&tls=custom",
@@ -108,6 +122,7 @@ func bindEnvVars() {
 	viper.BindEnv("mysql.automigrate", "MYSQL_AUTOMIGRATE")
 	viper.BindEnv("mysql.max_open_connections", "MYSQL_MAX_OPEN_CONNECTIONS")
 	viper.BindEnv("mysql.max_idle_connections", "MYSQL_MAX_IDLE_CONNECTIONS")
+	viper.BindEnv("mysql.tls_ca_path", "MYSQL_TLS_CA_PATH")
 
 	// Logger
 	viper.BindEnv("logger.level", "LOG_LEVEL")

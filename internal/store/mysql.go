@@ -69,16 +69,31 @@ func resolveCertPath(path string) string {
 }
 
 // registerTLSConfig registers a custom TLS configuration with the MySQL driver
-// If TLSCAPath is provided, registers a TLS config named "custom"
+// Priority order:
+// 1. db.CA_CERT environment variable (DigitalOcean App Platform - contains cert content directly)
+// 2. TLSCAPath from config (file path, supports @certs/ prefix for local development)
+// 3. No TLS config (if neither is provided)
 func registerTLSConfig(cfg Config) error {
-	if cfg.TLSCAPath == "" {
-		return nil // No TLS config needed
-	}
+	var caCert []byte
+	var err error
 
-	certPath := resolveCertPath(cfg.TLSCAPath)
-	caCert, err := os.ReadFile(certPath)
-	if err != nil {
-		return fmt.Errorf("failed to read CA certificate from %s: %w", certPath, err)
+	// Check for DigitalOcean's db.CA_CERT environment variable first
+	// This contains the certificate content directly (not a file path)
+	if dbCACert := os.Getenv("db.CA_CERT"); dbCACert != "" {
+		caCert = []byte(dbCACert)
+		slog.Default().Info("using CA certificate from db.CA_CERT environment variable")
+	} else if cfg.TLSCAPath != "" {
+		// Fall back to file-based certificate for local development
+		// Supports @certs/ prefix which resolves to config/certs directory
+		certPath := resolveCertPath(cfg.TLSCAPath)
+		caCert, err = os.ReadFile(certPath)
+		if err != nil {
+			return fmt.Errorf("failed to read CA certificate from %s: %w", certPath, err)
+		}
+		slog.Default().Info("using CA certificate from file", "path", certPath)
+	} else {
+		// No TLS config needed
+		return nil
 	}
 
 	caCertPool := x509.NewCertPool()

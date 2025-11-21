@@ -37,8 +37,10 @@ COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
 
 COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
 
-# Copy certs directory (config file is optional - app works with env vars)
-COPY --from=builder /grbpwr-manager/config/certs /etc/grbpwr-products-manager/certs
+# Create certs directory for backward compatibility (file-based certs)
+# Note: DigitalOcean App Platform provides db.CA_CERT env var automatically,
+# so cert files are optional. Directory is created in case file-based certs are used.
+RUN mkdir -p /etc/grbpwr-products-manager/certs
 
 WORKDIR /
 
