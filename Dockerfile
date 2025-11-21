@@ -1,9 +1,7 @@
 FROM golang:1.24.0-alpine3.20 AS builder
 
-# Install build dependencies including libwebp-dev and potentially libsharpyuv
-RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
-# If you know the package name that provides libsharpyuv.so.0, install it here
-# RUN apk add --no-cache <package-name>
+# Install build dependencies including libwebp-dev and libsharpyuv
+RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev libsharpyuv-dev
 
 COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
@@ -22,16 +20,15 @@ RUN make init
 
 RUN make build
 
-# Use the find command to locate libsharpyuv.so.0 in the builder stage
-RUN find / -name "libsharpyuv.so.0"
-
 FROM alpine:latest
 
-RUN apk add --no-cache libstdc++ libwebp
-# Correctly copy libsharpyuv.so.0 from the builder stage to the final stage
-COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
+# Install runtime dependencies including libwebp and libsharpyuv
+RUN apk add --no-cache libstdc++ libwebp libsharpyuv ca-certificates
 
 COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
+
+# Ensure the binary is executable
+RUN chmod +x /usr/local/bin/products-manager
 
 # Create certs directory for backward compatibility (file-based certs)
 # Note: DigitalOcean App Platform provides db.CA_CERT env var automatically,
@@ -42,6 +39,5 @@ WORKDIR /
 
 EXPOSE 8081
 
-# Config file is optional - if not provided, app will use env vars only
-# You can mount a config file or use env vars
-ENTRYPOINT ["products-manager"]
+# Use full path to binary to avoid PATH issues
+ENTRYPOINT ["/usr/local/bin/products-manager"]
