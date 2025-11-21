@@ -10,11 +10,34 @@ import (
 	"github.com/stripe/stripe-go/v79"
 )
 
+// isZeroDecimalCurrency checks if a currency is zero-decimal (no cents/subunits)
+// According to Stripe, these currencies don't have decimal places:
+// BIF, CLP, DJF, GNF, JPY, KMF, KRW, MGA, PYG, RWF, UGX, VND, VUV, XAF, XOF, XPF
+func isZeroDecimalCurrency(currency string) bool {
+	zeroDecimalCurrencies := map[string]bool{
+		"BIF": true, "CLP": true, "DJF": true, "GNF": true,
+		"JPY": true, "KMF": true, "KRW": true, "MGA": true,
+		"PYG": true, "RWF": true, "UGX": true, "VND": true,
+		"VUV": true, "XAF": true, "XOF": true, "XPF": true,
+	}
+	return zeroDecimalCurrencies[strings.ToUpper(currency)]
+}
+
+// amountToSmallestUnit converts an amount to the smallest currency unit for Stripe
+// For zero-decimal currencies (like JPY, KRW), returns the amount as-is
+// For other currencies, multiplies by 100 to convert to cents
+func amountToSmallestUnit(amount decimal.Decimal, currency string) int64 {
+	if isZeroDecimalCurrency(currency) {
+		return amount.IntPart()
+	}
+	return amount.Mul(decimal.NewFromInt(100)).IntPart()
+}
+
 // createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types
 func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error) {
 	// Use the order total directly - prices are already stored in the correct currency
-	// Calculate the order amount in cents (smallest currency unit)
-	amountCents := order.Order.TotalPrice.Mul(decimal.NewFromInt(100)).IntPart()
+	// Calculate the order amount in smallest currency unit (cents for most currencies, but not for zero-decimal currencies like JPY, KRW)
+	amountCents := amountToSmallestUnit(order.Order.TotalPrice, order.Order.Currency)
 
 	params := &stripe.PaymentIntentParams{
 		Amount:             stripe.Int64(amountCents),                                 // Amount to charge in the smallest currency unit (e.g., cents for USD)
@@ -81,7 +104,7 @@ func (p *Processor) GetPaymentIntentByID(ctx context.Context, paymentIntentID st
 
 // UpdatePaymentIntentAmount updates the amount of an existing PaymentIntent
 func (p *Processor) UpdatePaymentIntentAmount(ctx context.Context, paymentIntentID string, amount decimal.Decimal, currency string) error {
-	amountCents := amount.Mul(decimal.NewFromInt(100)).IntPart()
+	amountCents := amountToSmallestUnit(amount, currency)
 
 	params := &stripe.PaymentIntentParams{
 		Amount:   stripe.Int64(amountCents),

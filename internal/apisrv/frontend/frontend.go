@@ -473,6 +473,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
 	}
+	totalSale := oiv.SubtotalDecimal()
 
 	pbOii := make([]*pb_common.OrderItem, 0, len(oiv.ValidItems))
 	for _, i := range oiv.ValidItems {
@@ -486,8 +487,10 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		)
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
+
+	var shipmentPrice decimal.Decimal
 	if scOk && shipmentCarrier.Allowed {
-		shipmentPrice, err := shipmentCarrier.PriceDecimal(currency)
+		shipmentPrice, err = shipmentCarrier.PriceDecimal(currency)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get shipment carrier price",
 				slog.String("currency", currency),
@@ -495,23 +498,14 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 			)
 			return nil, status.Errorf(codes.Internal, "can't get shipment carrier price for currency %s", currency)
 		}
-		oiv.Subtotal = oiv.SubtotalDecimal().Add(shipmentPrice).Round(2)
 	}
 
+	totalSale = totalSale.Add(shipmentPrice)
 	promo, ok := cache.GetPromoByCode(req.PromoCode)
 	if ok && promo.Allowed && promo.FreeShipping && scOk {
-		shipmentPrice, err := shipmentCarrier.PriceDecimal(currency)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get shipment carrier price",
-				slog.String("currency", currency),
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't get shipment carrier price for currency %s", currency)
-		}
-		oiv.Subtotal = oiv.SubtotalDecimal().Sub(shipmentPrice).Round(2)
+		totalSale = totalSale.Sub(shipmentPrice)
 	}
 
-	totalSale := oiv.SubtotalDecimal()
 	if ok && promo.IsAllowed() {
 		if !promo.Discount.Equals(decimal.Zero) {
 			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
@@ -521,7 +515,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	response := &pb_frontend.ValidateOrderItemsInsertResponse{
 		ValidItems: pbOii,
 		HasChanged: oiv.HasChanged,
-		Subtotal:   &pb_decimal.Decimal{Value: oiv.SubtotalDecimal().String()},
+		Subtotal:   &pb_decimal.Decimal{Value: oiv.SubtotalDecimal().Round(2).String()},
 		TotalSale:  &pb_decimal.Decimal{Value: totalSale.Round(2).String()},
 		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
 	}
