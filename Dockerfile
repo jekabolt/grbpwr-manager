@@ -1,7 +1,7 @@
 FROM golang:1.24.0-alpine3.20 AS builder
 
-# Install build dependencies including libwebp-dev and libsharpyuv
-RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev libsharpyuv-dev
+# Install build dependencies including libwebp-dev
+RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
 
 COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
@@ -22,8 +22,8 @@ RUN make build
 
 FROM alpine:latest
 
-# Install runtime dependencies including libwebp and libsharpyuv
-RUN apk add --no-cache libstdc++ libwebp libsharpyuv ca-certificates
+# Install runtime dependencies including libwebp
+RUN apk add --no-cache libstdc++ libwebp ca-certificates
 
 COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
 
