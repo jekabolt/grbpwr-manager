@@ -6,6 +6,9 @@ admin-client
 bin
 .env-local
 **/mocks
+*.pem
+*.crt
+*.key
 
 *.swagger.json
 *.pb.go

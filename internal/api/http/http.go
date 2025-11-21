@@ -84,6 +84,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		return nil, err
 	}
 
+	// health check endpoint
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	// handle static swagger
 	r.HandleFunc("/products-manager/api", func(w http.ResponseWriter, r *http.Request) {
 		page, ok := pages[r.URL.Path]

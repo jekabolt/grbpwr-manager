@@ -35,8 +35,16 @@ COPY --from=builder /usr/lib/libwebp*.so* /usr/lib/
 # Correctly copy libsharpyuv.so.0 from the builder stage to the final stage
 COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
 
-COPY --from=builder /grbpwr-manager/bin/ /grbpwr-manager/bin/
+COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
+
+# Copy startup script and certs directory
+COPY --from=builder /grbpwr-manager/scripts/generate-config.sh /usr/local/bin/generate-config.sh
+COPY --from=builder /grbpwr-manager/config/certs /etc/grbpwr-products-manager/certs
+
+RUN chmod +x /usr/local/bin/generate-config.sh
+
+WORKDIR /
 
 EXPOSE 8081
 
-ENTRYPOINT ["./grbpwr-manager/bin/products-manager"]
+ENTRYPOINT ["/bin/sh", "-c", "generate-config.sh && products-manager --config /etc/grbpwr-products-manager/config.toml"]

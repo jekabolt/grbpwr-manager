@@ -1,0 +1,230 @@
+name: grbpwr-manager
+region: fra
+
+services:
+- name: manager
+  github:
+    repo: jekabolt/grbpwr-products-manager
+    branch: master
+    deploy_on_push: false
+  
+  dockerfile_path: Dockerfile
+  
+  http_port: 8081
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 60
+    period_seconds: 10
+  
+  envs:
+  # MySQL (from DO managed database)
+  - key: MYSQL_HOST
+    scope: RUN_TIME
+    type: SECRET
+    value: ${db.HOSTNAME}
+  - key: MYSQL_PORT
+    scope: RUN_TIME
+    type: SECRET
+    value: ${db.PORT}
+  - key: MYSQL_USER
+    scope: RUN_TIME
+    type: SECRET
+    value: ${db.USERNAME}
+  - key: MYSQL_PASSWORD
+    scope: RUN_TIME
+    type: SECRET
+    value: ${db.PASSWORD}
+  - key: MYSQL_DATABASE
+    scope: RUN_TIME
+    type: SECRET
+    value: ${db.DATABASE}
+  
+  # Logger
+  - key: LOG_LEVEL
+    scope: RUN_TIME
+    value: "-4"
+  - key: LOG_ADD_SOURCE
+    scope: RUN_TIME
+    value: "true"
+  
+  # HTTP
+  - key: HTTP_PORT
+    scope: RUN_TIME
+    value: "8081"
+  - key: HTTP_ADDRESS
+    scope: RUN_TIME
+    value: "0.0.0.0"
+  - key: HTTP_ALLOWED_ORIGINS
+    scope: RUN_TIME
+    value: '["https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com","https://backend.grbpwr.com"]'
+  
+  # Auth (set as SECRET in DO dashboard)
+  - key: AUTH_JWT_SECRET
+    scope: RUN_TIME
+    type: SECRET
+  - key: AUTH_MASTER_PASSWORD
+    scope: RUN_TIME
+    type: SECRET
+  - key: AUTH_PASSWORD_HASHER_SALT_SIZE
+    scope: RUN_TIME
+    value: "16"
+  - key: AUTH_PASSWORD_HASHER_ITERATIONS
+    scope: RUN_TIME
+    value: "100000"
+  - key: AUTH_JWT_TTL
+    scope: RUN_TIME
+    value: "6000m"
+  
+  # Bucket/S3 (set as SECRET in DO dashboard)
+  - key: BUCKET_S3_ACCESS_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: BUCKET_S3_SECRET_ACCESS_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: BUCKET_S3_ENDPOINT
+    scope: RUN_TIME
+    value: "fra1.digitaloceanspaces.com"
+  - key: BUCKET_S3_BUCKET_NAME
+    scope: RUN_TIME
+    value: "grbpwr"
+  - key: BUCKET_S3_BUCKET_LOCATION
+    scope: RUN_TIME
+    value: "fra-1"
+  - key: BUCKET_BASE_FOLDER
+    scope: RUN_TIME
+    value: "grbpwr-com"
+  - key: BUCKET_IMAGE_STORE_PREFIX
+    scope: RUN_TIME
+    value: "grbpwr-com"
+  - key: BUCKET_SUBDOMAIN_ENDPOINT
+    scope: RUN_TIME
+    value: "files.grbpwr.com"
+  
+  # Mailer (set as SECRET in DO dashboard)
+  - key: MAILER_SENDGRID_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: MAILER_FROM_EMAIL
+    scope: RUN_TIME
+    value: "info@grbpwr.com"
+  - key: MAILER_FROM_EMAIL_NAME
+    scope: RUN_TIME
+    value: "grbpwr.com"
+  - key: MAILER_REPLY_TO
+    scope: RUN_TIME
+    value: "noreply@grbpwr.com"
+  - key: MAILER_WORKER_INTERVAL
+    scope: RUN_TIME
+    value: "1m"
+  
+  # Rates (set as SECRET in DO dashboard)
+  - key: RATES_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: RATES_UPDATE_PERIOD
+    scope: RUN_TIME
+    value: "24h"
+  - key: RATES_BASE_CURRENCY
+    scope: RUN_TIME
+    value: "EUR"
+  
+  # USDT Tron Payment
+  - key: USDT_TRON_PAYMENT_ADDRESSES
+    scope: RUN_TIME
+    value: '["TRDTdbt4vsxQnXtSBX1Da9npWdwsfgYzy4"]'
+  - key: USDT_TRON_PAYMENT_NODE
+    scope: RUN_TIME
+    value: "https://api.trongrid.io"
+  - key: USDT_TRON_PAYMENT_INVOICE_EXPIRATION
+    scope: RUN_TIME
+    value: "30m"
+  - key: USDT_TRON_PAYMENT_CHECK_INTERVAL
+    scope: RUN_TIME
+    value: "30s"
+  - key: USDT_TRON_PAYMENT_CONTRACT_ADDRESS
+    scope: RUN_TIME
+    value: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+  
+  # USDT Tron Shasta Testnet Payment
+  - key: USDT_TRON_SHASTA_TESTNET_ADDRESSES
+    scope: RUN_TIME
+    value: '["TULivK5zBnouAaKyt9hxTHJQspPHNpVoKV"]'
+  - key: USDT_TRON_SHASTA_TESTNET_NODE
+    scope: RUN_TIME
+    value: "https://api.shasta.trongrid.io"
+  - key: USDT_TRON_SHASTA_TESTNET_INVOICE_EXPIRATION
+    scope: RUN_TIME
+    value: "1m"
+  - key: USDT_TRON_SHASTA_TESTNET_CHECK_INTERVAL
+    scope: RUN_TIME
+    value: "10s"
+  - key: USDT_TRON_SHASTA_TESTNET_CONTRACT_ADDRESS
+    scope: RUN_TIME
+    value: "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"
+  
+  # TronGrid (set as SECRET in DO dashboard)
+  - key: TRONGRID_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: TRONGRID_BASE_URL
+    scope: RUN_TIME
+    value: "https://api.trongrid.io"
+  - key: TRONGRID_TIMEOUT
+    scope: RUN_TIME
+    value: "30s"
+  
+  # TronGrid Shasta Testnet (set as SECRET in DO dashboard)
+  - key: TRONGRID_SHASTA_TESTNET_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: TRONGRID_SHASTA_TESTNET_BASE_URL
+    scope: RUN_TIME
+    value: "https://api.shasta.trongrid.io"
+  - key: TRONGRID_SHASTA_TESTNET_TIMEOUT
+    scope: RUN_TIME
+    value: "30s"
+  
+  # Stripe Payment (set as SECRET in DO dashboard)
+  - key: STRIPE_PAYMENT_SECRET_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: STRIPE_PAYMENT_PUB_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: STRIPE_PAYMENT_INVOICE_EXPIRATION
+    scope: RUN_TIME
+    value: "24h"
+  
+  # Stripe Payment Test (set as SECRET in DO dashboard)
+  - key: STRIPE_PAYMENT_TEST_SECRET_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: STRIPE_PAYMENT_TEST_PUB_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
+    scope: RUN_TIME
+    value: "60m"
+  
+  # Revalidation (set as SECRET in DO dashboard)
+  - key: REVALIDATION_PROJECT_ID
+    scope: RUN_TIME
+    value: "prj_qfeZdwAsaUaDqLTeO6VkNHwJRuPf"
+  - key: REVALIDATION_VERCEL_API_TOKEN
+    scope: RUN_TIME
+    type: SECRET
+  - key: REVALIDATION_REVALIDATE_SECRET
+    scope: RUN_TIME
+    type: SECRET
+  - key: REVALIDATION_HTTP_TIMEOUT
+    scope: RUN_TIME
+    value: "10s"
+
+databases:
+- name: db
+  engine: MYSQL
+  production: true
