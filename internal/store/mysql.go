@@ -122,10 +122,31 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("couldn't open database : %v", err)
 	}
 
+	// Configure connection pool
+	if cfg.MaxOpenConnections > 0 {
+		d.SetMaxOpenConns(cfg.MaxOpenConnections)
+	}
+	if cfg.MaxIdleConnections > 0 {
+		d.SetMaxIdleConns(cfg.MaxIdleConnections)
+	}
+	d.SetConnMaxLifetime(5 * time.Minute)
+
+	// Test connection with timeout
+	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pingCancel()
+	if err := d.PingContext(pingCtx); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
 	if cfg.Automigrate {
 		slog.Default().InfoContext(ctx, "applying migrations")
-		if err := Migrate(d.Unsafe().DB); err != nil {
-			return nil, err
+		// Run migrations with timeout
+		migrateCtx, migrateCancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer migrateCancel()
+		if err := MigrateWithContext(migrateCtx, d.Unsafe().DB); err != nil {
+			d.Close()
+			return nil, fmt.Errorf("migration failed: %w", err)
 		}
 	}
 
@@ -163,19 +184,38 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 var fs embed.FS
 
 func Migrate(db *sql.DB) error {
+	return MigrateWithContext(context.Background(), db)
+}
+
+func MigrateWithContext(ctx context.Context, db *sql.DB) error {
 	m := &migrate.EmbedFileSystemMigrationSource{
 		FileSystem: fs,
 		Root:       "sql",
 	}
-	n, err := migrate.Exec(db, "mysql", m, migrate.Up)
-	if err != nil {
-		return fmt.Errorf("db migrations have failed: %v", err)
-	}
 
-	slog.Default().Info("applied migrations",
-		slog.Int("count", n),
-	)
-	return nil
+	// Run migration in goroutine with context timeout
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := migrate.Exec(db, "mysql", m, migrate.Up)
+		done <- result{n: n, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("migration timeout: %w", ctx.Err())
+	case res := <-done:
+		if res.err != nil {
+			return fmt.Errorf("db migrations have failed: %w", res.err)
+		}
+		slog.Default().InfoContext(ctx, "applied migrations",
+			slog.Int("count", res.n),
+		)
+		return nil
+	}
 }
 
 // NewForTest creates a new store instance for testing without initializing cache
@@ -190,10 +230,31 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("couldn't open database : %v", err)
 	}
 
+	// Configure connection pool
+	if cfg.MaxOpenConnections > 0 {
+		d.SetMaxOpenConns(cfg.MaxOpenConnections)
+	}
+	if cfg.MaxIdleConnections > 0 {
+		d.SetMaxIdleConns(cfg.MaxIdleConnections)
+	}
+	d.SetConnMaxLifetime(5 * time.Minute)
+
+	// Test connection with timeout
+	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pingCancel()
+	if err := d.PingContext(pingCtx); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
 	if cfg.Automigrate {
 		slog.Default().InfoContext(ctx, "applying migrations")
-		if err := Migrate(d.Unsafe().DB); err != nil {
-			return nil, err
+		// Run migrations with timeout
+		migrateCtx, migrateCancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer migrateCancel()
+		if err := MigrateWithContext(migrateCtx, d.Unsafe().DB); err != nil {
+			d.Close()
+			return nil, fmt.Errorf("migration failed: %w", err)
 		}
 	}
 

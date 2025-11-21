@@ -19,6 +19,33 @@ services:
     initial_delay_seconds: 60
     period_seconds: 10
   
+  routes:
+  - path: /*
+    cors:
+      allow_origins:
+      - https://backend.grbpwr.com
+      - https://*.vercel.app
+      - https://mikevelko.github.io
+      - https://jekabolt.github.io
+      - https://0101oak.github.io
+      - https://grbpwr.com
+      allow_methods:
+      - GET
+      - PUT
+      - POST
+      - DELETE
+      - HEAD
+      - OPTIONS
+      allow_headers:
+      - Accept
+      - Content-Type
+      - Content-Length
+      - Accept-Encoding
+      - Authorization
+      - ResponseType
+      - Grpc-Metadata-Authorization
+      allow_credentials: true
+  
   envs:
   # MySQL (from DO managed database)
   # Note: DigitalOcean automatically injects db.* env vars (db.HOSTNAME, db.PORT, etc.)
@@ -63,7 +90,7 @@ services:
     value: "0.0.0.0"
   - key: HTTP_ALLOWED_ORIGINS
     scope: RUN_TIME
-    value: '["https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com","https://backend.grbpwr.com"]'
+    value: '["https://backend.grbpwr.com","https://*.vercel.app","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com"]'
   
   # Auth (set as SECRET in DO dashboard)
   - key: AUTH_JWT_SECRET
