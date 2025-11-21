@@ -27,11 +27,7 @@ RUN find / -name "libsharpyuv.so.0"
 
 FROM alpine:latest
 
-RUN apk add --no-cache libstdc++
-
-# COPY other necessary libwebp related shared libraries from the builder stage
-COPY --from=builder /usr/lib/libwebp.so.7 /usr/lib/
-COPY --from=builder /usr/lib/libwebp*.so* /usr/lib/
+RUN apk add --no-cache libstdc++ libwebp
 # Correctly copy libsharpyuv.so.0 from the builder stage to the final stage
 COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
 
