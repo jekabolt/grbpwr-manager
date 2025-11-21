@@ -37,14 +37,13 @@ COPY --from=builder /usr/lib/libsharpyuv.so.0 /usr/lib/
 
 COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
 
-# Copy startup script and certs directory
-COPY --from=builder /grbpwr-manager/scripts/generate-config.sh /usr/local/bin/generate-config.sh
+# Copy certs directory (config file is optional - app works with env vars)
 COPY --from=builder /grbpwr-manager/config/certs /etc/grbpwr-products-manager/certs
-
-RUN chmod +x /usr/local/bin/generate-config.sh
 
 WORKDIR /
 
 EXPOSE 8081
 
-ENTRYPOINT ["/bin/sh", "-c", "generate-config.sh && products-manager --config /etc/grbpwr-products-manager/config.toml"]
+# Config file is optional - if not provided, app will use env vars only
+# You can mount a config file or use env vars
+ENTRYPOINT ["products-manager"]
