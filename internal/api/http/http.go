@@ -67,17 +67,49 @@ func (s *Server) Done() <-chan struct{} {
 }
 
 func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
-	// Convert slice to map for efficient lookup
-	originsMap := make(map[string]bool, len(allowedOrigins))
+	// Separate exact matches and wildcard patterns
+	exactOrigins := make(map[string]bool, len(allowedOrigins))
+	wildcardPatterns := make([]string, 0)
+
 	for _, origin := range allowedOrigins {
-		originsMap[origin] = true
+		if strings.Contains(origin, "*") {
+			wildcardPatterns = append(wildcardPatterns, origin)
+		} else {
+			exactOrigins[origin] = true
+		}
+	}
+
+	// Helper function to check if origin matches a wildcard pattern
+	matchesWildcard := func(origin, pattern string) bool {
+		// Convert wildcard pattern to regex-like matching
+		// e.g., "https://*.vercel.app" matches "https://anything.vercel.app"
+		if !strings.Contains(pattern, "*") {
+			return false
+		}
+
+		// Handle pattern like "https://*.vercel.app"
+		if strings.HasPrefix(pattern, "https://*.") {
+			suffix := strings.TrimPrefix(pattern, "https://*")
+			if strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, suffix) {
+				// Ensure there's at least one character between "https://" and the suffix
+				middle := strings.TrimPrefix(strings.TrimSuffix(origin, suffix), "https://")
+				return len(middle) > 0 && !strings.Contains(middle, "/")
+			}
+		}
+
+		// Handle pattern like "http://*" or other patterns if needed
+		if strings.HasPrefix(pattern, "http://*") {
+			return strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1")
+		}
+
+		return false
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 
-			// Allow requests without Origin header (non-browser clients)
+			// Allow requests without Origin header (non-browser clients like curl)
 			if origin == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -86,14 +118,27 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 			var allowed bool
 
 			// Check exact match against configured origins
-			if originsMap[origin] {
+			if exactOrigins[origin] {
 				allowed = true
 			}
 
-			// Check regex patterns (localhost, vercel)
-			if strings.HasPrefix(origin, "http://localhost") ||
-				(strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, ".vercel.app")) {
-				allowed = true
+			// Check wildcard patterns
+			if !allowed {
+				for _, pattern := range wildcardPatterns {
+					if matchesWildcard(origin, pattern) {
+						allowed = true
+						break
+					}
+				}
+			}
+
+			// Check hardcoded patterns (localhost, vercel)
+			if !allowed {
+				if strings.HasPrefix(origin, "http://localhost") ||
+					strings.HasPrefix(origin, "http://127.0.0.1") ||
+					(strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, ".vercel.app")) {
+					allowed = true
+				}
 			}
 
 			if allowed {
