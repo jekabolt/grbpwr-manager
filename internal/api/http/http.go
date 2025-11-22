@@ -66,6 +66,59 @@ func (s *Server) Done() <-chan struct{} {
 	return s.done
 }
 
+func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	// Convert slice to map for efficient lookup
+	originsMap := make(map[string]bool, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		originsMap[origin] = true
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+
+			// Allow requests without Origin header (non-browser clients)
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			var allowed bool
+
+			// Check exact match against configured origins
+			if originsMap[origin] {
+				allowed = true
+			}
+
+			// Check regex patterns (localhost, vercel)
+			if strings.HasPrefix(origin, "http://localhost") ||
+				(strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, ".vercel.app")) {
+				allowed = true
+			}
+
+			if allowed {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Max-Age", "3600")
+
+				// Handle preflight requests
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Reject disallowed origin
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+		})
+	}
+}
+
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
 
 	r := chi.NewRouter()
@@ -111,9 +164,13 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 	})
 
-	r.Mount("/api/admin", auth.WithAuth(adminHandler))
-	r.Mount("/api/frontend", frontendHandler)
-	r.Mount("/api/auth", authHandler)
+	// Apply CORS middleware only to API routes
+	r.Route("/api", func(r chi.Router) {
+		r.Use(corsMiddleware(s.c.AllowedOrigins))
+		r.Mount("/admin", auth.WithAuth(adminHandler))
+		r.Mount("/frontend", frontendHandler)
+		r.Mount("/auth", authHandler)
+	})
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
 

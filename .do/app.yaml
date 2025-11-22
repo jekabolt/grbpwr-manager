@@ -211,6 +211,14 @@ ingress:
   - component:
       name: grbpwr-manager
     cors:
+      allow_origins:
+      - exact: "https://mikevelko.github.io"
+      - exact: "https://jekabolt.github.io"
+      - exact: "https://0101oak.github.io"
+      - exact: "https://grbpwr.com"
+      - exact: "https://backend.grbpwr.com"
+      - regex: "^https://.*\\.vercel\\.app$"
+      - regex: "^http://localhost(:[0-9]+)?$"
       allow_headers:
       - Content-Type
       - Authorization
@@ -225,8 +233,6 @@ ingress:
       - PATCH
       - DELETE
       - OPTIONS
-      allow_origins:
-      - regex: .*
       expose_headers:
       - Content-Length
       - X-Request-Id
