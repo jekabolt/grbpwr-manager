@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	chi "github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 
 	"log/slog"
@@ -67,101 +68,26 @@ func (s *Server) Done() <-chan struct{} {
 }
 
 func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
-	// Separate exact matches and wildcard patterns
-	exactOrigins := make(map[string]bool, len(allowedOrigins))
-	wildcardPatterns := make([]string, 0)
+	// Collect all allowed origins (exact and wildcard patterns)
+	origins := make([]string, 0, len(allowedOrigins)+3)
 
-	for _, origin := range allowedOrigins {
-		if strings.Contains(origin, "*") {
-			wildcardPatterns = append(wildcardPatterns, origin)
-		} else {
-			exactOrigins[origin] = true
-		}
-	}
+	// Add localhost and vercel patterns for development
+	origins = append(origins, "http://localhost*")
+	origins = append(origins, "http://127.0.0.1*")
+	origins = append(origins, "https://*.vercel.app")
 
-	// Helper function to check if origin matches a wildcard pattern
-	matchesWildcard := func(origin, pattern string) bool {
-		// Convert wildcard pattern to regex-like matching
-		// e.g., "https://*.vercel.app" matches "https://anything.vercel.app"
-		if !strings.Contains(pattern, "*") {
-			return false
-		}
+	// Add configured origins (they may contain wildcards)
+	origins = append(origins, allowedOrigins...)
 
-		// Handle pattern like "https://*.vercel.app"
-		if strings.HasPrefix(pattern, "https://*.") {
-			suffix := strings.TrimPrefix(pattern, "https://*")
-			if strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, suffix) {
-				// Ensure there's at least one character between "https://" and the suffix
-				middle := strings.TrimPrefix(strings.TrimSuffix(origin, suffix), "https://")
-				return len(middle) > 0 && !strings.Contains(middle, "/")
-			}
-		}
-
-		// Handle pattern like "http://*" or other patterns if needed
-		if strings.HasPrefix(pattern, "http://*") {
-			return strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1")
-		}
-
-		return false
-	}
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-
-			// Allow requests without Origin header (non-browser clients like curl)
-			if origin == "" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			var allowed bool
-
-			// Check exact match against configured origins
-			if exactOrigins[origin] {
-				allowed = true
-			}
-
-			// Check wildcard patterns
-			if !allowed {
-				for _, pattern := range wildcardPatterns {
-					if matchesWildcard(origin, pattern) {
-						allowed = true
-						break
-					}
-				}
-			}
-
-			// Check hardcoded patterns (localhost, vercel)
-			if !allowed {
-				if strings.HasPrefix(origin, "http://localhost") ||
-					strings.HasPrefix(origin, "http://127.0.0.1") ||
-					(strings.HasPrefix(origin, "https://") && strings.HasSuffix(origin, ".vercel.app")) {
-					allowed = true
-				}
-			}
-
-			if allowed {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Set("Access-Control-Max-Age", "3600")
-
-				// Handle preflight requests
-				if r.Method == http.MethodOptions {
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Reject disallowed origin
-			http.Error(w, "Origin not allowed", http.StatusForbidden)
-		})
-	}
+	// chi/cors handles wildcard patterns like "https://*.vercel.app"
+	return cors.Handler(cors.Options{
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"},
+		ExposedHeaders:   []string{"Content-Length", "X-Request-Id"},
+		AllowCredentials: true,
+		MaxAge:           3600,
+	})
 }
 
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
