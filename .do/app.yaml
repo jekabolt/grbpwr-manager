@@ -206,6 +206,34 @@ envs:
   value: 10s
 features:
 - buildpack-stack=ubuntu-22
+ingress:
+  rules:
+  - component:
+      name: grbpwr-manager
+    cors:
+      allow_headers:
+      - Content-Type
+      - Authorization
+      - X-Requested-With
+      - Accept
+      - Origin
+      allow_methods:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+      allow_origins:
+      - regex: .*
+      expose_headers:
+      - Content-Length
+      - X-Request-Id
+      max_age: 86400s
+    match:
+      path:
+        prefix: /
 name: grbpwr-backend
 region: fra
 services:
