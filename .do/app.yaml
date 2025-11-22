@@ -1,261 +1,223 @@
-name: grbpwr-manager
+alerts:
+- rule: DEPLOYMENT_FAILED
+- rule: DOMAIN_FAILED
+databases:
+- cluster_name: mysql-grbpwr
+  db_name: grbpwr
+  db_user: doadmin
+  engine: MYSQL
+  name: mysql-grbpwr
+  production: true
+domains:
+- domain: backend.grbpwr.com
+  type: PRIMARY
+  zone: backend.grbpwr.com
+envs:
+- key: MYSQL_DSN
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:EeWMsB6/QFWhar+Rn3eyMRhmyljqx0ed:lc/tb6FFVupP4U1Y+O7XaiVOhQWYSPXIL8DGeLmJeo31k7tswQLnLuGLlg0ugn2Wi5OqCCVa8hB2TuH/9uKVqaq5qAL4iyeclgfjXR2gz3gMFCMLJ62qvgukoYnzJT5no9YT7Vrj8OfsZcMnbWEFx7PUREwAYqMinWcKHHAxSCP2i+YcZzXU9Er6]
+- key: MYSQL_AUTOMIGRATE
+  scope: RUN_AND_BUILD_TIME
+  value: "true"
+- key: MYSQL_MAX_OPEN_CONNECTIONS
+  scope: RUN_AND_BUILD_TIME
+  value: "5"
+- key: MYSQL_MAX_IDLE_CONNECTIONS
+  scope: RUN_AND_BUILD_TIME
+  value: "2"
+- key: LOGGER_LEVEL
+  scope: RUN_AND_BUILD_TIME
+  value: "-4"
+- key: LOGGER_ADD_SOURCE
+  scope: RUN_AND_BUILD_TIME
+  value: "true"
+- key: HTTP_PORT
+  scope: RUN_AND_BUILD_TIME
+  value: "8081"
+- key: HTTP_ADDRESS
+  scope: RUN_AND_BUILD_TIME
+  value: 0.0.0.0
+- key: HTTP_ALLOWED_ORIGINS
+  scope: RUN_AND_BUILD_TIME
+  value: '["https://backend.grbpwr.com","https://*.vercel.app","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com"]'
+- key: AUTH_JWT_SECRET
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:XTwRb1GN7nCdm0tgfaWvY4s6uwOqOj7w:q9Ixg4Rp4+7OwZG83InfFFzk5zsBz+EozCRm]
+- key: AUTH_MASTER_PASSWORD
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:gpltjHhtwKb0+XnT/dq64I1V8C6vQTQp:18tOPR2279i/IOFeBNGyVHXQseG/UdZO7jiRcCIvlxK5aOnO]
+- key: AUTH_PASSWORD_HASHER_SALT_SIZE
+  scope: RUN_AND_BUILD_TIME
+  value: "16"
+- key: AUTH_PASSWORD_HASHER_ITERATIONS
+  scope: RUN_AND_BUILD_TIME
+  value: "100000"
+- key: AUTH_JWT_TTL
+  scope: RUN_AND_BUILD_TIME
+  value: 43800m
+- key: BUCKET_S3_ACCESS_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:afCB+2a8POfuRR1afNsoqYOL8+BevQS1:YNxl41JN3Qf2fJfnrltkBgXBMrXqQwV2hirx2idcs2BnTtb8]
+- key: BUCKET_S3_SECRET_ACCESS_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:7UBqRVqhPj8BT/tF0TeLzTtmKgpCxH7+:OJLnfDpM/2VQeuB/57TmfICFepbjuh2c1bks5zutlvMOsUXeWuk7tatQXdENuJSCJpKxcYRVKKDbJ18=]
+- key: BUCKET_S3_ENDPOINT
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:NmjjfdMETKPen8BsNm7PaQSs039TEOdy:PD+IFlBl3EIQ19rmAV68s1sab5ORE0kHgpoYV+AUS6nUX8GEvHT8eFfxBw==]
+- key: BUCKET_S3_BUCKET_NAME
+  scope: RUN_AND_BUILD_TIME
+  value: grbpwr
+- key: BUCKET_S3_BUCKET_LOCATION
+  scope: RUN_AND_BUILD_TIME
+  value: fra-1
+- key: BUCKET_BASE_FOLDER
+  scope: RUN_AND_BUILD_TIME
+  value: grbpwr-com
+- key: BUCKET_IMAGE_STORE_PREFIX
+  scope: RUN_AND_BUILD_TIME
+  value: grbpwr-com
+- key: BUCKET_SUBDOMAIN_ENDPOINT
+  scope: RUN_AND_BUILD_TIME
+  value: files.grbpwr.com
+- key: MAILER_SENDGRID_API_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:skIZd41igTY+xA+AbZ+xqz9yFN59J5ie:wiP7lVEaeczB1M5ruQrIXSpwwVCRkKq8SgMF9rqxwgXI7mP9Ri7U32xVBzdXpVagI5rl1w==]
+- key: MAILER_FROM_EMAIL
+  scope: RUN_AND_BUILD_TIME
+  value: info@grbpwr.com
+- key: MAILER_FROM_EMAIL_NAME
+  scope: RUN_AND_BUILD_TIME
+  value: grbpwr.com
+- key: MAILER_REPLY_TO
+  scope: RUN_AND_BUILD_TIME
+  value: noreply@grbpwr.com
+- key: MAILER_WORKER_INTERVAL
+  scope: RUN_AND_BUILD_TIME
+  value: 1h
+- key: RATES_API_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:TH7d3J0MiQe2PoHe1c/z/wkJx7CTKmdi:q+4tbeundOdxx6liugGQ8boRZX+jaU7KtjrErko3quYgOs0hxIq4Yw==]
+- key: RATES_UPDATE_PERIOD
+  scope: RUN_AND_BUILD_TIME
+  value: 24h
+- key: RATES_BASE_CURRENCY
+  scope: RUN_AND_BUILD_TIME
+  value: EUR
+- key: USDT_TRON_PAYMENT_ADDRESSES
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:s4Shqd+180clvUbCaz/Jbm6KdzsI/HTQ:PrtpVB0bRzZkHfP1jZmrXtSHAGQ/T9YN0GtHInujlrovF9sT0oAZKR515PJHEeI3s5wRMVCa]
+- key: USDT_TRON_PAYMENT_NODE
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:Pa7V7rtx0jmnR6a8N4UyAYvD7gNGafIf:HYVitYK4khSjadi9BXCe4dt8LfE0YfoQ+go9MpiHzl/W0qCM1bvWTde0eLGsTw==]
+- key: USDT_TRON_PAYMENT_INVOICE_EXPIRATION
+  scope: RUN_AND_BUILD_TIME
+  value: 30m
+- key: USDT_TRON_PAYMENT_CHECK_INCOMING_TX_INTERVAL
+  scope: RUN_AND_BUILD_TIME
+  value: 30s
+- key: USDT_TRON_PAYMENT_CONTRACT_ADDRESS
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:UOKyTA2zEqW6awwUqQFyFGiT7oCVVnnQ:7WcuVzPiAsvzLW3jey3eICymm4cTgSkhWYnOtDCmri/Bc4VR6Jw9P9XpgFqD2VAna1g=]
+- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_ADDRESSES
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:taMZSisG/jaUFcH1UKFS2SDPhVGRMh9w:wfYypMTGKEYEzRCCzjnLFBWeT9XCx31xQObodmoptSrCMreWI1gqX2wUoGe7zaLFKfnLWWMEb+DAflXmhhr6EytEUT9XGhOxQJidR2CA5HqFnv2eB+3vl3XEgUye00xDagMG66TpDSCv9jTDEq/HidrDvdpoEvfZUVIoR7TPMV153nAiTMfUrfOdKQuAx929afqt8ifXoynG/BoAXzlY1EHYX/+x]
+- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_NODE
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:Eu4nySnPtCmJXye4CTr65gPPkviANQw9:1SH+lzXOhQNsXw6wT72jvm7iCpnCYNCySWwe5rHVLi7CFRj3czrKBJ0FQ28IEA==]
+- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_INVOICE_EXPIRATION
+  scope: RUN_AND_BUILD_TIME
+  value: 1m
+- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_CHECK_INCOMING_TX_INTERVAL
+  scope: RUN_AND_BUILD_TIME
+  value: 30s
+- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_CONTRACT_ADDRESS
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:2aLHGhL+MNsKU4XLU8D59XOi5mMSM4em:SH5WU/eRS0+zVz6w0yFIPN+dXfW1pC9v/D82AQ7QxaWzGpG8/wRklGCOH8vVyqfN4Ic=]
+- key: TRONGRID_API_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:y1ICc/Cq2wFWl7OmHHrdAIEUteUZQc+w:X5JsOhoPxmzhfaSbmR4aIgE6TdXJj5kRgXm1UBxwhLoh2ZL5E8TANUhc2X/JGfm1OpHcAg==]
+- key: TRONGRID_BASE_URL
+  scope: RUN_AND_BUILD_TIME
+  value: https://api.trongrid.io
+- key: TRONGRID_TIMEOUT
+  scope: RUN_AND_BUILD_TIME
+  value: 30s
+- key: TRONGRID_SHASTA_TESTNET_API_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:fjImNtn8PNKfMwLTe8PTlJiOPJeYrtFQ:lbvWC+vVHodcJDFEfyqFV9iFqZ70RkcB5lW6DcusWr/YTEX2J+nj4jyfaK2UEe4byynShg==]
+- key: TRONGRID_SHASTA_TESTNET_BASE_URL
+  scope: RUN_AND_BUILD_TIME
+  value: https://api.shasta.trongrid.io
+- key: TRONGRID_SHASTA_TESTNET_TIMEOUT
+  scope: RUN_AND_BUILD_TIME
+  value: 30s
+- key: STRIPE_PAYMENT_SECRET_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:GPhoUQlM0MU8GP881FgeJcVuzQZwrjzY:J/exajnXhxHqaxRaDTiz5eOmhXqyWcnZL/fFNLLt5zHcnZcCN3ACjWMLl9lB9thk5BrHkndFb1XbWJzYLJasXuLGV1BXEPnd2bcIZPJoAjn1FsoUcT22/CIvGcAutYSiaULmFkqCmLpiuh6YvhLtEBr9afW6XjgNYHoc]
+- key: STRIPE_PAYMENT_PUB_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:dP5PXM4bRprt6otzHMqkGwuUnXHuCs52:S3U7TvXfAawgOvbvf4DWa16txTNuvAXfovxUGkLXoToPt2chkDhMX9mOkVnpKG705gqxNJv9E1fCbuh7s2TPJdsnsIQymFeD/j5c/C6abL749ypJD+OJCgyr/0deGe/KoIl/lj0sUGmzD8aMbFgTPRj4rD2q4+0I6x6N]
+- key: STRIPE_PAYMENT_INVOICE_EXPIRATION
+  scope: RUN_AND_BUILD_TIME
+  value: 1h
+- key: STRIPE_PAYMENT_TEST_SECRET_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:q6cpC7VOO+Y2TX9EG2eLoySGwfon/P96:/u396IMfq0VDlpFX5M8SpUIQCejW+n7zmC3joofZ2LTjYW8NTFN9HT4g5vXqGLlA6dJGPL9l3eCEpfWyW0uTJt7y68Aiib8j0dUUAZzyRT84q4H8pJxh/lI9/S+85auIXu35ofTbdR4OydRk38kO/eWHoM8dYAdp6YeD]
+- key: STRIPE_PAYMENT_TEST_PUB_KEY
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:vDA0wQj24j/J2feIn2pDK9ME9yYOKsV+:HnYiwu2K2SfKIF1r9vSIkANa2Glh2asy0v/8Ao344YL/+uUDglfOT3/JL3mIQM7KsZSIbtthWxnk3oGcRq4mzNo40amohtJA8UG0xtX+YpNUaCADyuBD4ow3o4KuXvn9fbF8eVoZvmBiFECPIwMVPvXYfBr3KS0aHYEV]
+- key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
+  scope: RUN_AND_BUILD_TIME
+  value: 15m
+- key: REVALIDATION_PROJECT_ID
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:vMohMBN2jYI91KXNGX8ofm53G4nvxXBy:psK6x1N0m+LT+G7S0gGNp2gnK/CJaMWY4UGCYRuHHYPRXR27YQphF7zNkD5NWVzq]
+- key: REVALIDATION_VERCEL_API_TOKEN
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:y6hmsmhf/J9lGxpSXjM0wTVlPhiSWA8P:xFC+Qvd4Qq1K91DJN+S8MIe8YknGc4iHDe4T/fmNjM7cvkob91y/vw==]
+- key: REVALIDATION_REVALIDATE_SECRET
+  scope: RUN_AND_BUILD_TIME
+  type: SECRET
+  value: EV[1:MGaV534pC43sPZRjJ2Yrc5m6qf3+4GdF:a05+8S4yT4VA6623koA/OFO2yku3peNjKD9F18b0Mzwblk8mh2JVt3L/k02ksfZUDpei1qgLn5ctRbrhiIGyOA==]
+- key: REVALIDATION_HTTP_TIMEOUT
+  scope: RUN_AND_BUILD_TIME
+  value: 10s
+features:
+- buildpack-stack=ubuntu-22
+name: grbpwr-backend
 region: fra
-
 services:
-- name: manager
+- dockerfile_path: /Dockerfile
+  envs:
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    value: ${production-database.DATABASE_URL}
   github:
-    repo: jekabolt/grbpwr-products-manager
     branch: master
-    deploy_on_push: false
-  
-  dockerfile_path: Dockerfile
-  
+    repo: jekabolt/grbpwr-manager
   http_port: 8081
   instance_count: 1
-  instance_size_slug: basic-xxs
-  
-  health_check:
-    http_path: /health
-    initial_delay_seconds: 60
-    period_seconds: 10
-  
-  routes:
-  - path: /*
-    cors:
-      allow_origins:
-      - https://backend.grbpwr.com
-      - https://*.vercel.app
-      - https://mikevelko.github.io
-      - https://jekabolt.github.io
-      - https://0101oak.github.io
-      - https://grbpwr.com
-      allow_methods:
-      - GET
-      - PUT
-      - POST
-      - DELETE
-      - HEAD
-      - OPTIONS
-      allow_headers:
-      - Accept
-      - Content-Type
-      - Content-Length
-      - Accept-Encoding
-      - Authorization
-      - ResponseType
-      - Grpc-Metadata-Authorization
-      allow_credentials: true
-  
-  envs:
-  # MySQL (from DO managed database)
-  # Note: DigitalOcean automatically injects db.* env vars (db.HOSTNAME, db.PORT, etc.)
-  # including db.CA_CERT when a managed database is connected.
-  # The app now supports both db.* (preferred) and MYSQL_* (backward compatibility) formats.
-  # Keeping MYSQL_* mappings for backward compatibility, but db.* will be checked first.
-  - key: MYSQL_HOST
-    scope: RUN_TIME
-    type: SECRET
-    value: ${db.HOSTNAME}
-  - key: MYSQL_PORT
-    scope: RUN_TIME
-    type: SECRET
-    value: ${db.PORT}
-  - key: MYSQL_USER
-    scope: RUN_TIME
-    type: SECRET
-    value: ${db.USERNAME}
-  - key: MYSQL_PASSWORD
-    scope: RUN_TIME
-    type: SECRET
-    value: ${db.PASSWORD}
-  - key: MYSQL_DATABASE
-    scope: RUN_TIME
-    type: SECRET
-    value: ${db.DATABASE}
-  
-  # Logger
-  - key: LOG_LEVEL
-    scope: RUN_TIME
-    value: "-4"
-  - key: LOG_ADD_SOURCE
-    scope: RUN_TIME
-    value: "true"
-  
-  # HTTP
-  - key: HTTP_PORT
-    scope: RUN_TIME
-    value: "8081"
-  - key: HTTP_ADDRESS
-    scope: RUN_TIME
-    value: "0.0.0.0"
-  - key: HTTP_ALLOWED_ORIGINS
-    scope: RUN_TIME
-    value: '["https://backend.grbpwr.com","https://*.vercel.app","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com"]'
-  
-  # Auth (set as SECRET in DO dashboard)
-  - key: AUTH_JWT_SECRET
-    scope: RUN_TIME
-    type: SECRET
-  - key: AUTH_MASTER_PASSWORD
-    scope: RUN_TIME
-    type: SECRET
-  - key: AUTH_PASSWORD_HASHER_SALT_SIZE
-    scope: RUN_TIME
-    value: "16"
-  - key: AUTH_PASSWORD_HASHER_ITERATIONS
-    scope: RUN_TIME
-    value: "100000"
-  - key: AUTH_JWT_TTL
-    scope: RUN_TIME
-    value: "6000m"
-  
-  # Bucket/S3 (set as SECRET in DO dashboard)
-  - key: BUCKET_S3_ACCESS_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: BUCKET_S3_SECRET_ACCESS_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: BUCKET_S3_ENDPOINT
-    scope: RUN_TIME
-    value: "fra1.digitaloceanspaces.com"
-  - key: BUCKET_S3_BUCKET_NAME
-    scope: RUN_TIME
-    value: "grbpwr"
-  - key: BUCKET_S3_BUCKET_LOCATION
-    scope: RUN_TIME
-    value: "fra-1"
-  - key: BUCKET_BASE_FOLDER
-    scope: RUN_TIME
-    value: "grbpwr-com"
-  - key: BUCKET_IMAGE_STORE_PREFIX
-    scope: RUN_TIME
-    value: "grbpwr-com"
-  - key: BUCKET_SUBDOMAIN_ENDPOINT
-    scope: RUN_TIME
-    value: "files.grbpwr.com"
-  
-  # Mailer (set as SECRET in DO dashboard)
-  - key: MAILER_SENDGRID_API_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: MAILER_FROM_EMAIL
-    scope: RUN_TIME
-    value: "info@grbpwr.com"
-  - key: MAILER_FROM_EMAIL_NAME
-    scope: RUN_TIME
-    value: "grbpwr.com"
-  - key: MAILER_REPLY_TO
-    scope: RUN_TIME
-    value: "noreply@grbpwr.com"
-  - key: MAILER_WORKER_INTERVAL
-    scope: RUN_TIME
-    value: "1m"
-  
-  # Rates (set as SECRET in DO dashboard)
-  - key: RATES_API_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: RATES_UPDATE_PERIOD
-    scope: RUN_TIME
-    value: "24h"
-  - key: RATES_BASE_CURRENCY
-    scope: RUN_TIME
-    value: "EUR"
-  
-  # USDT Tron Payment
-  - key: USDT_TRON_PAYMENT_ADDRESSES
-    scope: RUN_TIME
-    value: '["TRDTdbt4vsxQnXtSBX1Da9npWdwsfgYzy4"]'
-  - key: USDT_TRON_PAYMENT_NODE
-    scope: RUN_TIME
-    value: "https://api.trongrid.io"
-  - key: USDT_TRON_PAYMENT_INVOICE_EXPIRATION
-    scope: RUN_TIME
-    value: "30m"
-  - key: USDT_TRON_PAYMENT_CHECK_INTERVAL
-    scope: RUN_TIME
-    value: "30s"
-  - key: USDT_TRON_PAYMENT_CONTRACT_ADDRESS
-    scope: RUN_TIME
-    value: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-  
-  # USDT Tron Shasta Testnet Payment
-  - key: USDT_TRON_SHASTA_TESTNET_ADDRESSES
-    scope: RUN_TIME
-    value: '["TULivK5zBnouAaKyt9hxTHJQspPHNpVoKV"]'
-  - key: USDT_TRON_SHASTA_TESTNET_NODE
-    scope: RUN_TIME
-    value: "https://api.shasta.trongrid.io"
-  - key: USDT_TRON_SHASTA_TESTNET_INVOICE_EXPIRATION
-    scope: RUN_TIME
-    value: "1m"
-  - key: USDT_TRON_SHASTA_TESTNET_CHECK_INTERVAL
-    scope: RUN_TIME
-    value: "10s"
-  - key: USDT_TRON_SHASTA_TESTNET_CONTRACT_ADDRESS
-    scope: RUN_TIME
-    value: "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"
-  
-  # TronGrid (set as SECRET in DO dashboard)
-  - key: TRONGRID_API_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: TRONGRID_BASE_URL
-    scope: RUN_TIME
-    value: "https://api.trongrid.io"
-  - key: TRONGRID_TIMEOUT
-    scope: RUN_TIME
-    value: "30s"
-  
-  # TronGrid Shasta Testnet (set as SECRET in DO dashboard)
-  - key: TRONGRID_SHASTA_TESTNET_API_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: TRONGRID_SHASTA_TESTNET_BASE_URL
-    scope: RUN_TIME
-    value: "https://api.shasta.trongrid.io"
-  - key: TRONGRID_SHASTA_TESTNET_TIMEOUT
-    scope: RUN_TIME
-    value: "30s"
-  
-  # Stripe Payment (set as SECRET in DO dashboard)
-  - key: STRIPE_PAYMENT_SECRET_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: STRIPE_PAYMENT_PUB_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: STRIPE_PAYMENT_INVOICE_EXPIRATION
-    scope: RUN_TIME
-    value: "24h"
-  
-  # Stripe Payment Test (set as SECRET in DO dashboard)
-  - key: STRIPE_PAYMENT_TEST_SECRET_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: STRIPE_PAYMENT_TEST_PUB_KEY
-    scope: RUN_TIME
-    type: SECRET
-  - key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
-    scope: RUN_TIME
-    value: "60m"
-  
-  # Revalidation (set as SECRET in DO dashboard)
-  - key: REVALIDATION_PROJECT_ID
-    scope: RUN_TIME
-    value: "prj_qfeZdwAsaUaDqLTeO6VkNHwJRuPf"
-  - key: REVALIDATION_VERCEL_API_TOKEN
-    scope: RUN_TIME
-    type: SECRET
-  - key: REVALIDATION_REVALIDATE_SECRET
-    scope: RUN_TIME
-    type: SECRET
-  - key: REVALIDATION_HTTP_TIMEOUT
-    scope: RUN_TIME
-    value: "10s"
-
-databases:
-- name: db
-  engine: MYSQL
-  production: true
+  instance_size_slug: apps-s-1vcpu-1gb-fixed
+  name: grbpwr-manager

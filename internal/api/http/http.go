@@ -5,7 +5,6 @@ import (
 	"embed"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"text/template"
 
@@ -235,7 +234,7 @@ func (s *Server) Start(ctx context.Context,
 	listenerAddr := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 	s.hs = &http.Server{
 		Addr:    listenerAddr,
-		Handler: s.cors(h2c.NewHandler(handler, &http2.Server{})),
+		Handler: h2c.NewHandler(handler, &http2.Server{}),
 	}
 
 	go func() {
@@ -259,62 +258,4 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	return nil
-}
-
-// cors is a middleware that implements Cross Origin Resource Sharing.
-// It adds CORS headers to each response.
-// https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-func (s *Server) cors(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-
-		if origin == "" {
-			h.ServeHTTP(w, r)
-			return
-		}
-
-		if isOriginAllowed(origin, s.c.AllowedOrigins) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-		} else {
-			http.Error(w, "Origin not allowed", http.StatusForbidden)
-			return
-		}
-
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, HEAD, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization, ResponseType, Grpc-Metadata-Authorization")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		h.ServeHTTP(w, r)
-	})
-}
-
-func isOriginAllowed(origin string, allowedOrigins []string) bool {
-	// Always allow localhost origins
-	if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "https://localhost:") {
-		return true
-	}
-
-	// Check if origin matches any pattern in the allowed origins list
-	for _, pattern := range allowedOrigins {
-		matched, _ := matchPattern(pattern, origin)
-		if matched {
-			return true
-		}
-	}
-
-	return false
-}
-
-func matchPattern(pattern, origin string) (bool, error) {
-	if strings.Contains(pattern, "*") {
-		// Convert wildcard domain to a regex pattern
-		regexPattern := "^" + regexp.QuoteMeta(pattern)
-		regexPattern = strings.Replace(regexPattern, "\\*", ".*", -1) + "$"
-		return regexp.MatchString(regexPattern, origin)
-	}
-	return pattern == origin, nil
 }
