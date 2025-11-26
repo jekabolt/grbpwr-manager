@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
+	"unicode"
 
 	"log/slog"
 
@@ -46,7 +48,7 @@ func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, err
 func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, error) {
 	// Check if there are no items provided
 	if len(items) == 0 {
-		return nil, errors.New("zero items to validate")
+		return nil, &entity.ValidationError{Message: "zero items to validate"}
 	}
 
 	// Get product IDs from items
@@ -107,7 +109,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		productBody := &prd.ProductDisplay.ProductBody
 		productPrice, err := getProductPrice(&prd, currency)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get product %d price: %w", prd.Id, err)
+			return nil, &entity.ValidationError{Message: fmt.Sprintf("product %d does not have a price in currency %s", prd.Id, currency)}
 		}
 		item.ProductPrice = productPrice
 		if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
@@ -190,7 +192,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 
 	for _, item := range items {
 		if !item.GetQuantity().IsPositive() {
-			return decimal.Zero, fmt.Errorf("quantity for product ID %d is not positive", item.GetProductId())
+			return decimal.Zero, &entity.ValidationError{Message: fmt.Sprintf("quantity for product ID %d is not positive", item.GetProductId())}
 		}
 
 		// Get the base price
@@ -248,7 +250,33 @@ func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAdd
 	return int(shippingID), int(billingID), nil
 }
 
+// sanitizePhone removes all non-digit characters from the phone number
+// and validates that it's between 7-15 digits as required by buyer_chk_2 constraint
+func sanitizePhone(phone string) (string, error) {
+	// Remove all non-digit characters
+	var builder strings.Builder
+	for _, r := range phone {
+		if unicode.IsDigit(r) {
+			builder.WriteRune(r)
+		}
+	}
+	sanitized := builder.String()
+
+	// Validate length: must be between 7 and 15 digits
+	if len(sanitized) < 7 || len(sanitized) > 15 {
+		return "", fmt.Errorf("phone number must be between 7 and 15 digits after sanitization, got %d digits", len(sanitized))
+	}
+
+	return sanitized, nil
+}
+
 func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.BuyerInsert, sAdr, bAdr int) error {
+	// Sanitize phone number to meet database constraint requirements
+	phone, err := sanitizePhone(b.Phone)
+	if err != nil {
+		return fmt.Errorf("invalid phone number: %w", err)
+	}
+
 	query := `
 	INSERT INTO buyer 
 		(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
@@ -256,12 +284,12 @@ func insertBuyer(ctx context.Context, rep dependency.Repository, b *entity.Buyer
 		(:orderId, :firstName, :lastName, :email, :phone, :billingAddressId, :shippingAddressId)
 	`
 
-	err := ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
+	err = ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
 		"orderId":           b.OrderId,
 		"firstName":         b.FirstName,
 		"lastName":          b.LastName,
 		"email":             b.Email,
-		"phone":             b.Phone,
+		"phone":             phone,
 		"billingAddressId":  bAdr,
 		"shippingAddressId": sAdr,
 	})
@@ -605,10 +633,15 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 	// validate items stock availability
 	validItems, err := validateOrderItemsStockAvailability(ctx, ms, items, currency)
 	if err != nil {
+		// Preserve ValidationError, wrap other errors
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 	if len(validItems) == 0 {
-		return nil, fmt.Errorf("no valid order items to insert")
+		return nil, &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
 	}
 
 	return validItems, nil
@@ -618,7 +651,7 @@ func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []enti
 func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error) {
 	// Return early if there are no items
 	if len(items) == 0 {
-		return nil, fmt.Errorf("no order items to insert")
+		return nil, &entity.ValidationError{Message: "no order items to insert"}
 	}
 
 	// Make a copy of the original items to avoid modifying the input slice
@@ -631,12 +664,17 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	// Validate the merged order items with the specified currency
 	validItems, err := ms.validateOrderItemsInsert(ctx, mergedItems, currency)
 	if err != nil {
+		// Preserve ValidationError, wrap other errors
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 
 	// Return early if no valid items
 	if len(validItems) == 0 {
-		return nil, fmt.Errorf("zero valid order items to insert")
+		return nil, &entity.ValidationError{Message: "zero valid order items to insert"}
 	}
 
 	// Convert valid items for further processing
@@ -646,12 +684,17 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
 	total, err := calculateTotalAmount(ctx, ms, providers)
 	if err != nil {
+		// Check if it's a validation error from calculateTotalAmount
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error while calculating total amount: %w", err)
 	}
 
 	// Return early if total is zero
 	if total.IsZero() {
-		return nil, fmt.Errorf("total amount is zero")
+		return nil, &entity.ValidationError{Message: "total amount is zero"}
 	}
 
 	// Compare the original (copied) and valid items and return the validation result

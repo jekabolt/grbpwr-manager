@@ -7,6 +7,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// ValidationError represents a validation error that should return a 4xx status code
+// This error type is used to distinguish validation errors from internal server errors
+// The API layer should convert this to appropriate HTTP/gRPC status codes
+type ValidationError struct {
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	return e.Message
+}
+
 type OrderNew struct {
 	Items             []OrderItemInsert `valid:"required"`
 	ShippingAddress   *AddressInsert    `valid:"required"`

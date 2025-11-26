@@ -468,6 +468,14 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 
 	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert, currency)
 	if err != nil {
+		// Check if it's a validation error (should return 4xx, not 5xx)
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			slog.Default().WarnContext(ctx, "validation failed for order items",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
 		)
