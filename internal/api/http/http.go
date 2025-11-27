@@ -35,7 +35,7 @@ var (
 	fs embed.FS
 
 	pages = map[string]string{
-		"/products-manager/api": "static/swagger/index.html",
+		"/": "static/swagger/index.html",
 	}
 )
 
@@ -115,8 +115,13 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		w.Write([]byte("OK"))
 	})
 
-	// handle static swagger
-	r.HandleFunc("/products-manager/api", func(w http.ResponseWriter, r *http.Request) {
+	// handle static swagger at root
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Only serve swagger for root path, not for other paths
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		page, ok := pages[r.URL.Path]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)

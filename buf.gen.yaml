@@ -18,3 +18,4 @@ plugins:
     opt: 
       - json_names_for_fields=true
       - simple_operation_ids=true
+      - fqn_for_openapi_name=true

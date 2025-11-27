@@ -1,89 +1,546 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>grbpwr-products-manager REST API</title>
-    <link rel="icon" type="image/png" href="/static/vendor/swagger/images/favicon-32x32.png" sizes="32x32" />
-    <link rel="icon" type="image/png" href="/static/vendor/swagger/images/favicon-16x16.png" sizes="16x16" />
-    <link href="/static/vendor/swagger/css/typography.css" media="screen" rel="stylesheet" type="text/css" />
-    <link href="/static/vendor/swagger/css/reset.css" media="screen" rel="stylesheet" type="text/css" />
-    <link href="/static/vendor/swagger/css/screen.css" media="screen" rel="stylesheet" type="text/css" />
-    <link href="/static/vendor/swagger/css/reset.css" media="print" rel="stylesheet" type="text/css" />
-    <link href="/static/vendor/swagger/css/print.css" media="print" rel="stylesheet" type="text/css" />
-    <script src="/static/vendor/swagger/lib/jquery-1.8.0.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/jquery.slideto.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/jquery.wiggle.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/jquery.ba-bbq.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/handlebars-4.0.5.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/lodash.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/backbone-min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/swagger-ui.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/highlight.9.1.0.pack.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/highlight.9.1.0.pack_extended.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/jsoneditor.min.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/marked.js" type="text/javascript"></script>
-    <script src="/static/vendor/swagger/lib/swagger-oauth.js" type="text/javascript"></script>
-
-    <script type="text/javascript">
-        $(function() {
-            var url = window.location.search.match(/url=([^&]+)/);
-            if (url && url.length > 1) {
-                url = decodeURIComponent(url[1]);
-            } else {
-                url = "/static/swagger/api.swagger.json";
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css" />
+    <style>
+        html {
+            box-sizing: border-box;
+            overflow: -moz-scrollbars-vertical;
+            overflow-y: scroll;
+        }
+        
+        *,
+        *:before,
+        *:after {
+            box-sizing: inherit;
+        }
+        
+        body {
+            margin: 0;
+            background: #fafafa;
+        }
+        
+        .swagger-ui .topbar {
+            display: none;
+        }
+        
+        .swagger-ui .topbar-wrapper {
+            display: none;
+        }
+        
+        .auth-container {
+            background: #fff;
+            padding: 25px 30px;
+            border-bottom: 1px solid #e0e0e0;
+            margin: 0;
+            position: relative;
+        }
+        
+        .auth-container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #49cc90 0%, #3ba374 100%);
+        }
+        
+        .swagger-ui .info {
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-width: 100%;
+        }
+        
+        .auth-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            width: 100%;
+        }
+        
+        .auth-group label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #3b4151;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            height: 18px;
+            line-height: 18px;
+        }
+        
+        .auth-group label::before {
+            content: '🔑';
+            font-size: 14px;
+            filter: grayscale(0.3);
+        }
+        
+        .auth-group input {
+            padding: 11px 16px;
+            border: 1px solid #d0d0d0;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'source-code-pro', monospace;
+            height: 40px;
+            box-sizing: border-box;
+            background-color: #fafafa;
+            transition: all 0.2s ease;
+            color: #3b4151;
+            width: 100%;
+        }
+        
+        .auth-group input:hover {
+            border-color: #b0b0b0;
+            background-color: #fff;
+        }
+        
+        .auth-group input:focus {
+            outline: none;
+            border-color: #49cc90;
+            background-color: #fff;
+            box-shadow: 0 0 0 3px rgba(73, 204, 144, 0.15);
+        }
+        
+        .auth-group input::placeholder {
+            color: #999;
+            opacity: 1;
+            font-style: italic;
+        }
+        
+        .auth-actions {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+            margin-top: 4px;
+        }
+        
+        .auth-btn {
+            padding: 11px 24px;
+            background: #49cc90;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            height: 40px;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            box-shadow: 0 1px 3px rgba(73, 204, 144, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .auth-btn:hover {
+            background: #3ba374;
+            box-shadow: 0 2px 6px rgba(73, 204, 144, 0.4);
+            transform: translateY(-1px);
+        }
+        
+        .auth-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 2px rgba(73, 204, 144, 0.3);
+        }
+        
+        .auth-btn.secondary {
+            background: #6c757d;
+            box-shadow: 0 1px 3px rgba(108, 117, 125, 0.3);
+        }
+        
+        .auth-btn.secondary:hover {
+            background: #5a6268;
+            box-shadow: 0 2px 6px rgba(108, 117, 125, 0.4);
+        }
+        
+        .auth-status {
+            font-size: 11px;
+            color: #49cc90;
+            margin-top: 4px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-height: 16px;
+        }
+        
+        .auth-status::before {
+            content: '✓';
+            font-weight: bold;
+        }
+        
+        .auth-status.error {
+            color: #f93e3e;
+        }
+        
+        .auth-status.error::before {
+            content: '✗';
+        }
+        
+        @media (max-width: 768px) {
+            .auth-container {
+                padding: 20px 20px;
             }
-
-            window.swaggerUi = new SwaggerUi({
-                url: url,
-                dom_id: "swagger-ui-container",
-                supportedSubmitMethods: ['get', 'post', 'put', 'delete', 'patch'],
-                docExpansion: "list",
-                jsonEditor: false,
-                apisSorter: "alpha",
-                defaultModelRendering: 'schema',
-                validatorUrl: null,
-                onComplete: function(swaggerApi, swaggerUi) {
-                    addApiKeyAuthorization();
-                    addOtpHeader();
-                }
-            });
-
-            function addApiKeyAuthorization() {
-                var key = encodeURIComponent($('#input_apiKey')[0].value);
-                if (key && key.trim() != "") {
-                    window.swaggerUi.api.clientAuthorizations.add("key", new SwaggerClient.ApiKeyAuthorization("Grpc-Metadata-Authorization", 'Bearer ' + key, "header"));
-                    console.log("added key " + key);
-                }
+            .auth-form {
+                gap: 12px;
             }
-            $('#input_apiKey').change(addApiKeyAuthorization);
-
-            function addOtpHeader() {
-                var key = encodeURIComponent($('#input_otp')[0].value);
-                if (key && key.trim() != "") {
-                    window.swaggerUi.api.clientAuthorizations.add("otpKey", new SwaggerClient.ApiKeyAuthorization("Grpc-Metadata-X-OTP", key, "header"));
-                    console.log("added otp " + key);
-                }
+            .auth-actions {
+                gap: 8px;
             }
-            $('#input_otp').change(addOtpHeader);
-
-            window.swaggerUi.load();
-        });
-    </script>
+            .auth-btn {
+                flex: 1;
+            }
+        }
+        /* Hide Models section */
+        
+        .swagger-ui section.models {
+            display: none !important;
+        }
+        
+        .swagger-ui .model-container {
+            display: none !important;
+        }
+        
+        .swagger-ui .model-box {
+            display: none !important;
+        }
+        /* Hide only Example Value and Model sections in responses (not in request body) */
+        
+        .swagger-ui .responses-wrapper .response-content-type {
+            display: none !important;
+        }
+        
+        .swagger-ui .responses-wrapper .model-example {
+            display: none !important;
+        }
+        
+        .swagger-ui .response .model-example {
+            display: none !important;
+        }
+        /* Disable all animations and transitions */
+        
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0s !important;
+            animation-delay: 0s !important;
+            transition-duration: 0s !important;
+            transition-delay: 0s !important;
+        }
+        /* Re-enable transitions for auth elements */
+        
+        .auth-container *,
+        .auth-container *::before,
+        .auth-container *::after {
+            animation-duration: initial !important;
+            animation-delay: initial !important;
+            transition-duration: initial !important;
+            transition-delay: initial !important;
+        }
+    </style>
 </head>
 
-<body class="swagger-section">
-    <div id='header'>
-        <div class="swagger-ui-wrap">
-            <span id="logo">grbpwr-products-manager REST API</span>
-            <form id='api_selector'>
-                <div class='input'><input placeholder="JWT TOKEN" id="input_apiKey" name="apiKey" type="text" /></div>
-            </form>
-        </div>
-    </div>
+<body>
+    <div id="swagger-ui"></div>
 
-    <div id="message-bar" class="swagger-ui-wrap" data-sw-translate>&nbsp;</div>
-    <div id="swagger-ui-container" class="swagger-ui-wrap"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-standalone-preset.js"></script>
+    <script>
+        // Load saved tokens from localStorage
+        const savedJwt = localStorage.getItem('swagger_jwt_token');
+
+        // Get API spec URL from query param or use default
+        const urlParams = new URLSearchParams(window.location.search);
+        const specUrl = urlParams.get('url') || '/static/swagger/api.swagger.json';
+
+        // Initialize Swagger UI
+        window.ui = SwaggerUIBundle({
+            url: specUrl,
+            dom_id: '#swagger-ui',
+            deepLinking: true,
+            presets: [
+                SwaggerUIBundle.presets.apis,
+                SwaggerUIStandalonePreset
+            ],
+            plugins: [
+                SwaggerUIBundle.plugins.DownloadUrl
+            ],
+            layout: "StandaloneLayout",
+            validatorUrl: null,
+            docExpansion: 'list',
+            defaultModelsExpandDepth: -1,
+            defaultModelExpandDepth: -1,
+            filter: true,
+            showExtensions: true,
+            showCommonExtensions: true,
+            tryItOutEnabled: true,
+            withCredentials: false,
+            displayRequestDuration: true,
+            requestInterceptor: (request) => {
+                // Add JWT token if available
+                const jwtToken = localStorage.getItem('swagger_jwt_token');
+                if (jwtToken && jwtToken.trim() !== '') {
+                    request.headers['Grpc-Metadata-Authorization'] = 'Bearer ' + jwtToken.trim();
+                }
+
+                return request;
+            },
+            onComplete: () => {
+                // Apply saved tokens after UI loads
+                if (savedJwt) {
+                    applyAuth();
+                }
+
+                // Insert auth container after info section
+                insertAuthContainer();
+
+                // Customize filter to search by URL paths
+                customizeFilter();
+            }
+        });
+
+
+        function applyAuth() {
+            const jwtInput = document.getElementById('jwt-token');
+            const jwtStatus = document.getElementById('jwt-status');
+
+            if (!jwtInput) return;
+
+            const jwtToken = jwtInput.value.trim();
+
+            // Save to localStorage
+            if (jwtToken) {
+                localStorage.setItem('swagger_jwt_token', jwtToken);
+                jwtStatus.textContent = 'Token saved';
+                jwtStatus.className = 'auth-status';
+            } else {
+                localStorage.removeItem('swagger_jwt_token');
+                jwtStatus.textContent = '';
+                jwtStatus.className = 'auth-status';
+            }
+
+            // Reload the UI to apply new auth headers
+            if (window.ui) {
+                // Trigger a refresh by updating the spec
+                window.ui.specActions.updateSpec(window.ui.getSystem().specSelectors.specJson());
+            }
+        }
+
+        function clearAuth() {
+            const jwtInput = document.getElementById('jwt-token');
+            const jwtStatus = document.getElementById('jwt-status');
+
+            if (jwtInput) jwtInput.value = '';
+            if (jwtStatus) jwtStatus.textContent = '';
+
+            localStorage.removeItem('swagger_jwt_token');
+
+            // Reload the UI
+            if (window.ui) {
+                window.ui.specActions.updateSpec(window.ui.getSystem().specSelectors.specJson());
+            }
+        }
+
+        function customizeFilter() {
+            // Wait for Swagger UI to fully render
+            const findFilterInput = () => {
+                const filterInput = document.querySelector('.swagger-ui input[placeholder*="Filter"], .swagger-ui input[placeholder*="filter"], .swagger-ui .filter-container input');
+                if (filterInput) {
+                    // Change placeholder text
+                    filterInput.placeholder = 'Filter by URL path (e.g., "orders")';
+
+                    // Remove existing event listeners by cloning the input
+                    const newInput = filterInput.cloneNode(true);
+                    filterInput.parentNode.replaceChild(newInput, filterInput);
+
+                    // Override filter behavior
+                    let filterTimeout;
+                    newInput.addEventListener('input', function(e) {
+                        clearTimeout(filterTimeout);
+                        const searchTerm = e.target.value.toLowerCase().trim();
+
+                        filterTimeout = setTimeout(() => {
+                            if (!searchTerm) {
+                                // Show all if filter is empty
+                                document.querySelectorAll('.opblock-tag-section, .opblock').forEach(el => {
+                                    el.style.display = '';
+                                });
+                                return;
+                            }
+
+                            // Get all operation blocks
+                            const opBlocks = document.querySelectorAll('.opblock');
+
+                            opBlocks.forEach(opBlock => {
+                                // Find the path in the operation block - try multiple selectors
+                                let pathText = '';
+
+                                // Try to find path from various possible locations
+                                const pathSelectors = [
+                                    '.opblock-summary-path',
+                                    '.opblock-summary-operation-id',
+                                    '.opblock-summary .opblock-summary-path',
+                                    'a.opblock-summary-path'
+                                ];
+
+                                for (const selector of pathSelectors) {
+                                    const pathElement = opBlock.querySelector(selector);
+                                    if (pathElement) {
+                                        pathText += ' ' + (pathElement.textContent || '');
+                                        break;
+                                    }
+                                }
+
+                                // Get method (GET, POST, etc.)
+                                const methodElement = opBlock.querySelector('.opblock-summary-method');
+                                if (methodElement) {
+                                    pathText = (methodElement.textContent || '').toLowerCase() + ' ' + pathText;
+                                }
+
+                                // Also check the operation description/summary
+                                const summaryElement = opBlock.querySelector('.opblock-summary-description');
+                                if (summaryElement) {
+                                    pathText += ' ' + (summaryElement.textContent || '');
+                                }
+
+                                // Check operation ID
+                                const opIdElement = opBlock.querySelector('[data-operation-id]');
+                                if (opIdElement) {
+                                    pathText += ' ' + (opIdElement.getAttribute('data-operation-id') || '');
+                                }
+
+                                const matches = pathText.toLowerCase().includes(searchTerm);
+
+                                if (matches) {
+                                    opBlock.style.display = '';
+                                    // Show parent tag section
+                                    const tagSection = opBlock.closest('.opblock-tag-section');
+                                    if (tagSection) {
+                                        tagSection.style.display = '';
+                                    }
+                                } else {
+                                    opBlock.style.display = 'none';
+                                }
+                            });
+
+                            // Hide tag sections that have no visible operations
+                            document.querySelectorAll('.opblock-tag-section').forEach(tagSection => {
+                                const visibleOps = Array.from(tagSection.querySelectorAll('.opblock')).filter(op => {
+                                    return op.style.display !== 'none' && window.getComputedStyle(op).display !== 'none';
+                                });
+                                if (visibleOps.length === 0) {
+                                    tagSection.style.display = 'none';
+                                }
+                            });
+                        }, 150);
+                    });
+
+                    return true;
+                }
+                return false;
+            };
+
+            // Try immediately, then retry if not found
+            if (!findFilterInput()) {
+                setTimeout(() => {
+                    if (!findFilterInput()) {
+                        // Retry one more time after a longer delay
+                        setTimeout(findFilterInput, 500);
+                    }
+                }, 200);
+            }
+        }
+
+        // Auto-apply on input change (debounced)
+        let applyTimeout;
+
+        // Handle Enter key
+        function attachEventListeners() {
+            const jwtInput = document.getElementById('jwt-token');
+            if (jwtInput) {
+                jwtInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        applyAuth();
+                    }
+                });
+            }
+        }
+
+        function insertAuthContainer() {
+            // Check if already inserted
+            if (document.getElementById('auth-container')) {
+                return;
+            }
+
+            // Find the info section or wrapper
+            const infoSection = document.querySelector('.swagger-ui .info');
+            const wrapper = document.querySelector('.swagger-ui .wrapper');
+
+            if (!infoSection && !wrapper) {
+                // Retry after a short delay if elements aren't ready
+                setTimeout(insertAuthContainer, 100);
+                return;
+            }
+
+            const authContainer = document.createElement('div');
+            authContainer.id = 'auth-container';
+            authContainer.className = 'auth-container';
+            authContainer.innerHTML = `
+                <div class="auth-form">
+                    <div class="auth-group">
+                        <label for="jwt-token">JWT Token</label>
+                        <input type="text" id="jwt-token" placeholder="Enter JWT token" />
+                        <div id="jwt-status" class="auth-status"></div>
+                    </div>
+                    <div class="auth-actions">
+                        <button class="auth-btn" onclick="applyAuth()">Apply</button>
+                        <button class="auth-btn secondary" onclick="clearAuth()">Clear</button>
+                    </div>
+                </div>
+            `;
+
+            // Insert after info section or at the beginning of wrapper
+            if (infoSection && infoSection.parentNode) {
+                infoSection.parentNode.insertBefore(authContainer, infoSection.nextSibling);
+            } else if (wrapper) {
+                wrapper.insertBefore(authContainer, wrapper.firstChild);
+            }
+
+            // Set saved JWT value
+            if (savedJwt) {
+                const jwtInput = document.getElementById('jwt-token');
+                if (jwtInput) {
+                    jwtInput.value = savedJwt;
+                }
+            }
+
+            // Attach event listeners
+            attachEventListeners();
+
+            // Re-attach input listener
+            const jwtInput = document.getElementById('jwt-token');
+            if (jwtInput) {
+                jwtInput.addEventListener('input', function() {
+                    clearTimeout(applyTimeout);
+                    applyTimeout = setTimeout(applyAuth, 1000);
+                });
+            }
+        }
+    </script>
 </body>
 
 </html>
