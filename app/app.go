@@ -24,6 +24,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
 
+var commitHash string
+
+func getCommitHash() string {
+	return commitHash
+}
+
+func SetCommitHash(hash string) {
+	commitHash = hash
+}
+
 // App is the main application
 type App struct {
 	hs   *httpapi.Server
@@ -146,6 +156,7 @@ func (a *App) Start(ctx context.Context) error {
 	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest, a.re)
 
 	// start API server
+	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
 		slog.Default().ErrorContext(ctx, "cannot start http server")

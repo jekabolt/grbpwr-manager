@@ -7,6 +7,9 @@ COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 
+# Build argument for commit hash (can be passed from CI/CD)
+ARG COMMIT_HASH
+
 WORKDIR /grbpwr-manager
 
 COPY go.mod .
@@ -18,7 +21,14 @@ COPY ./ ./
 
 RUN make init
 
-RUN make build
+# Get commit hash: use build arg if provided, otherwise try git, fallback to "unknown"
+# Compute it explicitly and pass to make build
+RUN if [ -n "$$COMMIT_HASH" ]; then \
+      export COMMIT_HASH="$$COMMIT_HASH"; \
+    else \
+      export COMMIT_HASH=$$(git rev-parse --short HEAD 2>/dev/null || echo "unknown"); \
+    fi && \
+    make build
 
 FROM alpine:latest
 

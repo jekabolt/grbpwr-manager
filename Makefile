@@ -1,5 +1,7 @@
 DEFAULT_GOAL := up
 VERSION := $(shell git describe --tags --always --long |sed -e "s/^v//")
+# Use COMMIT_HASH from environment if set (e.g., from Docker build arg), otherwise get from git
+COMMIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_LINT_VERSION := v1.53.3
 
 .PHONY: generate internal/statics proto
@@ -33,7 +35,7 @@ build: format-proto proto generate internal/statics build-only
 
 build-only:
 	mkdir -p bin
-	go build $(GO_EXTRA_BUILD_ARGS) -ldflags "-s -w -X main.version=$(VERSION)" -o bin/products-manager ./cmd/*.go
+	go build $(GO_EXTRA_BUILD_ARGS) -ldflags "-s -w -X main.version=$(VERSION) -X main.commitHash=$(COMMIT_HASH)" -o bin/products-manager ./cmd/*.go
 
 run: build
 	source .env && ./bin/products-manager

@@ -28,6 +28,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}))
 	slog.SetDefault(logger)
 
+	app.SetCommitHash(commitHash)
 	a := app.New(cfg)
 	if err := a.Start(ctx); err != nil {
 		return fmt.Errorf("cannot start the application %v", err.Error())

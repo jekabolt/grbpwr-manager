@@ -44,6 +44,7 @@ type Config struct {
 	Port           string   `mapstructure:"port"`
 	Address        string   `mapstructure:"address"`
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
+	CommitHash     string   `mapstructure:"commit_hash"`
 }
 
 // Server is the http server
@@ -267,7 +268,11 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	go func() {
-		slog.Default().InfoContext(ctx, fmt.Sprintf("grbpwr-products-manager new listener on: http://%v", listenerAddr))
+		commitInfo := ""
+		if s.c.CommitHash != "" {
+			commitInfo = fmt.Sprintf(" commit: %s", s.c.CommitHash)
+		}
+		slog.Default().InfoContext(ctx, fmt.Sprintf("grbpwr-products-manager new listener on: http://%v%s", listenerAddr, commitInfo))
 		err := s.hs.ListenAndServe()
 		if err == http.ErrServerClosed {
 			slog.Default().InfoContext(ctx, "http server returned")

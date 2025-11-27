@@ -24,8 +24,9 @@ var (
 		},
 	}
 
-	cfgFile string
-	version string
+	cfgFile    string
+	version    string
+	commitHash string
 )
 
 func main() {
