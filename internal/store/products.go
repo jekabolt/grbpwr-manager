@@ -701,7 +701,12 @@ func (ms *MYSQLStore) GetProductsByIds(ctx context.Context, ids []int) ([]entity
 		sm.compressed AS secondary_compressed,
 		sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height,
-		sm.blur_hash AS secondary_blur_hash
+		sm.blur_hash AS secondary_blur_hash,
+		COALESCE((
+			SELECT SUM(COALESCE(ps.quantity, 0))
+			FROM product_size ps
+			WHERE ps.product_id = p.id
+		), 0) = 0 AS sold_out
 	FROM 
 		product p
 	JOIN
@@ -801,7 +806,12 @@ func (ms *MYSQLStore) GetProductsByTag(ctx context.Context, tag string) ([]entit
 		sm.compressed AS secondary_compressed,
 		sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height,
-		sm.blur_hash AS secondary_blur_hash
+		sm.blur_hash AS secondary_blur_hash,
+		COALESCE((
+			SELECT SUM(COALESCE(ps.quantity, 0))
+			FROM product_size ps
+			WHERE ps.product_id = p.id
+		), 0) = 0 AS sold_out
 	FROM 
 		product p
 	JOIN 
@@ -906,6 +916,7 @@ type productQueryResult struct {
 	SecondaryCompressedW        sql.NullInt32  `db:"secondary_compressed_width"`
 	SecondaryCompressedH        sql.NullInt32  `db:"secondary_compressed_height"`
 	SecondaryBlurHash           sql.NullString `db:"secondary_blur_hash"`
+	SoldOut                     bool           `db:"sold_out"`
 }
 
 // toProduct converts the flat database result to the nested Product structure
@@ -942,6 +953,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		DeletedAt: pqr.DeletedAt,
 		Slug:      pqr.Slug,
 		SKU:       pqr.SKU,
+		SoldOut:   pqr.SoldOut,
 		ProductDisplay: entity.ProductDisplay{
 			ProductBody: entity.ProductBody{
 				ProductBodyInsert: entity.ProductBodyInsert{
@@ -1093,7 +1105,12 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		sm.compressed AS secondary_compressed,
 		sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height,
-		sm.blur_hash AS secondary_blur_hash
+		sm.blur_hash AS secondary_blur_hash,
+		COALESCE((
+			SELECT SUM(COALESCE(ps.quantity, 0))
+			FROM product_size ps
+			WHERE ps.product_id = p.id
+		), 0) = 0 AS sold_out
 	FROM 
 		product p
 	JOIN 
@@ -1278,6 +1295,14 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		return nil, fmt.Errorf("can't get sizes: %w", err)
 	}
 	productInfo.Sizes = sizes
+
+	// Calculate sold_out from sizes: sum all quantities, if sum = 0 then sold out
+	totalQuantity := decimal.Zero
+	for _, size := range sizes {
+		totalQuantity = totalQuantity.Add(size.Quantity)
+	}
+	product.SoldOut = totalQuantity.LessThanOrEqual(decimal.Zero)
+	productInfo.Product.SoldOut = product.SoldOut
 
 	// fetch measurements
 	query = `SELECT * FROM size_measurement	WHERE product_id = :id`
@@ -1566,14 +1591,18 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 			sm.compressed AS secondary_compressed,
 			sm.compressed_width AS secondary_compressed_width,
 			sm.compressed_height AS secondary_compressed_height,
-			sm.blur_hash AS secondary_blur_hash
+			sm.blur_hash AS secondary_blur_hash,
+			NOT EXISTS (
+				SELECT 1 FROM product_size ps 
+				WHERE ps.product_id = p.id AND ps.quantity > 0
+			) AS sold_out
 		FROM 
 			product p
 		JOIN 
 			media m ON p.thumbnail_id = m.id
 		LEFT JOIN 
 			media sm ON p.secondary_thumbnail_id = sm.id
-	WHERE p.id IN (:productIds) AND p.deleted_at IS NULL`
+		WHERE p.id IN (:productIds) AND p.deleted_at IS NULL`
 
 	type productOrderResult struct {
 		productQueryResult

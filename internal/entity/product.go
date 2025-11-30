@@ -148,6 +148,7 @@ type Product struct {
 	SKU            string         `db:"sku"`
 	ProductDisplay ProductDisplay `valid:"required"`
 	Prices         []ProductPrice // Multi-currency prices
+	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
 }
 
 type ProductInsert struct {

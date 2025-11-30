@@ -63,6 +63,7 @@ message Product {
   string sku = 5;
   ProductDisplay product_display = 6;
   repeated ProductPrice prices = 7;
+  bool sold_out = 8;
 }
 
 message ProductBody {

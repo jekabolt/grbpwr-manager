@@ -359,6 +359,17 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		firstTranslationName = productBody.Translations[0].Name
 	}
 
+	// Calculate sold_out from sizes: product is sold out if it has no sizes OR all sizes have quantity <= 0
+	soldOut := true
+	if len(e.Sizes) > 0 {
+		for _, size := range e.Sizes {
+			if size.Quantity.GreaterThan(decimal.Zero) {
+				soldOut = false
+				break
+			}
+		}
+	}
+
 	pbProduct := &pb_common.Product{
 		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
@@ -367,6 +378,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Sku:            e.Product.SKU,
 		ProductDisplay: pbProductDisplay,
 		Prices:         pbPrices, // Prices are in nested Product
+		SoldOut:        soldOut,
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
@@ -528,7 +540,8 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 			Thumbnail:          ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
 			SecondaryThumbnail: pbSecondaryThumbnail,
 		},
-		Prices: pbPrices,
+		Prices:  pbPrices,
+		SoldOut: e.SoldOut,
 	}
 
 	return pbProduct, nil
