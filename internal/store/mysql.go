@@ -275,3 +275,17 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 func (ms *MYSQLStore) Close() {
 	ms.close()
 }
+
+// Ping checks database connectivity by executing a simple query
+func (ms *MYSQLStore) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Use a simple query to check database connectivity
+	var result int
+	err := ms.db.QueryRowxContext(ctx, "SELECT 1").Scan(&result)
+	if err != nil {
+		return fmt.Errorf("database ping failed: %w", err)
+	}
+	return nil
+}

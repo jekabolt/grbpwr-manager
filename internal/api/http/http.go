@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"text/template"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -39,6 +40,31 @@ var (
 	}
 )
 
+// HealthChecker defines an interface for checking application health
+type HealthChecker interface {
+	CheckHealth(ctx context.Context) error
+}
+
+// DatabaseHealthChecker implements HealthChecker for database health checks
+type DatabaseHealthChecker struct {
+	pingFunc func(ctx context.Context) error
+}
+
+// NewDatabaseHealthChecker creates a new database health checker
+func NewDatabaseHealthChecker(pingFunc func(ctx context.Context) error) *DatabaseHealthChecker {
+	return &DatabaseHealthChecker{
+		pingFunc: pingFunc,
+	}
+}
+
+// CheckHealth checks database connectivity
+func (d *DatabaseHealthChecker) CheckHealth(ctx context.Context) error {
+	if d.pingFunc == nil {
+		return fmt.Errorf("ping function not set")
+	}
+	return d.pingFunc(ctx)
+}
+
 // Config is the configuration for the http server
 type Config struct {
 	Port           string   `mapstructure:"port"`
@@ -49,10 +75,11 @@ type Config struct {
 
 // Server is the http server
 type Server struct {
-	hs   *http.Server
-	gs   *grpc.Server
-	c    *Config
-	done chan struct{}
+	hs            *http.Server
+	gs            *grpc.Server
+	c             *Config
+	done          chan struct{}
+	healthChecker HealthChecker
 }
 
 // New creates a new server
@@ -61,6 +88,11 @@ func New(config *Config) *Server {
 		c:    config,
 		done: make(chan struct{}),
 	}
+}
+
+// SetHealthChecker sets an optional health checker for readiness probes
+func (s *Server) SetHealthChecker(checker HealthChecker) {
+	s.healthChecker = checker
 }
 
 // Done returns a channel that is closed when gRPC server exits
@@ -109,8 +141,41 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		return nil, err
 	}
 
-	// health check endpoint
+	// Liveness probe - indicates the container is running
+	// Simple check that the server is alive and responding
+	r.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Readiness probe - indicates the container is ready to accept traffic
+	// Can check dependencies like database connectivity
+	r.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		if s.healthChecker != nil {
+			if err := s.healthChecker.CheckHealth(ctx); err != nil {
+				slog.Default().WarnContext(ctx, "readiness check failed",
+					slog.String("error", err.Error()),
+				)
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(fmt.Sprintf("NOT READY: %v", err)))
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Health check endpoint - backward compatibility
+	// Alias to liveness check for simple health monitoring
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})

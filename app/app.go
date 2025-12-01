@@ -158,6 +158,13 @@ func (a *App) Start(ctx context.Context) error {
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
+
+	// Set up database health checker if store supports it
+	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
+		healthChecker := httpapi.NewDatabaseHealthChecker(mysqlStore.Ping)
+		a.hs.SetHealthChecker(healthChecker)
+	}
+
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
 		slog.Default().ErrorContext(ctx, "cannot start http server")
 		return err
