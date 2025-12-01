@@ -1,7 +1,11 @@
-# Git
-.git
+# Git (keep .git for version info, but exclude other git files)
 .gitignore
 .gitattributes
+.git/config
+.git/hooks
+.git/objects
+.git/refs
+.git/logs
 
 # Documentation
 README.md

@@ -33,6 +33,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY proto/ ./proto/
 COPY buf.gen.yaml buf.work.yaml ./
 
+# Ensure grpc-gateway/v2 is available before proto generation (needed by generated code)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go get github.com/grpc-ecosystem/grpc-gateway/v2@v2.21.0
 
 RUN buf generate
 
@@ -52,13 +55,18 @@ RUN find proto/swagger -type f -name "*.json" -exec cp {} proto/swagger \; && \
     GOOS="" GOARCH="" go run proto/swagger/main.go proto/swagger > internal/api/http/static/swagger/api.swagger.json && \
     find proto/swagger -type f -name "*.json" -exec mv {} internal/api/http/static/swagger \;
 
-# Get commit hash and build
+# Download dependencies again after proto generation (in case new deps were needed)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && \
+    go mod tidy
+
+# Get commit hash and build (handle missing git gracefully)
 RUN COMMIT_HASH_VALUE="$COMMIT_HASH"; \
     if [ -z "$COMMIT_HASH_VALUE" ]; then \
-      COMMIT_HASH_VALUE=`git rev-parse --short HEAD 2>/dev/null || echo "unknown"`; \
+      COMMIT_HASH_VALUE=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown"); \
     fi && \
     export COMMIT_HASH="$COMMIT_HASH_VALUE" && \
-    VERSION=$(git describe --tags --always --long |sed -e "s/^v//") && \
+    VERSION=$(git describe --tags --always --long 2>/dev/null | sed -e "s/^v//" || echo "dev-unknown") && \
     mkdir -p bin && \
     go build -ldflags "-s -w -X main.version=$VERSION -X main.commitHash=$COMMIT_HASH" -o bin/products-manager ./cmd/*.go
 
