@@ -197,8 +197,8 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	}
 
 	// Get the actual amount charged from PaymentIntent (in payment currency)
-	// PaymentIntent.Amount is in smallest currency unit (cents), so convert back to decimal
-	paymentCurrencyAmount := decimal.NewFromInt(pi.Amount).Div(decimal.NewFromInt(100))
+	// PaymentIntent.Amount is in smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
+	paymentCurrencyAmount := AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
 
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.c.InvoiceExpiration))
@@ -338,8 +338,8 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 
 // CreatePreOrderPaymentIntent creates a PaymentIntent before order submission
 func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error) {
-	// Convert amount to cents
-	amountCents := amount.Mul(decimal.NewFromInt(100)).IntPart()
+	// Convert amount to smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
+	amountCents := AmountToSmallestUnit(amount, currency)
 
 	params := &stripe.PaymentIntentParams{
 		Amount:   stripe.Int64(amountCents),

@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+LICENSE
+*.md
+
+# CI/CD
+.github
+
+# Test files
+test/
+*_test.go
+coverage.out
+
+# Local config files
+.env
+.env.local
+.env.*.local
+config/.config-*.toml
+config/certs/*.pem
+config/certs/*.crt
+config/certs/*.key
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (will be generated in container)
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Generated code (will be regenerated in container)
+internal/dependency/mocks/
+proto/gen/
+openapi/gen/
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts (not needed in container)
+scripts/
+
+# App Platform spec (not needed in container)
+.do/
+

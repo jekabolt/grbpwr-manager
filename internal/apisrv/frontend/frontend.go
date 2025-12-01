@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/shopspring/decimal"
@@ -294,8 +295,10 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			return nil, status.Errorf(codes.Internal, "can't get payment intent for validation")
 		}
 
-		// Convert PaymentIntent amount from cents to decimal
-		piAmount := decimal.NewFromInt(stripePi.Amount).Div(decimal.NewFromInt(100))
+		// Convert PaymentIntent amount from smallest currency unit to decimal
+		// For zero-decimal currencies (like JPY, KRW), amount is already in decimal
+		// For other currencies, convert from cents
+		piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
 		orderTotal := orderFull.Order.TotalPriceDecimal()
 
 		// Check if amounts match (with small tolerance for rounding)
