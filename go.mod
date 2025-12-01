@@ -16,6 +16,7 @@ require (
 	github.com/golang/protobuf v1.5.4
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.0.0-rc.5
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.21.0
 	github.com/jmoiron/sqlx v1.3.5
 	github.com/kolesa-team/go-webp v1.0.4
 	github.com/lib/pq v1.10.7

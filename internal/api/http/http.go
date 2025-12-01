@@ -10,7 +10,7 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 
 	"log/slog"
 
@@ -161,13 +161,7 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
-		runtime.MIMEWildcard,
-		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
-		},
-	))
+	mux := runtime.NewServeMux()
 
 	err := pb_admin.RegisterAdminServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
@@ -182,13 +176,7 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
-		runtime.MIMEWildcard,
-		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
-		},
-	))
+	mux := runtime.NewServeMux()
 	err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
 		return nil, err
@@ -202,13 +190,7 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux(runtime.WithMarshalerOption(
-		runtime.MIMEWildcard,
-		&runtime.JSONPb{
-			EnumsAsInts:  false,
-			EmitDefaults: true,
-		},
-	))
+	mux := runtime.NewServeMux()
 
 	err := pb_auth.RegisterAuthServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
