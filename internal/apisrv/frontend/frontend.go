@@ -133,8 +133,31 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 
 	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
 
+	// Validate: price sorting requires currency to be specified
+	var priceSortRequested bool
+	for _, sf := range sfs {
+		if sf == entity.Price {
+			priceSortRequested = true
+			break
+		}
+	}
+
+	if priceSortRequested && (fc == nil || fc.Currency == "") {
+		slog.Default().WarnContext(ctx, "price sorting requires currency",
+			slog.String("err", "price sorting requires currency to be specified in filter conditions"),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "price sorting requires currency to be specified in filter conditions")
+	}
+
 	prds, count, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, false)
 	if err != nil {
+		// Check if it's a validation error (should return 4xx, not 5xx)
+		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
+			slog.Default().WarnContext(ctx, "price sorting requires currency",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),
 		)
