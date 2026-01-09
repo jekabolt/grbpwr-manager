@@ -93,7 +93,6 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			BigMenu:          cache.GetBigMenu(),
 			Announce:         cache.GetAnnounce(),
 		}),
-		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
 }
 
