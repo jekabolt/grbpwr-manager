@@ -109,6 +109,7 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	origins = append(origins, "http://127.0.0.1*")
 	origins = append(origins, "https://*.vercel.app")
 	origins = append(origins, "https://*.github.io")
+	origins = append(origins, "https://admin.grbpwr.com")
 
 	// Add configured origins (they may contain wildcards)
 	origins = append(origins, allowedOrigins...)
