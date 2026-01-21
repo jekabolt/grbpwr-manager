@@ -160,29 +160,35 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	}, nil
 }
 
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 func getBlurHash(img image.Image) (string, error) {
-	// Get the image dimensions
 	width := img.Bounds().Dx()
 	height := img.Bounds().Dy()
 
-	// Set a base component size (tune this based on the level of detail you want)
 	baseComponent := 4
 
-	// Calculate componentsX and componentsY to match the image aspect ratio
 	aspectRatio := float64(width) / float64(height)
-	componentsX := int(math.Max(1, float64(baseComponent)*aspectRatio))
-	componentsY := int(math.Max(1, float64(baseComponent)/aspectRatio))
+	componentsX := int(math.Round(float64(baseComponent) * aspectRatio))
+	componentsY := int(math.Round(float64(baseComponent) / aspectRatio))
 
-	// Encode the image to a BlurHash
+	componentsX = clamp(componentsX, 1, 9)
+	componentsY = clamp(componentsY, 1, 9)
+
 	hash, err := blurhash.Encode(componentsX, componentsY, img)
 	if err != nil {
-		log.Fatalf("Failed to encode image to BlurHash: %v", err)
+		return "", fmt.Errorf("failed to encode image to BlurHash: %v", err)
 	}
-
 	return hash, nil
-
 }
-
 // resizeImage checks the height of the given image. If it's greater than minWidth in px,
 // it resizes the image to have a height of 'minWidth' while maintaining the aspect ratio.
 func resizeImage(img image.Image, minWidth int) image.Image {
