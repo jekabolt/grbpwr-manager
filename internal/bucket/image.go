@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"image"
 	"io"
-	"log"
 	"math"
 	"strings"
 
