@@ -119,27 +119,20 @@ func convertAddress(commonAddress *pb_common.AddressInsert) *entity.AddressInser
 
 func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, error) {
 	pbOrder := &pb_common.Order{
-		Id:            int32(eOrder.Id),
-		Uuid:          eOrder.UUID,
-		Placed:        timestamppb.New(eOrder.Placed),
-		Modified:      timestamppb.New(eOrder.Modified),
-		TotalPrice:    &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
-		Currency:      eOrder.Currency,
-		OrderStatusId: int32(eOrder.OrderStatusId),
+		Id:             int32(eOrder.Id),
+		Uuid:           eOrder.UUID,
+		Placed:         timestamppb.New(eOrder.Placed),
+		Modified:       timestamppb.New(eOrder.Modified),
+		TotalPrice:     &pb_decimal.Decimal{Value: eOrder.TotalPriceDecimal().String()},
+		Currency:       eOrder.Currency,
+		OrderStatusId:  int32(eOrder.OrderStatusId),
+		RefundedAmount: &pb_decimal.Decimal{Value: eOrder.RefundedAmountDecimal().String()},
+		RefundReason:   eOrder.RefundReason.String,
+		OrderComment:   eOrder.OrderComment.String,
 	}
-
 	if eOrder.PromoId.Valid {
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)
 	}
-
-	if eOrder.RefundReason.Valid {
-		pbOrder.RefundReason = eOrder.RefundReason.String
-	}
-
-	if eOrder.OrderComment.Valid {
-		pbOrder.OrderComment = eOrder.OrderComment.String
-	}
-
 	return pbOrder, nil
 }
 
@@ -215,6 +208,11 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting order items: %w", err)
 	}
 
+	pbRefundedOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.RefundedOrderItems)
+	if err != nil {
+		return nil, fmt.Errorf("error converting refunded order items: %w", err)
+	}
+
 	pbPayment, err := ConvertEntityToPbPayment(e.Payment)
 	if err != nil {
 		return nil, fmt.Errorf("error converting payment: %w", err)
@@ -242,14 +240,15 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 	}
 
 	return &pb_common.OrderFull{
-		Order:      pbOrder,
-		OrderItems: pbOrderItems,
-		Payment:    pbPayment,
-		Shipment:   pbShipment,
-		PromoCode:  pbPromoCode,
-		Buyer:      pbBuyer,
-		Billing:    pbBilling,
-		Shipping:   pbShipping,
+		Order:              pbOrder,
+		OrderItems:         pbOrderItems,
+		RefundedOrderItems: pbRefundedOrderItems,
+		Payment:            pbPayment,
+		Shipment:           pbShipment,
+		PromoCode:          pbPromoCode,
+		Buyer:              pbBuyer,
+		Billing:            pbBilling,
+		Shipping:           pbShipping,
 	}, nil
 }
 

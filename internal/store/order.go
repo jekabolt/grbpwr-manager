@@ -967,6 +967,53 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds ...
 	return orderItemsMap, nil
 }
 
+type refundedQuantityRow struct {
+	OrderItemId      int   `db:"order_item_id"`
+	OrderId         int   `db:"order_id"`
+	QuantityRefunded int64 `db:"quantity_refunded"`
+}
+
+func getRefundedQuantitiesByOrderIds(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int]map[int]int64, error) {
+	if len(orderIds) == 0 {
+		return map[int]map[int]int64{}, nil
+	}
+	query := `
+		SELECT order_item_id, order_id, SUM(quantity_refunded) AS quantity_refunded
+		FROM refunded_order_item
+		WHERE order_id IN (:orderIds)
+		GROUP BY order_item_id, order_id
+	`
+	rows, err := QueryListNamed[refundedQuantityRow](ctx, rep.DB(), query, map[string]any{"orderIds": orderIds})
+	if err != nil {
+		return nil, fmt.Errorf("get refunded quantities: %w", err)
+	}
+	result := make(map[int]map[int]int64)
+	for _, r := range rows {
+		if result[r.OrderId] == nil {
+			result[r.OrderId] = make(map[int]int64)
+		}
+		result[r.OrderId][r.OrderItemId] = r.QuantityRefunded
+	}
+	return result, nil
+}
+
+func mergeRefundedOrderItems(orderItems map[int][]entity.OrderItem, refundedByItem map[int]map[int]int64) map[int][]entity.OrderItem {
+	result := make(map[int][]entity.OrderItem, len(orderItems))
+	for orderId, items := range orderItems {
+		qtyMap := refundedByItem[orderId]
+		if qtyMap == nil {
+			continue
+		}
+		for _, item := range items {
+			if qty := qtyMap[item.Id]; qty > 0 {
+				item.Quantity = decimal.NewFromInt(qty)
+				result[orderId] = append(result[orderId], item)
+			}
+		}
+	}
+	return result
+}
+
 func getOrderItemsInsert(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderItemInsert, error) {
 	// Optimized SQL query, ensuring all selected columns are necessary and indexed properly
 	query := `
@@ -1064,6 +1111,41 @@ func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId i
 		return fmt.Errorf("can't update order status: %w", err)
 	}
 	return nil
+}
+
+func insertRefundedOrderItems(ctx context.Context, rep dependency.Repository, orderId int, refundedByItem map[int]int64) error {
+	for orderItemId, qty := range refundedByItem {
+		query := `INSERT INTO refunded_order_item (order_id, order_item_id, quantity_refunded) VALUES (:orderId, :orderItemId, :quantityRefunded)`
+		if err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+			"orderId":          orderId,
+			"orderItemId":      orderItemId,
+			"quantityRefunded": qty,
+		}); err != nil {
+			return fmt.Errorf("insert refunded_order_item: %w", err)
+		}
+	}
+	return nil
+}
+
+func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal) error {
+	query := `UPDATE customer_order SET order_status_id = :orderStatusId, refunded_amount = :refundedAmount WHERE id = :orderId`
+	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId":        orderId,
+		"orderStatusId":  orderStatusId,
+		"refundedAmount": refundedAmount.Round(2),
+	})
+	if err != nil {
+		return fmt.Errorf("can't update order status and refunded amount: %w", err)
+	}
+	return nil
+}
+
+func refundAmountFromItems(items []entity.OrderItemInsert) decimal.Decimal {
+	var sum decimal.Decimal
+	for _, item := range items {
+		sum = sum.Add(item.ProductPriceWithSale.Mul(item.Quantity).Round(2))
+	}
+	return sum.Round(2)
 }
 
 func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId int, payment entity.PaymentInsert) error {
@@ -1646,12 +1728,13 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 	ids := getOrderIds(orders)
 
 	var (
-		orderItems map[int][]entity.OrderItem
-		payments   map[string]entity.Payment
-		shipments  map[int]entity.Shipment
-		promos     map[int]entity.PromoCode
-		buyers     map[int]entity.Buyer
-		addresses  map[int]addressFull
+		orderItems     map[int][]entity.OrderItem
+		refundedByItem map[int]map[int]int64 // orderId -> orderItemId -> quantityRefunded
+		payments       map[string]entity.Payment
+		shipments      map[int]entity.Shipment
+		promos         map[int]entity.PromoCode
+		buyers         map[int]entity.Buyer
+		addresses      map[int]addressFull
 	)
 
 	// Use errgroup to handle concurrency and errors more elegantly
@@ -1735,10 +1818,25 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 		return nil
 	})
 
+	// Fetch refunded quantities (parallel with other fetches)
+	g.Go(func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var err error
+		refundedByItem, err = getRefundedQuantitiesByOrderIds(ctx, rep, ids)
+		if err != nil {
+			return fmt.Errorf("get refunded quantities: %w", err)
+		}
+		return nil
+	})
+
 	// Wait for all goroutines to complete
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+
+	refundedOrderItems := mergeRefundedOrderItems(orderItems, refundedByItem)
 
 	ofs := make([]entity.OrderFull, 0, len(orders))
 
@@ -1749,20 +1847,25 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 			promos[order.Id] = entity.PromoCode{}
 		}
 		orderItemsList := orderItems[order.Id]
+		refundedItems := refundedOrderItems[order.Id]
+		if refundedItems == nil {
+			refundedItems = []entity.OrderItem{}
+		}
 		payment := payments[order.UUID]
 		shipment := shipments[order.Id]
 		buyer := buyers[order.Id]
 		addrs := addresses[order.Id]
 
 		ofs = append(ofs, entity.OrderFull{
-			Order:      order,
-			OrderItems: orderItemsList,
-			Payment:    payment,
-			Shipment:   shipment,
-			Buyer:      buyer,
-			PromoCode:  promos[order.Id],
-			Billing:    addrs.billing,
-			Shipping:   addrs.shipping,
+			Order:              order,
+			OrderItems:         orderItemsList,
+			RefundedOrderItems: refundedItems,
+			Payment:            payment,
+			Shipment:           shipment,
+			Buyer:              buyer,
+			PromoCode:          promos[order.Id],
+			Billing:            addrs.billing,
+			Shipping:           addrs.shipping,
 		})
 	}
 
@@ -2117,10 +2220,16 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 	return p, nil
 }
 
-// validateAndMapOrderItems maps order item IDs to OrderItemInsert, skipping IDs that don't
+// refundItem holds order_item_id and OrderItemInsert for stock restoration and refunded_order_item inserts.
+type refundItem struct {
+	OrderItemId   int
+	OrderItemInsert entity.OrderItemInsert
+}
+
+// validateAndMapOrderItems maps order item IDs to refundItem, skipping IDs that don't
 // belong to the order. Each occurrence of an ID = 1 unit to refund (e.g. [1,1,1] = 3 units).
 // Returns nil for full refund (empty IDs).
-func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int32) ([]entity.OrderItemInsert, error) {
+func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int32) ([]refundItem, error) {
 	if len(orderItemIDs) == 0 {
 		return nil, nil // Signal full refund
 	}
@@ -2130,7 +2239,7 @@ func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int3
 		itemByID[item.Id] = item
 	}
 
-	itemsToRefund := make([]entity.OrderItemInsert, 0, len(orderItemIDs))
+	itemsToRefund := make([]refundItem, 0, len(orderItemIDs))
 
 	for _, id := range orderItemIDs {
 		item, ok := itemByID[int(id)]
@@ -2138,9 +2247,9 @@ func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int3
 			continue // Skip: item does not belong to order
 		}
 		// Each occurrence = 1 unit to refund; use Quantity=1 so RestoreStock sums correctly
-		refundItem := item.OrderItemInsert
-		refundItem.Quantity = decimal.NewFromInt(1)
-		itemsToRefund = append(itemsToRefund, refundItem)
+		insert := item.OrderItemInsert
+		insert.Quantity = decimal.NewFromInt(1)
+		itemsToRefund = append(itemsToRefund, refundItem{OrderItemId: item.Id, OrderItemInsert: insert})
 	}
 
 	if len(itemsToRefund) == 0 {
@@ -2172,10 +2281,10 @@ func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32) 
 
 // determineRefundScope determines which items to refund and the target status based on
 // the current order status and requested item IDs.
-func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32) ([]entity.OrderItemInsert, *cache.Status, error) {
+func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32) ([]refundItem, *cache.Status, error) {
 	// Full refund for RefundInProgress regardless of orderItemIDs
 	if currentStatus == entity.RefundInProgress {
-		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
 	// PendingReturn: check for full vs partial
@@ -2186,16 +2295,24 @@ func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []ent
 
 	if partialItems == nil {
 		// Empty IDs = full refund
-		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
 	// orderItemIDs covers all items with full quantities = full refund (e.g. [1,2,2] for items 1,2 with qty 1,2)
 	if refundCoversFullOrder(orderItems, orderItemIDs) {
-		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
 	// Partial refund
 	return partialItems, &cache.OrderStatusPartiallyRefunded, nil
+}
+
+func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
+	out := make([]refundItem, len(orderItems))
+	for i, item := range orderItems {
+		out[i] = refundItem{OrderItemId: item.Id, OrderItemInsert: item.OrderItemInsert}
+	}
+	return out
 }
 
 // RefundOrder processes a full or partial refund for an order.
@@ -2236,11 +2353,24 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 			return err
 		}
 
-		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsToRefund); err != nil {
+		itemsForStock := make([]entity.OrderItemInsert, len(itemsToRefund))
+		for i := range itemsToRefund {
+			itemsForStock[i] = itemsToRefund[i].OrderItemInsert
+		}
+		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsForStock); err != nil {
 			return fmt.Errorf("restore stock: %w", err)
 		}
 
-		return updateOrderStatus(ctx, rep, order.Id, targetStatus.Status.Id)
+		refundedByItem := make(map[int]int64)
+		for _, r := range itemsToRefund {
+			refundedByItem[r.OrderItemId] += r.OrderItemInsert.Quantity.IntPart()
+		}
+		if err := insertRefundedOrderItems(ctx, rep, order.Id, refundedByItem); err != nil {
+			return fmt.Errorf("insert refunded order items: %w", err)
+		}
+
+		refundedAmount := refundAmountFromItems(itemsForStock)
+		return updateOrderStatusAndRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount)
 	})
 }
 

@@ -30,14 +30,15 @@ type OrderNew struct {
 }
 
 type OrderFull struct {
-	Order      Order
-	OrderItems []OrderItem
-	Payment    Payment
-	Shipment   Shipment
-	PromoCode  PromoCode
-	Buyer      Buyer
-	Billing    Address
-	Shipping   Address
+	Order              Order
+	OrderItems         []OrderItem
+	RefundedOrderItems []OrderItem
+	Payment            Payment
+	Shipment           Shipment
+	PromoCode          PromoCode
+	Buyer              Buyer
+	Billing            Address
+	Shipping           Address
 }
 
 // Orders represents the orders table
@@ -50,12 +51,17 @@ type Order struct {
 	Currency      string          `db:"currency"` // ISO 4217 currency code
 	OrderStatusId int             `db:"order_status_id"`
 	PromoId       sql.NullInt32   `db:"promo_id"`
-	RefundReason  sql.NullString  `db:"refund_reason"`
-	OrderComment  sql.NullString  `db:"order_comment"`
+	RefundReason   sql.NullString  `db:"refund_reason"`
+	OrderComment   sql.NullString  `db:"order_comment"`
+	RefundedAmount decimal.Decimal `db:"refunded_amount"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
 	return o.TotalPrice.Round(2)
+}
+
+func (o *Order) RefundedAmountDecimal() decimal.Decimal {
+	return o.RefundedAmount.Round(2)
 }
 
 type ProductInfoProvider interface {
@@ -68,20 +74,20 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	Id            int                        `db:"id"`
-	OrderId       int                        `db:"order_id"`
-	Thumbnail     string                     `db:"thumbnail"`
-	Translations  []ProductTranslationInsert `db:"translations"`
-	BlurHash      string                     `db:"blur_hash"`
-	ProductBrand  string                     `db:"product_brand"`
-	Color         string                     `db:"color"`
-	TopCategoryId int                        `db:"top_category_id"`
-	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
-	TypeId        sql.NullInt32              `db:"type_id"`
-	TargetGender  GenderEnum                 `db:"target_gender"`
-	SKU           string                     `db:"product_sku"`
-	Slug          string
-	Preorder      sql.NullTime `db:"preorder"`
+	Id        int    `db:"id"`
+	OrderId   int    `db:"order_id"`
+	Thumbnail string `db:"thumbnail"`
+	Translations     []ProductTranslationInsert `db:"translations"`
+	BlurHash         string                     `db:"blur_hash"`
+	ProductBrand     string                     `db:"product_brand"`
+	Color            string                     `db:"color"`
+	TopCategoryId    int                        `db:"top_category_id"`
+	SubCategoryId    sql.NullInt32              `db:"sub_category_id"`
+	TypeId           sql.NullInt32              `db:"type_id"`
+	TargetGender     GenderEnum                 `db:"target_gender"`
+	SKU              string                     `db:"product_sku"`
+	Slug             string
+	Preorder         sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 
