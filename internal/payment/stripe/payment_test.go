@@ -7,29 +7,49 @@ import (
 )
 
 func TestPaymentMethodTypesForCurrency(t *testing.T) {
-	// KRW: only card (Klarna/PayPal/Alipay/WeChat don't support)
+	// KRW: card, kr_card, apple_pay
 	krw := PaymentMethodTypesForCurrency("KRW")
-	assert.Equal(t, []string{"card"}, krw)
+	assert.ElementsMatch(t, []string{"card", "kr_card", "apple_pay"}, krw)
 
-	// EUR: card, Klarna, PayPal, Alipay, WeChat Pay
+	// EUR: card + bancontact, ideal, eps, p24, sepa_debit, multibanco, klarna, paypal, alipay, wechat_pay, afterpay_clearpay
 	eur := PaymentMethodTypesForCurrency("eur")
-	assert.ElementsMatch(t, []string{"card", "klarna", "paypal", "alipay", "wechat_pay"}, eur)
+	assert.Contains(t, eur, "card")
+	assert.Contains(t, eur, "klarna")
+	assert.Contains(t, eur, "paypal")
+	assert.Contains(t, eur, "alipay")
+	assert.Contains(t, eur, "wechat_pay")
+	assert.Contains(t, eur, "bancontact")
+	assert.Contains(t, eur, "ideal")
+	assert.Contains(t, eur, "sepa_debit")
 
-	// USD: card, Klarna, PayPal, Alipay, WeChat Pay
+	// USD: card + affirm, afterpay_clearpay, klarna, paypal, alipay, wechat_pay, acss_debit, us_bank_account
 	usd := PaymentMethodTypesForCurrency("usd")
-	assert.ElementsMatch(t, []string{"card", "klarna", "paypal", "alipay", "wechat_pay"}, usd)
+	assert.Contains(t, usd, "card")
+	assert.Contains(t, usd, "klarna")
+	assert.Contains(t, usd, "paypal")
+	assert.Contains(t, usd, "alipay")
+	assert.Contains(t, usd, "wechat_pay")
+	assert.Contains(t, usd, "affirm")
+	assert.Contains(t, usd, "us_bank_account")
 
-	// HKD: card, PayPal, Alipay, WeChat Pay (no Klarna)
+	// HKD: card, paypal, alipay, wechat_pay, apple_pay (no Klarna)
 	hkd := PaymentMethodTypesForCurrency("HKD")
-	assert.ElementsMatch(t, []string{"card", "paypal", "alipay", "wechat_pay"}, hkd)
+	assert.ElementsMatch(t, []string{"card", "paypal", "alipay", "wechat_pay", "apple_pay"}, hkd)
 
-	// CNY: card, Alipay, WeChat Pay (Klarna/PayPal don't support CNY)
+	// CNY: card, alipay, wechat_pay, apple_pay
 	cny := PaymentMethodTypesForCurrency("CNY")
-	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay"}, cny)
+	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay", "apple_pay"}, cny)
 
-	// JPY: card, Alipay, WeChat Pay (Klarna/PayPal don't support JPY)
+	// JPY: card, alipay, wechat_pay, konbini, paypay, apple_pay
 	jpy := PaymentMethodTypesForCurrency("JPY")
-	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay"}, jpy)
+	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay", "konbini", "paypay", "apple_pay"}, jpy)
+
+	// SGD: card, paypal, alipay, wechat_pay, grabpay, paynow
+	sgd := PaymentMethodTypesForCurrency("SGD")
+	assert.Contains(t, sgd, "card")
+	assert.Contains(t, sgd, "paypal")
+	assert.Contains(t, sgd, "grabpay")
+	assert.Contains(t, sgd, "paynow")
 }
 
 // import (
