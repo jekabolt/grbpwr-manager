@@ -15,9 +15,19 @@ func VerifyToken(jwtAuth *jwtauth.JWTAuth, token string) (string, error) {
 }
 
 func NewToken(jwtAuth *jwtauth.JWTAuth, ttl time.Duration) (string, error) {
-	_, ts, err := jwtAuth.Encode(map[string]interface{}{
+	return NewTokenWithSubject(jwtAuth, ttl, "")
+}
+
+// NewTokenWithSubject creates a JWT with optional subject (username) claim.
+// Subject is used for admin audit trails.
+func NewTokenWithSubject(jwtAuth *jwtauth.JWTAuth, ttl time.Duration, subject string) (string, error) {
+	claims := map[string]interface{}{
 		"exp": time.Now().Add(ttl).Unix(),
-	})
+	}
+	if subject != "" {
+		claims["sub"] = subject
+	}
+	_, ts, err := jwtAuth.Encode(claims)
 	if err != nil {
 		return ts, err
 	}

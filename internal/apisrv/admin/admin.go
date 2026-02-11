@@ -301,7 +301,7 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		previousQuantity = decimal.Zero
 	}
 
-	err = s.repo.Products().UpdateProductSizeStock(ctx, productId, sizeId, newQuantity)
+	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
@@ -327,6 +327,45 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		return nil, status.Errorf(codes.Internal, "can't revalidate product")
 	}
 	return &pb_admin.UpdateProductSizeStockResponse{}, nil
+}
+
+func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListStockChangeHistoryRequest) (*pb_admin.ListStockChangeHistoryResponse, error) {
+	var productId, sizeId *int
+	if req.ProductId != 0 {
+		pid := int(req.ProductId)
+		productId = &pid
+	}
+	if req.SizeId != 0 {
+		sid := int(req.SizeId)
+		sizeId = &sid
+	}
+	limit := int(req.Limit)
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset := int(req.Offset)
+	if offset < 0 {
+		offset = 0
+	}
+	orderFactor := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
+
+	sourceFilter := dto.StockChangeSourceToFilterString(req.Source)
+	changes, total, err := s.repo.Products().GetStockChangeHistory(ctx, productId, sizeId, sourceFilter, limit, offset, orderFactor)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get stock change history",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get stock change history")
+	}
+
+	pbChanges := make([]*pb_common.StockChange, 0, len(changes))
+	for _, c := range changes {
+		pbChanges = append(pbChanges, dto.StockChangeToProto(&c))
+	}
+	return &pb_admin.ListStockChangeHistoryResponse{
+		Changes: pbChanges,
+		Total:   int32(total),
+	}, nil
 }
 
 // notifyWaitlist processes waitlist entries and sends back-in-stock notifications

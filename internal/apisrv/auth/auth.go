@@ -15,6 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -97,7 +98,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
+	token, err := jwt.NewTokenWithSubject(s.JwtAuth, s.jwtTTL, username)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -131,7 +132,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
+	token, err := jwt.NewTokenWithSubject(s.JwtAuth, s.jwtTTL, username)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -261,4 +262,44 @@ func GetTokenMetadata(ctx context.Context) (string, error) {
 	token := strings.TrimPrefix(tokenHeaders[0], "Bearer ")
 
 	return token, nil
+}
+
+type adminContextKey string
+
+const adminUsernameKey adminContextKey = "admin_username"
+
+// GetAdminUsername returns the admin username from context (set by AdminAuthInterceptor).
+// Returns empty string if not set (e.g. for non-admin or unauthenticated requests).
+func GetAdminUsername(ctx context.Context) string {
+	u, _ := ctx.Value(adminUsernameKey).(string)
+	return u
+}
+
+// PutAdminUsername adds admin username to context.
+func PutAdminUsername(ctx context.Context, username string) context.Context {
+	return context.WithValue(ctx, adminUsernameKey, username)
+}
+
+const adminServicePrefix = "/admin.AdminService/"
+
+// UnaryAdminAuthInterceptor returns an interceptor that extracts the JWT subject (admin username)
+// from admin RPCs and puts it in context for downstream use (e.g. stock change history).
+func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if !strings.HasPrefix(info.FullMethod, adminServicePrefix) {
+			return handler(ctx, req)
+		}
+		token, err := GetTokenMetadata(ctx)
+		if err != nil {
+			return handler(ctx, req) // no token, continue; auth will fail elsewhere if required
+		}
+		sub, err := jwt.VerifyToken(s.JwtAuth, token)
+		if err != nil {
+			return handler(ctx, req)
+		}
+		if sub != "" {
+			ctx = PutAdminUsername(ctx, sub)
+		}
+		return handler(ctx, req)
+	}
 }

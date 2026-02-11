@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -203,6 +204,30 @@ func insertTags(ctx context.Context, rep dependency.Repository, tagsInsert []ent
 	return tags, BulkInsert(ctx, rep.DB(), "product_tag", rows)
 }
 
+func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.Repository, productID int, sizeMeasurements []entity.SizeWithMeasurementInsert, source entity.StockChangeSource) error {
+	if len(sizeMeasurements) == 0 {
+		return nil
+	}
+	adminUsername := auth.GetAdminUsername(ctx)
+	entries := make([]entity.StockChangeInsert, 0, len(sizeMeasurements))
+	for _, sm := range sizeMeasurements {
+		qty := sm.ProductSize.QuantityDecimal()
+		e := entity.StockChangeInsert{
+			ProductId:      productID,
+			SizeId:         sm.ProductSize.SizeId,
+			QuantityDelta:  qty,
+			QuantityBefore: decimal.Zero,
+			QuantityAfter:  qty,
+			Source:         string(source),
+		}
+		if adminUsername != "" {
+			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}
+		}
+		entries = append(entries, e)
+	}
+	return rep.Products().RecordStockChange(ctx, entries)
+}
+
 // AddProduct adds a new product to the product store.
 func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error) {
 	var prdId int
@@ -230,6 +255,11 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		err = insertSizeMeasurements(ctx, rep, prd.SizeMeasurements, prdId)
 		if err != nil {
 			return fmt.Errorf("can't insert size measurements: %w", err)
+		}
+
+		// Record stock change history for initial sizes
+		if err := recordStockChangeFromSizeMeasurements(ctx, rep, prdId, prd.SizeMeasurements, entity.StockChangeSourceAdminAddProduct); err != nil {
+			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
 		err = insertMedia(ctx, rep, prd.MediaIds, prdId)
@@ -287,6 +317,11 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 		err = insertSizeMeasurements(ctx, rep, prd.SizeMeasurements, id)
 		if err != nil {
 			return fmt.Errorf("can't update product measurements: %w", err)
+		}
+
+		// Record stock change history for updated sizes
+		if err := recordStockChangeFromSizeMeasurements(ctx, rep, id, prd.SizeMeasurements, entity.StockChangeSourceAdminUpdateProduct); err != nil {
+			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
 		// media
@@ -1381,7 +1416,8 @@ func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
 	})
 }
 
-func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error {
+func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
+	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
 
 		query := `SELECT * FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
@@ -1397,6 +1433,9 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductId, item.SizeId)
 		}
 
+		quantityBefore := productSize.QuantityDecimal()
+		quantityAfter := quantityBefore.Sub(item.QuantityDecimal())
+
 		query = `UPDATE product_size SET quantity = quantity - :quantity WHERE product_id = :productId AND size_id = :sizeId`
 		err = ExecNamed(ctx, ms.db, query, map[string]any{
 			"quantity":  item.QuantityDecimal(),
@@ -1406,14 +1445,37 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 		if err != nil {
 			return fmt.Errorf("can't decrease available sizes: %w", err)
 		}
+
+		if history != nil {
+			historyEntries = append(historyEntries, entity.StockChangeInsert{
+				ProductId:      item.ProductId,
+				SizeId:         item.SizeId,
+				QuantityDelta:  item.QuantityDecimal().Neg(),
+				QuantityBefore: quantityBefore,
+				QuantityAfter:  quantityAfter,
+				Source:         string(history.Source),
+				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
+				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
+			})
+		}
+	}
+	if len(historyEntries) > 0 {
+		return ms.RecordStockChange(ctx, historyEntries)
 	}
 	return nil
 }
 
-func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error {
+func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
+	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
+		quantityBefore, _, err := ms.GetProductSizeStock(ctx, item.ProductId, item.SizeId)
+		if err != nil {
+			return fmt.Errorf("can't get product size stock: %w", err)
+		}
+		quantityAfter := quantityBefore.Add(item.QuantityDecimal())
+
 		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
-		err := ExecNamed(ctx, ms.db, updateQuery, map[string]any{
+		err = ExecNamed(ctx, ms.db, updateQuery, map[string]any{
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
 			"sizeId":    item.SizeId,
@@ -1421,6 +1483,22 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		if err != nil {
 			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
 		}
+
+		if history != nil {
+			historyEntries = append(historyEntries, entity.StockChangeInsert{
+				ProductId:      item.ProductId,
+				SizeId:         item.SizeId,
+				QuantityDelta:  item.QuantityDecimal(),
+				QuantityBefore: quantityBefore,
+				QuantityAfter:  quantityAfter,
+				Source:         string(history.Source),
+				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
+				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
+			})
+		}
+	}
+	if len(historyEntries) > 0 {
+		return ms.RecordStockChange(ctx, historyEntries)
 	}
 	return nil
 }
@@ -1449,6 +1527,77 @@ func (ms *MYSQLStore) GetProductSizeStock(ctx context.Context, productId int, si
 	return productSize.Quantity, true, nil
 }
 
+func (ms *MYSQLStore) RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		row := map[string]any{
+			"product_id":      e.ProductId,
+			"size_id":         e.SizeId,
+			"quantity_delta":  e.QuantityDelta,
+			"quantity_before": e.QuantityBefore,
+			"quantity_after":  e.QuantityAfter,
+			"source":          e.Source,
+		}
+		if e.OrderId.Valid {
+			row["order_id"] = e.OrderId.Int32
+		} else {
+			row["order_id"] = nil
+		}
+		if e.OrderUUID.Valid {
+			row["order_uuid"] = e.OrderUUID.String
+		} else {
+			row["order_uuid"] = nil
+		}
+		if e.AdminUsername.Valid {
+			row["admin_username"] = e.AdminUsername.String
+		} else {
+			row["admin_username"] = nil
+		}
+		rows = append(rows, row)
+	}
+	return BulkInsert(ctx, ms.db, "product_stock_change_history", rows)
+}
+
+func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, sizeId *int, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error) {
+	baseQuery := `FROM product_stock_change_history WHERE 1=1`
+	params := map[string]any{"limit": limit, "offset": offset}
+	if productId != nil {
+		baseQuery += ` AND product_id = :productId`
+		params["productId"] = *productId
+	}
+	if sizeId != nil {
+		baseQuery += ` AND size_id = :sizeId`
+		params["sizeId"] = *sizeId
+	}
+	if source != "" {
+		baseQuery += ` AND source = :source`
+		params["source"] = source
+	}
+
+	orderBy := "ORDER BY created_at DESC"
+	if orderFactor == entity.Ascending {
+		orderBy = "ORDER BY created_at ASC"
+	}
+
+	countQuery := `SELECT COUNT(*) ` + baseQuery
+	total, err := QueryCountNamed(ctx, ms.db, countQuery, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't count stock change history: %w", err)
+	}
+
+	dataQuery := `SELECT id, product_id, size_id, quantity_delta, quantity_before, quantity_after, source,
+		COALESCE(order_id, 0) AS order_id, COALESCE(order_uuid, '') AS order_uuid,
+		COALESCE(admin_username, '') AS admin_username, created_at ` + baseQuery + ` ` + orderBy + ` LIMIT :limit OFFSET :offset`
+	changes, err := QueryListNamed[entity.StockChange](ctx, ms.db, dataQuery, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't get stock change history: %w", err)
+	}
+	return changes, total, nil
+}
+
 func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
 
 	sz, ok := cache.GetSizeById(sizeId)
@@ -1472,6 +1621,32 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 		return fmt.Errorf("can't insert product size: %w", err)
 	}
 	return nil
+}
+
+func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int) error {
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		prevQty, _, err := rep.Products().GetProductSizeStock(ctx, productId, sizeId)
+		if err != nil {
+			return err
+		}
+		if err := rep.Products().UpdateProductSizeStock(ctx, productId, sizeId, quantity); err != nil {
+			return err
+		}
+		newQty := decimal.NewFromInt(int64(quantity))
+		delta := newQty.Sub(prevQty)
+		e := entity.StockChangeInsert{
+			ProductId:      productId,
+			SizeId:         sizeId,
+			QuantityDelta:  delta,
+			QuantityBefore: prevQty,
+			QuantityAfter:  newQty,
+			Source:         string(entity.StockChangeSourceAdminUpdateSizeStock),
+		}
+		if adminUsername := auth.GetAdminUsername(ctx); adminUsername != "" {
+			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}
+		}
+		return rep.Products().RecordStockChange(ctx, []entity.StockChangeInsert{e})
+	})
 }
 
 func (ms *MYSQLStore) DeleteProductMedia(ctx context.Context, productId, mediaId int) error {
@@ -1506,7 +1681,6 @@ func updateProductMedia(ctx context.Context, rep dependency.Repository, productI
 	return nil
 }
 
-// TODO: rm (ms *MYSQLStore) from the function signature
 func updateProductTags(ctx context.Context, rep dependency.Repository, productId int, tagsInsert []entity.ProductTagInsert) error {
 	query := "DELETE FROM product_tag WHERE product_id = :productId"
 	err := ExecNamed(ctx, rep.DB(), query, map[string]interface{}{

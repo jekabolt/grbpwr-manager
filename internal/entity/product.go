@@ -247,3 +247,51 @@ type ProductTranslationInsert struct {
 	Name        string `db:"name" json:"name" valid:"required"`
 	Description string `db:"description" json:"description" valid:"required"`
 }
+
+// StockChangeSource represents the source of a product stock change.
+type StockChangeSource string
+
+const (
+	StockChangeSourceAdminAddProduct      StockChangeSource = "admin_add_product"
+	StockChangeSourceAdminUpdateProduct   StockChangeSource = "admin_update_product"
+	StockChangeSourceAdminUpdateSizeStock StockChangeSource = "admin_update_size_stock"
+	StockChangeSourceOrderPlaced          StockChangeSource = "order_placed"
+	StockChangeSourceOrderCancelled       StockChangeSource = "order_cancelled"
+	StockChangeSourceOrderExpired         StockChangeSource = "order_expired"
+	StockChangeSourceOrderRefunded        StockChangeSource = "order_refunded"
+)
+
+// StockChangeInsert represents a row to insert into product_stock_change_history.
+type StockChangeInsert struct {
+	ProductId      int             `db:"product_id"`
+	SizeId         int             `db:"size_id"`
+	QuantityDelta  decimal.Decimal `db:"quantity_delta"`
+	QuantityBefore decimal.Decimal `db:"quantity_before"`
+	QuantityAfter  decimal.Decimal `db:"quantity_after"`
+	Source         string          `db:"source"`
+	OrderId       sql.NullInt32  `db:"order_id"`
+	OrderUUID     sql.NullString `db:"order_uuid"`
+	AdminUsername sql.NullString `db:"admin_username"`
+}
+
+// StockChange represents a row from product_stock_change_history.
+type StockChange struct {
+	Id             int             `db:"id"`
+	ProductId      int             `db:"product_id"`
+	SizeId         int             `db:"size_id"`
+	QuantityDelta  decimal.Decimal `db:"quantity_delta"`
+	QuantityBefore decimal.Decimal `db:"quantity_before"`
+	QuantityAfter  decimal.Decimal `db:"quantity_after"`
+	Source         string          `db:"source"`
+	OrderId       int             `db:"order_id"`
+	OrderUUID     string          `db:"order_uuid"`
+	AdminUsername string          `db:"admin_username"`
+	CreatedAt      time.Time       `db:"created_at"`
+}
+
+// StockHistoryParams is passed when recording stock changes from order-related flows.
+type StockHistoryParams struct {
+	Source    StockChangeSource
+	OrderId   int
+	OrderUUID string
+}

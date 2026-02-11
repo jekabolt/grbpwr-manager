@@ -87,6 +87,11 @@ service AdminService {
     };
   }
 
+  // Lists stock change history with optional filters.
+  rpc ListStockChangeHistory(ListStockChangeHistoryRequest) returns (ListStockChangeHistoryResponse) {
+    option (google.api.http) = {get: "/api/admin/stock-change-history"};
+  }
+
   // PROMO MANAGER
 
   // Adds a new promotional code
@@ -318,6 +323,20 @@ message UpdateProductSizeStockRequest {
 }
 
 message UpdateProductSizeStockResponse {}
+
+message ListStockChangeHistoryRequest {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  common.StockChangeSource source = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+  common.OrderFactor order_factor = 6;
+}
+
+message ListStockChangeHistoryResponse {
+  repeated common.StockChange changes = 1;
+  int32 total = 2;
+}
 
 message DeleteProductMediaRequest {
   int32 product_id = 1;

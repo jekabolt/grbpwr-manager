@@ -279,9 +279,10 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	s.gs = grpc.NewServer(
-		grpc.MaxRecvMsgSize(20*1024*1024), // 20MB
+		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB
 		grpc.ChainUnaryInterceptor(
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
+			authServer.UnaryAdminAuthInterceptor(),
 			// grpcRecovery.UnaryServerInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(

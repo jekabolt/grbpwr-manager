@@ -39,11 +39,15 @@ type (
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
-		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
+		// When history is not nil, records each change to product_stock_change_history.
+		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
-		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert) error
+		// When history is not nil, records each change to product_stock_change_history.
+		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
+		// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
+		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int) error
 		// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 		GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error)
 		// AddToWaitlist adds an email to the waitlist for a specific product/size combination.
@@ -56,6 +60,10 @@ type (
 		RemoveFromWaitlistBatch(ctx context.Context, productId int, sizeId int) error
 		// GetWaitlistEntriesWithBuyerNames retrieves waitlist entries with buyer names in a single query.
 		GetWaitlistEntriesWithBuyerNames(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntryWithBuyer, error)
+		// RecordStockChange inserts stock change history entries.
+		RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error
+		// GetStockChangeHistory returns paginated stock change history with optional filters.
+		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error

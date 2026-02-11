@@ -166,3 +166,28 @@ message ProductPriceInsert {
   string currency = 1;
   google.type.Decimal price = 2;
 }
+
+enum StockChangeSource {
+  STOCK_CHANGE_SOURCE_UNSPECIFIED = 0;
+  STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT = 1;
+  STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT = 2;
+  STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK = 3;
+  STOCK_CHANGE_SOURCE_ORDER_PLACED = 4;
+  STOCK_CHANGE_SOURCE_ORDER_CANCELLED = 5;
+  STOCK_CHANGE_SOURCE_ORDER_EXPIRED = 6;
+  STOCK_CHANGE_SOURCE_ORDER_REFUNDED = 7;
+}
+
+message StockChange {
+  int32 id = 1;
+  int32 product_id = 2;
+  int32 size_id = 3;
+  google.type.Decimal quantity_delta = 4;
+  google.type.Decimal quantity_before = 5;
+  google.type.Decimal quantity_after = 6;
+  StockChangeSource source = 7;
+  int32 order_id = 8;
+  string order_uuid = 9;
+  google.protobuf.Timestamp created_at = 11;
+  string admin_username = 12; // Admin who made the change (for admin flows only)
+}

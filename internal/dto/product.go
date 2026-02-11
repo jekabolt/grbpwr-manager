@@ -25,6 +25,24 @@ var (
 		pb_common.GenderEnum_GENDER_ENUM_FEMALE: entity.Female,
 		pb_common.GenderEnum_GENDER_ENUM_UNISEX: entity.Unisex,
 	}
+	stockChangeSourceToProto = map[string]pb_common.StockChangeSource{
+		string(entity.StockChangeSourceAdminAddProduct):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT,
+		string(entity.StockChangeSourceAdminUpdateProduct):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT,
+		string(entity.StockChangeSourceAdminUpdateSizeStock): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK,
+		string(entity.StockChangeSourceOrderPlaced):          pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED,
+		string(entity.StockChangeSourceOrderCancelled):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
+		string(entity.StockChangeSourceOrderExpired):         pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED,
+		string(entity.StockChangeSourceOrderRefunded):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED,
+	}
+	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT:      string(entity.StockChangeSourceAdminAddProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT:   string(entity.StockChangeSourceAdminUpdateProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK: string(entity.StockChangeSourceAdminUpdateSizeStock),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED:            string(entity.StockChangeSourceOrderPlaced),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:         string(entity.StockChangeSourceOrderCancelled),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED:           string(entity.StockChangeSourceOrderExpired),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED:         string(entity.StockChangeSourceOrderRefunded),
+	}
 )
 
 func ConvertPbGenderEnumToEntityGenderEnum(pbGenderEnum pb_common.GenderEnum) (entity.GenderEnum, error) {
@@ -448,6 +466,36 @@ func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag
 		})
 	}
 	return pbTags
+}
+
+// StockChangeSourceToFilterString converts proto StockChangeSource to DB filter string.
+// Returns empty string for UNSPECIFIED (no filter).
+func StockChangeSourceToFilterString(s pb_common.StockChangeSource) string {
+	return stockChangeSourceToEntity[s]
+}
+
+// StockChangeToProto converts entity.StockChange to pb_common.StockChange.
+func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
+	if e == nil {
+		return nil
+	}
+	source := pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_UNSPECIFIED
+	if s, ok := stockChangeSourceToProto[e.Source]; ok {
+		source = s
+	}
+	return &pb_common.StockChange{
+		Id:            int32(e.Id),
+		ProductId:     int32(e.ProductId),
+		SizeId:        int32(e.SizeId),
+		QuantityDelta: &pb_decimal.Decimal{Value: e.QuantityDelta.String()},
+		QuantityBefore: &pb_decimal.Decimal{Value: e.QuantityBefore.String()},
+		QuantityAfter:  &pb_decimal.Decimal{Value: e.QuantityAfter.String()},
+		Source:        source,
+		OrderId:       int32(e.OrderId),
+		OrderUuid:     e.OrderUUID,
+		CreatedAt:     timestamppb.New(e.CreatedAt),
+		AdminUsername: e.AdminUsername,
+	}
 }
 
 var reg = regexp.MustCompile("[^a-zA-Z0-9]+")

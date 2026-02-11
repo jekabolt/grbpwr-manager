@@ -513,7 +513,7 @@ func validateAndUpdateOrderIfNeeded(
 	if err != nil {
 		// If validation fails and we should cancel, do it
 		if cancelOnValidationFailure {
-			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items); cancelErr != nil {
+			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items, entity.StockChangeSourceOrderCancelled); cancelErr != nil {
 				return false, fmt.Errorf("cannot cancel order after validation failure: %w", cancelErr)
 			}
 		}
@@ -969,7 +969,7 @@ func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds ...
 
 type refundedQuantityRow struct {
 	OrderItemId      int   `db:"order_item_id"`
-	OrderId         int   `db:"order_id"`
+	OrderId          int   `db:"order_id"`
 	QuantityRefunded int64 `db:"quantity_refunded"`
 }
 
@@ -1275,7 +1275,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 
 	// Check if the order's total price is zero
 	if orderFull.Order.TotalPrice.IsZero() {
-		if err := cancelOrder(ctx, ms, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)); err != nil {
+		if err := cancelOrder(ctx, ms, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems), entity.StockChangeSourceOrderCancelled); err != nil {
 			return nil, fmt.Errorf("cannot cancel order: %w", err)
 		}
 		return nil, fmt.Errorf("total price is zero")
@@ -1304,7 +1304,12 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 
 		// Reduce stock for valid items
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
-		if err := rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert); err != nil {
+		history := &entity.StockHistoryParams{
+			Source:    entity.StockChangeSourceOrderPlaced,
+			OrderId:   orderFull.Order.Id,
+			OrderUUID: orderFull.Order.UUID,
+		}
+		if err := rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert, history); err != nil {
 			return fmt.Errorf("error reducing stock for product sizes: %w", err)
 		}
 
@@ -2159,7 +2164,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
-		err = cancelOrder(ctx, rep, order, orderItems)
+		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderExpired)
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
@@ -2222,7 +2227,7 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 
 // refundItem holds order_item_id and OrderItemInsert for stock restoration and refunded_order_item inserts.
 type refundItem struct {
-	OrderItemId   int
+	OrderItemId     int
 	OrderItemInsert entity.OrderItemInsert
 }
 
@@ -2357,7 +2362,12 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 		for i := range itemsToRefund {
 			itemsForStock[i] = itemsToRefund[i].OrderItemInsert
 		}
-		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsForStock); err != nil {
+		history := &entity.StockHistoryParams{
+			Source:    entity.StockChangeSourceOrderRefunded,
+			OrderId:   order.Id,
+			OrderUUID: order.UUID,
+		}
+		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsForStock, history); err != nil {
 			return fmt.Errorf("restore stock: %w", err)
 		}
 
@@ -2414,7 +2424,7 @@ func removePromo(ctx context.Context, rep dependency.Repository, orderId int) er
 	return nil
 }
 
-func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert) error {
+func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource) error {
 	// Validate order status - if already cancelled, nothing to do
 	orderStatus, err := getOrderStatus(order.OrderStatusId)
 	if err != nil {
@@ -2433,7 +2443,12 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	}
 
 	if st == entity.AwaitingPayment {
-		err := rep.Products().RestoreStockForProductSizes(ctx, orderItems)
+		history := &entity.StockHistoryParams{
+			Source:    source,
+			OrderId:   order.Id,
+			OrderUUID: order.UUID,
+		}
+		err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
 		if err != nil {
 			return fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
@@ -2467,7 +2482,7 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 	}
 
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err = cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems))
+		err = cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems), entity.StockChangeSourceOrderCancelled)
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
@@ -2542,7 +2557,12 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 		// If order was in AwaitingPayment, restore stock
 		if currentStatus == entity.AwaitingPayment {
 			orderItems := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
-			err := rep.Products().RestoreStockForProductSizes(ctx, orderItems)
+			history := &entity.StockHistoryParams{
+				Source:    entity.StockChangeSourceOrderCancelled,
+				OrderId:   orderFull.Order.Id,
+				OrderUUID: orderFull.Order.UUID,
+			}
+			err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
 			if err != nil {
 				return fmt.Errorf("can't restore stock for product sizes: %w", err)
 			}
