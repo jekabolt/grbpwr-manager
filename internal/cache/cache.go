@@ -36,6 +36,7 @@ var (
 	OrderStatusPendingReturn    = Status{Status: entity.OrderStatus{Name: entity.PendingReturn}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN}
 	OrderStatusRefundInProgress = Status{Status: entity.OrderStatus{Name: entity.RefundInProgress}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS}
 	OrderStatusRefunded         = Status{Status: entity.OrderStatus{Name: entity.Refunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED}
+	OrderStatusPartiallyRefunded = Status{Status: entity.OrderStatus{Name: entity.PartiallyRefunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED}
 
 	orderStatuses = []*Status{
 		&OrderStatusPlaced,
@@ -47,6 +48,7 @@ var (
 		&OrderStatusPendingReturn,
 		&OrderStatusRefundInProgress,
 		&OrderStatusRefunded,
+		&OrderStatusPartiallyRefunded,
 	}
 
 	entityOrderStatuses = []entity.OrderStatus{}

@@ -557,8 +557,12 @@ func TestOrderLifecycle(t *testing.T) {
 		err = store.Order().DeliveredOrder(ctx, order.UUID)
 		require.NoError(t, err)
 
-		// Refund order
-		err = store.Order().RefundOrder(ctx, order.UUID)
+		// User cancels from Delivered -> PendingReturn (parcel return requested)
+		_, err = store.Order().CancelOrderByUser(ctx, order.UUID, orderNew.Buyer.Email, "changed mind")
+		require.NoError(t, err)
+
+		// Admin refunds (full refund, empty orderItemIDs)
+		err = store.Order().RefundOrder(ctx, order.UUID, nil)
 		require.NoError(t, err)
 
 		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
@@ -566,6 +570,62 @@ func TestOrderLifecycle(t *testing.T) {
 		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
 		require.True(t, ok)
 		require.Equal(t, entity.Refunded, status.Status.Name)
+	})
+
+	t.Run("Partial_Refund_Flow", func(t *testing.T) {
+		// Create order with 2 items for partial refund test
+		orderNewPartial := createTestOrderNew(t, store, product)
+		orderNewPartial.Items = append(orderNewPartial.Items, entity.OrderItemInsert{
+			ProductId: product.Id,
+			Quantity:  decimal.NewFromInt(1),
+			SizeId:    orderNewPartial.Items[0].SizeId,
+		})
+		order, _, err := store.Order().CreateOrder(ctx, orderNewPartial, false, time.Now().Add(time.Hour))
+		require.NoError(t, err)
+
+		_, err = store.Order().InsertFiatInvoice(ctx, order.UUID, "test-client-secret", entity.PaymentMethod{
+			Id:      cache.PaymentMethodCardTest.Method.Id,
+			Name:    entity.CARD_TEST,
+			Allowed: true,
+		})
+		require.NoError(t, err)
+
+		payment := &entity.Payment{
+			PaymentInsert: entity.PaymentInsert{
+				OrderId:                          order.Id,
+				PaymentMethodID:                  cache.PaymentMethodCardTest.Method.Id,
+				TransactionID:                    sql.NullString{String: "tx_123_partial", Valid: true},
+				TransactionAmount:                decimal.NewFromFloat(200.00),
+				TransactionAmountPaymentCurrency: decimal.NewFromFloat(200.00),
+				IsTransactionDone:                true,
+			},
+		}
+		_, err = store.Order().OrderPaymentDone(ctx, order.UUID, payment)
+		require.NoError(t, err)
+		_, err = store.Order().SetTrackingNumber(ctx, order.UUID, "TRACK456")
+		require.NoError(t, err)
+		err = store.Order().DeliveredOrder(ctx, order.UUID)
+		require.NoError(t, err)
+
+		// User cancels -> PendingReturn
+		_, err = store.Order().CancelOrderByUser(ctx, order.UUID, orderNewPartial.Buyer.Email, "partial return")
+		require.NoError(t, err)
+
+		// Get order items to select one for partial refund
+		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		require.Len(t, orderFull.OrderItems, 2)
+		firstItemID := int32(orderFull.OrderItems[0].Id)
+
+		// Admin partial refund - only first item
+		err = store.Order().RefundOrder(ctx, order.UUID, []int32{firstItemID})
+		require.NoError(t, err)
+
+		orderFull, err = store.Order().GetOrderFullByUUID(ctx, order.UUID)
+		require.NoError(t, err)
+		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+		require.True(t, ok)
+		require.Equal(t, entity.PartiallyRefunded, status.Status.Name)
 	})
 
 	t.Run("Delivery_Flow", func(t *testing.T) {

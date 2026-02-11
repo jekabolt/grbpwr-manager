@@ -632,7 +632,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 }
 
 func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
-	err := s.repo.Order().RefundOrder(ctx, req.OrderUuid)
+	err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),

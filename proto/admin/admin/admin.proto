@@ -386,6 +386,8 @@ message ListOrdersResponse {
 
 message RefundOrderRequest {
   string order_uuid = 1;
+  // Only used when status is PendingReturn. Empty = full refund. Non-empty = partial refund for specified order_item IDs.
+  repeated int32 order_item_ids = 2;
 }
 
 message RefundOrderResponse {}

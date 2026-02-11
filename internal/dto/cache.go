@@ -35,7 +35,8 @@ var (
 		entity.Cancelled:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
 		entity.PendingReturn:    pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN,
 		entity.RefundInProgress: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS,
-		entity.Refunded:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
+		entity.Refunded:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
+		entity.PartiallyRefunded: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED,
 	}
 
 	orderStatusPbEntityMap = map[pb_common.OrderStatusEnum]entity.OrderStatusName{
@@ -47,7 +48,8 @@ var (
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED:          entity.Cancelled,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN:     entity.PendingReturn,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS: entity.RefundInProgress,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:           entity.Refunded,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:            entity.Refunded,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED: entity.PartiallyRefunded,
 	}
 
 	paymentMethodEntityPbMap = map[entity.PaymentMethodName]pb_common.PaymentMethodNameEnum{

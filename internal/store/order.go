@@ -892,7 +892,7 @@ func (ms *MYSQLStore) handlePromoSubscription(ctx context.Context, email string,
 	return nil
 }
 
-func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds []int) (map[int][]entity.OrderItem, error) {
+func getOrdersItems(ctx context.Context, rep dependency.Repository, orderIds ...int) (map[int][]entity.OrderItem, error) {
 	// Return early if no order IDs are provided
 	if len(orderIds) == 0 {
 		return map[int][]entity.OrderItem{}, nil
@@ -1663,7 +1663,7 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 			return ctx.Err()
 		}
 		var err error
-		orderItems, err = getOrdersItems(ctx, rep, ids)
+		orderItems, err = getOrdersItems(ctx, rep, ids...)
 		if err != nil {
 			return fmt.Errorf("can't get order items: %w", err)
 		}
@@ -2117,33 +2117,131 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 	return p, nil
 }
 
-// TODO:
-func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string) error {
-	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+// validateAndMapOrderItems maps order item IDs to OrderItemInsert, skipping IDs that don't
+// belong to the order. Each occurrence of an ID = 1 unit to refund (e.g. [1,1,1] = 3 units).
+// Returns nil for full refund (empty IDs).
+func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int32) ([]entity.OrderItemInsert, error) {
+	if len(orderItemIDs) == 0 {
+		return nil, nil // Signal full refund
+	}
 
+	itemByID := make(map[int]entity.OrderItem, len(orderItems))
+	for _, item := range orderItems {
+		itemByID[item.Id] = item
+	}
+
+	itemsToRefund := make([]entity.OrderItemInsert, 0, len(orderItemIDs))
+
+	for _, id := range orderItemIDs {
+		item, ok := itemByID[int(id)]
+		if !ok {
+			continue // Skip: item does not belong to order
+		}
+		// Each occurrence = 1 unit to refund; use Quantity=1 so RestoreStock sums correctly
+		refundItem := item.OrderItemInsert
+		refundItem.Quantity = decimal.NewFromInt(1)
+		itemsToRefund = append(itemsToRefund, refundItem)
+	}
+
+	if len(itemsToRefund) == 0 {
+		return nil, fmt.Errorf("no valid order items to refund")
+	}
+
+	return itemsToRefund, nil
+}
+
+// refundCoversFullOrder returns true when the requested orderItemIDs cover all order items
+// with at least the full quantity each (e.g. orderItems [1,2,2], orderItemIDs [1,2,2] = full refund).
+func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32) bool {
+	// Count requested units per order_item id
+	requested := make(map[int]int64)
+	for _, id := range orderItemIDs {
+		requested[int(id)]++
+	}
+
+	// Each order item must have requested >= its quantity
+	for _, item := range orderItems {
+		req := requested[item.Id]
+		qty := item.Quantity.IntPart()
+		if req < qty {
+			return false
+		}
+	}
+	return true
+}
+
+// determineRefundScope determines which items to refund and the target status based on
+// the current order status and requested item IDs.
+func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32) ([]entity.OrderItemInsert, *cache.Status, error) {
+	// Full refund for RefundInProgress regardless of orderItemIDs
+	if currentStatus == entity.RefundInProgress {
+		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+	}
+
+	// PendingReturn: check for full vs partial
+	partialItems, err := validateAndMapOrderItems(orderItems, orderItemIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if partialItems == nil {
+		// Empty IDs = full refund
+		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+	}
+
+	// orderItemIDs covers all items with full quantities = full refund (e.g. [1,2,2] for items 1,2 with qty 1,2)
+	if refundCoversFullOrder(orderItems, orderItemIDs) {
+		return entity.ConvertOrderItemToOrderItemInsert(orderItems), &cache.OrderStatusRefunded, nil
+	}
+
+	// Partial refund
+	return partialItems, &cache.OrderStatusPartiallyRefunded, nil
+}
+
+// RefundOrder processes a full or partial refund for an order.
+// for orders in RefundInProgress status, always performs full refund.
+// for orders in PendingReturn status, performs full or partial refund based on orderItemIDs.
+func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32) error {
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
 		if err != nil {
 			return err
 		}
 
-		// Validate order status is Delivered
-		_, err = validateOrderStatus(order, entity.Delivered)
+		orderStatus, err := getOrderStatus(order.OrderStatusId)
 		if err != nil {
-			return fmt.Errorf("order status can be only Delivered: %w", err)
+			return err
 		}
 
-		err = updateOrderStatus(ctx, rep, order.Id, cache.OrderStatusRefunded.Status.Id)
-		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
+		if orderStatus.Status.Name != entity.RefundInProgress && orderStatus.Status.Name != entity.PendingReturn {
+			return fmt.Errorf("order status must be refund_in_progress or pending_return, got %s", orderStatus.Status.Name)
 		}
 
-		return nil
+		itemsMap, err := getOrdersItems(ctx, rep, order.Id)
+		if err != nil {
+			return fmt.Errorf("get order items: %w", err)
+		}
+
+		orderItems := itemsMap[order.Id]
+		if len(orderItems) == 0 {
+			return fmt.Errorf("order has no items")
+		}
+
+		itemsToRefund, targetStatus, err := determineRefundScope(
+			orderStatus.Status.Name,
+			orderItems,
+			orderItemIDs,
+		)
+		if err != nil {
+			return err
+		}
+
+		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsToRefund); err != nil {
+			return fmt.Errorf("restore stock: %w", err)
+		}
+
+		return updateOrderStatus(ctx, rep, order.Id, targetStatus.Status.Id)
 	})
-	if err != nil {
-		return fmt.Errorf("can't update order payment: %w", err)
-	}
-
-	return nil
 }
 
 // TODO:
@@ -2199,7 +2297,7 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	}
 
 	// Check if order can be cancelled (not in non-cancellable states)
-	_, err = validateOrderStatusNot(order, entity.Refunded, entity.Delivered, entity.Shipped, entity.Confirmed)
+	_, err = validateOrderStatusNot(order, entity.Refunded, entity.PartiallyRefunded, entity.Delivered, entity.Shipped, entity.Confirmed)
 	if err != nil {
 		return fmt.Errorf("order cannot be cancelled: %w", err)
 	}
@@ -2272,7 +2370,8 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 	if currentStatus == entity.Cancelled ||
 		currentStatus == entity.PendingReturn ||
 		currentStatus == entity.RefundInProgress ||
-		currentStatus == entity.Refunded {
+		currentStatus == entity.Refunded ||
+		currentStatus == entity.PartiallyRefunded {
 		return nil, fmt.Errorf("order already in refund progress or refunded: current status %s", currentStatus)
 	}
 

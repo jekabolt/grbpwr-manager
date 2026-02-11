@@ -182,8 +182,9 @@ const (
 	Delivered        OrderStatusName = "delivered"
 	Cancelled        OrderStatusName = "cancelled"
 	PendingReturn    OrderStatusName = "pending_return"
-	RefundInProgress OrderStatusName = "refund_in_progress"
-	Refunded         OrderStatusName = "refunded"
+	RefundInProgress   OrderStatusName = "refund_in_progress"
+	Refunded           OrderStatusName = "refunded"
+	PartiallyRefunded  OrderStatusName = "partially_refunded"
 )
 
 // ValidOrderStatusNames is a set of valid order status names
@@ -195,8 +196,9 @@ var ValidOrderStatusNames = map[OrderStatusName]bool{
 	Delivered:        true,
 	Cancelled:        true,
 	PendingReturn:    true,
-	RefundInProgress: true,
-	Refunded:         true,
+	RefundInProgress:  true,
+	Refunded:          true,
+	PartiallyRefunded: true,
 }
 
 // OrderStatus represents the order_status table
