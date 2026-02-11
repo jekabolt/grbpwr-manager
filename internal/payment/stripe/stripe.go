@@ -66,7 +66,7 @@ func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.Payment
 	params := &stripe.PaymentIntentParams{
 		Amount:             stripe.Int64(amountCents),                                 // Amount to charge in the smallest currency unit (e.g., cents for USD)
 		Currency:           stripe.String(order.Order.Currency),                       // Currency in which to charge the payment (use order currency)
-		PaymentMethodTypes: stripe.StringSlice(PaymentMethodTypes),                    // Types of payment methods (e.g., "card")
+		PaymentMethodTypes: stripe.StringSlice(PaymentMethodTypesForCurrency(order.Order.Currency)), // Filter by currency (e.g. Klarna/PayPal don't support KRW)
 		ReceiptEmail:       stripe.String(order.Buyer.Email),                          // Email to send the receipt to
 		Description:        stripe.String(fmt.Sprintf("order #%s", order.Order.UUID)), // Description of the payment
 		Metadata: map[string]string{

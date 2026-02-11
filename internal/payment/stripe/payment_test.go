@@ -1,5 +1,37 @@
 package stripe
 
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestPaymentMethodTypesForCurrency(t *testing.T) {
+	// KRW: only card (Klarna/PayPal/Alipay/WeChat don't support)
+	krw := PaymentMethodTypesForCurrency("KRW")
+	assert.Equal(t, []string{"card"}, krw)
+
+	// EUR: card, Klarna, PayPal, Alipay, WeChat Pay
+	eur := PaymentMethodTypesForCurrency("eur")
+	assert.ElementsMatch(t, []string{"card", "klarna", "paypal", "alipay", "wechat_pay"}, eur)
+
+	// USD: card, Klarna, PayPal, Alipay, WeChat Pay
+	usd := PaymentMethodTypesForCurrency("usd")
+	assert.ElementsMatch(t, []string{"card", "klarna", "paypal", "alipay", "wechat_pay"}, usd)
+
+	// HKD: card, PayPal, Alipay, WeChat Pay (no Klarna)
+	hkd := PaymentMethodTypesForCurrency("HKD")
+	assert.ElementsMatch(t, []string{"card", "paypal", "alipay", "wechat_pay"}, hkd)
+
+	// CNY: card, Alipay, WeChat Pay (Klarna/PayPal don't support CNY)
+	cny := PaymentMethodTypesForCurrency("CNY")
+	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay"}, cny)
+
+	// JPY: card, Alipay, WeChat Pay (Klarna/PayPal don't support JPY)
+	jpy := PaymentMethodTypesForCurrency("JPY")
+	assert.ElementsMatch(t, []string{"card", "alipay", "wechat_pay"}, jpy)
+}
+
 // import (
 // 	"database/sql"
 // 	"testing"
