@@ -155,3 +155,33 @@ func trimSecret(s string) string {
 	// Return the substring up to the index of "_secret_"
 	return s[:index]
 }
+
+// Refund creates a refund for the order via Stripe API.
+// If amount is nil, performs full refund. Otherwise refunds the specified amount in the given currency.
+// Requires payment with valid ClientSecret (PaymentIntent) and IsTransactionDone.
+func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error {
+	ok := payment.ClientSecret.Valid
+	if !ok {
+		return fmt.Errorf("payment has no client secret (PaymentIntent)")
+	}
+
+	paymentIntentID := trimSecret(payment.ClientSecret.String)
+	params := &stripe.RefundParams{
+		PaymentIntent: stripe.String(paymentIntentID),
+		Reason:        stripe.String("requested_by_customer"),
+	}
+	
+	// If amount is specified, set it (for partial refunds). Otherwise omit for full refund.
+	if amount != nil && !amount.IsZero() {
+		amountCents := AmountToSmallestUnit(*amount, currency)
+		params.Amount = stripe.Int64(amountCents)
+	}
+	
+	params.SetIdempotencyKey(orderUUID)
+
+	_, err := p.stripeClient.Refunds.New(params)
+	if err != nil {
+		return fmt.Errorf("stripe refund: %w", err)
+	}
+	return nil
+}

@@ -39,6 +39,7 @@ type OrderFull struct {
 	Buyer              Buyer
 	Billing            Address
 	Shipping           Address
+	StatusHistory      []OrderStatusHistoryWithStatus
 }
 
 // Orders represents the orders table
@@ -217,4 +218,20 @@ type OrderBuyerShipment struct {
 	Order    *Order
 	Buyer    *Buyer
 	Shipment *Shipment
+}
+
+// OrderStatusHistory represents the order_status_history table
+type OrderStatusHistory struct {
+	Id            int            `db:"id"`
+	OrderId       int            `db:"order_id"`
+	OrderStatusId int            `db:"order_status_id"`
+	ChangedAt     time.Time      `db:"changed_at"`
+	ChangedBy     sql.NullString `db:"changed_by"`
+	Notes         sql.NullString `db:"notes"`
+}
+
+// OrderStatusHistoryWithStatus includes status name for API responses
+type OrderStatusHistoryWithStatus struct {
+	OrderStatusHistory
+	StatusName OrderStatusName `db:"status_name"`
 }

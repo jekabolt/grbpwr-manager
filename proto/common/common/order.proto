@@ -33,6 +33,7 @@ message OrderFull {
   Buyer buyer = 7;
   Address billing = 8;
   Address shipping = 9;
+  repeated OrderStatusHistory status_history = 10;
 }
 
 message Order {
@@ -92,4 +93,13 @@ enum OrderStatusEnum {
 message OrderStatus {
   int32 id = 1;
   OrderStatusEnum name = 2;
+}
+
+message OrderStatusHistory {
+  int32 id = 1;
+  int32 order_id = 2;
+  OrderStatusEnum status = 3;
+  google.protobuf.Timestamp changed_at = 4;
+  string changed_by = 5;
+  string notes = 6;
 }

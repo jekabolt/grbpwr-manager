@@ -239,6 +239,8 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting shipping address: %w", err)
 	}
 
+	pbStatusHistory := ConvertEntityOrderStatusHistoryToPb(e.StatusHistory)
+
 	return &pb_common.OrderFull{
 		Order:              pbOrder,
 		OrderItems:         pbOrderItems,
@@ -249,7 +251,25 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		Buyer:              pbBuyer,
 		Billing:            pbBilling,
 		Shipping:           pbShipping,
+		StatusHistory:      pbStatusHistory,
 	}, nil
+}
+
+// ConvertEntityOrderStatusHistoryToPb converts entity status history to protobuf
+func ConvertEntityOrderStatusHistoryToPb(history []entity.OrderStatusHistoryWithStatus) []*pb_common.OrderStatusHistory {
+	result := make([]*pb_common.OrderStatusHistory, len(history))
+	for i, h := range history {
+		statusEnum, _ := ConvertEntityToPbOrderStatus(h.StatusName)
+		result[i] = &pb_common.OrderStatusHistory{
+			Id:        int32(h.Id),
+			OrderId:   int32(h.OrderId),
+			Status:    statusEnum,
+			ChangedAt: timestamppb.New(h.ChangedAt),
+			ChangedBy: h.ChangedBy.String,
+			Notes:     h.Notes.String,
+		}
+	}
+	return result
 }
 
 // ConvertEntityOrderItemsToPbOrderItems converts a slice of entity.OrderItem to a slice of pb_common.OrderItem

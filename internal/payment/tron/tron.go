@@ -475,3 +475,8 @@ func (p *Processor) UpdatePaymentIntentAmount(ctx context.Context, paymentIntent
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
 	go p.monitorPayment(ctx, orderUUID, &payment)
 }
+
+// Refund is a no-op for Tron payments (crypto cannot be refunded via Stripe)
+func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error {
+	return nil
+}

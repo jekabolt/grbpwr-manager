@@ -100,6 +100,7 @@ type (
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
+		SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error
 		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
 	}
 
@@ -121,6 +122,9 @@ type (
 		UpdatePaymentIntentAmount(ctx context.Context, paymentIntentID string, amount decimal.Decimal, currency string) error
 		// StartMonitoringPayment starts monitoring an existing payment
 		StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment)
+		// Refund performs a Stripe refund for an order. No-op for non-Stripe payment methods.
+		// If amount is nil, performs full refund. Otherwise refunds the specified amount in order currency.
+		Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error
 	}
 
 	StripePayment interface {

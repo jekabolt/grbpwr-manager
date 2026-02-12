@@ -671,7 +671,62 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 }
 
 func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderRequest) (*pb_admin.RefundOrderResponse, error) {
-	err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds)
+	orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order for refund",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get order")
+	}
+
+	orderStatus, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "can't get order status by id",
+			slog.String("orderUuid", req.OrderUuid),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get order status by id")
+	}
+
+	// Stripe refund for RefundInProgress or PendingReturn with Stripe payment
+	if orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn {
+		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+		if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
+			handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't get payment handler for refund",
+					slog.String("err", err.Error()),
+				)
+				return nil, status.Errorf(codes.Internal, "can't get payment handler")
+			}
+
+			// Calculate refund amount based on order items
+			var refundAmount *decimal.Decimal
+			if orderStatus.Status.Name == entity.RefundInProgress {
+				// Full refund for RefundInProgress
+				refundAmount = nil // nil = full refund
+			} else {
+				// PendingReturn: calculate amount based on orderItemIds
+				if len(req.OrderItemIds) == 0 {
+					// Empty orderItemIds = full refund
+					refundAmount = nil
+				} else {
+					// Partial refund: calculate amount from specified items
+					amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds)
+					refundAmount = &amount
+				}
+			}
+
+			if err := handler.Refund(ctx, orderFull.Payment, req.OrderUuid, refundAmount, orderFull.Order.Currency); err != nil {
+				slog.Default().ErrorContext(ctx, "stripe refund failed",
+					slog.String("err", err.Error()),
+					slog.String("orderUuid", req.OrderUuid),
+				)
+				return nil, status.Errorf(codes.Internal, "stripe refund failed: %v", err)
+			}
+		}
+	}
+
+	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),
@@ -679,6 +734,25 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		return nil, status.Errorf(codes.Internal, "can't refund order")
 	}
 	return &pb_admin.RefundOrderResponse{}, nil
+}
+
+// calculateRefundAmount calculates the total refund amount based on the specified order item IDs.
+// Each occurrence of an ID in orderItemIds represents 1 unit to refund.
+func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32) decimal.Decimal {
+	itemByID := make(map[int]entity.OrderItem)
+	for _, item := range orderItems {
+		itemByID[item.Id] = item
+	}
+
+	var total decimal.Decimal
+	for _, id := range orderItemIds {
+		item, ok := itemByID[int(id)]
+		if ok {
+			// Each occurrence = 1 unit, use ProductPriceWithSale for the refund amount
+			total = total.Add(item.ProductPriceWithSale)
+		}
+	}
+	return total.Round(2)
 }
 
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {

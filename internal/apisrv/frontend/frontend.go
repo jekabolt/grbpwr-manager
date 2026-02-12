@@ -717,64 +717,232 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
 }
 
+// isOrderEligibleForReturn checks if an order is eligible for return based on delivery date and order age
+// Returns (eligible bool, reason string)
+func isOrderEligibleForReturn(orderFull *entity.OrderFull, statusName entity.OrderStatusName) (bool, string) {
+	const (
+		maxDaysSinceDelivery = 14
+		maxDaysSincePlaced   = 90
+	)
+
+	now := time.Now()
+
+	// Check if order was placed more than 60 days ago
+	daysSincePlaced := now.Sub(orderFull.Order.Placed).Hours() / 24
+	if daysSincePlaced > maxDaysSincePlaced {
+		return false, "order was placed more than 60 days ago and is no longer eligible for return"
+	}
+
+	// If order is delivered, check if delivered more than 14 days ago
+	if statusName == entity.Delivered {
+		// Find when order was delivered from status history
+		var deliveredAt time.Time
+		for _, history := range orderFull.StatusHistory {
+			if history.StatusName == entity.Delivered {
+				deliveredAt = history.ChangedAt
+				break
+			}
+		}
+
+		if !deliveredAt.IsZero() {
+			daysSinceDelivery := now.Sub(deliveredAt).Hours() / 24
+			if daysSinceDelivery > maxDaysSinceDelivery {
+				return false, "order was delivered more than 14 days ago and is no longer eligible for return"
+			}
+		}
+	}
+
+	return true, ""
+}
+
 func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelOrderByUserRequest) (*pb_frontend.CancelOrderByUserResponse, error) {
-	// Decode base64 email
-	email, err := base64.StdEncoding.DecodeString(req.B64Email)
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.OrderUuid == "" {
+		return nil, status.Error(codes.InvalidArgument, "orderUuid is required")
+	}
+	if req.B64Email == "" {
+		return nil, status.Error(codes.InvalidArgument, "email is required")
+	}
+	if req.Reason == "" {
+		return nil, status.Error(codes.InvalidArgument, "reason is required")
+	}
+
+	emailBytes, err := base64.StdEncoding.DecodeString(req.B64Email)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't decode email",
 			slog.String("err", err.Error()),
+			slog.String("order_uuid", req.OrderUuid),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "can't decode email")
+		return nil, status.Error(codes.InvalidArgument, "can't decode email")
 	}
+	email := string(emailBytes)
 
-	// Validate reason
-	if req.Reason == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "reason is required")
-	}
-
-	// Cancel order by user
-	orderFull, err := s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, string(email), req.Reason)
+	orderFull, err := s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, email, req.Reason)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't cancel order by user",
 			slog.String("err", err.Error()),
-			slog.String("orderUuid", req.OrderUuid),
-			slog.String("email", string(email)),
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("email", email),
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
 	}
 
-	// Convert entity to protobuf
+	os, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "can't get order status by id",
+			slog.String("order_uuid", req.OrderUuid),
+		)
+		return nil, status.Error(codes.Internal, "can't get order status by id")
+	}
+	statusName := os.Status.Name
+
+	sendRefundInitiatedEmail := false
+
+	switch statusName {
+	case entity.RefundInProgress, entity.PendingReturn, entity.Refunded, entity.PartiallyRefunded, entity.Cancelled:
+		slog.Default().InfoContext(ctx, "order already in terminal/refund flow state",
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("status", string(statusName)),
+		)
+		return nil, status.Error(codes.AlreadyExists, "order already in refund progress, pending return, refunded, partially refunded, or cancelled")
+
+	case entity.Delivered, entity.Shipped:
+		// Check if order is eligible for return based on time constraints
+		eligible, reason := isOrderEligibleForReturn(orderFull, statusName)
+		if !eligible {
+			slog.Default().InfoContext(ctx, "order not eligible for return",
+				slog.String("order_uuid", req.OrderUuid),
+				slog.String("status", string(statusName)),
+				slog.String("reason", reason),
+			)
+			return nil, status.Error(codes.FailedPrecondition, reason)
+		}
+
+		// Order is eligible - set status to PendingReturn
+		if err := s.repo.Order().SetOrderStatusToPendingReturn(ctx, req.OrderUuid, "user"); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set order status to pending return",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+			return nil, status.Errorf(codes.Internal, "can't set order to pending return: %v", err)
+		}
+
+		// Refresh order to get updated status
+		orderFull, err = s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, email)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't refresh order after status update",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+			return nil, status.Errorf(codes.Internal, "can't refresh order: %v", err)
+		}
+
+		sendRefundInitiatedEmail = true
+		slog.Default().InfoContext(ctx, "order set to pending return by user",
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("email", email),
+			slog.String("reason", req.Reason),
+		)
+
+	case entity.Placed, entity.AwaitingPayment:
+		if err := s.repo.Order().CancelOrder(ctx, req.OrderUuid); err != nil {
+			slog.Default().ErrorContext(ctx, "can't cancel order",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+			return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+		}
+		slog.Default().InfoContext(ctx, "order cancelled by user (no payment yet)",
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("email", email),
+			slog.String("reason", req.Reason),
+		)
+		return &pb_frontend.CancelOrderByUserResponse{Order: nil}, nil
+
+	case entity.Confirmed:
+		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+		if !ok {
+			slog.Default().ErrorContext(ctx, "can't get payment method by id",
+				slog.String("order_uuid", req.OrderUuid),
+			)
+			return nil, status.Error(codes.Internal, "can't get payment method by id")
+		}
+
+		switch pm.Method.Name {
+		case entity.CARD, entity.CARD_TEST:
+			pHandler, err := s.getPaymentHandler(ctx, pm.Method.Name)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't get payment handler",
+					slog.String("err", err.Error()),
+					slog.String("order_uuid", req.OrderUuid),
+				)
+				return nil, status.Error(codes.Internal, "can't get payment handler")
+			}
+
+			// Full refund for RefundInProgress (amount = nil)
+			if err := pHandler.Refund(ctx, orderFull.Payment, req.OrderUuid, nil, orderFull.Order.Currency); err != nil {
+				slog.Default().ErrorContext(ctx, "can't refund payment",
+					slog.String("err", err.Error()),
+					slog.String("order_uuid", req.OrderUuid),
+				)
+				return nil, status.Errorf(codes.Internal, "can't refund payment: %v", err)
+			}
+
+			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil); err != nil {
+				slog.Default().ErrorContext(ctx, "can't refund order",
+					slog.String("err", err.Error()),
+					slog.String("order_uuid", req.OrderUuid),
+				)
+				return nil, status.Errorf(codes.Internal, "can't refund order: %v", err)
+			}
+
+			sendRefundInitiatedEmail = true
+
+		default:
+			// Keep order cancellation request recorded; actual refund handling depends on payment method implementation.
+			slog.InfoContext(ctx, "confirmed order cancellation requested; refund not auto-handled for payment method",
+				slog.String("order_uuid", req.OrderUuid),
+				slog.String("payment_method", string(pm.Method.Name)),
+			)
+		}
+
+	default:
+		return nil, status.Error(codes.FailedPrecondition, "order can't be cancelled in status: "+string(statusName))
+	}
+
+	if !sendRefundInitiatedEmail && (statusName == entity.RefundInProgress || statusName == entity.PendingReturn) {
+		sendRefundInitiatedEmail = true
+	}
+
+	if sendRefundInitiatedEmail {
+		refundDetails := dto.OrderFullToOrderRefundInitiated(orderFull)
+		if err := s.mailer.SendRefundInitiated(ctx, s.repo, orderFull.Buyer.Email, refundDetails); err != nil {
+			slog.Default().ErrorContext(ctx, "can't send refund initiated email",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+		}
+	}
+
 	pbOrder, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert order to protobuf",
 			slog.String("err", err.Error()),
+			slog.String("order_uuid", req.OrderUuid),
 		)
-		return nil, status.Errorf(codes.Internal, "can't convert order")
-	}
-
-	// Send refund initiated email if order status is RefundInProgress or PendingReturn
-	orderStatus, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
-	if ok && (orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn) {
-		refundDetails := dto.OrderFullToOrderRefundInitiated(orderFull)
-		err = s.mailer.SendRefundInitiated(ctx, s.repo, orderFull.Buyer.Email, refundDetails)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't send refund initiated email",
-				slog.String("err", err.Error()),
-				slog.String("orderUuid", req.OrderUuid),
-			)
-			// Don't fail the cancellation if email fails
-		}
+		return nil, status.Error(codes.Internal, "can't convert order")
 	}
 
 	slog.Default().InfoContext(ctx, "order cancelled by user",
-		slog.String("orderUuid", req.OrderUuid),
-		slog.String("email", string(email)),
+		slog.String("order_uuid", req.OrderUuid),
+		slog.String("email", email),
 		slog.String("reason", req.Reason),
+		slog.String("status", string(statusName)),
 	)
 
-	return &pb_frontend.CancelOrderByUserResponse{
-		Order: pbOrder,
-	}, nil
+	return &pb_frontend.CancelOrderByUserResponse{Order: pbOrder}, nil
 }
 
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {

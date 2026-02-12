@@ -1101,16 +1101,150 @@ func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.
 	return getOrderByUUID(ctx, ms, uuid)
 }
 
-func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
-	query := `UPDATE customer_order SET order_status_id = :orderStatusId WHERE id = :orderId`
-	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-		"orderId":       orderId,
-		"orderStatusId": orderStatusId,
+// ValidStatusTransitions defines allowed status transitions
+// Key: current status, Value: slice of allowed next statuses
+var ValidStatusTransitions = map[entity.OrderStatusName][]entity.OrderStatusName{
+	entity.Placed: {
+		entity.AwaitingPayment,
+		entity.Cancelled,
+	},
+	entity.AwaitingPayment: {
+		entity.Confirmed,
+		entity.Cancelled,
+	},
+	entity.Confirmed: {
+		entity.Shipped,
+		entity.RefundInProgress,
+		entity.Cancelled,
+	},
+	entity.Shipped: {
+		entity.Delivered,
+		entity.PendingReturn,
+	},
+	entity.Delivered: {
+		entity.PendingReturn,
+	},
+	entity.PendingReturn: {
+		entity.Refunded,
+		entity.PartiallyRefunded,
+	},
+	entity.RefundInProgress: {
+		entity.Refunded,
+	},
+	// Terminal states - no transitions allowed
+	entity.Cancelled:         {},
+	entity.Refunded:          {},
+	entity.PartiallyRefunded: {},
+}
+
+// isValidStatusTransition checks if transition from currentStatus to newStatus is allowed
+func isValidStatusTransition(currentStatus, newStatus entity.OrderStatusName) bool {
+	allowedTransitions, exists := ValidStatusTransitions[currentStatus]
+	if !exists {
+		return false
+	}
+
+	for _, allowed := range allowedTransitions {
+		if allowed == newStatus {
+			return true
+		}
+	}
+	return false
+}
+
+// updateOrderStatusWithValidation updates order status with transition validation.
+// Returns error if the status transition is not allowed.
+func updateOrderStatusWithValidation(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderId int,
+	newStatusId int,
+	changedBy string,
+	notes string,
+) error {
+	// Get current order status
+	var currentStatusId int
+	query := `SELECT order_status_id FROM customer_order WHERE id = ?`
+	err := rep.DB().GetContext(ctx, &currentStatusId, query, orderId)
+	if err != nil {
+		return fmt.Errorf("get current status: %w", err)
+	}
+
+	// Get status names for validation
+	currentStatus, err := getOrderStatus(currentStatusId)
+	if err != nil {
+		return fmt.Errorf("get current status name: %w", err)
+	}
+
+	newStatus, err := getOrderStatus(newStatusId)
+	if err != nil {
+		return fmt.Errorf("get new status name: %w", err)
+	}
+
+	// Validate transition
+	if !isValidStatusTransition(currentStatus.Status.Name, newStatus.Status.Name) {
+		return fmt.Errorf(
+			"invalid status transition: cannot change from %s to %s",
+			currentStatus.Status.Name,
+			newStatus.Status.Name,
+		)
+	}
+
+	// Update status
+	updateQuery := `
+		UPDATE customer_order 
+		SET order_status_id = :newStatusId,
+			modified = CURRENT_TIMESTAMP
+		WHERE id = :orderId
+	`
+
+	err = ExecNamed(ctx, rep.DB(), updateQuery, map[string]any{
+		"orderId":     orderId,
+		"newStatusId": newStatusId,
 	})
 	if err != nil {
-		return fmt.Errorf("can't update order status: %w", err)
+		return fmt.Errorf("update order status: %w", err)
 	}
-	return nil
+
+	// Insert into status history
+	historyQuery := `
+		INSERT INTO order_status_history (order_id, order_status_id, changed_by, notes)
+		VALUES (:orderId, :statusId, :changedBy, :notes)
+	`
+
+	return ExecNamed(ctx, rep.DB(), historyQuery, map[string]any{
+		"orderId":   orderId,
+		"statusId":  newStatusId,
+		"changedBy": changedBy,
+		"notes":     notes,
+	})
+}
+
+// updateOrderStatus is a wrapper for backward compatibility
+func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
+	return updateOrderStatusWithValidation(ctx, rep, orderId, orderStatusId, "system", "")
+}
+
+// getOrderStatusHistory retrieves the complete status history for an order
+func getOrderStatusHistory(ctx context.Context, rep dependency.Repository, orderId int) ([]entity.OrderStatusHistoryWithStatus, error) {
+	query := `
+		SELECT 
+			osh.id,
+			osh.order_id,
+			osh.order_status_id,
+			osh.changed_at,
+			osh.changed_by,
+			osh.notes,
+			os.name as status_name
+		FROM order_status_history osh
+		JOIN order_status os ON osh.order_status_id = os.id
+		WHERE osh.order_id = ?
+		ORDER BY osh.changed_at ASC
+	`
+
+	var history []entity.OrderStatusHistoryWithStatus
+	err := rep.DB().SelectContext(ctx, &history, query, orderId)
+	return history, err
 }
 
 func insertRefundedOrderItems(ctx context.Context, rep dependency.Repository, orderId int, refundedByItem map[int]int64) error {
@@ -1127,17 +1261,77 @@ func insertRefundedOrderItems(ctx context.Context, rep dependency.Repository, or
 	return nil
 }
 
-func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal) error {
-	query := `UPDATE customer_order SET order_status_id = :orderStatusId, refunded_amount = :refundedAmount WHERE id = :orderId`
-	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
+// updateOrderStatusAndRefundedAmountWithValidation updates order status and refunded amount with validation
+func updateOrderStatusAndRefundedAmountWithValidation(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderId int,
+	orderStatusId int,
+	refundedAmount decimal.Decimal,
+	changedBy string,
+) error {
+	// Get current order status for validation
+	var currentStatusId int
+	query := `SELECT order_status_id FROM customer_order WHERE id = ?`
+	err := rep.DB().GetContext(ctx, &currentStatusId, query, orderId)
+	if err != nil {
+		return fmt.Errorf("get current status: %w", err)
+	}
+
+	// Get status names for validation
+	currentStatus, err := getOrderStatus(currentStatusId)
+	if err != nil {
+		return fmt.Errorf("get current status name: %w", err)
+	}
+
+	newStatus, err := getOrderStatus(orderStatusId)
+	if err != nil {
+		return fmt.Errorf("get new status name: %w", err)
+	}
+
+	// Validate transition
+	if !isValidStatusTransition(currentStatus.Status.Name, newStatus.Status.Name) {
+		return fmt.Errorf(
+			"invalid status transition: cannot change from %s to %s",
+			currentStatus.Status.Name,
+			newStatus.Status.Name,
+		)
+	}
+
+	// Update status and refunded amount
+	updateQuery := `
+		UPDATE customer_order 
+		SET order_status_id = :orderStatusId,
+			refunded_amount = :refundedAmount,
+			modified = CURRENT_TIMESTAMP
+		WHERE id = :orderId
+	`
+
+	err = ExecNamed(ctx, rep.DB(), updateQuery, map[string]any{
 		"orderId":        orderId,
 		"orderStatusId":  orderStatusId,
 		"refundedAmount": refundedAmount.Round(2),
 	})
 	if err != nil {
-		return fmt.Errorf("can't update order status and refunded amount: %w", err)
+		return fmt.Errorf("update order: %w", err)
 	}
-	return nil
+
+	// Insert history
+	historyQuery := `
+		INSERT INTO order_status_history (order_id, order_status_id, changed_by, notes)
+		VALUES (:orderId, :statusId, :changedBy, :notes)
+	`
+
+	return ExecNamed(ctx, rep.DB(), historyQuery, map[string]any{
+		"orderId":   orderId,
+		"statusId":  orderStatusId,
+		"changedBy": changedBy,
+		"notes":     fmt.Sprintf("Refunded amount: %s", refundedAmount.String()),
+	})
+}
+
+func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal) error {
+	return updateOrderStatusAndRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, "admin")
 }
 
 func refundAmountFromItems(items []entity.OrderItemInsert) decimal.Decimal {
@@ -1956,6 +2150,13 @@ func (ms *MYSQLStore) GetOrderFullByUUID(ctx context.Context, uuid string) (*ent
 		return nil, fmt.Errorf("order is not found")
 	}
 
+	// Get status history
+	statusHistory, err := getOrderStatusHistory(ctx, ms, order.Id)
+	if err != nil {
+		return nil, fmt.Errorf("get status history: %w", err)
+	}
+	ofs[0].StatusHistory = statusHistory
+
 	return &ofs[0], nil
 }
 
@@ -1979,6 +2180,13 @@ func (ms *MYSQLStore) GetOrderByUUIDAndEmail(ctx context.Context, orderUUID stri
 	if err != nil {
 		return nil, fmt.Errorf("can't fetch order info: %w", err)
 	}
+
+	// Get status history
+	statusHistory, err := getOrderStatusHistory(ctx, ms, order.Id)
+	if err != nil {
+		return nil, fmt.Errorf("get status history: %w", err)
+	}
+	ofs[0].StatusHistory = statusHistory
 
 	return &ofs[0], nil
 }
@@ -2493,6 +2701,24 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 	}
 
 	return nil
+}
+
+// SetOrderStatusToPendingReturn sets an order status to PendingReturn with validation
+func (ms *MYSQLStore) SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error {
+	// Get order by UUID
+	order, err := getOrderByUUID(ctx, ms, orderUUID)
+	if err != nil {
+		return fmt.Errorf("get order by uuid: %w", err)
+	}
+
+	// Get PendingReturn status ID
+	pendingReturnStatus, ok := cache.GetOrderStatusByName(entity.PendingReturn)
+	if !ok {
+		return fmt.Errorf("can't get order status by name %s", entity.PendingReturn)
+	}
+
+	// Update status with validation
+	return updateOrderStatusWithValidation(ctx, ms, order.Id, pendingReturnStatus.Status.Id, changedBy, "User requested return")
 }
 
 // CancelOrderByUser allows a user to cancel or request a refund for their order
