@@ -63,7 +63,7 @@ type (
 		// RecordStockChange inserts stock change history entries.
 		RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error
 		// GetStockChangeHistory returns paginated stock change history with optional filters.
-		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
+		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error

@@ -14,6 +14,7 @@ import "common/product.proto";
 import "common/promo.proto";
 import "common/support.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
@@ -325,12 +326,14 @@ message UpdateProductSizeStockRequest {
 message UpdateProductSizeStockResponse {}
 
 message ListStockChangeHistoryRequest {
-  int32 product_id = 1;
-  int32 size_id = 2;
-  common.StockChangeSource source = 3;
-  int32 limit = 4;
-  int32 offset = 5;
-  common.OrderFactor order_factor = 6;
+  google.protobuf.Timestamp date_from = 1;
+  google.protobuf.Timestamp date_to = 2; // inclusive
+  int32 product_id = 3;
+  optional int32 size_id = 4; // Optional: filter by size
+  common.StockChangeSource source = 5;
+  int32 limit = 6; // 0 = return all records
+  int32 offset = 7;
+  optional common.OrderFactor order_factor = 8; // Optional: default DESC (newest first)
 }
 
 message ListStockChangeHistoryResponse {

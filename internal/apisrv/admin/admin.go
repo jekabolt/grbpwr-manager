@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"log/slog"
 
@@ -335,22 +336,35 @@ func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListS
 		pid := int(req.ProductId)
 		productId = &pid
 	}
-	if req.SizeId != 0 {
-		sid := int(req.SizeId)
+	if req.SizeId != nil && *req.SizeId != 0 {
+		sid := int(*req.SizeId)
 		sizeId = &sid
 	}
-	limit := int(req.Limit)
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	var dateFrom, dateTo *time.Time
+	if req.DateFrom != nil {
+		t := req.DateFrom.AsTime()
+		dateFrom = &t
 	}
+	if req.DateTo != nil {
+		t := req.DateTo.AsTime()
+		dateTo = &t
+	}
+	limit := int(req.Limit)
 	offset := int(req.Offset)
 	if offset < 0 {
 		offset = 0
 	}
-	orderFactor := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
+	// limit=0 means not set -> return all records; otherwise cap at 100
+	if limit > 0 && limit > 100 {
+		limit = 100
+	}
+	orderFactor := entity.Descending
+	if req.OrderFactor != nil {
+		orderFactor = dto.ConvertPBCommonOrderFactorToEntity(*req.OrderFactor)
+	}
 
 	sourceFilter := dto.StockChangeSourceToFilterString(req.Source)
-	changes, total, err := s.repo.Products().GetStockChangeHistory(ctx, productId, sizeId, sourceFilter, limit, offset, orderFactor)
+	changes, total, err := s.repo.Products().GetStockChangeHistory(ctx, productId, sizeId, dateFrom, dateTo, sourceFilter, limit, offset, orderFactor)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get stock change history",
 			slog.String("err", err.Error()),

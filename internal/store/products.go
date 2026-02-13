@@ -1561,7 +1561,7 @@ func (ms *MYSQLStore) RecordStockChange(ctx context.Context, entries []entity.St
 	return BulkInsert(ctx, ms.db, "product_stock_change_history", rows)
 }
 
-func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, sizeId *int, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error) {
+func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error) {
 	baseQuery := `FROM product_stock_change_history WHERE 1=1`
 	params := map[string]any{"limit": limit, "offset": offset}
 	if productId != nil {
@@ -1571,6 +1571,14 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 	if sizeId != nil {
 		baseQuery += ` AND size_id = :sizeId`
 		params["sizeId"] = *sizeId
+	}
+	if dateFrom != nil {
+		baseQuery += ` AND created_at >= :dateFrom`
+		params["dateFrom"] = *dateFrom
+	}
+	if dateTo != nil {
+		baseQuery += ` AND created_at <= :dateTo`
+		params["dateTo"] = *dateTo
 	}
 	if source != "" {
 		baseQuery += ` AND source = :source`
@@ -1590,7 +1598,13 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 
 	dataQuery := `SELECT id, product_id, size_id, quantity_delta, quantity_before, quantity_after, source,
 		COALESCE(order_id, 0) AS order_id, COALESCE(order_uuid, '') AS order_uuid,
-		COALESCE(admin_username, '') AS admin_username, created_at ` + baseQuery + ` ` + orderBy + ` LIMIT :limit OFFSET :offset`
+		COALESCE(admin_username, '') AS admin_username, created_at ` + baseQuery + ` ` + orderBy
+	if limit > 0 {
+		dataQuery += ` LIMIT :limit OFFSET :offset`
+	} else {
+		delete(params, "limit")
+		delete(params, "offset")
+	}
 	changes, err := QueryListNamed[entity.StockChange](ctx, ms.db, dataQuery, params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get stock change history: %w", err)
