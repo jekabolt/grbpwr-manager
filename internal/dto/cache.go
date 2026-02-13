@@ -145,14 +145,27 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			})
 		}
 
+		pbRegions := make([]pb_common.ShippingRegion, 0, len(s.AllowedRegions))
+		for _, r := range s.AllowedRegions {
+			if e, ok := entityRegionToPb[r]; ok {
+				pbRegions = append(pbRegions, e)
+			}
+		}
+		expectedDeliveryTime := ""
+		if s.ExpectedDeliveryTime.Valid {
+			expectedDeliveryTime = s.ExpectedDeliveryTime.String
+		}
 		commonDict.ShipmentCarriers = append(commonDict.ShipmentCarriers, &pb_common.ShipmentCarrier{
 			Id: int32(s.Id),
 			ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
-				Carrier:     s.Carrier,
-				Allowed:     s.Allowed,
-				Description: s.Description,
+				Carrier:              s.Carrier,
+				Allowed:              s.Allowed,
+				Description:          s.Description,
+				TrackingUrl:          s.TrackingURL,
+				ExpectedDeliveryTime: expectedDeliveryTime,
 			},
-			Prices: pbPrices,
+			Prices:         pbPrices,
+			AllowedRegions: pbRegions,
 		})
 	}
 

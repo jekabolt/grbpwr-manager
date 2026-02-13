@@ -201,13 +201,13 @@ func (ms *MYSQLStore) getPromos(ctx context.Context) ([]entity.PromoCode, error)
 }
 
 func (ms *MYSQLStore) getShipmentCarriers(ctx context.Context) ([]entity.ShipmentCarrier, error) {
-	query := `SELECT id, carrier, tracking_url, allowed, description FROM shipment_carrier`
+	query := `SELECT id, carrier, tracking_url, allowed, description, expected_delivery_time FROM shipment_carrier`
 	shipmentCarriers, err := QueryListNamed[entity.ShipmentCarrier](ctx, ms.db, query, map[string]interface{}{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get ShipmentCarrier by id: %w", err)
 	}
 
-	// Load prices for all shipment carriers
+	// Load prices and regions for all shipment carriers
 	if len(shipmentCarriers) > 0 {
 		carrierIds := make([]int, len(shipmentCarriers))
 		for i := range shipmentCarriers {
@@ -219,13 +219,44 @@ func (ms *MYSQLStore) getShipmentCarriers(ctx context.Context) ([]entity.Shipmen
 			return nil, fmt.Errorf("can't get shipment carrier prices: %w", err)
 		}
 
-		// Assign prices to carriers
+		regions, err := ms.fetchShipmentCarrierRegions(ctx, carrierIds)
+		if err != nil {
+			return nil, fmt.Errorf("can't get shipment carrier regions: %w", err)
+		}
+
+		// Assign prices and regions to carriers
 		for i := range shipmentCarriers {
 			shipmentCarriers[i].Prices = prices[shipmentCarriers[i].Id]
+			shipmentCarriers[i].AllowedRegions = regions[shipmentCarriers[i].Id]
 		}
 	}
 
 	return shipmentCarriers, nil
+}
+
+// fetchShipmentCarrierRegions fetches all regions for given shipment carrier IDs
+func (ms *MYSQLStore) fetchShipmentCarrierRegions(ctx context.Context, carrierIds []int) (map[int][]string, error) {
+	if len(carrierIds) == 0 {
+		return map[int][]string{}, nil
+	}
+
+	type regionRow struct {
+		ShipmentCarrierId int    `db:"shipment_carrier_id"`
+		Region            string `db:"region"`
+	}
+	query := `SELECT shipment_carrier_id, region FROM shipment_carrier_region WHERE shipment_carrier_id IN (:carrierIds) ORDER BY shipment_carrier_id, region`
+	rows, err := QueryListNamed[regionRow](ctx, ms.db, query, map[string]any{
+		"carrierIds": carrierIds,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	regionMap := make(map[int][]string)
+	for _, r := range rows {
+		regionMap[r.ShipmentCarrierId] = append(regionMap[r.ShipmentCarrierId], r.Region)
+	}
+	return regionMap, nil
 }
 
 // fetchShipmentCarrierPrices fetches all prices for given shipment carrier IDs

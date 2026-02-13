@@ -563,15 +563,26 @@ func validatePaymentMethodAllowed(pm *entity.PaymentMethod) error {
 	return nil
 }
 
-// validateShipmentCarrier validates a shipment carrier by ID and checks if it's allowed.
+// validateShipmentCarrier validates a shipment carrier by ID, checks if it's allowed, and if it serves the shipping region.
+// shippingCountry is the ISO 3166-1 alpha-2 code from the shipping address; if empty, geo check is skipped.
 // Returns the shipment carrier or an error if validation fails.
-func validateShipmentCarrier(carrierId int) (*entity.ShipmentCarrier, error) {
+func validateShipmentCarrier(carrierId int, shippingCountry string) (*entity.ShipmentCarrier, error) {
 	carrier, ok := cache.GetShipmentCarrierById(carrierId)
 	if !ok {
 		return nil, fmt.Errorf("shipment carrier does not exist: carrier id %d", carrierId)
 	}
 	if !carrier.Allowed {
 		return nil, fmt.Errorf("shipment carrier is not allowed: carrier id %d", carrierId)
+	}
+	// Geo restriction: if carrier has allowed regions and we have a country, verify the region
+	if shippingCountry != "" && len(carrier.AllowedRegions) > 0 {
+		region, ok := entity.CountryToRegion(shippingCountry)
+		if !ok {
+			return nil, fmt.Errorf("shipping country %s could not be mapped to a region", shippingCountry)
+		}
+		if !carrier.AvailableForRegion(region) {
+			return nil, fmt.Errorf("shipment carrier does not serve region %s", region)
+		}
 	}
 	return &carrier, nil
 }
@@ -758,8 +769,12 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		return nil, false, err
 	}
 
-	// Validate shipment carrier
-	shipmentCarrier, err := validateShipmentCarrier(orderNew.ShipmentCarrierId)
+	// Validate shipment carrier (including geo restrictions)
+	shippingCountry := ""
+	if orderNew.ShippingAddress != nil {
+		shippingCountry = orderNew.ShippingAddress.Country
+	}
+	shipmentCarrier, err := validateShipmentCarrier(orderNew.ShipmentCarrierId, shippingCountry)
 	if err != nil {
 		return nil, false, err
 	}

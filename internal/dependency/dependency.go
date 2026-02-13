@@ -191,6 +191,9 @@ type (
 	}
 
 	Settings interface {
+		AddShipmentCarrier(ctx context.Context, carrier *entity.ShipmentCarrierInsert, prices map[string]decimal.Decimal, allowedRegions []string) (int, error)
+		UpdateShipmentCarrier(ctx context.Context, id int, carrier *entity.ShipmentCarrierInsert, prices map[string]decimal.Decimal, allowedRegions []string) error
+		DeleteShipmentCarrier(ctx context.Context, id int) error
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
 		SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error

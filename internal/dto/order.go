@@ -4,6 +4,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -336,6 +337,52 @@ func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, 
 	}, nil
 }
 
+// EntityShippingRegionToPb maps entity region string to proto enum
+var entityRegionToPb = map[string]pb_common.ShippingRegion{
+	string(entity.ShippingRegionAfrica):      pb_common.ShippingRegion_SHIPPING_REGION_AFRICA,
+	string(entity.ShippingRegionAmericas):   pb_common.ShippingRegion_SHIPPING_REGION_AMERICAS,
+	string(entity.ShippingRegionAsiaPacific): pb_common.ShippingRegion_SHIPPING_REGION_ASIA_PACIFIC,
+	string(entity.ShippingRegionEurope):     pb_common.ShippingRegion_SHIPPING_REGION_EUROPE,
+	string(entity.ShippingRegionMiddleEast):  pb_common.ShippingRegion_SHIPPING_REGION_MIDDLE_EAST,
+}
+
+// PbShippingRegionToEntity maps proto enum to entity region string
+var pbRegionToEntity = map[pb_common.ShippingRegion]string{
+	pb_common.ShippingRegion_SHIPPING_REGION_AFRICA:       string(entity.ShippingRegionAfrica),
+	pb_common.ShippingRegion_SHIPPING_REGION_AMERICAS:     string(entity.ShippingRegionAmericas),
+	pb_common.ShippingRegion_SHIPPING_REGION_ASIA_PACIFIC: string(entity.ShippingRegionAsiaPacific),
+	pb_common.ShippingRegion_SHIPPING_REGION_EUROPE:       string(entity.ShippingRegionEurope),
+	pb_common.ShippingRegion_SHIPPING_REGION_MIDDLE_EAST:  string(entity.ShippingRegionMiddleEast),
+}
+
+// ConvertShipmentCarrierRequestToEntity converts request fields to entity.ShipmentCarrierInsert
+func ConvertShipmentCarrierRequestToEntity(carrier, trackingURL, description, expectedDeliveryTime string, allowed bool) entity.ShipmentCarrierInsert {
+	return entity.ShipmentCarrierInsert{
+		Carrier:     strings.TrimSpace(carrier),
+		TrackingURL: trackingURL,
+		Allowed:     allowed,
+		Description: description,
+		ExpectedDeliveryTime: sql.NullString{
+			String: expectedDeliveryTime,
+			Valid:  expectedDeliveryTime != "",
+		},
+	}
+}
+
+// ConvertPbShippingRegionsToEntity converts proto enum slice to entity region strings (skips UNKNOWN)
+func ConvertPbShippingRegionsToEntity(pbRegions []pb_common.ShippingRegion) []string {
+	out := make([]string, 0, len(pbRegions))
+	for _, r := range pbRegions {
+		if r == pb_common.ShippingRegion_SHIPPING_REGION_UNKNOWN {
+			continue
+		}
+		if s, ok := pbRegionToEntity[r]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) (*pb_common.ShipmentCarrier, error) {
 	if s == nil {
 		return nil, fmt.Errorf("empty entity.ShipmentCarrier")
@@ -352,14 +399,29 @@ func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) 
 		})
 	}
 
+	// Convert allowed regions to proto enum
+	pbRegions := make([]pb_common.ShippingRegion, 0, len(s.AllowedRegions))
+	for _, r := range s.AllowedRegions {
+		if e, ok := entityRegionToPb[r]; ok {
+			pbRegions = append(pbRegions, e)
+		}
+	}
+
+	expectedDeliveryTime := ""
+	if s.ExpectedDeliveryTime.Valid {
+		expectedDeliveryTime = s.ExpectedDeliveryTime.String
+	}
 	return &pb_common.ShipmentCarrier{
 		Id: int32(s.Id),
 		ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
-			Carrier:     s.Carrier,
-			Allowed:     s.Allowed,
-			Description: s.Description,
+			Carrier:              s.Carrier,
+			Allowed:              s.Allowed,
+			Description:          s.Description,
+			TrackingUrl:          s.TrackingURL,
+			ExpectedDeliveryTime: expectedDeliveryTime,
 		},
-		Prices: pbPrices,
+		Prices:         pbPrices,
+		AllowedRegions: pbRegions,
 	}, nil
 }
 

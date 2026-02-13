@@ -4488,16 +4488,12 @@ func TestUpdateSettings(t *testing.T) {
 					{
 						Carrier: "DHL",
 						Allow:   true,
-						Price: &pb_decimal.Decimal{
-							Value: "10.50",
-						},
+						Prices:  map[string]*pb_decimal.Decimal{"EUR": {Value: "10.50"}},
 					},
 					{
 						Carrier: "FedEx",
 						Allow:   false,
-						Price: &pb_decimal.Decimal{
-							Value: "15.75",
-						},
+						Prices:  map[string]*pb_decimal.Decimal{"EUR": {Value: "15.75"}},
 					},
 				},
 				PaymentMethods: []*pb_admin.PaymentMethodAllowance{
@@ -4517,14 +4513,12 @@ func TestUpdateSettings(t *testing.T) {
 				settingsMock := new(mocks.Settings)
 				// Shipment carrier expectations
 				settingsMock.On("SetShipmentCarrierAllowance", mock.Anything, "DHL", true).Return(nil)
-				settingsMock.On("SetShipmentCarrierPrice", mock.Anything, "DHL", mock.MatchedBy(func(d decimal.Decimal) bool {
-					expected := decimal.NewFromFloat(10.50)
-					return d.Equal(expected)
+				settingsMock.On("SetShipmentCarrierPrices", mock.Anything, "DHL", mock.MatchedBy(func(m map[string]decimal.Decimal) bool {
+					return len(m) == 1 && m["EUR"].Equal(decimal.NewFromFloat(10.50))
 				})).Return(nil)
 				settingsMock.On("SetShipmentCarrierAllowance", mock.Anything, "FedEx", false).Return(nil)
-				settingsMock.On("SetShipmentCarrierPrice", mock.Anything, "FedEx", mock.MatchedBy(func(d decimal.Decimal) bool {
-					expected := decimal.NewFromFloat(15.75)
-					return d.Equal(expected)
+				settingsMock.On("SetShipmentCarrierPrices", mock.Anything, "FedEx", mock.MatchedBy(func(m map[string]decimal.Decimal) bool {
+					return len(m) == 1 && m["EUR"].Equal(decimal.NewFromFloat(15.75))
 				})).Return(nil)
 
 				// Payment method expectations
@@ -4547,9 +4541,7 @@ func TestUpdateSettings(t *testing.T) {
 					{
 						Carrier: "InvalidCarrier",
 						Allow:   true,
-						Price: &pb_decimal.Decimal{
-							Value: "10.50",
-						},
+						Prices:  map[string]*pb_decimal.Decimal{"EUR": {Value: "10.50"}},
 					},
 				},
 				SiteAvailable: true,
@@ -4629,9 +4621,7 @@ func TestUpdateSettings(t *testing.T) {
 					{
 						Carrier: "DHL",
 						Allow:   true,
-						Price: &pb_decimal.Decimal{
-							Value: "invalid_price",
-						},
+						Prices:  map[string]*pb_decimal.Decimal{"EUR": {Value: "invalid_price"}},
 					},
 				},
 				SiteAvailable: true,
@@ -4640,6 +4630,7 @@ func TestUpdateSettings(t *testing.T) {
 			mock: func(r *mocks.Repository) {
 				settingsMock := new(mocks.Settings)
 				settingsMock.On("SetShipmentCarrierAllowance", mock.Anything, "DHL", true).Return(nil)
+				// SetShipmentCarrierPrices not called - invalid price causes continue
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
 				r.On("Settings").Return(settingsMock)

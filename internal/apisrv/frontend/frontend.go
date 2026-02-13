@@ -520,6 +520,16 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		)
 		return nil, status.Errorf(codes.PermissionDenied, "shipment carrier not allowed")
 	}
+	// Geo restriction: if carrier has allowed regions and we have a country, verify the region
+	if scOk && req.Country != "" && len(shipmentCarrier.AllowedRegions) > 0 {
+		region, ok := entity.CountryToRegion(req.Country)
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "shipping country %s could not be mapped to a region", req.Country)
+		}
+		if !shipmentCarrier.AvailableForRegion(region) {
+			return nil, status.Errorf(codes.PermissionDenied, "shipment carrier does not serve region %s", region)
+		}
+	}
 
 	var shipmentPrice decimal.Decimal
 	if scOk && shipmentCarrier.Allowed {

@@ -12,6 +12,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/promo.proto";
+import "common/shipment.proto";
 import "common/support.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
@@ -219,6 +220,27 @@ service AdminService {
       post: "/api/admin/settings/update"
       body: "*"
     };
+  }
+
+  // AddShipmentCarrier adds a new shipping carrier.
+  rpc AddShipmentCarrier(AddShipmentCarrierRequest) returns (AddShipmentCarrierResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/shipment-carrier/add"
+      body: "*"
+    };
+  }
+
+  // UpdateShipmentCarrier updates an existing shipping carrier.
+  rpc UpdateShipmentCarrier(UpdateShipmentCarrierRequest) returns (UpdateShipmentCarrierResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/shipment-carrier/update"
+      body: "*"
+    };
+  }
+
+  // DeleteShipmentCarrier deletes a shipping carrier by ID.
+  rpc DeleteShipmentCarrier(DeleteShipmentCarrierRequest) returns (DeleteShipmentCarrierResponse) {
+    option (google.api.http) = {delete: "/api/admin/settings/shipment-carrier/{id}"};
   }
 
   // SUPPORT MANAGER
@@ -490,6 +512,39 @@ message ShipmentCarrierAllowancePrice {
   bool allow = 2;
   map<string, google.type.Decimal> prices = 3; // Map of currency code to price (e.g., "EUR" -> price)
 }
+
+message AddShipmentCarrierRequest {
+  string carrier = 1;
+  map<string, google.type.Decimal> prices = 2; // EUR, USD, GBP, JPY, CNY, KRW required
+  string tracking_url = 3;
+  string expected_delivery_time = 4;
+  string description = 5;
+  repeated common.ShippingRegion allowed_regions = 6; // empty = global
+  bool allowed = 7;
+}
+
+message AddShipmentCarrierResponse {
+  int32 id = 1;
+}
+
+message UpdateShipmentCarrierRequest {
+  int32 id = 1;
+  string carrier = 2;
+  map<string, google.type.Decimal> prices = 3;
+  string tracking_url = 4;
+  string expected_delivery_time = 5;
+  string description = 6;
+  repeated common.ShippingRegion allowed_regions = 7;
+  bool allowed = 8;
+}
+
+message UpdateShipmentCarrierResponse {}
+
+message DeleteShipmentCarrierRequest {
+  int32 id = 1;
+}
+
+message DeleteShipmentCarrierResponse {}
 
 message PaymentMethodAllowance {
   common.PaymentMethodNameEnum payment_method = 1;
