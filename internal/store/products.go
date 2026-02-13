@@ -1408,8 +1408,23 @@ func toCamelCase(s string) string {
 	return strings.Join(parts, "")
 }
 
+// ErrProductInOrders is returned when attempting to delete a product that exists in any order.
+var ErrProductInOrders = errors.New("product exists in orders")
+
 // DeleteProductById soft deletes a product by its ID by setting deleted_at timestamp.
+// Returns ErrProductInOrders if the product exists in any order_item.
 func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
+	type countRow struct {
+		N int `db:"n"`
+	}
+	c, err := QueryNamedOne[countRow](ctx, ms.db, `SELECT COUNT(*) AS n FROM order_item WHERE product_id = :productId`, map[string]any{"productId": id})
+	if err != nil {
+		return fmt.Errorf("check product in orders: %w", err)
+	}
+	if c.N > 0 {
+		return ErrProductInOrders
+	}
+
 	query := "UPDATE product SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id AND deleted_at IS NULL"
 	return ExecNamed(ctx, ms.db, query, map[string]interface{}{
 		"id": id,

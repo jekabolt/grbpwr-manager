@@ -10,8 +10,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/payment/tron"
-	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -28,10 +26,6 @@ type Config struct {
 	Bucket                       bucket.Config       `mapstructure:"bucket"`
 	Mailer                       mail.Config         `mapstructure:"mailer"`
 	Rates                        rates.Config        `mapstructure:"rates"`
-	Trongrid                     trongrid.Config     `mapstructure:"trongrid"`
-	TrongridShasta               trongrid.Config     `mapstructure:"trongrid_shasta_testnet"`
-	USDTTronPayment              tron.Config         `mapstructure:"usdt_tron_payment"`
-	USDTTronShastaTestnetPayment tron.Config         `mapstructure:"usdt_tron_shasta_testnet_payment"`
 	StripePayment                stripe.Config       `mapstructure:"stripe_payment"`
 	StripePaymentTest            stripe.Config       `mapstructure:"stripe_payment_test"`
 	Revalidation                 revalidation.Config `mapstructure:"revalidation"`
@@ -161,30 +155,6 @@ func bindEnvVars() {
 	viper.BindEnv("rates.api_key", "RATES_API_KEY")
 	viper.BindEnv("rates.rates_update_period", "RATES_UPDATE_PERIOD")
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")
-
-	// USDT Tron Payment
-	viper.BindEnv("usdt_tron_payment.addresses", "USDT_TRON_PAYMENT_ADDRESSES")
-	viper.BindEnv("usdt_tron_payment.node", "USDT_TRON_PAYMENT_NODE")
-	viper.BindEnv("usdt_tron_payment.invoice_expiration", "USDT_TRON_PAYMENT_INVOICE_EXPIRATION")
-	viper.BindEnv("usdt_tron_payment.check_incoming_tx_interval", "USDT_TRON_PAYMENT_CHECK_INTERVAL")
-	viper.BindEnv("usdt_tron_payment.contract_address", "USDT_TRON_PAYMENT_CONTRACT_ADDRESS")
-
-	// USDT Tron Shasta Testnet Payment
-	viper.BindEnv("usdt_tron_shasta_testnet_payment.addresses", "USDT_TRON_SHASTA_TESTNET_ADDRESSES")
-	viper.BindEnv("usdt_tron_shasta_testnet_payment.node", "USDT_TRON_SHASTA_TESTNET_NODE")
-	viper.BindEnv("usdt_tron_shasta_testnet_payment.invoice_expiration", "USDT_TRON_SHASTA_TESTNET_INVOICE_EXPIRATION")
-	viper.BindEnv("usdt_tron_shasta_testnet_payment.check_incoming_tx_interval", "USDT_TRON_SHASTA_TESTNET_CHECK_INTERVAL")
-	viper.BindEnv("usdt_tron_shasta_testnet_payment.contract_address", "USDT_TRON_SHASTA_TESTNET_CONTRACT_ADDRESS")
-
-	// TronGrid
-	viper.BindEnv("trongrid.api_key", "TRONGRID_API_KEY")
-	viper.BindEnv("trongrid.base_url", "TRONGRID_BASE_URL")
-	viper.BindEnv("trongrid.timeout", "TRONGRID_TIMEOUT")
-
-	// TronGrid Shasta Testnet
-	viper.BindEnv("trongrid_shasta_testnet.api_key", "TRONGRID_SHASTA_TESTNET_API_KEY")
-	viper.BindEnv("trongrid_shasta_testnet.base_url", "TRONGRID_SHASTA_TESTNET_BASE_URL")
-	viper.BindEnv("trongrid_shasta_testnet.timeout", "TRONGRID_SHASTA_TESTNET_TIMEOUT")
 
 	// Stripe Payment
 	viper.BindEnv("stripe_payment.secret_key", "STRIPE_PAYMENT_SECRET_KEY")

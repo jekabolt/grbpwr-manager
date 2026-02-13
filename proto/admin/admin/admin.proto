@@ -503,6 +503,7 @@ message UpdateSettingsRequest {
   int32 max_order_items = 4;
   bool big_menu = 5;
   common.Announce announce = 6;
+  int32 order_expiration_seconds = 7; // 0 = use payment handler default
 }
 
 message UpdateSettingsResponse {}

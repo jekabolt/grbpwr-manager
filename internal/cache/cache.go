@@ -129,6 +129,7 @@ var (
 	defaultCurrency        = "EUR"
 	bigMenu                = false
 	announce               = &entity.AnnounceWithTranslations{}
+	orderExpirationSeconds = 0 // 0 = use payment handler default
 )
 
 var (
@@ -403,6 +404,14 @@ func GetBigMenu() bool {
 
 func GetAnnounce() *entity.AnnounceWithTranslations {
 	return announce
+}
+
+func GetOrderExpirationSeconds() int {
+	return orderExpirationSeconds
+}
+
+func SetOrderExpirationSeconds(seconds int) {
+	orderExpirationSeconds = seconds
 }
 
 func GetCategories() []entity.Category {

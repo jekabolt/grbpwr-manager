@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -32,8 +33,6 @@ type Server struct {
 	bucket            dependency.FileStore
 	mailer            dependency.Mailer
 	rates             dependency.RatesService
-	usdtTron          dependency.Invoicer
-	usdtTronTestnet   dependency.Invoicer
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
@@ -45,8 +44,6 @@ func New(
 	b dependency.FileStore,
 	m dependency.Mailer,
 	rates dependency.RatesService,
-	usdtTron dependency.Invoicer,
-	usdtTronTestnet dependency.Invoicer,
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
@@ -56,8 +53,6 @@ func New(
 		bucket:            b,
 		mailer:            m,
 		rates:             rates,
-		usdtTron:          usdtTron,
-		usdtTronTestnet:   usdtTronTestnet,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
@@ -207,6 +202,9 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
 	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
 	if err != nil {
+		if errors.Is(err, store.ErrProductInOrders) {
+			return nil, status.Errorf(codes.FailedPrecondition, "cannot delete product: it exists in one or more orders")
+		}
 		slog.Default().ErrorContext(ctx, "can't delete product",
 			slog.String("err", err.Error()),
 		)
@@ -539,11 +537,12 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			Genders:          cache.GetGenders(),
 			SortFactors:      cache.GetSortFactors(),
 			OrderFactors:     cache.GetOrderFactors(),
-			SiteEnabled:      cache.GetSiteAvailability(),
-			MaxOrderItems:    cache.GetMaxOrderItems(),
-			BaseCurrency:     cache.GetBaseCurrency(),
-			BigMenu:          cache.GetBigMenu(),
-			Announce:         cache.GetAnnounce(),
+			SiteEnabled:            cache.GetSiteAvailability(),
+			MaxOrderItems:          cache.GetMaxOrderItems(),
+			BaseCurrency:           cache.GetBaseCurrency(),
+			BigMenu:               cache.GetBigMenu(),
+			Announce:              cache.GetAnnounce(),
+			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
 		}),
 		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
 	}, nil
@@ -1050,6 +1049,14 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, err
 	}
 
+	err = s.repo.Settings().SetOrderExpirationSeconds(ctx, int(req.OrderExpirationSeconds))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't set order expiration seconds",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
 		Hero: true,
 	})
@@ -1196,10 +1203,6 @@ func (s *Server) UpdateSupportTicketStatus(ctx context.Context, req *pb_admin.Up
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
 	switch pm {
-	case entity.USDT_TRON:
-		return s.usdtTron, nil
-	case entity.USDT_TRON_TEST:
-		return s.usdtTronTestnet, nil
 	case entity.CARD:
 		return s.stripePayment, nil
 	case entity.CARD_TEST:

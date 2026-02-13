@@ -17,8 +17,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/payment/tron"
-	"github.com/jekabolt/grbpwr-manager/internal/payment/trongrid"
 	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -108,26 +106,6 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	tg := trongrid.New(&a.c.Trongrid)
-
-	usdtTron, err := tron.New(ctx, &a.c.USDTTronPayment, a.db, a.ma, tg, a.r, entity.USDT_TRON)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-
-	tgShasta := trongrid.New(&a.c.TrongridShasta)
-
-	usdtTronTestnet, err := tron.New(ctx, &a.c.USDTTronShastaTestnetPayment, a.db, a.ma, tgShasta, a.r, entity.USDT_TRON_TEST)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new usdt tron processor",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-
 	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.r, a.ma, entity.CARD)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
@@ -151,9 +129,9 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
-	adminS := admin.New(a.db, a.b, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest, a.re)
+	adminS := admin.New(a.db, a.b, a.ma, a.r, stripeMain, stripeTest, a.re)
 
-	frontendS := frontend.New(a.db, a.ma, a.r, usdtTron, usdtTronTestnet, stripeMain, stripeTest, a.re)
+	frontendS := frontend.New(a.db, a.ma, a.r, stripeMain, stripeTest, a.re)
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()

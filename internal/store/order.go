@@ -1550,9 +1550,6 @@ func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Reposit
 	orderFull.Payment.PaymentInsert.ExpiredAt = sql.NullTime{Time: expiredAt, Valid: true}
 
 	switch pm.Name {
-
-	case entity.USDT_TRON, entity.USDT_TRON_TEST:
-		orderFull.Payment.Payee = sql.NullString{String: addrOrSecret, Valid: true}
 	case entity.CARD, entity.CARD_TEST:
 		orderFull.Payment.ClientSecret = sql.NullString{String: addrOrSecret, Valid: true}
 	default:
@@ -1569,11 +1566,6 @@ func (ms *MYSQLStore) processPayment(ctx context.Context, rep dependency.Reposit
 	}
 
 	return nil
-}
-
-// InsertCryptoInvoice handles crypto-specific invoice insertion
-func (ms *MYSQLStore) InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error) {
-	return ms.insertOrderInvoice(ctx, orderUUID, payeeAddress, pm, expiredAt)
 }
 
 // InsertFiatInvoice handles fiat-specific invoice insertion

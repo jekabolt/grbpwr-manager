@@ -82,7 +82,6 @@ type (
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool, expiredAt time.Time) (*entity.Order, bool, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
-		InsertCryptoInvoice(ctx context.Context, orderUUID string, payeeAddress string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error)
 		InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error)
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
@@ -129,10 +128,6 @@ type (
 
 	StripePayment interface {
 		CreatePaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error)
-	}
-
-	Trongrid interface {
-		GetAddressTransactions(address string) (*dto.TronTransactionsResponse, error)
 	}
 
 	Subscribers interface {
@@ -202,6 +197,7 @@ type (
 		SetBigMenu(ctx context.Context, bigMenu bool) error
 		SetAnnounce(ctx context.Context, link string, translations []entity.AnnounceTranslation) error
 		GetAnnounce(ctx context.Context) (*entity.AnnounceWithTranslations, error)
+		SetOrderExpirationSeconds(ctx context.Context, seconds int) error
 	}
 
 	Waitlist interface {

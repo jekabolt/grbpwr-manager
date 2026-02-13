@@ -201,7 +201,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	paymentCurrencyAmount := AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
 
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.c.InvoiceExpiration))
+		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.expirationDuration()))
 		if err != nil {
 			return fmt.Errorf("can't insert fiat invoice: %w", err)
 		}
@@ -226,7 +226,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, fmt.Errorf("can't insert fiat invoice: %w", err)
 	}
 	payment.PaymentInsert.ExpiredAt = sql.NullTime{
-		Time:  time.Now().Add(p.c.InvoiceExpiration),
+		Time:  time.Now().Add(p.expirationDuration()),
 		Valid: true,
 	}
 
@@ -293,6 +293,13 @@ func (p *Processor) CancelMonitorPayment(orderUUID string) error {
 }
 
 func (p *Processor) ExpirationDuration() time.Duration {
+	return p.expirationDuration()
+}
+
+func (p *Processor) expirationDuration() time.Duration {
+	if sec := cache.GetOrderExpirationSeconds(); sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
 	return p.c.InvoiceExpiration
 }
 

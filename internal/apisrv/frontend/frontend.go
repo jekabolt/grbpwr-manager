@@ -31,8 +31,6 @@ type Server struct {
 	repo              dependency.Repository
 	rates             dependency.RatesService
 	mailer            dependency.Mailer
-	usdtTron          dependency.Invoicer
-	usdtTronTestnet   dependency.Invoicer
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
@@ -43,8 +41,6 @@ func New(
 	r dependency.Repository,
 	m dependency.Mailer,
 	ra dependency.RatesService,
-	usdtTron dependency.Invoicer,
-	usdtTronTestnet dependency.Invoicer,
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
@@ -53,8 +49,6 @@ func New(
 		repo:              r,
 		mailer:            m,
 		rates:             ra,
-		usdtTron:          usdtTron,
-		usdtTronTestnet:   usdtTronTestnet,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
@@ -87,11 +81,12 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			Languages:        cache.GetLanguages(),
 			SortFactors:      cache.GetSortFactors(),
 			OrderFactors:     cache.GetOrderFactors(),
-			SiteEnabled:      cache.GetSiteAvailability(),
-			MaxOrderItems:    cache.GetMaxOrderItems(),
-			BaseCurrency:     cache.GetBaseCurrency(),
-			BigMenu:          cache.GetBigMenu(),
-			Announce:         cache.GetAnnounce(),
+			SiteEnabled:            cache.GetSiteAvailability(),
+			MaxOrderItems:          cache.GetMaxOrderItems(),
+			BaseCurrency:           cache.GetBaseCurrency(),
+			BigMenu:               cache.GetBigMenu(),
+			Announce:              cache.GetAnnounce(),
+			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
 		}),
 	}, nil
 }
@@ -212,7 +207,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't get payment handler")
 	}
 
-	expirationDuration := handler.ExpirationDuration()
+	expirationDuration := s.getOrderExpirationDuration(handler)
 
 	// Check for idempotency: if PaymentIntent ID is provided, check if order already exists
 	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {
@@ -680,10 +675,6 @@ func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, handler dependen
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
 	switch pm {
-	case entity.USDT_TRON:
-		return s.usdtTron, nil
-	case entity.USDT_TRON_TEST:
-		return s.usdtTronTestnet, nil
 	case entity.CARD:
 		return s.stripePayment, nil
 	case entity.CARD_TEST:
@@ -691,6 +682,14 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 	default:
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
+}
+
+// getOrderExpirationDuration returns configurable expiration from settings, or handler default when not set.
+func (s *Server) getOrderExpirationDuration(handler dependency.Invoicer) time.Duration {
+	if sec := cache.GetOrderExpirationSeconds(); sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
+	return handler.ExpirationDuration()
 }
 
 func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.CancelOrderInvoiceRequest) (*pb_frontend.CancelOrderInvoiceResponse, error) {
@@ -703,27 +702,17 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	}
 	pme, _ := cache.GetPaymentMethodById(payment.PaymentMethodID)
 
-	slog.Default().DebugContext(ctx, "cancel order invoice",
-		slog.Any("paymentMethod", pme),
-	)
-
-	switch pme.Method.Name {
-	case entity.USDT_TRON:
-		err = s.usdtTron.CancelMonitorPayment(req.OrderUuid)
-	case entity.USDT_TRON_TEST:
-		err = s.usdtTronTestnet.CancelMonitorPayment(req.OrderUuid)
-	default:
-		slog.Default().ErrorContext(ctx, "payment method unimplemented")
-		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
-	}
+	handler, err := s.getPaymentHandler(ctx, pme.Method.Name)
 	if err != nil {
+		return nil, err
+	}
+	if err = handler.CancelMonitorPayment(req.OrderUuid); err != nil {
 		slog.Default().ErrorContext(ctx, "can't cancel monitor payment",
 			slog.String("err", err.Error()),
 			slog.Any("paymentMethod", pme.Method.Name),
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel monitor payment")
 	}
-
 	return &pb_frontend.CancelOrderInvoiceResponse{}, nil
 }
 

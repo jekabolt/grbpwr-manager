@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -1107,6 +1108,29 @@ func TestDeleteProductByID(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 		assert.Contains(t, err.Error(), "can't delete product")
+		mockProductsRepo.AssertExpectations(t)
+	})
+
+	t.Run("Product exists in orders", func(t *testing.T) {
+		ctx := context.Background()
+		mockRepo := mocks.NewRepository(t)
+		mockBucket := mocks.NewFileStore(t)
+		mockMailer := mocks.NewMailer(t)
+		mockRates := mocks.NewRatesService(t)
+		server := New(mockRepo, mockBucket, mockMailer, mockRates)
+
+		mockProductsRepo := mocks.NewProducts(t)
+		productID := int32(123)
+
+		mockRepo.On("Products").Return(mockProductsRepo)
+		mockProductsRepo.On("DeleteProductById", mock.Anything, int(productID)).Return(store.ErrProductInOrders)
+
+		req := &pb_admin.DeleteProductByIDRequest{Id: productID}
+		resp, err := server.DeleteProductByID(ctx, req)
+
+		assert.Error(t, err)
+		assert.Nil(t, resp)
+		assert.Contains(t, err.Error(), "exists in one or more orders")
 		mockProductsRepo.AssertExpectations(t)
 	})
 }
@@ -4528,6 +4552,7 @@ func TestUpdateSettings(t *testing.T) {
 				// Site availability and max order items expectations
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
+				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
 
 				r.On("Settings").Return(settingsMock)
 			},
@@ -4553,6 +4578,7 @@ func TestUpdateSettings(t *testing.T) {
 					Return(errors.New("invalid carrier"))
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
+				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},
@@ -4578,6 +4604,7 @@ func TestUpdateSettings(t *testing.T) {
 				}), true).Return(errors.New("invalid payment method"))
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
+				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},
@@ -4633,6 +4660,7 @@ func TestUpdateSettings(t *testing.T) {
 				// SetShipmentCarrierPrices not called - invalid price causes continue
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
+				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},

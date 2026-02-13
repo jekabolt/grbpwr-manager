@@ -262,6 +262,11 @@ func (ms *MYSQLStore) SetBigMenu(ctx context.Context, bigMenu bool) error {
 	return nil
 }
 
+func (ms *MYSQLStore) SetOrderExpirationSeconds(ctx context.Context, seconds int) error {
+	cache.SetOrderExpirationSeconds(seconds)
+	return nil
+}
+
 func (ms *MYSQLStore) SetAnnounce(ctx context.Context, link string, translations []entity.AnnounceTranslation) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Update link

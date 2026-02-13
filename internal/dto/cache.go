@@ -18,11 +18,12 @@ type Dict struct {
 	Genders          []pb_common.Genders
 	SortFactors      []pb_common.SortFactors
 	OrderFactors     []pb_common.OrderFactors
-	SiteEnabled      bool
-	MaxOrderItems    int
-	BaseCurrency     string
-	BigMenu          bool
-	Announce         *entity.AnnounceWithTranslations
+	SiteEnabled            bool
+	MaxOrderItems          int
+	BaseCurrency           string
+	BigMenu                bool
+	Announce               *entity.AnnounceWithTranslations
+	OrderExpirationSeconds int
 }
 
 var (
@@ -203,6 +204,7 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.MaxOrderItems = int32(dict.MaxOrderItems)
 	commonDict.BaseCurrency = dict.BaseCurrency
 	commonDict.BigMenu = dict.BigMenu
+	commonDict.OrderExpirationSeconds = int32(dict.OrderExpirationSeconds)
 
 	// Convert announce to protobuf format
 	if dict.Announce != nil {

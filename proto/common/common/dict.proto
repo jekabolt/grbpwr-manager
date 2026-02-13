@@ -26,6 +26,7 @@ message Dictionary {
   string base_currency = 10;
   bool big_menu = 11;
   Announce announce = 12;
+  int32 order_expiration_seconds = 14; // 0 = use payment handler default
 }
 
 message Collection {
