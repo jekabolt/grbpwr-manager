@@ -702,8 +702,20 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		return nil, status.Errorf(codes.Internal, "can't get order status by id")
 	}
 
-	// Stripe refund for RefundInProgress or PendingReturn with Stripe payment
-	if orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn {
+	allowed := orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn ||
+		orderStatus.Status.Name == entity.Delivered || orderStatus.Status.Name == entity.Confirmed
+	if !allowed {
+		return nil, status.Errorf(codes.InvalidArgument, "order status must be refund_in_progress, pending_return, delivered or confirmed, got %s", orderStatus.Status.Name)
+	}
+
+	// Confirmed orders support only full refund
+	if orderStatus.Status.Name == entity.Confirmed && len(req.OrderItemIds) > 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "confirmed orders support only full refund")
+	}
+
+	// Stripe refund for RefundInProgress, PendingReturn, Delivered, Confirmed with Stripe payment
+	if orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn ||
+		orderStatus.Status.Name == entity.Delivered || orderStatus.Status.Name == entity.Confirmed {
 		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
 		if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
 			handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
@@ -716,16 +728,14 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 
 			// Calculate refund amount based on order items
 			var refundAmount *decimal.Decimal
-			if orderStatus.Status.Name == entity.RefundInProgress {
-				// Full refund for RefundInProgress
+			if orderStatus.Status.Name == entity.Confirmed {
+				// Full refund for Confirmed only
 				refundAmount = nil // nil = full refund
 			} else {
-				// PendingReturn: calculate amount based on orderItemIds
+				// RefundInProgress, PendingReturn, Delivered: full or partial based on orderItemIds
 				if len(req.OrderItemIds) == 0 {
-					// Empty orderItemIds = full refund
 					refundAmount = nil
 				} else {
-					// Partial refund: calculate amount from specified items
 					amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds)
 					refundAmount = &amount
 				}

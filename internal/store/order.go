@@ -2502,12 +2502,12 @@ func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32) 
 // determineRefundScope determines which items to refund and the target status based on
 // the current order status and requested item IDs.
 func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32) ([]refundItem, *cache.Status, error) {
-	// Full refund for RefundInProgress regardless of orderItemIDs
-	if currentStatus == entity.RefundInProgress {
+	// Confirmed: full refund only (orderItemIDs validated as empty by caller)
+	if currentStatus == entity.Confirmed {
 		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
-	// PendingReturn: check for full vs partial
+	// RefundInProgress, PendingReturn, Delivered: full or partial
 	partialItems, err := validateAndMapOrderItems(orderItems, orderItemIDs)
 	if err != nil {
 		return nil, nil, err
@@ -2536,8 +2536,9 @@ func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
 }
 
 // RefundOrder processes a full or partial refund for an order.
-// for orders in RefundInProgress status, always performs full refund.
-// for orders in PendingReturn status, performs full or partial refund based on orderItemIDs.
+// Allowed statuses: refund_in_progress, pending_return, delivered, confirmed.
+// Full or partial: RefundInProgress, PendingReturn, Delivered.
+// Full refund only: Confirmed.
 func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
@@ -2549,9 +2550,14 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 		if err != nil {
 			return err
 		}
+		os := orderStatus.Status.Name
 
-		if orderStatus.Status.Name != entity.RefundInProgress && orderStatus.Status.Name != entity.PendingReturn {
-			return fmt.Errorf("order status must be refund_in_progress or pending_return, got %s", orderStatus.Status.Name)
+		allowed := os == entity.RefundInProgress || os == entity.PendingReturn || os == entity.Delivered || os == entity.Confirmed
+		if !allowed {
+			return fmt.Errorf("order status must be refund_in_progress, pending_return, delivered or confirmed, got %s", orderStatus.Status.Name)
+		}
+		if os == entity.Confirmed && len(orderItemIDs) > 0 {
+			return fmt.Errorf("confirmed orders support only full refund")
 		}
 
 		itemsMap, err := getOrdersItems(ctx, rep, order.Id)
