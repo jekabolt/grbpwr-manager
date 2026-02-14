@@ -1130,6 +1130,7 @@ var ValidStatusTransitions = map[entity.OrderStatusName][]entity.OrderStatusName
 	entity.Confirmed: {
 		entity.Shipped,
 		entity.RefundInProgress,
+		entity.Refunded,
 		entity.Cancelled,
 	},
 	entity.Shipped: {
@@ -1138,6 +1139,8 @@ var ValidStatusTransitions = map[entity.OrderStatusName][]entity.OrderStatusName
 	},
 	entity.Delivered: {
 		entity.PendingReturn,
+		entity.Refunded,
+		entity.PartiallyRefunded,
 	},
 	entity.PendingReturn: {
 		entity.Refunded,
@@ -1145,6 +1148,7 @@ var ValidStatusTransitions = map[entity.OrderStatusName][]entity.OrderStatusName
 	},
 	entity.RefundInProgress: {
 		entity.Refunded,
+		entity.PartiallyRefunded,
 	},
 	// Terminal states - no transitions allowed
 	entity.Cancelled:         {},
