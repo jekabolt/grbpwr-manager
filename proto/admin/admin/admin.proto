@@ -161,6 +161,11 @@ service AdminService {
     };
   }
 
+  // Retrieves business metrics for a period with optional comparison period
+  rpc GetBusinessMetrics(GetBusinessMetricsRequest) returns (GetBusinessMetricsResponse) {
+    option (google.api.http) = {get: "/api/admin/metrics"};
+  }
+
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
@@ -426,6 +431,171 @@ message ListOrdersRequest {
 
 message ListOrdersResponse {
   repeated common.Order orders = 1;
+}
+
+enum MetricsGranularity {
+  METRICS_GRANULARITY_UNSPECIFIED = 0; // defaults to day
+  METRICS_GRANULARITY_DAY = 1;
+  METRICS_GRANULARITY_WEEK = 2;
+  METRICS_GRANULARITY_MONTH = 3;
+}
+
+message GetBusinessMetricsRequest {
+  google.protobuf.Timestamp period_from = 1;
+  google.protobuf.Timestamp period_to = 2;
+  google.protobuf.Timestamp compare_period_from = 3;
+  google.protobuf.Timestamp compare_period_to = 4;
+  MetricsGranularity granularity = 5; // day, week, or month; default day
+}
+
+message GetBusinessMetricsResponse {
+  BusinessMetrics metrics = 1;
+}
+
+message BusinessMetrics {
+  TimeRange period = 1;
+  TimeRange compare_period = 2;
+
+  MetricWithComparison revenue = 3;
+  MetricWithComparison orders_count = 4;
+  MetricWithComparison avg_order_value = 5;
+  MetricWithComparison items_per_order = 25;
+  MetricWithComparison refund_rate = 6;
+  MetricWithComparison promo_usage_rate = 7;
+  MetricWithComparison gross_revenue = 39;
+  MetricWithComparison total_refunded = 40;
+  MetricWithComparison total_discount = 41;
+
+  repeated GeographyMetric revenue_by_country = 8;
+  repeated GeographyMetric revenue_by_city = 9;
+  repeated RegionMetric revenue_by_region = 26;
+  repeated GeographyMetric avg_order_by_country = 10;
+
+  repeated CurrencyMetric revenue_by_currency = 27;
+  repeated PaymentMethodMetric revenue_by_payment_method = 42;
+
+  repeated ProductMetric top_products_by_revenue = 11;
+  repeated ProductMetric top_products_by_quantity = 12;
+  repeated CategoryMetric revenue_by_category = 13;
+  repeated CrossSellPair cross_sell_pairs = 14;
+
+  MetricWithComparison new_subscribers = 15;
+  MetricWithComparison repeat_customers_rate = 16;
+  MetricWithComparison avg_orders_per_customer = 17;
+  MetricWithComparison avg_days_between_orders = 18;
+  CLVStats clv_distribution = 19;
+
+  repeated PromoMetric revenue_by_promo = 20;
+  repeated StatusCount orders_by_status = 21;
+
+  repeated TimeSeriesPoint revenue_by_day = 22;
+  repeated TimeSeriesPoint orders_by_day = 23;
+  repeated TimeSeriesPoint subscribers_by_day = 24;
+  repeated TimeSeriesPoint gross_revenue_by_day = 28;
+  repeated TimeSeriesPoint refunds_by_day = 29;
+  repeated TimeSeriesPoint avg_order_value_by_day = 30;
+  repeated TimeSeriesPoint units_sold_by_day = 31;
+  repeated TimeSeriesPoint new_customers_by_day = 43;
+  repeated TimeSeriesPoint returning_customers_by_day = 44;
+  repeated TimeSeriesPoint shipped_by_day = 45;
+  repeated TimeSeriesPoint delivered_by_day = 46;
+  repeated TimeSeriesPoint revenue_by_day_compare = 32;
+  repeated TimeSeriesPoint orders_by_day_compare = 33;
+  repeated TimeSeriesPoint subscribers_by_day_compare = 34;
+  repeated TimeSeriesPoint gross_revenue_by_day_compare = 35;
+  repeated TimeSeriesPoint refunds_by_day_compare = 36;
+  repeated TimeSeriesPoint avg_order_value_by_day_compare = 37;
+  repeated TimeSeriesPoint units_sold_by_day_compare = 38;
+  repeated TimeSeriesPoint new_customers_by_day_compare = 47;
+  repeated TimeSeriesPoint returning_customers_by_day_compare = 48;
+  repeated TimeSeriesPoint shipped_by_day_compare = 49;
+  repeated TimeSeriesPoint delivered_by_day_compare = 50;
+}
+
+message PaymentMethodMetric {
+  string payment_method = 1;
+  google.type.Decimal value = 2;
+  int32 count = 3;
+}
+
+message TimeRange {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+}
+
+message MetricWithComparison {
+  google.type.Decimal value = 1;
+  google.type.Decimal compare_value = 2;
+  double change_pct = 3;
+}
+
+message GeographyMetric {
+  string country = 1;
+  string state = 2;
+  string city = 3;
+  google.type.Decimal value = 4;
+  google.type.Decimal compare_value = 5;
+  int32 count = 6;
+  int32 compare_count = 7;
+}
+
+message RegionMetric {
+  string region = 1;
+  google.type.Decimal value = 2;
+  int32 count = 3;
+}
+
+message CurrencyMetric {
+  string currency = 1;
+  google.type.Decimal value = 2;
+  int32 count = 3;
+}
+
+message ProductMetric {
+  int32 product_id = 1;
+  string product_name = 2;
+  string brand = 3;
+  google.type.Decimal value = 4;
+  int32 count = 5;
+}
+
+message CategoryMetric {
+  int32 category_id = 1;
+  string category_name = 2;
+  google.type.Decimal value = 3;
+  int32 count = 4;
+}
+
+message CrossSellPair {
+  int32 product_a_id = 1;
+  int32 product_b_id = 2;
+  string product_a_name = 3;
+  string product_b_name = 4;
+  int32 count = 5;
+}
+
+message PromoMetric {
+  string promo_code = 1;
+  int32 orders_count = 2;
+  google.type.Decimal revenue = 3;
+  google.type.Decimal avg_discount = 4;
+}
+
+message StatusCount {
+  string status_name = 1;
+  int32 count = 2;
+}
+
+message CLVStats {
+  google.type.Decimal mean = 1;
+  google.type.Decimal median = 2;
+  google.type.Decimal p90 = 3;
+}
+
+message TimeSeriesPoint {
+  google.protobuf.Timestamp date = 1;
+  google.type.Decimal value = 2;
+  int32 count = 3;
 }
 
 message RefundOrderRequest {

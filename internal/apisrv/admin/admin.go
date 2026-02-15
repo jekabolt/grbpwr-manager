@@ -641,6 +641,46 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 	return &pb_admin.SetTrackingNumberResponse{}, nil
 }
 
+func (s *Server) GetBusinessMetrics(ctx context.Context, req *pb_admin.GetBusinessMetricsRequest) (*pb_admin.GetBusinessMetricsResponse, error) {
+	if req.PeriodFrom == nil || req.PeriodTo == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "period_from and period_to are required")
+	}
+	periodFrom := req.PeriodFrom.AsTime()
+	periodTo := req.PeriodTo.AsTime()
+	if periodTo.Before(periodFrom) || periodTo.Equal(periodFrom) {
+		return nil, status.Errorf(codes.InvalidArgument, "period_to must be after period_from")
+	}
+
+	period := entity.TimeRange{From: periodFrom, To: periodTo}
+	comparePeriod := entity.TimeRange{}
+	if req.ComparePeriodFrom != nil && req.ComparePeriodTo != nil {
+		comparePeriod.From = req.ComparePeriodFrom.AsTime()
+		comparePeriod.To = req.ComparePeriodTo.AsTime()
+		if comparePeriod.To.Before(comparePeriod.From) || comparePeriod.To.Equal(comparePeriod.From) {
+			return nil, status.Errorf(codes.InvalidArgument, "compare_period_to must be after compare_period_from")
+		}
+	}
+
+	granularity := entity.MetricsGranularityDay
+	switch req.Granularity {
+	case pb_admin.MetricsGranularity_METRICS_GRANULARITY_WEEK:
+		granularity = entity.MetricsGranularityWeek
+	case pb_admin.MetricsGranularity_METRICS_GRANULARITY_MONTH:
+		granularity = entity.MetricsGranularityMonth
+	}
+	metrics, err := s.repo.Metrics().GetBusinessMetrics(ctx, period, comparePeriod, granularity)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get business metrics",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't get business metrics")
+	}
+
+	return &pb_admin.GetBusinessMetricsResponse{
+		Metrics: dto.ConvertEntityBusinessMetricsToPb(metrics),
+	}, nil
+}
+
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {
 
 	if req.Status < 0 {

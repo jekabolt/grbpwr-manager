@@ -134,6 +134,11 @@ type (
 		GetActiveSubscribers(ctx context.Context) ([]entity.Subscriber, error)
 		UpsertSubscription(ctx context.Context, email string, receivePromo bool) (bool, error)
 		IsSubscribed(ctx context.Context, email string) (bool, error)
+		GetNewSubscribersCount(ctx context.Context, from, to time.Time) (int, error)
+	}
+
+	Metrics interface {
+		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
 	}
 
 	Support interface {
@@ -218,6 +223,7 @@ type (
 		Mail() Mail
 		Archive() Archive
 		Subscribers() Subscribers
+		Metrics() Metrics
 		Media() Media
 		Settings() Settings
 		Support() Support

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -36,7 +37,7 @@ func (ms *MYSQLStore) UpsertSubscription(ctx context.Context, email string, rece
 	subscriber, err := ms.getSubscriberByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			query := `INSERT INTO subscriber (email, receive_promo_emails) VALUES (:email, :receivePromoEmails)`
+			query := `INSERT INTO subscriber (email, receive_promo_emails, created_at) VALUES (:email, :receivePromoEmails, CURRENT_TIMESTAMP)`
 			params := map[string]interface{}{
 				"email":              email,
 				"receivePromoEmails": receivePromo,
@@ -91,4 +92,20 @@ func (ms *MYSQLStore) getSubscriberByEmail(ctx context.Context, email string) (*
 	}
 
 	return &subscriber, nil
+}
+
+// GetNewSubscribersCount returns the number of subscribers added in the given period.
+// Only counts rows with created_at set (new subscribers after migration 0026).
+func (ms *MYSQLStore) GetNewSubscribersCount(ctx context.Context, from, to time.Time) (int, error) {
+	query := `SELECT COUNT(*) FROM subscriber WHERE created_at >= :from AND created_at < :to`
+	params := map[string]interface{}{
+		"from": from,
+		"to":   to,
+	}
+
+	count, err := QueryCountNamed(ctx, ms.DB(), query, params)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get new subscribers count: %w", err)
+	}
+	return count, nil
 }
