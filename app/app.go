@@ -17,7 +17,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
@@ -38,7 +37,6 @@ type App struct {
 	db   dependency.Repository
 	b    dependency.FileStore
 	ma   dependency.Mailer
-	r    dependency.RatesService
 	re   dependency.RevalidationService
 	c    *config.Config
 	done chan struct{}
@@ -80,15 +78,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.r, err = rates.New(&a.c.Rates, a.db.Rates())
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't create rates worker",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-	a.r.Start()
-	cache.SetDefaultCurrency(a.r.GetBaseCurrency().String())
+	cache.SetDefaultCurrency(a.c.Rates.BaseCurrency)
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
@@ -106,7 +96,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.r, a.ma, entity.CARD)
+	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
 			slog.String("err", err.Error()),
@@ -114,7 +104,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	stripeTest, err := stripe.New(ctx, &a.c.StripePaymentTest, a.db, a.r, a.ma, entity.CARD_TEST)
+	stripeTest, err := stripe.New(ctx, &a.c.StripePaymentTest, a.db, a.ma, entity.CARD_TEST)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
 			slog.String("err", err.Error()),
@@ -129,9 +119,9 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
-	adminS := admin.New(a.db, a.b, a.ma, a.r, stripeMain, stripeTest, a.re)
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re)
 
-	frontendS := frontend.New(a.db, a.ma, a.r, stripeMain, stripeTest, a.re)
+	frontendS := frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re)
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()

@@ -29,7 +29,6 @@ import (
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
 	repo              dependency.Repository
-	rates             dependency.RatesService
 	mailer            dependency.Mailer
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
@@ -40,7 +39,6 @@ type Server struct {
 func New(
 	r dependency.Repository,
 	m dependency.Mailer,
-	ra dependency.RatesService,
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
@@ -48,7 +46,6 @@ func New(
 	return &Server{
 		repo:              r,
 		mailer:            m,
-		rates:             ra,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,

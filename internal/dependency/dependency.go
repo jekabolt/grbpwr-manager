@@ -155,11 +155,6 @@ type (
 		DisableVoucher(ctx context.Context, promoID sql.NullInt32) error
 	}
 
-	Rates interface {
-		GetLatestRates(ctx context.Context) ([]entity.CurrencyRate, error)
-		BulkUpdateRates(ctx context.Context, rates []entity.CurrencyRate) error
-	}
-
 	Archive interface {
 		AddArchive(ctx context.Context, archiveInsert *entity.ArchiveInsert) (int, error)
 		UpdateArchive(ctx context.Context, id int, archiveInsert *entity.ArchiveInsert) error
@@ -217,7 +212,6 @@ type (
 		Hero() Hero
 		Order() Order
 		Promo() Promo
-		Rates() Rates
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail
@@ -266,15 +260,6 @@ type (
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.MediaFull, error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
-	}
-
-	RatesService interface {
-		Start()
-		Stop()
-		GetRates() map[dto.CurrencyTicker]dto.CurrencyRate
-		GetBaseCurrency() dto.CurrencyTicker
-		ConvertToBaseCurrency(currencyFrom dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error)
-		ConvertFromBaseCurrency(currencyTo dto.CurrencyTicker, amount decimal.Decimal) (decimal.Decimal, error)
 	}
 
 	RevalidationService interface {

@@ -32,7 +32,6 @@ type Server struct {
 	repo              dependency.Repository
 	bucket            dependency.FileStore
 	mailer            dependency.Mailer
-	rates             dependency.RatesService
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
@@ -43,7 +42,6 @@ func New(
 	r dependency.Repository,
 	b dependency.FileStore,
 	m dependency.Mailer,
-	rates dependency.RatesService,
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
@@ -52,7 +50,6 @@ func New(
 		repo:              r,
 		bucket:            b,
 		mailer:            m,
-		rates:             rates,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
@@ -544,7 +541,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			Announce:              cache.GetAnnounce(),
 			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
 		}),
-		Rates: dto.CurrencyRateToPb(s.rates.GetRates()),
+		Rates: nil,
 	}, nil
 }
 

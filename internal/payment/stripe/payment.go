@@ -30,7 +30,6 @@ type Processor struct {
 	c            *Config
 	baseCurrency dto.CurrencyTicker
 	mailer       dependency.Mailer
-	rates        dependency.RatesService
 	rep          dependency.Repository
 	stripeClient *client.API
 	pm           entity.PaymentMethod
@@ -42,7 +41,7 @@ type Processor struct {
 	ctxMu   sync.Mutex
 }
 
-func New(ctx context.Context, c *Config, rep dependency.Repository, rs dependency.RatesService, m dependency.Mailer, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
+func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
 	ticker, ok := dto.VerifyCurrencyTicker(cache.GetBaseCurrency())
 	if !ok {
 		return nil, fmt.Errorf("invalid default currency: %s", cache.GetBaseCurrency())
@@ -61,7 +60,6 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, rs dependenc
 	p := Processor{
 		c:            c,
 		baseCurrency: ticker,
-		rates:        rs,
 		mailer:       m,
 		stripeClient: client.New(c.SecretKey, nil),
 		rep:          rep,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -289,19 +290,39 @@ func (ms *MYSQLStore) GetBusinessMetrics(ctx context.Context, period, comparePer
 }
 
 func (ms *MYSQLStore) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (revenue decimal.Decimal, orders int, aov decimal.Decimal, err error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	type row struct {
 		Revenue decimal.Decimal `db:"revenue"`
 		Orders  int             `db:"orders"`
 	}
 	query := `
-		SELECT 
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS revenue,
+		WITH order_base AS (
+			SELECT co.id,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(MAX(scp.price), 0) AS shipment_base,
+				COALESCE(MAX(pc.discount), 0) AS discount,
+				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+				co.total_price,
+				COALESCE(co.refunded_amount, 0) AS refunded_amount
+			FROM customer_order co
+			LEFT JOIN order_item oi ON co.id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			LEFT JOIN shipment s ON co.id = s.order_id
+			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+			LEFT JOIN promo_code pc ON co.promo_id = pc.id
+			WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (3, 4, 5, 10)
+			GROUP BY co.id, co.total_price, co.refunded_amount
+		)
+		SELECT
+			COALESCE(SUM(
+				(items_base * (100 - discount) / 100 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
+				* (total_price - refunded_amount) / NULLIF(total_price, 0)
+			), 0) AS revenue,
 			COUNT(*) AS orders
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		FROM order_base
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return decimal.Zero, 0, decimal.Zero, err
 	}
@@ -340,17 +361,38 @@ func (ms *MYSQLStore) getItemsPerOrder(ctx context.Context, from, to time.Time) 
 }
 
 func (ms *MYSQLStore) getRefundMetrics(ctx context.Context, from, to time.Time) (refundedAmount decimal.Decimal, refundedOrders int, err error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	type row struct {
 		Amount decimal.Decimal `db:"amount"`
-		Count  int            `db:"cnt"`
+		Count  int             `db:"cnt"`
 	}
 	query := `
-		SELECT COALESCE(SUM(COALESCE(refunded_amount, 0)), 0) AS amount, COUNT(*) AS cnt
-		FROM customer_order
-		WHERE placed >= :from AND placed < :to
-		AND order_status_id IN (7, 10) AND (refunded_amount IS NOT NULL AND refunded_amount > 0)
+		WITH order_base AS (
+			SELECT co.id,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(MAX(scp.price), 0) AS shipment_base,
+				COALESCE(MAX(pc.discount), 0) AS discount,
+				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+				co.total_price,
+				COALESCE(co.refunded_amount, 0) AS refunded_amount
+			FROM customer_order co
+			LEFT JOIN order_item oi ON co.id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			LEFT JOIN shipment s ON co.id = s.order_id
+			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+			LEFT JOIN promo_code pc ON co.promo_id = pc.id
+			WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (7, 10) AND (co.refunded_amount IS NOT NULL AND co.refunded_amount > 0)
+			GROUP BY co.id, co.total_price, co.refunded_amount
+		)
+		SELECT
+			COALESCE(SUM(
+				refunded_amount * (items_base * (100 - discount) / 100 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END) / NULLIF(total_price, 0)
+			), 0) AS amount,
+			COUNT(*) AS cnt
+		FROM order_base
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return decimal.Zero, 0, err
 	}
@@ -358,13 +400,15 @@ func (ms *MYSQLStore) getRefundMetrics(ctx context.Context, from, to time.Time) 
 }
 
 func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
-	params := map[string]any{"from": from, "to": to}
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	params := map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency}
 	productDiscount, err := QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
 	}](ctx, ms.DB(), `
-		SELECT COALESCE(SUM(oi.product_price * COALESCE(oi.product_sale_percentage, 0) / 100 * oi.quantity), 0) AS v
+		SELECT COALESCE(SUM(pp_base.price * COALESCE(oi.product_sale_percentage, 0) / 100 * oi.quantity), 0) AS v
 		FROM customer_order co
 		JOIN order_item oi ON co.id = oi.order_id
+		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		WHERE co.placed >= :from AND co.placed < :to
 		AND co.order_status_id IN (3, 4, 5, 10)
 	`, params)
@@ -374,11 +418,20 @@ func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) 
 	promoDiscount, err := QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
 	}](ctx, ms.DB(), `
-		SELECT COALESCE(SUM(pc.discount), 0) AS v
-		FROM customer_order co
-		JOIN promo_code pc ON co.promo_id = pc.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		WITH order_items_base AS (
+			SELECT co.id,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(pc.discount, 0) AS discount
+			FROM customer_order co
+			LEFT JOIN order_item oi ON co.id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			LEFT JOIN promo_code pc ON co.promo_id = pc.id
+			WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (3, 4, 5, 10) AND co.promo_id IS NOT NULL
+			GROUP BY co.id, pc.discount
+		)
+		SELECT COALESCE(SUM(items_base * discount / 100), 0) AS v
+		FROM order_items_base
 	`, params)
 	if err != nil {
 		return decimal.Zero, err
@@ -387,15 +440,36 @@ func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) 
 }
 
 func (ms *MYSQLStore) getRevenueByPaymentMethod(ctx context.Context, from, to time.Time) ([]entity.PaymentMethodMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
+		WITH order_base AS (
+			SELECT ob.id,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.total_price, co.refunded_amount
+			) ob
+		)
 		SELECT pm.name AS payment_method,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value,
+			COALESCE(SUM(ob.revenue_base), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		JOIN payment p ON co.id = p.order_id
+		FROM order_base ob
+		JOIN payment p ON p.order_id = ob.id
 		JOIN payment_method pm ON p.payment_method_id = pm.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
 		GROUP BY pm.id, pm.name
 		ORDER BY value DESC
 	`
@@ -403,7 +477,7 @@ func (ms *MYSQLStore) getRevenueByPaymentMethod(ctx context.Context, from, to ti
 		PaymentMethod string          `db:"payment_method"`
 		Value         decimal.Decimal `db:"value"`
 		Count         int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +505,7 @@ func (ms *MYSQLStore) getPromoUsageCount(ctx context.Context, from, to time.Time
 }
 
 func (ms *MYSQLStore) getRevenueByGeography(ctx context.Context, from, to time.Time, groupBy string, country, city *string) ([]entity.GeographyMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	var groupCol, selectCol string
 	if groupBy == "city" {
 		groupCol = "a.country, a.state, a.city"
@@ -440,22 +515,42 @@ func (ms *MYSQLStore) getRevenueByGeography(ctx context.Context, from, to time.T
 		selectCol = "a.country AS country, NULL AS state, NULL AS city"
 	}
 	query := fmt.Sprintf(`
+		WITH order_base AS (
+			SELECT ob.id,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.total_price, co.refunded_amount
+			) ob
+		)
 		SELECT %s,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value,
-			COUNT(DISTINCT co.id) AS cnt
-		FROM customer_order co
-		JOIN buyer b ON co.id = b.order_id
+			COALESCE(SUM(ob.revenue_base), 0) AS value,
+			COUNT(DISTINCT ob.id) AS cnt
+		FROM order_base ob
+		JOIN buyer b ON ob.id = b.order_id
 		JOIN address a ON b.shipping_address_id = a.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
-		AND (:country IS NULL OR a.country = :country)
+		WHERE (:country IS NULL OR a.country = :country)
 		AND (:city IS NULL OR a.city = :city)
 		GROUP BY %s
 		ORDER BY value DESC
 		LIMIT 50
 	`, selectCol, groupCol)
 
-	params := map[string]any{"from": from, "to": to, "country": country, "city": city}
+	params := map[string]any{"from": from, "to": to, "country": country, "city": city, "baseCurrency": baseCurrency}
 	rows, err := QueryListNamed[struct {
 		Country string          `db:"country"`
 		State   *string         `db:"state"`
@@ -481,15 +576,36 @@ func (ms *MYSQLStore) getRevenueByGeography(ctx context.Context, from, to time.T
 }
 
 func (ms *MYSQLStore) getAvgOrderByGeography(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
+		WITH order_base AS (
+			SELECT ob.id,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.total_price, co.refunded_amount
+			) ob
+		)
 		SELECT a.country,
-			COALESCE(AVG(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value,
-			COUNT(DISTINCT co.id) AS cnt
-		FROM customer_order co
-		JOIN buyer b ON co.id = b.order_id
+			COALESCE(AVG(ob.revenue_base), 0) AS value,
+			COUNT(DISTINCT ob.id) AS cnt
+		FROM order_base ob
+		JOIN buyer b ON ob.id = b.order_id
 		JOIN address a ON b.shipping_address_id = a.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
 		GROUP BY a.country
 		ORDER BY value DESC
 		LIMIT 30
@@ -498,7 +614,7 @@ func (ms *MYSQLStore) getAvgOrderByGeography(ctx context.Context, from, to time.
 		Country string          `db:"country"`
 		Value   decimal.Decimal `db:"value"`
 		Count   int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -565,12 +681,14 @@ func (ms *MYSQLStore) getRevenueByCurrency(ctx context.Context, from, to time.Ti
 }
 
 func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		SELECT oi.product_id, p.brand,
-			COALESCE(SUM(oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value,
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
 		AND co.order_status_id IN (3, 4, 5, 10)
@@ -583,7 +701,7 @@ func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time
 		Brand     string          `db:"brand"`
 		Value     decimal.Decimal `db:"value"`
 		Count     int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -595,11 +713,13 @@ func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time
 }
 
 func (ms *MYSQLStore) getTopProductsByQuantity(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		SELECT oi.product_id, p.brand, SUM(oi.quantity) AS cnt,
-			COALESCE(SUM(oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
 		AND co.order_status_id IN (3, 4, 5, 10)
@@ -612,7 +732,7 @@ func (ms *MYSQLStore) getTopProductsByQuantity(ctx context.Context, from, to tim
 		Brand     string          `db:"brand"`
 		Count     int             `db:"cnt"`
 		Value     decimal.Decimal `db:"value"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -624,12 +744,14 @@ func (ms *MYSQLStore) getTopProductsByQuantity(ctx context.Context, from, to tim
 }
 
 func (ms *MYSQLStore) getRevenueByCategory(ctx context.Context, from, to time.Time) ([]entity.CategoryMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		SELECT p.top_category_id AS category_id, c.name AS category_name,
-			COALESCE(SUM(oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value,
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN category c ON p.top_category_id = c.id
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
@@ -643,7 +765,7 @@ func (ms *MYSQLStore) getRevenueByCategory(ctx context.Context, from, to time.Ti
 		CategoryName string          `db:"category_name"`
 		Value        decimal.Decimal `db:"value"`
 		Count        int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -767,18 +889,40 @@ func (ms *MYSQLStore) getRepeatCustomerMetrics(ctx context.Context, from, to tim
 }
 
 func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLVStats, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
-		SELECT b.email, COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS clv
-		FROM customer_order co
-		JOIN buyer b ON co.id = b.order_id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
-		GROUP BY b.email
+		WITH order_base AS (
+			SELECT ob.id, b.email,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.total_price, co.refunded_amount
+			) ob
+			JOIN customer_order co ON ob.id = co.id
+			JOIN buyer b ON co.id = b.order_id
+		)
+		SELECT email, COALESCE(SUM(revenue_base), 0) AS clv
+		FROM order_base
+		GROUP BY email
 	`
 	rows, err := QueryListNamed[struct {
 		Email string          `db:"email"`
 		CLV   decimal.Decimal `db:"clv"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return entity.CLVStats{}, err
 	}
@@ -821,15 +965,34 @@ func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (enti
 }
 
 func (ms *MYSQLStore) getRevenueByPromo(ctx context.Context, from, to time.Time) ([]entity.PromoMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
-		SELECT pc.code, COUNT(co.id) AS orders_count,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS revenue,
-			COALESCE(AVG(pc.discount), 0) AS avg_discount
-		FROM customer_order co
-		JOIN promo_code pc ON co.promo_id = pc.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
-		GROUP BY pc.id, pc.code
+		WITH order_base AS (
+			SELECT ob.id, ob.promo_id, ob.code, ob.discount,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id, pc.id AS promo_id, pc.code, pc.discount,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.total_price, co.refunded_amount, pc.id, pc.code, pc.discount
+			) ob
+		)
+		SELECT code, COUNT(*) AS orders_count,
+			COALESCE(SUM(revenue_base), 0) AS revenue,
+			COALESCE(AVG(discount), 0) AS avg_discount
+		FROM order_base
+		GROUP BY promo_id, code
 		ORDER BY revenue DESC
 		LIMIT 20
 	`
@@ -838,7 +1001,7 @@ func (ms *MYSQLStore) getRevenueByPromo(ctx context.Context, from, to time.Time)
 		OrdersCount int             `db:"orders_count"`
 		Revenue     decimal.Decimal `db:"revenue"`
 		AvgDiscount decimal.Decimal `db:"avg_discount"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -905,21 +1068,42 @@ func granularityDateExpr(g entity.MetricsGranularity, col string) string {
 }
 
 func (ms *MYSQLStore) getRevenueByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
+		WITH order_base AS (
+			SELECT ob.id, ob.placed,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id, co.placed,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
+			) ob
+		)
 		SELECT %s AS d,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value,
+			COALESCE(SUM(revenue_base), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		FROM order_base
 		GROUP BY %s
 		ORDER BY d
-	`, dateExpr, dateExpr)
+	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -931,19 +1115,40 @@ func (ms *MYSQLStore) getRevenueByPeriod(ctx context.Context, from, to time.Time
 }
 
 func (ms *MYSQLStore) getOrdersByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
-		SELECT %s AS d, COUNT(*) AS cnt, COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		WITH order_base AS (
+			SELECT ob.id, ob.placed,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id, co.placed,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
+			) ob
+		)
+		SELECT %s AS d, COUNT(*) AS cnt, COALESCE(SUM(revenue_base), 0) AS value
+		FROM order_base
 		GROUP BY %s
 		ORDER BY d
-	`, dateExpr, dateExpr)
+	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Count int             `db:"cnt"`
 		Value decimal.Decimal `db:"value"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -977,21 +1182,40 @@ func (ms *MYSQLStore) getSubscribersByPeriod(ctx context.Context, from, to time.
 }
 
 func (ms *MYSQLStore) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
+		WITH order_base AS (
+			SELECT ob.id, ob.placed,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
+			FROM (
+				SELECT co.id, co.placed,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.placed
+			) ob
+		)
 		SELECT %s AS d,
-			COALESCE(SUM(co.total_price), 0) AS value,
+			COALESCE(SUM(gross_revenue_base), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		FROM order_base
 		GROUP BY %s
 		ORDER BY d
-	`, dateExpr, dateExpr)
+	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -1003,22 +1227,42 @@ func (ms *MYSQLStore) getGrossRevenueByPeriod(ctx context.Context, from, to time
 }
 
 func (ms *MYSQLStore) getRefundsByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
+		WITH order_base AS (
+			SELECT ob.id, ob.placed,
+				refunded_amount * (ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) / NULLIF(ob.total_price, 0) AS refunded_base
+			FROM (
+				SELECT co.id, co.placed, COALESCE(co.refunded_amount, 0) AS refunded_amount,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 7, 10)
+				AND COALESCE(co.refunded_amount, 0) > 0
+				GROUP BY co.id, co.placed, co.refunded_amount, co.total_price
+			) ob
+		)
 		SELECT %s AS d,
-			COALESCE(SUM(COALESCE(co.refunded_amount, 0)), 0) AS value,
+			COALESCE(SUM(refunded_base), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 7, 10)
-		AND COALESCE(co.refunded_amount, 0) > 0
+		FROM order_base
 		GROUP BY %s
 		ORDER BY d
-	`, dateExpr, dateExpr)
+	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}
@@ -1030,21 +1274,42 @@ func (ms *MYSQLStore) getRefundsByPeriod(ctx context.Context, from, to time.Time
 }
 
 func (ms *MYSQLStore) getAvgOrderValueByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
+		WITH order_base AS (
+			SELECT ob.id, ob.placed,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id, co.placed,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (3, 4, 5, 10)
+				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
+			) ob
+		)
 		SELECT %s AS d,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) / NULLIF(COUNT(*), 0) AS value,
+			COALESCE(SUM(revenue_base), 0) / NULLIF(COUNT(*), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		FROM order_base
 		GROUP BY %s
 		ORDER BY d
-	`, dateExpr, dateExpr)
+	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
 	if err != nil {
 		return nil, err
 	}

@@ -10,12 +10,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/rates"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
 )
+
+// RatesConfig holds base currency (no exchange rates - metrics use product_price).
+type RatesConfig struct {
+	BaseCurrency string `mapstructure:"base_currency"`
+}
 
 // Config represents the global configuration for the service.
 type Config struct {
@@ -25,7 +29,7 @@ type Config struct {
 	Auth                         auth.Config         `mapstructure:"auth"`
 	Bucket                       bucket.Config       `mapstructure:"bucket"`
 	Mailer                       mail.Config         `mapstructure:"mailer"`
-	Rates                        rates.Config        `mapstructure:"rates"`
+	Rates                        RatesConfig         `mapstructure:"rates"`
 	StripePayment                stripe.Config       `mapstructure:"stripe_payment"`
 	StripePaymentTest            stripe.Config       `mapstructure:"stripe_payment_test"`
 	Revalidation                 revalidation.Config `mapstructure:"revalidation"`
@@ -151,9 +155,7 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")
 	viper.BindEnv("mailer.worker_interval", "MAILER_WORKER_INTERVAL")
 
-	// Rates
-	viper.BindEnv("rates.api_key", "RATES_API_KEY")
-	viper.BindEnv("rates.rates_update_period", "RATES_UPDATE_PERIOD")
+	// Rates (base currency only; no exchange rates)
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")
 
 	// Stripe Payment
