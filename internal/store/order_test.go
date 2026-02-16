@@ -562,7 +562,7 @@ func TestOrderLifecycle(t *testing.T) {
 		require.NoError(t, err)
 
 		// Admin refunds (full refund, empty orderItemIDs)
-		err = store.Order().RefundOrder(ctx, order.UUID, nil)
+		err = store.Order().RefundOrder(ctx, order.UUID, nil, "")
 		require.NoError(t, err)
 
 		orderFull, err := store.Order().GetOrderFullByUUID(ctx, order.UUID)
@@ -618,7 +618,7 @@ func TestOrderLifecycle(t *testing.T) {
 		firstItemID := int32(orderFull.OrderItems[0].Id)
 
 		// Admin partial refund - only first item
-		err = store.Order().RefundOrder(ctx, order.UUID, []int32{firstItemID})
+		err = store.Order().RefundOrder(ctx, order.UUID, []int32{firstItemID}, "")
 		require.NoError(t, err)
 
 		orderFull, err = store.Order().GetOrderFullByUUID(ctx, order.UUID)

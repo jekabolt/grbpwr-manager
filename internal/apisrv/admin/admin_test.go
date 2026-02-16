@@ -3605,7 +3605,7 @@ func TestRefundOrder(t *testing.T) {
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
-		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything).Return(nil)
+		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything, mock.Anything).Return(nil)
 
 		// Create request
 		req := &pb_admin.RefundOrderRequest{
@@ -3637,7 +3637,7 @@ func TestRefundOrder(t *testing.T) {
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
-		mockOrderRepo.On("RefundOrder", mock.Anything, "", mock.Anything).Return(errors.New("empty order UUID"))
+		mockOrderRepo.On("RefundOrder", mock.Anything, "", mock.Anything, mock.Anything).Return(errors.New("empty order UUID"))
 
 		// Create request with empty UUID
 		req := &pb_admin.RefundOrderRequest{
@@ -3676,7 +3676,7 @@ func TestRefundOrder(t *testing.T) {
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
-		mockOrderRepo.On("RefundOrder", mock.Anything, nonExistentUUID, mock.Anything).Return(expectedErr)
+		mockOrderRepo.On("RefundOrder", mock.Anything, nonExistentUUID, mock.Anything, mock.Anything).Return(expectedErr)
 
 		// Create request
 		req := &pb_admin.RefundOrderRequest{
@@ -3715,7 +3715,7 @@ func TestRefundOrder(t *testing.T) {
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
-		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything).Return(expectedErr)
+		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything, mock.Anything).Return(expectedErr)
 
 		// Create request
 		req := &pb_admin.RefundOrderRequest{
@@ -3754,7 +3754,7 @@ func TestRefundOrder(t *testing.T) {
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
-		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything).Return(expectedErr)
+		mockOrderRepo.On("RefundOrder", mock.Anything, orderUUID, mock.Anything, mock.Anything).Return(expectedErr)
 
 		// Create request
 		req := &pb_admin.RefundOrderRequest{

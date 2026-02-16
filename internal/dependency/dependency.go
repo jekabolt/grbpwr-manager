@@ -95,7 +95,7 @@ type (
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error)
-		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32) error
+		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)

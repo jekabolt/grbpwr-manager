@@ -886,7 +886,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				return nil, status.Errorf(codes.Internal, "can't refund payment: %v", err)
 			}
 
-			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil); err != nil {
+			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason); err != nil {
 				slog.Default().ErrorContext(ctx, "can't refund order",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),

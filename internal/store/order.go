@@ -1280,13 +1280,15 @@ func insertRefundedOrderItems(ctx context.Context, rep dependency.Repository, or
 	return nil
 }
 
-// updateOrderStatusAndRefundedAmountWithValidation updates order status and refunded amount with validation
+// updateOrderStatusAndRefundedAmountWithValidation updates order status and refunded amount with validation.
+// refundReason is optional; when non-empty it updates customer_order.refund_reason.
 func updateOrderStatusAndRefundedAmountWithValidation(
 	ctx context.Context,
 	rep dependency.Repository,
 	orderId int,
 	orderStatusId int,
 	refundedAmount decimal.Decimal,
+	refundReason string,
 	changedBy string,
 ) error {
 	// Get current order status for validation
@@ -1317,11 +1319,12 @@ func updateOrderStatusAndRefundedAmountWithValidation(
 		)
 	}
 
-	// Update status and refunded amount
+	// Update status, refunded amount, and optionally refund reason
 	updateQuery := `
 		UPDATE customer_order 
 		SET order_status_id = :orderStatusId,
 			refunded_amount = :refundedAmount,
+			refund_reason = COALESCE(NULLIF(:refundReason, ''), refund_reason),
 			modified = CURRENT_TIMESTAMP
 		WHERE id = :orderId
 	`
@@ -1330,6 +1333,7 @@ func updateOrderStatusAndRefundedAmountWithValidation(
 		"orderId":        orderId,
 		"orderStatusId":  orderStatusId,
 		"refundedAmount": refundedAmount.Round(2),
+		"refundReason":   refundReason,
 	})
 	if err != nil {
 		return fmt.Errorf("update order: %w", err)
@@ -1349,8 +1353,8 @@ func updateOrderStatusAndRefundedAmountWithValidation(
 	})
 }
 
-func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal) error {
-	return updateOrderStatusAndRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, "admin")
+func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string) error {
+	return updateOrderStatusAndRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, refundReason, "admin")
 }
 
 func refundAmountFromItems(items []entity.OrderItemInsert) decimal.Decimal {
@@ -2543,7 +2547,7 @@ func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
 // Allowed statuses: refund_in_progress, pending_return, delivered, confirmed.
 // Full or partial: RefundInProgress, PendingReturn, Delivered.
 // Full refund only: Confirmed.
-func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32) error {
+func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUID(ctx, rep, orderUUID)
 		if err != nil {
@@ -2605,7 +2609,7 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 		}
 
 		refundedAmount := refundAmountFromItems(itemsForStock)
-		return updateOrderStatusAndRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount)
+		return updateOrderStatusAndRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount, reason)
 	})
 }
 

@@ -788,7 +788,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		}
 	}
 
-	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds)
+	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds, req.Reason)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),
