@@ -37,7 +37,7 @@ envs:
   value: 0.0.0.0
 - key: HTTP_ALLOWED_ORIGINS
   scope: RUN_TIME
-  value: '["https://backend.grbpwr.com","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com"]'
+  value: '["https://backend.grbpwr.com","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com","https://admin.grbpwr.com"]'
 - key: AUTH_JWT_SECRET
   scope: RUN_TIME
   type: SECRET
@@ -98,6 +98,18 @@ envs:
 - key: MAILER_WORKER_INTERVAL
   scope: RUN_TIME
   value: 1h
+- key: ORDER_CLEANUP_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 15m
+- key: ORDER_CLEANUP_PLACED_THRESHOLD
+  scope: RUN_TIME
+  value: 24h
+- key: STRIPE_RECONCILE_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 15m
+- key: STRIPE_RECONCILE_PRE_ORDER_THRESHOLD
+  scope: RUN_TIME
+  value: 24h
 - key: RATES_API_KEY
   scope: RUN_TIME
   type: SECRET
@@ -253,9 +265,21 @@ services:
   github:
     branch: master
     repo: jekabolt/grbpwr-manager
+  health_check:
+    failure_threshold: 9
+    http_path: /readyz
+    period_seconds: 10
+    success_threshold: 1
+    timeout_seconds: 1
   http_port: 8081
   instance_count: 1
   instance_size_slug: apps-s-1vcpu-0.5gb
+  liveness_health_check:
+    failure_threshold: 9
+    http_path: /livez
+    period_seconds: 10
+    success_threshold: 1
+    timeout_seconds: 1
   name: grbpwr-manager
 vpc:
   id: b5aeea90-1829-41d3-82f5-bb2cf3827c91

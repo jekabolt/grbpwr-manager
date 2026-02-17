@@ -195,10 +195,14 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 }
 
 func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRequest) (*pb_frontend.SubmitOrderResponse, error) {
+	slog.Default().InfoContext(ctx, "SubmitOrder started",
+		slog.String("payment_intent_id", req.PaymentIntentId),
+		slog.String("payment_method", string(dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod))),
+	)
 	// Extract client identifiers for rate limiting
 	clientIP := middleware.GetClientIP(ctx)
 	clientSession := middleware.GetClientSession(ctx)
-	
+
 	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
 
 	_, err := v.ValidateStruct(orderNew)
@@ -320,7 +324,11 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	// Associate PaymentIntent with order BEFORE InsertFiatInvoice so retries find the order
 	// when InsertFiatInvoice returns ErrOrderItemsUpdated (prevents duplicate orders)
 	if err = s.repo.Order().AssociatePaymentIntentWithOrder(ctx, order.UUID, req.PaymentIntentId); err != nil {
-		slog.Default().ErrorContext(ctx, "can't associate payment intent with order", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't associate payment intent with order",
+			slog.String("err", err.Error()),
+			slog.String("order_uuid", order.UUID),
+			slog.String("payment_intent_id", req.PaymentIntentId),
+		)
 		_ = s.repo.Order().CancelOrder(ctx, order.UUID)
 		s.reservationMgr.Release(ctx, order.UUID) // Release reservation on failure
 		return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
@@ -329,7 +337,10 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	// Update existing PaymentIntent with order details (using data we already have - no DB query!)
 	err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update payment intent with order", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't update payment intent with order",
+			slog.String("err", err.Error()),
+			slog.String("order_uuid", order.UUID),
+		)
 		_ = s.repo.Order().CancelOrder(ctx, order.UUID)
 		return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
 	}
@@ -345,7 +356,10 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 				return nil, status.Errorf(codes.Internal, "can't complete payment after items update: %v", err)
 			}
 		} else {
-			slog.Default().ErrorContext(ctx, "can't associate payment intent with order", slog.String("err", err.Error()))
+			slog.Default().ErrorContext(ctx, "InsertFiatInvoice failed, cancelling order",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", order.UUID),
+			)
 			if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
 				slog.Default().ErrorContext(ctx, "failed to cancel orphan order", slog.String("orderUUID", order.UUID), slog.String("err", cancelErr.Error()))
 			}
@@ -656,8 +670,13 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 			return response, nil
 		}
 
-		// Deterministic idempotency key: same cart = same key, retries return same PI
-		idempotencyKey := preOrderIdempotencyKey(roundedTotal, currency, req.Country, req.PromoCode, req.ShipmentCarrierId, itemsToInsert)
+		// Idempotency key: prefer client-generated (frontend creates UUID per checkout session). Fallback to session for backward compat.
+		idempotencyKey := req.IdempotencyKey
+		if idempotencyKey == "" {
+			idempotencyKey = preOrderIdempotencyKeyFallback(roundedTotal, currency, req.Country, req.PromoCode, req.ShipmentCarrierId, itemsToInsert, clientSession)
+		} else {
+			idempotencyKey = "preorder_" + idempotencyKey
+		}
 		pi, err := handler.CreatePreOrderPaymentIntent(ctx, roundedTotal, currency, req.Country, idempotencyKey)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't create pre-order payment intent",
@@ -753,8 +772,9 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 	}
 }
 
-// preOrderIdempotencyKey returns a deterministic key for pre-order PI creation. Same cart = same key.
-func preOrderIdempotencyKey(amount decimal.Decimal, currency, country, promoCode string, shipmentCarrierId int32, items []entity.OrderItemInsert) string {
+// preOrderIdempotencyKeyFallback returns a key when client doesn't provide idempotency_key (backward compat).
+// Same cart + same session = same key. Different session = different key.
+func preOrderIdempotencyKeyFallback(amount decimal.Decimal, currency, country, promoCode string, shipmentCarrierId int32, items []entity.OrderItemInsert, sessionID string) string {
 	// Sort items for deterministic output
 	sorted := make([]entity.OrderItemInsert, len(items))
 	copy(sorted, items)
@@ -764,7 +784,7 @@ func preOrderIdempotencyKey(amount decimal.Decimal, currency, country, promoCode
 		}
 		return sorted[i].SizeId < sorted[j].SizeId
 	})
-	data := fmt.Sprintf("%s|%s|%s|%s|%d", amount.String(), currency, country, promoCode, shipmentCarrierId)
+	data := fmt.Sprintf("%s|%s|%s|%s|%d|%s", amount.String(), currency, country, promoCode, shipmentCarrierId, sessionID)
 	for _, i := range sorted {
 		data += fmt.Sprintf("|%d:%d:%s", i.ProductId, i.SizeId, i.Quantity.String())
 	}

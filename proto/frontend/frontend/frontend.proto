@@ -184,6 +184,7 @@ message ValidateOrderItemsInsertRequest {
   string country = 4; // ISO country code for automatic_payment_methods
   common.PaymentMethodNameEnum payment_method = 5; // to determine if PaymentIntent needed
   string currency = 6; // ISO currency code (e.g., "usd", "eur")
+  string idempotency_key = 7; // Client-generated UUID per checkout session. Ensures different customers get different PaymentIntents even with identical carts.
 }
 
 message ValidateOrderItemsInsertResponse {

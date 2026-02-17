@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Knetic/go-namedParameterQuery"
-	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
 	"github.com/jmoiron/sqlx/reflectx"
@@ -116,10 +115,11 @@ func (ms *MYSQLStore) TxRollback(ctx context.Context) error {
 }
 
 func (ms *MYSQLStore) IsErrorRepeat(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	if errors.As(err, &mysqlErr) {
-		// 1213 = Deadlock found, 1205 = Lock wait timeout
-		return mysqlErr.Number == 1213 || mysqlErr.Number == 1205
+	var e *pq.Error
+	if errors.As(err, &e) {
+		if e.Code == "40001" {
+			return true
+		}
 	}
 	return false
 }

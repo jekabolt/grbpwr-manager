@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -295,7 +296,7 @@ func (s *Server) Start(ctx context.Context,
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
 
 	var clientHTTPHandler http.Handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middleware.ClientIdentifier(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
 			s.gs.ServeHTTP(w, r)
 		} else {
@@ -305,7 +306,7 @@ func (s *Server) Start(ctx context.Context,
 			}
 			clientHTTPHandler.ServeHTTP(w, r)
 		}
-	})
+	}))
 
 	ctx, cancel := context.WithCancel(ctx)
 	hsDone := make(chan struct{})

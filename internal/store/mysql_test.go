@@ -83,6 +83,7 @@ func TestMain(m *testing.M) {
 	testDB.SetMaxOpenConns(testCfg.MaxOpenConnections)
 	testDB.SetMaxIdleConns(testCfg.MaxIdleConnections)
 	testDB.SetConnMaxLifetime(time.Minute)
+	testDB.SetConnMaxIdleTime(30 * time.Second) // Close idle connections before MySQL server timeout
 
 	// Run migrations with timeout
 	_, cancel = context.WithTimeout(ctx, 30*time.Second)

@@ -129,7 +129,9 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if cfg.MaxIdleConnections > 0 {
 		d.SetMaxIdleConns(cfg.MaxIdleConnections)
 	}
-	d.SetConnMaxLifetime(5 * time.Minute)
+	// Aggressive connection lifecycle management to prevent stale connections
+	d.SetConnMaxLifetime(2 * time.Minute)  // Recycle connections every 2 minutes
+	d.SetConnMaxIdleTime(30 * time.Second) // Close idle connections after 30 seconds
 
 	// Test connection with timeout
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -237,7 +239,9 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if cfg.MaxIdleConnections > 0 {
 		d.SetMaxIdleConns(cfg.MaxIdleConnections)
 	}
-	d.SetConnMaxLifetime(5 * time.Minute)
+	// Aggressive connection lifecycle management to prevent stale connections
+	d.SetConnMaxLifetime(2 * time.Minute)  // Recycle connections every 2 minutes
+	d.SetConnMaxIdleTime(30 * time.Second) // Close idle connections after 30 seconds
 
 	// Test connection with timeout
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)

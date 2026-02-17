@@ -105,11 +105,12 @@ func LoadConfig(cfgFile string) (*Config, error) {
 			if mysqlPort == "" {
 				mysqlPort = "3306"
 			}
-			if mysqlUser != "" && mysqlPassword != "" && mysqlDatabase != "" {
-				// Construct DSN for DO managed database (with TLS)
-				config.DB.DSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true&tls=custom",
-					mysqlUser, mysqlPassword, mysqlHost, mysqlPort, mysqlDatabase)
-			}
+		if mysqlUser != "" && mysqlPassword != "" && mysqlDatabase != "" {
+			// Construct DSN for DO managed database (with TLS)
+			// Add connection validation and timeout parameters to prevent stale connections
+			config.DB.DSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true&tls=custom&timeout=10s&readTimeout=30s&writeTimeout=30s",
+				mysqlUser, mysqlPassword, mysqlHost, mysqlPort, mysqlDatabase)
+		}
 		}
 	}
 

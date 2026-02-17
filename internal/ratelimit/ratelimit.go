@@ -100,9 +100,9 @@ type MultiKeyLimiter struct {
 func NewMultiKeyLimiter() *MultiKeyLimiter {
 	return &MultiKeyLimiter{
 		limiters: map[string]*Limiter{
-			"ip_order":    NewLimiter(time.Hour, 5),     // 5 orders per IP per hour
-			"email_order": NewLimiter(time.Hour, 3),     // 3 orders per email per hour
-			"ip_validate": NewLimiter(time.Minute, 20),  // 20 validations per IP per minute
+			"ip_order":    NewLimiter(time.Hour, 100),   // 100 orders per IP per hour
+			"email_order": NewLimiter(time.Hour, 100),   // 100 orders per email per hour
+			"ip_validate": NewLimiter(time.Minute, 20),   // 20 validations per IP per minute
 		},
 	}
 }

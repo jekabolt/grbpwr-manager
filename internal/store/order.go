@@ -27,6 +27,10 @@ import (
 // (e.g. prices changed, items unavailable). Caller should NOT cancel the order.
 var ErrOrderItemsUpdated = errors.New("order items are not valid and were updated")
 
+// errPaymentRecordNotFound indicates the payment record for the order was not found (0 rows updated).
+// Can occur due to replication lag or if order creation didn't commit before association.
+var errPaymentRecordNotFound = errors.New("payment record not found for order")
+
 type orderStore struct {
 	*MYSQLStore
 }
@@ -570,18 +574,18 @@ func validateAndUpdateOrderIfNeededWithLock(
 	// Validate the order items
 	var oiv *entity.OrderItemValidation
 	var err error
-	
+
 	if lockStock {
 		// Use the internal method that locks stock rows
-		if ms, ok := rep.Order().(*MYSQLStore); ok {
-			oiv, err = ms.validateOrderItemsInsertForUpdate(ctx, items, orderFull.Order.Currency)
+		if os, ok := rep.Order().(*orderStore); ok {
+			oiv, err = os.validateOrderItemsInsertForUpdate(ctx, items, orderFull.Order.Currency)
 		} else {
-			return false, fmt.Errorf("cannot cast to MYSQLStore for stock locking")
+			return false, fmt.Errorf("cannot cast to orderStore for stock locking")
 		}
 	} else {
 		oiv, err = rep.Order().ValidateOrderItemsInsert(ctx, items, orderFull.Order.Currency)
 	}
-	
+
 	if err != nil {
 		// If validation fails and we should cancel, do it
 		if cancelOnValidationFailure {
@@ -777,13 +781,13 @@ func (ms *MYSQLStore) validateOrderItemsInsertWithLock(ctx context.Context, item
 	var validItems []entity.OrderItem
 	var itemAdjustments []entity.OrderItemAdjustment
 	var err error
-	
+
 	if lockStock {
 		validItems, itemAdjustments, err = validateOrderItemsStockAvailabilityForUpdate(ctx, ms, mergedItems, currency)
 	} else {
 		validItems, itemAdjustments, err = ms.validateOrderItemsInsert(ctx, mergedItems, currency)
 	}
-	
+
 	if err != nil {
 		var validationErr *entity.ValidationError
 		if errors.As(err, &validationErr) {
@@ -1570,12 +1574,16 @@ func (ms *MYSQLStore) AssociatePaymentIntentWithOrder(ctx context.Context, order
 		WHERE uuid = :orderUUID
 	)`
 
-	err := ExecNamed(ctx, ms.db, query, map[string]any{
+	rows, err := ms.db.NamedExecContext(ctx, query, map[string]any{
 		"paymentIntentId": paymentIntentId,
 		"orderUUID":       orderUUID,
 	})
 	if err != nil {
 		return fmt.Errorf("can't associate payment intent with order: %w", err)
+	}
+
+	if rowsAffected, err := rows.RowsAffected(); err != nil || rowsAffected == 0 {
+		return fmt.Errorf("can't associate payment intent with order: %w", errPaymentRecordNotFound)
 	}
 	return nil
 }
@@ -1646,7 +1654,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 	// Convert order items to insert format and validate them
 	var itemsChanged bool
 	var orderFull *entity.OrderFull
-	
+
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Lock the order row to prevent race conditions with concurrent invoice insertions or cancellations
 		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
@@ -1678,19 +1686,33 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 
 		// Check if the order's total price is zero or below currency minimum
 		if orderFull.Order.TotalPrice.IsZero() {
+			slog.Default().ErrorContext(ctx, "InsertFiatInvoice: order total is zero, cancelling",
+				slog.String("order_uuid", orderUUID),
+				slog.Int("order_id", orderFull.Order.Id),
+				slog.String("currency", orderFull.Order.Currency),
+			)
 			if err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled); err != nil {
 				return fmt.Errorf("cannot cancel order: %w", err)
 			}
 			return fmt.Errorf("total price is zero")
 		}
 		if err := dto.ValidatePriceMeetsMinimum(orderFull.Order.TotalPrice, orderFull.Order.Currency); err != nil {
+			slog.Default().ErrorContext(ctx, "InsertFiatInvoice: order total below currency minimum",
+				slog.String("order_uuid", orderUUID),
+				slog.String("total", orderFull.Order.TotalPrice.String()),
+				slog.String("currency", orderFull.Order.Currency),
+				slog.String("err", err.Error()),
+			)
 			return fmt.Errorf("order total below currency minimum: %w", err)
 		}
 
 		// Validate and update order with stock row locking to prevent race conditions
 		itemsChanged, err = validateAndUpdateOrderIfNeededForUpdate(ctx, rep, orderFull, true)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "cannot validate order items", slog.String("err", err.Error()))
+			slog.Default().ErrorContext(ctx, "InsertFiatInvoice: order validation failed, cancelling",
+				slog.String("order_uuid", orderUUID),
+				slog.String("err", err.Error()),
+			)
 			return err
 		}
 
@@ -2134,103 +2156,109 @@ func fetchOrderInfo(ctx context.Context, rep dependency.Repository, orders []ent
 		addresses      map[int]addressFull
 	)
 
-	// Use errgroup to handle concurrency and errors more elegantly
-	g, ctx := errgroup.WithContext(ctx)
-
-	// Fetch order items
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	// MySQL connections only support one query at a time. When inside a transaction
+	// (single connection), concurrent goroutines corrupt the protocol and cause
+	// "driver: bad connection" errors. Run sequentially in that case.
+	if rep.InTx() {
 		var err error
 		orderItems, err = getOrdersItems(ctx, rep, ids...)
 		if err != nil {
-			return fmt.Errorf("can't get order items: %w", err)
+			return nil, fmt.Errorf("can't get order items: %w", err)
 		}
-		return nil
-	})
-
-	// Fetch payments
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		payments, err = paymentsByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("can't get payment by id: %w", err)
+			return nil, fmt.Errorf("can't get payment by id: %w", err)
 		}
-		return nil
-	})
-
-	// Fetch shipments
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		shipments, err = shipmentsByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("can't get order shipment: %w", err)
+			return nil, fmt.Errorf("can't get order shipment: %w", err)
 		}
-		return nil
-	})
-
-	// Fetch promos
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		promos, err = promosByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("can't get order promos: %w", err)
+			return nil, fmt.Errorf("can't get order promos: %w", err)
 		}
-		return nil
-	})
-
-	// Fetch buyers
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		buyers, err = buyersByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("can't get buyers order by ids %w", err)
+			return nil, fmt.Errorf("can't get buyers order by ids %w", err)
 		}
-		return nil
-	})
-
-	// Fetch addresses
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		addresses, err = addressesByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("can't get addresses by id: %w", err)
+			return nil, fmt.Errorf("can't get addresses by id: %w", err)
 		}
-		return nil
-	})
-
-	// Fetch refunded quantities (parallel with other fetches)
-	g.Go(func() error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var err error
 		refundedByItem, err = getRefundedQuantitiesByOrderIds(ctx, rep, ids)
 		if err != nil {
-			return fmt.Errorf("get refunded quantities: %w", err)
+			return nil, fmt.Errorf("get refunded quantities: %w", err)
 		}
-		return nil
-	})
+	} else {
+		// Outside a transaction: use errgroup for parallel fetches across pooled connections
+		g, ctx := errgroup.WithContext(ctx)
 
-	// Wait for all goroutines to complete
-	if err := g.Wait(); err != nil {
-		return nil, err
+		g.Go(func() error {
+			var err error
+			orderItems, err = getOrdersItems(ctx, rep, ids...)
+			if err != nil {
+				return fmt.Errorf("can't get order items: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			payments, err = paymentsByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("can't get payment by id: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			shipments, err = shipmentsByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("can't get order shipment: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			promos, err = promosByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("can't get order promos: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			buyers, err = buyersByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("can't get buyers order by ids %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			addresses, err = addressesByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("can't get addresses by id: %w", err)
+			}
+			return nil
+		})
+
+		g.Go(func() error {
+			var err error
+			refundedByItem, err = getRefundedQuantitiesByOrderIds(ctx, rep, ids)
+			if err != nil {
+				return fmt.Errorf("get refunded quantities: %w", err)
+			}
+			return nil
+		})
+
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
 	}
 
 	refundedOrderItems := mergeRefundedOrderItems(orderItems, refundedByItem)
