@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/shopspring/decimal"
 )
 
@@ -128,15 +129,14 @@ type ShipmentCarrierInsert struct {
 	ExpectedDeliveryTime sql.NullString `db:"expected_delivery_time"`
 }
 
-// PriceDecimal returns the price for the specified currency
-// Returns an error if the currency is not found
-func (sc *ShipmentCarrier) PriceDecimal(currency string) (decimal.Decimal, error) {
+// PriceDecimal returns the price for the specified currency (currency-aware rounding)
+func (sc *ShipmentCarrier) PriceDecimal(c string) (decimal.Decimal, error) {
 	for _, price := range sc.Prices {
-		if price.Currency == currency {
-			return price.Price.Round(2), nil
+		if price.Currency == c {
+			return currency.Round(price.Price, c), nil
 		}
 	}
-	return decimal.Zero, fmt.Errorf("shipment carrier %d does not have a price in currency %s", sc.Id, currency)
+	return decimal.Zero, fmt.Errorf("shipment carrier %d does not have a price in currency %s", sc.Id, c)
 }
 
 // AvailableForRegion returns true if the carrier serves the given region.
@@ -166,6 +166,7 @@ type Shipment struct {
 	EstimatedArrivalDate sql.NullTime    `db:"estimated_arrival_date"`
 }
 
-func (s *Shipment) CostDecimal() decimal.Decimal {
-	return s.Cost.Round(2)
+// CostDecimal returns shipment cost with currency-aware rounding
+func (s *Shipment) CostDecimal(c string) decimal.Decimal {
+	return currency.Round(s.Cost, c)
 }

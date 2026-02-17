@@ -3037,10 +3037,6 @@ func TestGetDictionary(t *testing.T) {
 			PaymentMethods: []entity.PaymentMethod{
 				{Id: 1, Name: entity.CARD, Allowed: true},
 				{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-				{Id: 3, Name: entity.ETH, Allowed: true},
-				{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-				{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-				{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 			},
 			ShipmentCarriers: []entity.ShipmentCarrier{
 				{
@@ -4675,7 +4671,7 @@ func TestUpdateSettings(t *testing.T) {
 						Allow:         true,
 					},
 					{
-						PaymentMethod: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH,
+						PaymentMethod: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST,
 						Allow:         false,
 					},
 				},
@@ -4696,7 +4692,7 @@ func TestUpdateSettings(t *testing.T) {
 
 				// Payment method expectations
 				settingsMock.On("SetPaymentMethodAllowance", mock.Anything, entity.CARD, true).Return(nil)
-				settingsMock.On("SetPaymentMethodAllowance", mock.Anything, entity.ETH, false).Return(nil)
+				settingsMock.On("SetPaymentMethodAllowance", mock.Anything, entity.CARD_TEST, false).Return(nil)
 
 				// Site availability and max order items expectations
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)

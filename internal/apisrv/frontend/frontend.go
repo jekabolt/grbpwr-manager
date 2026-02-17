@@ -2,11 +2,14 @@ package frontend
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"time"
 
 	"log/slog"
@@ -16,7 +19,11 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
+	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
+	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/shopspring/decimal"
@@ -33,6 +40,8 @@ type Server struct {
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
+	rateLimiter       *ratelimit.MultiKeyLimiter
+	reservationMgr    *stockreserve.Manager
 }
 
 // New creates a new server with frontend handlers.
@@ -43,12 +52,24 @@ func New(
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
 ) *Server {
+	reservationMgr := stockreserve.NewDefaultManager()
+	
+	// Set reservation manager on stripe processors if they support it
+	if sp, ok := stripePayment.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
+		sp.SetReservationManager(reservationMgr)
+	}
+	if spt, ok := stripePaymentTest.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
+		spt.SetReservationManager(reservationMgr)
+	}
+	
 	return &Server{
 		repo:              r,
 		mailer:            m,
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
+		rateLimiter:       ratelimit.NewMultiKeyLimiter(),
+		reservationMgr:    reservationMgr,
 	}
 }
 
@@ -67,22 +88,22 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	return &pb_frontend.GetHeroResponse{
 		Hero: h,
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:       cache.GetCategories(),
-			Measurements:     cache.GetMeasurements(),
-			OrderStatuses:    cache.GetOrderStatuses(),
-			PaymentMethods:   cache.GetPaymentMethods(),
-			ShipmentCarriers: cache.GetShipmentCarriers(),
-			Sizes:            cache.GetSizes(),
-			Collections:      cache.GetCollections(),
-			Genders:          cache.GetGenders(),
-			Languages:        cache.GetLanguages(),
-			SortFactors:      cache.GetSortFactors(),
-			OrderFactors:     cache.GetOrderFactors(),
+			Categories:             cache.GetCategories(),
+			Measurements:           cache.GetMeasurements(),
+			OrderStatuses:          cache.GetOrderStatuses(),
+			PaymentMethods:         cache.GetPaymentMethods(),
+			ShipmentCarriers:       cache.GetShipmentCarriers(),
+			Sizes:                  cache.GetSizes(),
+			Collections:            cache.GetCollections(),
+			Genders:                cache.GetGenders(),
+			Languages:              cache.GetLanguages(),
+			SortFactors:            cache.GetSortFactors(),
+			OrderFactors:           cache.GetOrderFactors(),
 			SiteEnabled:            cache.GetSiteAvailability(),
 			MaxOrderItems:          cache.GetMaxOrderItems(),
 			BaseCurrency:           cache.GetBaseCurrency(),
-			BigMenu:               cache.GetBigMenu(),
-			Announce:              cache.GetAnnounce(),
+			BigMenu:                cache.GetBigMenu(),
+			Announce:               cache.GetAnnounce(),
 			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
 		}),
 	}, nil
@@ -174,6 +195,10 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 }
 
 func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRequest) (*pb_frontend.SubmitOrderResponse, error) {
+	// Extract client identifiers for rate limiting
+	clientIP := middleware.GetClientIP(ctx)
+	clientSession := middleware.GetClientSession(ctx)
+	
 	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
 
 	_, err := v.ValidateStruct(orderNew)
@@ -182,6 +207,16 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
+	}
+
+	// RATE LIMIT CHECK: Prevent cart bombing and order spam
+	if err := s.rateLimiter.CheckOrderCreation(clientIP, orderNew.Buyer.Email); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for order creation",
+			slog.String("ip", clientIP),
+			slog.String("email", orderNew.Buyer.Email),
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
 	}
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
@@ -194,6 +229,11 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	if !pme.Method.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
 		return nil, status.Errorf(codes.PermissionDenied, "payment method not allowed")
+	}
+
+	// Enforce PaymentIntent flow for card: prevents duplicate orders on retry (idempotency)
+	if (pm == entity.CARD || pm == entity.CARD_TEST) && req.PaymentIntentId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "payment_intent_id required for card payments; call ValidateOrderItemsInsert first")
 	}
 
 	handler, err := s.getPaymentHandler(ctx, pm)
@@ -223,6 +263,12 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 				slog.String("orderUUID", existingOrder.Order.UUID),
 				slog.String("paymentIntentId", req.PaymentIntentId),
 			)
+
+			// Ensure PaymentIntent amount matches order total (order may have been updated on ErrOrderItemsUpdated)
+			if err := s.ensurePaymentIntentAmountMatchesOrder(ctx, handler, req.PaymentIntentId, existingOrder); err != nil {
+				slog.Default().ErrorContext(ctx, "can't sync payment intent amount on idempotent retry", slog.String("err", err.Error()))
+				return nil, status.Errorf(codes.Internal, "can't sync payment intent amount: %v", err)
+			}
 
 			eos, ok := cache.GetOrderStatusById(existingOrder.Order.OrderStatusId)
 			if !ok {
@@ -259,6 +305,9 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't create order")
 	}
 
+	// COMMIT RESERVATION: Convert cart reservation to order reservation
+	s.reservationMgr.Commit(ctx, clientSession, order.UUID)
+
 	if sendEmail {
 		err := s.mailer.QueueNewSubscriber(ctx, s.repo, orderNew.Buyer.Email)
 		if err != nil {
@@ -268,92 +317,100 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		}
 	}
 
-	var pi *entity.PaymentInsert
+	// Associate PaymentIntent with order BEFORE InsertFiatInvoice so retries find the order
+	// when InsertFiatInvoice returns ErrOrderItemsUpdated (prevents duplicate orders)
+	if err = s.repo.Order().AssociatePaymentIntentWithOrder(ctx, order.UUID, req.PaymentIntentId); err != nil {
+		slog.Default().ErrorContext(ctx, "can't associate payment intent with order", slog.String("err", err.Error()))
+		_ = s.repo.Order().CancelOrder(ctx, order.UUID)
+		s.reservationMgr.Release(ctx, order.UUID) // Release reservation on failure
+		return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
+	}
 
-	// Handle pre-created PaymentIntent for card payments
-	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {
-		// Update existing PaymentIntent with order details (using data we already have - no DB query!)
-		err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't update payment intent with order", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
-		}
+	// Update existing PaymentIntent with order details (using data we already have - no DB query!)
+	err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't update payment intent with order", slog.String("err", err.Error()))
+		_ = s.repo.Order().CancelOrder(ctx, order.UUID)
+		return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
+	}
 
-		// Associate PaymentIntent with order in database
-		var orderFull *entity.OrderFull
-		err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-			orderFull, err = s.repo.Order().InsertFiatInvoice(ctx, order.UUID, req.PaymentIntentId, pme.Method, time.Now().Add(expirationDuration))
+	var orderFull *entity.OrderFull
+	orderFull, err = s.repo.Order().InsertFiatInvoice(ctx, order.UUID, req.PaymentIntentId, pme.Method, time.Now().Add(expirationDuration))
+	if err != nil {
+		if errors.Is(err, store.ErrOrderItemsUpdated) {
+			// Order items were updated (stock/price changed). Update PaymentIntent amount and retry.
+			orderFull, err = s.retryInsertFiatInvoiceAfterItemsUpdated(ctx, order.UUID, req.PaymentIntentId, pme.Method, expirationDuration, handler)
 			if err != nil {
-				return fmt.Errorf("can't insert fiat invoice: %w", err)
+				slog.Default().ErrorContext(ctx, "can't complete payment after items update", slog.String("err", err.Error()))
+				return nil, status.Errorf(codes.Internal, "can't complete payment after items update: %v", err)
 			}
-
-			// Payment currency amount is the same as order currency amount since we use order currency in PaymentIntent
-			// Prices are stored per currency, so no conversion needed
-			err = s.repo.Order().UpdateTotalPaymentCurrency(ctx, order.UUID, orderFull.Order.TotalPriceDecimal())
-			if err != nil {
-				return fmt.Errorf("can't update total payment currency: %w", err)
-			}
-
-			return nil
-		})
-
-		if err != nil {
+		} else {
 			slog.Default().ErrorContext(ctx, "can't associate payment intent with order", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
-		}
-
-		// Validate and update PaymentIntent amount to match final order total (including delivery)
-		stripePi, err := handler.GetPaymentIntentByID(ctx, req.PaymentIntentId)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get payment intent for validation", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't get payment intent for validation")
-		}
-
-		// Convert PaymentIntent amount from smallest currency unit to decimal
-		// For zero-decimal currencies (like JPY, KRW), amount is already in decimal
-		// For other currencies, convert from cents
-		piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
-		orderTotal := orderFull.Order.TotalPriceDecimal()
-
-		// Check if amounts match (with small tolerance for rounding)
-		if !piAmount.Equal(orderTotal) {
-			slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch, updating",
-				slog.String("payment_intent_id", req.PaymentIntentId),
-				slog.String("pi_amount", piAmount.String()),
-				slog.String("order_total", orderTotal.String()),
-			)
-
-			// Update PaymentIntent amount to match order total
-			err = handler.UpdatePaymentIntentAmount(ctx, req.PaymentIntentId, orderTotal, orderFull.Order.Currency)
-			if err != nil {
-				slog.Default().ErrorContext(ctx, "can't update payment intent amount",
-					slog.String("err", err.Error()),
-					slog.String("payment_intent_id", req.PaymentIntentId),
-					slog.String("expected_amount", orderTotal.String()),
-				)
-				return nil, status.Errorf(codes.Internal, "payment amount mismatch: expected %s but PaymentIntent has %s", orderTotal.String(), piAmount.String())
+			if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
+				slog.Default().ErrorContext(ctx, "failed to cancel orphan order", slog.String("orderUUID", order.UUID), slog.String("err", cancelErr.Error()))
 			}
-
-			slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
-				slog.String("payment_intent_id", req.PaymentIntentId),
-				slog.String("new_amount", orderTotal.String()),
-			)
-		}
-
-		pi = &orderFull.Payment.PaymentInsert
-
-		// Start monitoring the payment
-		handler.StartMonitoringPayment(ctx, order.UUID, orderFull.Payment)
-	} else {
-		// Legacy flow: create PaymentIntent/invoice during order submission
-		pi, err = s.getInvoiceByPaymentMethod(ctx, handler, order.UUID)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't get order invoice")
+			return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
 		}
 	}
 
-	eos, ok := cache.GetOrderStatusById(order.OrderStatusId)
+	// start monitoring immediately after InsertFiatInvoice succeeds
+	// to prevent orphaned orders if subsequent operations fail
+	handler.StartMonitoringPayment(ctx, order.UUID, orderFull.Payment)
+
+	err = s.repo.Order().UpdateTotalPaymentCurrency(ctx, order.UUID, orderFull.Order.TotalPriceDecimal())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't update total payment currency", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't update total payment currency")
+	}
+
+	// Validate and update PaymentIntent amount to match final order total (including delivery)
+	stripePi, err := handler.GetPaymentIntentByID(ctx, req.PaymentIntentId)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get payment intent for validation", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get payment intent for validation")
+	}
+
+	// Convert PaymentIntent amount from smallest currency unit to decimal
+	// For zero-decimal currencies (like JPY, KRW), amount is already in decimal
+	// For other currencies, convert from cents
+	piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
+	orderTotal := orderFull.Order.TotalPriceDecimal()
+
+	// Check if amounts match (with small tolerance for rounding)
+	if !piAmount.Equal(orderTotal) {
+		slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch, updating",
+			slog.String("payment_intent_id", req.PaymentIntentId),
+			slog.String("pi_amount", piAmount.String()),
+			slog.String("order_total", orderTotal.String()),
+		)
+
+		// Update PaymentIntent amount to match order total
+		err = handler.UpdatePaymentIntentAmount(ctx, req.PaymentIntentId, orderTotal, orderFull.Order.Currency)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't update payment intent amount",
+				slog.String("err", err.Error()),
+				slog.String("payment_intent_id", req.PaymentIntentId),
+				slog.String("expected_amount", orderTotal.String()),
+			)
+			return nil, status.Errorf(codes.Internal, "payment amount mismatch: expected %s but PaymentIntent has %s", orderTotal.String(), piAmount.String())
+		}
+
+		slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
+			slog.String("payment_intent_id", req.PaymentIntentId),
+			slog.String("new_amount", orderTotal.String()),
+		)
+	}
+
+	pi := &orderFull.Payment.PaymentInsert
+
+	// Fetch order from DB for response (status may have changed to AwaitingPayment after InsertFiatInvoice)
+	orderForResponse, err := s.repo.Order().GetOrderByUUID(ctx, order.UUID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get order for response", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get order for response")
+	}
+
+	eos, ok := cache.GetOrderStatusById(orderForResponse.OrderStatusId)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve order status")
 		return nil, status.Errorf(codes.Internal, "internal error")
@@ -386,13 +443,13 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		}); err != nil {
 			slog.Default().ErrorContext(revalidateCtx, "async revalidation failed",
 				slog.String("err", err.Error()),
-				slog.String("orderUUID", order.UUID),
+				slog.String("orderUUID", orderForResponse.UUID),
 			)
 		}
 	}()
 
 	return &pb_frontend.SubmitOrderResponse{
-		OrderUuid:   order.UUID,
+		OrderUuid:   orderForResponse.UUID,
 		OrderStatus: os,
 		Payment:     pbPi,
 	}, nil
@@ -465,6 +522,19 @@ func (s *Server) GetOrderByUUIDAndEmail(ctx context.Context, req *pb_frontend.Ge
 }
 
 func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.ValidateOrderItemsInsertRequest) (*pb_frontend.ValidateOrderItemsInsertResponse, error) {
+	// Extract client identifiers for rate limiting and stock reservation
+	clientIP := middleware.GetClientIP(ctx)
+	clientSession := middleware.GetClientSession(ctx)
+
+	// RATE LIMIT CHECK: Prevent validation spam
+	if err := s.rateLimiter.CheckValidation(clientIP); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for validation",
+			slog.String("ip", clientIP),
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
+	}
+
 	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
 	for _, i := range req.Items {
 		oii, err := dto.ConvertPbOrderItemInsertToEntity(i)
@@ -483,7 +553,8 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		return nil, status.Errorf(codes.InvalidArgument, "currency is required")
 	}
 
-	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, itemsToInsert, currency)
+	// Validate with stock reservation awareness
+	oiv, err := s.validateOrderItemsWithReservation(ctx, itemsToInsert, currency, clientSession)
 	if err != nil {
 		// Check if it's a validation error (should return 4xx, not 5xx)
 		var validationErr *entity.ValidationError
@@ -502,7 +573,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 
 	pbOii := make([]*pb_common.OrderItem, 0, len(oiv.ValidItems))
 	for _, i := range oiv.ValidItems {
-		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i))
+		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i, currency))
 	}
 
 	shipmentCarrier, scOk := cache.GetShipmentCarrierById(int(req.ShipmentCarrierId))
@@ -548,11 +619,12 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	}
 
 	response := &pb_frontend.ValidateOrderItemsInsertResponse{
-		ValidItems: pbOii,
-		HasChanged: oiv.HasChanged,
-		Subtotal:   &pb_decimal.Decimal{Value: oiv.SubtotalDecimal().Round(2).String()},
-		TotalSale:  &pb_decimal.Decimal{Value: totalSale.Round(2).String()},
-		Promo:      dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
+		ValidItems:      pbOii,
+		HasChanged:      oiv.HasChanged,
+		Subtotal:        &pb_decimal.Decimal{Value: dto.RoundForCurrency(oiv.SubtotalDecimal(), currency).String()},
+		TotalSale:       &pb_decimal.Decimal{Value: dto.RoundForCurrency(totalSale, currency).String()},
+		Promo:           dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
+		ItemAdjustments: dto.ConvertEntityOrderItemAdjustmentsToPb(oiv.ItemAdjustments),
 	}
 
 	// Create PaymentIntent if payment method is CARD
@@ -573,17 +645,20 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 			currency = cache.GetBaseCurrency()
 		}
 
-		// Validate currency
-		currencyTicker, ok := dto.VerifyCurrencyTicker(currency)
-		if !ok {
-			slog.Default().ErrorContext(ctx, "invalid currency",
+		// Validate total meets Stripe minimum before creating PaymentIntent
+		roundedTotal := dto.RoundForCurrency(totalSale, currency)
+		if err := dto.ValidatePriceMeetsMinimum(roundedTotal, currency); err != nil {
+			slog.Default().WarnContext(ctx, "total below currency minimum, card payment unavailable",
 				slog.String("currency", currency),
+				slog.String("total", roundedTotal.String()),
+				slog.String("err", err.Error()),
 			)
 			return response, nil
 		}
 
-		// Create pre-order PaymentIntent
-		pi, err := handler.CreatePreOrderPaymentIntent(ctx, totalSale.Round(2), currencyTicker.String(), req.Country)
+		// Deterministic idempotency key: same cart = same key, retries return same PI
+		idempotencyKey := preOrderIdempotencyKey(roundedTotal, currency, req.Country, req.PromoCode, req.ShipmentCarrierId, itemsToInsert)
+		pi, err := handler.CreatePreOrderPaymentIntent(ctx, roundedTotal, currency, req.Country, idempotencyKey)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't create pre-order payment intent",
 				slog.String("err", err.Error()),
@@ -660,13 +735,10 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 }
 
 func (s *Server) getInvoiceByPaymentMethod(ctx context.Context, handler dependency.Invoicer, orderUuid string) (*entity.PaymentInsert, error) {
-
 	pi, err := handler.GetOrderInvoice(ctx, orderUuid)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get order invoice", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "can't get order invoice")
+		return nil, err
 	}
-
 	return pi, nil
 }
 
@@ -679,6 +751,66 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 	default:
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
+}
+
+// preOrderIdempotencyKey returns a deterministic key for pre-order PI creation. Same cart = same key.
+func preOrderIdempotencyKey(amount decimal.Decimal, currency, country, promoCode string, shipmentCarrierId int32, items []entity.OrderItemInsert) string {
+	// Sort items for deterministic output
+	sorted := make([]entity.OrderItemInsert, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].ProductId != sorted[j].ProductId {
+			return sorted[i].ProductId < sorted[j].ProductId
+		}
+		return sorted[i].SizeId < sorted[j].SizeId
+	})
+	data := fmt.Sprintf("%s|%s|%s|%s|%d", amount.String(), currency, country, promoCode, shipmentCarrierId)
+	for _, i := range sorted {
+		data += fmt.Sprintf("|%d:%d:%s", i.ProductId, i.SizeId, i.Quantity.String())
+	}
+	h := sha256.Sum256([]byte(data))
+	return "preorder_" + hex.EncodeToString(h[:16])
+}
+
+// ensurePaymentIntentAmountMatchesOrder verifies the PaymentIntent amount matches the order total.
+// If not (e.g. order was updated on ErrOrderItemsUpdated), updates the PaymentIntent before the client pays.
+func (s *Server) ensurePaymentIntentAmountMatchesOrder(ctx context.Context, handler dependency.Invoicer, paymentIntentId string, orderFull *entity.OrderFull) error {
+	stripePi, err := handler.GetPaymentIntentByID(ctx, paymentIntentId)
+	if err != nil {
+		return fmt.Errorf("get payment intent: %w", err)
+	}
+	piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
+	orderTotal := orderFull.Order.TotalPriceDecimal()
+	if piAmount.Equal(orderTotal) {
+		return nil
+	}
+	slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch on retry, updating",
+		slog.String("payment_intent_id", paymentIntentId),
+		slog.String("pi_amount", piAmount.String()),
+		slog.String("order_total", orderTotal.String()),
+	)
+	return handler.UpdatePaymentIntentAmount(ctx, paymentIntentId, orderTotal, orderFull.Order.Currency)
+}
+
+// retryInsertFiatInvoiceAfterItemsUpdated is called when InsertFiatInvoice returns ErrOrderItemsUpdated.
+// Order items were updated in DB (stock/price changed). We update the PaymentIntent amount to match
+// the new order total, then retry InsertFiatInvoice (items now match, so it should succeed).
+func (s *Server) retryInsertFiatInvoiceAfterItemsUpdated(ctx context.Context, orderUUID string, paymentIntentId string, pm entity.PaymentMethod, expirationDuration time.Duration, handler dependency.Invoicer) (*entity.OrderFull, error) {
+	orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, orderUUID)
+	if err != nil {
+		return nil, fmt.Errorf("get updated order: %w", err)
+	}
+
+	orderTotal := orderFull.Order.TotalPriceDecimal()
+	if err = handler.UpdatePaymentIntentAmount(ctx, paymentIntentId, orderTotal, orderFull.Order.Currency); err != nil {
+		return nil, fmt.Errorf("update payment intent amount: %w", err)
+	}
+
+	orderFull, err = s.repo.Order().InsertFiatInvoice(ctx, orderUUID, paymentIntentId, pm, time.Now().Add(expirationDuration))
+	if err != nil {
+		return nil, fmt.Errorf("retry insert fiat invoice: %w", err)
+	}
+	return orderFull, nil
 }
 
 // getOrderExpirationDuration returns configurable expiration from settings, or handler default when not set.
@@ -697,6 +829,15 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 		)
 		return nil, status.Errorf(codes.Internal, "can't expire order payment")
 	}
+
+	// If payment is nil, the order was not in AwaitingPayment status, nothing to cancel
+	if payment == nil {
+		return &pb_frontend.CancelOrderInvoiceResponse{}, nil
+	}
+
+	// RELEASE RESERVATION: Free stock when order invoice is cancelled
+	s.reservationMgr.Release(ctx, req.OrderUuid)
+
 	pme, _ := cache.GetPaymentMethodById(payment.PaymentMethodID)
 
 	handler, err := s.getPaymentHandler(ctx, pme.Method.Name)
@@ -723,11 +864,11 @@ func isOrderEligibleForReturn(orderFull *entity.OrderFull, statusName entity.Ord
 
 	now := time.Now()
 
-	// Check if order was placed more than 60 days ago
-	daysSincePlaced := now.Sub(orderFull.Order.Placed).Hours() / 24
-	if daysSincePlaced > maxDaysSincePlaced {
-		return false, "order was placed more than 60 days ago and is no longer eligible for return"
-	}
+	// // Check if order was placed more than 60 days ago
+	// daysSincePlaced := now.Sub(orderFull.Order.Placed).Hours() / 24
+	// if daysSincePlaced > maxDaysSincePlaced {
+	// 	return false, "order was placed more than 60 days ago and is no longer eligible for return"
+	// }
 
 	// If order is delivered, check if delivered more than 14 days ago
 	if statusName == entity.Delivered {
@@ -784,6 +925,9 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
 	}
+
+	// RELEASE RESERVATION: Free stock when order is cancelled
+	s.reservationMgr.Release(ctx, req.OrderUuid)
 
 	os, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
 	if !ok {
@@ -1023,6 +1167,91 @@ func (s *Server) NotifyMe(ctx context.Context, req *pb_frontend.NotifyMeRequest)
 	)
 
 	return &pb_frontend.NotifyMeResponse{}, nil
+}
+
+// validateOrderItemsWithReservation validates order items while accounting for stock reservations
+func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []entity.OrderItemInsert, currency string, sessionID string) (*entity.OrderItemValidation, error) {
+	// First, get the standard validation
+	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, items, currency)
+	if err != nil {
+		return nil, err
+	}
+
+	// Now apply stock reservation logic - check available stock minus other reservations
+	adjustedItems := make([]entity.OrderItem, 0, len(oiv.ValidItems))
+	additionalAdjustments := make([]entity.OrderItemAdjustment, 0)
+
+	for _, item := range oiv.ValidItems {
+		// Get current stock from database
+		currentStock, exists, err := s.repo.Products().GetProductSizeStock(ctx, item.ProductId, item.SizeId)
+		if err != nil || !exists {
+			// If we can't get stock, skip this item
+			additionalAdjustments = append(additionalAdjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: item.Quantity,
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
+			})
+			continue
+		}
+
+		// Calculate available stock (total - reservations, excluding current session)
+		availableStock := s.reservationMgr.GetAvailableStock(currentStock, item.ProductId, item.SizeId, sessionID)
+
+		if availableStock.LessThanOrEqual(decimal.Zero) {
+			// No stock available after accounting for reservations
+			additionalAdjustments = append(additionalAdjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: item.Quantity,
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
+			})
+			continue
+		}
+
+		if item.Quantity.GreaterThan(availableStock) {
+			// Reduce quantity to available stock
+			additionalAdjustments = append(additionalAdjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: item.Quantity,
+				AdjustedQuantity:  availableStock,
+				Reason:            entity.AdjustmentReasonQuantityReduced,
+			})
+			item.Quantity = availableStock
+		}
+
+		// Reserve the stock for this session
+		if err := s.reservationMgr.Reserve(ctx, sessionID, item.ProductId, item.SizeId, item.Quantity); err != nil {
+			slog.Default().WarnContext(ctx, "failed to reserve stock",
+				slog.String("session_id", sessionID),
+				slog.Int("product_id", item.ProductId),
+				slog.Int("size_id", item.SizeId),
+				slog.String("err", err.Error()),
+			)
+		}
+
+		adjustedItems = append(adjustedItems, item)
+	}
+
+	// If we had additional adjustments, recalculate subtotal
+	if len(additionalAdjustments) > 0 {
+		oiv.ValidItems = adjustedItems
+		oiv.ItemAdjustments = append(oiv.ItemAdjustments, additionalAdjustments...)
+		oiv.HasChanged = true
+
+		// Recalculate subtotal
+		subtotal := decimal.Zero
+		for _, item := range adjustedItems {
+			itemTotal := item.ProductPriceWithSale.Mul(item.Quantity)
+			subtotal = subtotal.Add(itemTotal)
+		}
+		oiv.Subtotal = subtotal
+	}
+
+	return oiv, nil
 }
 
 func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchivesPagedRequest) (*pb_frontend.GetArchivesPagedResponse, error) {

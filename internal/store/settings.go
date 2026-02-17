@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 )
@@ -58,13 +59,17 @@ func (ms *MYSQLStore) AddShipmentCarrier(ctx context.Context, carrier *entity.Sh
 		}
 		carrierId = id
 
-		// Insert prices
+		// Insert prices (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD)
 		for currency, price := range prices {
+			rounded := dto.RoundForCurrency(price, currency)
+			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+				return fmt.Errorf("price validation for %s: %w", currency, err)
+			}
 			priceQuery := `INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price) VALUES (:carrierId, :currency, :price)`
 			if err := ExecNamed(ctx, ms.DB(), priceQuery, map[string]any{
 				"carrierId": carrierId,
 				"currency":  currency,
-				"price":     price,
+				"price":     dto.RoundForCurrency(price, currency),
 			}); err != nil {
 				return fmt.Errorf("failed to insert price for %s: %w", currency, err)
 			}
@@ -114,11 +119,15 @@ func (ms *MYSQLStore) UpdateShipmentCarrier(ctx context.Context, id int, carrier
 			return fmt.Errorf("failed to delete existing prices: %w", err)
 		}
 		for currency, price := range prices {
+			rounded := dto.RoundForCurrency(price, currency)
+			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+				return fmt.Errorf("price validation for %s: %w", currency, err)
+			}
 			priceQuery := `INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price) VALUES (:carrierId, :currency, :price)`
 			if err := ExecNamed(ctx, ms.DB(), priceQuery, map[string]any{
 				"carrierId": id,
 				"currency":  currency,
-				"price":     price,
+				"price":     dto.RoundForCurrency(price, currency),
 			}); err != nil {
 				return fmt.Errorf("failed to insert price for %s: %w", currency, err)
 			}
@@ -197,8 +206,12 @@ func (ms *MYSQLStore) SetShipmentCarrierPrices(ctx context.Context, carrier stri
 		}
 		carrierId := carrierResult.Id
 
-		// Upsert prices for each currency
+		// Upsert prices for each currency (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD)
 		for currency, price := range prices {
+			rounded := dto.RoundForCurrency(price, currency)
+			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+				return fmt.Errorf("price validation for %s: %w", currency, err)
+			}
 			upsertQuery := `
 				INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price)
 				VALUES (:carrierId, :currency, :price)
@@ -206,7 +219,7 @@ func (ms *MYSQLStore) SetShipmentCarrierPrices(ctx context.Context, carrier stri
 			err := ExecNamed(ctx, ms.DB(), upsertQuery, map[string]any{
 				"carrierId": carrierId,
 				"currency":  currency,
-				"price":     price,
+				"price":     dto.RoundForCurrency(price, currency),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to upsert shipment carrier price for currency %s: %w", currency, err)

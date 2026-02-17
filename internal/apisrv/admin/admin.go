@@ -773,7 +773,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 				if len(req.OrderItemIds) == 0 {
 					refundAmount = nil
 				} else {
-					amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds)
+					amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds, orderFull.Order.Currency)
 					refundAmount = &amount
 				}
 			}
@@ -800,7 +800,8 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 
 // calculateRefundAmount calculates the total refund amount based on the specified order item IDs.
 // Each occurrence of an ID in orderItemIds represents 1 unit to refund.
-func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32) decimal.Decimal {
+// Uses currency-aware rounding (0 for KRW/JPY, 2 for EUR/USD).
+func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32, currency string) decimal.Decimal {
 	itemByID := make(map[int]entity.OrderItem)
 	for _, item := range orderItems {
 		itemByID[item.Id] = item
@@ -814,7 +815,7 @@ func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32) 
 			total = total.Add(item.ProductPriceWithSale)
 		}
 	}
-	return total.Round(2)
+	return dto.RoundForCurrency(total, currency)
 }
 
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
@@ -1025,7 +1026,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 					)
 					continue
 				}
-				prices[currency] = price.Round(2)
+				prices[currency] = dto.RoundForCurrency(price, currency)
 			}
 		}
 
@@ -1193,6 +1194,21 @@ func validateShipmentCarrierRequest(carrier, trackingURL string, prices map[stri
 			return fmt.Errorf("missing required currency: %s", c)
 		}
 	}
+	// Validate each price meets currency minimum (e.g. KRW >= 100)
+	for currency, pbPrice := range prices {
+		if pbPrice == nil {
+			continue
+		}
+		p, err := decimal.NewFromString(pbPrice.GetValue())
+		if err != nil {
+			return fmt.Errorf("invalid price for %s: %w", currency, err)
+		}
+		currencyUpper := strings.ToUpper(currency)
+		rounded := dto.RoundForCurrency(p, currencyUpper)
+		if err := dto.ValidatePriceMeetsMinimum(rounded, currencyUpper); err != nil {
+			return err
+		}
+	}
 	for _, r := range allowedRegions {
 		if r == pb_common.ShippingRegion_SHIPPING_REGION_UNKNOWN {
 			return fmt.Errorf("invalid region: SHIPPING_REGION_UNKNOWN")
@@ -1214,7 +1230,8 @@ func parseShipmentCarrierPrices(prices map[string]*decimalpb.Decimal) map[string
 		if err != nil {
 			continue
 		}
-		out[strings.ToUpper(currency)] = p.Round(2)
+		currencyUpper := strings.ToUpper(currency)
+		out[currencyUpper] = dto.RoundForCurrency(p, currencyUpper)
 	}
 	return out
 }

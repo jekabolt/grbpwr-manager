@@ -168,9 +168,10 @@ func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPri
 		if err != nil {
 			continue // Skip invalid prices
 		}
+		currency := strings.ToUpper(pbPrice.Currency)
 		prices = append(prices, entity.ProductPriceInsert{
-			Currency: pbPrice.Currency,
-			Price:    priceVal,
+			Currency: currency,
+			Price:    RoundForCurrency(priceVal, currency),
 		})
 	}
 	return prices

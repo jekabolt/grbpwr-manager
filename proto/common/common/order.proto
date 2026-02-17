@@ -76,6 +76,22 @@ message OrderItemInsert {
   int32 size_id = 3;
 }
 
+enum OrderItemAdjustmentReasonEnum {
+  ORDER_ITEM_ADJUSTMENT_REASON_ENUM_UNKNOWN = 0;
+  ORDER_ITEM_ADJUSTMENT_REASON_ENUM_OUT_OF_STOCK = 1;
+  ORDER_ITEM_ADJUSTMENT_REASON_ENUM_QUANTITY_REDUCED = 2;
+  ORDER_ITEM_ADJUSTMENT_REASON_ENUM_QUANTITY_CAPPED = 3;
+}
+
+// OrderItemAdjustment describes a change made during order item validation.
+message OrderItemAdjustment {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  google.type.Decimal requested_quantity = 3;
+  google.type.Decimal adjusted_quantity = 4; // 0 means item was removed
+  OrderItemAdjustmentReasonEnum reason = 5;
+}
+
 enum OrderStatusEnum {
   ORDER_STATUS_ENUM_UNKNOWN = 0;
   ORDER_STATUS_ENUM_PLACED = 1;

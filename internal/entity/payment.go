@@ -26,8 +26,6 @@ type PaymentInsert struct {
 	TransactionID                    sql.NullString  `db:"transaction_id"`
 	TransactionAmount                decimal.Decimal `db:"transaction_amount"`
 	TransactionAmountPaymentCurrency decimal.Decimal `db:"transaction_amount_payment_currency"`
-	Payer                            sql.NullString  `db:"payer"`
-	Payee                            sql.NullString  `db:"payee"`
 	ClientSecret                     sql.NullString  `db:"client_secret"`
 	IsTransactionDone                bool            `db:"is_transaction_done"`
 	ExpiredAt                        sql.NullTime    `db:"expired_at"`
@@ -36,22 +34,14 @@ type PaymentInsert struct {
 type PaymentMethodName string
 
 const (
-	CARD           PaymentMethodName = "card"
-	CARD_TEST      PaymentMethodName = "card-test"
-	ETH            PaymentMethodName = "eth"
-	ETH_TEST       PaymentMethodName = "eth-test"
-	USDT_TRON      PaymentMethodName = "usdt-tron"
-	USDT_TRON_TEST PaymentMethodName = "usdt-shasta"
+	CARD      PaymentMethodName = "card"
+	CARD_TEST PaymentMethodName = "card-test"
 )
 
 // ValidPaymentMethodNames is a set of valid payment method names
 var ValidPaymentMethodNames = map[PaymentMethodName]bool{
-	CARD:           true,
-	CARD_TEST:      true,
-	ETH:            true,
-	ETH_TEST:       true,
-	USDT_TRON:      true,
-	USDT_TRON_TEST: true,
+	CARD:      true,
+	CARD_TEST: true,
 }
 
 // PaymentMethod represents the payment_method table

@@ -80,6 +80,10 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 		}
 	}
 
+	receivePromo := false
+	if commonOrder.Buyer != nil {
+		receivePromo = commonOrder.Buyer.ReceivePromoEmails
+	}
 	return &entity.OrderNew{
 		Items:             items,
 		ShippingAddress:   shippingAddress,
@@ -89,7 +93,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 		ShipmentCarrierId: int(commonOrder.ShipmentCarrierId),
 		PromoCode:         commonOrder.PromoCode,
 		Currency:          commonOrder.Currency,
-	}, commonOrder.Buyer.ReceivePromoEmails
+	}, receivePromo
 }
 
 // convertAddress converts a common.AddressInsert to an entity.AddressInsert.
@@ -162,7 +166,39 @@ func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_com
 	}
 }
 
-func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderItem {
+// ConvertEntityAdjustmentReasonToPb maps entity adjustment reason to proto enum.
+func ConvertEntityAdjustmentReasonToPb(reason entity.OrderItemAdjustmentReason) pb_common.OrderItemAdjustmentReasonEnum {
+	switch reason {
+	case entity.AdjustmentReasonOutOfStock:
+		return pb_common.OrderItemAdjustmentReasonEnum_ORDER_ITEM_ADJUSTMENT_REASON_ENUM_OUT_OF_STOCK
+	case entity.AdjustmentReasonQuantityReduced:
+		return pb_common.OrderItemAdjustmentReasonEnum_ORDER_ITEM_ADJUSTMENT_REASON_ENUM_QUANTITY_REDUCED
+	case entity.AdjustmentReasonQuantityCapped:
+		return pb_common.OrderItemAdjustmentReasonEnum_ORDER_ITEM_ADJUSTMENT_REASON_ENUM_QUANTITY_CAPPED
+	default:
+		return pb_common.OrderItemAdjustmentReasonEnum_ORDER_ITEM_ADJUSTMENT_REASON_ENUM_UNKNOWN
+	}
+}
+
+// ConvertEntityOrderItemAdjustmentsToPb converts entity adjustments to protobuf.
+func ConvertEntityOrderItemAdjustmentsToPb(adjustments []entity.OrderItemAdjustment) []*pb_common.OrderItemAdjustment {
+	if len(adjustments) == 0 {
+		return nil
+	}
+	pb := make([]*pb_common.OrderItemAdjustment, 0, len(adjustments))
+	for _, a := range adjustments {
+		pb = append(pb, &pb_common.OrderItemAdjustment{
+			ProductId:         int32(a.ProductId),
+			SizeId:            int32(a.SizeId),
+			RequestedQuantity: &pb_decimal.Decimal{Value: a.RequestedQuantity.String()},
+			AdjustedQuantity:  &pb_decimal.Decimal{Value: a.AdjustedQuantity.String()},
+			Reason:            ConvertEntityAdjustmentReasonToPb(a.Reason),
+		})
+	}
+	return pb
+}
+
+func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *pb_common.OrderItem {
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation
 	for _, trans := range orderItem.Translations {
@@ -178,9 +214,9 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem) *pb_common.OrderIte
 		OrderId:               int32(orderItem.OrderId),
 		Thumbnail:             orderItem.Thumbnail,
 		Blurhash:              orderItem.BlurHash,
-		ProductPrice:          orderItem.ProductPriceDecimal().String(),
+		ProductPrice:          RoundForCurrency(orderItem.ProductPrice, currency).String(),
 		ProductSalePercentage: orderItem.ProductSalePercentageDecimal().String(),
-		ProductPriceWithSale:  orderItem.ProductPriceWithSaleDecimal().String(),
+		ProductPriceWithSale:  RoundForCurrency(orderItem.ProductPriceWithSale, currency).String(),
 		Slug:                  orderItem.Slug,
 		Color:                 orderItem.Color,
 		TopCategoryId:         int32(orderItem.TopCategoryId),
@@ -204,12 +240,12 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting order: %w", err)
 	}
 
-	pbOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.OrderItems)
-	if err != nil {
-		return nil, fmt.Errorf("error converting order items: %w", err)
-	}
+		pbOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.OrderItems, e.Order.Currency)
+		if err != nil {
+			return nil, fmt.Errorf("error converting order items: %w", err)
+		}
 
-	pbRefundedOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.RefundedOrderItems)
+		pbRefundedOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.RefundedOrderItems, e.Order.Currency)
 	if err != nil {
 		return nil, fmt.Errorf("error converting refunded order items: %w", err)
 	}
@@ -274,17 +310,17 @@ func ConvertEntityOrderStatusHistoryToPb(history []entity.OrderStatusHistoryWith
 }
 
 // ConvertEntityOrderItemsToPbOrderItems converts a slice of entity.OrderItem to a slice of pb_common.OrderItem
-func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem) ([]*pb_common.OrderItem, error) {
+func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem, currency string) ([]*pb_common.OrderItem, error) {
 
 	pbOrderItems := make([]*pb_common.OrderItem, len(items))
 	for i, item := range items {
-		pbOrderItems[i] = convertOrderItem(&item)
+		pbOrderItems[i] = convertOrderItem(&item, currency)
 	}
 	return pbOrderItems, nil
 }
 
 // convertOrderItem converts an individual entity.OrderItem to a pb_common.OrderItem
-func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
+func convertOrderItem(e *entity.OrderItem, currency string) *pb_common.OrderItem {
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation
 	for _, trans := range e.Translations {
@@ -300,8 +336,8 @@ func convertOrderItem(e *entity.OrderItem) *pb_common.OrderItem {
 		OrderId:               int32(e.OrderId),
 		Thumbnail:             e.Thumbnail,
 		Blurhash:              e.BlurHash,
-		ProductPrice:          e.ProductPriceDecimal().String(),
-		ProductPriceWithSale:  e.ProductPriceWithSaleDecimal().String(),
+		ProductPrice:          RoundForCurrency(e.ProductPrice, currency).String(),
+		ProductPriceWithSale:  RoundForCurrency(e.ProductPriceWithSale, currency).String(),
 		ProductSalePercentage: e.ProductSalePercentageDecimal().String(),
 		TopCategoryId:         int32(e.TopCategoryId),
 		SubCategoryId:         e.SubCategoryId.Int32,

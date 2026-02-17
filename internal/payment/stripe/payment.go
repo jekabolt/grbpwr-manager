@@ -27,12 +27,12 @@ type Config struct {
 }
 
 type Processor struct {
-	c            *Config
-	baseCurrency dto.CurrencyTicker
-	mailer       dependency.Mailer
-	rep          dependency.Repository
-	stripeClient *client.API
-	pm           entity.PaymentMethod
+	c                *Config
+	mailer           dependency.Mailer
+	rep              dependency.Repository
+	stripeClient     *client.API
+	pm               entity.PaymentMethod
+	reservationMgr   dependency.StockReservationManager
 
 	// secrets map[string]string //k:clientSecret v: order uuid
 	// mu      sync.Mutex
@@ -42,9 +42,8 @@ type Processor struct {
 }
 
 func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
-	ticker, ok := dto.VerifyCurrencyTicker(cache.GetBaseCurrency())
-	if !ok {
-		return nil, fmt.Errorf("invalid default currency: %s", cache.GetBaseCurrency())
+	if cache.GetBaseCurrency() == "" {
+		return nil, fmt.Errorf("base currency not configured")
 	}
 
 	pm, ok := cache.GetPaymentMethodByName(pmn)
@@ -58,13 +57,13 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 	stripe.DefaultLeveledLogger = log.NewSlogLeveledLogger()
 
 	p := Processor{
-		c:            c,
-		baseCurrency: ticker,
-		mailer:       m,
-		stripeClient: client.New(c.SecretKey, nil),
-		rep:          rep,
-		pm:           pm.Method,
-		monCtxt:      make(map[string]context.CancelFunc),
+		c:              c,
+		mailer:         m,
+		stripeClient:   client.New(c.SecretKey, nil),
+		rep:            rep,
+		pm:             pm.Method,
+		monCtxt:        make(map[string]context.CancelFunc),
+		reservationMgr: nil, // Will be set via SetReservationManager if needed
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -87,6 +86,13 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 	}
 
 	for _, poid := range poids {
+		p.ctxMu.Lock()
+		if _, exists := p.monCtxt[poid.OrderUUID]; exists {
+			p.ctxMu.Unlock()
+			continue
+		}
+		p.ctxMu.Unlock()
+
 		slog.Default().Info("monitorPayment", slog.Any("poid", poid))
 		go p.monitorPayment(ctx, poid.OrderUUID, &poid.Payment)
 	}
@@ -134,18 +140,26 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	var err error
 
 	payment.IsTransactionDone = true
-	_, err = rep.Order().OrderPaymentDone(ctx, orderUUID, &payment)
+	wasUpdated, err := rep.Order().OrderPaymentDone(ctx, orderUUID, &payment)
 	if err != nil {
-		if mysqlErr, ok := err.(*mysql.MySQLError); ok {
-			if mysqlErr.Number == 1062 {
-				slog.Default().InfoContext(ctx, "Order already marked as paid", slog.String("orderUUID", orderUUID))
-			} else {
-				return fmt.Errorf("can't update order payment done: %w", err)
-			}
+		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
+			slog.Default().InfoContext(ctx, "Order already marked as paid (idempotent)", slog.String("orderUUID", orderUUID))
+			return nil
 		}
 		return fmt.Errorf("can't update order payment done: %w", err)
-	} else {
-		slog.Default().InfoContext(ctx, "Order marked as paid", slog.String("orderUUID", orderUUID))
+	}
+
+	// Only send confirmation email if we actually updated the order status
+	if !wasUpdated {
+		slog.Default().InfoContext(ctx, "Order already confirmed, skipping duplicate email", slog.String("orderUUID", orderUUID))
+		return nil
+	}
+
+	slog.Default().InfoContext(ctx, "Order marked as paid", slog.String("orderUUID", orderUUID))
+
+	// RELEASE RESERVATION: Free stock when payment is completed
+	if p.reservationMgr != nil {
+		p.reservationMgr.Release(ctx, orderUUID)
 	}
 
 	of, err := rep.Order().GetOrderFullByUUID(ctx, orderUUID)
@@ -154,9 +168,12 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	}
 
 	orderDetails := dto.OrderFullToOrderConfirmed(of)
-	err = p.mailer.SendOrderConfirmation(ctx, rep, of.Buyer.Email, orderDetails)
-	if err != nil {
-		return fmt.Errorf("can't send order confirmation: %w", err)
+	if err := p.mailer.QueueOrderConfirmation(ctx, rep, of.Buyer.Email, orderDetails); err != nil {
+		// Log but never fail payment update due to email - worker will retry queued emails
+		slog.Default().ErrorContext(ctx, "can't queue order confirmation email",
+			slog.String("orderUUID", orderUUID),
+			slog.String("err", err.Error()),
+		)
 	}
 
 	return nil
@@ -174,35 +191,61 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		return nil, fmt.Errorf("can't get payment by order id: %w", err)
 	}
 
-	of, err := p.rep.Order().GetOrderFullByUUID(ctx, orderUUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order by id: %w", err)
-	}
-
 	// If the payment is already done, return it immediately.
 	if payment.IsTransactionDone {
 		return &payment.PaymentInsert, nil
 	}
 
 	// Order has unexpired invoice, return it.
-	if payment.ClientSecret.Valid && payment.Payee.String != "" {
-		return &payment.PaymentInsert, nil
+	if payment.ClientSecret.Valid {
+		if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now()) {
+			return &payment.PaymentInsert, nil
+		}
 	}
 
-	pi, err := p.createPaymentIntent(*of)
-	if err != nil {
-		return nil, fmt.Errorf("can't create payment intent: %w", err)
-	}
-
-	// Get the actual amount charged from PaymentIntent (in payment currency)
-	// PaymentIntent.Amount is in smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
-	paymentCurrencyAmount := AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
+	// CRITICAL: Create PaymentIntent inside transaction to prevent race condition.
+	// Without this, concurrent requests could both create PaymentIntents on Stripe,
+	// then serialize at DB level. The "loser" would error out but leave an orphaned
+	// PaymentIntent on Stripe (money leak). By creating PI inside the TX after
+	// acquiring the order lock, we ensure only one request creates the PI.
+	var pi *stripe.PaymentIntent
+	var paymentCurrencyAmount decimal.Decimal
 
 	err = p.rep.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		of, err = p.rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.expirationDuration()))
+		// Re-check payment status inside transaction after acquiring lock (via InsertFiatInvoice)
+		// Another request may have created the invoice while we were waiting
+		payment, err = rep.Order().GetPaymentByOrderUUID(ctx, orderUUID)
+		if err != nil {
+			return fmt.Errorf("can't get payment by order id: %w", err)
+		}
+
+		if payment.ClientSecret.Valid {
+			if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now()) {
+				return nil // Invoice already exists and is valid, skip PI creation
+			}
+		}
+
+		// Get order details for PaymentIntent creation
+		of, err := rep.Order().GetOrderFullByUUID(ctx, orderUUID)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		// Create PaymentIntent on Stripe (external API call inside TX - acceptable for idempotency)
+		pi, err = p.createPaymentIntent(*of)
+		if err != nil {
+			return fmt.Errorf("can't create payment intent: %w", err)
+		}
+
+		// Get the actual amount charged from PaymentIntent (in payment currency)
+		// PaymentIntent.Amount is in smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
+		paymentCurrencyAmount = AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
+
+		of, err = rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.expirationDuration()))
 		if err != nil {
 			return fmt.Errorf("can't insert fiat invoice: %w", err)
 		}
+
 		payment.PaymentInsert.ClientSecret = sql.NullString{
 			String: pi.ClientSecret,
 			Valid:  true,
@@ -212,7 +255,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		payment.TransactionAmount = of.Order.TotalPriceDecimal()
 		payment.TransactionAmountPaymentCurrency = paymentCurrencyAmount
 
-		err = p.rep.Order().UpdateTotalPaymentCurrency(ctx, orderUUID, paymentCurrencyAmount)
+		err = rep.Order().UpdateTotalPaymentCurrency(ctx, orderUUID, paymentCurrencyAmount)
 		if err != nil {
 			return fmt.Errorf("can't update total payment currency: %w", err)
 		}
@@ -223,6 +266,13 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	if err != nil {
 		return nil, fmt.Errorf("can't insert fiat invoice: %w", err)
 	}
+
+	// If pi is nil, it means another request created the invoice while we were waiting
+	if pi == nil {
+		// Return the existing payment info
+		return &payment.PaymentInsert, nil
+	}
+
 	payment.PaymentInsert.ExpiredAt = sql.NullTime{
 		Time:  time.Now().Add(p.expirationDuration()),
 		Valid: true,
@@ -342,7 +392,11 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 }
 
 // CreatePreOrderPaymentIntent creates a PaymentIntent before order submission
-func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error) {
+func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string, idempotencyKey string) (*stripe.PaymentIntent, error) {
+	// Validate amount meets Stripe minimum (e.g. KRW >= 100)
+	if err := dto.ValidatePriceMeetsMinimum(amount, currency); err != nil {
+		return nil, fmt.Errorf("amount below currency minimum: %w", err)
+	}
 	// Convert amount to smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
 	amountCents := AmountToSmallestUnit(amount, currency)
 
@@ -357,6 +411,7 @@ func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount deci
 			"country":   country,
 		},
 	}
+	params.SetIdempotencyKey(idempotencyKey)
 
 	// Create the PaymentIntent
 	pi, err := p.stripeClient.PaymentIntents.New(params)
@@ -445,4 +500,66 @@ func (p *Processor) UpdatePaymentIntentWithOrderNew(ctx context.Context, payment
 // StartMonitoringPayment starts monitoring an existing payment
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
 	go p.monitorPayment(ctx, orderUUID, &payment)
+}
+
+// CleanupOrphanedPreOrderPaymentIntents searches Stripe for PaymentIntents with metadata pre_order=true
+// older than olderThan and cancels them. Only cancellable statuses are cancelled (requires_payment_method,
+// requires_confirmation, requires_action, processing, requires_capture).
+func (p *Processor) CleanupOrphanedPreOrderPaymentIntents(ctx context.Context, olderThan time.Time) error {
+	cutoffUnix := olderThan.Unix()
+	query := fmt.Sprintf("metadata['pre_order']:'true' AND created<%d", cutoffUnix)
+	limit := int64(100)
+	params := &stripe.PaymentIntentSearchParams{}
+	params.Query = query
+	params.Limit = &limit
+	params.Context = ctx
+
+	iter := p.stripeClient.PaymentIntents.Search(params)
+	cancelled := 0
+	for iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		pi := iter.PaymentIntent()
+		if !isCancellable(pi.Status) {
+			continue
+		}
+		reason := stripe.String(string(stripe.PaymentIntentCancellationReasonAbandoned))
+		_, err := p.stripeClient.PaymentIntents.Cancel(pi.ID, &stripe.PaymentIntentCancelParams{
+			CancellationReason: reason,
+		})
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "stripe reconcile: failed to cancel orphaned pre-order PI",
+				slog.String("payment_intent_id", pi.ID),
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
+		cancelled++
+		slog.Default().InfoContext(ctx, "stripe reconcile: cancelled orphaned pre-order PI",
+			slog.String("payment_intent_id", pi.ID),
+		)
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("stripe search: %w", err)
+	}
+	if cancelled > 0 {
+		slog.Default().InfoContext(ctx, "stripe reconcile: cancelled orphaned pre-order PIs",
+			slog.Int("count", cancelled),
+		)
+	}
+	return nil
+}
+
+func isCancellable(status stripe.PaymentIntentStatus) bool {
+	switch status {
+	case stripe.PaymentIntentStatusRequiresPaymentMethod,
+		stripe.PaymentIntentStatusRequiresConfirmation,
+		stripe.PaymentIntentStatusRequiresAction,
+		stripe.PaymentIntentStatusProcessing,
+		stripe.PaymentIntentStatusRequiresCapture:
+		return true
+	default:
+		return false
+	}
 }

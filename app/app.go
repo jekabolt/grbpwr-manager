@@ -16,8 +16,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
 
@@ -37,6 +39,8 @@ type App struct {
 	db   dependency.Repository
 	b    dependency.FileStore
 	ma   dependency.Mailer
+	oc   *ordercleanup.Worker
+	sr   *stripereconcile.Worker
 	re   dependency.RevalidationService
 	c    *config.Config
 	done chan struct{}
@@ -78,6 +82,14 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db)
+	if err = a.oc.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
 	cache.SetDefaultCurrency(a.c.Rates.BaseCurrency)
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
@@ -110,6 +122,24 @@ func (a *App) Start(ctx context.Context) error {
 			slog.String("err", err.Error()),
 		)
 		return err
+	}
+
+	// Stripe reconciliation: clean orphaned pre-order PaymentIntents (main + test)
+	var stripeCleaners []stripereconcile.PreOrderPICleaner
+	if p, ok := stripeMain.(*stripe.Processor); ok {
+		stripeCleaners = append(stripeCleaners, p)
+	}
+	if p, ok := stripeTest.(*stripe.Processor); ok {
+		stripeCleaners = append(stripeCleaners, p)
+	}
+	if len(stripeCleaners) > 0 {
+		a.sr = stripereconcile.New(&a.c.StripeReconcile, stripeCleaners...)
+		if err = a.sr.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start stripe reconcile worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	a.re, err = revalidation.New(ctx, &a.c.Revalidation)

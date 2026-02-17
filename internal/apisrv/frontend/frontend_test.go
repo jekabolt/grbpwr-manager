@@ -67,10 +67,6 @@ func TestGetHero(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 		ShipmentCarriers: []entity.ShipmentCarrier{
 			{
@@ -100,19 +96,6 @@ func TestGetHero(t *testing.T) {
 	cache.SetSiteAvailability(true)
 	cache.SetDefaultCurrency("USD")
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-	mockRates.EXPECT().GetRates().Return(map[dto.CurrencyTicker]dto.CurrencyRate{
-		dto.USD: {
-			Description: "US Dollar",
-			Rate:        decimal.NewFromInt(1),
-		},
-		dto.EUR: {
-			Description: "Euro",
-			Rate:        decimal.NewFromFloat(0.85),
-		},
-	})
-
 	// Setup mock repository
 	mockRepo := mocks.NewRepository(t)
 
@@ -120,20 +103,19 @@ func TestGetHero(t *testing.T) {
 	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Call the function being tested
@@ -144,7 +126,6 @@ func TestGetHero(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.NotNil(t, resp.Hero)
 	assert.NotNil(t, resp.Dictionary)
-	assert.NotNil(t, resp.Rates)
 
 	// Verify hero data
 	assert.Len(t, resp.Hero.Entities, 1)
@@ -167,15 +148,6 @@ func TestGetHero(t *testing.T) {
 	assert.True(t, resp.Dictionary.SiteEnabled)
 	assert.Equal(t, int32(10), resp.Dictionary.MaxOrderItems)
 	assert.Equal(t, "USD", resp.Dictionary.BaseCurrency)
-
-	// Verify rates
-	assert.Len(t, resp.Rates.Currencies, 2)
-	assert.Contains(t, resp.Rates.Currencies, "USD")
-	assert.Contains(t, resp.Rates.Currencies, "EUR")
-	assert.Equal(t, "US Dollar", resp.Rates.Currencies["USD"].Description)
-	assert.Equal(t, "Euro", resp.Rates.Currencies["EUR"].Description)
-	assert.Equal(t, "1", resp.Rates.Currencies["USD"].Rate.Value)
-	assert.Equal(t, "0.85", resp.Rates.Currencies["EUR"].Rate.Value)
 }
 
 // TestGetProduct tests the GetProduct method separately from the main TestFrontend function
@@ -271,27 +243,23 @@ func TestGetProduct(t *testing.T) {
 	// Setup mock for GetProductByIdNoHidden
 	mockProducts.EXPECT().GetProductByIdNoHidden(mock.Anything, 1).Return(mockProduct, nil)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Call the function being tested
@@ -412,27 +380,23 @@ func TestGetProductsPaged(t *testing.T) {
 		nil,
 	)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Call the function being tested
@@ -483,14 +447,12 @@ func TestSubmitOrder(t *testing.T) {
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Initialize cache with test data
 	dictionaryInfo := &entity.DictionaryInfo{
@@ -506,10 +468,6 @@ func TestSubmitOrder(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 		ShipmentCarriers: []entity.ShipmentCarrier{
 			{
@@ -533,11 +491,9 @@ func TestSubmitOrder(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock order data
@@ -653,10 +609,6 @@ func TestGetOrderByUUID(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 	}
 
@@ -781,17 +733,15 @@ func TestGetOrderByUUID(t *testing.T) {
 	// Setup mock for GetOrderFullByUUID
 	mockOrders.EXPECT().GetOrderFullByUUID(mock.Anything, "test-uuid-123").Return(mockOrderFull, nil)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// For orders with status "awaiting_payment", the method will check for transactions
 	mockStripePaymentTest.EXPECT().CheckForTransactions(
@@ -804,11 +754,9 @@ func TestGetOrderByUUID(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Call the function being tested
@@ -894,14 +842,12 @@ func TestValidateOrderItemsInsert(t *testing.T) {
 	mockOrders := mocks.NewOrder(t)
 	mockRepo.EXPECT().Order().Return(mockOrders)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Initialize cache with test data
 	dictionaryInfo := &entity.DictionaryInfo{
@@ -917,10 +863,6 @@ func TestValidateOrderItemsInsert(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 		ShipmentCarriers: []entity.ShipmentCarrier{
 			{
@@ -950,11 +892,9 @@ func TestValidateOrderItemsInsert(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock validated order items
@@ -1185,14 +1125,12 @@ func TestValidateOrderByUUID(t *testing.T) {
 	mockOrders := mocks.NewOrder(t)
 	mockRepo.EXPECT().Order().Return(mockOrders)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Initialize cache with test data
 	dictionaryInfo := &entity.DictionaryInfo{
@@ -1208,10 +1146,6 @@ func TestValidateOrderByUUID(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 	}
 
@@ -1226,11 +1160,9 @@ func TestValidateOrderByUUID(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock order data
@@ -1423,14 +1355,12 @@ func TestGetOrderInvoice(t *testing.T) {
 	// Setup mock repository
 	mockRepo := mocks.NewRepository(t)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Initialize cache with test data
 	dictionaryInfo := &entity.DictionaryInfo{
@@ -1446,10 +1376,6 @@ func TestGetOrderInvoice(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 	}
 
@@ -1464,11 +1390,9 @@ func TestGetOrderInvoice(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock payment insert
@@ -1516,14 +1440,12 @@ func TestCancelOrderInvoice(t *testing.T) {
 	mockOrders := mocks.NewOrder(t)
 	mockRepo.EXPECT().Order().Return(mockOrders)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
-
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
+
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Initialize cache with test data
 	dictionaryInfo := &entity.DictionaryInfo{
@@ -1539,10 +1461,6 @@ func TestCancelOrderInvoice(t *testing.T) {
 		PaymentMethods: []entity.PaymentMethod{
 			{Id: 1, Name: entity.CARD, Allowed: true},
 			{Id: 2, Name: entity.CARD_TEST, Allowed: true},
-			{Id: 3, Name: entity.ETH, Allowed: true},
-			{Id: 4, Name: entity.ETH_TEST, Allowed: true},
-			{Id: 5, Name: entity.USDT_TRON, Allowed: true},
-			{Id: 6, Name: entity.USDT_TRON_TEST, Allowed: true},
 		},
 	}
 
@@ -1557,11 +1475,9 @@ func TestCancelOrderInvoice(t *testing.T) {
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock payment
@@ -1571,11 +1487,9 @@ func TestCancelOrderInvoice(t *testing.T) {
 		ModifiedAt: time.Now(),
 		PaymentInsert: entity.PaymentInsert{
 			OrderId:                          1,
-			PaymentMethodID:                  5, // USDT_TRON
+			PaymentMethodID:                  2, // CARD_TEST
 			TransactionAmount:                decimal.NewFromInt(100),
 			TransactionAmountPaymentCurrency: decimal.NewFromInt(100),
-			Payer:                            sql.NullString{String: "payer-address", Valid: true},
-			Payee:                            sql.NullString{String: "payee-address", Valid: true},
 			IsTransactionDone:                false,
 			ExpiredAt:                        sql.NullTime{Time: time.Now().Add(15 * time.Minute), Valid: true},
 		},
@@ -1588,7 +1502,7 @@ func TestCancelOrderInvoice(t *testing.T) {
 	).Return(mockPayment, nil)
 
 	// Setup mock for CancelMonitorPayment
-	mockUsdtTron.EXPECT().CancelMonitorPayment(
+	mockStripePaymentTest.EXPECT().CancelMonitorPayment(
 		"test-uuid-123",
 	).Return(nil)
 
@@ -1614,27 +1528,23 @@ func TestSubscribeNewsletter(t *testing.T) {
 	mockSubscribers := mocks.NewSubscribers(t)
 	mockRepo.EXPECT().Subscribers().Return(mockSubscribers)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
+	// Setup mock mailer
+	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
 
-	// Setup mock mailer
-	mockMailer := mocks.NewMailer(t)
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Test email address
@@ -1716,27 +1626,23 @@ func TestUnsubscribeNewsletter(t *testing.T) {
 	mockSubscribers := mocks.NewSubscribers(t)
 	mockRepo.EXPECT().Subscribers().Return(mockSubscribers)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
+	// Setup mock mailer
+	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
 
-	// Setup mock mailer
-	mockMailer := mocks.NewMailer(t)
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Test email address
@@ -1788,27 +1694,23 @@ func TestGetArchivesPaged(t *testing.T) {
 	mockArchive := mocks.NewArchive(t)
 	mockRepo.EXPECT().Archive().Return(mockArchive)
 
-	// Setup mock rates service
-	mockRates := mocks.NewRatesService(t)
+	// Setup mock mailer
+	mockMailer := mocks.NewMailer(t)
 
 	// Setup mock invoicers
-	mockUsdtTron := mocks.NewInvoicer(t)
-	mockUsdtTronTestnet := mocks.NewInvoicer(t)
 	mockStripePayment := mocks.NewInvoicer(t)
 	mockStripePaymentTest := mocks.NewInvoicer(t)
 
-	// Setup mock mailer
-	mockMailer := mocks.NewMailer(t)
+	// Setup mock revalidation service
+	mockRe := mocks.NewRevalidationService(t)
 
 	// Create server with mocked dependencies
 	server := New(
 		mockRepo,
 		mockMailer,
-		mockRates,
-		mockUsdtTron,
-		mockUsdtTronTestnet,
 		mockStripePayment,
 		mockStripePaymentTest,
+		mockRe,
 	)
 
 	// Create mock archive data

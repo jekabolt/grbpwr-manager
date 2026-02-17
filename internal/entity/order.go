@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/shopspring/decimal"
 )
 
@@ -58,11 +59,11 @@ type Order struct {
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
-	return o.TotalPrice.Round(2)
+	return currency.Round(o.TotalPrice, o.Currency)
 }
 
 func (o *Order) RefundedAmountDecimal() decimal.Decimal {
-	return o.RefundedAmount.Round(2)
+	return currency.Round(o.RefundedAmount, o.Currency)
 }
 
 type ProductInfoProvider interface {
@@ -117,10 +118,33 @@ func (oii *OrderItemInsert) QuantityDecimal() decimal.Decimal {
 	return oii.Quantity.Round(0)
 }
 
+// OrderItemAdjustmentReason is a typed string for adjustment reasons.
+type OrderItemAdjustmentReason string
+
+func (r OrderItemAdjustmentReason) String() string {
+	return string(r)
+}
+
+const (
+	AdjustmentReasonOutOfStock     OrderItemAdjustmentReason = "out_of_stock"
+	AdjustmentReasonQuantityReduced OrderItemAdjustmentReason = "quantity_reduced"
+	AdjustmentReasonQuantityCapped  OrderItemAdjustmentReason = "quantity_capped"
+)
+
+// OrderItemAdjustment describes a change made during order item validation (e.g. quantity reduced, item removed).
+type OrderItemAdjustment struct {
+	ProductId         int
+	SizeId            int
+	RequestedQuantity decimal.Decimal
+	AdjustedQuantity  decimal.Decimal // 0 means item was removed
+	Reason            OrderItemAdjustmentReason
+}
+
 type OrderItemValidation struct {
-	ValidItems []OrderItem
-	Subtotal   decimal.Decimal
-	HasChanged bool
+	ValidItems    []OrderItem
+	Subtotal      decimal.Decimal
+	HasChanged    bool
+	ItemAdjustments []OrderItemAdjustment
 }
 
 func (oiv *OrderItemValidation) SubtotalDecimal() decimal.Decimal {

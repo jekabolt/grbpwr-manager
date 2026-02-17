@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -68,26 +69,10 @@ var (
 	PaymentMethodCardTest = PaymentMethod{Method: entity.PaymentMethod{
 		Name: entity.CARD_TEST,
 	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST}
-	PaymentMethodEth = PaymentMethod{Method: entity.PaymentMethod{
-		Name: entity.ETH,
-	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH}
-	PaymentMethodEthTest = PaymentMethod{Method: entity.PaymentMethod{
-		Name: entity.ETH_TEST,
-	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST}
-	PaymentMethodUsdtTron = PaymentMethod{Method: entity.PaymentMethod{
-		Name: entity.USDT_TRON,
-	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON}
-	PaymentMethodUsdtTronTest = PaymentMethod{Method: entity.PaymentMethod{
-		Name: entity.USDT_TRON_TEST,
-	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA}
 
 	paymentMethods = []*PaymentMethod{
 		&PaymentMethodCard,
 		&PaymentMethodCardTest,
-		&PaymentMethodEth,
-		&PaymentMethodEthTest,
-		&PaymentMethodUsdtTron,
-		&PaymentMethodUsdtTronTest,
 	}
 
 	entityPaymentMethods = []entity.PaymentMethod{}
@@ -95,21 +80,13 @@ var (
 	paymentMethodsById = map[int]*PaymentMethod{}
 
 	paymentMethodsByName = map[entity.PaymentMethodName]*PaymentMethod{
-		entity.CARD:           &PaymentMethodCard,
-		entity.CARD_TEST:      &PaymentMethodCardTest,
-		entity.ETH:            &PaymentMethodEth,
-		entity.ETH_TEST:       &PaymentMethodEthTest,
-		entity.USDT_TRON:      &PaymentMethodUsdtTron,
-		entity.USDT_TRON_TEST: &PaymentMethodUsdtTronTest,
+		entity.CARD:      &PaymentMethodCard,
+		entity.CARD_TEST: &PaymentMethodCardTest,
 	}
 
 	paymentMethodIdByPbId = map[pb_common.PaymentMethodNameEnum]int{
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        PaymentMethodCard.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:   PaymentMethodCardTest.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         PaymentMethodEth.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST:    PaymentMethodEthTest.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   PaymentMethodUsdtTron.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: PaymentMethodUsdtTronTest.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:      PaymentMethodCard.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST: PaymentMethodCardTest.Method.Id,
 	}
 
 	sizeById = map[int]entity.Size{}
@@ -121,7 +98,9 @@ var (
 	entityLanguages = []entity.Language{}
 
 	promoCodes             = make(map[string]entity.PromoCode)
+	promoCodesMu           sync.RWMutex
 	shipmentCarriersById   = make(map[int]entity.ShipmentCarrier)
+	shipmentCarriersMu     sync.RWMutex
 	entityShipmentCarriers = []entity.ShipmentCarrier{}
 	hero                   = &entity.HeroFullWithTranslations{}
 	maxOrderItems          = 3
@@ -217,14 +196,18 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 		}
 	}
 
+	promoCodesMu.Lock()
 	for _, p := range dInfo.Promos {
 		promoCodes[p.Code] = p
 	}
+	promoCodesMu.Unlock()
 
+	shipmentCarriersMu.Lock()
 	for _, sc := range dInfo.ShipmentCarriers {
 		shipmentCarriersById[sc.Id] = sc
 		entityShipmentCarriers = append(entityShipmentCarriers, sc)
 	}
+	shipmentCarriersMu.Unlock()
 	hero = h
 
 	// check if all consts are initialized
@@ -257,17 +240,23 @@ func UpdateHero(hf *entity.HeroFullWithTranslations) {
 }
 
 func UpdatePromos(promos []entity.PromoCode) {
+	promoCodesMu.Lock()
 	promoCodes = make(map[string]entity.PromoCode, len(promos))
 	for _, p := range promos {
 		promoCodes[p.Code] = p
 	}
+	promoCodesMu.Unlock()
 }
 
 func AddPromo(p entity.PromoCode) {
+	promoCodesMu.Lock()
 	promoCodes[p.Code] = p
+	promoCodesMu.Unlock()
 }
 
 func GetPromoById(id int) (entity.PromoCode, bool) {
+	promoCodesMu.RLock()
+	defer promoCodesMu.RUnlock()
 	for _, p := range promoCodes {
 		if p.Id == id {
 			return p, true
@@ -277,10 +266,14 @@ func GetPromoById(id int) (entity.PromoCode, bool) {
 }
 
 func DeletePromo(code string) {
+	promoCodesMu.Lock()
 	delete(promoCodes, code)
+	promoCodesMu.Unlock()
 }
 
 func DisablePromo(code string) {
+	promoCodesMu.Lock()
+	defer promoCodesMu.Unlock()
 	p, ok := promoCodes[code]
 	if ok {
 		p.Allowed = false
@@ -289,23 +282,31 @@ func DisablePromo(code string) {
 }
 
 func GetPromoByCode(code string) (entity.PromoCode, bool) {
+	promoCodesMu.RLock()
+	defer promoCodesMu.RUnlock()
 	p, ok := promoCodes[code]
 	return p, ok
 }
 
 func UpdateShipmentCarriers(scs []entity.ShipmentCarrier) {
+	shipmentCarriersMu.Lock()
 	shipmentCarriersById = make(map[int]entity.ShipmentCarrier, len(scs))
 	for _, sc := range scs {
 		shipmentCarriersById[sc.Id] = sc
 	}
+	shipmentCarriersMu.Unlock()
 }
 
 func GetShipmentCarrierById(id int) (entity.ShipmentCarrier, bool) {
+	shipmentCarriersMu.RLock()
+	defer shipmentCarriersMu.RUnlock()
 	sc, ok := shipmentCarriersById[id]
 	return sc, ok
 }
 
 func UpdateShipmentCarrierAllowance(carrier string, allowed bool) {
+	shipmentCarriersMu.Lock()
+	defer shipmentCarriersMu.Unlock()
 	for _, sc := range shipmentCarriersById {
 		if sc.Carrier == carrier {
 			sc.Allowed = allowed
@@ -317,6 +318,8 @@ func UpdateShipmentCarrierAllowance(carrier string, allowed bool) {
 
 // UpdateShipmentCarrierCost is deprecated. Use UpdateShipmentCarriers instead.
 func UpdateShipmentCarrierCost(carrier string, price decimal.Decimal) {
+	shipmentCarriersMu.Lock()
+	defer shipmentCarriersMu.Unlock()
 	for _, sc := range shipmentCarriersById {
 		if sc.Carrier == carrier {
 			// Update all prices to the same value (for backward compatibility)
@@ -451,6 +454,8 @@ func GetCollections() []entity.Collection {
 }
 
 func GetShipmentCarriers() []entity.ShipmentCarrier {
+	shipmentCarriersMu.RLock()
+	defer shipmentCarriersMu.RUnlock()
 	scs := make([]entity.ShipmentCarrier, 0, len(shipmentCarriersById))
 	for _, sc := range shipmentCarriersById {
 		scs = append(scs, sc)

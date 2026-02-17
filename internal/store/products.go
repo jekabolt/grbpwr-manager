@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"golang.org/x/text/cases"
@@ -408,7 +409,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 	})
 }
 
-// validateRequiredCurrencies validates that all required currencies are present in the prices and not zero
+// validateRequiredCurrencies validates that all required currencies are present, not zero, and meet currency minimums
 func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 	requiredCurrencies := map[string]bool{
 		"EUR": true,
@@ -421,6 +422,7 @@ func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 
 	providedCurrencies := make(map[string]bool)
 	var zeroPriceCurrencies []string
+	var belowMinCurrencies []string
 	for _, price := range prices {
 		currency := strings.ToUpper(price.Currency)
 		providedCurrencies[currency] = true
@@ -428,6 +430,13 @@ func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 		// Check if price is zero or negative
 		if price.Price.LessThanOrEqual(decimal.Zero) {
 			zeroPriceCurrencies = append(zeroPriceCurrencies, currency)
+			continue
+		}
+
+		// Check if price meets currency minimum (e.g. KRW >= 100); validate rounded value
+		rounded := dto.RoundForCurrency(price.Price, currency)
+		if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+			belowMinCurrencies = append(belowMinCurrencies, err.Error())
 		}
 	}
 
@@ -446,6 +455,10 @@ func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 		return fmt.Errorf("prices must be greater than zero for currencies: %s", strings.Join(zeroPriceCurrencies, ", "))
 	}
 
+	if len(belowMinCurrencies) > 0 {
+		return fmt.Errorf("prices below currency minimum: %s", strings.Join(belowMinCurrencies, "; "))
+	}
+
 	return nil
 }
 
@@ -460,7 +473,7 @@ func insertProductPrices(ctx context.Context, rep dependency.Repository, product
 		row := map[string]any{
 			"product_id": productId,
 			"currency":   p.Currency,
-			"price":      p.Price,
+			"price":      dto.RoundForCurrency(p.Price, p.Currency),
 		}
 		rows = append(rows, row)
 	}
@@ -1434,25 +1447,23 @@ func (ms *MYSQLStore) DeleteProductById(ctx context.Context, id int) error {
 func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
 	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
-
-		query := `SELECT * FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
-		productSize, err := QueryNamedOne[entity.ProductSize](ctx, ms.db, query, map[string]any{
-			"productId": item.ProductId,
-			"sizeId":    item.SizeId,
-		})
+		// Get quantity before for history tracking
+		quantityBefore, exists, err := ms.GetProductSizeStock(ctx, item.ProductId, item.SizeId)
 		if err != nil {
 			return fmt.Errorf("error checking current quantity: %w", err)
 		}
-
-		if productSize.QuantityDecimal().Add(item.Quantity.Neg()).LessThan(decimal.Zero) {
-			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductId, item.SizeId)
+		if !exists {
+			return fmt.Errorf("product size not found: product ID: %d, size ID: %d", item.ProductId, item.SizeId)
 		}
 
-		quantityBefore := productSize.QuantityDecimal()
-		quantityAfter := quantityBefore.Sub(item.QuantityDecimal())
-
-		query = `UPDATE product_size SET quantity = quantity - :quantity WHERE product_id = :productId AND size_id = :sizeId`
-		err = ExecNamed(ctx, ms.db, query, map[string]any{
+		// Atomic UPDATE with quantity check in WHERE clause to prevent race conditions
+		query := `UPDATE product_size 
+			SET quantity = quantity - :quantity 
+			WHERE product_id = :productId 
+			AND size_id = :sizeId 
+			AND quantity >= :quantity`
+		
+		result, err := ms.db.NamedExecContext(ctx, query, map[string]any{
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
 			"sizeId":    item.SizeId,
@@ -1460,6 +1471,17 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 		if err != nil {
 			return fmt.Errorf("can't decrease available sizes: %w", err)
 		}
+
+		// Check if the update affected any rows - if not, insufficient stock
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("can't get rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductId, item.SizeId)
+		}
+
+		quantityAfter := quantityBefore.Sub(item.QuantityDecimal())
 
 		if history != nil {
 			historyEntries = append(historyEntries, entity.StockChangeInsert{
@@ -1850,6 +1872,15 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 }
 
 func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+	return getProductsSizesByIdsWithLock(ctx, rep, items, false)
+}
+
+// getProductsSizesByIdsForUpdate locks the product_size rows for update to prevent race conditions
+func getProductsSizesByIdsForUpdate(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+	return getProductsSizesByIdsWithLock(ctx, rep, items, true)
+}
+
+func getProductsSizesByIdsWithLock(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, forUpdate bool) ([]entity.ProductSize, error) {
 	if len(items) == 0 {
 		return []entity.ProductSize{}, nil
 	}
@@ -1864,6 +1895,10 @@ func getProductsSizesByIds(ctx context.Context, rep dependency.Repository, items
 	}
 
 	productSizeQuery += strings.Join(productSizeConditions, " OR ")
+	
+	if forUpdate {
+		productSizeQuery += " FOR UPDATE"
+	}
 
 	var productSizes []entity.ProductSize
 

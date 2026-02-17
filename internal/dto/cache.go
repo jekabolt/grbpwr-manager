@@ -54,19 +54,13 @@ var (
 	}
 
 	paymentMethodEntityPbMap = map[entity.PaymentMethodName]pb_common.PaymentMethodNameEnum{
-		entity.CARD:           pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD,
-		entity.CARD_TEST:      pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST,
-		entity.ETH:            pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH,
-		entity.ETH_TEST:       pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH_TEST,
-		entity.USDT_TRON:      pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON,
-		entity.USDT_TRON_TEST: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA,
+		entity.CARD:      pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD,
+		entity.CARD_TEST: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST,
 	}
 
 	paymentMethodPbEntityMap = map[pb_common.PaymentMethodNameEnum]entity.PaymentMethodName{
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:        entity.CARD,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_ETH:         entity.ETH,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_TRON:   entity.USDT_TRON,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_USDT_SHASTA: entity.USDT_TRON_TEST,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:      entity.CARD,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST: entity.CARD_TEST,
 	}
 )
 

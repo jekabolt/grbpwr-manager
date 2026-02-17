@@ -81,8 +81,10 @@ type (
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool, expiredAt time.Time) (*entity.Order, bool, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error)
+		ValidateOrderItemsInsertWithReservation(ctx context.Context, items []entity.OrderItemInsert, currency string, sessionID string) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
 		InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error)
+		AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID string, paymentIntentId string) error
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
@@ -94,10 +96,12 @@ type (
 		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
-		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error)
+		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
 		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
+		GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error)
+		GetExpiredAwaitingPaymentOrders(ctx context.Context, now time.Time) ([]entity.Order, error)
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
 		SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error
 		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
@@ -110,7 +114,7 @@ type (
 		CheckForTransactions(ctx context.Context, orderUUID string, payment entity.Payment) (*entity.Payment, error)
 		ExpirationDuration() time.Duration
 		// CreatePreOrderPaymentIntent creates a PaymentIntent before order submission (for card payments)
-		CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string) (*stripe.PaymentIntent, error)
+		CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string, idempotencyKey string) (*stripe.PaymentIntent, error)
 		// UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
 		UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
 		// UpdatePaymentIntentWithOrderNew updates a PaymentIntent with order data from OrderNew (optimized, no DB query)
@@ -270,6 +274,7 @@ type (
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
 		QueueNewSubscriber(ctx context.Context, rep Repository, to string) error
 		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
+		QueueOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
 		SendOrderCancellation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderCancelled) error
 		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error
 		SendRefundInitiated(ctx context.Context, rep Repository, to string, refundDetails *dto.OrderRefundInitiated) error
@@ -287,5 +292,10 @@ type (
 		AddPaymentExpiration(ctx context.Context, poid entity.PaymentOrderUUID) error
 		RemovePaymentExpiration(orderId int) error
 		Start(ctx context.Context) error
+	}
+
+	// StockReservationManager handles temporary stock holds
+	StockReservationManager interface {
+		Release(ctx context.Context, orderUUID string)
 	}
 )

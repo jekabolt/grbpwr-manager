@@ -41,7 +41,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 		OrderUUID:           of.Order.UUID,
 		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
-		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
+		OrderItems:          EntityOrderItemsToDto(of.OrderItems, of.Order.Currency),
 		PromoExist:          of.PromoCode.Id != 0,
 		PromoDiscountAmount: of.PromoCode.DiscountDecimal().String(),
 		HasFreeShipping:     of.PromoCode.FreeShipping,
@@ -80,7 +80,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
-		OrderItems:          EntityOrderItemsToDto(of.OrderItems),
+		OrderItems:          EntityOrderItemsToDto(of.OrderItems, of.Order.Currency),
 		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		PromoExist:          of.PromoCode.Id != 0,
@@ -120,7 +120,7 @@ func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated
 	}
 }
 
-func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
+func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderItem {
 	oi := make([]OrderItem, len(items))
 	for i, item := range items {
 		size, found := cache.GetSizeById(item.SizeId)
@@ -140,7 +140,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem) []OrderItem {
 			Thumbnail: item.Thumbnail,
 			Size:      size.Name,
 			Quantity:  int(item.Quantity.IntPart()),
-			Price:     item.OrderItemInsert.ProductPriceDecimal().String(),
+			Price:     RoundForCurrency(item.OrderItemInsert.ProductPriceWithSale, currency).String(),
 		}
 	}
 

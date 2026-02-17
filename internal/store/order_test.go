@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -133,10 +134,6 @@ func setupTestOrder(t *testing.T) (*MYSQLStore, context.Context) {
 			require.NotZero(t, pm.Id, "card test payment method ID should not be zero")
 			require.True(t, pm.Allowed, "card test payment method should be allowed")
 		}
-		if pm.Name == entity.USDT_TRON_TEST {
-			require.NotZero(t, pm.Id, "USDT Tron test payment method ID should not be zero")
-			require.True(t, pm.Allowed, "USDT Tron test payment method should be allowed")
-		}
 	}
 
 	err = cache.InitConsts(ctx, di, hf)
@@ -150,10 +147,6 @@ func setupTestOrder(t *testing.T) (*MYSQLStore, context.Context) {
 	cardTestMethod := cache.PaymentMethodCardTest
 	require.NotZero(t, cardTestMethod.Method.Id, "card test payment method ID should not be zero")
 	require.True(t, cardTestMethod.Method.Allowed, "card test payment method should be allowed")
-
-	usdtTronTestMethod := cache.PaymentMethodUsdtTronTest
-	require.NotZero(t, usdtTronTestMethod.Method.Id, "USDT Tron test payment method ID should not be zero")
-	require.True(t, usdtTronTestMethod.Method.Allowed, "USDT Tron test payment method should be allowed")
 
 	// Print available sizes for debugging
 	type Size struct {
@@ -289,6 +282,7 @@ func createTestOrderNew(t *testing.T, store *MYSQLStore, product entity.Product)
 				SizeId:    validSizeID,
 			},
 		},
+		Currency: "USD",
 		ShippingAddress: &entity.AddressInsert{
 			Country:        "Test Country",
 			State:          sql.NullString{String: "Test State", Valid: true},
@@ -334,7 +328,7 @@ func TestOrderLifecycle(t *testing.T) {
 		// Test with invalid quantity
 		invalidQuantityOrder := createTestOrderNew(t, store, product)
 		invalidQuantityOrder.Items[0].Quantity = decimal.NewFromInt(-1)
-		_, err := store.Order().ValidateOrderItemsInsert(ctx, invalidQuantityOrder.Items)
+		_, err := store.Order().ValidateOrderItemsInsert(ctx, invalidQuantityOrder.Items, invalidQuantityOrder.Currency)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "quantity for product ID")
 		require.Contains(t, err.Error(), "is not positive")
@@ -342,7 +336,7 @@ func TestOrderLifecycle(t *testing.T) {
 		// Test with non-existent product
 		nonExistentProductOrder := createTestOrderNew(t, store, product)
 		nonExistentProductOrder.Items[0].ProductId = 99999
-		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentProductOrder.Items)
+		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentProductOrder.Items, nonExistentProductOrder.Currency)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "error while validating order items")
 		require.Contains(t, err.Error(), "no valid order items to insert")
@@ -350,7 +344,7 @@ func TestOrderLifecycle(t *testing.T) {
 		// Test with non-existent size
 		nonExistentSizeOrder := createTestOrderNew(t, store, product)
 		nonExistentSizeOrder.Items[0].SizeId = 99999
-		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentSizeOrder.Items)
+		_, err = store.Order().ValidateOrderItemsInsert(ctx, nonExistentSizeOrder.Items, nonExistentSizeOrder.Currency)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "error while validating order items")
 		require.Contains(t, err.Error(), "no valid order items to insert")
@@ -358,16 +352,17 @@ func TestOrderLifecycle(t *testing.T) {
 		// Test with quantity exceeding stock
 		exceedingStockOrder := createTestOrderNew(t, store, product)
 		exceedingStockOrder.Items[0].Quantity = decimal.NewFromInt(100)
-		adjustedItems, err := store.Order().ValidateOrderItemsInsert(ctx, exceedingStockOrder.Items)
+		adjustedItems, err := store.Order().ValidateOrderItemsInsert(ctx, exceedingStockOrder.Items, exceedingStockOrder.Currency)
 		require.NoError(t, err)
 		require.NotNil(t, adjustedItems)
 		require.NotEmpty(t, adjustedItems.ValidItems)
 		require.Equal(t, decimal.NewFromInt(3), adjustedItems.ValidItems[0].Quantity) // Adjusted to maxOrderItemPerSize from cache
 		require.False(t, adjustedItems.Subtotal.IsZero())
+		require.NotEmpty(t, adjustedItems.ItemAdjustments, "should have adjustments when quantity exceeds stock or max")
 
 		// Test valid order items
 		validOrder := createTestOrderNew(t, store, product)
-		validItems, err := store.Order().ValidateOrderItemsInsert(ctx, validOrder.Items)
+		validItems, err := store.Order().ValidateOrderItemsInsert(ctx, validOrder.Items, validOrder.Currency)
 		require.NoError(t, err)
 		require.NotNil(t, validItems)
 		require.NotEmpty(t, validItems.ValidItems)
@@ -416,28 +411,6 @@ func TestOrderLifecycle(t *testing.T) {
 		status, ok = cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
 		require.True(t, ok)
 		require.Equal(t, entity.Confirmed, status.Status.Name)
-	})
-
-	t.Run("Crypto_Payment_Flow", func(t *testing.T) {
-		cryptoOrderNew := createTestOrderNew(t, store, product)
-		cryptoOrderNew.PaymentMethod = entity.USDT_TRON_TEST
-
-		// Create and validate order
-		order, _, err := store.Order().CreateOrder(ctx, cryptoOrderNew, false, time.Now().Add(time.Hour))
-		require.NoError(t, err)
-
-		// Insert crypto invoice
-		orderFull, err := store.Order().InsertCryptoInvoice(ctx, order.UUID, "test-tron-address", entity.PaymentMethod{
-			Id:      cache.PaymentMethodUsdtTronTest.Method.Id,
-			Name:    entity.USDT_TRON_TEST,
-			Allowed: true,
-		})
-		require.NoError(t, err)
-		require.Equal(t, "test-tron-address", orderFull.Payment.Payee.String)
-
-		status, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
-		require.True(t, ok)
-		require.Equal(t, entity.AwaitingPayment, status.Status.Name)
 	})
 
 	t.Run("Payment_Expiration_Flow", func(t *testing.T) {
@@ -711,7 +684,7 @@ func TestOrderLifecycle(t *testing.T) {
 		// Test validation with stock changes
 		_, err = store.Order().ValidateOrderByUUID(ctx, order2.UUID)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "order items are not valid and were updated")
+		require.True(t, errors.Is(err, ErrOrderItemsUpdated))
 
 		// Verify the order was updated with adjusted quantity
 		updatedOrder, err := store.Order().GetOrderFullByUUID(ctx, order2.UUID)

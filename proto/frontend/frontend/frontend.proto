@@ -194,6 +194,7 @@ message ValidateOrderItemsInsertResponse {
   common.PromoCodeInsert promo = 5;
   string client_secret = 6; // Stripe client_secret for payment element
   string payment_intent_id = 7; // Stripe PaymentIntent ID
+  repeated common.OrderItemAdjustment item_adjustments = 8; // Describes quantity/availability changes
 }
 
 message ValidateOrderByUUIDRequest {

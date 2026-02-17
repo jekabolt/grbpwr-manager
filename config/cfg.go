@@ -9,8 +9,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
@@ -29,7 +31,9 @@ type Config struct {
 	Auth                         auth.Config         `mapstructure:"auth"`
 	Bucket                       bucket.Config       `mapstructure:"bucket"`
 	Mailer                       mail.Config         `mapstructure:"mailer"`
-	Rates                        RatesConfig         `mapstructure:"rates"`
+	OrderCleanup                 ordercleanup.Config      `mapstructure:"order_cleanup"`
+	StripeReconcile              stripereconcile.Config   `mapstructure:"stripe_reconcile"`
+	Rates                        RatesConfig              `mapstructure:"rates"`
 	StripePayment                stripe.Config       `mapstructure:"stripe_payment"`
 	StripePaymentTest            stripe.Config       `mapstructure:"stripe_payment_test"`
 	Revalidation                 revalidation.Config `mapstructure:"revalidation"`
@@ -154,6 +158,14 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.from_email_name", "MAILER_FROM_EMAIL_NAME")
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")
 	viper.BindEnv("mailer.worker_interval", "MAILER_WORKER_INTERVAL")
+
+	// Order cleanup (stuck Placed orders)
+	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")
+	viper.BindEnv("order_cleanup.placed_threshold", "ORDER_CLEANUP_PLACED_THRESHOLD")
+
+	// Stripe reconcile (orphaned pre-order PaymentIntents)
+	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")
+	viper.BindEnv("stripe_reconcile.pre_order_threshold", "STRIPE_RECONCILE_PRE_ORDER_THRESHOLD")
 
 	// Rates (base currency only; no exchange rates)
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")

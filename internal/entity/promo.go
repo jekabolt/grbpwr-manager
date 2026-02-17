@@ -16,13 +16,14 @@ func (pc *PromoCode) IsAllowed() bool {
 	return pc.Allowed && pc.Expiration.After(time.Now()) && pc.Start.Before(time.Now())
 }
 
-func (pc *PromoCode) SubtotalWithPromo(subtotal, shippingPrice decimal.Decimal) decimal.Decimal {
+// SubtotalWithPromo applies promo discount and shipping. decimalPlaces: 0 for zero-decimal (KRW, JPY), 2 for standard.
+func (pc *PromoCode) SubtotalWithPromo(subtotal, shippingPrice decimal.Decimal, decimalPlaces int32) decimal.Decimal {
 	if !pc.Discount.Equals(decimal.Zero) {
-		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(pc.Discount).Div(decimal.NewFromInt(100))).Round(2)
+		subtotal = subtotal.Mul(decimal.NewFromInt(100).Sub(pc.Discount).Div(decimal.NewFromInt(100))).Round(decimalPlaces)
 	}
 
 	if !pc.FreeShipping {
-		subtotal = subtotal.Add(shippingPrice).Round(2)
+		subtotal = subtotal.Add(shippingPrice).Round(decimalPlaces)
 	}
 	return subtotal
 }

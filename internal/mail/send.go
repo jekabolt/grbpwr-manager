@@ -77,6 +77,22 @@ func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repos
 	return m.sendWithInsert(ctx, rep, ser)
 }
 
+// QueueOrderConfirmation queues an order confirmation email for asynchronous sending.
+// The background worker will pick it up and send it. Use this when email must not block
+// critical operations (e.g. payment confirmation).
+func (m *Mailer) QueueOrderConfirmation(ctx context.Context, rep dependency.Repository, to string, orderDetails *dto.OrderConfirmed) error {
+	if orderDetails.OrderUUID == "" {
+		return fmt.Errorf("incomplete order details: %+v", orderDetails)
+	}
+
+	ser, err := m.buildSendMailRequest(to, OrderConfirmed, orderDetails)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for order confirmation: %w", err)
+	}
+
+	return m.queueEmail(ctx, rep, ser)
+}
+
 // SendOrderCancellation sends an order cancellation email.
 func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repository, to string, orderDetails *dto.OrderCancelled) error {
 	if orderDetails.OrderUUID == "" {

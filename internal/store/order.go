@@ -23,6 +23,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// ErrOrderItemsUpdated is returned when order items were validated and updated
+// (e.g. prices changed, items unavailable). Caller should NOT cancel the order.
+var ErrOrderItemsUpdated = errors.New("order items are not valid and were updated")
+
 type orderStore struct {
 	*MYSQLStore
 }
@@ -45,10 +49,19 @@ func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, err
 	return decimal.Zero, fmt.Errorf("product %d does not have a price in currency %s", prd.Id, currency)
 }
 
-func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, error) {
+func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
+	return validateOrderItemsStockAvailabilityWithLock(ctx, rep, items, currency, false)
+}
+
+// validateOrderItemsStockAvailabilityForUpdate validates stock and locks product_size rows to prevent race conditions
+func validateOrderItemsStockAvailabilityForUpdate(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
+	return validateOrderItemsStockAvailabilityWithLock(ctx, rep, items, currency, true)
+}
+
+func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string, forUpdate bool) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	// Check if there are no items provided
 	if len(items) == 0 {
-		return nil, &entity.ValidationError{Message: "zero items to validate"}
+		return nil, nil, &entity.ValidationError{Message: "zero items to validate"}
 	}
 
 	// Get product IDs from items
@@ -59,7 +72,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 	// Get product details by IDs
 	prds, err := getProductsByIds(ctx, rep, prdIds)
 	if err != nil {
-		return nil, fmt.Errorf("can't get products by ids: %w", err)
+		return nil, nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
 
 	// Create a map for product details with ProductId as the key
@@ -69,9 +82,14 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 	}
 
 	// Get product sizes (stock) details by item details
-	prdSizes, err := getProductsSizesByIds(ctx, rep, items)
+	var prdSizes []entity.ProductSize
+	if forUpdate {
+		prdSizes, err = getProductsSizesByIdsForUpdate(ctx, rep, items)
+	} else {
+		prdSizes, err = getProductsSizesByIds(ctx, rep, items)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("can't get products sizes by ids: %w", err)
+		return nil, nil, fmt.Errorf("can't get products sizes by ids: %w", err)
 	}
 
 	// Create a map for product sizes with a combination of ProductId and SizeId as the key
@@ -81,27 +99,48 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		prdSizeMap[key] = prdSize
 	}
 
-	// Initialize a slice to store the valid order items
 	validItems := make([]entity.OrderItem, 0, len(items))
+	adjustments := make([]entity.OrderItemAdjustment, 0)
 
 	for _, item := range items {
-		// Create a key for the current item to look up in the prdSizeMap
 		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
 		prdSize, exists := prdSizeMap[sizeKey]
 
-		// Check if the size exists and if the quantity is available
+		// Out of stock or size doesn't exist: record adjustment and skip
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: item.QuantityDecimal(),
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
+			})
 			continue
 		}
 
-		// Adjust quantity if necessary
-		if item.QuantityDecimal().GreaterThan(prdSize.QuantityDecimal()) {
+		// Reduce quantity if requested exceeds available: record adjustment
+		requestedQty := item.QuantityDecimal()
+		if requestedQty.GreaterThan(prdSize.QuantityDecimal()) {
 			item.Quantity = prdSize.QuantityDecimal()
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: requestedQty,
+				AdjustedQuantity:  prdSize.QuantityDecimal(),
+				Reason:            entity.AdjustmentReasonQuantityReduced,
+			})
 		}
 
 		// Look up the product in the prdMap
 		prd, exists := prdMap[item.ProductId]
 		if !exists {
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: item.QuantityDecimal(),
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
+			})
 			continue
 		}
 
@@ -109,7 +148,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		productBody := &prd.ProductDisplay.ProductBody
 		productPrice, err := getProductPrice(&prd, currency)
 		if err != nil {
-			return nil, &entity.ValidationError{Message: fmt.Sprintf("product %d does not have a price in currency %s", prd.Id, currency)}
+			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("product %d does not have a price in currency %s", prd.Id, currency)}
 		}
 		item.ProductPrice = productPrice
 		if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
@@ -144,7 +183,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 		validItems = append(validItems, validItem)
 	}
 
-	return validItems, nil
+	return validItems, adjustments, nil
 }
 
 // compareItems return true if items are equal
@@ -181,7 +220,7 @@ func compareItems(items, validItems []entity.OrderItemInsert, onlyQuantity bool)
 	return true
 }
 
-func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items []entity.ProductInfoProvider) (decimal.Decimal, error) {
+func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items []entity.ProductInfoProvider, currency string) (decimal.Decimal, error) {
 	if len(items) == 0 {
 		return decimal.Zero, errors.New("no items to calculate total amount")
 	}
@@ -208,7 +247,7 @@ func calculateTotalAmount(ctx context.Context, rep dependency.Repository, items 
 		totalAmount = totalAmount.Add(price.Mul(item.GetQuantity()))
 	}
 
-	return totalAmount.Round(2), nil
+	return dto.RoundForCurrency(totalAmount, currency), nil
 }
 
 func insertAddresses(ctx context.Context, rep dependency.Repository, shippingAddress, billingAddress *entity.AddressInsert) (int, int, error) {
@@ -506,10 +545,43 @@ func validateAndUpdateOrderIfNeeded(
 	orderFull *entity.OrderFull,
 	cancelOnValidationFailure bool,
 ) (bool, error) {
+	return validateAndUpdateOrderIfNeededWithLock(ctx, rep, orderFull, cancelOnValidationFailure, false)
+}
+
+// validateAndUpdateOrderIfNeededForUpdate is like validateAndUpdateOrderIfNeeded but locks product_size rows
+func validateAndUpdateOrderIfNeededForUpdate(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderFull *entity.OrderFull,
+	cancelOnValidationFailure bool,
+) (bool, error) {
+	return validateAndUpdateOrderIfNeededWithLock(ctx, rep, orderFull, cancelOnValidationFailure, true)
+}
+
+func validateAndUpdateOrderIfNeededWithLock(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderFull *entity.OrderFull,
+	cancelOnValidationFailure bool,
+	lockStock bool,
+) (bool, error) {
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 
 	// Validate the order items
-	oiv, err := rep.Order().ValidateOrderItemsInsert(ctx, items, orderFull.Order.Currency)
+	var oiv *entity.OrderItemValidation
+	var err error
+	
+	if lockStock {
+		// Use the internal method that locks stock rows
+		if ms, ok := rep.Order().(*MYSQLStore); ok {
+			oiv, err = ms.validateOrderItemsInsertForUpdate(ctx, items, orderFull.Order.Currency)
+		} else {
+			return false, fmt.Errorf("cannot cast to MYSQLStore for stock locking")
+		}
+	} else {
+		oiv, err = rep.Order().ValidateOrderItemsInsert(ctx, items, orderFull.Order.Currency)
+	}
+	
 	if err != nil {
 		// If validation fails and we should cancel, do it
 		if cancelOnValidationFailure {
@@ -531,7 +603,7 @@ func validateAndUpdateOrderIfNeeded(
 		}
 
 		// Update the total amount based on the new items
-		if _, err := updateTotalAmount(ctx, rep, orderFull.Order.Id, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment); err != nil {
+		if _, err := updateTotalAmount(ctx, rep, orderFull.Order.Id, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment, orderFull.Order.Currency); err != nil {
 			return false, fmt.Errorf("error updating total amount: %w", err)
 		}
 
@@ -622,44 +694,73 @@ func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
 	return mergedSlice
 }
 
-// adjustQuantities adjusts the quantity of the items if it exceeds the maxOrderItemPerSize
-func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) []entity.OrderItemInsert {
+// adjustQuantities adjusts the quantity of the items if it exceeds the maxOrderItemPerSize.
+// Returns the adjusted items and any adjustments made (quantity_capped).
+func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) ([]entity.OrderItemInsert, []entity.OrderItemAdjustment) {
 	maxQuantity := decimal.NewFromInt(int64(maxOrderItemPerSize))
+	adjustments := make([]entity.OrderItemAdjustment, 0)
 	for i, item := range items {
-		// Check if the item quantity exceeds the maxOrderItemPerSize
 		if item.QuantityDecimal().Cmp(maxQuantity) > 0 {
+			requestedQty := items[i].QuantityDecimal()
 			items[i].Quantity = maxQuantity.Round(0)
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:            item.SizeId,
+				RequestedQuantity: requestedQty,
+				AdjustedQuantity:  maxQuantity.Round(0),
+				Reason:            entity.AdjustmentReasonQuantityCapped,
+			})
 		}
 	}
-	return items
+	return items, adjustments
 }
 
-func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, error) {
-
+func (ms *MYSQLStore) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	// adjust quantities if it exceeds the maxOrderItemPerSize
-	items = adjustQuantities(cache.GetMaxOrderItems(), items)
+	items, capAdjustments := adjustQuantities(cache.GetMaxOrderItems(), items)
 
 	slog.Default().InfoContext(ctx, "items", slog.Any("items", items))
 
 	// validate items stock availability
-	validItems, err := validateOrderItemsStockAvailability(ctx, ms, items, currency)
+	validItems, stockAdjustments, err := validateOrderItemsStockAvailability(ctx, ms, items, currency)
 	if err != nil {
-		// Preserve ValidationError, wrap other errors
 		var validationErr *entity.ValidationError
 		if errors.As(err, &validationErr) {
-			return nil, err
+			return nil, nil, err
 		}
-		return nil, fmt.Errorf("error while validating order items: %w", err)
+		return nil, nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 	if len(validItems) == 0 {
-		return nil, &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
+		return nil, nil, &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
 	}
 
-	return validItems, nil
+	// Combine adjustments (cap first, then stock)
+	allAdjustments := make([]entity.OrderItemAdjustment, 0, len(capAdjustments)+len(stockAdjustments))
+	allAdjustments = append(allAdjustments, capAdjustments...)
+	allAdjustments = append(allAdjustments, stockAdjustments...)
+
+	return validItems, allAdjustments, nil
 }
 
 // ValidateOrderItemsInsert validates the order items and returns the valid items and the total amount
 func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error) {
+	return ms.validateOrderItemsInsertWithLock(ctx, items, currency, false)
+}
+
+// ValidateOrderItemsInsertWithReservation validates order items with stock reservation awareness
+// This method is a placeholder that calls the standard validation - reservation logic is handled at the service layer
+func (ms *MYSQLStore) ValidateOrderItemsInsertWithReservation(ctx context.Context, items []entity.OrderItemInsert, currency string, sessionID string) (*entity.OrderItemValidation, error) {
+	// The actual reservation logic is handled in the frontend server layer
+	// This method exists to satisfy the interface and maintain consistency
+	return ms.validateOrderItemsInsertWithLock(ctx, items, currency, false)
+}
+
+// validateOrderItemsInsertForUpdate validates order items and locks product_size rows to prevent race conditions
+func (ms *MYSQLStore) validateOrderItemsInsertForUpdate(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error) {
+	return ms.validateOrderItemsInsertWithLock(ctx, items, currency, true)
+}
+
+func (ms *MYSQLStore) validateOrderItemsInsertWithLock(ctx context.Context, items []entity.OrderItemInsert, currency string, lockStock bool) (*entity.OrderItemValidation, error) {
 	// Return early if there are no items
 	if len(items) == 0 {
 		return nil, &entity.ValidationError{Message: "no order items to insert"}
@@ -673,9 +774,17 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 	mergedItems := mergeOrderItems(copiedItems)
 
 	// Validate the merged order items with the specified currency
-	validItems, err := ms.validateOrderItemsInsert(ctx, mergedItems, currency)
+	var validItems []entity.OrderItem
+	var itemAdjustments []entity.OrderItemAdjustment
+	var err error
+	
+	if lockStock {
+		validItems, itemAdjustments, err = validateOrderItemsStockAvailabilityForUpdate(ctx, ms, mergedItems, currency)
+	} else {
+		validItems, itemAdjustments, err = ms.validateOrderItemsInsert(ctx, mergedItems, currency)
+	}
+	
 	if err != nil {
-		// Preserve ValidationError, wrap other errors
 		var validationErr *entity.ValidationError
 		if errors.As(err, &validationErr) {
 			return nil, err
@@ -693,9 +802,8 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 
 	// Convert to providers and calculate total
 	providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
-	total, err := calculateTotalAmount(ctx, ms, providers)
+	total, err := calculateTotalAmount(ctx, ms, providers, currency)
 	if err != nil {
-		// Check if it's a validation error from calculateTotalAmount
 		var validationErr *entity.ValidationError
 		if errors.As(err, &validationErr) {
 			return nil, err
@@ -710,9 +818,10 @@ func (ms *MYSQLStore) ValidateOrderItemsInsert(ctx context.Context, items []enti
 
 	// Compare the original (copied) and valid items and return the validation result
 	return &entity.OrderItemValidation{
-		ValidItems: validItems,
-		Subtotal:   total.Round(2),
-		HasChanged: !compareItems(copiedItems, validItemsInsert, true),
+		ValidItems:      validItems,
+		Subtotal:        dto.RoundForCurrency(total, currency),
+		HasChanged:      !compareItems(copiedItems, validItemsInsert, true),
+		ItemAdjustments: itemAdjustments,
 	}, nil
 }
 
@@ -748,7 +857,7 @@ func (ms *MYSQLStore) ValidateOrderByUUID(ctx context.Context, uuid string) (*en
 
 	// If items were changed during validation, return an error
 	if itemsChanged {
-		return nil, fmt.Errorf("order items are not valid and were updated")
+		return nil, ErrOrderItemsUpdated
 	}
 
 	// Return the fully validated order
@@ -799,7 +908,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		// Validate order items with currency-specific pricing
-		validItems, err := ms.validateOrderItemsInsert(ctx, orderNew.Items, orderNew.Currency)
+		validItems, _, err := ms.validateOrderItemsInsert(ctx, orderNew.Items, orderNew.Currency)
 		if err != nil {
 			return fmt.Errorf("error while validating order items: %w", err)
 		}
@@ -807,7 +916,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 
 		// Calculate total from validated items
 		providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
-		subtotal, err := calculateTotalAmount(ctx, rep, providers)
+		subtotal, err := calculateTotalAmount(ctx, rep, providers, orderNew.Currency)
 		if err != nil {
 			return fmt.Errorf("error while calculating total amount: %w", err)
 		}
@@ -816,7 +925,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err != nil {
 			return fmt.Errorf("can't get shipment carrier price for currency %s: %w", orderNew.Currency, err)
 		}
-		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentPrice)
+		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentPrice, dto.DecimalPlacesForCurrency(orderNew.Currency))
 
 		order = &entity.Order{
 			TotalPrice:    totalPrice,
@@ -1112,6 +1221,38 @@ func getOrderByUUID(ctx context.Context, rep dependency.Repository, uuid string)
 	return &order, nil
 }
 
+// getOrderByUUIDForUpdate locks the order row for update to prevent race conditions
+func getOrderByUUIDForUpdate(ctx context.Context, rep dependency.Repository, uuid string) (*entity.Order, error) {
+	query := `
+	SELECT * from customer_order WHERE uuid = :uuid FOR UPDATE`
+	order, err := QueryNamedOne[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"uuid": uuid,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
+// getOrderByUUIDAndEmailForUpdate locks the order row for update and verifies email ownership
+func getOrderByUUIDAndEmailForUpdate(ctx context.Context, rep dependency.Repository, orderUUID string, email string) (*entity.Order, error) {
+	query := `
+		SELECT co.*
+		FROM customer_order co
+		INNER JOIN buyer b ON co.id = b.order_id
+		WHERE co.uuid = :orderUUID AND b.email = :email
+		FOR UPDATE
+	`
+	order, err := QueryNamedOne[entity.Order](ctx, rep.DB(), query, map[string]interface{}{
+		"orderUUID": orderUUID,
+		"email":     email,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get order by uuid and email: %w", err)
+	}
+	return &order, nil
+}
+
 func (ms *MYSQLStore) GetOrderByUUID(ctx context.Context, uuid string) (*entity.Order, error) {
 	return getOrderByUUID(ctx, ms, uuid)
 }
@@ -1357,12 +1498,12 @@ func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repo
 	return updateOrderStatusAndRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, refundReason, "admin")
 }
 
-func refundAmountFromItems(items []entity.OrderItemInsert) decimal.Decimal {
+func refundAmountFromItems(items []entity.OrderItemInsert, currency string) decimal.Decimal {
 	var sum decimal.Decimal
 	for _, item := range items {
-		sum = sum.Add(item.ProductPriceWithSale.Mul(item.Quantity).Round(2))
+		sum = sum.Add(item.ProductPriceWithSale.Mul(item.Quantity))
 	}
-	return sum.Round(2)
+	return dto.RoundForCurrency(sum, currency)
 }
 
 func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId int, payment entity.PaymentInsert) error {
@@ -1373,8 +1514,6 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		transaction_id = :transactionId,
 		is_transaction_done = :isTransactionDone,
 		payment_method_id = :paymentMethodId,
-		payer = :payer,
-		payee = :payee,
 		client_secret = :clientSecret,
 		expired_at = :expiredAt
 	WHERE order_id = :orderId`
@@ -1385,8 +1524,6 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"transactionId":                    payment.TransactionID,
 		"isTransactionDone":                payment.IsTransactionDone,
 		"paymentMethodId":                  payment.PaymentMethodID,
-		"payer":                            payment.Payer,
-		"payee":                            payment.Payee,
 		"clientSecret":                     payment.ClientSecret,
 		"orderId":                          orderId,
 		"expiredAt":                        payment.ExpiredAt,
@@ -1421,6 +1558,28 @@ func (ms *MYSQLStore) UpdateTotalPaymentCurrency(ctx context.Context, orderUUID 
 	return nil
 }
 
+// AssociatePaymentIntentWithOrder stores the PaymentIntent ID in the payment record before InsertFiatInvoice.
+// This ensures GetOrderByPaymentIntentId finds the order on retry when InsertFiatInvoice returns ErrOrderItemsUpdated,
+// preventing duplicate order creation.
+func (ms *MYSQLStore) AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID string, paymentIntentId string) error {
+	query := `
+	UPDATE payment 
+	SET client_secret = :paymentIntentId 
+	WHERE order_id = (
+		SELECT id FROM customer_order 
+		WHERE uuid = :orderUUID
+	)`
+
+	err := ExecNamed(ctx, ms.db, query, map[string]any{
+		"paymentIntentId": paymentIntentId,
+		"orderUUID":       orderUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("can't associate payment intent with order: %w", err)
+	}
+	return nil
+}
+
 func updateOrderItems(ctx context.Context, rep dependency.Repository, validItems []entity.OrderItemInsert, orderId int) error {
 	err := deleteOrderItems(ctx, rep, orderId)
 	if err != nil {
@@ -1439,13 +1598,13 @@ func updateOrderItems(ctx context.Context, rep dependency.Repository, validItems
 // If the promo code offers a discount, the subtotal is multiplied by (100 - discount) / 100.
 // Finally, it updates the order's total promo and returns the calculated subtotal.
 // If any error occurs during the process, it returns an error along with a zero subtotal.
-func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment) (decimal.Decimal, error) {
+func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment, currency string) (decimal.Decimal, error) {
 	// check if promo is allowed and not expired
 	if !promo.IsAllowed() {
 		promo = entity.PromoCode{}
 	}
 
-	subtotal = promo.SubtotalWithPromo(subtotal, shipment.CostDecimal())
+	subtotal = promo.SubtotalWithPromo(subtotal, shipment.CostDecimal(currency), dto.DecimalPlacesForCurrency(currency))
 
 	err := updateOrderTotalPromo(ctx, rep, orderId, promo.Id, subtotal)
 	if err != nil {
@@ -1470,7 +1629,7 @@ func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, order
 	err := ExecNamed(ctx, rep.DB(), query, map[string]any{
 		"orderId":    orderId,
 		"promoId":    promoIdNull,
-		"totalPrice": totalPrice.Round(2),
+		"totalPrice": totalPrice,
 	})
 	if err != nil {
 		return err
@@ -1484,31 +1643,52 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		return nil, err
 	}
 
-	// Get order details by UUID
-	orderFull, err := ms.GetOrderFullByUUID(ctx, orderUUID)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get order by UUID %s: %w", orderUUID, err)
-	}
-
-	// Check if the order's total price is zero
-	if orderFull.Order.TotalPrice.IsZero() {
-		if err := cancelOrder(ctx, ms, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems), entity.StockChangeSourceOrderCancelled); err != nil {
-			return nil, fmt.Errorf("cannot cancel order: %w", err)
-		}
-		return nil, fmt.Errorf("total price is zero")
-	}
-
-	// Validate order status is Placed or Cancelled
-	_, err = validateOrderStatus(&orderFull.Order, entity.Placed, entity.Cancelled)
-	if err != nil {
-		return nil, err
-	}
-
 	// Convert order items to insert format and validate them
 	var itemsChanged bool
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		var err error
-		itemsChanged, err = validateAndUpdateOrderIfNeeded(ctx, rep, orderFull, true)
+	var orderFull *entity.OrderFull
+	
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Lock the order row to prevent race conditions with concurrent invoice insertions or cancellations
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
+		if err != nil {
+			return fmt.Errorf("cannot get order by UUID %s: %w", orderUUID, err)
+		}
+
+		// Validate order status is Placed (do not process payment for Cancelled orders)
+		_, err = validateOrderStatus(order, entity.Placed)
+		if err != nil {
+			return err
+		}
+
+		// Get full order details (items, buyer, etc.) inside transaction
+		orderItems, err := getOrderItemsInsert(ctx, rep, order.Id)
+		if err != nil {
+			return fmt.Errorf("cannot get order items: %w", err)
+		}
+
+		// Fetch full order info
+		ofs, err := fetchOrderInfo(ctx, rep, []entity.Order{*order})
+		if err != nil {
+			return fmt.Errorf("cannot fetch order info: %w", err)
+		}
+		if len(ofs) == 0 {
+			return fmt.Errorf("order is not found")
+		}
+		orderFull = &ofs[0]
+
+		// Check if the order's total price is zero or below currency minimum
+		if orderFull.Order.TotalPrice.IsZero() {
+			if err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled); err != nil {
+				return fmt.Errorf("cannot cancel order: %w", err)
+			}
+			return fmt.Errorf("total price is zero")
+		}
+		if err := dto.ValidatePriceMeetsMinimum(orderFull.Order.TotalPrice, orderFull.Order.Currency); err != nil {
+			return fmt.Errorf("order total below currency minimum: %w", err)
+		}
+
+		// Validate and update order with stock row locking to prevent race conditions
+		itemsChanged, err = validateAndUpdateOrderIfNeededForUpdate(ctx, rep, orderFull, true)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "cannot validate order items", slog.String("err", err.Error()))
 			return err
@@ -1519,7 +1699,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 			return nil
 		}
 
-		// Reduce stock for valid items
+		// Reduce stock for valid items (validation already locked the rows, so this is atomic)
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 		history := &entity.StockHistoryParams{
 			Source:    entity.StockChangeSourceOrderPlaced,
@@ -1537,7 +1717,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		return nil, err
 	}
 	if itemsChanged {
-		return nil, fmt.Errorf("order items are not valid and were updated")
+		return nil, ErrOrderItemsUpdated
 	}
 
 	// Refresh order details after updating status
@@ -1606,33 +1786,38 @@ func updateOrderShipment(ctx context.Context, rep dependency.Repository, shipmen
 
 // SetTrackingNumber sets the tracking number for an order, returns the shipment and the order UUID.
 func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error) {
-	order, err := getOrderByUUID(ctx, ms, orderUUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order by id: %w", err)
-	}
+	var order *entity.Order
+	var shipment *entity.Shipment
+	var buyer *entity.Buyer
 
-	// Validate order status is Confirmed or Shipped
-	_, err = validateOrderStatus(order, entity.Confirmed, entity.Shipped)
-	if err != nil {
-		return nil, fmt.Errorf("bad order status for setting tracking number: %w", err)
-	}
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		order, err = getOrderByUUIDForUpdate(ctx, rep, orderUUID)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
 
-	shipment, err := getOrderShipment(ctx, ms, order.Id)
-	if err != nil {
-		return nil, fmt.Errorf("can't get order shipment: %w", err)
-	}
+		// Validate order status is Confirmed or Shipped
+		_, err = validateOrderStatus(order, entity.Confirmed, entity.Shipped)
+		if err != nil {
+			return fmt.Errorf("bad order status for setting tracking number: %w", err)
+		}
 
-	shipment.TrackingCode = sql.NullString{
-		String: trackingCode,
-		Valid:  true,
-	}
+		shipment, err = getOrderShipment(ctx, rep, order.Id)
+		if err != nil {
+			return fmt.Errorf("can't get order shipment: %w", err)
+		}
 
-	buyer, err := getBuyerById(ctx, ms, order.Id)
-	if err != nil {
-		return nil, fmt.Errorf("can't get buyer by id: %w", err)
-	}
+		shipment.TrackingCode = sql.NullString{
+			String: trackingCode,
+			Valid:  true,
+		}
 
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		buyer, err = getBuyerById(ctx, rep, order.Id)
+		if err != nil {
+			return fmt.Errorf("can't get buyer by id: %w", err)
+		}
+
 		err = updateOrderShipment(ctx, rep, shipment)
 		if err != nil {
 			return fmt.Errorf("can't update order shipment: %w", err)
@@ -1649,10 +1834,10 @@ func (ms *MYSQLStore) SetTrackingNumber(ctx context.Context, orderUUID string, t
 		return nil, fmt.Errorf("can't set tracking number: %w", err)
 	}
 
-	// Refresh order details after updating status
+	// Read committed order with updated status for return
 	order, err = getOrderByUUID(ctx, ms, orderUUID)
 	if err != nil {
-		return nil, fmt.Errorf("can't refresh order details: %w", err)
+		return nil, fmt.Errorf("can't get order after update: %w", err)
 	}
 
 	return &entity.OrderBuyerShipment{
@@ -1681,8 +1866,6 @@ func paymentsByOrderIds(ctx context.Context, rep dependency.Repository, orderIds
 		payment.transaction_id, 
 		payment.transaction_amount, 
 		payment.transaction_amount_payment_currency,
-		payment.payer, 
-		payment.payee, 
 		payment.client_secret,
 		payment.is_transaction_done,
 		payment.created_at,
@@ -2339,7 +2522,8 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 
 	// Use transaction context
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderByUUID(ctx, rep, orderUUID)
+		// Lock the order row to prevent race conditions with concurrent payment confirmations
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)
 		}
@@ -2375,12 +2559,12 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 			TransactionID:                    sql.NullString{Valid: false},
 			TransactionAmount:                decimal.Zero,
 			TransactionAmountPaymentCurrency: decimal.Zero,
-			Payer:                            sql.NullString{Valid: false},
-			Payee:                            sql.NullString{Valid: false},
 			IsTransactionDone:                false,
 		}
 
-		// TODO: check if payment is already done
+		if payment.IsTransactionDone {
+			return nil
+		}
 
 		// Update order payment
 		if err := updateOrderPayment(ctx, rep, order.Id, paymentUpdate); err != nil {
@@ -2402,12 +2586,27 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 	return payment, nil
 }
 
-func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (*entity.Payment, error) {
+func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (bool, error) {
+	wasUpdated := false
+
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		order, err := getOrderByUUID(ctx, rep, orderUUID)
+		// Lock the order row to prevent race conditions with concurrent payment confirmations
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		// Check if order is in AwaitingPayment status (idempotency check)
+		os, err := getOrderStatus(order.OrderStatusId)
+		if err != nil {
+			return err
+		}
+
+		if os.Status.Name != entity.AwaitingPayment {
+			// Order already confirmed or in different state - return early (idempotent)
+			// wasUpdated remains false to prevent duplicate emails
+			return nil
 		}
 
 		if order.PromoId.Int32 != 0 {
@@ -2415,16 +2614,6 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 			if err != nil {
 				return fmt.Errorf("can't disable voucher: %w", err)
 			}
-		}
-
-		// Check if order is in AwaitingPayment status
-		os, err := getOrderStatus(order.OrderStatusId)
-		if err != nil {
-			return err
-		}
-
-		if os.Status.Name != entity.AwaitingPayment {
-			return nil
 		}
 
 		err = updateOrderStatus(ctx, rep, order.Id, cache.OrderStatusConfirmed.Status.Id)
@@ -2439,13 +2628,15 @@ func (ms *MYSQLStore) OrderPaymentDone(ctx context.Context, orderUUID string, p 
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
+		// Mark that we successfully updated the order
+		wasUpdated = true
 		return nil
 	})
 	if err != nil {
-		return p, err
+		return false, err
 	}
 
-	return p, nil
+	return wasUpdated, nil
 }
 
 // refundItem holds order_item_id and OrderItemInsert for stock restoration and refunded_order_item inserts.
@@ -2457,7 +2648,8 @@ type refundItem struct {
 // validateAndMapOrderItems maps order item IDs to refundItem, skipping IDs that don't
 // belong to the order. Each occurrence of an ID = 1 unit to refund (e.g. [1,1,1] = 3 units).
 // Returns nil for full refund (empty IDs).
-func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int32) ([]refundItem, error) {
+// alreadyRefunded maps order_item_id to quantity already refunded.
+func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int32, alreadyRefunded map[int]int64) ([]refundItem, error) {
 	if len(orderItemIDs) == 0 {
 		return nil, nil // Signal full refund
 	}
@@ -2467,17 +2659,43 @@ func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int3
 		itemByID[item.Id] = item
 	}
 
+	// Count requested refund units per order_item_id
+	requestedRefund := make(map[int]int64)
+	for _, id := range orderItemIDs {
+		requestedRefund[int(id)]++
+	}
+
 	itemsToRefund := make([]refundItem, 0, len(orderItemIDs))
 
-	for _, id := range orderItemIDs {
-		item, ok := itemByID[int(id)]
+	// Validate and build refund items
+	for orderItemId, requestedQty := range requestedRefund {
+		item, ok := itemByID[orderItemId]
 		if !ok {
 			continue // Skip: item does not belong to order
 		}
-		// Each occurrence = 1 unit to refund; use Quantity=1 so RestoreStock sums correctly
-		insert := item.OrderItemInsert
-		insert.Quantity = decimal.NewFromInt(1)
-		itemsToRefund = append(itemsToRefund, refundItem{OrderItemId: item.Id, OrderItemInsert: insert})
+
+		// Calculate remaining refundable quantity
+		originalQty := item.Quantity.IntPart()
+		refundedQty := alreadyRefunded[orderItemId]
+		remainingQty := originalQty - refundedQty
+
+		if remainingQty <= 0 {
+			return nil, fmt.Errorf("order item %d already fully refunded", orderItemId)
+		}
+
+		// Cap requested quantity to remaining refundable quantity
+		actualRefundQty := requestedQty
+		if actualRefundQty > remainingQty {
+			return nil, fmt.Errorf("cannot refund %d units of order item %d: only %d units remaining (original: %d, already refunded: %d)",
+				requestedQty, orderItemId, remainingQty, originalQty, refundedQty)
+		}
+
+		// Add each unit as a separate refundItem (for RestoreStock to sum correctly)
+		for i := int64(0); i < actualRefundQty; i++ {
+			insert := item.OrderItemInsert
+			insert.Quantity = decimal.NewFromInt(1)
+			itemsToRefund = append(itemsToRefund, refundItem{OrderItemId: item.Id, OrderItemInsert: insert})
+		}
 	}
 
 	if len(itemsToRefund) == 0 {
@@ -2487,20 +2705,24 @@ func validateAndMapOrderItems(orderItems []entity.OrderItem, orderItemIDs []int3
 	return itemsToRefund, nil
 }
 
-// refundCoversFullOrder returns true when the requested orderItemIDs cover all order items
-// with at least the full quantity each (e.g. orderItems [1,2,2], orderItemIDs [1,2,2] = full refund).
-func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32) bool {
+// refundCoversFullOrder returns true when the requested orderItemIDs cover all remaining
+// refundable quantity for all order items (e.g. if item has qty 3, already refunded 1, requesting 2 = full refund).
+// alreadyRefunded maps order_item_id to quantity already refunded.
+func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32, alreadyRefunded map[int]int64) bool {
 	// Count requested units per order_item id
 	requested := make(map[int]int64)
 	for _, id := range orderItemIDs {
 		requested[int(id)]++
 	}
 
-	// Each order item must have requested >= its quantity
+	// Each order item must have requested >= remaining refundable quantity
 	for _, item := range orderItems {
 		req := requested[item.Id]
-		qty := item.Quantity.IntPart()
-		if req < qty {
+		originalQty := item.Quantity.IntPart()
+		refundedQty := alreadyRefunded[item.Id]
+		remainingQty := originalQty - refundedQty
+
+		if req < remainingQty {
 			return false
 		}
 	}
@@ -2509,14 +2731,15 @@ func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32) 
 
 // determineRefundScope determines which items to refund and the target status based on
 // the current order status and requested item IDs.
-func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32) ([]refundItem, *cache.Status, error) {
+// alreadyRefunded maps order_item_id to quantity already refunded.
+func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32, alreadyRefunded map[int]int64) ([]refundItem, *cache.Status, error) {
 	// Confirmed: full refund only (orderItemIDs validated as empty by caller)
 	if currentStatus == entity.Confirmed {
 		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
 	// RefundInProgress, PendingReturn, Delivered: full or partial
-	partialItems, err := validateAndMapOrderItems(orderItems, orderItemIDs)
+	partialItems, err := validateAndMapOrderItems(orderItems, orderItemIDs, alreadyRefunded)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2526,8 +2749,8 @@ func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []ent
 		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
-	// orderItemIDs covers all items with full quantities = full refund (e.g. [1,2,2] for items 1,2 with qty 1,2)
-	if refundCoversFullOrder(orderItems, orderItemIDs) {
+	// orderItemIDs covers all remaining refundable quantities = full refund
+	if refundCoversFullOrder(orderItems, orderItemIDs, alreadyRefunded) {
 		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
 	}
 
@@ -2549,7 +2772,7 @@ func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
 // Full refund only: Confirmed.
 func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderByUUID(ctx, rep, orderUUID)
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
 		if err != nil {
 			return err
 		}
@@ -2578,10 +2801,21 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 			return fmt.Errorf("order has no items")
 		}
 
+		// Get already refunded quantities to prevent over-refunding
+		alreadyRefundedMap, err := getRefundedQuantitiesByOrderIds(ctx, rep, []int{order.Id})
+		if err != nil {
+			return fmt.Errorf("get already refunded quantities: %w", err)
+		}
+		alreadyRefunded := alreadyRefundedMap[order.Id]
+		if alreadyRefunded == nil {
+			alreadyRefunded = make(map[int]int64)
+		}
+
 		itemsToRefund, targetStatus, err := determineRefundScope(
 			orderStatus.Status.Name,
 			orderItems,
 			orderItemIDs,
+			alreadyRefunded,
 		)
 		if err != nil {
 			return err
@@ -2608,7 +2842,7 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 			return fmt.Errorf("insert refunded order items: %w", err)
 		}
 
-		refundedAmount := refundAmountFromItems(itemsForStock)
+		refundedAmount := refundAmountFromItems(itemsForStock, order.Currency)
 		return updateOrderStatusAndRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount, reason)
 	})
 }
@@ -2684,7 +2918,7 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	}
 
 	if order.PromoId.Int32 != 0 {
-		err := removePromo(ctx, rep, int(order.PromoId.Int32))
+		err := removePromo(ctx, rep, order.Id)
 		if err != nil {
 			return fmt.Errorf("can't remove promo: %w", err)
 		}
@@ -2704,14 +2938,64 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 
 }
 
-func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
-	orderFull, err := ms.GetOrderFullByUUID(ctx, orderUUID)
+// GetStuckPlacedOrders returns orders in Placed status older than the given time.
+// These are orders that never reached InsertFiatInvoice (e.g. crash/network failure after CreateOrder).
+func (ms *MYSQLStore) GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error) {
+	query := `
+    SELECT co.*
+    FROM customer_order co
+    WHERE co.order_status_id = :status AND co.placed < :olderThan
+    `
+	orders, err := QueryListNamed[entity.Order](ctx, ms.DB(), query, map[string]interface{}{
+		"status":    cache.OrderStatusPlaced.Status.Id,
+		"olderThan": olderThan,
+	})
 	if err != nil {
-		return fmt.Errorf("can't get order by id: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.Order{}, nil
+		}
+		return nil, fmt.Errorf("can't get stuck placed orders: %w", err)
 	}
+	return orders, nil
+}
 
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		err = cancelOrder(ctx, rep, &orderFull.Order, entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems), entity.StockChangeSourceOrderCancelled)
+// GetExpiredAwaitingPaymentOrders returns orders in AwaitingPayment status where payment.expired_at < now.
+// Safety net for when payment monitors fail to expire orders on time.
+func (ms *MYSQLStore) GetExpiredAwaitingPaymentOrders(ctx context.Context, now time.Time) ([]entity.Order, error) {
+	query := `
+    SELECT co.*
+    FROM customer_order co
+    JOIN payment p ON co.id = p.order_id
+    WHERE co.order_status_id = :status AND p.expired_at IS NOT NULL AND p.expired_at < :now
+    `
+	orders, err := QueryListNamed[entity.Order](ctx, ms.DB(), query, map[string]interface{}{
+		"status": cache.OrderStatusAwaitingPayment.Status.Id,
+		"now":    now,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.Order{}, nil
+		}
+		return nil, fmt.Errorf("can't get expired awaiting payment orders: %w", err)
+	}
+	return orders, nil
+}
+
+func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Lock the order row to prevent race conditions with concurrent status updates
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
+		if err != nil {
+			return fmt.Errorf("can't get order by id: %w", err)
+		}
+
+		// Get order items inside the transaction
+		orderItems, err := getOrderItemsInsert(ctx, rep, order.Id)
+		if err != nil {
+			return fmt.Errorf("can't get order items: %w", err)
+		}
+
+		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled)
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
@@ -2726,65 +3010,63 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 
 // SetOrderStatusToPendingReturn sets an order status to PendingReturn with validation
 func (ms *MYSQLStore) SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error {
-	// Get order by UUID
-	order, err := getOrderByUUID(ctx, ms, orderUUID)
-	if err != nil {
-		return fmt.Errorf("get order by uuid: %w", err)
-	}
-
-	// Get PendingReturn status ID
 	pendingReturnStatus, ok := cache.GetOrderStatusByName(entity.PendingReturn)
 	if !ok {
 		return fmt.Errorf("can't get order status by name %s", entity.PendingReturn)
 	}
 
-	// Update status with validation
-	return updateOrderStatusWithValidation(ctx, ms, order.Id, pendingReturnStatus.Status.Id, changedBy, "User requested return")
+	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
+		if err != nil {
+			return fmt.Errorf("get order by uuid: %w", err)
+		}
+		return updateOrderStatusWithValidation(ctx, rep, order.Id, pendingReturnStatus.Status.Id, changedBy, "User requested return")
+	})
 }
 
 // CancelOrderByUser allows a user to cancel or request a refund for their order
 func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error) {
-	// Get order by UUID and email to verify ownership
-	orderFull, err := ms.GetOrderByUUIDAndEmail(ctx, orderUUID, email)
-	if err != nil {
-		return nil, fmt.Errorf("order not found: %w", err)
-	}
-
-	// Get current order status
-	orderStatus, err := getOrderStatus(orderFull.Order.OrderStatusId)
-	if err != nil {
-		return nil, err
-	}
-
-	currentStatus := orderStatus.Status.Name
-
-	// Check if order is already in a refund/cancellation state
-	if currentStatus == entity.Cancelled ||
-		currentStatus == entity.PendingReturn ||
-		currentStatus == entity.RefundInProgress ||
-		currentStatus == entity.Refunded ||
-		currentStatus == entity.PartiallyRefunded {
-		return nil, fmt.Errorf("order already in refund progress or refunded: current status %s", currentStatus)
-	}
-
-	// Determine new status based on current status
-	var newStatus *cache.Status
-	switch currentStatus {
-	case entity.Placed, entity.AwaitingPayment:
-		// Set to Cancelled
-		newStatus = &cache.OrderStatusCancelled
-	case entity.Confirmed:
-		// Set to RefundInProgress
-		newStatus = &cache.OrderStatusRefundInProgress
-	case entity.Shipped, entity.Delivered:
-		// Set to PendingReturn
-		newStatus = &cache.OrderStatusPendingReturn
-	default:
-		return nil, fmt.Errorf("cannot cancel order with status: %s", currentStatus)
-	}
-
 	// Update order status and reason in transaction
-	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Lock the order row and verify ownership to prevent race conditions
+		order, err := getOrderByUUIDAndEmailForUpdate(ctx, rep, orderUUID, email)
+		if err != nil {
+			return fmt.Errorf("order not found: %w", err)
+		}
+
+		// Get current order status
+		orderStatus, err := getOrderStatus(order.OrderStatusId)
+		if err != nil {
+			return err
+		}
+
+		currentStatus := orderStatus.Status.Name
+
+		// Check if order is already in a refund/cancellation state
+		if currentStatus == entity.Cancelled ||
+			currentStatus == entity.PendingReturn ||
+			currentStatus == entity.RefundInProgress ||
+			currentStatus == entity.Refunded ||
+			currentStatus == entity.PartiallyRefunded {
+			return fmt.Errorf("order already in refund progress or refunded: current status %s", currentStatus)
+		}
+
+		// Determine new status based on current status
+		var newStatus *cache.Status
+		switch currentStatus {
+		case entity.Placed, entity.AwaitingPayment:
+			// Set to Cancelled
+			newStatus = &cache.OrderStatusCancelled
+		case entity.Confirmed:
+			// Set to RefundInProgress
+			newStatus = &cache.OrderStatusRefundInProgress
+		case entity.Shipped, entity.Delivered:
+			// Set to PendingReturn
+			newStatus = &cache.OrderStatusPendingReturn
+		default:
+			return fmt.Errorf("cannot cancel order with status: %s", currentStatus)
+		}
+
 		// Update order status and refund reason
 		query := `
 			UPDATE customer_order
@@ -2792,8 +3074,8 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 				refund_reason = :refundReason
 			WHERE id = :orderId`
 
-		err := ExecNamed(ctx, rep.DB(), query, map[string]any{
-			"orderId":       orderFull.Order.Id,
+		err = ExecNamed(ctx, rep.DB(), query, map[string]any{
+			"orderId":       order.Id,
 			"orderStatusId": newStatus.Status.Id,
 			"refundReason":  reason,
 		})
@@ -2803,13 +3085,17 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 
 		// If order was in AwaitingPayment, restore stock
 		if currentStatus == entity.AwaitingPayment {
-			orderItems := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
+			orderItems, err := getOrderItemsInsert(ctx, rep, order.Id)
+			if err != nil {
+				return fmt.Errorf("can't get order items: %w", err)
+			}
+
 			history := &entity.StockHistoryParams{
 				Source:    entity.StockChangeSourceOrderCancelled,
-				OrderId:   orderFull.Order.Id,
-				OrderUUID: orderFull.Order.UUID,
+				OrderId:   order.Id,
+				OrderUUID: order.UUID,
 			}
-			err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
+			err = rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
 			if err != nil {
 				return fmt.Errorf("can't restore stock for product sizes: %w", err)
 			}
@@ -2822,7 +3108,7 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 	}
 
 	// Refresh order details after update
-	orderFull, err = ms.GetOrderByUUIDAndEmail(ctx, orderUUID, email)
+	orderFull, err := ms.GetOrderByUUIDAndEmail(ctx, orderUUID, email)
 	if err != nil {
 		return nil, fmt.Errorf("can't refresh order details: %w", err)
 	}

@@ -197,6 +197,46 @@ func TestSendOrderConfirmation(t *testing.T) {
 	})
 }
 
+func TestQueueOrderConfirmation(t *testing.T) {
+	ctx := context.Background()
+	mailer := createTestMailer(t)
+
+	repMock := mocks.NewMockRepository(t)
+	mailDBMock := mocks.NewMockMail(t)
+
+	repMock.On("Mail").Return(mailDBMock)
+	mailDBMock.On("AddMail", ctx, mock.Anything).Return(1, nil)
+
+	orderDetails := &dto.OrderConfirmed{
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
+		OrderUUID:           "test-uuid-123",
+		TotalPrice:          "100.00",
+		OrderItems:          []dto.OrderItem{},
+		PromoExist:          false,
+		PromoDiscountAmount: "0",
+		HasFreeShipping:     false,
+		ShippingPrice:       "10.00",
+		EmailB64:            base64.StdEncoding.EncodeToString([]byte("test@example.com")),
+	}
+
+	err := mailer.QueueOrderConfirmation(ctx, repMock, "test@example.com", orderDetails)
+
+	assert.NoError(t, err)
+	repMock.AssertExpectations(t)
+	mailDBMock.AssertExpectations(t)
+	// Verify that UpdateSent was NOT called (email is queued, not sent immediately)
+
+	t.Run("Empty OrderUUID", func(t *testing.T) {
+		invalidDetails := &dto.OrderConfirmed{
+			OrderUUID: "",
+		}
+
+		err := mailer.QueueOrderConfirmation(ctx, repMock, "test@example.com", invalidDetails)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete order details")
+	})
+}
+
 func TestSendOrderCancellation(t *testing.T) {
 	ctx := context.Background()
 	mailer := createTestMailer(t)

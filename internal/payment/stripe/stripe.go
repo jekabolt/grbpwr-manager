@@ -5,30 +5,25 @@ import (
 	"fmt"
 	"strings"
 
+	curr "github.com/jekabolt/grbpwr-manager/internal/currency"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v79"
 )
 
-// isZeroDecimalCurrency checks if a currency is zero-decimal (no cents/subunits)
-// According to Stripe, these currencies don't have decimal places:
-// BIF, CLP, DJF, GNF, JPY, KMF, KRW, MGA, PYG, RWF, UGX, VND, VUV, XAF, XOF, XPF
-func isZeroDecimalCurrency(currency string) bool {
-	zeroDecimalCurrencies := map[string]bool{
-		"BIF": true, "CLP": true, "DJF": true, "GNF": true,
-		"JPY": true, "KMF": true, "KRW": true, "MGA": true,
-		"PYG": true, "RWF": true, "UGX": true, "VND": true,
-		"VUV": true, "XAF": true, "XOF": true, "XPF": true,
-	}
-	return zeroDecimalCurrencies[strings.ToUpper(currency)]
+// IsZeroDecimalCurrency checks if a currency is zero-decimal (no cents/subunits)
+func IsZeroDecimalCurrency(c string) bool {
+	return curr.IsZeroDecimal(c)
 }
 
 // AmountToSmallestUnit converts an amount to the smallest currency unit for Stripe
-// For zero-decimal currencies (like JPY, KRW), returns the amount as-is
+// For zero-decimal currencies (like JPY, KRW), rounds to whole units (no decimals)
 // For other currencies, multiplies by 100 to convert to cents
-func AmountToSmallestUnit(amount decimal.Decimal, currency string) int64 {
-	if isZeroDecimalCurrency(currency) {
-		return amount.IntPart()
+func AmountToSmallestUnit(amount decimal.Decimal, c string) int64 {
+	if curr.IsZeroDecimal(c) {
+		return curr.Round(amount, c).IntPart()
 	}
 	return amount.Mul(decimal.NewFromInt(100)).IntPart()
 }
@@ -36,8 +31,8 @@ func AmountToSmallestUnit(amount decimal.Decimal, currency string) int64 {
 // AmountFromSmallestUnit converts an amount from Stripe's smallest currency unit back to decimal
 // For zero-decimal currencies (like JPY, KRW), returns the amount as-is
 // For other currencies, divides by 100 to convert from cents
-func AmountFromSmallestUnit(amount int64, currency string) decimal.Decimal {
-	if isZeroDecimalCurrency(currency) {
+func AmountFromSmallestUnit(amount int64, c string) decimal.Decimal {
+	if curr.IsZeroDecimal(c) {
 		return decimal.NewFromInt(amount)
 	}
 	return decimal.NewFromInt(amount).Div(decimal.NewFromInt(100))
@@ -59,6 +54,10 @@ func amountFromSmallestUnit(amount int64, currency string) decimal.Decimal {
 
 // createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types
 func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error) {
+	// Validate order total meets Stripe minimum (e.g. KRW >= 100)
+	if err := dto.ValidatePriceMeetsMinimum(order.Order.TotalPrice, order.Order.Currency); err != nil {
+		return nil, fmt.Errorf("order total below currency minimum: %w", err)
+	}
 	// Use the order total directly - prices are already stored in the correct currency
 	// Calculate the order amount in smallest currency unit (cents for most currencies, but not for zero-decimal currencies like JPY, KRW)
 	amountCents := amountToSmallestUnit(order.Order.TotalPrice, order.Order.Currency)
@@ -74,7 +73,7 @@ func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.Payment
 		Metadata: map[string]string{
 			"order_id": order.Order.UUID,
 		},
-		Shipping: &stripe.ShippingDetailsParams{ // Shipping details
+		Shipping: &stripe.ShippingDetailsParams{
 			Address: &stripe.AddressParams{
 				City:       &order.Shipping.City,
 				Country:    &order.Shipping.Country,
@@ -86,6 +85,7 @@ func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.Payment
 			Name: stripe.String(fmt.Sprintf("%s %s", order.Buyer.FirstName, order.Buyer.LastName)),
 		},
 	}
+	params.SetIdempotencyKey(order.Order.UUID)
 
 	// Create the PaymentIntent
 	pi, err := p.stripeClient.PaymentIntents.New(params)
@@ -170,13 +170,23 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 		PaymentIntent: stripe.String(paymentIntentID),
 		Reason:        stripe.String("requested_by_customer"),
 	}
-	
+
 	// If amount is specified, set it (for partial refunds). Otherwise omit for full refund.
 	if amount != nil && !amount.IsZero() {
-		amountCents := AmountToSmallestUnit(*amount, currency)
+		rounded := dto.RoundForCurrency(*amount, currency)
+		if rounded.IsZero() {
+			return fmt.Errorf("refund amount rounds to zero for %s", currency)
+		}
+		if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+			return fmt.Errorf("refund amount below currency minimum: %w", err)
+		}
+		amountCents := AmountToSmallestUnit(rounded, currency)
+		if amountCents <= 0 {
+			return fmt.Errorf("refund amount too small for %s", currency)
+		}
 		params.Amount = stripe.Int64(amountCents)
 	}
-	
+
 	params.SetIdempotencyKey(orderUUID)
 
 	_, err := p.stripeClient.Refunds.New(params)
@@ -184,4 +194,9 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 		return fmt.Errorf("stripe refund: %w", err)
 	}
 	return nil
+}
+
+// SetReservationManager sets the stock reservation manager for this processor
+func (p *Processor) SetReservationManager(mgr dependency.StockReservationManager) {
+	p.reservationMgr = mgr
 }
