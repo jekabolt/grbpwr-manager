@@ -12,55 +12,76 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		return nil
 	}
 	pb := &pb_admin.BusinessMetrics{
-		Period:                 timeRangeToPb(m.Period),
-		Revenue:                metricWithComparisonToPb(m.Revenue),
-		OrdersCount:            metricWithComparisonToPb(m.OrdersCount),
-		AvgOrderValue:          metricWithComparisonToPb(m.AvgOrderValue),
-		ItemsPerOrder:          metricWithComparisonToPb(m.ItemsPerOrder),
-		RefundRate:             metricWithComparisonToPb(m.RefundRate),
-		PromoUsageRate:         metricWithComparisonToPb(m.PromoUsageRate),
-		GrossRevenue:           metricWithComparisonToPb(m.GrossRevenue),
-		TotalRefunded:          metricWithComparisonToPb(m.TotalRefunded),
-		TotalDiscount:         metricWithComparisonToPb(m.TotalDiscount),
-		NewSubscribers:         metricWithComparisonToPb(m.NewSubscribers),
-		RepeatCustomersRate:    metricWithComparisonToPb(m.RepeatCustomersRate),
-		AvgOrdersPerCustomer:   metricWithComparisonToPb(m.AvgOrdersPerCustomer),
-		AvgDaysBetweenOrders:   metricWithComparisonToPb(m.AvgDaysBetweenOrders),
-		ClvDistribution:        clvStatsToPb(m.CLVDistribution),
-		RevenueByCountry:      geographyMetricsToPb(m.RevenueByCountry),
-		RevenueByCity:         geographyMetricsToPb(m.RevenueByCity),
-		RevenueByRegion:       regionMetricsToPb(m.RevenueByRegion),
-		AvgOrderByCountry:     geographyMetricsToPb(m.AvgOrderByCountry),
-		RevenueByCurrency:     currencyMetricsToPb(m.RevenueByCurrency),
-		RevenueByPaymentMethod: paymentMethodMetricsToPb(m.RevenueByPaymentMethod),
-		TopProductsByRevenue:  productMetricsToPb(m.TopProductsByRevenue),
-		TopProductsByQuantity: productMetricsToPb(m.TopProductsByQuantity),
-		RevenueByCategory:     categoryMetricsToPb(m.RevenueByCategory),
-		CrossSellPairs:        crossSellPairsToPb(m.CrossSellPairs),
-		RevenueByPromo:        promoMetricsToPb(m.RevenueByPromo),
-		OrdersByStatus:        statusCountsToPb(m.OrdersByStatus),
-		RevenueByDay:               timeSeriesToPb(m.RevenueByDay),
-		OrdersByDay:                timeSeriesToPb(m.OrdersByDay),
-		SubscribersByDay:           timeSeriesToPb(m.SubscribersByDay),
-		GrossRevenueByDay:         timeSeriesToPb(m.GrossRevenueByDay),
-		RefundsByDay:              timeSeriesToPb(m.RefundsByDay),
-		AvgOrderValueByDay:        timeSeriesToPb(m.AvgOrderValueByDay),
-		UnitsSoldByDay:            timeSeriesToPb(m.UnitsSoldByDay),
-		NewCustomersByDay:         timeSeriesToPb(m.NewCustomersByDay),
-		ReturningCustomersByDay:   timeSeriesToPb(m.ReturningCustomersByDay),
-		ShippedByDay:              timeSeriesToPb(m.ShippedByDay),
-		DeliveredByDay:            timeSeriesToPb(m.DeliveredByDay),
-		RevenueByDayCompare:       timeSeriesToPb(m.RevenueByDayCompare),
-		OrdersByDayCompare:        timeSeriesToPb(m.OrdersByDayCompare),
-		SubscribersByDayCompare:   timeSeriesToPb(m.SubscribersByDayCompare),
-		GrossRevenueByDayCompare: timeSeriesToPb(m.GrossRevenueByDayCompare),
-		RefundsByDayCompare:      timeSeriesToPb(m.RefundsByDayCompare),
-		AvgOrderValueByDayCompare: timeSeriesToPb(m.AvgOrderValueByDayCompare),
-		UnitsSoldByDayCompare:       timeSeriesToPb(m.UnitsSoldByDayCompare),
-		NewCustomersByDayCompare:    timeSeriesToPb(m.NewCustomersByDayCompare),
+		Period:                         timeRangeToPb(m.Period),
+		Revenue:                        metricWithComparisonToPb(m.Revenue),
+		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
+		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
+		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder),
+		RefundRate:                     metricWithComparisonToPb(m.RefundRate),
+		PromoUsageRate:                 metricWithComparisonToPb(m.PromoUsageRate),
+		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
+		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded),
+		TotalDiscount:                  metricWithComparisonToPb(m.TotalDiscount),
+		Sessions:                       metricWithComparisonToPb(m.Sessions),
+		Users:                          metricWithComparisonToPb(m.Users),
+		NewUsers:                       metricWithComparisonToPb(m.NewUsers),
+		PageViews:                      metricWithComparisonToPb(m.PageViews),
+		BounceRate:                     metricWithComparisonToPb(m.BounceRate),
+		AvgSessionDuration:             metricWithComparisonToPb(m.AvgSessionDuration),
+		PagesPerSession:                metricWithComparisonToPb(m.PagesPerSession),
+		ConversionRate:                 metricWithComparisonToPb(m.ConversionRate),
+		RevenuePerSession:              metricWithComparisonToPb(m.RevenuePerSession),
+		NewSubscribers:                 metricWithComparisonToPb(m.NewSubscribers),
+		RepeatCustomersRate:            metricWithComparisonToPb(m.RepeatCustomersRate),
+		AvgOrdersPerCustomer:           metricWithComparisonToPb(m.AvgOrdersPerCustomer),
+		AvgDaysBetweenOrders:           metricWithComparisonToPb(m.AvgDaysBetweenOrders),
+		ClvDistribution:                clvStatsToPb(m.CLVDistribution),
+		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
+		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
+		RevenueByRegion:                regionMetricsToPb(m.RevenueByRegion),
+		AvgOrderByCountry:              geographyMetricsToPb(m.AvgOrderByCountry),
+		SessionsByCountry:              geographySessionMetricsToPb(m.SessionsByCountry),
+		RevenueByCurrency:              currencyMetricsToPb(m.RevenueByCurrency),
+		RevenueByPaymentMethod:         paymentMethodMetricsToPb(m.RevenueByPaymentMethod),
+		TopProductsByRevenue:           productMetricsToPb(m.TopProductsByRevenue),
+		TopProductsByQuantity:          productMetricsToPb(m.TopProductsByQuantity),
+		TopProductsByViews:             productViewMetricsToPb(m.TopProductsByViews),
+		RevenueByCategory:              categoryMetricsToPb(m.RevenueByCategory),
+		CrossSellPairs:                 crossSellPairsToPb(m.CrossSellPairs),
+		TrafficBySource:                trafficSourceMetricsToPb(m.TrafficBySource),
+		TrafficByDevice:                deviceMetricsToPb(m.TrafficByDevice),
+		RevenueByPromo:                 promoMetricsToPb(m.RevenueByPromo),
+		OrdersByStatus:                 statusCountsToPb(m.OrdersByStatus),
+		RevenueByDay:                   timeSeriesToPb(m.RevenueByDay),
+		OrdersByDay:                    timeSeriesToPb(m.OrdersByDay),
+		SubscribersByDay:               timeSeriesToPb(m.SubscribersByDay),
+		GrossRevenueByDay:              timeSeriesToPb(m.GrossRevenueByDay),
+		RefundsByDay:                   timeSeriesToPb(m.RefundsByDay),
+		AvgOrderValueByDay:             timeSeriesToPb(m.AvgOrderValueByDay),
+		UnitsSoldByDay:                 timeSeriesToPb(m.UnitsSoldByDay),
+		NewCustomersByDay:              timeSeriesToPb(m.NewCustomersByDay),
+		ReturningCustomersByDay:        timeSeriesToPb(m.ReturningCustomersByDay),
+		ShippedByDay:                   timeSeriesToPb(m.ShippedByDay),
+		DeliveredByDay:                 timeSeriesToPb(m.DeliveredByDay),
+		SessionsByDay:                  timeSeriesToPb(m.SessionsByDay),
+		UsersByDay:                     timeSeriesToPb(m.UsersByDay),
+		PageViewsByDay:                 timeSeriesToPb(m.PageViewsByDay),
+		ConversionRateByDay:            timeSeriesToPb(m.ConversionRateByDay),
+		RevenueByDayCompare:            timeSeriesToPb(m.RevenueByDayCompare),
+		OrdersByDayCompare:             timeSeriesToPb(m.OrdersByDayCompare),
+		SubscribersByDayCompare:        timeSeriesToPb(m.SubscribersByDayCompare),
+		GrossRevenueByDayCompare:       timeSeriesToPb(m.GrossRevenueByDayCompare),
+		RefundsByDayCompare:            timeSeriesToPb(m.RefundsByDayCompare),
+		AvgOrderValueByDayCompare:      timeSeriesToPb(m.AvgOrderValueByDayCompare),
+		UnitsSoldByDayCompare:          timeSeriesToPb(m.UnitsSoldByDayCompare),
+		NewCustomersByDayCompare:       timeSeriesToPb(m.NewCustomersByDayCompare),
 		ReturningCustomersByDayCompare: timeSeriesToPb(m.ReturningCustomersByDayCompare),
-		ShippedByDayCompare:         timeSeriesToPb(m.ShippedByDayCompare),
-		DeliveredByDayCompare:       timeSeriesToPb(m.DeliveredByDayCompare),
+		ShippedByDayCompare:            timeSeriesToPb(m.ShippedByDayCompare),
+		DeliveredByDayCompare:          timeSeriesToPb(m.DeliveredByDayCompare),
+		SessionsByDayCompare:           timeSeriesToPb(m.SessionsByDayCompare),
+		UsersByDayCompare:              timeSeriesToPb(m.UsersByDayCompare),
+		PageViewsByDayCompare:          timeSeriesToPb(m.PageViewsByDayCompare),
+		ConversionRateByDayCompare:     timeSeriesToPb(m.ConversionRateByDayCompare),
 	}
 	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
 		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
@@ -77,7 +98,7 @@ func timeRangeToPb(tr entity.TimeRange) *pb_admin.TimeRange {
 
 func metricWithComparisonToPb(m entity.MetricWithComparison) *pb_admin.MetricWithComparison {
 	pb := &pb_admin.MetricWithComparison{
-		Value:    &decimal.Decimal{Value: m.Value.String()},
+		Value:     &decimal.Decimal{Value: m.Value.String()},
 		ChangePct: ptrFloat64ToVal(m.ChangePct),
 	}
 	if m.CompareValue != nil {
@@ -218,7 +239,7 @@ func promoMetricsToPb(list []entity.PromoMetric) []*pb_admin.PromoMetric {
 			PromoCode:   p.PromoCode,
 			OrdersCount: int32(p.OrdersCount),
 			Revenue:     &decimal.Decimal{Value: p.Revenue.String()},
-			AvgDiscount:  &decimal.Decimal{Value: p.AvgDiscount.String()},
+			AvgDiscount: &decimal.Decimal{Value: p.AvgDiscount.String()},
 		}
 	}
 	return pb
@@ -266,4 +287,78 @@ func ptrFloat64ToVal(p *float64) float64 {
 		return 0
 	}
 	return *p
+}
+
+func productViewMetricsToPb(list []entity.ProductViewMetric) []*pb_admin.ProductViewMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ProductViewMetric, len(list))
+	for i, p := range list {
+		pb[i] = &pb_admin.ProductViewMetric{
+			ProductId:      int32(p.ProductId),
+			ProductName:    p.ProductName,
+			Brand:          p.Brand,
+			PageViews:      int32(p.PageViews),
+			Sessions:       int32(p.Sessions),
+			AddToCarts:     int32(p.AddToCarts),
+			Purchases:      int32(p.Purchases),
+			ConversionRate: p.ConversionRate,
+		}
+	}
+	return pb
+}
+
+func trafficSourceMetricsToPb(list []entity.TrafficSourceMetric) []*pb_admin.TrafficSourceMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.TrafficSourceMetric, len(list))
+	for i, t := range list {
+		pb[i] = &pb_admin.TrafficSourceMetric{
+			Source:   t.Source,
+			Medium:   t.Medium,
+			Sessions: int32(t.Sessions),
+			Users:    int32(t.Users),
+			Revenue:  &decimal.Decimal{Value: t.Revenue.String()},
+		}
+	}
+	return pb
+}
+
+func deviceMetricsToPb(list []entity.DeviceMetric) []*pb_admin.DeviceMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.DeviceMetric, len(list))
+	for i, d := range list {
+		pb[i] = &pb_admin.DeviceMetric{
+			DeviceCategory: d.DeviceCategory,
+			Sessions:       int32(d.Sessions),
+			Users:          int32(d.Users),
+			ConversionRate: d.ConversionRate,
+		}
+	}
+	return pb
+}
+
+func geographySessionMetricsToPb(list []entity.GeographySessionMetric) []*pb_admin.GeographySessionMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.GeographySessionMetric, len(list))
+	for i, g := range list {
+		pb[i] = &pb_admin.GeographySessionMetric{
+			Country:  g.Country,
+			Sessions: int32(g.Sessions),
+			Users:    int32(g.Users),
+		}
+		if g.State != nil {
+			pb[i].State = *g.State
+		}
+		if g.City != nil {
+			pb[i].City = *g.City
+		}
+	}
+	return pb
 }

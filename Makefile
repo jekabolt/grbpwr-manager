@@ -33,11 +33,17 @@ lint-proto:
 
 build: format-proto proto generate internal/statics build-only
 
+# build-quick skips mock generation (useful when mockery has Go version mismatch)
+build-quick: format-proto proto internal/statics build-only
+
 build-only:
 	mkdir -p bin
 	go build $(GO_EXTRA_BUILD_ARGS) -ldflags "-s -w -X main.version=$(VERSION) -X main.commitHash=$(COMMIT_HASH)" -o bin/products-manager ./cmd/*.go
 
 run: build
+	source .env && ./bin/products-manager
+
+run-quick: build-quick
 	source .env && ./bin/products-manager
 	
 internal/statics:

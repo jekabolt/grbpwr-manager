@@ -29,6 +29,8 @@ type PaymentInsert struct {
 	ClientSecret                     sql.NullString  `db:"client_secret"`
 	IsTransactionDone                bool            `db:"is_transaction_done"`
 	ExpiredAt                        sql.NullTime    `db:"expired_at"`
+	// PaymentMethodType is the provider's sub-method used (card, apple_pay, klarna, etc.)
+	PaymentMethodType sql.NullString `db:"payment_method_type"`
 }
 
 type PaymentMethodName string

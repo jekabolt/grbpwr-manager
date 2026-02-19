@@ -9,6 +9,7 @@ bin
 *.pem
 *.crt
 *.key
+config/creds/*.json
 
 *.swagger.json
 *.pb.go

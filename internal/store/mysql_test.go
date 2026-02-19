@@ -253,7 +253,7 @@ func TestMigrate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := New(ctx, *tt.cfg)
+			store, err := New(ctx, *tt.cfg, 0)
 			require.NoError(t, err)
 			defer store.Close()
 
@@ -275,7 +275,7 @@ func TestMigrate(t *testing.T) {
 
 func TestGetDictionaryInfo(t *testing.T) {
 	ctx := context.Background()
-	store, err := New(ctx, *testCfg)
+	store, err := New(ctx, *testCfg, 0)
 	require.NoError(t, err)
 	require.NotNil(t, store)
 

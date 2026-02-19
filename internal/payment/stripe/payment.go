@@ -119,7 +119,15 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 
 	switch pi.Status {
 	case stripe.PaymentIntentStatusSucceeded:
-		err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment)
+		// Fetch PaymentIntent with expanded payment_method to get sub-type (apple_pay, klarna, etc.)
+		piExpanded, expandErr := p.getPaymentIntentWithExpand(payment.ClientSecret.String, []string{"payment_method"})
+		if expandErr == nil && piExpanded.PaymentMethod != nil {
+			payment.PaymentInsert.PaymentMethodType = sql.NullString{
+				String: string(piExpanded.PaymentMethod.Type),
+				Valid:  true,
+			}
+		}
+		err = p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment)
 		if err != nil {
 			return fmt.Errorf("can't update order as paid: %w", err)
 		}

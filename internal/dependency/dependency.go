@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -168,6 +169,21 @@ type (
 		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
 	}
 
+	GA4 interface {
+		SaveGA4DailyMetrics(ctx context.Context, metrics []ga4.DailyMetrics) error
+		SaveGA4ProductPageMetrics(ctx context.Context, metrics []ga4.ProductPageMetrics) error
+		SaveGA4TrafficSourceMetrics(ctx context.Context, metrics []ga4.TrafficSourceMetrics) error
+		SaveGA4DeviceMetrics(ctx context.Context, metrics []ga4.DeviceMetrics) error
+		SaveGA4CountryMetrics(ctx context.Context, metrics []ga4.CountryMetrics) error
+		UpdateGA4SyncStatus(ctx context.Context, syncType string, lastSyncDate time.Time, status string, recordsSynced int, errorMsg string) error
+		GetGA4LastSyncDate(ctx context.Context, syncType string) (time.Time, error)
+		GetGA4DailyMetrics(ctx context.Context, from, to time.Time) ([]ga4.DailyMetrics, error)
+		GetGA4ProductPageMetrics(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductViewMetric, error)
+		GetGA4TrafficSourceMetrics(ctx context.Context, from, to time.Time, limit int) ([]entity.TrafficSourceMetric, error)
+		GetGA4DeviceMetrics(ctx context.Context, from, to time.Time) ([]entity.DeviceMetric, error)
+		GetGA4SessionsByCountry(ctx context.Context, from, to time.Time, limit int) ([]entity.GeographySessionMetric, error)
+	}
+
 	Language interface {
 		GetAllLanguages(ctx context.Context) ([]entity.Language, error)
 		GetActiveLanguages(ctx context.Context) ([]entity.Language, error)
@@ -220,6 +236,7 @@ type (
 		Cache() Cache
 		Mail() Mail
 		Archive() Archive
+		GA4() GA4
 		Subscribers() Subscribers
 		Metrics() Metrics
 		Media() Media

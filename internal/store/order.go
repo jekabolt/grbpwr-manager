@@ -1519,7 +1519,8 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		is_transaction_done = :isTransactionDone,
 		payment_method_id = :paymentMethodId,
 		client_secret = :clientSecret,
-		expired_at = :expiredAt
+		expired_at = :expiredAt,
+		payment_method_type = :paymentMethodType
 	WHERE order_id = :orderId`
 
 	params := map[string]any{
@@ -1531,6 +1532,7 @@ func updateOrderPayment(ctx context.Context, rep dependency.Repository, orderId 
 		"clientSecret":                     payment.ClientSecret,
 		"orderId":                          orderId,
 		"expiredAt":                        payment.ExpiredAt,
+		"paymentMethodType":                payment.PaymentMethodType,
 	}
 
 	slog.Default().InfoContext(ctx, "update order payment", "params", params, "query", query)

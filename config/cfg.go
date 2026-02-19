@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
@@ -37,6 +39,8 @@ type Config struct {
 	StripePayment                stripe.Config       `mapstructure:"stripe_payment"`
 	StripePaymentTest            stripe.Config       `mapstructure:"stripe_payment_test"`
 	Revalidation                 revalidation.Config `mapstructure:"revalidation"`
+	GA4                          ga4.Config          `mapstructure:"ga4"`
+	GA4Sync                      ga4sync.Config      `mapstructure:"ga4_sync"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -186,4 +190,13 @@ func bindEnvVars() {
 	viper.BindEnv("revalidation.vercel_api_token", "REVALIDATION_VERCEL_API_TOKEN")
 	viper.BindEnv("revalidation.revalidate_secret", "REVALIDATION_REVALIDATE_SECRET")
 	viper.BindEnv("revalidation.http_timeout", "REVALIDATION_HTTP_TIMEOUT")
+
+	// GA4 Analytics
+	viper.BindEnv("ga4.enabled", "GA4_ENABLED")
+	viper.BindEnv("ga4.property_id", "GA4_PROPERTY_ID")
+	viper.BindEnv("ga4.credentials_json", "GA4_CREDENTIALS_JSON")
+
+	// GA4 Sync Worker
+	viper.BindEnv("ga4_sync.worker_interval", "GA4_SYNC_WORKER_INTERVAL")
+	viper.BindEnv("ga4_sync.lookback_days", "GA4_SYNC_LOOKBACK_DAYS")
 }

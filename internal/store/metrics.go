@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -12,14 +13,18 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/errgroup"
 )
 
 type metricsStore struct {
 	*MYSQLStore
 }
 
+// Metrics returns an object implementing the Metrics interface.
 func (ms *MYSQLStore) Metrics() dependency.Metrics {
-	return &metricsStore{MYSQLStore: ms}
+	return &metricsStore{
+		MYSQLStore: ms,
+	}
 }
 
 func (ms *MYSQLStore) GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error) {
@@ -27,262 +32,558 @@ func (ms *MYSQLStore) GetBusinessMetrics(ctx context.Context, period, comparePer
 		granularity = entity.MetricsGranularityDay
 	}
 	dateExpr, subDateExpr := granularitySQL(granularity)
-	m := &entity.BusinessMetrics{
-		Period: period,
-	}
+	shippedDateExpr := granularityDateExpr(granularity, "first_shipped.shipped_at")
+	deliveredDateExpr := granularityDateExpr(granularity, "first_delivered.delivered_at")
+
+	m := &entity.BusinessMetrics{Period: period}
 	if !comparePeriod.From.IsZero() || !comparePeriod.To.IsZero() {
 		m.ComparePeriod = &comparePeriod
 	}
+	hasCompare := !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero()
 
-	// Core sales metrics
-	rev, orders, aov, err := ms.getCoreSalesMetrics(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("core sales: %w", err)
+	var (
+		rev, cRev                      decimal.Decimal
+		orders, cOrders                int
+		aov, cAov                      decimal.Decimal
+		itemsPerOrder, cItemsPerOrder  decimal.Decimal
+		revRefund, cRevRefund          decimal.Decimal
+		totalDiscount, cTotalDiscount  decimal.Decimal
+		promoOrders, cPromoOrders      int
+		newSubs, cNewSubs              int
+		repeatRate, avgOrders, avgDays decimal.Decimal
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	// --- HOT: Core sales + time series (dashboard charts, refreshed every few seconds) ---
+	// Core sales (period)
+	g.Go(func() error {
+		var err error
+		rev, orders, aov, err = ms.getCoreSalesMetrics(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		itemsPerOrder, err = ms.getItemsPerOrder(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		revRefund, _, err = ms.getRefundMetrics(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		totalDiscount, err = ms.getTotalDiscount(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		promoOrders, err = ms.getPromoUsageCount(gctx, period.From, period.To)
+		return err
+	})
+
+	// Core sales (compare)
+	if hasCompare {
+		g.Go(func() error {
+			var err error
+			cRev, cOrders, cAov, err = ms.getCoreSalesMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cItemsPerOrder, err = ms.getItemsPerOrder(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cRevRefund, _, err = ms.getRefundMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cTotalDiscount, err = ms.getTotalDiscount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cPromoOrders, err = ms.getPromoUsageCount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
 	}
+
+	// --- COLD: Breakdowns (geography, products, customers; can be lazy-loaded or cached longer) ---
+	// Geography
+	g.Go(func() error {
+		var err error
+		m.RevenueByCountry, err = ms.getRevenueByGeography(gctx, period.From, period.To, "country", nil, nil)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.RevenueByCity, err = ms.getRevenueByGeography(gctx, period.From, period.To, "city", nil, nil)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.AvgOrderByCountry, err = ms.getAvgOrderByGeography(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.SessionsByCountry, err = ms.GA4().GetGA4SessionsByCountry(gctx, period.From, period.To, 50)
+		return err
+	})
+
+	// Currency + payment
+	g.Go(func() error {
+		var err error
+		m.RevenueByCurrency, err = ms.getRevenueByCurrency(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.RevenueByPaymentMethod, err = ms.getRevenueByPaymentMethod(gctx, period.From, period.To)
+		return err
+	})
+
+	// Products
+	g.Go(func() error {
+		var err error
+		m.TopProductsByRevenue, err = ms.getTopProductsByRevenue(gctx, period.From, period.To, 20)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.TopProductsByQuantity, err = ms.getTopProductsByQuantity(gctx, period.From, period.To, 20)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.TopProductsByViews, err = ms.GA4().GetGA4ProductPageMetrics(gctx, period.From, period.To, 20)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.RevenueByCategory, err = ms.getRevenueByCategory(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.CrossSellPairs, err = ms.getCrossSellPairs(gctx, period.From, period.To, 15)
+		return err
+	})
+
+	// Traffic Sources
+	g.Go(func() error {
+		var err error
+		m.TrafficBySource, err = ms.GA4().GetGA4TrafficSourceMetrics(gctx, period.From, period.To, 20)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.TrafficByDevice, err = ms.GA4().GetGA4DeviceMetrics(gctx, period.From, period.To)
+		return err
+	})
+
+	// Customers
+	g.Go(func() error {
+		var err error
+		newSubs, err = ms.GetNewSubscribersCount(gctx, period.From, period.To)
+		return err
+	})
+	if hasCompare {
+		g.Go(func() error {
+			var err error
+			cNewSubs, err = ms.GetNewSubscribersCount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+	}
+	g.Go(func() error {
+		var err error
+		repeatRate, avgOrders, avgDays, err = ms.getRepeatCustomerMetrics(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.CLVDistribution, err = ms.getCLVStats(gctx, period.From, period.To)
+		return err
+	})
+
+	// Promo + order status
+	g.Go(func() error {
+		var err error
+		m.RevenueByPromo, err = ms.getRevenueByPromo(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.OrdersByStatus, err = ms.getOrdersByStatus(gctx, period.From, period.To)
+		return err
+	})
+
+	// --- HOT: Time series (period) ---
+	g.Go(func() error {
+		var err error
+		m.RevenueByDay, err = ms.getRevenueByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.OrdersByDay, err = ms.getOrdersByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.SubscribersByDay, err = ms.getSubscribersByPeriod(gctx, period.From, period.To, subDateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.GrossRevenueByDay, err = ms.getGrossRevenueByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.RefundsByDay, err = ms.getRefundsByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.AvgOrderValueByDay, err = ms.getAvgOrderValueByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.UnitsSoldByDay, err = ms.getUnitsSoldByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.NewCustomersByDay, m.ReturningCustomersByDay, err = ms.getNewVsReturningCustomersByPeriod(gctx, period.From, period.To, dateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.ShippedByDay, err = ms.getShippedByPeriod(gctx, period.From, period.To, shippedDateExpr)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		m.DeliveredByDay, err = ms.getDeliveredByPeriod(gctx, period.From, period.To, deliveredDateExpr)
+		return err
+	})
+
+	// --- GA4: Time series (period) ---
+	g.Go(func() error {
+		var err error
+		ga4Metrics, err := ms.GA4().GetGA4DailyMetrics(gctx, period.From, period.To)
+		if err != nil {
+			return err
+		}
+		m.SessionsByDay = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+		m.UsersByDay = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+		m.PageViewsByDay = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+		for i, ga := range ga4Metrics {
+			m.SessionsByDay[i] = entity.TimeSeriesPoint{
+				Date:  ga.Date,
+				Value: decimal.NewFromInt(int64(ga.Sessions)),
+				Count: ga.Sessions,
+			}
+			m.UsersByDay[i] = entity.TimeSeriesPoint{
+				Date:  ga.Date,
+				Value: decimal.NewFromInt(int64(ga.Users)),
+				Count: ga.Users,
+			}
+			m.PageViewsByDay[i] = entity.TimeSeriesPoint{
+				Date:  ga.Date,
+				Value: decimal.NewFromInt(int64(ga.PageViews)),
+				Count: ga.PageViews,
+			}
+		}
+		return nil
+	})
+
+	// --- HOT: Time series (compare) ---
+	if hasCompare {
+		g.Go(func() error {
+			var err error
+			m.RevenueByDayCompare, err = ms.getRevenueByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.OrdersByDayCompare, err = ms.getOrdersByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.SubscribersByDayCompare, err = ms.getSubscribersByPeriod(gctx, comparePeriod.From, comparePeriod.To, subDateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.GrossRevenueByDayCompare, err = ms.getGrossRevenueByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.RefundsByDayCompare, err = ms.getRefundsByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.AvgOrderValueByDayCompare, err = ms.getAvgOrderValueByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.UnitsSoldByDayCompare, err = ms.getUnitsSoldByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.NewCustomersByDayCompare, m.ReturningCustomersByDayCompare, err = ms.getNewVsReturningCustomersByPeriod(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.ShippedByDayCompare, err = ms.getShippedByPeriod(gctx, comparePeriod.From, comparePeriod.To, shippedDateExpr)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			m.DeliveredByDayCompare, err = ms.getDeliveredByPeriod(gctx, comparePeriod.From, comparePeriod.To, deliveredDateExpr)
+			return err
+		})
+
+		// --- GA4: Time series (compare) ---
+		g.Go(func() error {
+			var err error
+			ga4Metrics, err := ms.GA4().GetGA4DailyMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			if err != nil {
+				return err
+			}
+			m.SessionsByDayCompare = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+			m.UsersByDayCompare = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+			m.PageViewsByDayCompare = make([]entity.TimeSeriesPoint, len(ga4Metrics))
+			for i, ga := range ga4Metrics {
+				m.SessionsByDayCompare[i] = entity.TimeSeriesPoint{
+					Date:  ga.Date,
+					Value: decimal.NewFromInt(int64(ga.Sessions)),
+					Count: ga.Sessions,
+				}
+				m.UsersByDayCompare[i] = entity.TimeSeriesPoint{
+					Date:  ga.Date,
+					Value: decimal.NewFromInt(int64(ga.Users)),
+					Count: ga.Users,
+				}
+				m.PageViewsByDayCompare[i] = entity.TimeSeriesPoint{
+					Date:  ga.Date,
+					Value: decimal.NewFromInt(int64(ga.PageViews)),
+					Count: ga.PageViews,
+				}
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		slog.Default().ErrorContext(ctx, "GetBusinessMetrics: metrics query failed", slog.String("err", err.Error()))
+		return nil, err
+	}
+
+	// GA4 aggregate metrics for period (needed for compare block and final values)
+	var totalSessions, totalUsers, totalNewUsers, totalPageViews int
+	var totalBounceRate, totalAvgSessionDuration, totalPagesPerSession float64
+	ga4Daily, _ := ms.GA4().GetGA4DailyMetrics(ctx, period.From, period.To)
+	for _, d := range ga4Daily {
+		totalSessions += d.Sessions
+		totalUsers += d.Users
+		totalNewUsers += d.NewUsers
+		totalPageViews += d.PageViews
+		totalBounceRate += d.BounceRate
+		totalAvgSessionDuration += d.AvgSessionDuration
+		totalPagesPerSession += d.PagesPerSession
+	}
+
+	if hasCompare {
+		m.NewSubscribers.CompareValue = ptr(decimal.NewFromInt(int64(cNewSubs)))
+		m.NewSubscribers.ChangePct = changePctInt(newSubs, cNewSubs)
+
+		// GA4 compare metrics
+		var cTotalSessions, cTotalUsers, cTotalNewUsers, cTotalPageViews int
+		ga4DailyCompare, _ := ms.GA4().GetGA4DailyMetrics(ctx, comparePeriod.From, comparePeriod.To)
+		for _, d := range ga4DailyCompare {
+			cTotalSessions += d.Sessions
+			cTotalUsers += d.Users
+			cTotalNewUsers += d.NewUsers
+			cTotalPageViews += d.PageViews
+		}
+		m.Sessions.CompareValue = ptr(decimal.NewFromInt(int64(cTotalSessions)))
+		m.Sessions.ChangePct = changePctInt(totalSessions, cTotalSessions)
+		m.Users.CompareValue = ptr(decimal.NewFromInt(int64(cTotalUsers)))
+		m.Users.ChangePct = changePctInt(totalUsers, cTotalUsers)
+		m.NewUsers.CompareValue = ptr(decimal.NewFromInt(int64(cTotalNewUsers)))
+		m.NewUsers.ChangePct = changePctInt(totalNewUsers, cTotalNewUsers)
+		m.PageViews.CompareValue = ptr(decimal.NewFromInt(int64(cTotalPageViews)))
+		m.PageViews.ChangePct = changePctInt(totalPageViews, cTotalPageViews)
+
+		// Conversion rate compare
+		if cTotalSessions > 0 {
+			cConvRate := decimal.NewFromInt(int64(cOrders)).Div(decimal.NewFromInt(int64(cTotalSessions))).Mul(decimal.NewFromInt(100))
+			m.ConversionRate.CompareValue = &cConvRate
+			if !m.ConversionRate.Value.IsZero() {
+				changePct := m.ConversionRate.Value.Sub(cConvRate).Div(cConvRate).Mul(decimal.NewFromInt(100))
+				f, _ := changePct.Float64()
+				m.ConversionRate.ChangePct = &f
+			}
+
+			cRevPerSession := cRev.Div(decimal.NewFromInt(int64(cTotalSessions)))
+			m.RevenuePerSession.CompareValue = &cRevPerSession
+			if !m.RevenuePerSession.Value.IsZero() {
+				changePct := m.RevenuePerSession.Value.Sub(cRevPerSession).Div(cRevPerSession).Mul(decimal.NewFromInt(100))
+				f, _ := changePct.Float64()
+				m.RevenuePerSession.ChangePct = &f
+			}
+		}
+
+		// Conversion rate by day compare
+		m.ConversionRateByDayCompare = make([]entity.TimeSeriesPoint, 0)
+		ordersByDayCompareMap := make(map[string]int)
+		for _, o := range m.OrdersByDayCompare {
+			ordersByDayCompareMap[o.Date.Format("2006-01-02")] = o.Count
+		}
+		for _, s := range m.SessionsByDayCompare {
+			dateKey := s.Date.Format("2006-01-02")
+			ordersCount := ordersByDayCompareMap[dateKey]
+			convRate := decimal.Zero
+			if s.Count > 0 {
+				convRate = decimal.NewFromInt(int64(ordersCount)).Div(decimal.NewFromInt(int64(s.Count))).Mul(decimal.NewFromInt(100))
+			}
+			m.ConversionRateByDayCompare = append(m.ConversionRateByDayCompare, entity.TimeSeriesPoint{
+				Date:  s.Date,
+				Value: convRate,
+				Count: ordersCount,
+			})
+		}
+	}
+
+	// Derived values from core sales
 	m.Revenue.Value = rev
 	m.OrdersCount.Value = decimal.NewFromInt(int64(orders))
 	m.AvgOrderValue.Value = aov
-
-	itemsPerOrder, err := ms.getItemsPerOrder(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("items per order: %w", err)
-	}
 	m.ItemsPerOrder.Value = itemsPerOrder
-
-	revRefund, _, err := ms.getRefundMetrics(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("refund: %w", err)
-	}
 	grossRev := rev.Add(revRefund)
 	if grossRev.GreaterThan(decimal.Zero) {
 		m.RefundRate.Value = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100))
 	}
 	m.GrossRevenue.Value = grossRev
 	m.TotalRefunded.Value = revRefund
-
-	totalDiscount, err := ms.getTotalDiscount(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("total discount: %w", err)
-	}
 	m.TotalDiscount.Value = totalDiscount
-
-	promoOrders, err := ms.getPromoUsageCount(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("promo usage: %w", err)
-	}
 	if orders > 0 {
 		m.PromoUsageRate.Value = decimal.NewFromInt(int64(promoOrders)).Div(decimal.NewFromInt(int64(orders))).Mul(decimal.NewFromInt(100))
 	}
+	m.NewSubscribers.Value = decimal.NewFromInt(int64(newSubs))
+	m.RepeatCustomersRate.Value = repeatRate
+	m.AvgOrdersPerCustomer.Value = avgOrders
+	m.AvgDaysBetweenOrders.Value = avgDays
 
-	// Compare period
-	if !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero() {
-		cRev, cOrders, cAov, err := ms.getCoreSalesMetrics(ctx, comparePeriod.From, comparePeriod.To)
-		if err == nil {
-			m.Revenue.CompareValue = &cRev
-			m.OrdersCount.CompareValue = ptr(decimal.NewFromInt(int64(cOrders)))
-			m.AvgOrderValue.CompareValue = &cAov
-			m.Revenue.ChangePct = changePct(rev, cRev)
-			m.OrdersCount.ChangePct = changePctInt(orders, cOrders)
-			m.AvgOrderValue.ChangePct = changePct(aov, cAov)
+	// GA4 aggregate metrics (totalSessions etc. computed above)
+	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
+	m.Users.Value = decimal.NewFromInt(int64(totalUsers))
+	m.NewUsers.Value = decimal.NewFromInt(int64(totalNewUsers))
+	m.PageViews.Value = decimal.NewFromInt(int64(totalPageViews))
+	if len(ga4Daily) > 0 {
+		m.BounceRate.Value = decimal.NewFromFloat(totalBounceRate / float64(len(ga4Daily)))
+		m.AvgSessionDuration.Value = decimal.NewFromFloat(totalAvgSessionDuration / float64(len(ga4Daily)))
+		m.PagesPerSession.Value = decimal.NewFromFloat(totalPagesPerSession / float64(len(ga4Daily)))
+	}
+	
+	// Conversion rate = orders / sessions
+	if totalSessions > 0 {
+		m.ConversionRate.Value = decimal.NewFromInt(int64(orders)).Div(decimal.NewFromInt(int64(totalSessions))).Mul(decimal.NewFromInt(100))
+		m.RevenuePerSession.Value = rev.Div(decimal.NewFromInt(int64(totalSessions)))
+	}
+
+	// Compute conversion rate by day
+	m.ConversionRateByDay = make([]entity.TimeSeriesPoint, 0)
+	ordersByDayMap := make(map[string]int)
+	for _, o := range m.OrdersByDay {
+		ordersByDayMap[o.Date.Format("2006-01-02")] = o.Count
+	}
+	for _, s := range m.SessionsByDay {
+		dateKey := s.Date.Format("2006-01-02")
+		ordersCount := ordersByDayMap[dateKey]
+		convRate := decimal.Zero
+		if s.Count > 0 {
+			convRate = decimal.NewFromInt(int64(ordersCount)).Div(decimal.NewFromInt(int64(s.Count))).Mul(decimal.NewFromInt(100))
 		}
-		cItemsPerOrder, _ := ms.getItemsPerOrder(ctx, comparePeriod.From, comparePeriod.To)
+		m.ConversionRateByDay = append(m.ConversionRateByDay, entity.TimeSeriesPoint{
+			Date:  s.Date,
+			Value: convRate,
+			Count: ordersCount,
+		})
+	}
+
+	if hasCompare {
+		m.Revenue.CompareValue = &cRev
+		m.OrdersCount.CompareValue = ptr(decimal.NewFromInt(int64(cOrders)))
+		m.AvgOrderValue.CompareValue = &cAov
+		m.Revenue.ChangePct = changePct(rev, cRev)
+		m.OrdersCount.ChangePct = changePctInt(orders, cOrders)
+		m.AvgOrderValue.ChangePct = changePct(aov, cAov)
 		m.ItemsPerOrder.CompareValue = &cItemsPerOrder
 		m.ItemsPerOrder.ChangePct = changePct(itemsPerOrder, cItemsPerOrder)
-		cRevRefund, _, _ := ms.getRefundMetrics(ctx, comparePeriod.From, comparePeriod.To)
-		cRevTotal, _, _, _ := ms.getCoreSalesMetrics(ctx, comparePeriod.From, comparePeriod.To)
-		cGross := cRevTotal.Add(cRevRefund)
+		cGross := cRev.Add(cRevRefund)
 		if cGross.GreaterThan(decimal.Zero) {
 			cRefundRate := cRevRefund.Div(cGross).Mul(decimal.NewFromInt(100))
 			m.RefundRate.CompareValue = &cRefundRate
 			m.RefundRate.ChangePct = changePct(m.RefundRate.Value, cRefundRate)
 		}
-		cPromoOrders, _ := ms.getPromoUsageCount(ctx, comparePeriod.From, comparePeriod.To)
 		if cOrders > 0 {
 			cPromoRate := decimal.NewFromInt(int64(cPromoOrders)).Div(decimal.NewFromInt(int64(cOrders))).Mul(decimal.NewFromInt(100))
 			m.PromoUsageRate.CompareValue = &cPromoRate
 			m.PromoUsageRate.ChangePct = changePct(m.PromoUsageRate.Value, cPromoRate)
 		}
-		cGrossRev := cRevTotal.Add(cRevRefund)
-		m.GrossRevenue.CompareValue = &cGrossRev
+		m.GrossRevenue.CompareValue = ptr(cRev.Add(cRevRefund))
 		m.TotalRefunded.CompareValue = &cRevRefund
-		m.GrossRevenue.ChangePct = changePct(grossRev, cGrossRev)
+		m.GrossRevenue.ChangePct = changePct(grossRev, cRev.Add(cRevRefund))
 		m.TotalRefunded.ChangePct = changePct(revRefund, cRevRefund)
-		cTotalDiscount, _ := ms.getTotalDiscount(ctx, comparePeriod.From, comparePeriod.To)
 		m.TotalDiscount.CompareValue = &cTotalDiscount
 		m.TotalDiscount.ChangePct = changePct(totalDiscount, cTotalDiscount)
 	}
 
-	// Geography
-	m.RevenueByCountry, err = ms.getRevenueByGeography(ctx, period.From, period.To, "country", nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by country: %w", err)
-	}
-	m.RevenueByCity, err = ms.getRevenueByGeography(ctx, period.From, period.To, "city", nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by city: %w", err)
-	}
-	m.AvgOrderByCountry, err = ms.getAvgOrderByGeography(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("avg order by country: %w", err)
-	}
-	m.RevenueByRegion, err = ms.getRevenueByRegion(ctx, period.From, period.To)
+	// Region depends on country (run after parallel wait)
+	var err error
+	m.RevenueByRegion, err = ms.getRevenueByRegion(m.RevenueByCountry)
 	if err != nil {
 		return nil, fmt.Errorf("revenue by region: %w", err)
 	}
 
-	// Currency
-	m.RevenueByCurrency, err = ms.getRevenueByCurrency(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by currency: %w", err)
-	}
-
-	// Payment method
-	m.RevenueByPaymentMethod, err = ms.getRevenueByPaymentMethod(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by payment method: %w", err)
-	}
-
-	// Products
-	m.TopProductsByRevenue, err = ms.getTopProductsByRevenue(ctx, period.From, period.To, 20)
-	if err != nil {
-		return nil, fmt.Errorf("top products revenue: %w", err)
-	}
-	m.TopProductsByQuantity, err = ms.getTopProductsByQuantity(ctx, period.From, period.To, 20)
-	if err != nil {
-		return nil, fmt.Errorf("top products quantity: %w", err)
-	}
-	m.RevenueByCategory, err = ms.getRevenueByCategory(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by category: %w", err)
-	}
-	m.CrossSellPairs, err = ms.getCrossSellPairs(ctx, period.From, period.To, 15)
-	if err != nil {
-		return nil, fmt.Errorf("cross sell: %w", err)
-	}
-
-	// Customers
-	newSubs, err := ms.GetNewSubscribersCount(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("new subscribers: %w", err)
-	}
-	m.NewSubscribers.Value = decimal.NewFromInt(int64(newSubs))
-	if !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero() {
-		cNewSubs, _ := ms.GetNewSubscribersCount(ctx, comparePeriod.From, comparePeriod.To)
-		m.NewSubscribers.CompareValue = ptr(decimal.NewFromInt(int64(cNewSubs)))
-		m.NewSubscribers.ChangePct = changePctInt(newSubs, cNewSubs)
-	}
-
-	repeatRate, avgOrders, avgDays, err := ms.getRepeatCustomerMetrics(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("repeat customers: %w", err)
-	}
-	m.RepeatCustomersRate.Value = repeatRate
-	m.AvgOrdersPerCustomer.Value = avgOrders
-	m.AvgDaysBetweenOrders.Value = avgDays
-
-	m.CLVDistribution, err = ms.getCLVStats(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("clv: %w", err)
-	}
-
-	// Promo
-	m.RevenueByPromo, err = ms.getRevenueByPromo(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by promo: %w", err)
-	}
-
-	// Order status funnel
-	m.OrdersByStatus, err = ms.getOrdersByStatus(ctx, period.From, period.To)
-	if err != nil {
-		return nil, fmt.Errorf("orders by status: %w", err)
-	}
-
-	// Time series (with gap-filling for continuous charts)
-	m.RevenueByDay, err = ms.getRevenueByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("revenue by period: %w", err)
-	}
+	// Gap-fill time series (data already fetched in parallel)
 	m.RevenueByDay = fillTimeSeriesGaps(m.RevenueByDay, period.From, period.To, granularity)
-
-	m.OrdersByDay, err = ms.getOrdersByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("orders by period: %w", err)
-	}
 	m.OrdersByDay = fillTimeSeriesGaps(m.OrdersByDay, period.From, period.To, granularity)
-
-	m.SubscribersByDay, err = ms.getSubscribersByPeriod(ctx, period.From, period.To, subDateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("subscribers by period: %w", err)
-	}
 	m.SubscribersByDay = fillTimeSeriesGaps(m.SubscribersByDay, period.From, period.To, granularity)
-
-	m.GrossRevenueByDay, err = ms.getGrossRevenueByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("gross revenue by period: %w", err)
-	}
 	m.GrossRevenueByDay = fillTimeSeriesGaps(m.GrossRevenueByDay, period.From, period.To, granularity)
-
-	m.RefundsByDay, err = ms.getRefundsByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("refunds by period: %w", err)
-	}
 	m.RefundsByDay = fillTimeSeriesGaps(m.RefundsByDay, period.From, period.To, granularity)
-
-	m.AvgOrderValueByDay, err = ms.getAvgOrderValueByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("avg order value by period: %w", err)
-	}
 	m.AvgOrderValueByDay = fillTimeSeriesGaps(m.AvgOrderValueByDay, period.From, period.To, granularity)
-
-	m.UnitsSoldByDay, err = ms.getUnitsSoldByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("units sold by period: %w", err)
-	}
 	m.UnitsSoldByDay = fillTimeSeriesGaps(m.UnitsSoldByDay, period.From, period.To, granularity)
-
-	m.NewCustomersByDay, m.ReturningCustomersByDay, err = ms.getNewVsReturningCustomersByPeriod(ctx, period.From, period.To, dateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("new vs returning customers: %w", err)
-	}
 	m.NewCustomersByDay = fillTimeSeriesGaps(m.NewCustomersByDay, period.From, period.To, granularity)
 	m.ReturningCustomersByDay = fillTimeSeriesGaps(m.ReturningCustomersByDay, period.From, period.To, granularity)
-
-	shippedDateExpr := granularityDateExpr(granularity, "first_shipped.shipped_at")
-	deliveredDateExpr := granularityDateExpr(granularity, "first_delivered.delivered_at")
-	m.ShippedByDay, err = ms.getShippedByPeriod(ctx, period.From, period.To, shippedDateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("shipped by period: %w", err)
-	}
 	m.ShippedByDay = fillTimeSeriesGaps(m.ShippedByDay, period.From, period.To, granularity)
-
-	m.DeliveredByDay, err = ms.getDeliveredByPeriod(ctx, period.From, period.To, deliveredDateExpr)
-	if err != nil {
-		return nil, fmt.Errorf("delivered by period: %w", err)
-	}
 	m.DeliveredByDay = fillTimeSeriesGaps(m.DeliveredByDay, period.From, period.To, granularity)
-
-	// Comparison period time series
-	if !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero() {
-		m.RevenueByDayCompare, _ = ms.getRevenueByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
+	if hasCompare {
 		m.RevenueByDayCompare = fillTimeSeriesGaps(m.RevenueByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.OrdersByDayCompare, _ = ms.getOrdersByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.OrdersByDayCompare = fillTimeSeriesGaps(m.OrdersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.SubscribersByDayCompare, _ = ms.getSubscribersByPeriod(ctx, comparePeriod.From, comparePeriod.To, subDateExpr)
 		m.SubscribersByDayCompare = fillTimeSeriesGaps(m.SubscribersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.GrossRevenueByDayCompare, _ = ms.getGrossRevenueByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.GrossRevenueByDayCompare = fillTimeSeriesGaps(m.GrossRevenueByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.RefundsByDayCompare, _ = ms.getRefundsByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.RefundsByDayCompare = fillTimeSeriesGaps(m.RefundsByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.AvgOrderValueByDayCompare, _ = ms.getAvgOrderValueByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.AvgOrderValueByDayCompare = fillTimeSeriesGaps(m.AvgOrderValueByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.UnitsSoldByDayCompare, _ = ms.getUnitsSoldByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.UnitsSoldByDayCompare = fillTimeSeriesGaps(m.UnitsSoldByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.NewCustomersByDayCompare, m.ReturningCustomersByDayCompare, _ = ms.getNewVsReturningCustomersByPeriod(ctx, comparePeriod.From, comparePeriod.To, dateExpr)
 		m.NewCustomersByDayCompare = fillTimeSeriesGaps(m.NewCustomersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.ReturningCustomersByDayCompare = fillTimeSeriesGaps(m.ReturningCustomersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.ShippedByDayCompare, _ = ms.getShippedByPeriod(ctx, comparePeriod.From, comparePeriod.To, shippedDateExpr)
 		m.ShippedByDayCompare = fillTimeSeriesGaps(m.ShippedByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
-		m.DeliveredByDayCompare, _ = ms.getDeliveredByPeriod(ctx, comparePeriod.From, comparePeriod.To, deliveredDateExpr)
 		m.DeliveredByDayCompare = fillTimeSeriesGaps(m.DeliveredByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 	}
 
@@ -311,7 +612,7 @@ func (ms *MYSQLStore) getCoreSalesMetrics(ctx context.Context, from, to time.Tim
 			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (3, 4, 5, 10)
+			AND co.order_status_id IN (:statusIds)
 			GROUP BY co.id, co.total_price, co.refunded_amount
 		)
 		SELECT
@@ -322,7 +623,7 @@ func (ms *MYSQLStore) getCoreSalesMetrics(ctx context.Context, from, to time.Tim
 			COUNT(*) AS orders
 		FROM order_base
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return decimal.Zero, 0, decimal.Zero, err
 	}
@@ -346,11 +647,11 @@ func (ms *MYSQLStore) getItemsPerOrder(ctx context.Context, from, to time.Time) 
 			FROM customer_order co
 			JOIN order_item oi ON co.id = oi.order_id
 			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (3, 4, 5, 10)
+			AND co.order_status_id IN (:statusIds)
 			GROUP BY co.id
 		) AS order_items
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return decimal.Zero, err
 	}
@@ -382,7 +683,7 @@ func (ms *MYSQLStore) getRefundMetrics(ctx context.Context, from, to time.Time) 
 			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (7, 10) AND (co.refunded_amount IS NOT NULL AND co.refunded_amount > 0)
+			AND co.order_status_id IN (:statusIds) AND (co.refunded_amount IS NOT NULL AND co.refunded_amount > 0)
 			GROUP BY co.id, co.total_price, co.refunded_amount
 		)
 		SELECT
@@ -392,7 +693,7 @@ func (ms *MYSQLStore) getRefundMetrics(ctx context.Context, from, to time.Time) 
 			COUNT(*) AS cnt
 		FROM order_base
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForRefund()})
 	if err != nil {
 		return decimal.Zero, 0, err
 	}
@@ -401,7 +702,7 @@ func (ms *MYSQLStore) getRefundMetrics(ctx context.Context, from, to time.Time) 
 
 func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
-	params := map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency}
+	params := map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()}
 	productDiscount, err := QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
 	}](ctx, ms.DB(), `
@@ -410,7 +711,7 @@ func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) 
 		JOIN order_item oi ON co.id = oi.order_id
 		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 	`, params)
 	if err != nil {
 		return decimal.Zero, err
@@ -427,7 +728,7 @@ func (ms *MYSQLStore) getTotalDiscount(ctx context.Context, from, to time.Time) 
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (3, 4, 5, 10) AND co.promo_id IS NOT NULL
+			AND co.order_status_id IN (:statusIds) AND co.promo_id IS NOT NULL
 			GROUP BY co.id, pc.discount
 		)
 		SELECT COALESCE(SUM(items_base * discount / 100), 0) AS v
@@ -460,24 +761,24 @@ func (ms *MYSQLStore) getRevenueByPaymentMethod(ctx context.Context, from, to ti
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount
 			) ob
 		)
-		SELECT pm.name AS payment_method,
+		SELECT COALESCE(p.payment_method_type, pm.name) AS payment_method,
 			COALESCE(SUM(ob.revenue_base), 0) AS value,
 			COUNT(*) AS cnt
 		FROM order_base ob
 		JOIN payment p ON p.order_id = ob.id
 		JOIN payment_method pm ON p.payment_method_id = pm.id
-		GROUP BY pm.id, pm.name
+		GROUP BY COALESCE(p.payment_method_type, pm.name)
 		ORDER BY value DESC
 	`
 	rows, err := QueryListNamed[struct {
 		PaymentMethod string          `db:"payment_method"`
 		Value         decimal.Decimal `db:"value"`
 		Count         int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -495,9 +796,9 @@ func (ms *MYSQLStore) getPromoUsageCount(ctx context.Context, from, to time.Time
 	query := `
 		SELECT COUNT(*) AS n FROM customer_order
 		WHERE placed >= :from AND placed < :to
-		AND order_status_id IN (3, 4, 5, 10) AND promo_id IS NOT NULL
+		AND order_status_id IN (:statusIds) AND promo_id IS NOT NULL
 	`
-	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	r, err := QueryNamedOne[row](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return 0, err
 	}
@@ -533,7 +834,7 @@ func (ms *MYSQLStore) getRevenueByGeography(ctx context.Context, from, to time.T
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount
 			) ob
 		)
@@ -550,7 +851,7 @@ func (ms *MYSQLStore) getRevenueByGeography(ctx context.Context, from, to time.T
 		LIMIT 50
 	`, selectCol, groupCol)
 
-	params := map[string]any{"from": from, "to": to, "country": country, "city": city, "baseCurrency": baseCurrency}
+	params := map[string]any{"from": from, "to": to, "country": country, "city": city, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()}
 	rows, err := QueryListNamed[struct {
 		Country string          `db:"country"`
 		State   *string         `db:"state"`
@@ -596,7 +897,7 @@ func (ms *MYSQLStore) getAvgOrderByGeography(ctx context.Context, from, to time.
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount
 			) ob
 		)
@@ -614,7 +915,7 @@ func (ms *MYSQLStore) getAvgOrderByGeography(ctx context.Context, from, to time.
 		Country string          `db:"country"`
 		Value   decimal.Decimal `db:"value"`
 		Count   int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -625,11 +926,7 @@ func (ms *MYSQLStore) getAvgOrderByGeography(ctx context.Context, from, to time.
 	return result, nil
 }
 
-func (ms *MYSQLStore) getRevenueByRegion(ctx context.Context, from, to time.Time) ([]entity.RegionMetric, error) {
-	byCountry, err := ms.getRevenueByGeography(ctx, from, to, "country", nil, nil)
-	if err != nil {
-		return nil, err
-	}
+func (ms *MYSQLStore) getRevenueByRegion(byCountry []entity.GeographyMetric) ([]entity.RegionMetric, error) {
 	regionAgg := make(map[string]struct {
 		value decimal.Decimal
 		count int
@@ -655,21 +952,42 @@ func (ms *MYSQLStore) getRevenueByRegion(ctx context.Context, from, to time.Time
 }
 
 func (ms *MYSQLStore) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([]entity.CurrencyMetric, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
-		SELECT co.currency,
-			COALESCE(SUM(co.total_price - COALESCE(co.refunded_amount, 0)), 0) AS value,
+		WITH order_base AS (
+			SELECT ob.id, ob.currency,
+				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id, co.currency,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (:statusIds)
+				GROUP BY co.id, co.currency, co.total_price, co.refunded_amount
+			) ob
+		)
+		SELECT currency,
+			COALESCE(SUM(revenue_base), 0) AS value,
 			COUNT(*) AS cnt
-		FROM customer_order co
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
-		GROUP BY co.currency
+		FROM order_base
+		GROUP BY currency
 		ORDER BY value DESC
 	`
 	rows, err := QueryListNamed[struct {
 		Currency string          `db:"currency"`
 		Value    decimal.Decimal `db:"value"`
 		Count    int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -684,6 +1002,7 @@ func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		SELECT oi.product_id, p.brand,
+			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
@@ -691,23 +1010,28 @@ func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time
 		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY oi.product_id, p.brand
 		ORDER BY value DESC
 		LIMIT :limit
 	`
 	rows, err := QueryListNamed[struct {
-		ProductId int             `db:"product_id"`
-		Brand     string          `db:"brand"`
-		Value     decimal.Decimal `db:"value"`
-		Count     int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency})
+		ProductId   int             `db:"product_id"`
+		Brand       string          `db:"brand"`
+		ProductName string          `db:"product_name"`
+		Value       decimal.Decimal `db:"value"`
+		Count       int             `db:"cnt"`
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
 	result := make([]entity.ProductMetric, len(rows))
 	for i, r := range rows {
-		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: r.Brand, Brand: r.Brand, Value: r.Value, Count: r.Count}
+		productName := r.ProductName
+		if productName == "" {
+			productName = r.Brand
+		}
+		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: productName, Brand: r.Brand, Value: r.Value, Count: r.Count}
 	}
 	return result, nil
 }
@@ -715,30 +1039,37 @@ func (ms *MYSQLStore) getTopProductsByRevenue(ctx context.Context, from, to time
 func (ms *MYSQLStore) getTopProductsByQuantity(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
-		SELECT oi.product_id, p.brand, SUM(oi.quantity) AS cnt,
+		SELECT oi.product_id, p.brand,
+			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
+			SUM(oi.quantity) AS cnt,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS value
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY oi.product_id, p.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
 	`
 	rows, err := QueryListNamed[struct {
-		ProductId int             `db:"product_id"`
-		Brand     string          `db:"brand"`
-		Count     int             `db:"cnt"`
-		Value     decimal.Decimal `db:"value"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency})
+		ProductId   int             `db:"product_id"`
+		Brand       string          `db:"brand"`
+		ProductName string          `db:"product_name"`
+		Count       int             `db:"cnt"`
+		Value       decimal.Decimal `db:"value"`
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
 	result := make([]entity.ProductMetric, len(rows))
 	for i, r := range rows {
-		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: r.Brand, Brand: r.Brand, Value: r.Value, Count: r.Count}
+		productName := r.ProductName
+		if productName == "" {
+			productName = r.Brand
+		}
+		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: productName, Brand: r.Brand, Value: r.Value, Count: r.Count}
 	}
 	return result, nil
 }
@@ -755,7 +1086,7 @@ func (ms *MYSQLStore) getRevenueByCategory(ctx context.Context, from, to time.Ti
 		JOIN category c ON p.top_category_id = c.id
 		JOIN customer_order co ON oi.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY p.top_category_id, c.name
 		ORDER BY value DESC
 		LIMIT 30
@@ -765,7 +1096,7 @@ func (ms *MYSQLStore) getRevenueByCategory(ctx context.Context, from, to time.Ti
 		CategoryName string          `db:"category_name"`
 		Value        decimal.Decimal `db:"value"`
 		Count        int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -779,7 +1110,8 @@ func (ms *MYSQLStore) getRevenueByCategory(ctx context.Context, from, to time.Ti
 func (ms *MYSQLStore) getCrossSellPairs(ctx context.Context, from, to time.Time, limit int) ([]entity.CrossSellPair, error) {
 	query := `
 		SELECT oi1.product_id AS product_a_id, oi2.product_id AS product_b_id,
-			p1.brand AS product_a_name, p2.brand AS product_b_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p1.id ORDER BY pt.language_id LIMIT 1), p1.brand) AS product_a_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p2.id ORDER BY pt.language_id LIMIT 1), p2.brand) AS product_b_name,
 			COUNT(*) AS cnt
 		FROM order_item oi1
 		JOIN order_item oi2 ON oi1.order_id = oi2.order_id AND oi1.product_id < oi2.product_id
@@ -787,7 +1119,7 @@ func (ms *MYSQLStore) getCrossSellPairs(ctx context.Context, from, to time.Time,
 		JOIN product p2 ON oi2.product_id = p2.id
 		JOIN customer_order co ON oi1.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY oi1.product_id, oi2.product_id, p1.brand, p2.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
@@ -798,7 +1130,7 @@ func (ms *MYSQLStore) getCrossSellPairs(ctx context.Context, from, to time.Time,
 		ProductAName string `db:"product_a_name"`
 		ProductBName string `db:"product_b_name"`
 		Count        int    `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "limit": limit, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -825,10 +1157,10 @@ func (ms *MYSQLStore) getRepeatCustomerMetrics(ctx context.Context, from, to tim
 		FROM customer_order co
 		JOIN buyer b ON co.id = b.order_id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY b.email
 	`
-	rows, err := QueryListNamed[emailOrders](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	rows, err := QueryListNamed[emailOrders](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return decimal.Zero, decimal.Zero, decimal.Zero, err
 	}
@@ -849,41 +1181,27 @@ func (ms *MYSQLStore) getRepeatCustomerMetrics(ctx context.Context, from, to tim
 	repeatRate = decimal.NewFromInt(int64(repeatCount)).Div(decimal.NewFromInt(int64(totalCustomers))).Mul(decimal.NewFromInt(100))
 	avgOrders = decimal.NewFromInt(int64(totalOrders)).Div(decimal.NewFromInt(int64(totalCustomers)))
 
-	// Avg days between orders for repeat buyers
-	type orderDate struct {
-		Email string    `db:"email"`
-		Placed time.Time `db:"placed"`
-	}
+	// Avg days between orders for repeat buyers — computed in SQL with LAG, no row materialization
 	q2 := `
-		SELECT b.email, co.placed
-		FROM customer_order co
-		JOIN buyer b ON co.id = b.order_id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
-		ORDER BY b.email, co.placed
+		SELECT AVG(gap_days) AS avg_days
+		FROM (
+			SELECT DATEDIFF(co.placed, LAG(co.placed) OVER (PARTITION BY b.email ORDER BY co.placed)) AS gap_days
+			FROM customer_order co
+			JOIN buyer b ON co.id = b.order_id
+			WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (:statusIds)
+		) t
+		WHERE gap_days IS NOT NULL
 	`
-	orderRows, err := QueryListNamed[orderDate](ctx, ms.DB(), q2, map[string]any{"from": from, "to": to})
+	params := map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()}
+	avgDaysRow, err := QueryNamedOne[struct {
+		AvgDays *float64 `db:"avg_days"`
+	}](ctx, ms.DB(), q2, params)
 	if err != nil {
-		return repeatRate, avgOrders, decimal.Zero, nil
+		return repeatRate, avgOrders, decimal.Zero, err
 	}
-
-	// Group by email, compute gaps
-	emailToDates := make(map[string][]time.Time)
-	for _, r := range orderRows {
-		emailToDates[r.Email] = append(emailToDates[r.Email], r.Placed)
-	}
-	var totalDays int
-	var gapCount int
-	for _, dates := range emailToDates {
-		sort.Slice(dates, func(i, j int) bool { return dates[i].Before(dates[j]) })
-		for i := 1; i < len(dates); i++ {
-			d := int(dates[i].Sub(dates[i-1]).Hours() / 24)
-			totalDays += d
-			gapCount++
-		}
-	}
-	if gapCount > 0 {
-		avgDays = decimal.NewFromInt(int64(totalDays)).Div(decimal.NewFromInt(int64(gapCount)))
+	if avgDaysRow.AvgDays != nil {
+		avgDays = decimal.NewFromFloat(*avgDaysRow.AvgDays)
 	}
 	return repeatRate, avgOrders, avgDays, nil
 }
@@ -909,7 +1227,7 @@ func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (enti
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount
 			) ob
 			JOIN customer_order co ON ob.id = co.id
@@ -922,7 +1240,7 @@ func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (enti
 	rows, err := QueryListNamed[struct {
 		Email string          `db:"email"`
 		CLV   decimal.Decimal `db:"clv"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return entity.CLVStats{}, err
 	}
@@ -931,13 +1249,19 @@ func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (enti
 		return entity.CLVStats{}, nil
 	}
 
-	clvs := make([]float64, len(rows))
-	for i, r := range rows {
-		f, _ := r.CLV.Float64()
-		clvs[i] = f
+	clvs := make([]float64, 0, len(rows))
+	for _, r := range rows {
+		f, ok := r.CLV.Float64()
+		if !ok {
+			continue
+		}
+		clvs = append(clvs, f)
 	}
 	sort.Float64s(clvs)
 
+	if len(clvs) == 0 {
+		return entity.CLVStats{}, nil
+	}
 	mean := 0.0
 	for _, v := range clvs {
 		mean += v
@@ -951,7 +1275,7 @@ func (ms *MYSQLStore) getCLVStats(ctx context.Context, from, to time.Time) (enti
 		median = (clvs[len(clvs)/2-1] + clvs[len(clvs)/2]) / 2
 	}
 
-	p90Idx := int(math.Ceil(float64(len(clvs)) * 0.9)) - 1
+	p90Idx := int(math.Ceil(float64(len(clvs))*0.9)) - 1
 	if p90Idx < 0 {
 		p90Idx = 0
 	}
@@ -984,7 +1308,7 @@ func (ms *MYSQLStore) getRevenueByPromo(ctx context.Context, from, to time.Time)
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount, pc.id, pc.code, pc.discount
 			) ob
 		)
@@ -1001,7 +1325,7 @@ func (ms *MYSQLStore) getRevenueByPromo(ctx context.Context, from, to time.Time)
 		OrdersCount int             `db:"orders_count"`
 		Revenue     decimal.Decimal `db:"revenue"`
 		AvgDiscount decimal.Decimal `db:"avg_discount"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1029,7 +1353,7 @@ func (ms *MYSQLStore) getOrdersByStatus(ctx context.Context, from, to time.Time)
 	rows, err := QueryListNamed[struct {
 		Name  string `db:"name"`
 		Count int    `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1042,28 +1366,34 @@ func (ms *MYSQLStore) getOrdersByStatus(ctx context.Context, from, to time.Time)
 
 // granularitySQL returns date expression for ORDER BY/SELECT and GROUP BY.
 // dateExpr for order tables (co.placed), subDateExpr for subscriber (created_at).
+// Uses CONVERT_TZ to UTC so date bucketing matches Go's bucketStart (UTC).
 func granularitySQL(g entity.MetricsGranularity) (dateExpr, subDateExpr string) {
+	// CONVERT_TZ(col, @@session.time_zone, '+00:00') ensures DATE() uses UTC regardless of MySQL server timezone
+	placedUTC := "CONVERT_TZ(co.placed, @@session.time_zone, '+00:00')"
+	createdUTC := "CONVERT_TZ(created_at, @@session.time_zone, '+00:00')"
 	switch g {
 	case entity.MetricsGranularityWeek:
-		return "DATE(DATE_SUB(co.placed, INTERVAL WEEKDAY(co.placed) DAY))",
-			"DATE(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY))"
+		return fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", placedUTC, placedUTC),
+			fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", createdUTC, createdUTC)
 	case entity.MetricsGranularityMonth:
-		return "DATE(DATE_FORMAT(co.placed, '%Y-%m-01'))",
-			"DATE(DATE_FORMAT(created_at, '%Y-%m-01'))"
+		return fmt.Sprintf("DATE(DATE_FORMAT(%s, '%%Y-%%m-01'))", placedUTC),
+			fmt.Sprintf("DATE(DATE_FORMAT(%s, '%%Y-%%m-01'))", createdUTC)
 	default:
-		return "DATE(co.placed)", "DATE(created_at)"
+		return fmt.Sprintf("DATE(%s)", placedUTC), fmt.Sprintf("DATE(%s)", createdUTC)
 	}
 }
 
 // granularityDateExpr returns date expression for a given column (e.g. osh.changed_at).
+// Uses CONVERT_TZ to UTC for alignment with Go bucketStart.
 func granularityDateExpr(g entity.MetricsGranularity, col string) string {
+	colUTC := fmt.Sprintf("CONVERT_TZ(%s, @@session.time_zone, '+00:00')", col)
 	switch g {
 	case entity.MetricsGranularityWeek:
-		return fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", col, col)
+		return fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", colUTC, colUTC)
 	case entity.MetricsGranularityMonth:
-		return fmt.Sprintf("DATE(DATE_FORMAT(%s, '%%Y-%%m-01'))", col)
+		return fmt.Sprintf("DATE(DATE_FORMAT(%s, '%%Y-%%m-01'))", colUTC)
 	default:
-		return fmt.Sprintf("DATE(%s)", col)
+		return fmt.Sprintf("DATE(%s)", colUTC)
 	}
 }
 
@@ -1088,7 +1418,7 @@ func (ms *MYSQLStore) getRevenueByPeriod(ctx context.Context, from, to time.Time
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
 			) ob
 		)
@@ -1103,7 +1433,7 @@ func (ms *MYSQLStore) getRevenueByPeriod(ctx context.Context, from, to time.Time
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1115,40 +1445,19 @@ func (ms *MYSQLStore) getRevenueByPeriod(ctx context.Context, from, to time.Time
 }
 
 func (ms *MYSQLStore) getOrdersByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
-	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
-		WITH order_base AS (
-			SELECT ob.id, ob.placed,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
-			FROM (
-				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
-					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
-					co.total_price,
-					COALESCE(co.refunded_amount, 0) AS refunded_amount
-				FROM customer_order co
-				LEFT JOIN order_item oi ON co.id = oi.order_id
-				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-				LEFT JOIN shipment s ON co.id = s.order_id
-				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
-				LEFT JOIN promo_code pc ON co.promo_id = pc.id
-				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
-				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
-			) ob
-		)
-		SELECT %s AS d, COUNT(*) AS cnt, COALESCE(SUM(revenue_base), 0) AS value
-		FROM order_base
+		SELECT %s AS d, COUNT(*) AS cnt, 0 AS value
+		FROM customer_order co
+		WHERE co.placed >= :from AND co.placed < :to
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY %s
 		ORDER BY d
-	`, strings.ReplaceAll(dateExpr, "co.placed", "placed"), strings.ReplaceAll(dateExpr, "co.placed", "placed"))
+	`, dateExpr, dateExpr)
 	rows, err := QueryListNamed[struct {
 		D     time.Time       `db:"d"`
 		Count int             `db:"cnt"`
 		Value decimal.Decimal `db:"value"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1170,7 +1479,7 @@ func (ms *MYSQLStore) getSubscribersByPeriod(ctx context.Context, from, to time.
 	rows, err := QueryListNamed[struct {
 		D     time.Time `db:"d"`
 		Count int       `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1200,7 +1509,7 @@ func (ms *MYSQLStore) getGrossRevenueByPeriod(ctx context.Context, from, to time
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.placed
 			) ob
 		)
@@ -1215,7 +1524,7 @@ func (ms *MYSQLStore) getGrossRevenueByPeriod(ctx context.Context, from, to time
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForRefund()})
 	if err != nil {
 		return nil, err
 	}
@@ -1246,7 +1555,7 @@ func (ms *MYSQLStore) getRefundsByPeriod(ctx context.Context, from, to time.Time
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 7, 10)
+				AND co.order_status_id IN (:statusIdsRefund)
 				AND COALESCE(co.refunded_amount, 0) > 0
 				GROUP BY co.id, co.placed, co.refunded_amount, co.total_price
 			) ob
@@ -1262,7 +1571,7 @@ func (ms *MYSQLStore) getRefundsByPeriod(ctx context.Context, from, to time.Time
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIdsRefund": cache.OrderStatusIDsForRefund()})
 	if err != nil {
 		return nil, err
 	}
@@ -1294,7 +1603,7 @@ func (ms *MYSQLStore) getAvgOrderValueByPeriod(ctx context.Context, from, to tim
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
-				AND co.order_status_id IN (3, 4, 5, 10)
+				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
 			) ob
 		)
@@ -1309,7 +1618,7 @@ func (ms *MYSQLStore) getAvgOrderValueByPeriod(ctx context.Context, from, to tim
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1332,7 +1641,7 @@ func (ms *MYSQLStore) getUnitsSoldByPeriod(ctx context.Context, from, to time.Ti
 		FROM customer_order co
 		JOIN order_item oi ON co.id = oi.order_id
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (3, 4, 5, 10)
+		AND co.order_status_id IN (:statusIds)
 		GROUP BY %s
 		ORDER BY d
 	`, dateExpr, dateExpr)
@@ -1340,7 +1649,7 @@ func (ms *MYSQLStore) getUnitsSoldByPeriod(ctx context.Context, from, to time.Ti
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -1353,28 +1662,27 @@ func (ms *MYSQLStore) getUnitsSoldByPeriod(ctx context.Context, from, to time.Ti
 
 func (ms *MYSQLStore) getNewVsReturningCustomersByPeriod(ctx context.Context, from, to time.Time, dateExpr string) (newCustomers, returningCustomers []entity.TimeSeriesPoint, err error) {
 	query := fmt.Sprintf(`
-		SELECT bucket AS d,
-			SUM(CASE WHEN prior_orders = 0 THEN 1 ELSE 0 END) AS new_cnt,
-			SUM(CASE WHEN prior_orders > 0 THEN 1 ELSE 0 END) AS ret_cnt
-		FROM (
-			SELECT %s AS bucket,
-				(SELECT COUNT(*) FROM customer_order co2
-				 JOIN buyer b2 ON co2.id = b2.order_id
-				 WHERE b2.email = b.email AND co2.placed < co.placed
-				 AND co2.order_status_id IN (3, 4, 5, 10)) AS prior_orders
+		WITH ranked AS (
+			SELECT co.placed,
+				%s AS bucket,
+				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY co.placed) AS rn
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
-			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (3, 4, 5, 10)
-		) AS cust
+			WHERE co.order_status_id IN (:statusIds)
+		)
+		SELECT bucket AS d,
+			SUM(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS new_cnt,
+			SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS ret_cnt
+		FROM ranked
+		WHERE placed >= :from AND placed < :to
 		GROUP BY bucket
 		ORDER BY d
 	`, dateExpr)
 	rows, err := QueryListNamed[struct {
-		D       time.Time `db:"d"`
-		NewCnt  int       `db:"new_cnt"`
-		RetCnt  int       `db:"ret_cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+		D      time.Time `db:"d"`
+		NewCnt int       `db:"new_cnt"`
+		RetCnt int       `db:"ret_cnt"`
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1393,7 +1701,7 @@ func (ms *MYSQLStore) getShippedByPeriod(ctx context.Context, from, to time.Time
 		FROM (
 			SELECT osh.order_id, MIN(osh.changed_at) AS shipped_at
 			FROM order_status_history osh
-			WHERE osh.order_status_id = 4
+			WHERE osh.order_status_id = :shippedStatusId
 			GROUP BY osh.order_id
 		) AS first_shipped
 		WHERE shipped_at >= :from AND shipped_at < :to
@@ -1402,8 +1710,8 @@ func (ms *MYSQLStore) getShippedByPeriod(ctx context.Context, from, to time.Time
 	`, dateExpr, dateExpr)
 	rows, err := QueryListNamed[struct {
 		D     time.Time `db:"d"`
-		Count int      `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+		Count int       `db:"cnt"`
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "shippedStatusId": cache.OrderStatusShipped.Status.Id})
 	if err != nil {
 		return nil, err
 	}
@@ -1420,7 +1728,7 @@ func (ms *MYSQLStore) getDeliveredByPeriod(ctx context.Context, from, to time.Ti
 		FROM (
 			SELECT osh.order_id, MIN(osh.changed_at) AS delivered_at
 			FROM order_status_history osh
-			WHERE osh.order_status_id = 5
+			WHERE osh.order_status_id = :deliveredStatusId
 			GROUP BY osh.order_id
 		) AS first_delivered
 		WHERE delivered_at >= :from AND delivered_at < :to
@@ -1429,8 +1737,8 @@ func (ms *MYSQLStore) getDeliveredByPeriod(ctx context.Context, from, to time.Ti
 	`, dateExpr, dateExpr)
 	rows, err := QueryListNamed[struct {
 		D     time.Time `db:"d"`
-		Count int      `db:"cnt"`
-	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to})
+		Count int       `db:"cnt"`
+	}](ctx, ms.DB(), query, map[string]any{"from": from, "to": to, "deliveredStatusId": cache.OrderStatusDelivered.Status.Id})
 	if err != nil {
 		return nil, err
 	}
@@ -1463,8 +1771,11 @@ func fillTimeSeriesGaps(points []entity.TimeSeriesPoint, from, to time.Time, gra
 	return result
 }
 
+// bucketStart returns the start of the bucket containing t. Uses UTC to align with MySQL
+// CONVERT_TZ(..., '+00:00') in granularitySQL; avoids timezone mismatch between Go and MySQL.
 func bucketStart(t time.Time, g entity.MetricsGranularity) time.Time {
-	loc := t.Location()
+	t = t.UTC()
+	loc := time.UTC
 	switch g {
 	case entity.MetricsGranularityWeek:
 		// Monday 00:00 (align with MySQL WEEKDAY: 0=Mon, 6=Sun; Go: 0=Sun, 1=Mon)
@@ -1494,7 +1805,10 @@ func changePct(current, previous decimal.Decimal) *float64 {
 		return nil
 	}
 	diff := current.Sub(previous).Div(previous).Mul(decimal.NewFromInt(100))
-	f, _ := diff.Float64()
+	f, ok := diff.Float64()
+	if !ok {
+		return nil
+	}
 	return &f
 }
 

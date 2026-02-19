@@ -110,7 +110,7 @@ func registerTLSConfig(cfg Config) error {
 	return nil
 }
 
-// New connects to the database, applies migrations and returns a new MYSQLStore object
+// New connects to the database, applies migrations and returns a new MYSQLStore object.
 func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	// Register custom TLS config if provided
 	if err := registerTLSConfig(cfg); err != nil {

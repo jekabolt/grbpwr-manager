@@ -235,6 +235,31 @@ func GetOrderStatusByName(n entity.OrderStatusName) (Status, bool) {
 	st, ok := orderStatusesByName[n]
 	return *st, ok
 }
+
+// OrderStatusIDsForNetRevenue returns status IDs for orders contributing to net revenue (confirmed, shipped, delivered, partially_refunded).
+func OrderStatusIDsForNetRevenue() []int {
+	names := []entity.OrderStatusName{entity.Confirmed, entity.Shipped, entity.Delivered, entity.PartiallyRefunded}
+	ids := make([]int, 0, len(names))
+	for _, n := range names {
+		if s, ok := GetOrderStatusByName(n); ok {
+			ids = append(ids, s.Status.Id)
+		}
+	}
+	return ids
+}
+
+// OrderStatusIDsForRefund returns status IDs for orders with refunded_amount (net revenue set + refunded).
+func OrderStatusIDsForRefund() []int {
+	names := []entity.OrderStatusName{entity.Confirmed, entity.Shipped, entity.Delivered, entity.Refunded, entity.PartiallyRefunded}
+	ids := make([]int, 0, len(names))
+	for _, n := range names {
+		if s, ok := GetOrderStatusByName(n); ok {
+			ids = append(ids, s.Status.Id)
+		}
+	}
+	return ids
+}
+
 func UpdateHero(hf *entity.HeroFullWithTranslations) {
 	hero = hf
 }

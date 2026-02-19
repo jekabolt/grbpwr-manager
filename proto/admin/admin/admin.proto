@@ -440,12 +440,17 @@ enum MetricsGranularity {
   METRICS_GRANULARITY_MONTH = 3;
 }
 
+enum CompareMode {
+  COMPARE_MODE_UNSPECIFIED = 0;
+  COMPARE_MODE_NONE = 1;
+  COMPARE_MODE_PREVIOUS_PERIOD = 2; // same length, immediately before
+  COMPARE_MODE_SAME_PERIOD_LAST_YEAR = 3;
+}
+
 message GetBusinessMetricsRequest {
-  google.protobuf.Timestamp period_from = 1;
-  google.protobuf.Timestamp period_to = 2;
-  google.protobuf.Timestamp compare_period_from = 3;
-  google.protobuf.Timestamp compare_period_to = 4;
-  MetricsGranularity granularity = 5; // day, week, or month; default day
+  string period = 1; // "7d", "30d", "90d" or ISO8601 duration (e.g. P7D)
+  google.protobuf.Timestamp end_at = 2; // defaults to now; period end (inclusive)
+  CompareMode compare_mode = 3;
 }
 
 message GetBusinessMetricsResponse {
@@ -510,6 +515,31 @@ message BusinessMetrics {
   repeated TimeSeriesPoint returning_customers_by_day_compare = 48;
   repeated TimeSeriesPoint shipped_by_day_compare = 49;
   repeated TimeSeriesPoint delivered_by_day_compare = 50;
+
+  // GA4 Traffic & Engagement
+  MetricWithComparison sessions = 51;
+  MetricWithComparison users = 52;
+  MetricWithComparison new_users = 53;
+  MetricWithComparison page_views = 54;
+  MetricWithComparison bounce_rate = 55;
+  MetricWithComparison avg_session_duration = 56;
+  MetricWithComparison pages_per_session = 57;
+  MetricWithComparison conversion_rate = 58;
+  MetricWithComparison revenue_per_session = 59;
+
+  repeated GeographySessionMetric sessions_by_country = 60;
+  repeated ProductViewMetric top_products_by_views = 61;
+  repeated TrafficSourceMetric traffic_by_source = 62;
+  repeated DeviceMetric traffic_by_device = 63;
+
+  repeated TimeSeriesPoint sessions_by_day = 64;
+  repeated TimeSeriesPoint users_by_day = 65;
+  repeated TimeSeriesPoint page_views_by_day = 66;
+  repeated TimeSeriesPoint conversion_rate_by_day = 67;
+  repeated TimeSeriesPoint sessions_by_day_compare = 68;
+  repeated TimeSeriesPoint users_by_day_compare = 69;
+  repeated TimeSeriesPoint page_views_by_day_compare = 70;
+  repeated TimeSeriesPoint conversion_rate_by_day_compare = 71;
 }
 
 message PaymentMethodMetric {
@@ -596,6 +626,40 @@ message TimeSeriesPoint {
   google.protobuf.Timestamp date = 1;
   google.type.Decimal value = 2;
   int32 count = 3;
+}
+
+message ProductViewMetric {
+  int32 product_id = 1;
+  string product_name = 2;
+  string brand = 3;
+  int32 page_views = 4;
+  int32 sessions = 5;
+  int32 add_to_carts = 6;
+  int32 purchases = 7;
+  double conversion_rate = 8;
+}
+
+message TrafficSourceMetric {
+  string source = 1;
+  string medium = 2;
+  int32 sessions = 3;
+  int32 users = 4;
+  google.type.Decimal revenue = 5;
+}
+
+message DeviceMetric {
+  string device_category = 1;
+  int32 sessions = 2;
+  int32 users = 3;
+  double conversion_rate = 4;
+}
+
+message GeographySessionMetric {
+  string country = 1;
+  string state = 2;
+  string city = 3;
+  int32 sessions = 4;
+  int32 users = 5;
 }
 
 message RefundOrderRequest {

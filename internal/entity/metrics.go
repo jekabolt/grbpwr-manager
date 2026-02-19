@@ -12,21 +12,33 @@ type BusinessMetrics struct {
 	ComparePeriod *TimeRange
 
 	// Core sales
-	Revenue          MetricWithComparison
-	OrdersCount      MetricWithComparison
-	AvgOrderValue    MetricWithComparison
-	ItemsPerOrder    MetricWithComparison
-	RefundRate       MetricWithComparison
-	PromoUsageRate   MetricWithComparison
-	GrossRevenue     MetricWithComparison
-	TotalRefunded    MetricWithComparison
-	TotalDiscount    MetricWithComparison
+	Revenue        MetricWithComparison
+	OrdersCount    MetricWithComparison
+	AvgOrderValue  MetricWithComparison
+	ItemsPerOrder  MetricWithComparison
+	RefundRate     MetricWithComparison
+	PromoUsageRate MetricWithComparison
+	GrossRevenue   MetricWithComparison
+	TotalRefunded  MetricWithComparison
+	TotalDiscount  MetricWithComparison
+
+	// GA4 Traffic & Engagement
+	Sessions              MetricWithComparison
+	Users                 MetricWithComparison
+	NewUsers              MetricWithComparison
+	PageViews             MetricWithComparison
+	BounceRate            MetricWithComparison
+	AvgSessionDuration    MetricWithComparison
+	PagesPerSession       MetricWithComparison
+	ConversionRate        MetricWithComparison // orders / sessions
+	RevenuePerSession     MetricWithComparison // revenue / sessions
 
 	// Geography
 	RevenueByCountry  []GeographyMetric
 	RevenueByCity     []GeographyMetric
 	RevenueByRegion   []RegionMetric
 	AvgOrderByCountry []GeographyMetric
+	SessionsByCountry []GeographySessionMetric
 
 	// Currency
 	RevenueByCurrency []CurrencyMetric
@@ -35,17 +47,22 @@ type BusinessMetrics struct {
 	RevenueByPaymentMethod []PaymentMethodMetric
 
 	// Products
-	TopProductsByRevenue   []ProductMetric
-	TopProductsByQuantity  []ProductMetric
-	RevenueByCategory      []CategoryMetric
-	CrossSellPairs         []CrossSellPair
+	TopProductsByRevenue  []ProductMetric
+	TopProductsByQuantity []ProductMetric
+	TopProductsByViews    []ProductViewMetric
+	RevenueByCategory     []CategoryMetric
+	CrossSellPairs        []CrossSellPair
+
+	// Traffic Sources
+	TrafficBySource []TrafficSourceMetric
+	TrafficByDevice []DeviceMetric
 
 	// Customers
-	NewSubscribers      MetricWithComparison
-	RepeatCustomersRate MetricWithComparison
+	NewSubscribers       MetricWithComparison
+	RepeatCustomersRate  MetricWithComparison
 	AvgOrdersPerCustomer MetricWithComparison
 	AvgDaysBetweenOrders MetricWithComparison
-	CLVDistribution     CLVStats
+	CLVDistribution      CLVStats
 
 	// Promo
 	RevenueByPromo []PromoMetric
@@ -54,30 +71,38 @@ type BusinessMetrics struct {
 	OrdersByStatus []StatusCount
 
 	// Time series for charts
-	RevenueByDay        []TimeSeriesPoint
-	OrdersByDay         []TimeSeriesPoint
-	SubscribersByDay    []TimeSeriesPoint
-	GrossRevenueByDay  []TimeSeriesPoint
-	RefundsByDay       []TimeSeriesPoint
-	AvgOrderValueByDay []TimeSeriesPoint
-	UnitsSoldByDay         []TimeSeriesPoint
-	NewCustomersByDay      []TimeSeriesPoint
+	RevenueByDay            []TimeSeriesPoint
+	OrdersByDay             []TimeSeriesPoint
+	SubscribersByDay        []TimeSeriesPoint
+	GrossRevenueByDay       []TimeSeriesPoint
+	RefundsByDay            []TimeSeriesPoint
+	AvgOrderValueByDay      []TimeSeriesPoint
+	UnitsSoldByDay          []TimeSeriesPoint
+	NewCustomersByDay       []TimeSeriesPoint
 	ReturningCustomersByDay []TimeSeriesPoint
-	ShippedByDay           []TimeSeriesPoint
-	DeliveredByDay         []TimeSeriesPoint
+	ShippedByDay            []TimeSeriesPoint
+	DeliveredByDay          []TimeSeriesPoint
+	SessionsByDay           []TimeSeriesPoint
+	UsersByDay              []TimeSeriesPoint
+	PageViewsByDay          []TimeSeriesPoint
+	ConversionRateByDay     []TimeSeriesPoint
 
 	// Comparison period time series (overlay previous period on charts)
-	RevenueByDayCompare        []TimeSeriesPoint
-	OrdersByDayCompare         []TimeSeriesPoint
-	SubscribersByDayCompare    []TimeSeriesPoint
-	GrossRevenueByDayCompare   []TimeSeriesPoint
-	RefundsByDayCompare        []TimeSeriesPoint
-	AvgOrderValueByDayCompare   []TimeSeriesPoint
-	UnitsSoldByDayCompare       []TimeSeriesPoint
-	NewCustomersByDayCompare    []TimeSeriesPoint
+	RevenueByDayCompare            []TimeSeriesPoint
+	OrdersByDayCompare             []TimeSeriesPoint
+	SubscribersByDayCompare        []TimeSeriesPoint
+	GrossRevenueByDayCompare       []TimeSeriesPoint
+	RefundsByDayCompare            []TimeSeriesPoint
+	AvgOrderValueByDayCompare      []TimeSeriesPoint
+	UnitsSoldByDayCompare          []TimeSeriesPoint
+	NewCustomersByDayCompare       []TimeSeriesPoint
 	ReturningCustomersByDayCompare []TimeSeriesPoint
-	ShippedByDayCompare        []TimeSeriesPoint
-	DeliveredByDayCompare      []TimeSeriesPoint
+	ShippedByDayCompare            []TimeSeriesPoint
+	DeliveredByDayCompare          []TimeSeriesPoint
+	SessionsByDayCompare           []TimeSeriesPoint
+	UsersByDayCompare              []TimeSeriesPoint
+	PageViewsByDayCompare          []TimeSeriesPoint
+	ConversionRateByDayCompare     []TimeSeriesPoint
 }
 
 // PaymentMethodMetric aggregates revenue by payment method (card, PayPal, etc.)
@@ -142,8 +167,8 @@ type ProductMetric struct {
 type CategoryMetric struct {
 	CategoryId   int
 	CategoryName string
-	Value       decimal.Decimal
-	Count       int
+	Value        decimal.Decimal
+	Count        int
 }
 
 type CrossSellPair struct {
@@ -155,10 +180,10 @@ type CrossSellPair struct {
 }
 
 type PromoMetric struct {
-	PromoCode    string
-	OrdersCount  int
-	Revenue      decimal.Decimal
-	AvgDiscount  decimal.Decimal
+	PromoCode   string
+	OrdersCount int
+	Revenue     decimal.Decimal
+	AvgDiscount decimal.Decimal
 }
 
 type StatusCount struct {
@@ -176,4 +201,42 @@ type TimeSeriesPoint struct {
 	Date  time.Time
 	Value decimal.Decimal
 	Count int
+}
+
+// ProductViewMetric represents product page performance with GA4 data.
+type ProductViewMetric struct {
+	ProductId      int
+	ProductName    string
+	Brand          string
+	PageViews      int
+	Sessions       int
+	AddToCarts     int
+	Purchases      int
+	ConversionRate float64 // purchases / page_views
+}
+
+// TrafficSourceMetric represents traffic source/medium breakdown.
+type TrafficSourceMetric struct {
+	Source   string
+	Medium   string
+	Sessions int
+	Users    int
+	Revenue  decimal.Decimal
+}
+
+// DeviceMetric represents device category breakdown.
+type DeviceMetric struct {
+	DeviceCategory string
+	Sessions       int
+	Users          int
+	ConversionRate float64
+}
+
+// GeographySessionMetric represents session data by geography.
+type GeographySessionMetric struct {
+	Country  string
+	State    *string
+	City     *string
+	Sessions int
+	Users    int
 }

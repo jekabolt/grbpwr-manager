@@ -97,10 +97,22 @@ func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.Payment
 }
 
 func (p *Processor) getPaymentIntent(paymentSecret string) (*stripe.PaymentIntent, error) {
+	return p.getPaymentIntentWithExpand(paymentSecret, nil)
+}
 
+// getPaymentIntentWithExpand retrieves a PaymentIntent, optionally expanding payment_method to get sub-type (apple_pay, klarna, etc.)
+func (p *Processor) getPaymentIntentWithExpand(paymentSecret string, expand []string) (*stripe.PaymentIntent, error) {
 	paymentIntentID := trimSecret(paymentSecret)
 
-	pi, err := p.stripeClient.PaymentIntents.Get(paymentIntentID, nil)
+	var params *stripe.PaymentIntentParams
+	if len(expand) > 0 {
+		params = &stripe.PaymentIntentParams{}
+		for _, e := range expand {
+			params.AddExpand(e)
+		}
+	}
+
+	pi, err := p.stripeClient.PaymentIntents.Get(paymentIntentID, params)
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve payment intent: %v", err)
 	}

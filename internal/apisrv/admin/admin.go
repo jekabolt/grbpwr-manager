@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -639,32 +641,39 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 }
 
 func (s *Server) GetBusinessMetrics(ctx context.Context, req *pb_admin.GetBusinessMetricsRequest) (*pb_admin.GetBusinessMetricsResponse, error) {
-	if req.PeriodFrom == nil || req.PeriodTo == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "period_from and period_to are required")
+	if strings.TrimSpace(req.Period) == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d)")
 	}
-	periodFrom := req.PeriodFrom.AsTime()
-	periodTo := req.PeriodTo.AsTime()
-	if periodTo.Before(periodFrom) || periodTo.Equal(periodFrom) {
-		return nil, status.Errorf(codes.InvalidArgument, "period_to must be after period_from")
+	dur, err := parseMetricsPeriod(req.Period)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
 	}
 
+	endAt := time.Now()
+	if req.EndAt != nil {
+		endAt = req.EndAt.AsTime()
+	}
+
+	periodTo := endAt
+	periodFrom := endAt.Add(-dur)
 	period := entity.TimeRange{From: periodFrom, To: periodTo}
+
 	comparePeriod := entity.TimeRange{}
-	if req.ComparePeriodFrom != nil && req.ComparePeriodTo != nil {
-		comparePeriod.From = req.ComparePeriodFrom.AsTime()
-		comparePeriod.To = req.ComparePeriodTo.AsTime()
-		if comparePeriod.To.Before(comparePeriod.From) || comparePeriod.To.Equal(comparePeriod.From) {
-			return nil, status.Errorf(codes.InvalidArgument, "compare_period_to must be after compare_period_from")
+	switch req.CompareMode {
+	case pb_admin.CompareMode_COMPARE_MODE_PREVIOUS_PERIOD:
+		// Same length, immediately before: [period_from - duration, period_from]
+		comparePeriod = entity.TimeRange{
+			From: periodFrom.Add(-dur),
+			To:   periodFrom,
+		}
+	case pb_admin.CompareMode_COMPARE_MODE_SAME_PERIOD_LAST_YEAR:
+		comparePeriod = entity.TimeRange{
+			From: periodFrom.AddDate(-1, 0, 0),
+			To:   periodTo.AddDate(-1, 0, 0),
 		}
 	}
 
-	granularity := entity.MetricsGranularityDay
-	switch req.Granularity {
-	case pb_admin.MetricsGranularity_METRICS_GRANULARITY_WEEK:
-		granularity = entity.MetricsGranularityWeek
-	case pb_admin.MetricsGranularity_METRICS_GRANULARITY_MONTH:
-		granularity = entity.MetricsGranularityMonth
-	}
+	granularity := inferMetricsGranularity(dur)
 	metrics, err := s.repo.Metrics().GetBusinessMetrics(ctx, period, comparePeriod, granularity)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get business metrics",
@@ -676,6 +685,40 @@ func (s *Server) GetBusinessMetrics(ctx context.Context, req *pb_admin.GetBusine
 	return &pb_admin.GetBusinessMetricsResponse{
 		Metrics: dto.ConvertEntityBusinessMetricsToPb(metrics),
 	}, nil
+}
+
+// parseMetricsPeriod parses "7d", "30d", "90d" or ISO8601 duration (e.g. P7D, P30D) into time.Duration.
+func parseMetricsPeriod(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	// Shorthand: Nd
+	if m := regexp.MustCompile(`^(\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+		days, _ := strconv.Atoi(m[1])
+		if days < 1 || days > 365 {
+			return 0, fmt.Errorf("days must be 1-365")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	// ISO8601: P{n}D
+	if m := regexp.MustCompile(`^[pP](\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+		days, _ := strconv.Atoi(m[1])
+		if days < 1 || days > 365 {
+			return 0, fmt.Errorf("days must be 1-365")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return 0, fmt.Errorf("expected format: 7d, 30d, 90d or P7D, P30D")
+}
+
+// inferMetricsGranularity derives granularity from period length: <=14d→day, 15-90d→week, >90d→month.
+func inferMetricsGranularity(dur time.Duration) entity.MetricsGranularity {
+	days := int(dur / (24 * time.Hour))
+	if days <= 14 {
+		return entity.MetricsGranularityDay
+	}
+	if days <= 90 {
+		return entity.MetricsGranularityWeek
+	}
+	return entity.MetricsGranularityMonth
 }
 
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {

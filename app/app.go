@@ -8,6 +8,8 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/config"
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
@@ -19,8 +21,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
-	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 )
 
 var commitHash string
@@ -41,6 +43,7 @@ type App struct {
 	ma   dependency.Mailer
 	oc   *ordercleanup.Worker
 	sr   *stripereconcile.Worker
+	ga4w *ga4sync.Worker
 	re   dependency.RevalidationService
 	c    *config.Config
 	done chan struct{}
@@ -149,6 +152,30 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+
+	// GA4 Analytics integration
+	ga4Client, err := ga4.NewClient(ctx, &a.c.GA4)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed create new ga4 client",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	// GA4 sync worker (only if GA4 is enabled)
+	if a.c.GA4.Enabled {
+		if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
+				a.ga4w = ga4sync.New(ga4Client, mysqlStore.GA4(), &a.c.GA4Sync)
+			if err = a.ga4w.Start(ctx); err != nil {
+				slog.Default().ErrorContext(ctx, "couldn't start ga4 sync worker",
+					slog.String("err", err.Error()),
+				)
+				return err
+			}
+			slog.Default().InfoContext(ctx, "ga4 sync worker started")
+		}
+	}
+
 	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re)
 
 	frontendS := frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re)

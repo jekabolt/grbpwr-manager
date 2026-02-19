@@ -213,6 +213,22 @@ envs:
 - key: REVALIDATION_HTTP_TIMEOUT
   scope: RUN_TIME
   value: 10s
+- key: GA4_ENABLED
+  scope: RUN_TIME
+  value: "true"
+- key: GA4_PROPERTY_ID
+  scope: RUN_TIME
+  value: "299206603"
+- key: GA4_CREDENTIALS_JSON
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+- key: GA4_SYNC_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 1h
+- key: GA4_SYNC_LOOKBACK_DAYS
+  scope: RUN_TIME
+  value: "7"
 - key: MYSQL_DSN
   scope: RUN_TIME
   type: SECRET
