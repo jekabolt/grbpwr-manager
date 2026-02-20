@@ -116,6 +116,10 @@ type (
 		ExpirationDuration() time.Duration
 		// CreatePreOrderPaymentIntent creates a PaymentIntent before order submission (for card payments)
 		CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string, idempotencyKey string) (*stripe.PaymentIntent, error)
+		// GetOrCreatePreOrderPaymentIntent gets or creates a PaymentIntent for pre-order, with idempotency and rotation.
+		// Returns (pi, rotatedKey, err). If rotatedKey != "", client should replace stored key.
+		// ErrPaymentAlreadyCompleted when PI was already used for a completed payment.
+		GetOrCreatePreOrderPaymentIntent(ctx context.Context, idempotencyKey string, amount decimal.Decimal, currency, country string, cartFingerprint string) (pi *stripe.PaymentIntent, rotatedKey string, err error)
 		// UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
 		UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
 		// UpdatePaymentIntentWithOrderNew updates a PaymentIntent with order data from OrderNew (optimized, no DB query)

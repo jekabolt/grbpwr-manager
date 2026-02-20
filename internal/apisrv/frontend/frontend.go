@@ -646,11 +646,11 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	if pm == entity.CARD || pm == entity.CARD_TEST {
 		handler, err := s.getPaymentHandler(ctx, pm)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get payment handler",
+			slog.Default().ErrorContext(ctx, "can't get payment handler for validate-items",
+				slog.String("payment_method", string(pm)),
 				slog.String("err", err.Error()),
 			)
-			// Don't fail the validation, just log the error and return without client_secret
-			return response, nil
+			return nil, status.Errorf(codes.Internal, "payment unavailable: %s", err.Error())
 		}
 
 		// Use provided currency or fall back to base currency from cache
@@ -667,27 +667,37 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 				slog.String("total", roundedTotal.String()),
 				slog.String("err", err.Error()),
 			)
-			return response, nil
+			return nil, status.Errorf(codes.InvalidArgument, "total below currency minimum for card payment: %s", err.Error())
 		}
 
-		// Idempotency key: prefer client-generated (frontend creates UUID per checkout session). Fallback to session for backward compat.
-		idempotencyKey := req.IdempotencyKey
-		if idempotencyKey == "" {
-			idempotencyKey = preOrderIdempotencyKeyFallback(roundedTotal, currency, req.Country, req.PromoCode, req.ShipmentCarrierId, itemsToInsert, clientSession)
-		} else {
-			idempotencyKey = "preorder_" + idempotencyKey
-		}
-		pi, err := handler.CreatePreOrderPaymentIntent(ctx, roundedTotal, currency, req.Country, idempotencyKey)
+		// Cart fingerprint for session matching (same cart + same client = same session)
+		cartFingerprint := cartFingerprintForPreOrder(roundedTotal, currency, req.Country, req.PromoCode, req.ShipmentCarrierId, itemsToInsert, clientSession)
+		pi, rotatedKey, err := handler.GetOrCreatePreOrderPaymentIntent(ctx, req.IdempotencyKey, roundedTotal, currency, req.Country, cartFingerprint)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't create pre-order payment intent",
+			if errors.Is(err, stripe.ErrPaymentAlreadyCompleted) {
+				return nil, status.Errorf(codes.InvalidArgument, "Payment already completed for this session. Please clear your checkout and start a new order.")
+			}
+			slog.Default().ErrorContext(ctx, "can't get or create pre-order payment intent",
+				slog.String("payment_method", string(pm)),
+				slog.String("currency", currency),
+				slog.String("total", roundedTotal.String()),
 				slog.String("err", err.Error()),
 			)
-			// Don't fail the validation, just log the error and return without client_secret
-			return response, nil
+			return nil, status.Errorf(codes.Internal, "failed to create payment intent: %s", err.Error())
+		}
+
+		if pi.ClientSecret == "" {
+			slog.Default().ErrorContext(ctx, "Stripe returned PaymentIntent without ClientSecret")
+			return nil, status.Errorf(codes.Internal, "payment unavailable: missing client secret")
 		}
 
 		response.ClientSecret = pi.ClientSecret
 		response.PaymentIntentId = pi.ID
+		if rotatedKey != "" {
+			response.IdempotencyKey = rotatedKey // New session or rotated (expired)
+		} else {
+			response.IdempotencyKey = req.IdempotencyKey // Same valid session
+		}
 	}
 
 	return response, nil
@@ -772,10 +782,9 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 	}
 }
 
-// preOrderIdempotencyKeyFallback returns a key when client doesn't provide idempotency_key (backward compat).
-// Same cart + same session = same key. Different session = different key.
-func preOrderIdempotencyKeyFallback(amount decimal.Decimal, currency, country, promoCode string, shipmentCarrierId int32, items []entity.OrderItemInsert, sessionID string) string {
-	// Sort items for deterministic output
+// cartFingerprintForPreOrder returns a deterministic hash of cart contents and client identity for session matching.
+// Same cart + same client = same fingerprint. Includes clientSession so different clients with identical carts get different sessions.
+func cartFingerprintForPreOrder(amount decimal.Decimal, currency, country, promoCode string, shipmentCarrierId int32, items []entity.OrderItemInsert, clientSession string) string {
 	sorted := make([]entity.OrderItemInsert, len(items))
 	copy(sorted, items)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -784,12 +793,12 @@ func preOrderIdempotencyKeyFallback(amount decimal.Decimal, currency, country, p
 		}
 		return sorted[i].SizeId < sorted[j].SizeId
 	})
-	data := fmt.Sprintf("%s|%s|%s|%s|%d|%s", amount.String(), currency, country, promoCode, shipmentCarrierId, sessionID)
+	data := fmt.Sprintf("%s|%s|%s|%s|%d|%s", amount.String(), currency, country, promoCode, shipmentCarrierId, clientSession)
 	for _, i := range sorted {
 		data += fmt.Sprintf("|%d:%d:%s", i.ProductId, i.SizeId, i.Quantity.String())
 	}
 	h := sha256.Sum256([]byte(data))
-	return "preorder_" + hex.EncodeToString(h[:16])
+	return hex.EncodeToString(h[:16])
 }
 
 // ensurePaymentIntentAmountMatchesOrder verifies the PaymentIntent amount matches the order total.

@@ -52,8 +52,9 @@ func amountFromSmallestUnit(amount int64, currency string) decimal.Decimal {
 	return AmountFromSmallestUnit(amount, currency)
 }
 
-// createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types
-func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.PaymentIntent, error) {
+// createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types.
+// idempotencyKey must be unique per PaymentIntent; use rotation (e.g. orderUUID+"_"+timestamp) when re-creating after expiry.
+func (p *Processor) createPaymentIntent(order entity.OrderFull, idempotencyKey string) (*stripe.PaymentIntent, error) {
 	// Validate order total meets Stripe minimum (e.g. KRW >= 100)
 	if err := dto.ValidatePriceMeetsMinimum(order.Order.TotalPrice, order.Order.Currency); err != nil {
 		return nil, fmt.Errorf("order total below currency minimum: %w", err)
@@ -85,7 +86,7 @@ func (p *Processor) createPaymentIntent(order entity.OrderFull) (*stripe.Payment
 			Name: stripe.String(fmt.Sprintf("%s %s", order.Buyer.FirstName, order.Buyer.LastName)),
 		},
 	}
-	params.SetIdempotencyKey(order.Order.UUID)
+	params.SetIdempotencyKey(idempotencyKey)
 
 	// Create the PaymentIntent
 	pi, err := p.stripeClient.PaymentIntents.New(params)

@@ -184,7 +184,7 @@ message ValidateOrderItemsInsertRequest {
   string country = 4; // ISO country code for automatic_payment_methods
   common.PaymentMethodNameEnum payment_method = 5; // to determine if PaymentIntent needed
   string currency = 6; // ISO currency code (e.g., "usd", "eur")
-  string idempotency_key = 7; // Client-generated UUID per checkout session. Ensures different customers get different PaymentIntents even with identical carts.
+  string idempotency_key = 7; // Optional: key from previous ValidateOrderItemsInsert response; same key = same payment session
 }
 
 message ValidateOrderItemsInsertResponse {
@@ -196,6 +196,7 @@ message ValidateOrderItemsInsertResponse {
   string client_secret = 6; // Stripe client_secret for payment element
   string payment_intent_id = 7; // Stripe PaymentIntent ID
   repeated common.OrderItemAdjustment item_adjustments = 8; // Describes quantity/availability changes
+  string idempotency_key = 9; // Server-generated key for payment session; client stores and sends on subsequent requests
 }
 
 message ValidateOrderByUUIDRequest {

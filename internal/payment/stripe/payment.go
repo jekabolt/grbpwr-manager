@@ -3,12 +3,17 @@ package stripe
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
+	"github.com/jekabolt/grbpwr-manager/internal/preorderpayment"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -26,6 +31,9 @@ type Config struct {
 	InvoiceExpiration time.Duration `mapstructure:"invoice_expiration"`
 }
 
+// ErrPaymentAlreadyCompleted is returned when the PaymentIntent was already used for a completed payment.
+var ErrPaymentAlreadyCompleted = errors.New("payment already completed for this session")
+
 type Processor struct {
 	c                *Config
 	mailer           dependency.Mailer
@@ -33,9 +41,7 @@ type Processor struct {
 	stripeClient     *client.API
 	pm               entity.PaymentMethod
 	reservationMgr   dependency.StockReservationManager
-
-	// secrets map[string]string //k:clientSecret v: order uuid
-	// mu      sync.Mutex
+	preOrderStore    *preorderpayment.Store
 
 	monCtxt map[string]context.CancelFunc // tracks monitoring contexts by order uuid
 	ctxMu   sync.Mutex
@@ -56,6 +62,10 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 
 	stripe.DefaultLeveledLogger = log.NewSlogLeveledLogger()
 
+	ttl := c.InvoiceExpiration
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
 	p := Processor{
 		c:              c,
 		mailer:         m,
@@ -64,6 +74,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 		pm:             pm.Method,
 		monCtxt:        make(map[string]context.CancelFunc),
 		reservationMgr: nil, // Will be set via SetReservationManager if needed
+		preOrderStore:  preorderpayment.NewStore(ttl),
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -239,8 +250,15 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 			return fmt.Errorf("can't get order by id: %w", err)
 		}
 
+		// Idempotency key: use rotation when payment was expired so Stripe creates a fresh PI instead of returning cached expired one
+		idempotencyKey := orderUUID
+		if payment.ClientSecret.Valid {
+			// Had ClientSecret but expired - rotate key to get new PaymentIntent
+			idempotencyKey = orderUUID + "_" + strconv.FormatInt(time.Now().Unix(), 10)
+		}
+
 		// Create PaymentIntent on Stripe (external API call inside TX - acceptable for idempotency)
-		pi, err = p.createPaymentIntent(*of)
+		pi, err = p.createPaymentIntent(*of, idempotencyKey)
 		if err != nil {
 			return fmt.Errorf("can't create payment intent: %w", err)
 		}
@@ -405,6 +423,8 @@ func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount deci
 	if err := dto.ValidatePriceMeetsMinimum(amount, currency); err != nil {
 		return nil, fmt.Errorf("amount below currency minimum: %w", err)
 	}
+	// Stripe requires lowercase ISO currency codes (e.g. "eur" not "EUR")
+	currency = strings.ToLower(currency)
 	// Convert amount to smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
 	amountCents := AmountToSmallestUnit(amount, currency)
 
@@ -435,6 +455,87 @@ func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount deci
 	)
 
 	return pi, nil
+}
+
+// GetOrCreatePreOrderPaymentIntent gets or creates a PaymentIntent for pre-order with idempotency and rotation.
+func (p *Processor) GetOrCreatePreOrderPaymentIntent(ctx context.Context, idempotencyKey string, amount decimal.Decimal, currency, country string, cartFingerprint string) (*stripe.PaymentIntent, string, error) {
+	// New session: no key or key not found
+	if idempotencyKey == "" {
+		return p.createNewPreOrderSession(ctx, "", amount, currency, country, cartFingerprint)
+	}
+
+	sess, ok := p.preOrderStore.Get(idempotencyKey)
+	if !ok {
+		return p.createNewPreOrderSession(ctx, "", amount, currency, country, cartFingerprint)
+	}
+
+	// Cart changed - old key stale
+	if sess.CartFingerprint != cartFingerprint {
+		p.preOrderStore.Delete(idempotencyKey)
+		return p.createNewPreOrderSession(ctx, "", amount, currency, country, cartFingerprint)
+	}
+
+	// Check if PI already succeeded (payment completed)
+	pi, err := p.GetPaymentIntentByID(ctx, sess.PaymentIntentID)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "failed to get payment intent for pre-order session, creating new",
+			slog.String("payment_intent_id", sess.PaymentIntentID),
+			slog.String("err", err.Error()),
+		)
+		p.preOrderStore.Delete(idempotencyKey)
+		return p.createNewPreOrderSession(ctx, "", amount, currency, country, cartFingerprint)
+	}
+	if pi.Status == stripe.PaymentIntentStatusSucceeded {
+		p.preOrderStore.Delete(idempotencyKey)
+		return nil, "", ErrPaymentAlreadyCompleted
+	}
+
+	// Session expired - rotate: create new PI, return new key
+	if time.Now().After(sess.ExpiresAt) {
+		stripeKey := idempotencyKey + "_rotated_" + strconv.FormatInt(time.Now().Unix(), 10)
+		newPi, err := p.CreatePreOrderPaymentIntent(ctx, amount, currency, country, stripeKey)
+		if err != nil {
+			return nil, "", err
+		}
+		newKey := p.preOrderStore.Put("", &preorderpayment.Session{
+			PaymentIntentID:      newPi.ID,
+			ClientSecret:         newPi.ClientSecret,
+			StripeIdempotencyKey: stripeKey,
+			CartFingerprint:      cartFingerprint,
+		})
+		p.preOrderStore.Delete(idempotencyKey)
+		slog.Default().InfoContext(ctx, "rotated pre-order payment session",
+			slog.String("old_key", idempotencyKey),
+			slog.String("new_key", newKey),
+			slog.String("payment_intent_id", newPi.ID),
+		)
+		return newPi, newKey, nil
+	}
+
+	// Valid session - return existing PI (reconstruct for response; ClientSecret is in sess)
+	return &stripe.PaymentIntent{
+		ID:          sess.PaymentIntentID,
+		ClientSecret: sess.ClientSecret,
+	}, "", nil
+}
+
+func (p *Processor) createNewPreOrderSession(ctx context.Context, idempotencyKey string, amount decimal.Decimal, currency, country string, cartFingerprint string) (*stripe.PaymentIntent, string, error) {
+	ourKey := idempotencyKey
+	if ourKey == "" {
+		ourKey = uuid.New().String()
+	}
+	stripeKey := "preorder_" + ourKey
+	pi, err := p.CreatePreOrderPaymentIntent(ctx, amount, currency, country, stripeKey)
+	if err != nil {
+		return nil, "", err
+	}
+	key := p.preOrderStore.Put(ourKey, &preorderpayment.Session{
+		PaymentIntentID:      pi.ID,
+		ClientSecret:         pi.ClientSecret,
+		StripeIdempotencyKey: stripeKey,
+		CartFingerprint:      cartFingerprint,
+	})
+	return pi, key, nil
 }
 
 // UpdatePaymentIntentWithOrder updates an existing PaymentIntent with order details
