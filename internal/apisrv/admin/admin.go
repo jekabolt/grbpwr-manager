@@ -37,6 +37,7 @@ type Server struct {
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
+	reservationMgr    dependency.StockReservationManager
 }
 
 // New creates a new server with admin handlers.
@@ -47,6 +48,7 @@ func New(
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
+	reservationMgr dependency.StockReservationManager,
 ) *Server {
 	return &Server{
 		repo:              r,
@@ -55,6 +57,7 @@ func New(
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
+		reservationMgr:    reservationMgr,
 	}
 }
 
@@ -793,9 +796,8 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		return nil, status.Errorf(codes.InvalidArgument, "confirmed orders support only full refund")
 	}
 
-	// Stripe refund for RefundInProgress, PendingReturn, Delivered, Confirmed with Stripe payment
-	if orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn ||
-		orderStatus.Status.Name == entity.Delivered || orderStatus.Status.Name == entity.Confirmed {
+	// Stripe refund only for Confirmed status with Stripe payment
+	if orderStatus.Status.Name == entity.Confirmed {
 		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
 		if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
 			handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
@@ -879,6 +881,9 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't cancel order")
+	}
+	if s.reservationMgr != nil {
+		s.reservationMgr.Release(ctx, req.OrderUuid)
 	}
 	return &pb_admin.CancelOrderResponse{}, nil
 }

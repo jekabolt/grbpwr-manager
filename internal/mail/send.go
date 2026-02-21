@@ -16,6 +16,7 @@ const (
 	OrderConfirmed       templateName = "order_confirmed.gohtml"
 	OrderShipped         templateName = "order_shipped.gohtml"
 	OrderRefundInitiated templateName = "refund_initiated.gohtml"
+	OrderPendingReturn   templateName = "pending_return.gohtml"
 	PromoCode            templateName = "promo_code.gohtml"
 	BackInStock          templateName = "back_in_stock.gohtml"
 )
@@ -27,6 +28,7 @@ var templateSubjects = map[templateName]string{
 	OrderConfirmed:       "Your order has been confirmed",
 	OrderShipped:         "Your order has been shipped",
 	OrderRefundInitiated: "Your refund has been initiated",
+	OrderPendingReturn:   "Your return has been requested",
 	PromoCode:            "Your promo code",
 	BackInStock:          "Your waitlist item is back in stock",
 }
@@ -129,6 +131,20 @@ func (m *Mailer) SendRefundInitiated(ctx context.Context, rep dependency.Reposit
 	ser, err := m.buildSendMailRequest(to, OrderRefundInitiated, refundDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for refund initiated: %w", err)
+	}
+
+	return m.sendWithInsert(ctx, rep, ser)
+}
+
+// SendPendingReturn sends a pending return email when order is set to PendingReturn (waiting for parcel back).
+func (m *Mailer) SendPendingReturn(ctx context.Context, rep dependency.Repository, to string, details *dto.OrderPendingReturn) error {
+	if details.OrderUUID == "" {
+		return fmt.Errorf("incomplete pending return details: %+v", details)
+	}
+
+	ser, err := m.buildSendMailRequest(to, OrderPendingReturn, details)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for pending return: %w", err)
 	}
 
 	return m.sendWithInsert(ctx, rep, ser)

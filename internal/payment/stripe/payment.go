@@ -148,6 +148,9 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 		if err != nil {
 			return fmt.Errorf("can't expire order payment: %w", err)
 		}
+		if p.reservationMgr != nil {
+			p.reservationMgr.Release(ctx, orderUUID)
+		}
 		p.CancelMonitorPayment(orderUUID)
 		p.cancelPaymentIntent(payment.ClientSecret.String)
 	}

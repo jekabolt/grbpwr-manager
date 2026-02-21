@@ -7,9 +7,9 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/config"
-	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
+	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
@@ -21,6 +21,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 )
@@ -85,7 +86,8 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db)
+	reservationMgr := stockreserve.NewDefaultManager()
+	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservationMgr)
 	if err = a.oc.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
 			slog.String("err", err.Error()),
@@ -165,7 +167,7 @@ func (a *App) Start(ctx context.Context) error {
 	// GA4 sync worker (only if GA4 is enabled)
 	if a.c.GA4.Enabled {
 		if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
-				a.ga4w = ga4sync.New(ga4Client, mysqlStore.GA4(), &a.c.GA4Sync)
+			a.ga4w = ga4sync.New(ga4Client, mysqlStore.GA4(), &a.c.GA4Sync)
 			if err = a.ga4w.Start(ctx); err != nil {
 				slog.Default().ErrorContext(ctx, "couldn't start ga4 sync worker",
 					slog.String("err", err.Error()),
@@ -176,9 +178,9 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re)
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr)
 
-	frontendS := frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re)
+	frontendS := frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr)
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()

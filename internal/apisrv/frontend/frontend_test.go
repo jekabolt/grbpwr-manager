@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -116,6 +117,7 @@ func TestGetHero(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Call the function being tested
@@ -260,6 +262,7 @@ func TestGetProduct(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Call the function being tested
@@ -397,6 +400,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Call the function being tested
@@ -494,6 +498,7 @@ func TestSubmitOrder(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock order data
@@ -757,6 +762,7 @@ func TestGetOrderByUUID(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Call the function being tested
@@ -895,6 +901,7 @@ func TestValidateOrderItemsInsert(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock validated order items
@@ -1163,6 +1170,7 @@ func TestValidateOrderByUUID(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock order data
@@ -1393,6 +1401,7 @@ func TestGetOrderInvoice(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock payment insert
@@ -1478,6 +1487,7 @@ func TestCancelOrderInvoice(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock payment
@@ -1545,6 +1555,7 @@ func TestSubscribeNewsletter(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Test email address
@@ -1643,6 +1654,7 @@ func TestUnsubscribeNewsletter(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Test email address
@@ -1711,6 +1723,7 @@ func TestGetArchivesPaged(t *testing.T) {
 		mockStripePayment,
 		mockStripePaymentTest,
 		mockRe,
+		stockreserve.NewDefaultManager(),
 	)
 
 	// Create mock archive data

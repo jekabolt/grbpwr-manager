@@ -299,6 +299,7 @@ type (
 		SendOrderCancellation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderCancelled) error
 		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error
 		SendRefundInitiated(ctx context.Context, rep Repository, to string, refundDetails *dto.OrderRefundInitiated) error
+		SendPendingReturn(ctx context.Context, rep Repository, to string, details *dto.OrderPendingReturn) error
 		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error
 		SendBackInStock(ctx context.Context, rep Repository, to string, productDetails *dto.BackInStock) error
 		Start(ctx context.Context) error

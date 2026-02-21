@@ -51,6 +51,9 @@ func (w *Worker) cancelStuckPlacedOrders(ctx context.Context) error {
 			)
 			continue
 		}
+		if w.reservationMgr != nil {
+			w.reservationMgr.Release(ctx, order.UUID)
+		}
 		slog.Default().InfoContext(ctx, "cancelled stuck placed order",
 			slog.String("order_uuid", order.UUID),
 			slog.Int("order_id", order.Id),
@@ -80,6 +83,9 @@ func (w *Worker) cancelExpiredAwaitingPaymentOrders(ctx context.Context) error {
 				slog.Int("order_id", order.Id),
 			)
 			continue
+		}
+		if w.reservationMgr != nil {
+			w.reservationMgr.Release(ctx, order.UUID)
 		}
 		slog.Default().InfoContext(ctx, "expired awaiting payment order (safety net)",
 			slog.String("order_uuid", order.UUID),

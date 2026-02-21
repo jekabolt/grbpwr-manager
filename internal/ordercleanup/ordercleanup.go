@@ -25,14 +25,15 @@ func DefaultConfig() Config {
 // Worker cancels orders stuck in Placed status (never reached InsertFiatInvoice)
 // and AwaitingPayment orders past their expired_at (safety net when monitors fail).
 type Worker struct {
-	repo dependency.Repository
-	c    *Config
-	ctx  context.Context
-	stop context.CancelFunc
+	repo           dependency.Repository
+	reservationMgr dependency.StockReservationManager
+	c              *Config
+	ctx            context.Context
+	stop           context.CancelFunc
 }
 
 // New creates a new order cleanup worker.
-func New(c *Config, repo dependency.Repository) *Worker {
+func New(c *Config, repo dependency.Repository, reservationMgr dependency.StockReservationManager) *Worker {
 	if c == nil {
 		dc := DefaultConfig()
 		c = &dc
@@ -44,8 +45,9 @@ func New(c *Config, repo dependency.Repository) *Worker {
 		c.WorkerInterval = 15 * time.Minute
 	}
 	return &Worker{
-		repo: repo,
-		c:    c,
+		repo:           repo,
+		reservationMgr: reservationMgr,
+		c:              c,
 	}
 }
 

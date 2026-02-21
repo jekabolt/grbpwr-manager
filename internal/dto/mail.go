@@ -120,6 +120,20 @@ func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated
 	}
 }
 
+func OrderFullToOrderPendingReturn(of *entity.OrderFull) *OrderPendingReturn {
+	buyerName := of.Buyer.FirstName
+	if of.Buyer.LastName != "" {
+		buyerName = fmt.Sprintf("%s %s", of.Buyer.FirstName, of.Buyer.LastName)
+	}
+
+	return &OrderPendingReturn{
+		Preheader: "YOUR GRBPWR RETURN HAS BEEN REQUESTED",
+		BuyerName: buyerName,
+		OrderUUID: of.Order.UUID,
+		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
+	}
+}
+
 func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderItem {
 	oi := make([]OrderItem, len(items))
 	for i, item := range items {
@@ -193,6 +207,13 @@ type OrderShipment struct {
 type OrderRefundInitiated struct {
 	Preheader string
 	BuyerName string // First name or full name if available
+	OrderUUID string
+	EmailB64  string
+}
+
+type OrderPendingReturn struct {
+	Preheader string
+	BuyerName string
 	OrderUUID string
 	EmailB64  string
 }

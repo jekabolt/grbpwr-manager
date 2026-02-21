@@ -51,9 +51,8 @@ func New(
 	stripePayment dependency.Invoicer,
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
+	reservationMgr *stockreserve.Manager,
 ) *Server {
-	reservationMgr := stockreserve.NewDefaultManager()
-	
 	// Set reservation manager on stripe processors if they support it
 	if sp, ok := stripePayment.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
 		sp.SetReservationManager(reservationMgr)
@@ -61,7 +60,7 @@ func New(
 	if spt, ok := stripePaymentTest.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
 		spt.SetReservationManager(reservationMgr)
 	}
-	
+
 	return &Server{
 		repo:              r,
 		mailer:            m,
@@ -342,6 +341,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			slog.String("order_uuid", order.UUID),
 		)
 		_ = s.repo.Order().CancelOrder(ctx, order.UUID)
+		s.reservationMgr.Release(ctx, order.UUID)
 		return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
 	}
 
@@ -363,6 +363,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
 				slog.Default().ErrorContext(ctx, "failed to cancel orphan order", slog.String("orderUUID", order.UUID), slog.String("err", cancelErr.Error()))
 			}
+			s.reservationMgr.Release(ctx, order.UUID)
 			return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
 		}
 	}
@@ -945,84 +946,45 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 	}
 	email := string(emailBytes)
 
-	orderFull, err := s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, email, req.Reason)
+	// Fetch order first to determine the ORIGINAL status before any changes.
+	// This drives the switch logic; the actual atomic status transition happens
+	// inside CancelOrderByUser (which uses SELECT … FOR UPDATE).
+	orderFull, err := s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, email)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't cancel order by user",
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "order not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get order",
 			slog.String("err", err.Error()),
 			slog.String("order_uuid", req.OrderUuid),
-			slog.String("email", email),
 		)
-		return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+		return nil, status.Errorf(codes.Internal, "can't get order: %v", err)
 	}
-
-	// RELEASE RESERVATION: Free stock when order is cancelled
-	s.reservationMgr.Release(ctx, req.OrderUuid)
 
 	os, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
 	if !ok {
-		slog.Default().ErrorContext(ctx, "can't get order status by id",
-			slog.String("order_uuid", req.OrderUuid),
-		)
 		return nil, status.Error(codes.Internal, "can't get order status by id")
 	}
-	statusName := os.Status.Name
+	originalStatus := os.Status.Name
 
-	sendRefundInitiatedEmail := false
+	switch originalStatus {
+	// --- Terminal / already-in-progress: reject ---
+	case entity.Cancelled, entity.Refunded, entity.PartiallyRefunded, entity.RefundInProgress, entity.PendingReturn:
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"order cannot be cancelled in status: %s", originalStatus)
 
-	switch statusName {
-	case entity.RefundInProgress, entity.PendingReturn, entity.Refunded, entity.PartiallyRefunded, entity.Cancelled:
-		slog.Default().InfoContext(ctx, "order already in terminal/refund flow state",
-			slog.String("order_uuid", req.OrderUuid),
-			slog.String("status", string(statusName)),
-		)
-		return nil, status.Error(codes.AlreadyExists, "order already in refund progress, pending return, refunded, partially refunded, or cancelled")
-
-	case entity.Delivered, entity.Shipped:
-		// Check if order is eligible for return based on time constraints
-		eligible, reason := isOrderEligibleForReturn(orderFull, statusName)
-		if !eligible {
-			slog.Default().InfoContext(ctx, "order not eligible for return",
-				slog.String("order_uuid", req.OrderUuid),
-				slog.String("status", string(statusName)),
-				slog.String("reason", reason),
-			)
-			return nil, status.Error(codes.FailedPrecondition, reason)
-		}
-
-		// Order is eligible - set status to PendingReturn
-		if err := s.repo.Order().SetOrderStatusToPendingReturn(ctx, req.OrderUuid, "user"); err != nil {
-			slog.Default().ErrorContext(ctx, "can't set order status to pending return",
-				slog.String("err", err.Error()),
-				slog.String("order_uuid", req.OrderUuid),
-			)
-			return nil, status.Errorf(codes.Internal, "can't set order to pending return: %v", err)
-		}
-
-		// Refresh order to get updated status
-		orderFull, err = s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, email)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't refresh order after status update",
-				slog.String("err", err.Error()),
-				slog.String("order_uuid", req.OrderUuid),
-			)
-			return nil, status.Errorf(codes.Internal, "can't refresh order: %v", err)
-		}
-
-		sendRefundInitiatedEmail = true
-		slog.Default().InfoContext(ctx, "order set to pending return by user",
-			slog.String("order_uuid", req.OrderUuid),
-			slog.String("email", email),
-			slog.String("reason", req.Reason),
-		)
-
+	// --- No payment yet: cancel directly ---
 	case entity.Placed, entity.AwaitingPayment:
-		if err := s.repo.Order().CancelOrder(ctx, req.OrderUuid); err != nil {
+		// CancelOrderByUser atomically sets status to Cancelled + restores stock
+		if _, err := s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, email, req.Reason); err != nil {
 			slog.Default().ErrorContext(ctx, "can't cancel order",
 				slog.String("err", err.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
 			return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
 		}
+		s.reservationMgr.Release(ctx, req.OrderUuid)
+
 		slog.Default().InfoContext(ctx, "order cancelled by user (no payment yet)",
 			slog.String("order_uuid", req.OrderUuid),
 			slog.String("email", email),
@@ -1030,62 +992,59 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 		)
 		return &pb_frontend.CancelOrderByUserResponse{Order: nil}, nil
 
+	// --- Paid but not shipped: refund via Stripe ---
 	case entity.Confirmed:
-		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
-		if !ok {
-			slog.Default().ErrorContext(ctx, "can't get payment method by id",
+		// CancelOrderByUser atomically sets status to RefundInProgress (prevents double refund)
+		orderFull, err = s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, email, req.Reason)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't initiate refund for confirmed order",
+				slog.String("err", err.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
+			return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+		}
+
+		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+		if !ok {
 			return nil, status.Error(codes.Internal, "can't get payment method by id")
 		}
 
-		switch pm.Method.Name {
-		case entity.CARD, entity.CARD_TEST:
+		if pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST {
 			pHandler, err := s.getPaymentHandler(ctx, pm.Method.Name)
 			if err != nil {
-				slog.Default().ErrorContext(ctx, "can't get payment handler",
-					slog.String("err", err.Error()),
-					slog.String("order_uuid", req.OrderUuid),
-				)
 				return nil, status.Error(codes.Internal, "can't get payment handler")
 			}
 
-			// Full refund for RefundInProgress (amount = nil)
 			if err := pHandler.Refund(ctx, orderFull.Payment, req.OrderUuid, nil, orderFull.Order.Currency); err != nil {
-				slog.Default().ErrorContext(ctx, "can't refund payment",
+				slog.Default().ErrorContext(ctx, "stripe refund failed",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),
 				)
 				return nil, status.Errorf(codes.Internal, "can't refund payment: %v", err)
 			}
 
+			// RefundOrder transitions RefundInProgress → Refunded, restores stock, records refunded items
 			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason); err != nil {
-				slog.Default().ErrorContext(ctx, "can't refund order",
+				slog.Default().ErrorContext(ctx, "can't finalize refund in DB",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),
 				)
 				return nil, status.Errorf(codes.Internal, "can't refund order: %v", err)
 			}
-
-			sendRefundInitiatedEmail = true
-
-		default:
-			// Keep order cancellation request recorded; actual refund handling depends on payment method implementation.
-			slog.InfoContext(ctx, "confirmed order cancellation requested; refund not auto-handled for payment method",
+		} else {
+			slog.Default().InfoContext(ctx, "confirmed order cancellation requested; refund not auto-handled for payment method",
 				slog.String("order_uuid", req.OrderUuid),
 				slog.String("payment_method", string(pm.Method.Name)),
 			)
 		}
 
-	default:
-		return nil, status.Error(codes.FailedPrecondition, "order can't be cancelled in status: "+string(statusName))
-	}
+		// Refresh to get final Refunded status
+		orderFull, err = s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, email)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't refresh order: %v", err)
+		}
 
-	if !sendRefundInitiatedEmail && (statusName == entity.RefundInProgress || statusName == entity.PendingReturn) {
-		sendRefundInitiatedEmail = true
-	}
-
-	if sendRefundInitiatedEmail {
+		// Send "refund initiated" email
 		refundDetails := dto.OrderFullToOrderRefundInitiated(orderFull)
 		if err := s.mailer.SendRefundInitiated(ctx, s.repo, orderFull.Buyer.Email, refundDetails); err != nil {
 			slog.Default().ErrorContext(ctx, "can't send refund initiated email",
@@ -1093,6 +1052,42 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				slog.String("order_uuid", req.OrderUuid),
 			)
 		}
+
+	// --- Already shipped/delivered: pending return ---
+	case entity.Shipped, entity.Delivered:
+		eligible, reason := isOrderEligibleForReturn(orderFull, originalStatus)
+		if !eligible {
+			return nil, status.Error(codes.FailedPrecondition, reason)
+		}
+
+		// CancelOrderByUser atomically sets status to PendingReturn
+		orderFull, err = s.repo.Order().CancelOrderByUser(ctx, req.OrderUuid, email, req.Reason)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't set pending return",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+			return nil, status.Errorf(codes.Internal, "can't set order to pending return: %v", err)
+		}
+
+		slog.Default().InfoContext(ctx, "order set to pending return by user",
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("email", email),
+			slog.String("reason", req.Reason),
+		)
+
+		// Send "pending return" email (waiting for parcel back)
+		pendingDetails := dto.OrderFullToOrderPendingReturn(orderFull)
+		if err := s.mailer.SendPendingReturn(ctx, s.repo, orderFull.Buyer.Email, pendingDetails); err != nil {
+			slog.Default().ErrorContext(ctx, "can't send pending return email",
+				slog.String("err", err.Error()),
+				slog.String("order_uuid", req.OrderUuid),
+			)
+		}
+
+	default:
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"order can't be cancelled in status: %s", originalStatus)
 	}
 
 	pbOrder, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
@@ -1104,11 +1099,11 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 		return nil, status.Error(codes.Internal, "can't convert order")
 	}
 
-	slog.Default().InfoContext(ctx, "order cancelled by user",
+	slog.Default().InfoContext(ctx, "order cancel/return processed by user",
 		slog.String("order_uuid", req.OrderUuid),
 		slog.String("email", email),
 		slog.String("reason", req.Reason),
-		slog.String("status", string(statusName)),
+		slog.String("original_status", string(originalStatus)),
 	)
 
 	return &pb_frontend.CancelOrderByUserResponse{Order: pbOrder}, nil

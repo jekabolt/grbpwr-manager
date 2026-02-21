@@ -39,7 +39,7 @@ func TestUploadContentImage(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create expected response
 		expectedMedia := &pb_common.MediaFull{
@@ -97,7 +97,7 @@ func TestUploadContentImage(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		expectedErr := errors.New("upload failed")
 
@@ -133,7 +133,7 @@ func TestUploadContentImage(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
 		mockBucket.On("GetBaseFolder").Return(testBaseFolder)
@@ -167,7 +167,7 @@ func TestUploadContentImage(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
 		mockBucket.On("GetBaseFolder").Return(testBaseFolder)
@@ -208,7 +208,7 @@ func TestUploadContentVideo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create expected response
 		expectedMedia := &pb_common.MediaFull{
@@ -268,7 +268,7 @@ func TestUploadContentVideo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		expectedErr := errors.New("upload failed")
 
@@ -306,7 +306,7 @@ func TestUploadContentVideo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		emptyData := []byte{}
 		expectedErr := errors.New("empty video data")
@@ -345,7 +345,7 @@ func TestUploadContentVideo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		invalidContentType := "invalid/type"
 		expectedErr := errors.New("invalid content type")
@@ -384,7 +384,7 @@ func TestUploadContentVideo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
 		mockBucket.On("GetBaseFolder").Return(testBaseFolder)
@@ -425,7 +425,7 @@ func TestDeleteFromBucket(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 
@@ -463,7 +463,7 @@ func TestDeleteFromBucket(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 		expectedErr := errors.New("media deletion failed")
@@ -499,7 +499,7 @@ func TestDeleteFromBucket(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 		refreshErr := errors.New("hero refresh failed")
@@ -539,7 +539,7 @@ func TestDeleteFromBucket(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		invalidID := int32(-1)
 		expectedErr := errors.New("invalid media ID")
@@ -577,7 +577,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
 		mockProductsRepo := mocks.NewProducts(t)
@@ -657,7 +657,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
 		mockProductsRepo := mocks.NewProducts(t)
@@ -737,7 +737,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid product (missing required fields)
 		product := &pb_common.ProductNew{
@@ -792,7 +792,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -862,7 +862,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -935,7 +935,7 @@ func TestUpsertProduct(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1014,7 +1014,7 @@ func TestDeleteProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1049,7 +1049,7 @@ func TestDeleteProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1088,7 +1088,7 @@ func TestDeleteProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1127,7 +1127,7 @@ func TestDeleteProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1165,7 +1165,7 @@ func TestDeleteProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mockProductsRepo := mocks.NewProducts(t)
 		productID := int32(123)
@@ -1193,7 +1193,7 @@ func TestGetProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1322,7 +1322,7 @@ func TestGetProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1361,7 +1361,7 @@ func TestGetProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1400,7 +1400,7 @@ func TestGetProductByID(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1459,7 +1459,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1593,7 +1593,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1702,7 +1702,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1756,7 +1756,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1815,7 +1815,7 @@ func TestGetProductsPaged(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1915,7 +1915,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -1959,7 +1959,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2007,7 +2007,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2055,7 +2055,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2103,7 +2103,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2151,7 +2151,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2199,7 +2199,7 @@ func TestUpdateProductSizeStock(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
 		mockProductsRepo := mocks.NewProducts(t)
@@ -2249,7 +2249,7 @@ func TestAddPromo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2294,7 +2294,7 @@ func TestAddPromo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid promo code (invalid discount value)
 		now := time.Now()
@@ -2332,7 +2332,7 @@ func TestAddPromo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2381,7 +2381,7 @@ func TestAddPromo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2431,7 +2431,7 @@ func TestAddPromo(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid promo code (missing required fields)
 		promo := &pb_common.PromoCodeInsert{
@@ -2468,7 +2468,7 @@ func TestDeletePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2503,7 +2503,7 @@ func TestDeletePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty code
 		req := &pb_admin.DeletePromoCodeRequest{
@@ -2528,7 +2528,7 @@ func TestDeletePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2567,7 +2567,7 @@ func TestDeletePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2608,7 +2608,7 @@ func TestDisablePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2643,7 +2643,7 @@ func TestDisablePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty code
 		req := &pb_admin.DisablePromoCodeRequest{
@@ -2668,7 +2668,7 @@ func TestDisablePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2707,7 +2707,7 @@ func TestDisablePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2746,7 +2746,7 @@ func TestDisablePromoCode(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2787,7 +2787,7 @@ func TestListPromos(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2857,7 +2857,7 @@ func TestListPromos(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2900,7 +2900,7 @@ func TestListPromos(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -2943,7 +2943,7 @@ func TestListPromos(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
 		mockPromoRepo := mocks.NewPromo(t)
@@ -3015,7 +3015,7 @@ func TestGetDictionary(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Initialize cache with mock data
 		dictionaryInfo := &entity.DictionaryInfo{
@@ -3100,7 +3100,7 @@ func TestSetTrackingNumber(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3174,7 +3174,7 @@ func TestSetTrackingNumber(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty tracking code
 		req := &pb_admin.SetTrackingNumberRequest{
@@ -3200,7 +3200,7 @@ func TestSetTrackingNumber(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3241,7 +3241,7 @@ func TestSetTrackingNumber(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3321,7 +3321,7 @@ func TestListOrders(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3402,7 +3402,7 @@ func TestListOrders(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3462,7 +3462,7 @@ func TestListOrders(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with invalid status
 		req := &pb_admin.ListOrdersRequest{
@@ -3493,7 +3493,7 @@ func TestListOrders(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with invalid payment method
 		req := &pb_admin.ListOrdersRequest{
@@ -3524,7 +3524,7 @@ func TestListOrders(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3591,7 +3591,7 @@ func TestRefundOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3626,7 +3626,7 @@ func TestRefundOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3659,7 +3659,7 @@ func TestRefundOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3698,7 +3698,7 @@ func TestRefundOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3737,7 +3737,7 @@ func TestRefundOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3778,7 +3778,7 @@ func TestDeliveredOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3813,7 +3813,7 @@ func TestDeliveredOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3846,7 +3846,7 @@ func TestDeliveredOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3885,7 +3885,7 @@ func TestDeliveredOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3924,7 +3924,7 @@ func TestDeliveredOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -3965,7 +3965,7 @@ func TestCancelOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -4000,7 +4000,7 @@ func TestCancelOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -4033,7 +4033,7 @@ func TestCancelOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -4072,7 +4072,7 @@ func TestCancelOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -4111,7 +4111,7 @@ func TestCancelOrder(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
 		mockOrderRepo := mocks.NewOrder(t)
@@ -4152,7 +4152,7 @@ func TestAddHero(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
 		mockHeroRepo := mocks.NewHero(t)
@@ -4216,7 +4216,7 @@ func TestAddHero(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
 		mockHeroRepo := mocks.NewHero(t)
@@ -4266,7 +4266,7 @@ func TestAddHero(t *testing.T) {
 		mockStripe := mocks.NewInvoicer(t)
 		mockStripeTest := mocks.NewInvoicer(t)
 		mockRe := mocks.NewRevalidationService(t)
-		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe)
+		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
 		mockHeroRepo := mocks.NewHero(t)

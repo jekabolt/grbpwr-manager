@@ -589,7 +589,7 @@ func validateAndUpdateOrderIfNeededWithLock(
 	if err != nil {
 		// If validation fails and we should cancel, do it
 		if cancelOnValidationFailure {
-			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items, entity.StockChangeSourceOrderCancelled); cancelErr != nil {
+			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items, entity.StockChangeSourceOrderCancelled, ""); cancelErr != nil {
 				return false, fmt.Errorf("cannot cancel order after validation failure: %w", cancelErr)
 			}
 		}
@@ -1370,23 +1370,25 @@ func updateOrderStatusWithValidation(
 		return fmt.Errorf("update order status: %w", err)
 	}
 
-	// Insert into status history
-	historyQuery := `
-		INSERT INTO order_status_history (order_id, order_status_id, changed_by, notes)
-		VALUES (:orderId, :statusId, :changedBy, :notes)
-	`
-
-	return ExecNamed(ctx, rep.DB(), historyQuery, map[string]any{
-		"orderId":   orderId,
-		"statusId":  newStatusId,
-		"changedBy": changedBy,
-		"notes":     notes,
-	})
+	return insertOrderStatusHistoryEntry(ctx, rep, orderId, newStatusId, changedBy, notes)
 }
 
 // updateOrderStatus is a wrapper for backward compatibility
 func updateOrderStatus(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int) error {
 	return updateOrderStatusWithValidation(ctx, rep, orderId, orderStatusId, "system", "")
+}
+
+// insertOrderStatusHistoryEntry inserts a single entry into order_status_history.
+func insertOrderStatusHistoryEntry(ctx context.Context, rep dependency.Repository, orderId int, statusId int, changedBy string, notes string) error {
+	query := `
+		INSERT INTO order_status_history (order_id, order_status_id, changed_by, notes)
+		VALUES (:orderId, :statusId, :changedBy, :notes)`
+	return ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"orderId":   orderId,
+		"statusId":  statusId,
+		"changedBy": changedBy,
+		"notes":     notes,
+	})
 }
 
 // getOrderStatusHistory retrieves the complete status history for an order
@@ -1484,18 +1486,8 @@ func updateOrderStatusAndRefundedAmountWithValidation(
 		return fmt.Errorf("update order: %w", err)
 	}
 
-	// Insert history
-	historyQuery := `
-		INSERT INTO order_status_history (order_id, order_status_id, changed_by, notes)
-		VALUES (:orderId, :statusId, :changedBy, :notes)
-	`
-
-	return ExecNamed(ctx, rep.DB(), historyQuery, map[string]any{
-		"orderId":   orderId,
-		"statusId":  orderStatusId,
-		"changedBy": changedBy,
-		"notes":     fmt.Sprintf("Refunded amount: %s", refundedAmount.String()),
-	})
+	notes := fmt.Sprintf("Refunded amount: %s", refundedAmount.String())
+	return insertOrderStatusHistoryEntry(ctx, rep, orderId, orderStatusId, changedBy, notes)
 }
 
 func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string) error {
@@ -1693,7 +1685,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 				slog.Int("order_id", orderFull.Order.Id),
 				slog.String("currency", orderFull.Order.Currency),
 			)
-			if err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled); err != nil {
+			if err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled, ""); err != nil {
 				return fmt.Errorf("cannot cancel order: %w", err)
 			}
 			return fmt.Errorf("total price is zero")
@@ -2601,7 +2593,7 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
-		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderExpired)
+		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderExpired, "")
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
@@ -2917,7 +2909,7 @@ func removePromo(ctx context.Context, rep dependency.Repository, orderId int) er
 	return nil
 }
 
-func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource) error {
+func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource, refundReason string) error {
 	// Validate order status - if already cancelled, nothing to do
 	orderStatus, err := getOrderStatus(order.OrderStatusId)
 	if err != nil {
@@ -3025,7 +3017,7 @@ func (ms *MYSQLStore) CancelOrder(ctx context.Context, orderUUID string) error {
 			return fmt.Errorf("can't get order items: %w", err)
 		}
 
-		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled)
+		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, "")
 		if err != nil {
 			return fmt.Errorf("can't cancel order: %w", err)
 		}
@@ -3081,54 +3073,55 @@ func (ms *MYSQLStore) CancelOrderByUser(ctx context.Context, orderUUID string, e
 			return fmt.Errorf("order already in refund progress or refunded: current status %s", currentStatus)
 		}
 
-		// Determine new status based on current status
-		var newStatus *cache.Status
+		// Determine action based on current status
 		switch currentStatus {
 		case entity.Placed, entity.AwaitingPayment:
-			// Set to Cancelled
-			newStatus = &cache.OrderStatusCancelled
-		case entity.Confirmed:
-			// Set to RefundInProgress
-			newStatus = &cache.OrderStatusRefundInProgress
-		case entity.Shipped, entity.Delivered:
-			// Set to PendingReturn
-			newStatus = &cache.OrderStatusPendingReturn
-		default:
-			return fmt.Errorf("cannot cancel order with status: %s", currentStatus)
-		}
-
-		// Update order status and refund reason
-		query := `
-			UPDATE customer_order
-			SET order_status_id = :orderStatusId,
-				refund_reason = :refundReason
-			WHERE id = :orderId`
-
-		err = ExecNamed(ctx, rep.DB(), query, map[string]any{
-			"orderId":       order.Id,
-			"orderStatusId": newStatus.Status.Id,
-			"refundReason":  reason,
-		})
-		if err != nil {
-			return fmt.Errorf("can't update order status and reason: %w", err)
-		}
-
-		// If order was in AwaitingPayment, restore stock
-		if currentStatus == entity.AwaitingPayment {
+			// Use cancelOrder for shared logic (restore stock, remove promo, status update)
 			orderItems, err := getOrderItemsInsert(ctx, rep, order.Id)
 			if err != nil {
 				return fmt.Errorf("can't get order items: %w", err)
 			}
-
-			history := &entity.StockHistoryParams{
-				Source:    entity.StockChangeSourceOrderCancelled,
-				OrderId:   order.Id,
-				OrderUUID: order.UUID,
+			if err := cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, reason); err != nil {
+				return fmt.Errorf("can't cancel order: %w", err)
 			}
-			err = rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
+		case entity.Confirmed:
+			// Set to RefundInProgress
+			query := `
+				UPDATE customer_order
+				SET order_status_id = :orderStatusId,
+					refund_reason = :refundReason
+				WHERE id = :orderId`
+			err = ExecNamed(ctx, rep.DB(), query, map[string]any{
+				"orderId":       order.Id,
+				"orderStatusId": cache.OrderStatusRefundInProgress.Status.Id,
+				"refundReason":  reason,
+			})
 			if err != nil {
-				return fmt.Errorf("can't restore stock for product sizes: %w", err)
+				return fmt.Errorf("can't update order status and reason: %w", err)
 			}
+			if err := insertOrderStatusHistoryEntry(ctx, rep, order.Id, cache.OrderStatusRefundInProgress.Status.Id, "user", reason); err != nil {
+				return fmt.Errorf("can't insert order status history: %w", err)
+			}
+		case entity.Shipped, entity.Delivered:
+			// Set to PendingReturn
+			query := `
+				UPDATE customer_order
+				SET order_status_id = :orderStatusId,
+					refund_reason = :refundReason
+				WHERE id = :orderId`
+			err = ExecNamed(ctx, rep.DB(), query, map[string]any{
+				"orderId":       order.Id,
+				"orderStatusId": cache.OrderStatusPendingReturn.Status.Id,
+				"refundReason":  reason,
+			})
+			if err != nil {
+				return fmt.Errorf("can't update order status and reason: %w", err)
+			}
+			if err := insertOrderStatusHistoryEntry(ctx, rep, order.Id, cache.OrderStatusPendingReturn.Status.Id, "user", reason); err != nil {
+				return fmt.Errorf("can't insert order status history: %w", err)
+			}
+		default:
+			return fmt.Errorf("cannot cancel order with status: %s", currentStatus)
 		}
 
 		return nil
