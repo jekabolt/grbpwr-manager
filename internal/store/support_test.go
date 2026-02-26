@@ -234,7 +234,7 @@ func TestSupportStore_UpdateInternalNotes(t *testing.T) {
 
 	updated, err := store.Support().GetSupportTicketById(ctx, retrieved.Id)
 	require.NoError(t, err)
-	assert.Equal(t, internalNotes, updated.InternalNotes)
+	assert.Equal(t, internalNotes, updated.InternalNotes.String)
 }
 
 func TestSupportStore_GetSupportTicketsPaged(t *testing.T) {

@@ -19,7 +19,7 @@ func ConvertEntitySupportTicketToPb(ticket entity.SupportTicket) *pb_common.Supp
 		CaseNumber:          ticket.CaseNumber,
 		Category:            ticket.Category,
 		Priority:            ConvertEntitySupportTicketPriorityToPb(ticket.Priority),
-		InternalNotes:       ticket.InternalNotes,
+		InternalNotes:       ticket.InternalNotes.String,
 	}
 }
 

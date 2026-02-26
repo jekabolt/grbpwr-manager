@@ -249,10 +249,8 @@ service AdminService {
   }
 
   // SUPPORT MANAGER
-
-  rpc GetSupportTicketsPaged(GetSupportTicketsPagedRequest) returns (GetSupportTicketsPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/support/tickets/paged"};
-  }
+  // Order matters: literal paths (paged, case) must be registered after {id} wildcard
+  // so they're checked first (grpc-gateway prepends handlers, last-registered = first-checked)
 
   rpc GetSupportTicketById(GetSupportTicketByIdRequest) returns (GetSupportTicketByIdResponse) {
     option (google.api.http) = {get: "/api/admin/support/tickets/{id}"};
@@ -260,6 +258,10 @@ service AdminService {
 
   rpc GetSupportTicketByCaseNumber(GetSupportTicketByCaseNumberRequest) returns (GetSupportTicketByCaseNumberResponse) {
     option (google.api.http) = {get: "/api/admin/support/tickets/case/{case_number}"};
+  }
+
+  rpc GetSupportTicketsPaged(GetSupportTicketsPagedRequest) returns (GetSupportTicketsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/support/tickets/paged"};
   }
 
   rpc UpdateSupportTicketStatus(UpdateSupportTicketStatusRequest) returns (UpdateSupportTicketStatusResponse) {

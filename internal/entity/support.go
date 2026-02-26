@@ -38,7 +38,7 @@ type SupportTicket struct {
 	Priority      SupportTicketPriority `db:"priority"`
 	Category      string                `db:"category"`
 	ResolvedAt    sql.NullTime          `db:"resolved_at"`
-	InternalNotes string                `db:"internal_notes"`
+	InternalNotes sql.NullString        `db:"internal_notes"`
 	SupportTicketInsert
 }
 
