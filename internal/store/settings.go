@@ -339,3 +339,54 @@ func (ms *MYSQLStore) GetAnnounce(ctx context.Context) (*entity.AnnounceWithTran
 		Translations: translations,
 	}, nil
 }
+
+func (ms *MYSQLStore) SetComplimentaryShippingPrices(ctx context.Context, prices map[string]decimal.Decimal) error {
+	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		for currency, price := range prices {
+			rounded := dto.RoundForCurrency(price, currency)
+			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+				return fmt.Errorf("price validation for %s: %w", currency, err)
+			}
+			upsertQuery := `
+				INSERT INTO complimentary_shipping_price (currency, price)
+				VALUES (:currency, :price)
+				ON DUPLICATE KEY UPDATE price = :price, updated_at = NOW()`
+			err := ExecNamed(ctx, ms.DB(), upsertQuery, map[string]any{
+				"currency": currency,
+				"price":    rounded,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to upsert complimentary shipping price for currency %s: %w", currency, err)
+			}
+		}
+
+		pricesFromDB, err := ms.GetComplimentaryShippingPrices(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to refresh complimentary shipping prices: %w", err)
+		}
+		cache.UpdateComplimentaryShippingPrices(pricesFromDB)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update complimentary shipping prices: %w", err)
+	}
+	return nil
+}
+
+func (ms *MYSQLStore) GetComplimentaryShippingPrices(ctx context.Context) (map[string]decimal.Decimal, error) {
+	type ComplimentaryShippingPrice struct {
+		Currency string          `db:"currency"`
+		Price    decimal.Decimal `db:"price"`
+	}
+	query := `SELECT currency, price FROM complimentary_shipping_price`
+	results, err := QueryListNamed[ComplimentaryShippingPrice](ctx, ms.DB(), query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get complimentary shipping prices: %w", err)
+	}
+
+	prices := make(map[string]decimal.Decimal)
+	for _, result := range results {
+		prices[result.Currency] = result.Price
+	}
+	return prices, nil
+}

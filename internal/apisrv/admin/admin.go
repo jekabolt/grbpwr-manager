@@ -528,22 +528,22 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:       cache.GetCategories(),
-			Measurements:     cache.GetMeasurements(),
-			OrderStatuses:    cache.GetOrderStatuses(),
-			PaymentMethods:   cache.GetPaymentMethods(),
-			ShipmentCarriers: cache.GetShipmentCarriers(),
-			Sizes:            cache.GetSizes(),
-			Collections:      cache.GetCollections(),
-			Languages:        cache.GetLanguages(),
-			Genders:          cache.GetGenders(),
-			SortFactors:      cache.GetSortFactors(),
-			OrderFactors:     cache.GetOrderFactors(),
+			Categories:             cache.GetCategories(),
+			Measurements:           cache.GetMeasurements(),
+			OrderStatuses:          cache.GetOrderStatuses(),
+			PaymentMethods:         cache.GetPaymentMethods(),
+			ShipmentCarriers:       cache.GetShipmentCarriers(),
+			Sizes:                  cache.GetSizes(),
+			Collections:            cache.GetCollections(),
+			Languages:              cache.GetLanguages(),
+			Genders:                cache.GetGenders(),
+			SortFactors:            cache.GetSortFactors(),
+			OrderFactors:           cache.GetOrderFactors(),
 			SiteEnabled:            cache.GetSiteAvailability(),
 			MaxOrderItems:          cache.GetMaxOrderItems(),
 			BaseCurrency:           cache.GetBaseCurrency(),
-			BigMenu:               cache.GetBigMenu(),
-			Announce:              cache.GetAnnounce(),
+			BigMenu:                cache.GetBigMenu(),
+			Announce:               cache.GetAnnounce(),
 			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
 		}),
 		Rates: nil,
@@ -738,6 +738,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 
 	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
 		req.Email,
+		req.OrderUuid,
 		int(req.Status),
 		cache.GetPaymentMethodIdByPbId(req.PaymentMethod),
 		int(req.OrderId),
@@ -1151,6 +1152,31 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 			slog.String("err", err.Error()),
 		)
 		return nil, err
+	}
+
+	if req.ComplimentaryShippingPrices != nil && len(req.ComplimentaryShippingPrices) > 0 {
+		prices := make(map[string]decimal.Decimal)
+		for currency, pbPrice := range req.ComplimentaryShippingPrices {
+			price, err := decimal.NewFromString(pbPrice.Value)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't convert string to decimal for complimentary shipping",
+					slog.String("currency", currency),
+					slog.String("err", err.Error()),
+				)
+				continue
+			}
+			prices[currency] = dto.RoundForCurrency(price, currency)
+		}
+
+		if len(prices) > 0 {
+			err = s.repo.Settings().SetComplimentaryShippingPrices(ctx, prices)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't set complimentary shipping prices",
+					slog.String("err", err.Error()),
+				)
+				return nil, err
+			}
+		}
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{

@@ -2414,6 +2414,7 @@ func (ms *MYSQLStore) GetOrderByUUIDAndEmail(ctx context.Context, orderUUID stri
 func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 	ctx context.Context,
 	email string,
+	orderUUID string,
 	statusId,
 	paymentMethodId,
 	orderId int,
@@ -2435,6 +2436,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
 			AND (:email = '' OR b.email = :email)
 			AND (:orderId = 0 OR co.id = :orderId)
+			AND (:orderUUID = '' OR co.uuid = :orderUUID)
 		ORDER BY 
 			co.modified %s
 		LIMIT 
@@ -2448,6 +2450,7 @@ func (ms *MYSQLStore) GetOrdersByStatusAndPaymentTypePaged(
 		"status":        statusId,
 		"paymentMethod": paymentMethodId,
 		"orderId":       orderId,
+		"orderUUID":     orderUUID,
 		"limit":         lim,
 		"offset":        off,
 	}

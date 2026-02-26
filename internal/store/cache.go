@@ -65,6 +65,11 @@ func (ms *MYSQLStore) GetDictionaryInfo(ctx context.Context) (*entity.Dictionary
 		return nil, fmt.Errorf("failed to get announce: %w", err)
 	}
 
+	dict.ComplimentaryShippingPrices, err = ms.Settings().GetComplimentaryShippingPrices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get complimentary shipping prices: %w", err)
+	}
+
 	return &dict, nil
 }
 

@@ -97,18 +97,20 @@ var (
 
 	entityLanguages = []entity.Language{}
 
-	promoCodes             = make(map[string]entity.PromoCode)
-	promoCodesMu           sync.RWMutex
-	shipmentCarriersById   = make(map[int]entity.ShipmentCarrier)
-	shipmentCarriersMu     sync.RWMutex
-	entityShipmentCarriers = []entity.ShipmentCarrier{}
-	hero                   = &entity.HeroFullWithTranslations{}
-	maxOrderItems          = 3
-	siteEnabled            = true
-	defaultCurrency        = "EUR"
-	bigMenu                = false
-	announce               = &entity.AnnounceWithTranslations{}
-	orderExpirationSeconds = 0 // 0 = use payment handler default
+	promoCodes                   = make(map[string]entity.PromoCode)
+	promoCodesMu                 sync.RWMutex
+	shipmentCarriersById         = make(map[int]entity.ShipmentCarrier)
+	shipmentCarriersMu           sync.RWMutex
+	entityShipmentCarriers       = []entity.ShipmentCarrier{}
+	hero                         = &entity.HeroFullWithTranslations{}
+	maxOrderItems                = 3
+	siteEnabled                  = true
+	defaultCurrency              = "EUR"
+	bigMenu                      = false
+	announce                     = &entity.AnnounceWithTranslations{}
+	orderExpirationSeconds       = 0 // 0 = use payment handler default
+	complimentaryShippingPrices  = make(map[string]decimal.Decimal)
+	complimentaryShippingPricesMu sync.RWMutex
 )
 
 var (
@@ -208,6 +210,11 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 		entityShipmentCarriers = append(entityShipmentCarriers, sc)
 	}
 	shipmentCarriersMu.Unlock()
+
+	complimentaryShippingPricesMu.Lock()
+	complimentaryShippingPrices = dInfo.ComplimentaryShippingPrices
+	complimentaryShippingPricesMu.Unlock()
+
 	hero = h
 
 	// check if all consts are initialized
@@ -440,6 +447,22 @@ func GetOrderExpirationSeconds() int {
 
 func SetOrderExpirationSeconds(seconds int) {
 	orderExpirationSeconds = seconds
+}
+
+func UpdateComplimentaryShippingPrices(prices map[string]decimal.Decimal) {
+	complimentaryShippingPricesMu.Lock()
+	defer complimentaryShippingPricesMu.Unlock()
+	complimentaryShippingPrices = prices
+}
+
+func GetComplimentaryShippingPrices() map[string]decimal.Decimal {
+	complimentaryShippingPricesMu.RLock()
+	defer complimentaryShippingPricesMu.RUnlock()
+	result := make(map[string]decimal.Decimal)
+	for k, v := range complimentaryShippingPrices {
+		result[k] = v
+	}
+	return result
 }
 
 func GetCategories() []entity.Category {

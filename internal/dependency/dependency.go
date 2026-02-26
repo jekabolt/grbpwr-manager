@@ -94,7 +94,7 @@ type (
 		GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, email string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, orderUUID string) (*entity.Order, error)
 		GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId string) (*entity.OrderFull, error)
-		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
+		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
@@ -222,6 +222,8 @@ type (
 		SetAnnounce(ctx context.Context, link string, translations []entity.AnnounceTranslation) error
 		GetAnnounce(ctx context.Context) (*entity.AnnounceWithTranslations, error)
 		SetOrderExpirationSeconds(ctx context.Context, seconds int) error
+		SetComplimentaryShippingPrices(ctx context.Context, prices map[string]decimal.Decimal) error
+		GetComplimentaryShippingPrices(ctx context.Context) (map[string]decimal.Decimal, error)
 	}
 
 	Waitlist interface {

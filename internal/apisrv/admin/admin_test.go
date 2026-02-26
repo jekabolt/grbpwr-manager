@@ -3362,6 +3362,7 @@ func TestListOrders(t *testing.T) {
 		mockOrderRepo.On("GetOrdersByStatusAndPaymentTypePaged",
 			mock.Anything,
 			email,
+			"",
 			int(status),
 			mock.AnythingOfType("int"), // Use AnythingOfType for payment method ID
 			int(orderId),
@@ -3424,6 +3425,7 @@ func TestListOrders(t *testing.T) {
 		mockOrderRepo.On("GetOrdersByStatusAndPaymentTypePaged",
 			mock.Anything,
 			email,
+			"",
 			int(status),
 			mock.AnythingOfType("int"), // Use AnythingOfType for payment method ID
 			int(orderId),
@@ -3546,6 +3548,7 @@ func TestListOrders(t *testing.T) {
 		mockOrderRepo.On("GetOrdersByStatusAndPaymentTypePaged",
 			mock.Anything,
 			email,
+			"",
 			int(status),
 			mock.AnythingOfType("int"), // Use AnythingOfType for payment method ID
 			int(orderId),

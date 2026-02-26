@@ -424,9 +424,10 @@ message ListOrdersRequest {
   common.PaymentMethodNameEnum payment_method = 2;
   string email = 3;
   int32 order_id = 4;
-  int32 limit = 5;
-  int32 offset = 6;
-  common.OrderFactor order_factor = 7;
+  string order_uuid = 5; // filter by order UUID
+  int32 limit = 6;
+  int32 offset = 7;
+  common.OrderFactor order_factor = 8;
 }
 
 message ListOrdersResponse {
@@ -740,6 +741,7 @@ message UpdateSettingsRequest {
   bool big_menu = 5;
   common.Announce announce = 6;
   int32 order_expiration_seconds = 7; // 0 = use payment handler default
+  map<string, google.type.Decimal> complimentary_shipping_prices = 8; // Map of currency code to complimentary shipping threshold (e.g., "EUR" -> 100.00)
 }
 
 message UpdateSettingsResponse {}
