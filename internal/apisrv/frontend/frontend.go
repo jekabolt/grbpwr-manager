@@ -1342,11 +1342,39 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 }
 
 func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.SubmitSupportTicketRequest) (*pb_frontend.SubmitSupportTicketResponse, error) {
-	err := s.repo.Support().SubmitTicket(ctx, dto.ConvertPbSupportTicketInsertToEntity(req.Ticket))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't create support ticket", slog.String("err", err.Error()))
-		return nil, err
+	clientIP := middleware.GetClientIP(ctx)
+
+	ticket := dto.ConvertPbSupportTicketInsertToEntity(req.Ticket)
+
+	if err := entity.ValidateSupportTicketInsert(&ticket); err != nil {
+		slog.Default().WarnContext(ctx, "invalid support ticket",
+			slog.String("err", err.Error()),
+			slog.String("email", ticket.Email),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid ticket: %v", err)
 	}
+
+	if err := s.rateLimiter.CheckSupportTicket(clientIP, ticket.Email); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for support ticket",
+			slog.String("ip", clientIP),
+			slog.String("email", ticket.Email),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
+	}
+
+	caseNumber, err := s.repo.Support().SubmitTicket(ctx, ticket)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't create support ticket", 
+			slog.String("err", err.Error()),
+			slog.String("email", ticket.Email),
+		)
+		return nil, status.Errorf(codes.Internal, "can't create support ticket")
+	}
+
+	slog.Default().InfoContext(ctx, "support ticket created",
+		slog.String("case_number", caseNumber),
+		slog.String("email", ticket.Email),
+	)
 
 	return &pb_frontend.SubmitSupportTicketResponse{}, nil
 }

@@ -6,6 +6,23 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
+enum SupportTicketStatus {
+  SUPPORT_TICKET_STATUS_UNKNOWN = 0;
+  SUPPORT_TICKET_STATUS_SUBMITTED = 1;
+  SUPPORT_TICKET_STATUS_IN_PROGRESS = 2;
+  SUPPORT_TICKET_STATUS_WAITING_CUSTOMER = 3;
+  SUPPORT_TICKET_STATUS_RESOLVED = 4;
+  SUPPORT_TICKET_STATUS_CLOSED = 5;
+}
+
+enum SupportTicketPriority {
+  SUPPORT_TICKET_PRIORITY_UNKNOWN = 0;
+  SUPPORT_TICKET_PRIORITY_LOW = 1;
+  SUPPORT_TICKET_PRIORITY_MEDIUM = 2;
+  SUPPORT_TICKET_PRIORITY_HIGH = 3;
+  SUPPORT_TICKET_PRIORITY_URGENT = 4;
+}
+
 message SupportTicketInsert {
   string topic = 1;
   string subject = 2;
@@ -15,13 +32,19 @@ message SupportTicketInsert {
   string last_name = 6;
   string order_reference = 7;
   string notes = 8;
+  string category = 9;
+  SupportTicketPriority priority = 10;
 }
 
 message SupportTicket {
   int32 id = 1;
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
-  bool status = 4;
+  SupportTicketStatus status = 4;
   google.protobuf.Timestamp resolved_at = 5;
   SupportTicketInsert support_ticket_insert = 6;
+  string case_number = 7;
+  string category = 8;
+  SupportTicketPriority priority = 9;
+  string internal_notes = 10;
 }

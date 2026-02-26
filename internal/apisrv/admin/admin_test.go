@@ -4846,3 +4846,259 @@ func TestUpdateSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestGetSupportTicketsPaged(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	mockTickets := []entity.SupportTicket{
+		{
+			Id:         1,
+			CaseNumber: "CS-2026-00001",
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+			Status:     entity.SupportStatusSubmitted,
+			Priority:   entity.PriorityHigh,
+			Category:   "shipping",
+			SupportTicketInsert: entity.SupportTicketInsert{
+				Email:     "test1@example.com",
+				Subject:   "Order issue",
+				FirstName: "John",
+				LastName:  "Doe",
+				Notes:     "Help needed",
+			},
+		},
+		{
+			Id:         2,
+			CaseNumber: "CS-2026-00002",
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+			Status:     entity.SupportStatusInProgress,
+			Priority:   entity.PriorityMedium,
+			Category:   "product",
+			SupportTicketInsert: entity.SupportTicketInsert{
+				Email:     "test2@example.com",
+				Subject:   "Product question",
+				FirstName: "Jane",
+				LastName:  "Smith",
+				Notes:     "Need info",
+			},
+		},
+	}
+
+	mockSupport.On("GetSupportTicketsPaged",
+		mock.Anything,
+		10,
+		0,
+		entity.OrderFactorDESC,
+		mock.AnythingOfType("entity.SupportTicketFilters"),
+	).Return(mockTickets, 2, nil)
+
+	resp, err := server.GetSupportTicketsPaged(ctx, &pb_admin.GetSupportTicketsPagedRequest{
+		Limit:       10,
+		Offset:      0,
+		OrderFactor: pb_common.OrderFactor_ORDER_FACTOR_DESC,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, int32(2), resp.TotalCount)
+	assert.Len(t, resp.Tickets, 2)
+	assert.Equal(t, "CS-2026-00001", resp.Tickets[0].CaseNumber)
+	assert.Equal(t, "test1@example.com", resp.Tickets[0].SupportTicketInsert.Email)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestGetSupportTicketById(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	mockTicket := entity.SupportTicket{
+		Id:         1,
+		CaseNumber: "CS-2026-00001",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		Status:     entity.SupportStatusSubmitted,
+		Priority:   entity.PriorityHigh,
+		Category:   "shipping",
+		SupportTicketInsert: entity.SupportTicketInsert{
+			Email:     "test@example.com",
+			Subject:   "Order issue",
+			FirstName: "John",
+			LastName:  "Doe",
+			Notes:     "Help needed",
+		},
+	}
+
+	mockSupport.On("GetSupportTicketById", mock.Anything, 1).Return(mockTicket, nil)
+
+	resp, err := server.GetSupportTicketById(ctx, &pb_admin.GetSupportTicketByIdRequest{
+		Id: 1,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "CS-2026-00001", resp.Ticket.CaseNumber)
+	assert.Equal(t, "test@example.com", resp.Ticket.SupportTicketInsert.Email)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestGetSupportTicketByCaseNumber(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	mockTicket := entity.SupportTicket{
+		Id:         1,
+		CaseNumber: "CS-2026-00001",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		Status:     entity.SupportStatusSubmitted,
+		Priority:   entity.PriorityHigh,
+		Category:   "shipping",
+		SupportTicketInsert: entity.SupportTicketInsert{
+			Email:     "test@example.com",
+			Subject:   "Order issue",
+			FirstName: "John",
+			LastName:  "Doe",
+			Notes:     "Help needed",
+		},
+	}
+
+	mockSupport.On("GetSupportTicketByCaseNumber", mock.Anything, "CS-2026-00001").Return(mockTicket, nil)
+
+	resp, err := server.GetSupportTicketByCaseNumber(ctx, &pb_admin.GetSupportTicketByCaseNumberRequest{
+		CaseNumber: "CS-2026-00001",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "CS-2026-00001", resp.Ticket.CaseNumber)
+	assert.Equal(t, "test@example.com", resp.Ticket.SupportTicketInsert.Email)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestUpdateSupportTicketStatus(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	mockSupport.On("UpdateStatus", mock.Anything, 1, entity.SupportStatusResolved).Return(nil)
+
+	resp, err := server.UpdateSupportTicketStatus(ctx, &pb_admin.UpdateSupportTicketStatusRequest{
+		Id:     1,
+		Status: pb_common.SupportTicketStatus_SUPPORT_TICKET_STATUS_RESOLVED,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestUpdateSupportTicketStatus_WithInternalNotes(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+	notes := "Customer called and confirmed resolution"
+
+	mockSupport.On("UpdateStatus", mock.Anything, 1, entity.SupportStatusResolved).Return(nil)
+	mockSupport.On("UpdateInternalNotes", mock.Anything, 1, notes).Return(nil)
+
+	resp, err := server.UpdateSupportTicketStatus(ctx, &pb_admin.UpdateSupportTicketStatusRequest{
+		Id:            1,
+		Status:        pb_common.SupportTicketStatus_SUPPORT_TICKET_STATUS_RESOLVED,
+		InternalNotes: &notes,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestUpdateSupportTicket(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	priority := pb_common.SupportTicketPriority_SUPPORT_TICKET_PRIORITY_URGENT
+	category := "technical"
+	notes := "Escalated to engineering team"
+
+	mockSupport.On("UpdatePriority", mock.Anything, 1, entity.PriorityUrgent).Return(nil)
+	mockSupport.On("UpdateCategory", mock.Anything, 1, category).Return(nil)
+	mockSupport.On("UpdateInternalNotes", mock.Anything, 1, notes).Return(nil)
+
+	resp, err := server.UpdateSupportTicket(ctx, &pb_admin.UpdateSupportTicketRequest{
+		Id:            1,
+		Priority:      &priority,
+		Category:      &category,
+		InternalNotes: &notes,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestUpdateSupportTicket_PartialUpdate(t *testing.T) {
+	mockRepo := new(mocks.Repository)
+	mockSupport := new(mocks.Support)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo: mockRepo,
+	}
+
+	ctx := context.Background()
+
+	priority := pb_common.SupportTicketPriority_SUPPORT_TICKET_PRIORITY_HIGH
+
+	mockSupport.On("UpdatePriority", mock.Anything, 1, entity.PriorityHigh).Return(nil)
+
+	resp, err := server.UpdateSupportTicket(ctx, &pb_admin.UpdateSupportTicketRequest{
+		Id:       1,
+		Priority: &priority,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	mockSupport.AssertExpectations(t)
+}

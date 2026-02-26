@@ -151,9 +151,14 @@ type (
 	}
 
 	Support interface {
-		GetSupportTicketsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, status bool) ([]entity.SupportTicket, error)
-		UpdateStatus(ctx context.Context, id int, status bool) error
-		SubmitTicket(ctx context.Context, ticket entity.SupportTicketInsert) error
+		GetSupportTicketsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filters entity.SupportTicketFilters) ([]entity.SupportTicket, int, error)
+		GetSupportTicketById(ctx context.Context, id int) (entity.SupportTicket, error)
+		GetSupportTicketByCaseNumber(ctx context.Context, caseNumber string) (entity.SupportTicket, error)
+		UpdateStatus(ctx context.Context, id int, status entity.SupportTicketStatus) error
+		UpdatePriority(ctx context.Context, id int, priority entity.SupportTicketPriority) error
+		UpdateCategory(ctx context.Context, id int, category string) error
+		UpdateInternalNotes(ctx context.Context, id int, notes string) error
+		SubmitTicket(ctx context.Context, ticket entity.SupportTicketInsert) (string, error)
 	}
 
 	Promo interface {

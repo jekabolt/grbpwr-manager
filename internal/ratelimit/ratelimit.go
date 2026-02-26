@@ -100,9 +100,11 @@ type MultiKeyLimiter struct {
 func NewMultiKeyLimiter() *MultiKeyLimiter {
 	return &MultiKeyLimiter{
 		limiters: map[string]*Limiter{
-			"ip_order":    NewLimiter(time.Hour, 100),   // 100 orders per IP per hour
-			"email_order": NewLimiter(time.Hour, 100),   // 100 orders per email per hour
-			"ip_validate": NewLimiter(time.Minute, 20),   // 20 validations per IP per minute
+			"ip_order":      NewLimiter(time.Hour, 100),  // 100 orders per IP per hour
+			"email_order":   NewLimiter(time.Hour, 100),  // 100 orders per email per hour
+			"ip_validate":   NewLimiter(time.Minute, 20), // 20 validations per IP per minute
+			"ip_support":    NewLimiter(time.Hour, 2),    // 5 tickets per IP per hour
+			"email_support": NewLimiter(time.Hour, 1),    // 3 tickets per email per hour
 		},
 	}
 }
@@ -141,6 +143,22 @@ func (m *MultiKeyLimiter) CheckValidation(ip string) error {
 
 	if !m.limiters["ip_validate"].Allow(ip) {
 		return fmt.Errorf("too many validation requests, please slow down")
+	}
+
+	return nil
+}
+
+// CheckSupportTicket verifies if a support ticket can be submitted from the given IP and email
+func (m *MultiKeyLimiter) CheckSupportTicket(ip, email string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_support"].Allow(ip) {
+		return fmt.Errorf("too many support tickets from this IP address, please try again later")
+	}
+
+	if email != "" && !m.limiters["email_support"].Allow(email) {
+		return fmt.Errorf("too many support tickets from this email address, please try again later")
 	}
 
 	return nil

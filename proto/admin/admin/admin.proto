@@ -254,9 +254,24 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/support/tickets/paged"};
   }
 
+  rpc GetSupportTicketById(GetSupportTicketByIdRequest) returns (GetSupportTicketByIdResponse) {
+    option (google.api.http) = {get: "/api/admin/support/tickets/{id}"};
+  }
+
+  rpc GetSupportTicketByCaseNumber(GetSupportTicketByCaseNumberRequest) returns (GetSupportTicketByCaseNumberResponse) {
+    option (google.api.http) = {get: "/api/admin/support/tickets/case/{case_number}"};
+  }
+
   rpc UpdateSupportTicketStatus(UpdateSupportTicketStatusRequest) returns (UpdateSupportTicketStatusResponse) {
     option (google.api.http) = {
       post: "/api/admin/support/tickets/{id}/update-status"
+      body: "*"
+    };
+  }
+
+  rpc UpdateSupportTicket(UpdateSupportTicketRequest) returns (UpdateSupportTicketResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/support/tickets/{id}/update"
       body: "*"
     };
   }
@@ -797,16 +812,50 @@ message GetSupportTicketsPagedRequest {
   int32 limit = 1;
   int32 offset = 2;
   common.OrderFactor order_factor = 3;
-  bool resolved = 4;
+  optional common.SupportTicketStatus status = 4;
+  optional string email = 5;
+  optional string order_reference = 6;
+  optional string topic = 7;
+  optional string category = 8;
+  optional common.SupportTicketPriority priority = 9;
+  optional string date_from = 10; // ISO 8601 format
+  optional string date_to = 11; // ISO 8601 format
 }
 
 message GetSupportTicketsPagedResponse {
   repeated common.SupportTicket tickets = 1;
+  int32 total_count = 2;
+}
+
+message GetSupportTicketByIdRequest {
+  int32 id = 1;
+}
+
+message GetSupportTicketByIdResponse {
+  common.SupportTicket ticket = 1;
+}
+
+message GetSupportTicketByCaseNumberRequest {
+  string case_number = 1;
+}
+
+message GetSupportTicketByCaseNumberResponse {
+  common.SupportTicket ticket = 1;
 }
 
 message UpdateSupportTicketStatusRequest {
   int32 id = 1;
-  bool status = 2;
+  common.SupportTicketStatus status = 2;
+  optional string internal_notes = 3;
 }
 
 message UpdateSupportTicketStatusResponse {}
+
+message UpdateSupportTicketRequest {
+  int32 id = 1;
+  optional common.SupportTicketPriority priority = 2;
+  optional string category = 3;
+  optional string internal_notes = 4;
+}
+
+message UpdateSupportTicketResponse {}

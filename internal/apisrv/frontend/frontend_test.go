@@ -1825,3 +1825,190 @@ func TestGetArchivesPaged(t *testing.T) {
 	assert.Len(t, resp.Archives[1].Media, 1)
 	assert.Equal(t, "https://example.com/image2.jpg", resp.Archives[1].Media[0].Media.FullSize.MediaUrl)
 }
+
+func TestSubmitSupportTicket_Success(t *testing.T) {
+	mockRepo := new(MockRepository)
+	mockSupport := new(MockSupport)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo:        mockRepo,
+		rateLimiter: ratelimit.NewMultiKeyLimiter(),
+	}
+
+	ctx := middleware.WithClientIP(context.Background(), "192.168.1.1")
+
+	ticket := &pb_common.SupportTicketInsert{
+		Topic:          "Order Issue",
+		Subject:        "Problem with order",
+		Civility:       "Mr",
+		Email:          "test@example.com",
+		FirstName:      "John",
+		LastName:       "Doe",
+		OrderReference: "ORD-123",
+		Notes:          "I need help with my order",
+		Category:       "shipping",
+		Priority:       pb_common.SupportTicketPriority_SUPPORT_TICKET_PRIORITY_HIGH,
+	}
+
+	mockSupport.EXPECT().SubmitTicket(
+		mock.Anything,
+		mock.MatchedBy(func(t entity.SupportTicketInsert) bool {
+			return t.Email == "test@example.com" &&
+				t.Subject == "Problem with order" &&
+				t.Priority == entity.PriorityHigh
+		}),
+	).Return("CS-2026-00001", nil)
+
+	resp, err := server.SubmitSupportTicket(ctx, &pb_frontend.SubmitSupportTicketRequest{
+		Ticket: ticket,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	mockSupport.AssertExpectations(t)
+}
+
+func TestSubmitSupportTicket_InvalidEmail(t *testing.T) {
+	mockRepo := new(MockRepository)
+	mockSupport := new(MockSupport)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo:        mockRepo,
+		rateLimiter: ratelimit.NewMultiKeyLimiter(),
+	}
+
+	ctx := middleware.WithClientIP(context.Background(), "192.168.1.1")
+
+	ticket := &pb_common.SupportTicketInsert{
+		Topic:     "Test",
+		Subject:   "Test",
+		Civility:  "Mr",
+		Email:     "invalid-email",
+		FirstName: "John",
+		LastName:  "Doe",
+		Notes:     "Test notes",
+	}
+
+	resp, err := server.SubmitSupportTicket(ctx, &pb_frontend.SubmitSupportTicketRequest{
+		Ticket: ticket,
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "invalid email format")
+}
+
+func TestSubmitSupportTicket_MissingRequiredFields(t *testing.T) {
+	mockRepo := new(MockRepository)
+	mockSupport := new(MockSupport)
+	mockRepo.On("Support").Return(mockSupport)
+
+	server := &Server{
+		repo:        mockRepo,
+		rateLimiter: ratelimit.NewMultiKeyLimiter(),
+	}
+
+	ctx := middleware.WithClientIP(context.Background(), "192.168.1.1")
+
+	testCases := []struct {
+		name   string
+		ticket *pb_common.SupportTicketInsert
+		errMsg string
+	}{
+		{
+			name: "missing email",
+			ticket: &pb_common.SupportTicketInsert{
+				Subject:   "Test",
+				FirstName: "John",
+				LastName:  "Doe",
+				Notes:     "Test",
+			},
+			errMsg: "email is required",
+		},
+		{
+			name: "missing first name",
+			ticket: &pb_common.SupportTicketInsert{
+				Email:    "test@example.com",
+				Subject:  "Test",
+				LastName: "Doe",
+				Notes:    "Test",
+			},
+			errMsg: "first name is required",
+		},
+		{
+			name: "missing subject",
+			ticket: &pb_common.SupportTicketInsert{
+				Email:     "test@example.com",
+				FirstName: "John",
+				LastName:  "Doe",
+				Notes:     "Test",
+			},
+			errMsg: "subject is required",
+		},
+		{
+			name: "missing notes",
+			ticket: &pb_common.SupportTicketInsert{
+				Email:     "test@example.com",
+				FirstName: "John",
+				LastName:  "Doe",
+				Subject:   "Test",
+			},
+			errMsg: "notes are required",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := server.SubmitSupportTicket(ctx, &pb_frontend.SubmitSupportTicketRequest{
+				Ticket: tc.ticket,
+			})
+
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+			assert.Contains(t, err.Error(), tc.errMsg)
+		})
+	}
+}
+
+func TestSubmitSupportTicket_RateLimitExceeded(t *testing.T) {
+	mockRepo := new(MockRepository)
+	mockSupport := new(MockSupport)
+	mockRepo.On("Support").Return(mockSupport)
+
+	limiter := ratelimit.NewCustomMultiKeyLimiter(100, 100, 20)
+	server := &Server{
+		repo:        mockRepo,
+		rateLimiter: limiter,
+	}
+
+	ctx := middleware.WithClientIP(context.Background(), "192.168.1.1")
+
+	ticket := &pb_common.SupportTicketInsert{
+		Topic:     "Test",
+		Subject:   "Test ticket",
+		Civility:  "Mr",
+		Email:     "test@example.com",
+		FirstName: "John",
+		LastName:  "Doe",
+		Notes:     "Test notes",
+	}
+
+	mockSupport.On("SubmitTicket", mock.Anything, mock.Anything).Return("CS-2026-00001", nil)
+
+	for i := 0; i < 5; i++ {
+		_, err := server.SubmitSupportTicket(ctx, &pb_frontend.SubmitSupportTicketRequest{
+			Ticket: ticket,
+		})
+		assert.NoError(t, err)
+	}
+
+	resp, err := server.SubmitSupportTicket(ctx, &pb_frontend.SubmitSupportTicketRequest{
+		Ticket: ticket,
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "too many support tickets")
+}
