@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -209,6 +210,11 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *p
 		})
 	}
 
+	sku := orderItem.SKU
+	if size, ok := cache.GetSizeById(orderItem.SizeId); ok && size.Name != "" {
+		sku = fmt.Sprintf("%s-%s", orderItem.SKU, strings.ToUpper(size.Name))
+	}
+
 	return &pb_common.OrderItem{
 		Id:                    int32(orderItem.Id),
 		OrderId:               int32(orderItem.OrderId),
@@ -223,7 +229,7 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *p
 		SubCategoryId:         orderItem.SubCategoryId.Int32,
 		TypeId:                int32(orderItem.TypeId.Int32),
 		ProductBrand:          orderItem.ProductBrand,
-		Sku:                   orderItem.SKU,
+		Sku:                   sku,
 		Preorder:              timestamppb.New(orderItem.Preorder.Time),
 		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
 		Translations:          pbTranslations,
