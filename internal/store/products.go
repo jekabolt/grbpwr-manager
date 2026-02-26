@@ -29,14 +29,15 @@ func (ms *MYSQLStore) Products() dependency.Products {
 	}
 }
 
-func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int) (int, error) {
+func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int, sku string) (int, error) {
 	query := `
 	INSERT INTO product 
-	(id, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
-	VALUES (:id, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
+	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
+	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
 
 	params := map[string]any{
 		"id":                   id,
+		"sku":                  sku,
 		"preorder":             product.ProductBodyInsert.Preorder,
 		"brand":                product.ProductBodyInsert.Brand,
 		"color":                product.ProductBodyInsert.Color,
@@ -242,7 +243,8 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		}
 		// generate unique id
 		id := time.Now().Unix()
-		prdId, err = insertProduct(ctx, rep, prd.Product, int(id))
+		sku := GenerateSKU(prd.Product, int(id))
+		prdId, err = insertProduct(ctx, rep, prd.Product, int(id), sku)
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}

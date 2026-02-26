@@ -37,7 +37,7 @@ func (s *supportStore) generateCaseNumber(ctx context.Context) (string, error) {
 
 func (s *supportStore) GetSupportTicketsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filters entity.SupportTicketFilters) ([]entity.SupportTicket, int, error) {
 	var tickets []entity.SupportTicket
-	
+
 	whereConditions := []string{}
 	args := map[string]any{
 		"limit":  limit,
@@ -83,7 +83,7 @@ func (s *supportStore) GetSupportTicketsPaged(ctx context.Context, limit, offset
 	}
 
 	orderByClause := "created_at DESC"
-	if orderFactor == entity.OrderFactorASC {
+	if orderFactor == entity.Ascending {
 		orderByClause = "created_at ASC"
 	}
 
@@ -164,7 +164,7 @@ func (s *supportStore) UpdateStatus(ctx context.Context, id int, status entity.S
 	if status == entity.SupportStatusResolved || status == entity.SupportStatusClosed {
 		resolvedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	}
-	
+
 	query := `
 		UPDATE support_ticket
 		SET status = :status, resolved_at = :resolved_at

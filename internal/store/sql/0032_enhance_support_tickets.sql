@@ -1,12 +1,18 @@
--- +goose Up
+-- +migrate Up
 -- Enhance support_ticket table with proper status model, priority, category, and internal notes
 
--- Add new columns
+-- Add new columns (case_number without UNIQUE first to allow backfill)
 ALTER TABLE support_ticket
-ADD COLUMN case_number VARCHAR(20) UNIQUE NOT NULL DEFAULT '',
+ADD COLUMN case_number VARCHAR(20) NULL,
 ADD COLUMN priority ENUM('low', 'medium', 'high', 'urgent') NOT NULL DEFAULT 'medium',
 ADD COLUMN category VARCHAR(100) NOT NULL DEFAULT '',
-ADD COLUMN internal_notes TEXT NOT NULL DEFAULT '';
+ADD COLUMN internal_notes TEXT NULL;
+
+-- Backfill case numbers for existing tickets. Format: CS-YYYY-NNNNN (id ensures uniqueness)
+UPDATE support_ticket SET case_number = CONCAT('CS-', YEAR(created_at), '-', LPAD(id, 5, '0'));
+
+-- Now enforce UNIQUE NOT NULL on case_number
+ALTER TABLE support_ticket MODIFY COLUMN case_number VARCHAR(20) UNIQUE NOT NULL;
 
 -- Change status from boolean to enum
 ALTER TABLE support_ticket
@@ -20,15 +26,7 @@ CREATE INDEX idx_support_ticket_category ON support_ticket(category);
 CREATE INDEX idx_support_ticket_email ON support_ticket(email);
 CREATE INDEX idx_support_ticket_created_at ON support_ticket(created_at);
 
--- Generate case numbers for existing tickets (if any)
--- Format: CS-YYYY-NNNNN
-SET @row_number = 0;
-UPDATE support_ticket
-SET case_number = CONCAT('CS-', YEAR(created_at), '-', LPAD((@row_number := @row_number + 1), 5, '0'))
-WHERE case_number = ''
-ORDER BY id;
-
--- +goose Down
+-- +migrate Down
 -- Revert support_ticket table changes
 
 -- Drop indexes
