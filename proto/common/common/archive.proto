@@ -19,14 +19,14 @@ message ArchiveList {
 
 message ArchiveFull {
   ArchiveList archive_list = 1;
-  common.MediaFull main_media = 2;
+  repeated common.MediaFull main_media = 2;
   repeated common.MediaFull media = 3;
 }
 
 message ArchiveInsert {
   string tag = 1;
   repeated int32 media_ids = 2;
-  int32 main_media_id = 3;
+  repeated int32 main_media_ids = 3;
   int32 thumbnail_id = 4;
   repeated common.ArchiveInsertTranslation translations = 5;
 }

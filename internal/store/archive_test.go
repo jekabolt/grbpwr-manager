@@ -53,6 +53,14 @@ func cleanupMedia(ctx context.Context, store *MYSQLStore, mediaIds []int) error 
 		return err
 	}
 
+	// Delete all archive main media that reference these media
+	query = `DELETE FROM archive_main_media WHERE media_id IN (:mediaIds)`
+	if err := ExecNamed(ctx, store.DB(), query, map[string]any{
+		"mediaIds": mediaIds,
+	}); err != nil {
+		return err
+	}
+
 	// Then delete the media
 	for _, id := range mediaIds {
 		if err := store.Media().DeleteMediaById(ctx, id); err != nil {
@@ -119,21 +127,33 @@ func TestArchiveCRUD(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		// Try to create with empty media ids (should fail)
 		emptyArchive := &entity.ArchiveInsert{
-			Heading:     "Empty Archive",
-			Description: "Empty Description",
 			Tag:         "empty",
 			MediaIds:    []int{},
+			ThumbnailId: mediaIds[0],
+			Translations: []entity.ArchiveTranslation{
+				{
+					LanguageId:  1,
+					Heading:     "Empty Archive",
+					Description: "Empty Description",
+				},
+			},
 		}
 		_, err := store.Archive().AddArchive(ctx, emptyArchive)
 		assert.Error(t, err, "should fail with empty media ids")
 
 		// Create valid archive
 		archive := &entity.ArchiveInsert{
-			Heading:     "Test Archive",
-			Description: "Test Description",
-			Tag:         "test",
-			MediaIds:    mediaIds[0:3],
-			VideoId:     sql.NullInt32{Int32: int32(mediaIds[3]), Valid: true},
+			Tag:          "test",
+			MediaIds:     mediaIds[0:3],
+			MainMediaIds: []int{mediaIds[3], mediaIds[4]},
+			ThumbnailId:  mediaIds[5],
+			Translations: []entity.ArchiveTranslation{
+				{
+					LanguageId:  1,
+					Heading:     "Test Archive",
+					Description: "Test Description",
+				},
+			},
 		}
 		id, err := store.Archive().AddArchive(ctx, archive)
 		require.NoError(t, err)
@@ -149,26 +169,39 @@ func TestArchiveCRUD(t *testing.T) {
 			// Get created archive
 			result, err := store.Archive().GetArchiveById(ctx, id)
 			require.NoError(t, err)
-			// Only verify the core fields, not media-related fields
-			assert.Equal(t, archive.Heading, result.Heading)
-			assert.Equal(t, archive.Description, result.Description)
-			assert.Equal(t, archive.Tag, result.Tag)
+			assert.Equal(t, archive.Tag, result.ArchiveList.Tag)
+			assert.Len(t, result.MainMedia, 2)
+			assert.Len(t, result.Media, 3)
 
 			// Test Read (Get Paged)
 			t.Run("read_paged", func(t *testing.T) {
 				// Create additional archives for pagination test
 				archives := []*entity.ArchiveInsert{
 					{
-						Heading:     "Archive 2",
-						Description: "Description 2",
-						Tag:         "tag2",
-						MediaIds:    mediaIds[4:6],
+						Tag:          "tag2",
+						MediaIds:     mediaIds[6:8],
+						MainMediaIds: []int{mediaIds[7]},
+						ThumbnailId:  mediaIds[8],
+						Translations: []entity.ArchiveTranslation{
+							{
+								LanguageId:  1,
+								Heading:     "Archive 2",
+								Description: "Description 2",
+							},
+						},
 					},
 					{
-						Heading:     "Archive 3",
-						Description: "Description 3",
-						Tag:         "tag3",
-						MediaIds:    mediaIds[6:8],
+						Tag:          "tag3",
+						MediaIds:     mediaIds[9:10],
+						MainMediaIds: []int{mediaIds[10]},
+						ThumbnailId:  mediaIds[9],
+						Translations: []entity.ArchiveTranslation{
+							{
+								LanguageId:  1,
+								Heading:     "Archive 3",
+								Description: "Description 3",
+							},
+						},
 					},
 				}
 
@@ -179,14 +212,14 @@ func TestArchiveCRUD(t *testing.T) {
 				}
 
 				// Test invalid pagination
-				_, _, err = store.Archive().GetArchivesPaged(ctx, 1, 0, 0, entity.Descending)
+				_, _, err = store.Archive().GetArchivesPaged(ctx, 0, 0, entity.Descending)
 				assert.Error(t, err, "should fail with invalid limit")
 
-				_, _, err = store.Archive().GetArchivesPaged(ctx, 1, 10, -1, entity.Descending)
+				_, _, err = store.Archive().GetArchivesPaged(ctx, 10, -1, entity.Descending)
 				assert.Error(t, err, "should fail with invalid offset")
 
 				// Test valid pagination
-				results, count, err := store.Archive().GetArchivesPaged(ctx, 1, 2, 0, entity.Descending)
+				results, count, err := store.Archive().GetArchivesPaged(ctx, 2, 0, entity.Descending)
 				require.NoError(t, err)
 				assert.Equal(t, 3, count) // Total count should be 3 (1 original + 2 additional)
 				assert.Len(t, results, 2) // Should return 2 items due to limit
@@ -199,11 +232,17 @@ func TestArchiveCRUD(t *testing.T) {
 
 					// Update existing archive
 					updateArchive := &entity.ArchiveInsert{
-						Heading:     "Updated Archive",
-						Description: "Updated Description",
-						Tag:         "updated",
-						MediaIds:    mediaIds[8:10],
-						VideoId:     sql.NullInt32{Int32: int32(mediaIds[10]), Valid: true},
+						Tag:          "updated",
+						MediaIds:     mediaIds[1:3],
+						MainMediaIds: []int{mediaIds[2]},
+						ThumbnailId:  mediaIds[0],
+						Translations: []entity.ArchiveTranslation{
+							{
+								LanguageId:  1,
+								Heading:     "Updated Archive",
+								Description: "Updated Description",
+							},
+						},
 					}
 					err = store.Archive().UpdateArchive(ctx, id, updateArchive)
 					require.NoError(t, err)
@@ -211,10 +250,9 @@ func TestArchiveCRUD(t *testing.T) {
 					// Verify update
 					updated, err := store.Archive().GetArchiveById(ctx, id)
 					require.NoError(t, err)
-					// Only verify the core fields, not media-related fields
-					assert.Equal(t, updateArchive.Heading, updated.Heading)
-					assert.Equal(t, updateArchive.Description, updated.Description)
-					assert.Equal(t, updateArchive.Tag, updated.Tag)
+					assert.Equal(t, updateArchive.Tag, updated.ArchiveList.Tag)
+					assert.Len(t, updated.MainMedia, 1)
+					assert.Len(t, updated.Media, 2)
 
 					// Test Delete
 					t.Run("delete", func(t *testing.T) {

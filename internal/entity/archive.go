@@ -15,13 +15,13 @@ type ArchiveList struct {
 
 type ArchiveFull struct {
 	ArchiveList ArchiveList
-	MainMedia   MediaFull `db:"main_media" json:"main_media"`
+	MainMedia   []MediaFull `db:"main_media" json:"main_media"`
 	Media       []MediaFull
 }
 
 type ArchiveInsert struct {
 	Tag          string               `db:"tag" json:"tag"`
-	MainMediaId  int                  `db:"main_media_id" json:"main_media_id"`
+	MainMediaIds []int                `db:"main_media_ids" json:"main_media_ids"`
 	ThumbnailId  int                  `db:"thumbnail_id" json:"thumbnail_id"`
 	MediaIds     []int                `db:"media_ids" json:"media_ids"`
 	Translations []ArchiveTranslation `db:"translations" json:"translations"`

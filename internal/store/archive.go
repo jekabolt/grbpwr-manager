@@ -32,14 +32,31 @@ func (ms *MYSQLStore) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert
 	var err error
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (tag, main_media_id, thumbnail_id) VALUES (:tag, :mainMediaId, :thumbnailId)`
+		query := `INSERT INTO archive (tag, thumbnail_id) VALUES (:tag, :thumbnailId)`
 		aid, err = ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 			"tag":         aNew.Tag,
-			"mainMediaId": aNew.MainMediaId,
 			"thumbnailId": aNew.ThumbnailId,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
+		}
+
+		// Insert main media items
+		if len(aNew.MainMediaIds) > 0 {
+			mainMediaRows := make([]map[string]any, 0, len(aNew.MainMediaIds))
+			for i, mid := range aNew.MainMediaIds {
+				row := map[string]any{
+					"archive_id":    aid,
+					"media_id":      mid,
+					"display_order": i,
+				}
+				mainMediaRows = append(mainMediaRows, row)
+			}
+
+			err = BulkInsert(ctx, rep.DB(), "archive_main_media", mainMediaRows)
+			if err != nil {
+				return fmt.Errorf("failed to add archive main media: %w", err)
+			}
 		}
 
 		rows := make([]map[string]any, 0, len(aNew.MediaIds))
@@ -104,22 +121,47 @@ func (ms *MYSQLStore) UpdateArchive(ctx context.Context, aid int, aInsert *entit
 			return fmt.Errorf("failed to delete archive items with archive Id %d: %w", aid, err)
 		}
 
+		// Delete existing main media items
+		query = `DELETE FROM archive_main_media WHERE archive_id = :archiveId`
+		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
+			"archiveId": aid,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete archive main media with archive Id %d: %w", aid, err)
+		}
+
 		// Update the archive itself
 		query = `
 		UPDATE archive SET 
 			tag = :tag,
-			main_media_id = :main_media_id,
 			thumbnail_id = :thumbnail_id 
 		WHERE id = :id`
 
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
-			"id":            aid,
-			"tag":           aInsert.Tag,
-			"main_media_id": aInsert.MainMediaId,
-			"thumbnail_id":  aInsert.ThumbnailId,
+			"id":           aid,
+			"tag":          aInsert.Tag,
+			"thumbnail_id": aInsert.ThumbnailId,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update archive: %w", err)
+		}
+
+		// Insert new main media items
+		if len(aInsert.MainMediaIds) > 0 {
+			mainMediaRows := make([]map[string]any, 0, len(aInsert.MainMediaIds))
+			for i, mid := range aInsert.MainMediaIds {
+				row := map[string]any{
+					"archive_id":    aid,
+					"media_id":      mid,
+					"display_order": i,
+				}
+				mainMediaRows = append(mainMediaRows, row)
+			}
+
+			err = BulkInsert(ctx, rep.DB(), "archive_main_media", mainMediaRows)
+			if err != nil {
+				return fmt.Errorf("failed to add archive main media: %w", err)
+			}
 		}
 
 		// Insert new archive items
@@ -298,12 +340,10 @@ func (ms *MYSQLStore) DeleteArchiveById(ctx context.Context, id int) error {
 func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 	query := `
 	SELECT 
-		a.id, a.tag, a.created_at, a.main_media_id, a.thumbnail_id,
-		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash,
-		mm.id AS main_media_id, mm.full_size AS main_media_full_size, mm.full_size_width AS main_media_full_size_width, mm.full_size_height AS main_media_full_size_height, mm.thumbnail AS main_media_thumbnail, mm.thumbnail_width AS main_media_thumbnail_width, mm.thumbnail_height AS main_media_thumbnail_height, mm.compressed AS main_media_compressed, mm.compressed_width AS main_media_compressed_width, mm.compressed_height AS main_media_compressed_height, mm.blur_hash AS main_media_blur_hash
+		a.id, a.tag, a.created_at, a.thumbnail_id,
+		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash
 	FROM archive a
 	LEFT JOIN media mt ON a.thumbnail_id = mt.id
-	LEFT JOIN media mm ON a.main_media_id = mm.id
 	WHERE a.id = :id`
 
 	sqlStr, args, err := MakeQuery(query, map[string]any{"id": id})
@@ -322,45 +362,12 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 
 	var al entity.ArchiveList
 	var thumbnail entity.MediaFull
-	var mainMediaId sql.NullInt64
-	// Internal struct for nullable mainMedia fields
-	type mainMediaScan struct {
-		FullSizeMediaURL   sql.NullString
-		FullSizeWidth      sql.NullInt64
-		FullSizeHeight     sql.NullInt64
-		ThumbnailMediaURL  sql.NullString
-		ThumbnailWidth     sql.NullInt64
-		ThumbnailHeight    sql.NullInt64
-		CompressedMediaURL sql.NullString
-		CompressedWidth    sql.NullInt64
-		CompressedHeight   sql.NullInt64
-		BlurHash           sql.NullString
-	}
-	var mainMediaS mainMediaScan
 	err = rows.Scan(
-		&al.Id, &al.Tag, &al.CreatedAt, &mainMediaId, &thumbnail.Id,
+		&al.Id, &al.Tag, &al.CreatedAt, &thumbnail.Id,
 		&thumbnail.Id, &thumbnail.MediaItem.FullSizeMediaURL, &thumbnail.MediaItem.FullSizeWidth, &thumbnail.MediaItem.FullSizeHeight, &thumbnail.MediaItem.ThumbnailMediaURL, &thumbnail.MediaItem.ThumbnailWidth, &thumbnail.MediaItem.ThumbnailHeight, &thumbnail.MediaItem.CompressedMediaURL, &thumbnail.MediaItem.CompressedWidth, &thumbnail.MediaItem.CompressedHeight, &thumbnail.MediaItem.BlurHash,
-		&mainMediaId,
-		&mainMediaS.FullSizeMediaURL, &mainMediaS.FullSizeWidth, &mainMediaS.FullSizeHeight, &mainMediaS.ThumbnailMediaURL, &mainMediaS.ThumbnailWidth, &mainMediaS.ThumbnailHeight, &mainMediaS.CompressedMediaURL, &mainMediaS.CompressedWidth, &mainMediaS.CompressedHeight, &mainMediaS.BlurHash,
 	)
 	if err != nil {
 		return nil, err
-	}
-	var mainMedia entity.MediaFull
-	if mainMediaId.Valid {
-		mainMedia.Id = int(mainMediaId.Int64)
-		mainMedia.MediaItem.FullSizeMediaURL = mainMediaS.FullSizeMediaURL.String
-		mainMedia.MediaItem.FullSizeWidth = int(mainMediaS.FullSizeWidth.Int64)
-		mainMedia.MediaItem.FullSizeHeight = int(mainMediaS.FullSizeHeight.Int64)
-		mainMedia.MediaItem.ThumbnailMediaURL = mainMediaS.ThumbnailMediaURL.String
-		mainMedia.MediaItem.ThumbnailWidth = int(mainMediaS.ThumbnailWidth.Int64)
-		mainMedia.MediaItem.ThumbnailHeight = int(mainMediaS.ThumbnailHeight.Int64)
-		mainMedia.MediaItem.CompressedMediaURL = mainMediaS.CompressedMediaURL.String
-		mainMedia.MediaItem.CompressedWidth = int(mainMediaS.CompressedWidth.Int64)
-		mainMedia.MediaItem.CompressedHeight = int(mainMediaS.CompressedHeight.Int64)
-		mainMedia.MediaItem.BlurHash = mainMediaS.BlurHash
-	} else {
-		mainMedia = entity.MediaFull{}
 	}
 	al.Thumbnail = thumbnail
 
@@ -376,6 +383,19 @@ func (ms *MYSQLStore) GetArchiveById(ctx context.Context, id int) (*entity.Archi
 		al.Slug = dto.GetArchiveSlug(al.Id, translations[0].Heading, al.Tag)
 	} else {
 		al.Slug = dto.GetArchiveSlug(al.Id, "", al.Tag)
+	}
+
+	// Query all main media for this archive
+	mainMediaQuery := `
+	SELECT 
+		m.id, m.created_at, m.full_size, m.full_size_width, m.full_size_height, m.thumbnail, m.thumbnail_width, m.thumbnail_height, m.compressed, m.compressed_width, m.compressed_height, m.blur_hash
+	FROM archive_main_media amm
+	JOIN media m ON amm.media_id = m.id
+	WHERE amm.archive_id = :archiveId
+	ORDER BY amm.display_order ASC`
+	mainMedia, err := QueryListNamed[entity.MediaFull](ctx, ms.DB(), mainMediaQuery, map[string]any{"archiveId": id})
+	if err != nil {
+		return nil, err
 	}
 
 	// Query all media for this archive

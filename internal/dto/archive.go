@@ -28,6 +28,11 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		mids = append(mids, int(mid))
 	}
 
+	mainMediaIds := make([]int, 0, len(pbArchiveInsert.MainMediaIds))
+	for _, mid := range pbArchiveInsert.MainMediaIds {
+		mainMediaIds = append(mainMediaIds, int(mid))
+	}
+
 	translations := make([]entity.ArchiveTranslation, 0, len(pbArchiveInsert.Translations))
 	for _, translation := range pbArchiveInsert.Translations {
 		translations = append(translations, entity.ArchiveTranslation{
@@ -41,7 +46,7 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		Translations: translations,
 		Tag:          pbArchiveInsert.Tag,
 		MediaIds:     mids,
-		MainMediaId:  int(pbArchiveInsert.MainMediaId),
+		MainMediaIds: mainMediaIds,
 		ThumbnailId:  int(pbArchiveInsert.ThumbnailId),
 	}, nil
 }
@@ -57,9 +62,14 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		mediaPb = append(mediaPb, ConvertEntityToCommonMedia(&m))
 	}
 
+	mainMediaPb := make([]*pb_common.MediaFull, 0, len(af.MainMedia))
+	for _, m := range af.MainMedia {
+		mainMediaPb = append(mainMediaPb, ConvertEntityToCommonMedia(&m))
+	}
+
 	return &pb_common.ArchiveFull{
 		ArchiveList: ConvertEntityToCommonArchiveList(&af.ArchiveList),
-		MainMedia:   ConvertEntityToCommonMedia(&af.MainMedia),
+		MainMedia:   mainMediaPb,
 		Media:       mediaPb,
 	}
 }
