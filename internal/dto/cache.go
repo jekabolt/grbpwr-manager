@@ -3,6 +3,7 @@ package dto
 import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
@@ -22,8 +23,10 @@ type Dict struct {
 	MaxOrderItems          int
 	BaseCurrency           string
 	BigMenu                bool
-	Announce               *entity.AnnounceWithTranslations
-	OrderExpirationSeconds int
+	Announce                   *entity.AnnounceWithTranslations
+	OrderExpirationSeconds     int
+	ComplimentaryShippingPrices map[string]decimal.Decimal
+	IsProd                      bool // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 }
 
 var (
@@ -118,7 +121,7 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			})
 	}
 
-	for _, p := range dict.PaymentMethods {
+	for _, p := range dict.PaymentMethods { // Use filtered list (CARD or CARD_TEST based on IsProd)
 		name, _ := ConvertEntityToPbPaymentMethod(p.Name)
 		commonDict.PaymentMethods = append(commonDict.PaymentMethods,
 			&pb_common.PaymentMethod{
@@ -214,6 +217,15 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 		}
 		commonDict.Announce = pbAnnounce
 	}
+
+	if len(dict.ComplimentaryShippingPrices) > 0 {
+		commonDict.ComplimentaryShippingPrices = make(map[string]*pb_decimal.Decimal, len(dict.ComplimentaryShippingPrices))
+		for currency, price := range dict.ComplimentaryShippingPrices {
+			commonDict.ComplimentaryShippingPrices[currency] = &pb_decimal.Decimal{Value: price.String()}
+		}
+	}
+
+	commonDict.IsProd = dict.IsProd
 
 	return commonDict
 }

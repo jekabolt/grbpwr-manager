@@ -4701,6 +4701,7 @@ func TestUpdateSettings(t *testing.T) {
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
 				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
+				settingsMock.On("SetPaymentIsProd", mock.Anything, false).Return(nil)
 
 				r.On("Settings").Return(settingsMock)
 			},
@@ -4727,6 +4728,7 @@ func TestUpdateSettings(t *testing.T) {
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
 				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
+				settingsMock.On("SetPaymentIsProd", mock.Anything, false).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},
@@ -4753,6 +4755,7 @@ func TestUpdateSettings(t *testing.T) {
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
 				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
+				settingsMock.On("SetPaymentIsProd", mock.Anything, false).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},
@@ -4809,6 +4812,7 @@ func TestUpdateSettings(t *testing.T) {
 				settingsMock.On("SetSiteAvailability", mock.Anything, true).Return(nil)
 				settingsMock.On("SetMaxOrderItems", mock.Anything, 10).Return(nil)
 				settingsMock.On("SetOrderExpirationSeconds", mock.Anything, 0).Return(nil)
+				settingsMock.On("SetPaymentIsProd", mock.Anything, false).Return(nil)
 				r.On("Settings").Return(settingsMock)
 			},
 			want:    &pb_admin.UpdateSettingsResponse{},

@@ -45,4 +45,5 @@ message Shipment {
   string tracking_code = 5;
   google.protobuf.Timestamp shipping_date = 6;
   google.protobuf.Timestamp estimated_arrival_date = 7;
+  bool free_shipping = 8; // True when shipping was complimentary (threshold met or promo)
 }

@@ -742,6 +742,7 @@ message UpdateSettingsRequest {
   common.Announce announce = 6;
   int32 order_expiration_seconds = 7; // 0 = use payment handler default
   map<string, google.type.Decimal> complimentary_shipping_prices = 8; // Map of currency code to complimentary shipping threshold (e.g., "EUR" -> 100.00)
+  bool is_prod = 9; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 }
 
 message UpdateSettingsResponse {}

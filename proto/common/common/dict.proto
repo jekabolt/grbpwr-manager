@@ -27,6 +27,8 @@ message Dictionary {
   bool big_menu = 11;
   Announce announce = 12;
   int32 order_expiration_seconds = 14; // 0 = use payment handler default
+  map<string, google.type.Decimal> complimentary_shipping_prices = 15; // Map of currency code to minimum subtotal for free shipping
+  bool is_prod = 16; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 }
 
 message Collection {

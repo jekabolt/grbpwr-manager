@@ -158,6 +158,7 @@ type Shipment struct {
 	Id                   int             `db:"id"`
 	OrderId              int             `db:"order_id"`
 	Cost                 decimal.Decimal `db:"cost"`
+	FreeShipping         bool            `db:"free_shipping"`
 	CreatedAt            time.Time       `db:"created_at"`
 	UpdatedAt            time.Time       `db:"updated_at"`
 	CarrierId            int             `db:"carrier_id"`

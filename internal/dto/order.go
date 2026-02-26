@@ -370,6 +370,7 @@ func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, 
 		TrackingCode:         s.TrackingCode.String,
 		ShippingDate:         timestamppb.New(s.ShippingDate.Time),
 		EstimatedArrivalDate: timestamppb.New(s.EstimatedArrivalDate.Time),
+		FreeShipping:         s.FreeShipping,
 	}, nil
 }
 

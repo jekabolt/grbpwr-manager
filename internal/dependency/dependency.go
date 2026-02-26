@@ -216,6 +216,7 @@ type (
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
 		SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
+		SetPaymentIsProd(ctx context.Context, isProd bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
 		SetBigMenu(ctx context.Context, bigMenu bool) error

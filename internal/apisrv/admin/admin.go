@@ -528,23 +528,25 @@ func (s *Server) ListPromos(ctx context.Context, req *pb_admin.ListPromosRequest
 func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:             cache.GetCategories(),
-			Measurements:           cache.GetMeasurements(),
-			OrderStatuses:          cache.GetOrderStatuses(),
-			PaymentMethods:         cache.GetPaymentMethods(),
-			ShipmentCarriers:       cache.GetShipmentCarriers(),
-			Sizes:                  cache.GetSizes(),
-			Collections:            cache.GetCollections(),
-			Languages:              cache.GetLanguages(),
-			Genders:                cache.GetGenders(),
-			SortFactors:            cache.GetSortFactors(),
-			OrderFactors:           cache.GetOrderFactors(),
-			SiteEnabled:            cache.GetSiteAvailability(),
-			MaxOrderItems:          cache.GetMaxOrderItems(),
-			BaseCurrency:           cache.GetBaseCurrency(),
-			BigMenu:                cache.GetBigMenu(),
-			Announce:               cache.GetAnnounce(),
-			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
+			Categories:                  cache.GetCategories(),
+			Measurements:                cache.GetMeasurements(),
+			OrderStatuses:               cache.GetOrderStatuses(),
+			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(),
+			ShipmentCarriers:            cache.GetShipmentCarriers(),
+			Sizes:                       cache.GetSizes(),
+			Collections:                 cache.GetCollections(),
+			Languages:                   cache.GetLanguages(),
+			Genders:                     cache.GetGenders(),
+			SortFactors:                 cache.GetSortFactors(),
+			OrderFactors:                cache.GetOrderFactors(),
+			SiteEnabled:                 cache.GetSiteAvailability(),
+			MaxOrderItems:               cache.GetMaxOrderItems(),
+			BaseCurrency:                cache.GetBaseCurrency(),
+			BigMenu:                     cache.GetBigMenu(),
+			Announce:                    cache.GetAnnounce(),
+			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(),
+			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
+			IsProd:                      cache.GetPaymentIsProd(),
 		}),
 		Rates: nil,
 	}, nil
@@ -1149,6 +1151,14 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 	err = s.repo.Settings().SetOrderExpirationSeconds(ctx, int(req.OrderExpirationSeconds))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't set order expiration seconds",
+			slog.String("err", err.Error()),
+		)
+		return nil, err
+	}
+
+	err = s.repo.Settings().SetPaymentIsProd(ctx, req.IsProd)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't set payment is prod",
 			slog.String("err", err.Error()),
 		)
 		return nil, err

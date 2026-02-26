@@ -393,19 +393,16 @@ func deleteOrderItems(ctx context.Context, rep dependency.Repository, orderId in
 	return nil
 }
 
-func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.ShipmentCarrier, orderId int, currency string) error {
-	price, err := sc.PriceDecimal(currency)
-	if err != nil {
-		return fmt.Errorf("can't get shipment carrier price for currency %s: %w", currency, err)
-	}
+func insertShipment(ctx context.Context, rep dependency.Repository, sc *entity.ShipmentCarrier, orderId int, cost decimal.Decimal, freeShipping bool) error {
 	query := `
-	INSERT INTO shipment (carrier_id, order_id, cost)
-	VALUES (:carrierId, :orderId, :cost)
+	INSERT INTO shipment (carrier_id, order_id, cost, free_shipping)
+	VALUES (:carrierId, :orderId, :cost, :freeShipping)
 	`
-	err = ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
-		"carrierId": sc.Id,
-		"orderId":   orderId,
-		"cost":      price,
+	err := ExecNamed(ctx, rep.DB(), query, map[string]interface{}{
+		"carrierId":    sc.Id,
+		"orderId":      orderId,
+		"cost":         cost,
+		"freeShipping": freeShipping,
 	})
 	if err != nil {
 		return fmt.Errorf("can't insert shipment: %w", err)
@@ -929,6 +926,21 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err != nil {
 			return fmt.Errorf("can't get shipment carrier price for currency %s: %w", orderNew.Currency, err)
 		}
+
+		// Complimentary shipping: waive shipping when subtotal meets threshold (threshold=0 means disabled for that currency)
+		freeShipping := false
+		complimentaryPrices := cache.GetComplimentaryShippingPrices()
+		if threshold, ok := complimentaryPrices[strings.ToUpper(orderNew.Currency)]; ok && threshold.GreaterThan(decimal.Zero) {
+			if subtotal.GreaterThanOrEqual(threshold) {
+				shipmentPrice = decimal.Zero
+				freeShipping = true
+			}
+		}
+		if promo.FreeShipping {
+			shipmentPrice = decimal.Zero
+			freeShipping = true
+		}
+
 		totalPrice := promo.SubtotalWithPromo(subtotal, shipmentPrice, dto.DecimalPlacesForCurrency(orderNew.Currency))
 
 		order = &entity.Order{
@@ -939,7 +951,7 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 		}
 
 		// Insert order and related entities
-		err = ms.insertOrderDetails(ctx, rep, order, validItemsInsert, shipmentCarrier, orderNew)
+		err = ms.insertOrderDetails(ctx, rep, order, validItemsInsert, shipmentCarrier, shipmentPrice, freeShipping, orderNew)
 		if err != nil {
 			return fmt.Errorf("error while inserting order details: %w", err)
 		}
@@ -978,7 +990,7 @@ func validateOrderInput(orderNew *entity.OrderNew) error {
 }
 
 // Helper function to insert order details
-func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Repository, order *entity.Order, validItemsInsert []entity.OrderItemInsert, carrier *entity.ShipmentCarrier, orderNew *entity.OrderNew) error {
+func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Repository, order *entity.Order, validItemsInsert []entity.OrderItemInsert, carrier *entity.ShipmentCarrier, shipmentCost decimal.Decimal, freeShipping bool, orderNew *entity.OrderNew) error {
 	var err error
 	order.Id, order.UUID, err = insertOrder(ctx, rep, order)
 	if err != nil {
@@ -989,7 +1001,7 @@ func (ms *MYSQLStore) insertOrderDetails(ctx context.Context, rep dependency.Rep
 	if err = insertOrderItems(ctx, rep, validItemsInsert, order.Id); err != nil {
 		return fmt.Errorf("error while inserting order items: %w", err)
 	}
-	if err = insertShipment(ctx, rep, carrier, order.Id, order.Currency); err != nil {
+	if err = insertShipment(ctx, rep, carrier, order.Id, shipmentCost, freeShipping); err != nil {
 		return fmt.Errorf("error while inserting shipment: %w", err)
 	}
 	shippingAddressId, billingAddressId, err := insertAddresses(ctx, rep, orderNew.ShippingAddress, orderNew.BillingAddress)
@@ -1601,12 +1613,38 @@ func updateOrderItems(ctx context.Context, rep dependency.Repository, validItems
 // Finally, it updates the order's total promo and returns the calculated subtotal.
 // If any error occurs during the process, it returns an error along with a zero subtotal.
 func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment, currency string) (decimal.Decimal, error) {
-	// check if promo is allowed and not expired
 	if !promo.IsAllowed() {
 		promo = entity.PromoCode{}
 	}
 
-	subtotal = promo.SubtotalWithPromo(subtotal, shipment.CostDecimal(currency), dto.DecimalPlacesForCurrency(currency))
+	// Re-evaluate complimentary shipping: get carrier's actual price and check threshold
+	shipmentCost := shipment.CostDecimal(currency)
+	freeShipping := false
+	carrier, carrierOk := cache.GetShipmentCarrierById(shipment.CarrierId)
+	if carrierOk {
+		carrierPrice, err := carrier.PriceDecimal(currency)
+		if err == nil {
+			shipmentCost = carrierPrice
+			complimentaryPrices := cache.GetComplimentaryShippingPrices()
+			if threshold, ok := complimentaryPrices[strings.ToUpper(currency)]; ok && threshold.GreaterThan(decimal.Zero) {
+				if subtotal.GreaterThanOrEqual(threshold) {
+					shipmentCost = decimal.Zero
+					freeShipping = true
+				}
+			}
+		}
+	}
+	if promo.FreeShipping {
+		shipmentCost = decimal.Zero
+		freeShipping = true
+	}
+
+	// Update stored shipment cost and free_shipping flag
+	if err := updateShipmentCostAndFreeShipping(ctx, rep, shipment.Id, shipmentCost, freeShipping); err != nil {
+		return decimal.Zero, fmt.Errorf("can't update shipment cost: %w", err)
+	}
+
+	subtotal = promo.SubtotalWithPromo(subtotal, shipmentCost, dto.DecimalPlacesForCurrency(currency))
 
 	err := updateOrderTotalPromo(ctx, rep, orderId, promo.Id, subtotal)
 	if err != nil {
@@ -1614,6 +1652,15 @@ func updateTotalAmount(ctx context.Context, rep dependency.Repository, orderId i
 	}
 
 	return subtotal, nil
+}
+
+func updateShipmentCostAndFreeShipping(ctx context.Context, rep dependency.Repository, shipmentId int, cost decimal.Decimal, freeShipping bool) error {
+	query := `UPDATE shipment SET cost = :cost, free_shipping = :freeShipping WHERE id = :id`
+	return ExecNamed(ctx, rep.DB(), query, map[string]any{
+		"id":           shipmentId,
+		"cost":         cost,
+		"freeShipping": freeShipping,
+	})
 }
 
 func updateOrderTotalPromo(ctx context.Context, rep dependency.Repository, orderId int, promoId int, totalPrice decimal.Decimal) error {

@@ -197,6 +197,8 @@ message ValidateOrderItemsInsertResponse {
   string payment_intent_id = 7; // Stripe PaymentIntent ID
   repeated common.OrderItemAdjustment item_adjustments = 8; // Describes quantity/availability changes
   string idempotency_key = 9; // Server-generated key for payment session; client stores and sends on subsequent requests
+  bool free_shipping = 10; // True when order qualifies for complimentary shipping (subtotal >= threshold) or promo grants free shipping
+  google.type.Decimal shipping_price = 11; // Effective shipping price charged (0 when free_shipping is true)
 }
 
 message ValidateOrderByUUIDRequest {

@@ -240,6 +240,11 @@ func (ms *MYSQLStore) SetShipmentCarrierPrices(ctx context.Context, carrier stri
 	return nil
 }
 
+func (ms *MYSQLStore) SetPaymentIsProd(ctx context.Context, isProd bool) error {
+	cache.SetPaymentIsProd(isProd)
+	return nil
+}
+
 func (ms *MYSQLStore) SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error {
 	err := ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `UPDATE payment_method SET allowed = :allowed WHERE name = :method`

@@ -1,3 +1,4 @@
+-- +migrate Up
 -- Migration: Add complimentary shipping prices table
 -- Purpose: Store complimentary (free) shipping threshold prices in multiple currencies
 -- Affected: New table complimentary_shipping_price
@@ -22,3 +23,6 @@ VALUES
     ('JPY', 15000),
     ('CNY', 700),
     ('KRW', 130000);
+
+-- +migrate Down
+DROP TABLE IF EXISTS complimentary_shipping_price;

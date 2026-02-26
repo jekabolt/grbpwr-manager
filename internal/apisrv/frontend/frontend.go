@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -87,23 +88,25 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	return &pb_frontend.GetHeroResponse{
 		Hero: h,
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:             cache.GetCategories(),
-			Measurements:           cache.GetMeasurements(),
-			OrderStatuses:          cache.GetOrderStatuses(),
-			PaymentMethods:         cache.GetPaymentMethods(),
-			ShipmentCarriers:       cache.GetShipmentCarriers(),
-			Sizes:                  cache.GetSizes(),
-			Collections:            cache.GetCollections(),
-			Genders:                cache.GetGenders(),
-			Languages:              cache.GetLanguages(),
-			SortFactors:            cache.GetSortFactors(),
-			OrderFactors:           cache.GetOrderFactors(),
-			SiteEnabled:            cache.GetSiteAvailability(),
-			MaxOrderItems:          cache.GetMaxOrderItems(),
-			BaseCurrency:           cache.GetBaseCurrency(),
-			BigMenu:                cache.GetBigMenu(),
-			Announce:               cache.GetAnnounce(),
-			OrderExpirationSeconds: cache.GetOrderExpirationSeconds(),
+			Categories:                  cache.GetCategories(),
+			Measurements:                cache.GetMeasurements(),
+			OrderStatuses:               cache.GetOrderStatuses(),
+			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(),
+			ShipmentCarriers:            cache.GetShipmentCarriers(),
+			Sizes:                       cache.GetSizes(),
+			Collections:                 cache.GetCollections(),
+			Genders:                     cache.GetGenders(),
+			Languages:                   cache.GetLanguages(),
+			SortFactors:                 cache.GetSortFactors(),
+			OrderFactors:                cache.GetOrderFactors(),
+			SiteEnabled:                 cache.GetSiteAvailability(),
+			MaxOrderItems:               cache.GetMaxOrderItems(),
+			BaseCurrency:                cache.GetBaseCurrency(),
+			BigMenu:                     cache.GetBigMenu(),
+			Announce:                    cache.GetAnnounce(),
+			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(),
+			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
+			IsProd:                      cache.GetPaymentIsProd(),
 		}),
 	}, nil
 }
@@ -621,13 +624,29 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		}
 	}
 
-	totalSale = totalSale.Add(shipmentPrice)
-	promo, ok := cache.GetPromoByCode(req.PromoCode)
-	if ok && promo.Allowed && promo.FreeShipping && scOk {
-		totalSale = totalSale.Sub(shipmentPrice)
+	freeShipping := false
+
+	// Complimentary shipping: waive shipping when subtotal meets threshold (threshold=0 means disabled for that currency)
+	complimentaryPrices := cache.GetComplimentaryShippingPrices()
+	if threshold, ok := complimentaryPrices[strings.ToUpper(currency)]; ok && threshold.GreaterThan(decimal.Zero) {
+		if oiv.SubtotalDecimal().GreaterThanOrEqual(threshold) {
+			freeShipping = true
+		}
 	}
 
-	if ok && promo.IsAllowed() {
+	promo, promoOk := cache.GetPromoByCode(req.PromoCode)
+	if promoOk && promo.Allowed && promo.FreeShipping && scOk {
+		freeShipping = true
+	}
+
+	effectiveShipmentPrice := shipmentPrice
+	if freeShipping {
+		effectiveShipmentPrice = decimal.Zero
+	}
+
+	totalSale = totalSale.Add(effectiveShipmentPrice)
+
+	if promoOk && promo.IsAllowed() {
 		if !promo.Discount.Equals(decimal.Zero) {
 			totalSale = totalSale.Mul(decimal.NewFromInt(100).Sub(promo.Discount).Div(decimal.NewFromInt(100)))
 		}
@@ -640,6 +659,8 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		TotalSale:       &pb_decimal.Decimal{Value: dto.RoundForCurrency(totalSale, currency).String()},
 		Promo:           dto.ConvertEntityPromoInsertToPb(promo.PromoCodeInsert),
 		ItemAdjustments: dto.ConvertEntityOrderItemAdjustmentsToPb(oiv.ItemAdjustments),
+		FreeShipping:    freeShipping,
+		ShippingPrice:   &pb_decimal.Decimal{Value: dto.RoundForCurrency(effectiveShipmentPrice, currency).String()},
 	}
 
 	// Create PaymentIntent if payment method is CARD

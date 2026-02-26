@@ -111,6 +111,8 @@ var (
 	orderExpirationSeconds       = 0 // 0 = use payment handler default
 	complimentaryShippingPrices  = make(map[string]decimal.Decimal)
 	complimentaryShippingPricesMu sync.RWMutex
+	paymentIsProd                = true // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
+	paymentIsProdMu              sync.RWMutex
 )
 
 var (
@@ -491,6 +493,42 @@ func GetOrderStatuses() []entity.OrderStatus {
 
 func GetPaymentMethods() []entity.PaymentMethod {
 	return entityPaymentMethods
+}
+
+func SetPaymentIsProd(isProd bool) {
+	paymentIsProdMu.Lock()
+	paymentIsProd = isProd
+	paymentIsProdMu.Unlock()
+}
+
+func GetPaymentIsProd() bool {
+	paymentIsProdMu.RLock()
+	defer paymentIsProdMu.RUnlock()
+	return paymentIsProd
+}
+
+// GetPaymentMethodsFilteredByIsProd returns payment methods for checkout: only CARD if isProd, only CARD_TEST if !isProd.
+// Respects the Allowed flag for each method.
+func GetPaymentMethodsFilteredByIsProd() []entity.PaymentMethod {
+	paymentIsProdMu.RLock()
+	isProd := paymentIsProd
+	paymentIsProdMu.RUnlock()
+
+	var target entity.PaymentMethodName
+	if isProd {
+		target = entity.CARD
+	} else {
+		target = entity.CARD_TEST
+	}
+
+	result := make([]entity.PaymentMethod, 0, 1)
+	for _, pm := range entityPaymentMethods {
+		if pm.Name == target && pm.Allowed {
+			result = append(result, pm)
+			break
+		}
+	}
+	return result
 }
 
 func GetSizes() []entity.Size {
