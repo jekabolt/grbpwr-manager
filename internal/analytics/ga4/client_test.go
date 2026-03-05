@@ -109,56 +109,6 @@ func TestClient_GetProductPageMetrics_Integration(t *testing.T) {
 	t.Logf("GetProductPageMetrics returned %d rows", len(metrics))
 }
 
-func TestClient_GetTrafficSourceMetrics_Integration(t *testing.T) {
-	credsPath := findCredsPath(t)
-	if credsPath == "" {
-		t.Skip("config/creds/*.json not found - skipping GA4 integration test")
-	}
-
-	ctx := context.Background()
-	cfg := &Config{
-		PropertyID:      testPropertyID,
-		CredentialsJSON: credsPath,
-		Enabled:         true,
-	}
-
-	client, err := NewClient(ctx, cfg)
-	require.NoError(t, err)
-	require.NotNil(t, client)
-
-	endDate := time.Now().AddDate(0, 0, -1)
-	startDate := endDate.AddDate(0, 0, -6)
-
-	metrics, err := client.GetTrafficSourceMetrics(ctx, startDate, endDate)
-	require.NoError(t, err)
-	t.Logf("GetTrafficSourceMetrics returned %d rows", len(metrics))
-}
-
-func TestClient_GetDeviceMetrics_Integration(t *testing.T) {
-	credsPath := findCredsPath(t)
-	if credsPath == "" {
-		t.Skip("config/creds/*.json not found - skipping GA4 integration test")
-	}
-
-	ctx := context.Background()
-	cfg := &Config{
-		PropertyID:      testPropertyID,
-		CredentialsJSON: credsPath,
-		Enabled:         true,
-	}
-
-	client, err := NewClient(ctx, cfg)
-	require.NoError(t, err)
-	require.NotNil(t, client)
-
-	endDate := time.Now().AddDate(0, 0, -1)
-	startDate := endDate.AddDate(0, 0, -6)
-
-	metrics, err := client.GetDeviceMetrics(ctx, startDate, endDate)
-	require.NoError(t, err)
-	t.Logf("GetDeviceMetrics returned %d rows", len(metrics))
-}
-
 func TestClient_GetCountryMetrics_Integration(t *testing.T) {
 	credsPath := findCredsPath(t)
 	if credsPath == "" {

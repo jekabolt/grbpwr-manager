@@ -161,8 +161,13 @@ service AdminService {
     };
   }
 
-  // Retrieves business metrics for a period with optional comparison period
-  rpc GetBusinessMetrics(GetBusinessMetricsRequest) returns (GetBusinessMetricsResponse) {
+  // Retrieves metrics for a period. Request sections to include (empty = business only).
+  // Supports: business, funnel, oos_impact, payment_failures, web_vitals, user_journeys,
+  // session_duration, device_funnel, product_engagement, form_errors, exceptions, not_found,
+  // hero_funnel, size_confidence, payment_recovery, checkout_timings, cohort_retention,
+  // order_sequence, entry_products, revenue_pareto, spending_curve, category_loyalty,
+  // inventory_health, size_run_efficiency.
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse) {
     option (google.api.http) = {get: "/api/admin/metrics"};
   }
 
@@ -465,14 +470,95 @@ enum CompareMode {
   COMPARE_MODE_SAME_PERIOD_LAST_YEAR = 3;
 }
 
-message GetBusinessMetricsRequest {
+enum MetricsSection {
+  METRICS_SECTION_UNSPECIFIED = 0;
+  METRICS_SECTION_BUSINESS = 1;
+  METRICS_SECTION_FUNNEL = 2;
+  METRICS_SECTION_OOS_IMPACT = 3;
+  METRICS_SECTION_PAYMENT_FAILURES = 4;
+  METRICS_SECTION_WEB_VITALS = 5;
+  METRICS_SECTION_USER_JOURNEYS = 6;
+  METRICS_SECTION_SESSION_DURATION = 7;
+  METRICS_SECTION_DEVICE_FUNNEL = 8;
+  METRICS_SECTION_PRODUCT_ENGAGEMENT = 9;
+  METRICS_SECTION_FORM_ERRORS = 10;
+  METRICS_SECTION_EXCEPTIONS = 11;
+  METRICS_SECTION_NOT_FOUND = 12;
+  METRICS_SECTION_HERO_FUNNEL = 13;
+  METRICS_SECTION_SIZE_CONFIDENCE = 14;
+  METRICS_SECTION_PAYMENT_RECOVERY = 15;
+  METRICS_SECTION_CHECKOUT_TIMINGS = 16;
+  METRICS_SECTION_COHORT_RETENTION = 17;
+  METRICS_SECTION_ORDER_SEQUENCE = 18;
+  METRICS_SECTION_ENTRY_PRODUCTS = 19;
+  METRICS_SECTION_REVENUE_PARETO = 20;
+  METRICS_SECTION_SPENDING_CURVE = 21;
+  METRICS_SECTION_CATEGORY_LOYALTY = 22;
+  METRICS_SECTION_INVENTORY_HEALTH = 23;
+  METRICS_SECTION_SIZE_RUN_EFFICIENCY = 24;
+  METRICS_SECTION_SLOW_MOVERS = 25;
+  METRICS_SECTION_RETURN_ANALYSIS = 26;
+  METRICS_SECTION_SIZE_ANALYTICS = 27;
+  METRICS_SECTION_DEAD_STOCK = 28;
+  METRICS_SECTION_PRODUCT_TREND = 29;
+  METRICS_SECTION_SCROLL_DEPTH = 30;
+  METRICS_SECTION_ADD_TO_CART_RATE = 31;
+  METRICS_SECTION_BROWSER_BREAKDOWN = 32;
+  METRICS_SECTION_NEWSLETTER = 33;
+  METRICS_SECTION_ABANDONED_CART = 34;
+  METRICS_SECTION_CAMPAIGN_ATTRIBUTION = 35;
+}
+
+message GetMetricsRequest {
   string period = 1; // "7d", "30d", "90d" or ISO8601 duration (e.g. P7D)
   google.protobuf.Timestamp end_at = 2; // defaults to now; period end (inclusive)
   CompareMode compare_mode = 3;
+  repeated MetricsSection sections = 4; // empty = business only
+  int32 limit = 5; // for sections that support it (user_journeys, entry_products, revenue_pareto, inventory_health, size_run_efficiency)
 }
 
-message GetBusinessMetricsResponse {
-  BusinessMetrics metrics = 1;
+message GetMetricsResponse {
+  BusinessMetrics business = 1;
+  FunnelSection funnel = 2;
+  repeated OOSImpactMetric oos_impact = 3;
+  repeated PaymentFailureMetric payment_failures = 4;
+  repeated WebVitalMetric web_vitals = 5;
+  repeated UserJourneyMetric user_journeys = 6;
+  repeated SessionDurationMetric session_duration = 7;
+  repeated DeviceFunnelMetric device_funnel = 8;
+  repeated ProductEngagementMetric product_engagement = 9;
+  repeated FormErrorMetric form_errors = 10;
+  repeated ExceptionMetric exceptions = 11;
+  repeated NotFoundMetric not_found = 12;
+  repeated HeroFunnelMetric hero_funnel = 13;
+  repeated SizeConfidenceMetric size_confidence = 14;
+  repeated PaymentRecoveryMetric payment_recovery = 15;
+  repeated CheckoutTimingMetric checkout_timings = 16;
+  repeated CohortRetentionRow cohort_retention = 17;
+  repeated OrderSequenceMetric order_sequence = 18;
+  repeated EntryProductMetric entry_products = 19;
+  repeated RevenueParetoRow revenue_pareto = 20;
+  repeated SpendingCurvePoint spending_curve = 21;
+  repeated CategoryLoyaltyRow category_loyalty = 22;
+  repeated InventoryHealthRow inventory_health = 23;
+  repeated SizeRunEfficiencyRow size_run_efficiency = 24;
+  repeated SlowMoverRow slow_movers = 25;
+  repeated ReturnByProductRow return_by_product = 26;
+  repeated ReturnBySizeRow return_by_size = 27;
+  repeated SizeAnalyticsRow size_analytics = 28;
+  repeated DeadStockRow dead_stock = 29;
+  repeated ProductTrendRow product_trend = 30;
+  repeated ScrollDepthRow scroll_depth = 31;
+  repeated AddToCartRateRow add_to_cart_rate = 32;
+  repeated BrowserBreakdownRow browser_breakdown = 33;
+  repeated NewsletterMetricRow newsletter = 34;
+  repeated AbandonedCartRow abandoned_cart = 35;
+  repeated CampaignAttributionRow campaign_attribution = 36;
+}
+
+message FunnelSection {
+  FunnelAggregate aggregate = 1;
+  repeated DailyFunnel daily = 2;
 }
 
 message BusinessMetrics {
@@ -861,3 +947,381 @@ message UpdateSupportTicketRequest {
 }
 
 message UpdateSupportTicketResponse {}
+
+// --- Analytics: Funnel ---
+
+message FunnelAggregate {
+  int64 session_start_users = 1;
+  int64 view_item_list_users = 2;
+  int64 select_item_users = 3;
+  int64 view_item_users = 4;
+  int64 size_selected_users = 5;
+  int64 add_to_cart_users = 6;
+  int64 begin_checkout_users = 7;
+  int64 add_shipping_info_users = 8;
+  int64 add_payment_info_users = 9;
+  int64 purchase_users = 10;
+}
+
+message DailyFunnel {
+  google.protobuf.Timestamp date = 1;
+  int64 session_start_users = 2;
+  int64 view_item_list_users = 3;
+  int64 select_item_users = 4;
+  int64 view_item_users = 5;
+  int64 size_selected_users = 6;
+  int64 add_to_cart_users = 7;
+  int64 begin_checkout_users = 8;
+  int64 add_shipping_info_users = 9;
+  int64 add_payment_info_users = 10;
+  int64 purchase_users = 11;
+}
+
+// --- Analytics: OOS Impact ---
+
+message OOSImpactMetric {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  int32 size_id = 4;
+  string size_name = 5;
+  google.type.Decimal product_price = 6;
+  string currency = 7;
+  int64 click_count = 8;
+  google.type.Decimal estimated_lost_sales = 9;
+  google.type.Decimal estimated_lost_revenue = 10;
+}
+
+// --- Analytics: Payment Failures ---
+
+message PaymentFailureMetric {
+  google.protobuf.Timestamp date = 1;
+  string error_code = 2;
+  string payment_type = 3;
+  int64 failure_count = 4;
+  google.type.Decimal total_failed_value = 5;
+  google.type.Decimal avg_failed_order_value = 6;
+}
+
+// --- Analytics: Web Vitals ---
+
+message WebVitalMetric {
+  google.protobuf.Timestamp date = 1;
+  string metric_name = 2;
+  string metric_rating = 3;
+  int64 session_count = 4;
+  int64 conversions = 5;
+  double avg_metric_value = 6;
+}
+
+// --- Analytics: User Journeys ---
+
+message UserJourneyMetric {
+  google.protobuf.Timestamp date = 1;
+  string journey_path = 2;
+  int64 session_count = 3;
+  int64 conversions = 4;
+}
+
+// --- Analytics: Session Duration ---
+
+message SessionDurationMetric {
+  google.protobuf.Timestamp date = 1;
+  double avg_time_between_events_seconds = 2;
+  double median_time_between_events = 3;
+}
+
+// --- Analytics: Device Funnel ---
+
+message DeviceFunnelMetric {
+  google.protobuf.Timestamp date = 1;
+  string device_category = 2;
+  int64 sessions = 3;
+  int64 add_to_cart_users = 4;
+  int64 checkout_users = 5;
+  int64 purchase_users = 6;
+}
+
+// --- Analytics: Product Engagement ---
+
+message ProductEngagementMetric {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  int64 image_views = 4;
+  int64 zoom_events = 5;
+  int64 scroll_75 = 6;
+  int64 scroll_100 = 7;
+}
+
+// --- Analytics: Form Errors ---
+
+message FormErrorMetric {
+  google.protobuf.Timestamp date = 1;
+  string field_name = 2;
+  int64 error_count = 3;
+}
+
+// --- Analytics: Exceptions ---
+
+message ExceptionMetric {
+  google.protobuf.Timestamp date = 1;
+  string page_path = 2;
+  int64 exception_count = 3;
+  string description = 4;
+}
+
+// --- Analytics: 404 Pages ---
+
+message NotFoundMetric {
+  google.protobuf.Timestamp date = 1;
+  string page_path = 2;
+  int64 hit_count = 3;
+}
+
+// --- Analytics: Hero Funnel ---
+
+message HeroFunnelMetric {
+  google.protobuf.Timestamp date = 1;
+  int64 hero_click_users = 2;
+  int64 view_item_users = 3;
+  int64 purchase_users = 4;
+}
+
+// --- Analytics: Size Confidence ---
+
+message SizeConfidenceMetric {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  int64 size_guide_views = 3;
+  int64 size_selections = 4;
+}
+
+// --- Analytics: Payment Recovery ---
+
+message PaymentRecoveryMetric {
+  google.protobuf.Timestamp date = 1;
+  int64 failed_users = 2;
+  int64 recovered_users = 3;
+}
+
+// --- Analytics: Checkout Timings ---
+
+message CheckoutTimingMetric {
+  google.protobuf.Timestamp date = 1;
+  double avg_checkout_seconds = 2;
+  double median_checkout_seconds = 3;
+  int64 session_count = 4;
+}
+
+// --- Analytics: Cohort Retention ---
+
+message CohortRetentionRow {
+  google.protobuf.Timestamp cohort_month = 1;
+  int64 cohort_size = 2;
+  int64 m1 = 3;
+  int64 m2 = 4;
+  int64 m3 = 5;
+  int64 m4 = 6;
+  int64 m5 = 7;
+  int64 m6 = 8;
+}
+
+// --- Analytics: Order Sequence ---
+
+message OrderSequenceMetric {
+  int32 order_number = 1;
+  int64 order_count = 2;
+  google.type.Decimal avg_order_value = 3;
+  double avg_days_since_prev = 4;
+}
+
+// --- Analytics: Entry Products ---
+
+message EntryProductMetric {
+  int32 product_id = 1;
+  string product_name = 2;
+  int64 purchase_count = 3;
+  google.type.Decimal total_revenue = 4;
+}
+
+// --- Analytics: Revenue Pareto ---
+
+message RevenueParetoRow {
+  int32 rank = 1;
+  int32 product_id = 2;
+  string product_name = 3;
+  google.type.Decimal revenue = 4;
+  double cumulative_pct = 5;
+}
+
+// --- Analytics: Customer Spending Curve ---
+
+message SpendingCurvePoint {
+  int32 order_number = 1;
+  google.type.Decimal avg_cumulative_spend = 2;
+  int64 customer_count = 3;
+}
+
+// --- Analytics: Category Loyalty ---
+
+message CategoryLoyaltyRow {
+  string first_category = 1;
+  string second_category = 2;
+  int64 customer_count = 3;
+}
+
+// --- Analytics: Inventory Health ---
+
+message InventoryHealthRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int32 size_id = 3;
+  string size_name = 4;
+  int32 quantity = 5;
+  double avg_daily_sales = 6;
+  double days_on_hand = 7;
+}
+
+// --- Analytics: Size Run Efficiency ---
+
+message SizeRunEfficiencyRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int32 total_sizes = 3;
+  int32 sold_through_sizes = 4;
+  double efficiency_pct = 5;
+}
+
+// --- Analytics: Slow Movers ---
+
+message SlowMoverRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  google.type.Decimal revenue = 3;
+  int64 units_sold = 4;
+  double days_in_stock = 5;
+  google.protobuf.Timestamp last_sale_date = 6;
+}
+
+// --- Analytics: Return Analysis ---
+
+message ReturnByProductRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int64 total_sold = 3;
+  int64 total_returned = 4;
+  double return_rate = 5;
+  google.type.Decimal return_value = 6;
+}
+
+message ReturnBySizeRow {
+  int32 size_id = 1;
+  string size_name = 2;
+  int64 total_sold = 3;
+  int64 total_returned = 4;
+  double return_rate = 5;
+}
+
+// --- Analytics: Size Analytics ---
+
+message SizeAnalyticsRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int32 size_id = 3;
+  string size_name = 4;
+  int64 units_sold = 5;
+  google.type.Decimal revenue = 6;
+  double pct_of_product = 7;
+}
+
+// --- Analytics: Dead Stock ---
+
+message DeadStockRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int32 size_id = 3;
+  string size_name = 4;
+  int32 quantity = 5;
+  double days_without_sale = 6;
+  google.type.Decimal stock_value = 7;
+}
+
+// --- Analytics: Product Trend ---
+
+message ProductTrendRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  google.type.Decimal current_revenue = 3;
+  google.type.Decimal previous_revenue = 4;
+  double change_pct = 5;
+  int64 current_units = 6;
+  int64 previous_units = 7;
+}
+
+// --- Analytics: Scroll Depth (BQ) ---
+
+message ScrollDepthRow {
+  google.protobuf.Timestamp date = 1;
+  string page_type = 2;
+  int64 scroll_25 = 3;
+  int64 scroll_50 = 4;
+  int64 scroll_75 = 5;
+  int64 scroll_100 = 6;
+  int64 total_users = 7;
+}
+
+// --- Analytics: Add-to-Cart Rate (BQ) ---
+
+message AddToCartRateRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  int64 view_count = 4;
+  int64 add_to_cart_count = 5;
+  double cart_rate = 6;
+}
+
+// --- Analytics: Browser Breakdown (BQ) ---
+
+message BrowserBreakdownRow {
+  google.protobuf.Timestamp date = 1;
+  string browser = 2;
+  int64 sessions = 3;
+  int64 users = 4;
+  int64 conversions = 5;
+  double conversion_rate = 6;
+}
+
+// --- Analytics: Newsletter (BQ) ---
+
+message NewsletterMetricRow {
+  google.protobuf.Timestamp date = 1;
+  int64 signup_count = 2;
+  int64 unique_users = 3;
+}
+
+// --- Analytics: Abandoned Cart (BQ) ---
+
+message AbandonedCartRow {
+  google.protobuf.Timestamp date = 1;
+  int64 carts_started = 2;
+  int64 checkouts_started = 3;
+  double abandonment_rate = 4;
+  double avg_minutes_to_checkout = 5;
+  double avg_minutes_to_abandon = 6;
+}
+
+// --- Analytics: Campaign Attribution (BQ) ---
+
+message CampaignAttributionRow {
+  google.protobuf.Timestamp date = 1;
+  string utm_source = 2;
+  string utm_medium = 3;
+  string utm_campaign = 4;
+  int64 sessions = 5;
+  int64 users = 6;
+  int64 conversions = 7;
+  google.type.Decimal revenue = 8;
+  double conversion_rate = 9;
+}
