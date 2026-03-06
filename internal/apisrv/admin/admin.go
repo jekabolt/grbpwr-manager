@@ -976,22 +976,92 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.ProductTrend = dto.ConvertProductTrendToPb(items)
 	}
 
-	if want(pb_admin.MetricsSection_METRICS_SECTION_SCROLL_DEPTH) {
-		items, err := s.repo.BQCache().GetBQScrollDepth(ctx, from, to)
+	if want(pb_admin.MetricsSection_METRICS_SECTION_TIME_ON_PAGE) {
+		items, err := s.repo.BQCache().GetBQTimeOnPage(ctx, from, to, limit, 0)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't get scroll depth", slog.String("err", err.Error()))
-			return nil, status.Errorf(codes.Internal, "can't get scroll depth")
+			slog.Default().ErrorContext(ctx, "can't get time on page", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get time on page")
 		}
-		resp.ScrollDepth = dto.ConvertScrollDepthToPb(items)
+		resp.TimeOnPage = dto.ConvertTimeOnPageToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PRODUCT_ZOOM) {
+		items, err := s.repo.BQCache().GetBQProductZoom(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get product zoom", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get product zoom")
+		}
+		resp.ProductZoom = dto.ConvertProductZoomToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_IMAGE_SWIPES) {
+		items, err := s.repo.BQCache().GetBQImageSwipes(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get image swipes", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get image swipes")
+		}
+		resp.ImageSwipes = dto.ConvertImageSwipesToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SIZE_GUIDE_CLICKS) {
+		items, err := s.repo.BQCache().GetBQSizeGuideClicks(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get size guide clicks", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get size guide clicks")
+		}
+		resp.SizeGuideClicks = dto.ConvertSizeGuideClicksToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_DETAILS_EXPANSION) {
+		items, err := s.repo.BQCache().GetBQDetailsExpansion(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get details expansion", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get details expansion")
+		}
+		resp.DetailsExpansion = dto.ConvertDetailsExpansionToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_NOTIFY_ME_INTENT) {
+		items, err := s.repo.BQCache().GetBQNotifyMeIntent(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get notify me intent", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get notify me intent")
+		}
+		resp.NotifyMeIntent = dto.ConvertNotifyMeIntentToPb(items)
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_ADD_TO_CART_RATE) {
-		items, err := s.repo.BQCache().GetBQAddToCartRate(ctx, from, to, limit, 0)
+		// Convert protobuf granularity to entity granularity
+		granularity := entity.TrendGranularityDaily
+		switch req.TrendGranularity {
+		case pb_admin.TrendGranularity_TREND_GRANULARITY_WEEKLY:
+			granularity = entity.TrendGranularityWeekly
+		case pb_admin.TrendGranularity_TREND_GRANULARITY_MONTHLY:
+			granularity = entity.TrendGranularityMonthly
+		}
+		
+		analysis, err := s.repo.BQCache().GetBQAddToCartRate(ctx, from, to, granularity, limit, 0)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get add to cart rate", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get add to cart rate")
 		}
-		resp.AddToCartRate = dto.ConvertAddToCartRateToPb(items)
+		resp.AddToCartRateAnalysis = dto.ConvertAddToCartRateAnalysisToPb(analysis)
+		
+		// For backwards compatibility, also populate the old field with product data
+		if analysis != nil && len(analysis.Products) > 0 {
+			legacyRows := make([]entity.AddToCartRateRow, 0, len(analysis.Products))
+			for _, p := range analysis.Products {
+				legacyRows = append(legacyRows, entity.AddToCartRateRow{
+					Date:           from,
+					ProductID:      p.ProductID,
+					ProductName:    p.ProductName,
+					ViewCount:      p.ViewCount,
+					AddToCartCount: p.AddToCartCount,
+					CartRate:       p.CartRate,
+				})
+			}
+			resp.AddToCartRate = dto.ConvertAddToCartRateToPb(legacyRows)
+		}
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_BROWSER_BREAKDOWN) {

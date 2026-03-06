@@ -323,20 +323,105 @@ func (s *bqCacheStoreWrite) SaveBQCheckoutTimings(ctx context.Context, rows []en
 	return nil
 }
 
-func (s *bqCacheStoreWrite) SaveBQScrollDepth(ctx context.Context, rows []entity.ScrollDepthRow) error {
+func (s *bqCacheStoreWrite) SaveBQTimeOnPage(ctx context.Context, rows []entity.TimeOnPageRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	cols := []string{"date", "page_type", "scroll_25", "scroll_50", "scroll_75", "scroll_100", "total_users"}
+	cols := []string{"date", "page_path", "avg_visible_time_seconds", "avg_total_time_seconds", "avg_engagement_score", "page_views"}
 	args := make([][]any, 0, len(rows))
 	for _, r := range rows {
 		args = append(args, []any{
-			r.Date.Format("2006-01-02"), r.PageType, r.Scroll25, r.Scroll50,
-			r.Scroll75, r.Scroll100, r.TotalUsers,
+			r.Date.Format("2006-01-02"), r.PagePath, r.AvgVisibleTimeSeconds,
+			r.AvgTotalTimeSeconds, r.AvgEngagementScore, r.PageViews,
 		})
 	}
-	if err := BulkReplaceByDate(ctx, s.DB(), "bq_scroll_depth", cols, args); err != nil {
-		return fmt.Errorf("save bq scroll depth: %w", err)
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_time_on_page", cols, args); err != nil {
+		return fmt.Errorf("save bq time on page: %w", err)
+	}
+	return nil
+}
+
+func (s *bqCacheStoreWrite) SaveBQProductZoom(ctx context.Context, rows []entity.ProductZoomRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "product_id", "product_name", "zoom_method", "zoom_count"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.ZoomMethod, r.ZoomCount,
+		})
+	}
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_product_zoom", cols, args); err != nil {
+		return fmt.Errorf("save bq product zoom: %w", err)
+	}
+	return nil
+}
+
+func (s *bqCacheStoreWrite) SaveBQImageSwipes(ctx context.Context, rows []entity.ImageSwipeRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "product_id", "product_name", "swipe_direction", "swipe_count"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.SwipeDirection, r.SwipeCount,
+		})
+	}
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_image_swipes", cols, args); err != nil {
+		return fmt.Errorf("save bq image swipes: %w", err)
+	}
+	return nil
+}
+
+func (s *bqCacheStoreWrite) SaveBQSizeGuideClicks(ctx context.Context, rows []entity.SizeGuideClickRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "product_id", "product_name", "page_location", "click_count"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.PageLocation, r.ClickCount,
+		})
+	}
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_size_guide_clicks", cols, args); err != nil {
+		return fmt.Errorf("save bq size guide clicks: %w", err)
+	}
+	return nil
+}
+
+func (s *bqCacheStoreWrite) SaveBQDetailsExpansion(ctx context.Context, rows []entity.DetailsExpansionRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "product_id", "product_name", "section_name", "expand_count"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.SectionName, r.ExpandCount,
+		})
+	}
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_details_expansion", cols, args); err != nil {
+		return fmt.Errorf("save bq details expansion: %w", err)
+	}
+	return nil
+}
+
+func (s *bqCacheStoreWrite) SaveBQNotifyMeIntent(ctx context.Context, rows []entity.NotifyMeIntentRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "product_id", "product_name", "action", "count", "conversion_rate"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.Action, r.Count, r.ConversionRate,
+		})
+	}
+	if err := BulkReplaceByDate(ctx, s.DB(), "bq_notify_me_intent", cols, args); err != nil {
+		return fmt.Errorf("save bq notify me intent: %w", err)
 	}
 	return nil
 }

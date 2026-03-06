@@ -557,52 +557,257 @@ func (s *bqCacheStoreRead) GetBQCheckoutTimings(ctx context.Context, from, to ti
 	return result, nil
 }
 
-func (s *bqCacheStoreRead) GetBQScrollDepth(ctx context.Context, from, to time.Time) ([]entity.ScrollDepthRow, error) {
+func (s *bqCacheStoreRead) GetBQTimeOnPage(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.TimeOnPageRow, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
 	query := `
-		SELECT date, page_type, scroll_25, scroll_50, scroll_75, scroll_100, total_users
-		FROM bq_scroll_depth
+		SELECT date, page_path, avg_visible_time_seconds, avg_total_time_seconds, avg_engagement_score, page_views
+		FROM bq_time_on_page
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY date ASC, page_type ASC
+		ORDER BY page_views DESC
+		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
-		Date       string `db:"date"`
-		PageType   string `db:"page_type"`
-		Scroll25   int64  `db:"scroll_25"`
-		Scroll50   int64  `db:"scroll_50"`
-		Scroll75   int64  `db:"scroll_75"`
-		Scroll100  int64  `db:"scroll_100"`
-		TotalUsers int64  `db:"total_users"`
+		Date                  string  `db:"date"`
+		PagePath              string  `db:"page_path"`
+		AvgVisibleTimeSeconds float64 `db:"avg_visible_time_seconds"`
+		AvgTotalTimeSeconds   float64 `db:"avg_total_time_seconds"`
+		AvgEngagementScore    float64 `db:"avg_engagement_score"`
+		PageViews             int64   `db:"page_views"`
 	}
-	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02")}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
 	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]entity.ScrollDepthRow, 0, len(rows))
+	result := make([]entity.TimeOnPageRow, 0, len(rows))
 	for _, r := range rows {
 		date, err := parseDateStr(r.Date)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, entity.ScrollDepthRow{
-			Date: date, PageType: r.PageType, Scroll25: r.Scroll25, Scroll50: r.Scroll50,
-			Scroll75: r.Scroll75, Scroll100: r.Scroll100, TotalUsers: r.TotalUsers,
+		result = append(result, entity.TimeOnPageRow{
+			Date:                  date,
+			PagePath:              r.PagePath,
+			AvgVisibleTimeSeconds: r.AvgVisibleTimeSeconds,
+			AvgTotalTimeSeconds:   r.AvgTotalTimeSeconds,
+			AvgEngagementScore:    r.AvgEngagementScore,
+			PageViews:             r.PageViews,
 		})
 	}
 	return result, nil
 }
 
-func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.AddToCartRateRow, error) {
+func (s *bqCacheStoreRead) GetBQProductZoom(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductZoomRow, error) {
 	page := BQPageParams{Limit: limit, Offset: offset}
 	query := `
-		SELECT date, product_id, product_name, view_count, add_to_cart_count, cart_rate
-		FROM bq_add_to_cart_rate
+		SELECT date, product_id, product_name, zoom_method, zoom_count
+		FROM bq_product_zoom
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY cart_rate DESC
+		ORDER BY zoom_count DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type row struct {
+		Date        string `db:"date"`
+		ProductID   string `db:"product_id"`
+		ProductName string `db:"product_name"`
+		ZoomMethod  string `db:"zoom_method"`
+		ZoomCount   int64  `db:"zoom_count"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
+	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]entity.ProductZoomRow, 0, len(rows))
+	for _, r := range rows {
+		date, err := parseDateStr(r.Date)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entity.ProductZoomRow{
+			Date:        date,
+			ProductID:   r.ProductID,
+			ProductName: r.ProductName,
+			ZoomMethod:  r.ZoomMethod,
+			ZoomCount:   r.ZoomCount,
+		})
+	}
+	return result, nil
+}
+
+func (s *bqCacheStoreRead) GetBQImageSwipes(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ImageSwipeRow, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
+	query := `
+		SELECT date, product_id, product_name, swipe_direction, swipe_count
+		FROM bq_image_swipes
+		WHERE date >= :fromDate AND date <= :toDate
+		ORDER BY swipe_count DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type row struct {
+		Date           string `db:"date"`
+		ProductID      string `db:"product_id"`
+		ProductName    string `db:"product_name"`
+		SwipeDirection string `db:"swipe_direction"`
+		SwipeCount     int64  `db:"swipe_count"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
+	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]entity.ImageSwipeRow, 0, len(rows))
+	for _, r := range rows {
+		date, err := parseDateStr(r.Date)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entity.ImageSwipeRow{
+			Date:           date,
+			ProductID:      r.ProductID,
+			ProductName:    r.ProductName,
+			SwipeDirection: r.SwipeDirection,
+			SwipeCount:     r.SwipeCount,
+		})
+	}
+	return result, nil
+}
+
+func (s *bqCacheStoreRead) GetBQSizeGuideClicks(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeGuideClickRow, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
+	query := `
+		SELECT date, product_id, product_name, page_location, click_count
+		FROM bq_size_guide_clicks
+		WHERE date >= :fromDate AND date <= :toDate
+		ORDER BY click_count DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type row struct {
+		Date         string `db:"date"`
+		ProductID    string `db:"product_id"`
+		ProductName  string `db:"product_name"`
+		PageLocation string `db:"page_location"`
+		ClickCount   int64  `db:"click_count"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
+	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]entity.SizeGuideClickRow, 0, len(rows))
+	for _, r := range rows {
+		date, err := parseDateStr(r.Date)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entity.SizeGuideClickRow{
+			Date:         date,
+			ProductID:    r.ProductID,
+			ProductName:  r.ProductName,
+			PageLocation: r.PageLocation,
+			ClickCount:   r.ClickCount,
+		})
+	}
+	return result, nil
+}
+
+func (s *bqCacheStoreRead) GetBQDetailsExpansion(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.DetailsExpansionRow, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
+	query := `
+		SELECT date, product_id, product_name, section_name, expand_count
+		FROM bq_details_expansion
+		WHERE date >= :fromDate AND date <= :toDate
+		ORDER BY expand_count DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type row struct {
+		Date        string `db:"date"`
+		ProductID   string `db:"product_id"`
+		ProductName string `db:"product_name"`
+		SectionName string `db:"section_name"`
+		ExpandCount int64  `db:"expand_count"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
+	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]entity.DetailsExpansionRow, 0, len(rows))
+	for _, r := range rows {
+		date, err := parseDateStr(r.Date)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entity.DetailsExpansionRow{
+			Date:        date,
+			ProductID:   r.ProductID,
+			ProductName: r.ProductName,
+			SectionName: r.SectionName,
+			ExpandCount: r.ExpandCount,
+		})
+	}
+	return result, nil
+}
+
+func (s *bqCacheStoreRead) GetBQNotifyMeIntent(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotifyMeIntentRow, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
+	query := `
+		SELECT date, product_id, product_name, action, count, conversion_rate
+		FROM bq_notify_me_intent
+		WHERE date >= :fromDate AND date <= :toDate
+		ORDER BY count DESC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
 		Date           string  `db:"date"`
+		ProductID      string  `db:"product_id"`
+		ProductName    string  `db:"product_name"`
+		Action         string  `db:"action"`
+		Count          int64   `db:"count"`
+		ConversionRate float64 `db:"conversion_rate"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
+	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]entity.NotifyMeIntentRow, 0, len(rows))
+	for _, r := range rows {
+		date, err := parseDateStr(r.Date)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entity.NotifyMeIntentRow{
+			Date:           date,
+			ProductID:      r.ProductID,
+			ProductName:    r.ProductName,
+			Action:         r.Action,
+			Count:          r.Count,
+			ConversionRate: r.ConversionRate,
+		})
+	}
+	return result, nil
+}
+
+func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time.Time, granularity entity.TrendGranularity, limit, offset int) (*entity.AddToCartRateAnalysis, error) {
+	page := BQPageParams{Limit: limit, Offset: offset}
+	
+	// Query 1: Per-product aggregates for scatter plot
+	productQuery := `
+		SELECT
+			product_id,
+			ANY_VALUE(product_name) AS product_name,
+			SUM(view_count) AS view_count,
+			SUM(add_to_cart_count) AS add_to_cart_count,
+			CASE WHEN SUM(view_count) > 0 THEN SUM(add_to_cart_count) / SUM(view_count) ELSE 0 END AS cart_rate
+		FROM bq_add_to_cart_rate
+		WHERE date >= :fromDate AND date <= :toDate
+		GROUP BY product_id
+		HAVING SUM(view_count) > 0
+		ORDER BY view_count DESC, cart_rate DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type productRow struct {
 		ProductID      string  `db:"product_id"`
 		ProductName    string  `db:"product_name"`
 		ViewCount      int64   `db:"view_count"`
@@ -610,22 +815,109 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 		CartRate       float64 `db:"cart_rate"`
 	}
 	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
-	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
+	productRows, err := QueryListNamed[productRow](ctx, s.DB(), productQuery, params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get product aggregates: %w", err)
 	}
-	result := make([]entity.AddToCartRateRow, 0, len(rows))
-	for _, r := range rows {
-		date, err := parseDateStr(r.Date)
-		if err != nil {
-			return nil, err
+	
+	products := make([]entity.AddToCartRateProductRow, 0, len(productRows))
+	var totalViews int64
+	var totalAddToCarts int64
+	for _, r := range productRows {
+		products = append(products, entity.AddToCartRateProductRow{
+			ProductID:      r.ProductID,
+			ProductName:    r.ProductName,
+			ViewCount:      r.ViewCount,
+			AddToCartCount: r.AddToCartCount,
+			CartRate:       r.CartRate,
+		})
+		totalViews += r.ViewCount
+		totalAddToCarts += r.AddToCartCount
+	}
+	
+	// Calculate store averages for quadrant dividing lines
+	avgViewCount := int64(0)
+	avgCartRate := 0.0
+	if len(products) > 0 {
+		avgViewCount = totalViews / int64(len(products))
+		if totalViews > 0 {
+			avgCartRate = float64(totalAddToCarts) / float64(totalViews)
 		}
-		result = append(result, entity.AddToCartRateRow{
-			Date: date, ProductID: r.ProductID, ProductName: r.ProductName,
-			ViewCount: r.ViewCount, AddToCartCount: r.AddToCartCount, CartRate: r.CartRate,
+	}
+	
+	// Query 2: Global trend data for time series
+	var trendQuery string
+	switch granularity {
+	case entity.TrendGranularityWeekly:
+		trendQuery = `
+			SELECT
+				DATE_ADD(date, INTERVAL -WEEKDAY(date) DAY) AS trend_date,
+				SUM(view_count) AS total_views,
+				SUM(add_to_cart_count) AS total_add_to_carts,
+				CASE WHEN SUM(view_count) > 0 THEN SUM(add_to_cart_count) / SUM(view_count) ELSE 0 END AS global_cart_rate
+			FROM bq_add_to_cart_rate
+			WHERE date >= :fromDate AND date <= :toDate
+			GROUP BY trend_date
+			ORDER BY trend_date
+		`
+	case entity.TrendGranularityMonthly:
+		trendQuery = `
+			SELECT
+				DATE_FORMAT(date, '%Y-%m-01') AS trend_date,
+				SUM(view_count) AS total_views,
+				SUM(add_to_cart_count) AS total_add_to_carts,
+				CASE WHEN SUM(view_count) > 0 THEN SUM(add_to_cart_count) / SUM(view_count) ELSE 0 END AS global_cart_rate
+			FROM bq_add_to_cart_rate
+			WHERE date >= :fromDate AND date <= :toDate
+			GROUP BY trend_date
+			ORDER BY trend_date
+		`
+	default: // Daily
+		trendQuery = `
+			SELECT
+				date AS trend_date,
+				SUM(view_count) AS total_views,
+				SUM(add_to_cart_count) AS total_add_to_carts,
+				CASE WHEN SUM(view_count) > 0 THEN SUM(add_to_cart_count) / SUM(view_count) ELSE 0 END AS global_cart_rate
+			FROM bq_add_to_cart_rate
+			WHERE date >= :fromDate AND date <= :toDate
+			GROUP BY date
+			ORDER BY date
+		`
+	}
+	
+	type trendRow struct {
+		TrendDate       string  `db:"trend_date"`
+		TotalViews      int64   `db:"total_views"`
+		TotalAddToCarts int64   `db:"total_add_to_carts"`
+		GlobalCartRate  float64 `db:"global_cart_rate"`
+	}
+	trendParams := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02")}
+	trendRows, err := QueryListNamed[trendRow](ctx, s.DB(), trendQuery, trendParams)
+	if err != nil {
+		return nil, fmt.Errorf("get trend data: %w", err)
+	}
+	
+	globalTrend := make([]entity.AddToCartRateGlobalRow, 0, len(trendRows))
+	for _, r := range trendRows {
+		date, err := parseDateStr(r.TrendDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse trend date: %w", err)
+		}
+		globalTrend = append(globalTrend, entity.AddToCartRateGlobalRow{
+			Date:            date,
+			TotalViews:      r.TotalViews,
+			TotalAddToCarts: r.TotalAddToCarts,
+			GlobalCartRate:  r.GlobalCartRate,
 		})
 	}
-	return result, nil
+	
+	return &entity.AddToCartRateAnalysis{
+		Products:     products,
+		GlobalTrend:  globalTrend,
+		AvgViewCount: avgViewCount,
+		AvgCartRate:  avgCartRate,
+	}, nil
 }
 
 func (s *bqCacheStoreRead) GetBQBrowserBreakdown(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.BrowserBreakdownRow, error) {

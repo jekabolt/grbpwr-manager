@@ -501,12 +501,17 @@ enum MetricsSection {
   METRICS_SECTION_SIZE_ANALYTICS = 27;
   METRICS_SECTION_DEAD_STOCK = 28;
   METRICS_SECTION_PRODUCT_TREND = 29;
-  METRICS_SECTION_SCROLL_DEPTH = 30;
   METRICS_SECTION_ADD_TO_CART_RATE = 31;
   METRICS_SECTION_BROWSER_BREAKDOWN = 32;
   METRICS_SECTION_NEWSLETTER = 33;
   METRICS_SECTION_ABANDONED_CART = 34;
   METRICS_SECTION_CAMPAIGN_ATTRIBUTION = 35;
+  METRICS_SECTION_TIME_ON_PAGE = 36;
+  METRICS_SECTION_PRODUCT_ZOOM = 37;
+  METRICS_SECTION_IMAGE_SWIPES = 38;
+  METRICS_SECTION_SIZE_GUIDE_CLICKS = 39;
+  METRICS_SECTION_DETAILS_EXPANSION = 40;
+  METRICS_SECTION_NOTIFY_ME_INTENT = 41;
 }
 
 message GetMetricsRequest {
@@ -515,6 +520,7 @@ message GetMetricsRequest {
   CompareMode compare_mode = 3;
   repeated MetricsSection sections = 4; // empty = business only
   int32 limit = 5; // for sections that support it (user_journeys, entry_products, revenue_pareto, inventory_health, size_run_efficiency)
+  TrendGranularity trend_granularity = 6; // for time series data (default DAILY)
 }
 
 message GetMetricsResponse {
@@ -548,12 +554,18 @@ message GetMetricsResponse {
   repeated SizeAnalyticsRow size_analytics = 28;
   repeated DeadStockRow dead_stock = 29;
   repeated ProductTrendRow product_trend = 30;
-  repeated ScrollDepthRow scroll_depth = 31;
-  repeated AddToCartRateRow add_to_cart_rate = 32;
+  repeated AddToCartRateRow add_to_cart_rate = 32; // deprecated: use add_to_cart_rate_analysis instead
   repeated BrowserBreakdownRow browser_breakdown = 33;
   repeated NewsletterMetricRow newsletter = 34;
   repeated AbandonedCartRow abandoned_cart = 35;
   repeated CampaignAttributionRow campaign_attribution = 36;
+  AddToCartRateAnalysis add_to_cart_rate_analysis = 37;
+  repeated TimeOnPageRow time_on_page = 38;
+  repeated ProductZoomRow product_zoom = 39;
+  repeated ImageSwipeRow image_swipes = 40;
+  repeated SizeGuideClickRow size_guide_clicks = 41;
+  repeated DetailsExpansionRow details_expansion = 42;
+  repeated NotifyMeIntentRow notify_me_intent = 43;
 }
 
 message FunnelSection {
@@ -1207,12 +1219,9 @@ message SlowMoverRow {
 // --- Analytics: Return Analysis ---
 
 message ReturnByProductRow {
-  int32 product_id = 1;
-  string product_name = 2;
-  int64 total_sold = 3;
-  int64 total_returned = 4;
-  double return_rate = 5;
-  google.type.Decimal return_value = 6;
+  string product_name = 1;
+  double total_return_rate = 2;
+  map<string, double> reasons = 3; // wrong_size, not_as_described, defective, changed_mind, other
 }
 
 message ReturnBySizeRow {
@@ -1261,14 +1270,66 @@ message ProductTrendRow {
 
 // --- Analytics: Scroll Depth (BQ) ---
 
-message ScrollDepthRow {
+// --- Analytics: Time on Page ---
+
+message TimeOnPageRow {
   google.protobuf.Timestamp date = 1;
-  string page_type = 2;
-  int64 scroll_25 = 3;
-  int64 scroll_50 = 4;
-  int64 scroll_75 = 5;
-  int64 scroll_100 = 6;
-  int64 total_users = 7;
+  string page_path = 2;
+  double avg_visible_time_seconds = 3;
+  double avg_total_time_seconds = 4;
+  double avg_engagement_score = 5;
+  int64 page_views = 6;
+}
+
+// --- Analytics: Product Zoom ---
+
+message ProductZoomRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string zoom_method = 4; // double_click, pinch
+  int64 zoom_count = 5;
+}
+
+// --- Analytics: Image Swipes ---
+
+message ImageSwipeRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string swipe_direction = 4; // next, previous
+  int64 swipe_count = 5;
+}
+
+// --- Analytics: Size Guide Clicks ---
+
+message SizeGuideClickRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string page_location = 4; // desktop, mobile
+  int64 click_count = 5;
+}
+
+// --- Analytics: Details Expansion ---
+
+message DetailsExpansionRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string section_name = 4; // description, composition, care
+  int64 expand_count = 5;
+}
+
+// --- Analytics: Notify Me Intent ---
+
+message NotifyMeIntentRow {
+  google.protobuf.Timestamp date = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string action = 4; // opened, submitted, closed_without_submit
+  int64 count = 5;
+  double conversion_rate = 6; // submitted / opened
 }
 
 // --- Analytics: Add-to-Cart Rate (BQ) ---
@@ -1280,6 +1341,39 @@ message AddToCartRateRow {
   int64 view_count = 4;
   int64 add_to_cart_count = 5;
   double cart_rate = 6;
+}
+
+// TrendGranularity defines time bucket size for trend analysis
+enum TrendGranularity {
+  TREND_GRANULARITY_DAILY = 0;
+  TREND_GRANULARITY_WEEKLY = 1;
+  TREND_GRANULARITY_MONTHLY = 2;
+}
+
+// AddToCartRateAnalysis contains both per-product aggregate data for scatter plot
+// and store-wide trend data for time series visualization
+message AddToCartRateAnalysis {
+  repeated AddToCartRateProductRow products = 1;
+  repeated AddToCartRateGlobalRow global_trend = 2;
+  double avg_view_count = 3;
+  double avg_cart_rate = 4;
+}
+
+// AddToCartRateProductRow represents per-product aggregate metrics for scatter plot matrix
+message AddToCartRateProductRow {
+  string product_id = 1;
+  string product_name = 2;
+  int64 view_count = 3;
+  int64 add_to_cart_count = 4;
+  double cart_rate = 5;
+}
+
+// AddToCartRateGlobalRow represents store-wide daily/weekly/monthly ATC rate for trend line
+message AddToCartRateGlobalRow {
+  google.protobuf.Timestamp date = 1;
+  int64 total_views = 2;
+  int64 total_add_to_carts = 3;
+  double global_cart_rate = 4;
 }
 
 // --- Analytics: Browser Breakdown (BQ) ---
