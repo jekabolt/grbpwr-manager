@@ -21,28 +21,11 @@ type DailyMetrics struct {
 // ProductPageMetrics represents GA4 metrics for a specific product page.
 type ProductPageMetrics struct {
 	Date       time.Time
-	ProductID  int
+	ProductID  string
 	PagePath   string
 	PageViews  int
 	AddToCarts int
 	Sessions   int
-}
-
-// TrafficSourceMetrics represents GA4 traffic source data.
-type TrafficSourceMetrics struct {
-	Date     time.Time
-	Source   string
-	Medium   string
-	Sessions int
-	Users    int
-}
-
-// DeviceMetrics represents GA4 device category data.
-type DeviceMetrics struct {
-	Date           time.Time
-	DeviceCategory string // mobile, desktop, tablet
-	Sessions       int
-	Users          int
 }
 
 // CountryMetrics represents GA4 country-level session data.
@@ -53,44 +36,36 @@ type CountryMetrics struct {
 	Users    int
 }
 
-// CategoryPageMetrics represents GA4 metrics for category pages.
-type CategoryPageMetrics struct {
-	Date       time.Time
-	CategoryID int
-	PagePath   string
-	PageViews  int
-	Sessions   int
+// EcommerceMetrics represents daily ecommerce metrics from GA4 batch API.
+type EcommerceMetrics struct {
+	Date        time.Time
+	Purchases   int
+	Revenue     decimal.Decimal
+	AddToCarts  int
+	Checkouts   int
+	ItemsViewed int
 }
 
-// MetricsRequest represents a request for GA4 data.
-type MetricsRequest struct {
-	PropertyID string
-	StartDate  time.Time
-	EndDate    time.Time
-	Dimensions []string
-	Metrics    []string
+// RevenueSourceMetrics represents revenue attribution by source/medium/campaign.
+type RevenueSourceMetrics struct {
+	Date      time.Time
+	Source    string
+	Medium    string
+	Campaign  string
+	Sessions  int
+	Revenue   decimal.Decimal
+	Purchases int
 }
 
-// MetricsResponse represents the raw response from GA4 Data API.
-type MetricsResponse struct {
-	Rows []MetricsRow
-}
-
-// MetricsRow represents a single row in the GA4 response.
-type MetricsRow struct {
-	DimensionValues []string
-	MetricValues    []string
-}
-
-// AggregatedMetrics represents computed metrics combining GA + DB data.
-type AggregatedMetrics struct {
-	Period             TimeRange
-	Sessions           int
-	Users              int
-	Orders             int
-	ConversionRate     decimal.Decimal
-	RevenuePerSession  decimal.Decimal
-	CartAbandonmentRate decimal.Decimal
+// ProductConversionMetrics represents per-product conversion funnel data.
+type ProductConversionMetrics struct {
+	Date        time.Time
+	ProductID   string
+	ProductName string
+	ItemsViewed int
+	AddToCarts  int
+	Purchases   int
+	Revenue     decimal.Decimal
 }
 
 // TimeRange represents a time period for metrics.

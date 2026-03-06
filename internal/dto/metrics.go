@@ -362,3 +362,639 @@ func geographySessionMetricsToPb(list []entity.GeographySessionMetric) []*pb_adm
 	}
 	return pb
 }
+
+// --- BQ Analytics DTO converters ---
+
+func ConvertFunnelAggregateToPb(a *entity.FunnelAggregate) *pb_admin.FunnelAggregate {
+	if a == nil {
+		return nil
+	}
+	return &pb_admin.FunnelAggregate{
+		SessionStartUsers:    a.FunnelSteps.SessionStartUsers,
+		ViewItemListUsers:    a.FunnelSteps.ViewItemListUsers,
+		SelectItemUsers:      a.FunnelSteps.SelectItemUsers,
+		ViewItemUsers:        a.FunnelSteps.ViewItemUsers,
+		SizeSelectedUsers:    a.FunnelSteps.SizeSelectedUsers,
+		AddToCartUsers:       a.FunnelSteps.AddToCartUsers,
+		BeginCheckoutUsers:   a.FunnelSteps.BeginCheckoutUsers,
+		AddShippingInfoUsers: a.FunnelSteps.AddShippingInfoUsers,
+		AddPaymentInfoUsers:  a.FunnelSteps.AddPaymentInfoUsers,
+		PurchaseUsers:        a.FunnelSteps.PurchaseUsers,
+	}
+}
+
+func ConvertDailyFunnelsToPb(list []entity.DailyFunnel) []*pb_admin.DailyFunnel {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.DailyFunnel, len(list))
+	for i, d := range list {
+		pb[i] = &pb_admin.DailyFunnel{
+			Date:                 timestamppb.New(d.Date),
+			SessionStartUsers:    d.FunnelSteps.SessionStartUsers,
+			ViewItemListUsers:    d.FunnelSteps.ViewItemListUsers,
+			SelectItemUsers:      d.FunnelSteps.SelectItemUsers,
+			ViewItemUsers:        d.FunnelSteps.ViewItemUsers,
+			SizeSelectedUsers:    d.FunnelSteps.SizeSelectedUsers,
+			AddToCartUsers:       d.FunnelSteps.AddToCartUsers,
+			BeginCheckoutUsers:   d.FunnelSteps.BeginCheckoutUsers,
+			AddShippingInfoUsers: d.FunnelSteps.AddShippingInfoUsers,
+			AddPaymentInfoUsers:  d.FunnelSteps.AddPaymentInfoUsers,
+			PurchaseUsers:        d.FunnelSteps.PurchaseUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertOOSImpactMetricsToPb(list []entity.OOSImpactMetric) []*pb_admin.OOSImpactMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.OOSImpactMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.OOSImpactMetric{
+			Date:                 timestamppb.New(m.Date),
+			ProductId:            m.ProductID,
+			ProductName:          m.ProductName,
+			SizeId:               int32(m.SizeID),
+			SizeName:             m.SizeName,
+			ProductPrice:         &decimal.Decimal{Value: m.ProductPrice.String()},
+			Currency:             m.Currency,
+			ClickCount:           m.ClickCount,
+			EstimatedLostSales:   &decimal.Decimal{Value: m.EstimatedLostSales.String()},
+			EstimatedLostRevenue: &decimal.Decimal{Value: m.EstimatedLostRevenue.String()},
+		}
+	}
+	return pb
+}
+
+func ConvertPaymentFailureMetricsToPb(list []entity.PaymentFailureMetric) []*pb_admin.PaymentFailureMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.PaymentFailureMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.PaymentFailureMetric{
+			Date:                timestamppb.New(m.Date),
+			ErrorCode:           m.ErrorCode,
+			PaymentType:         m.PaymentType,
+			FailureCount:        m.FailureCount,
+			TotalFailedValue:    &decimal.Decimal{Value: m.TotalFailedValue.String()},
+			AvgFailedOrderValue: &decimal.Decimal{Value: m.AvgFailedOrderValue.String()},
+		}
+	}
+	return pb
+}
+
+func ConvertWebVitalMetricsToPb(list []entity.WebVitalMetric) []*pb_admin.WebVitalMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.WebVitalMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.WebVitalMetric{
+			Date:           timestamppb.New(m.Date),
+			MetricName:     m.MetricName,
+			MetricRating:   m.MetricRating,
+			SessionCount:   m.SessionCount,
+			Conversions:    m.Conversions,
+			AvgMetricValue: m.AvgMetricValue,
+		}
+	}
+	return pb
+}
+
+func ConvertUserJourneyMetricsToPb(list []entity.UserJourneyMetric) []*pb_admin.UserJourneyMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.UserJourneyMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.UserJourneyMetric{
+			Date:         timestamppb.New(m.Date),
+			JourneyPath:  m.JourneyPath,
+			SessionCount: m.SessionCount,
+			Conversions:  m.Conversions,
+		}
+	}
+	return pb
+}
+
+func ConvertSessionDurationMetricsToPb(list []entity.SessionDurationMetric) []*pb_admin.SessionDurationMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SessionDurationMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.SessionDurationMetric{
+			Date:                        timestamppb.New(m.Date),
+			AvgTimeBetweenEventsSeconds: m.AvgTimeBetweenEventsSeconds,
+			MedianTimeBetweenEvents:     m.MedianTimeBetweenEvents,
+		}
+	}
+	return pb
+}
+
+func ConvertDeviceFunnelMetricsToPb(list []entity.DeviceFunnelMetric) []*pb_admin.DeviceFunnelMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.DeviceFunnelMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.DeviceFunnelMetric{
+			Date:           timestamppb.New(m.Date),
+			DeviceCategory: m.DeviceCategory,
+			Sessions:       m.Sessions,
+			AddToCartUsers: m.AddToCartUsers,
+			CheckoutUsers:  m.CheckoutUsers,
+			PurchaseUsers:  m.PurchaseUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertProductEngagementMetricsToPb(list []entity.ProductEngagementMetric) []*pb_admin.ProductEngagementMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ProductEngagementMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.ProductEngagementMetric{
+			Date:        timestamppb.New(m.Date),
+			ProductId:   m.ProductID,
+			ProductName: m.ProductName,
+			ImageViews:  m.ImageViews,
+			ZoomEvents:  m.ZoomEvents,
+			Scroll_75:   m.Scroll75,
+			Scroll_100:  m.Scroll100,
+		}
+	}
+	return pb
+}
+
+func ConvertFormErrorMetricsToPb(list []entity.FormErrorMetric) []*pb_admin.FormErrorMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.FormErrorMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.FormErrorMetric{
+			Date:       timestamppb.New(m.Date),
+			FieldName:  m.FieldName,
+			ErrorCount: m.ErrorCount,
+		}
+	}
+	return pb
+}
+
+func ConvertExceptionMetricsToPb(list []entity.ExceptionMetric) []*pb_admin.ExceptionMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ExceptionMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.ExceptionMetric{
+			Date:           timestamppb.New(m.Date),
+			PagePath:       m.PagePath,
+			ExceptionCount: m.ExceptionCount,
+			Description:    m.Description,
+		}
+	}
+	return pb
+}
+
+func ConvertNotFoundMetricsToPb(list []entity.NotFoundMetric) []*pb_admin.NotFoundMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.NotFoundMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.NotFoundMetric{
+			Date:     timestamppb.New(m.Date),
+			PagePath: m.PagePath,
+			HitCount: m.HitCount,
+		}
+	}
+	return pb
+}
+
+func ConvertHeroFunnelMetricsToPb(list []entity.HeroFunnelMetric) []*pb_admin.HeroFunnelMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.HeroFunnelMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.HeroFunnelMetric{
+			Date:           timestamppb.New(m.Date),
+			HeroClickUsers: m.HeroClickUsers,
+			ViewItemUsers:  m.ViewItemUsers,
+			PurchaseUsers:  m.PurchaseUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertSizeConfidenceMetricsToPb(list []entity.SizeConfidenceMetric) []*pb_admin.SizeConfidenceMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SizeConfidenceMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.SizeConfidenceMetric{
+			Date:           timestamppb.New(m.Date),
+			ProductId:      m.ProductID,
+			SizeGuideViews: m.SizeGuideViews,
+			SizeSelections: m.SizeSelections,
+		}
+	}
+	return pb
+}
+
+func ConvertPaymentRecoveryMetricsToPb(list []entity.PaymentRecoveryMetric) []*pb_admin.PaymentRecoveryMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.PaymentRecoveryMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.PaymentRecoveryMetric{
+			Date:           timestamppb.New(m.Date),
+			FailedUsers:    m.FailedUsers,
+			RecoveredUsers: m.RecoveredUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertCheckoutTimingMetricsToPb(list []entity.CheckoutTimingMetric) []*pb_admin.CheckoutTimingMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CheckoutTimingMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.CheckoutTimingMetric{
+			Date:                  timestamppb.New(m.Date),
+			AvgCheckoutSeconds:    m.AvgCheckoutSeconds,
+			MedianCheckoutSeconds: m.MedianCheckoutSeconds,
+			SessionCount:          m.SessionCount,
+		}
+	}
+	return pb
+}
+
+// --- Retention DTO converters ---
+
+func ConvertCohortRetentionToPb(list []entity.CohortRetentionRow) []*pb_admin.CohortRetentionRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CohortRetentionRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CohortRetentionRow{
+			CohortMonth: timestamppb.New(r.CohortMonth),
+			CohortSize:  r.CohortSize,
+			M1:          r.M1,
+			M2:          r.M2,
+			M3:          r.M3,
+			M4:          r.M4,
+			M5:          r.M5,
+			M6:          r.M6,
+		}
+	}
+	return pb
+}
+
+func ConvertOrderSequenceMetricsToPb(list []entity.OrderSequenceMetric) []*pb_admin.OrderSequenceMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.OrderSequenceMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.OrderSequenceMetric{
+			OrderNumber:      int32(m.OrderNumber),
+			OrderCount:       m.OrderCount,
+			AvgOrderValue:    &decimal.Decimal{Value: m.AvgOrderValue.String()},
+			AvgDaysSincePrev: m.AvgDaysSincePrev,
+		}
+	}
+	return pb
+}
+
+func ConvertEntryProductMetricsToPb(list []entity.EntryProductMetric) []*pb_admin.EntryProductMetric {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.EntryProductMetric, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.EntryProductMetric{
+			ProductId:     int32(m.ProductID),
+			ProductName:   m.ProductName,
+			PurchaseCount: m.PurchaseCount,
+			TotalRevenue:  &decimal.Decimal{Value: m.TotalRevenue.String()},
+		}
+	}
+	return pb
+}
+
+func ConvertRevenueParetoToPb(list []entity.RevenueParetoRow) []*pb_admin.RevenueParetoRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.RevenueParetoRow, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.RevenueParetoRow{
+			Rank:          int32(m.Rank),
+			ProductId:     int32(m.ProductID),
+			ProductName:   m.ProductName,
+			Revenue:       &decimal.Decimal{Value: m.Revenue.String()},
+			CumulativePct: m.CumulativePct,
+		}
+	}
+	return pb
+}
+
+func ConvertSpendingCurveToPb(list []entity.SpendingCurvePoint) []*pb_admin.SpendingCurvePoint {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SpendingCurvePoint, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.SpendingCurvePoint{
+			OrderNumber:        int32(m.OrderNumber),
+			AvgCumulativeSpend: &decimal.Decimal{Value: m.AvgCumulativeSpend.String()},
+			CustomerCount:      m.CustomerCount,
+		}
+	}
+	return pb
+}
+
+func ConvertCategoryLoyaltyToPb(list []entity.CategoryLoyaltyRow) []*pb_admin.CategoryLoyaltyRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CategoryLoyaltyRow, len(list))
+	for i, m := range list {
+		pb[i] = &pb_admin.CategoryLoyaltyRow{
+			FirstCategory:  m.FirstCategory,
+			SecondCategory: m.SecondCategory,
+			CustomerCount:  m.CustomerCount,
+		}
+	}
+	return pb
+}
+
+func ConvertInventoryHealthToPb(list []entity.InventoryHealthRow) []*pb_admin.InventoryHealthRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.InventoryHealthRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.InventoryHealthRow{
+			ProductId:     int32(r.ProductID),
+			ProductName:   r.ProductName,
+			SizeId:        int32(r.SizeID),
+			SizeName:      r.SizeName,
+			Quantity:      int32(r.Quantity),
+			AvgDailySales: r.AvgDailySales,
+			DaysOnHand:    r.DaysOnHand,
+		}
+	}
+	return pb
+}
+
+func ConvertSizeRunEfficiencyToPb(list []entity.SizeRunEfficiencyRow) []*pb_admin.SizeRunEfficiencyRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SizeRunEfficiencyRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SizeRunEfficiencyRow{
+			ProductId:        int32(r.ProductID),
+			ProductName:      r.ProductName,
+			TotalSizes:       int32(r.TotalSizes),
+			SoldThroughSizes: int32(r.SoldThroughSizes),
+			EfficiencyPct:    r.EfficiencyPct,
+		}
+	}
+	return pb
+}
+
+func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SlowMoverRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SlowMoverRow{
+			ProductId:   int32(r.ProductID),
+			ProductName: r.ProductName,
+			Revenue:     &decimal.Decimal{Value: r.Revenue.String()},
+			UnitsSold:   r.UnitsSold,
+			DaysInStock: r.DaysInStock,
+		}
+		if r.LastSaleDate != nil {
+			pb[i].LastSaleDate = timestamppb.New(*r.LastSaleDate)
+		}
+	}
+	return pb
+}
+
+func ConvertReturnByProductToPb(list []entity.ReturnByProductRow) []*pb_admin.ReturnByProductRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ReturnByProductRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ReturnByProductRow{
+			ProductId:     int32(r.ProductID),
+			ProductName:   r.ProductName,
+			TotalSold:     r.TotalSold,
+			TotalReturned: r.TotalReturned,
+			ReturnRate:    r.ReturnRate,
+			ReturnValue:   &decimal.Decimal{Value: r.ReturnValue.String()},
+		}
+	}
+	return pb
+}
+
+func ConvertReturnBySizeToPb(list []entity.ReturnBySizeRow) []*pb_admin.ReturnBySizeRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ReturnBySizeRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ReturnBySizeRow{
+			SizeId:        int32(r.SizeID),
+			SizeName:      r.SizeName,
+			TotalSold:     r.TotalSold,
+			TotalReturned: r.TotalReturned,
+			ReturnRate:    r.ReturnRate,
+		}
+	}
+	return pb
+}
+
+func ConvertSizeAnalyticsToPb(list []entity.SizeAnalyticsRow) []*pb_admin.SizeAnalyticsRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SizeAnalyticsRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SizeAnalyticsRow{
+			ProductId:    int32(r.ProductID),
+			ProductName:  r.ProductName,
+			SizeId:       int32(r.SizeID),
+			SizeName:     r.SizeName,
+			UnitsSold:    r.UnitsSold,
+			Revenue:      &decimal.Decimal{Value: r.Revenue.String()},
+			PctOfProduct: r.PctOfProduct,
+		}
+	}
+	return pb
+}
+
+func ConvertDeadStockToPb(list []entity.DeadStockRow) []*pb_admin.DeadStockRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.DeadStockRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.DeadStockRow{
+			ProductId:       int32(r.ProductID),
+			ProductName:     r.ProductName,
+			SizeId:          int32(r.SizeID),
+			SizeName:        r.SizeName,
+			Quantity:        int32(r.Quantity),
+			DaysWithoutSale: r.DaysWithoutSale,
+			StockValue:      &decimal.Decimal{Value: r.StockValue.String()},
+		}
+	}
+	return pb
+}
+
+func ConvertProductTrendToPb(list []entity.ProductTrendRow) []*pb_admin.ProductTrendRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ProductTrendRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ProductTrendRow{
+			ProductId:       int32(r.ProductID),
+			ProductName:     r.ProductName,
+			CurrentRevenue:  &decimal.Decimal{Value: r.CurrentRevenue.String()},
+			PreviousRevenue: &decimal.Decimal{Value: r.PreviousRevenue.String()},
+			ChangePct:       r.ChangePct,
+			CurrentUnits:    r.CurrentUnits,
+			PreviousUnits:   r.PreviousUnits,
+		}
+	}
+	return pb
+}
+
+func ConvertScrollDepthToPb(list []entity.ScrollDepthRow) []*pb_admin.ScrollDepthRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ScrollDepthRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ScrollDepthRow{
+			Date:       timestamppb.New(r.Date),
+			PageType:   r.PageType,
+			Scroll_25:  r.Scroll25,
+			Scroll_50:  r.Scroll50,
+			Scroll_75:  r.Scroll75,
+			Scroll_100: r.Scroll100,
+			TotalUsers: r.TotalUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertAddToCartRateToPb(list []entity.AddToCartRateRow) []*pb_admin.AddToCartRateRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.AddToCartRateRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.AddToCartRateRow{
+			Date:           timestamppb.New(r.Date),
+			ProductId:      r.ProductID,
+			ProductName:    r.ProductName,
+			ViewCount:      r.ViewCount,
+			AddToCartCount: r.AddToCartCount,
+			CartRate:       r.CartRate,
+		}
+	}
+	return pb
+}
+
+func ConvertBrowserBreakdownToPb(list []entity.BrowserBreakdownRow) []*pb_admin.BrowserBreakdownRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.BrowserBreakdownRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.BrowserBreakdownRow{
+			Date:           timestamppb.New(r.Date),
+			Browser:        r.Browser,
+			Sessions:       r.Sessions,
+			Users:          r.Users,
+			Conversions:    r.Conversions,
+			ConversionRate: r.ConversionRate,
+		}
+	}
+	return pb
+}
+
+func ConvertNewsletterToPb(list []entity.NewsletterMetricRow) []*pb_admin.NewsletterMetricRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.NewsletterMetricRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.NewsletterMetricRow{
+			Date:        timestamppb.New(r.Date),
+			SignupCount: r.SignupCount,
+			UniqueUsers: r.UniqueUsers,
+		}
+	}
+	return pb
+}
+
+func ConvertAbandonedCartToPb(list []entity.AbandonedCartRow) []*pb_admin.AbandonedCartRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.AbandonedCartRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.AbandonedCartRow{
+			Date:                  timestamppb.New(r.Date),
+			CartsStarted:          r.CartsStarted,
+			CheckoutsStarted:      r.CheckoutsStarted,
+			AbandonmentRate:       r.AbandonmentRate,
+			AvgMinutesToCheckout:  r.AvgMinutesToCheckout,
+			AvgMinutesToAbandon:   r.AvgMinutesToAbandon,
+		}
+	}
+	return pb
+}
+
+func ConvertCampaignAttributionToPb(list []entity.CampaignAttributionRow) []*pb_admin.CampaignAttributionRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CampaignAttributionRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CampaignAttributionRow{
+			Date:           timestamppb.New(r.Date),
+			UtmSource:      r.UTMSource,
+			UtmMedium:      r.UTMMedium,
+			UtmCampaign:    r.UTMCampaign,
+			Sessions:       r.Sessions,
+			Users:          r.Users,
+			Conversions:    r.Conversions,
+			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
+			ConversionRate: r.ConversionRate,
+		}
+	}
+	return pb
+}

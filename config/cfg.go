@@ -5,17 +5,18 @@ import (
 	"os"
 	"strings"
 
-	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
+	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
+	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
-	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
 )
@@ -27,20 +28,21 @@ type RatesConfig struct {
 
 // Config represents the global configuration for the service.
 type Config struct {
-	DB                           store.Config        `mapstructure:"mysql"`
-	Logger                       log.Config          `mapstructure:"logger"`
-	HTTP                         httpapi.Config      `mapstructure:"http"`
-	Auth                         auth.Config         `mapstructure:"auth"`
-	Bucket                       bucket.Config       `mapstructure:"bucket"`
-	Mailer                       mail.Config         `mapstructure:"mailer"`
-	OrderCleanup                 ordercleanup.Config      `mapstructure:"order_cleanup"`
-	StripeReconcile              stripereconcile.Config   `mapstructure:"stripe_reconcile"`
-	Rates                        RatesConfig              `mapstructure:"rates"`
-	StripePayment                stripe.Config       `mapstructure:"stripe_payment"`
-	StripePaymentTest            stripe.Config       `mapstructure:"stripe_payment_test"`
-	Revalidation                 revalidation.Config `mapstructure:"revalidation"`
-	GA4                          ga4.Config          `mapstructure:"ga4"`
-	GA4Sync                      ga4sync.Config      `mapstructure:"ga4_sync"`
+	DB                store.Config           `mapstructure:"mysql"`
+	Logger            log.Config             `mapstructure:"logger"`
+	HTTP              httpapi.Config         `mapstructure:"http"`
+	Auth              auth.Config            `mapstructure:"auth"`
+	Bucket            bucket.Config          `mapstructure:"bucket"`
+	Mailer            mail.Config            `mapstructure:"mailer"`
+	OrderCleanup      ordercleanup.Config    `mapstructure:"order_cleanup"`
+	StripeReconcile   stripereconcile.Config `mapstructure:"stripe_reconcile"`
+	Rates             RatesConfig            `mapstructure:"rates"`
+	StripePayment     stripe.Config          `mapstructure:"stripe_payment"`
+	StripePaymentTest stripe.Config          `mapstructure:"stripe_payment_test"`
+	Revalidation      revalidation.Config    `mapstructure:"revalidation"`
+	GA4               ga4.Config             `mapstructure:"ga4"`
+	GA4Sync           ga4sync.Config         `mapstructure:"ga4_sync"`
+	BigQuery          bq.Config              `mapstructure:"bigquery"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -109,12 +111,12 @@ func LoadConfig(cfgFile string) (*Config, error) {
 			if mysqlPort == "" {
 				mysqlPort = "3306"
 			}
-		if mysqlUser != "" && mysqlPassword != "" && mysqlDatabase != "" {
-			// Construct DSN for DO managed database (with TLS)
-			// Add connection validation and timeout parameters to prevent stale connections
-			config.DB.DSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true&tls=custom&timeout=10s&readTimeout=30s&writeTimeout=30s",
-				mysqlUser, mysqlPassword, mysqlHost, mysqlPort, mysqlDatabase)
-		}
+			if mysqlUser != "" && mysqlPassword != "" && mysqlDatabase != "" {
+				// Construct DSN for DO managed database (with TLS)
+				// Add connection validation and timeout parameters to prevent stale connections
+				config.DB.DSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true&tls=custom&timeout=10s&readTimeout=30s&writeTimeout=30s",
+					mysqlUser, mysqlPassword, mysqlHost, mysqlPort, mysqlDatabase)
+			}
 		}
 	}
 
@@ -132,8 +134,8 @@ func bindEnvVars() {
 	viper.BindEnv("mysql.tls_ca_path", "MYSQL_TLS_CA_PATH")
 
 	// Logger
-	viper.BindEnv("logger.level", "LOG_LEVEL")
-	viper.BindEnv("logger.add_source", "LOG_ADD_SOURCE")
+	viper.BindEnv("logger.level", "LOGGER_LEVEL")
+	viper.BindEnv("logger.add_source", "LOGGER_ADD_SOURCE")
 
 	// HTTP
 	viper.BindEnv("http.port", "HTTP_PORT")
@@ -198,5 +200,27 @@ func bindEnvVars() {
 
 	// GA4 Sync Worker
 	viper.BindEnv("ga4_sync.worker_interval", "GA4_SYNC_WORKER_INTERVAL")
+	viper.BindEnv("ga4_sync.bq_interval", "GA4_SYNC_BQ_INTERVAL")
 	viper.BindEnv("ga4_sync.lookback_days", "GA4_SYNC_LOOKBACK_DAYS")
+	viper.BindEnv("ga4_sync.retention_days", "GA4_SYNC_RETENTION_DAYS")
+	viper.BindEnv("ga4_sync.max_backoff_retries", "GA4_SYNC_MAX_BACKOFF_RETRIES")
+	viper.BindEnv("ga4_sync.initial_backoff", "GA4_SYNC_INITIAL_BACKOFF")
+	viper.BindEnv("ga4_sync.max_backoff", "GA4_SYNC_MAX_BACKOFF")
+	viper.BindEnv("ga4_sync.ga4_stale_threshold", "GA4_SYNC_GA4_STALE_THRESHOLD")
+	viper.BindEnv("ga4_sync.bq_stale_threshold", "GA4_SYNC_BQ_STALE_THRESHOLD")
+
+	// BigQuery
+	viper.BindEnv("bigquery.project_id", "BIGQUERY_PROJECT_ID")
+	viper.BindEnv("bigquery.dataset_id", "BIGQUERY_DATASET_ID")
+	viper.BindEnv("bigquery.credentials_json", "BIGQUERY_CREDENTIALS_JSON")
+	viper.BindEnv("bigquery.query_timeout", "BIGQUERY_QUERY_TIMEOUT")
+	viper.BindEnv("bigquery.use_literal_dates", "BIGQUERY_USE_LITERAL_DATES")
+	viper.BindEnv("bigquery.circuit_breaker.max_failures", "BIGQUERY_CIRCUIT_BREAKER_MAX_FAILURES")
+	viper.BindEnv("bigquery.circuit_breaker.open_timeout", "BIGQUERY_CIRCUIT_BREAKER_OPEN_TIMEOUT")
+	viper.BindEnv("bigquery.circuit_breaker.half_open_max_retries", "BIGQUERY_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
+
+	// GA4 Circuit Breaker
+	viper.BindEnv("ga4.circuit_breaker.max_failures", "GA4_CIRCUIT_BREAKER_MAX_FAILURES")
+	viper.BindEnv("ga4.circuit_breaker.open_timeout", "GA4_CIRCUIT_BREAKER_OPEN_TIMEOUT")
+	viper.BindEnv("ga4.circuit_breaker.half_open_max_retries", "GA4_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
 }

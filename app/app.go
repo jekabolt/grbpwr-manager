@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/config"
+	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
@@ -45,6 +46,7 @@ type App struct {
 	oc   *ordercleanup.Worker
 	sr   *stripereconcile.Worker
 	ga4w *ga4sync.Worker
+	bqc  dependency.BQClient
 	re   dependency.RevalidationService
 	c    *config.Config
 	done chan struct{}
@@ -164,10 +166,19 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// BigQuery client (optional — disabled when not configured)
+	a.bqc, err = bq.NewClient(ctx, &a.c.BigQuery)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create bigquery client",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
 	// GA4 sync worker (only if GA4 is enabled)
 	if a.c.GA4.Enabled {
 		if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
-			a.ga4w = ga4sync.New(ga4Client, mysqlStore.GA4(), &a.c.GA4Sync)
+			a.ga4w = ga4sync.New(ga4Client, a.bqc, mysqlStore.GA4Data(), mysqlStore.BQCache(), mysqlStore.SyncStatus(), &a.c.GA4Sync)
 			if err = a.ga4w.Start(ctx); err != nil {
 				slog.Default().ErrorContext(ctx, "couldn't start ga4 sync worker",
 					slog.String("err", err.Error()),
@@ -202,6 +213,9 @@ func (a *App) Start(ctx context.Context) error {
 
 // Stop stops the application and waits for all services to exit
 func (a *App) Stop(ctx context.Context) {
+	if a.bqc != nil {
+		a.bqc.Close()
+	}
 	a.db.Close()
 	close(a.done)
 }

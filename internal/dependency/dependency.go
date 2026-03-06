@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
+	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -146,7 +148,35 @@ type (
 		GetNewSubscribersCount(ctx context.Context, from, to time.Time) (int, error)
 	}
 
+	Inventory interface {
+		GetInventoryHealth(ctx context.Context, from, to time.Time, limit int) ([]entity.InventoryHealthRow, error)
+		GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error)
+	}
+
+	Retention interface {
+		GetCohortRetention(ctx context.Context, from, to time.Time) ([]entity.CohortRetentionRow, error)
+		GetOrderSequenceMetrics(ctx context.Context, from, to time.Time) ([]entity.OrderSequenceMetric, error)
+		GetEntryProducts(ctx context.Context, from, to time.Time, limit int) ([]entity.EntryProductMetric, error)
+		GetRevenuePareto(ctx context.Context, from, to time.Time, limit int) ([]entity.RevenueParetoRow, error)
+		GetCustomerSpendingCurve(ctx context.Context, from, to time.Time) ([]entity.SpendingCurvePoint, error)
+		GetCategoryLoyalty(ctx context.Context, from, to time.Time) ([]entity.CategoryLoyaltyRow, error)
+	}
+
+	Analytics interface {
+		GetSlowMovers(ctx context.Context, from, to time.Time, limit int) ([]entity.SlowMoverRow, error)
+		GetReturnByProduct(ctx context.Context, from, to time.Time, limit int) ([]entity.ReturnByProductRow, error)
+		GetReturnBySize(ctx context.Context, from, to time.Time) ([]entity.ReturnBySizeRow, error)
+		GetSizeAnalytics(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeAnalyticsRow, error)
+		GetDeadStock(ctx context.Context, from, to time.Time, limit int) ([]entity.DeadStockRow, error)
+		GetProductTrend(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductTrendRow, error)
+	}
+
+	// Metrics aggregates Retention, Inventory, Analytics plus business metrics.
+	// Embedding ensures new methods on those interfaces are automatically included.
 	Metrics interface {
+		Retention
+		Inventory
+		Analytics
 		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
 	}
 
@@ -178,19 +208,117 @@ type (
 		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
 	}
 
-	GA4 interface {
+	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
+	BQClient interface {
+		CircuitBreakerState() circuitbreaker.State
+		Close() error
+		GetFunnelAnalysis(ctx context.Context, startDate, endDate time.Time) ([]entity.DailyFunnel, error)
+		GetFunnelAnalysisStream(ctx context.Context, startDate, endDate time.Time, batchSize int, fn func([]entity.DailyFunnel) error) error
+		GetOOSImpact(ctx context.Context, startDate, endDate time.Time) ([]entity.OOSImpactMetric, error)
+		GetPaymentFailures(ctx context.Context, startDate, endDate time.Time) ([]entity.PaymentFailureMetric, error)
+		GetWebVitals(ctx context.Context, startDate, endDate time.Time) ([]entity.WebVitalMetric, error)
+		GetUserJourneys(ctx context.Context, startDate, endDate time.Time, limit int) ([]entity.UserJourneyMetric, error)
+		GetSessionDuration(ctx context.Context, startDate, endDate time.Time) ([]entity.SessionDurationMetric, error)
+		GetSizeIntent(ctx context.Context, startDate, endDate time.Time) ([]bq.SizeIntentRow, error)
+		GetDeviceFunnel(ctx context.Context, startDate, endDate time.Time) ([]entity.DeviceFunnelMetric, error)
+		GetProductEngagement(ctx context.Context, startDate, endDate time.Time) ([]entity.ProductEngagementMetric, error)
+		GetFormErrors(ctx context.Context, startDate, endDate time.Time) ([]entity.FormErrorMetric, error)
+		GetExceptions(ctx context.Context, startDate, endDate time.Time) ([]entity.ExceptionMetric, error)
+		Get404Pages(ctx context.Context, startDate, endDate time.Time) ([]entity.NotFoundMetric, error)
+		GetHeroFunnel(ctx context.Context, startDate, endDate time.Time) ([]entity.HeroFunnelMetric, error)
+		GetSizeConfidence(ctx context.Context, startDate, endDate time.Time) ([]entity.SizeConfidenceMetric, error)
+		GetPaymentRecovery(ctx context.Context, startDate, endDate time.Time) ([]entity.PaymentRecoveryMetric, error)
+		GetCheckoutTimings(ctx context.Context, startDate, endDate time.Time) ([]entity.CheckoutTimingMetric, error)
+		GetScrollDepth(ctx context.Context, startDate, endDate time.Time) ([]entity.ScrollDepthRow, error)
+		GetAddToCartRate(ctx context.Context, startDate, endDate time.Time) ([]entity.AddToCartRateRow, error)
+		GetBrowserBreakdown(ctx context.Context, startDate, endDate time.Time) ([]entity.BrowserBreakdownRow, error)
+		GetNewsletterSignups(ctx context.Context, startDate, endDate time.Time) ([]entity.NewsletterMetricRow, error)
+		GetAbandonedCart(ctx context.Context, startDate, endDate time.Time) ([]entity.AbandonedCartRow, error)
+		GetCampaignAttribution(ctx context.Context, startDate, endDate time.Time) ([]entity.CampaignAttributionRow, error)
+	}
+
+	// GA4DataStore handles GA4 Data API persistence (raw GA4 metrics)
+	GA4DataStore interface {
 		SaveGA4DailyMetrics(ctx context.Context, metrics []ga4.DailyMetrics) error
 		SaveGA4ProductPageMetrics(ctx context.Context, metrics []ga4.ProductPageMetrics) error
-		SaveGA4TrafficSourceMetrics(ctx context.Context, metrics []ga4.TrafficSourceMetrics) error
-		SaveGA4DeviceMetrics(ctx context.Context, metrics []ga4.DeviceMetrics) error
 		SaveGA4CountryMetrics(ctx context.Context, metrics []ga4.CountryMetrics) error
-		UpdateGA4SyncStatus(ctx context.Context, syncType string, lastSyncDate time.Time, status string, recordsSynced int, errorMsg string) error
-		GetGA4LastSyncDate(ctx context.Context, syncType string) (time.Time, error)
+		SaveGA4EcommerceMetrics(ctx context.Context, metrics []ga4.EcommerceMetrics) error
+		SaveGA4RevenueBySource(ctx context.Context, metrics []ga4.RevenueSourceMetrics) error
+		SaveGA4ProductConversion(ctx context.Context, metrics []ga4.ProductConversionMetrics) error
 		GetGA4DailyMetrics(ctx context.Context, from, to time.Time) ([]ga4.DailyMetrics, error)
 		GetGA4ProductPageMetrics(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductViewMetric, error)
-		GetGA4TrafficSourceMetrics(ctx context.Context, from, to time.Time, limit int) ([]entity.TrafficSourceMetric, error)
-		GetGA4DeviceMetrics(ctx context.Context, from, to time.Time) ([]entity.DeviceMetric, error)
 		GetGA4SessionsByCountry(ctx context.Context, from, to time.Time, limit int) ([]entity.GeographySessionMetric, error)
+	}
+
+	// BQCacheStoreRead handles BigQuery precomputed analytics cache reads.
+	// High-cardinality methods accept limit, offset for pagination; 0 limit uses default 500.
+	BQCacheStoreRead interface {
+		SumBQFunnelAnalysis(ctx context.Context, from, to time.Time) (*entity.FunnelAggregate, error)
+		GetDailyBQFunnelAnalysis(ctx context.Context, from, to time.Time) ([]entity.DailyFunnel, error)
+		GetBQOOSImpact(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.OOSImpactMetric, error)
+		GetBQPaymentFailures(ctx context.Context, from, to time.Time) ([]entity.PaymentFailureMetric, error)
+		GetBQWebVitals(ctx context.Context, from, to time.Time) ([]entity.WebVitalMetric, error)
+		GetBQUserJourneys(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.UserJourneyMetric, error)
+		GetBQSessionDuration(ctx context.Context, from, to time.Time) ([]entity.SessionDurationMetric, error)
+		GetBQSizeIntent(ctx context.Context, from, to time.Time, limit, offset int) ([]bq.SizeIntentRow, error)
+		GetBQDeviceFunnel(ctx context.Context, from, to time.Time) ([]entity.DeviceFunnelMetric, error)
+		GetBQProductEngagement(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductEngagementMetric, error)
+		GetBQFormErrors(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.FormErrorMetric, error)
+		GetBQExceptions(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ExceptionMetric, error)
+		GetBQNotFoundPages(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotFoundMetric, error)
+		GetBQHeroFunnel(ctx context.Context, from, to time.Time) ([]entity.HeroFunnelMetric, error)
+		GetBQSizeConfidence(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeConfidenceMetric, error)
+		GetBQPaymentRecovery(ctx context.Context, from, to time.Time) ([]entity.PaymentRecoveryMetric, error)
+		GetBQCheckoutTimings(ctx context.Context, from, to time.Time) ([]entity.CheckoutTimingMetric, error)
+		GetBQScrollDepth(ctx context.Context, from, to time.Time) ([]entity.ScrollDepthRow, error)
+		GetBQAddToCartRate(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.AddToCartRateRow, error)
+		GetBQBrowserBreakdown(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.BrowserBreakdownRow, error)
+		GetBQNewsletter(ctx context.Context, from, to time.Time) ([]entity.NewsletterMetricRow, error)
+		GetBQAbandonedCart(ctx context.Context, from, to time.Time) ([]entity.AbandonedCartRow, error)
+		GetBQCampaignAttribution(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionRow, error)
+	}
+
+	// BQCacheStoreWriter handles BigQuery precomputed analytics cache writes
+	BQCacheStoreWriter interface {
+		DeleteBQFunnelAnalysisByDateRange(ctx context.Context, startDate, endDate time.Time) error
+		InsertBQFunnelAnalysisBatch(ctx context.Context, rows []entity.DailyFunnel) error
+		SaveBQFunnelAnalysis(ctx context.Context, rows []entity.DailyFunnel) error
+		SaveBQOOSImpact(ctx context.Context, rows []entity.OOSImpactMetric) error
+		SaveBQPaymentFailures(ctx context.Context, rows []entity.PaymentFailureMetric) error
+		SaveBQWebVitals(ctx context.Context, rows []entity.WebVitalMetric) error
+		SaveBQUserJourneys(ctx context.Context, rows []entity.UserJourneyMetric) error
+		SaveBQSessionDuration(ctx context.Context, rows []entity.SessionDurationMetric) error
+		SaveBQSizeIntent(ctx context.Context, rows []bq.SizeIntentRow) error
+		SaveBQDeviceFunnel(ctx context.Context, rows []entity.DeviceFunnelMetric) error
+		SaveBQProductEngagement(ctx context.Context, rows []entity.ProductEngagementMetric) error
+		SaveBQFormErrors(ctx context.Context, rows []entity.FormErrorMetric) error
+		SaveBQExceptions(ctx context.Context, rows []entity.ExceptionMetric) error
+		SaveBQNotFoundPages(ctx context.Context, rows []entity.NotFoundMetric) error
+		SaveBQHeroFunnel(ctx context.Context, rows []entity.HeroFunnelMetric) error
+		SaveBQSizeConfidence(ctx context.Context, rows []entity.SizeConfidenceMetric) error
+		SaveBQPaymentRecovery(ctx context.Context, rows []entity.PaymentRecoveryMetric) error
+		SaveBQCheckoutTimings(ctx context.Context, rows []entity.CheckoutTimingMetric) error
+		SaveBQScrollDepth(ctx context.Context, rows []entity.ScrollDepthRow) error
+		SaveBQAddToCartRate(ctx context.Context, rows []entity.AddToCartRateRow) error
+		SaveBQBrowserBreakdown(ctx context.Context, rows []entity.BrowserBreakdownRow) error
+		SaveBQNewsletter(ctx context.Context, rows []entity.NewsletterMetricRow) error
+		SaveBQAbandonedCart(ctx context.Context, rows []entity.AbandonedCartRow) error
+		SaveBQCampaignAttribution(ctx context.Context, rows []entity.CampaignAttributionRow) error
+	}
+
+	// BQCacheStore combines read and write for backward compatibility
+	BQCacheStore interface {
+		BQCacheStoreRead
+		BQCacheStoreWriter
+	}
+
+	// SyncStatusStore handles sync metadata and retention
+	SyncStatusStore interface {
+		UpdateGA4SyncStatus(ctx context.Context, syncType string, lastSyncDate time.Time, success bool, recordsSynced int, errorMsg string) error
+		GetGA4LastSyncDate(ctx context.Context, syncType string) (time.Time, error)
+		GetGA4MinLastSyncDate(ctx context.Context) (time.Time, error)
+		GetAllSyncStatuses(ctx context.Context) ([]entity.SyncSourceStatus, error)
+		DeleteOldAnalyticsData(ctx context.Context, olderThan time.Time) (int64, error)
 	}
 
 	Language interface {
@@ -248,9 +376,14 @@ type (
 		Cache() Cache
 		Mail() Mail
 		Archive() Archive
-		GA4() GA4
+		GA4Data() GA4DataStore
+		BQCache() BQCacheStore
+		SyncStatus() SyncStatusStore
 		Subscribers() Subscribers
 		Metrics() Metrics
+		Inventory() Inventory
+		Retention() Retention
+		Analytics() Analytics
 		Media() Media
 		Settings() Settings
 		Support() Support
