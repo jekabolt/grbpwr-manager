@@ -805,12 +805,9 @@ func ConvertReturnByProductToPb(list []entity.ReturnByProductRow) []*pb_admin.Re
 	pb := make([]*pb_admin.ReturnByProductRow, len(list))
 	for i, r := range list {
 		pb[i] = &pb_admin.ReturnByProductRow{
-			ProductId:     int32(r.ProductID),
-			ProductName:   r.ProductName,
-			TotalSold:     r.TotalSold,
-			TotalReturned: r.TotalReturned,
-			ReturnRate:    r.ReturnRate,
-			ReturnValue:   &decimal.Decimal{Value: r.ReturnValue.String()},
+			ProductName:     r.ProductName,
+			TotalReturnRate: r.TotalReturnRate,
+			Reasons:         r.Reasons,
 		}
 	}
 	return pb
@@ -890,20 +887,105 @@ func ConvertProductTrendToPb(list []entity.ProductTrendRow) []*pb_admin.ProductT
 	return pb
 }
 
-func ConvertScrollDepthToPb(list []entity.ScrollDepthRow) []*pb_admin.ScrollDepthRow {
+func ConvertTimeOnPageToPb(list []entity.TimeOnPageRow) []*pb_admin.TimeOnPageRow {
 	if len(list) == 0 {
 		return nil
 	}
-	pb := make([]*pb_admin.ScrollDepthRow, len(list))
+	pb := make([]*pb_admin.TimeOnPageRow, len(list))
 	for i, r := range list {
-		pb[i] = &pb_admin.ScrollDepthRow{
-			Date:       timestamppb.New(r.Date),
-			PageType:   r.PageType,
-			Scroll_25:  r.Scroll25,
-			Scroll_50:  r.Scroll50,
-			Scroll_75:  r.Scroll75,
-			Scroll_100: r.Scroll100,
-			TotalUsers: r.TotalUsers,
+		pb[i] = &pb_admin.TimeOnPageRow{
+			Date:                  timestamppb.New(r.Date),
+			PagePath:              r.PagePath,
+			AvgVisibleTimeSeconds: r.AvgVisibleTimeSeconds,
+			AvgTotalTimeSeconds:   r.AvgTotalTimeSeconds,
+			AvgEngagementScore:    r.AvgEngagementScore,
+			PageViews:             r.PageViews,
+		}
+	}
+	return pb
+}
+
+func ConvertProductZoomToPb(list []entity.ProductZoomRow) []*pb_admin.ProductZoomRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ProductZoomRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ProductZoomRow{
+			Date:        timestamppb.New(r.Date),
+			ProductId:   r.ProductID,
+			ProductName: r.ProductName,
+			ZoomMethod:  r.ZoomMethod,
+			ZoomCount:   r.ZoomCount,
+		}
+	}
+	return pb
+}
+
+func ConvertImageSwipesToPb(list []entity.ImageSwipeRow) []*pb_admin.ImageSwipeRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.ImageSwipeRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.ImageSwipeRow{
+			Date:           timestamppb.New(r.Date),
+			ProductId:      r.ProductID,
+			ProductName:    r.ProductName,
+			SwipeDirection: r.SwipeDirection,
+			SwipeCount:     r.SwipeCount,
+		}
+	}
+	return pb
+}
+
+func ConvertSizeGuideClicksToPb(list []entity.SizeGuideClickRow) []*pb_admin.SizeGuideClickRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SizeGuideClickRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SizeGuideClickRow{
+			Date:         timestamppb.New(r.Date),
+			ProductId:    r.ProductID,
+			ProductName:  r.ProductName,
+			PageLocation: r.PageLocation,
+			ClickCount:   r.ClickCount,
+		}
+	}
+	return pb
+}
+
+func ConvertDetailsExpansionToPb(list []entity.DetailsExpansionRow) []*pb_admin.DetailsExpansionRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.DetailsExpansionRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.DetailsExpansionRow{
+			Date:        timestamppb.New(r.Date),
+			ProductId:   r.ProductID,
+			ProductName: r.ProductName,
+			SectionName: r.SectionName,
+			ExpandCount: r.ExpandCount,
+		}
+	}
+	return pb
+}
+
+func ConvertNotifyMeIntentToPb(list []entity.NotifyMeIntentRow) []*pb_admin.NotifyMeIntentRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.NotifyMeIntentRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.NotifyMeIntentRow{
+			Date:           timestamppb.New(r.Date),
+			ProductId:      r.ProductID,
+			ProductName:    r.ProductName,
+			Action:         r.Action,
+			Count:          r.Count,
+			ConversionRate: r.ConversionRate,
 		}
 	}
 	return pb
@@ -922,6 +1004,51 @@ func ConvertAddToCartRateToPb(list []entity.AddToCartRateRow) []*pb_admin.AddToC
 			ViewCount:      r.ViewCount,
 			AddToCartCount: r.AddToCartCount,
 			CartRate:       r.CartRate,
+		}
+	}
+	return pb
+}
+
+func ConvertAddToCartRateAnalysisToPb(a *entity.AddToCartRateAnalysis) *pb_admin.AddToCartRateAnalysis {
+	if a == nil {
+		return nil
+	}
+	return &pb_admin.AddToCartRateAnalysis{
+		Products:     convertATCProductRowsToPb(a.Products),
+		GlobalTrend:  convertATCGlobalRowsToPb(a.GlobalTrend),
+		AvgViewCount: float64(a.AvgViewCount),
+		AvgCartRate:  a.AvgCartRate,
+	}
+}
+
+func convertATCProductRowsToPb(list []entity.AddToCartRateProductRow) []*pb_admin.AddToCartRateProductRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.AddToCartRateProductRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.AddToCartRateProductRow{
+			ProductId:      r.ProductID,
+			ProductName:    r.ProductName,
+			ViewCount:      r.ViewCount,
+			AddToCartCount: r.AddToCartCount,
+			CartRate:       r.CartRate,
+		}
+	}
+	return pb
+}
+
+func convertATCGlobalRowsToPb(list []entity.AddToCartRateGlobalRow) []*pb_admin.AddToCartRateGlobalRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.AddToCartRateGlobalRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.AddToCartRateGlobalRow{
+			Date:            timestamppb.New(r.Date),
+			TotalViews:      r.TotalViews,
+			TotalAddToCarts: r.TotalAddToCarts,
+			GlobalCartRate:  r.GlobalCartRate,
 		}
 	}
 	return pb
@@ -967,12 +1094,12 @@ func ConvertAbandonedCartToPb(list []entity.AbandonedCartRow) []*pb_admin.Abando
 	pb := make([]*pb_admin.AbandonedCartRow, len(list))
 	for i, r := range list {
 		pb[i] = &pb_admin.AbandonedCartRow{
-			Date:                  timestamppb.New(r.Date),
-			CartsStarted:          r.CartsStarted,
-			CheckoutsStarted:      r.CheckoutsStarted,
-			AbandonmentRate:       r.AbandonmentRate,
-			AvgMinutesToCheckout:  r.AvgMinutesToCheckout,
-			AvgMinutesToAbandon:   r.AvgMinutesToAbandon,
+			Date:                 timestamppb.New(r.Date),
+			CartsStarted:         r.CartsStarted,
+			CheckoutsStarted:     r.CheckoutsStarted,
+			AbandonmentRate:      r.AbandonmentRate,
+			AvgMinutesToCheckout: r.AvgMinutesToCheckout,
+			AvgMinutesToAbandon:  r.AvgMinutesToAbandon,
 		}
 	}
 	return pb

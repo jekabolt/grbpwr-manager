@@ -18,15 +18,15 @@ import (
 
 // Config holds configuration for the GA4 sync worker.
 type Config struct {
-	WorkerInterval       time.Duration `mapstructure:"worker_interval"`
-	BQInterval           time.Duration `mapstructure:"bq_interval"`
-	LookbackDays         int           `mapstructure:"lookback_days"`
-	RetentionDays        int           `mapstructure:"retention_days"`
-	MaxBackoffRetries    int           `mapstructure:"max_backoff_retries"`
-	InitialBackoff       time.Duration `mapstructure:"initial_backoff"`
-	MaxBackoff           time.Duration `mapstructure:"max_backoff"`
-	GA4StaleThreshold    time.Duration `mapstructure:"ga4_stale_threshold"`
-	BQStaleThreshold     time.Duration `mapstructure:"bq_stale_threshold"`
+	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
+	BQInterval        time.Duration `mapstructure:"bq_interval"`
+	LookbackDays      int           `mapstructure:"lookback_days"`
+	RetentionDays     int           `mapstructure:"retention_days"`
+	MaxBackoffRetries int           `mapstructure:"max_backoff_retries"`
+	InitialBackoff    time.Duration `mapstructure:"initial_backoff"`
+	MaxBackoff        time.Duration `mapstructure:"max_backoff"`
+	GA4StaleThreshold time.Duration `mapstructure:"ga4_stale_threshold"`
+	BQStaleThreshold  time.Duration `mapstructure:"bq_stale_threshold"`
 }
 
 // DefaultConfig returns default configuration values.
@@ -618,12 +618,47 @@ func (w *Worker) runBQPrecompute(ctx context.Context, startDate, endDate time.Ti
 			}
 			return w.bqCache.SaveBQCheckoutTimings(ctx, rows)
 		}},
-		{"bq_scroll_depth", func() error {
-			rows, err := w.bqClient.GetScrollDepth(ctx, startDate, endDate)
+		{"bq_time_on_page", func() error {
+			rows, err := w.bqClient.GetTimeOnPage(ctx, startDate, endDate)
 			if err != nil {
-				return fmt.Errorf("fetch scroll depth: %w", err)
+				return fmt.Errorf("fetch time on page: %w", err)
 			}
-			return w.bqCache.SaveBQScrollDepth(ctx, rows)
+			return w.bqCache.SaveBQTimeOnPage(ctx, rows)
+		}},
+		{"bq_product_zoom", func() error {
+			rows, err := w.bqClient.GetProductZoom(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch product zoom: %w", err)
+			}
+			return w.bqCache.SaveBQProductZoom(ctx, rows)
+		}},
+		{"bq_image_swipes", func() error {
+			rows, err := w.bqClient.GetImageSwipes(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch image swipes: %w", err)
+			}
+			return w.bqCache.SaveBQImageSwipes(ctx, rows)
+		}},
+		{"bq_size_guide_clicks", func() error {
+			rows, err := w.bqClient.GetSizeGuideClicks(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch size guide clicks: %w", err)
+			}
+			return w.bqCache.SaveBQSizeGuideClicks(ctx, rows)
+		}},
+		{"bq_details_expansion", func() error {
+			rows, err := w.bqClient.GetDetailsExpansion(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch details expansion: %w", err)
+			}
+			return w.bqCache.SaveBQDetailsExpansion(ctx, rows)
+		}},
+		{"bq_notify_me_intent", func() error {
+			rows, err := w.bqClient.GetNotifyMeIntent(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch notify me intent: %w", err)
+			}
+			return w.bqCache.SaveBQNotifyMeIntent(ctx, rows)
 		}},
 		{"bq_add_to_cart_rate", func() error {
 			rows, err := w.bqClient.GetAddToCartRate(ctx, startDate, endDate)

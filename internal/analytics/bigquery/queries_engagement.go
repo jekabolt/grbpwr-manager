@@ -239,9 +239,9 @@ func (c *Client) getUserJourneys(
 	for {
 		var r struct {
 			EventDate    civil.Date `bigquery:"event_date"`
-			JourneyPath  string    `bigquery:"journey_path"`
-			SessionCount int64     `bigquery:"session_count"`
-			Conversions  int64     `bigquery:"conversions"`
+			JourneyPath  string     `bigquery:"journey_path"`
+			SessionCount int64      `bigquery:"session_count"`
+			Conversions  int64      `bigquery:"conversions"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -338,8 +338,8 @@ func (c *Client) getSessionDuration(
 	for {
 		var r struct {
 			EventDate                   civil.Date `bigquery:"event_date"`
-			AvgTimeBetweenEventsSeconds float64   `bigquery:"avg_time_between_events_seconds"`
-			MedianTimeBetweenEvents     float64   `bigquery:"median_time_between_events"`
+			AvgTimeBetweenEventsSeconds float64    `bigquery:"avg_time_between_events_seconds"`
+			MedianTimeBetweenEvents     float64    `bigquery:"median_time_between_events"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -350,112 +350,6 @@ func (c *Client) getSessionDuration(
 			Date:                        civilDateToTime(r.EventDate),
 			AvgTimeBetweenEventsSeconds: SanitizeFloat64(r.AvgTimeBetweenEventsSeconds),
 			MedianTimeBetweenEvents:     SanitizeFloat64(r.MedianTimeBetweenEvents),
-		})
-	}
-	return rows, nil
-}
-
-// GetScrollDepth returns scroll_depth events aggregated by page type per day.
-// Uses page_path from event_params (sent by frontend scroll-depth tracker).
-func (c *Client) GetScrollDepth(
-	ctx context.Context,
-	startDate, endDate time.Time,
-) ([]entity.ScrollDepthRow, error) {
-
-	var result []entity.ScrollDepthRow
-	err := c.withCircuitBreaker(ctx, func(ctx context.Context) error {
-		rows, err := c.getScrollDepth(ctx, startDate, endDate)
-		if err != nil {
-			return err
-		}
-		result = rows
-		return nil
-	})
-	return result, err
-}
-
-func (c *Client) getScrollDepth(
-	ctx context.Context,
-	startDate, endDate time.Time,
-) ([]entity.ScrollDepthRow, error) {
-	ctx, cancel := c.queryContext(ctx)
-	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name")
-	if err != nil {
-		return nil, fmt.Errorf("GetScrollDepth: %w", err)
-	}
-	sql := fmt.Sprintf(`
-		WITH scroll_events AS (
-			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-				user_pseudo_id,
-				CASE
-					WHEN IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), '/') = '/'
-					THEN 'homepage'
-					WHEN REGEXP_CONTAINS(
-						IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), '/'),
-						r'/product[s]?/'
-					) THEN 'product'
-					WHEN REGEXP_CONTAINS(
-						IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), '/'),
-						r'/checkout'
-					) THEN 'checkout'
-					ELSE 'other'
-				END AS page_type,
-				SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') AS INT64) AS pct
-			FROM %s
-			WHERE %s
-				AND event_name = 'scroll_depth'
-		)
-		SELECT
-			event_date,
-			page_type,
-			COUNTIF(pct >= 25) AS scroll_25,
-			COUNTIF(pct >= 50) AS scroll_50,
-			COUNTIF(pct >= 75) AS scroll_75,
-			COUNTIF(pct >= 100) AS scroll_100,
-			COUNT(DISTINCT user_pseudo_id) AS total_users
-		FROM scroll_events
-		GROUP BY event_date, page_type
-	`, src, c.dateFilterSQL(startDate, endDate))
-
-	query := c.client.Query(sql)
-	if !c.useLiteralDates {
-		query.Parameters = []bigquery.QueryParameter{
-			{Name: "start_date", Value: startDate},
-			{Name: "end_date", Value: endDate},
-		}
-	}
-
-	it, err := query.Read(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("GetScrollDepth: %w", err)
-	}
-
-	var rows []entity.ScrollDepthRow
-	for {
-		var r struct {
-			EventDate  civil.Date `bigquery:"event_date"`
-			PageType   string    `bigquery:"page_type"`
-			Scroll25   int64     `bigquery:"scroll_25"`
-			Scroll50   int64     `bigquery:"scroll_50"`
-			Scroll75   int64     `bigquery:"scroll_75"`
-			Scroll100  int64     `bigquery:"scroll_100"`
-			TotalUsers int64     `bigquery:"total_users"`
-		}
-		if err := it.Next(&r); err == iterator.Done {
-			break
-		} else if err != nil {
-			return nil, fmt.Errorf("GetScrollDepth iterate: %w", err)
-		}
-		rows = append(rows, entity.ScrollDepthRow{
-			Date:       civilDateToTime(r.EventDate),
-			PageType:   r.PageType,
-			Scroll25:   ClampInt64(r.Scroll25),
-			Scroll50:   ClampInt64(r.Scroll50),
-			Scroll75:   ClampInt64(r.Scroll75),
-			Scroll100:  ClampInt64(r.Scroll100),
-			TotalUsers: ClampInt64(r.TotalUsers),
 		})
 	}
 	return rows, nil
@@ -529,11 +423,11 @@ func (c *Client) getBrowserBreakdown(
 	for {
 		var r struct {
 			EventDate      civil.Date `bigquery:"event_date"`
-			Browser        string    `bigquery:"browser"`
-			Sessions       int64     `bigquery:"sessions"`
-			Users          int64     `bigquery:"users"`
-			Conversions    int64     `bigquery:"conversions"`
-			ConversionRate float64   `bigquery:"conversion_rate"`
+			Browser        string     `bigquery:"browser"`
+			Sessions       int64      `bigquery:"sessions"`
+			Users          int64      `bigquery:"users"`
+			Conversions    int64      `bigquery:"conversions"`
+			ConversionRate float64    `bigquery:"conversion_rate"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -608,8 +502,8 @@ func (c *Client) getNewsletterSignups(
 	for {
 		var r struct {
 			EventDate   civil.Date `bigquery:"event_date"`
-			SignupCount int64     `bigquery:"signup_count"`
-			UniqueUsers int64     `bigquery:"unique_users"`
+			SignupCount int64      `bigquery:"signup_count"`
+			UniqueUsers int64      `bigquery:"unique_users"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -706,14 +600,14 @@ func (c *Client) getCampaignAttribution(
 	for {
 		var r struct {
 			EventDate      civil.Date `bigquery:"event_date"`
-			UTMSource      string    `bigquery:"utm_source"`
-			UTMMedium      string    `bigquery:"utm_medium"`
-			UTMCampaign    string    `bigquery:"utm_campaign"`
-			Sessions       int64     `bigquery:"sessions"`
-			Users          int64     `bigquery:"users"`
-			Conversions    int64     `bigquery:"conversions"`
-			Revenue        float64   `bigquery:"revenue"`
-			ConversionRate float64   `bigquery:"conversion_rate"`
+			UTMSource      string     `bigquery:"utm_source"`
+			UTMMedium      string     `bigquery:"utm_medium"`
+			UTMCampaign    string     `bigquery:"utm_campaign"`
+			Sessions       int64      `bigquery:"sessions"`
+			Users          int64      `bigquery:"users"`
+			Conversions    int64      `bigquery:"conversions"`
+			Revenue        float64    `bigquery:"revenue"`
+			ConversionRate float64    `bigquery:"conversion_rate"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break

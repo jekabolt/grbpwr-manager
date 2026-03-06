@@ -229,12 +229,17 @@ type (
 		GetSizeConfidence(ctx context.Context, startDate, endDate time.Time) ([]entity.SizeConfidenceMetric, error)
 		GetPaymentRecovery(ctx context.Context, startDate, endDate time.Time) ([]entity.PaymentRecoveryMetric, error)
 		GetCheckoutTimings(ctx context.Context, startDate, endDate time.Time) ([]entity.CheckoutTimingMetric, error)
-		GetScrollDepth(ctx context.Context, startDate, endDate time.Time) ([]entity.ScrollDepthRow, error)
 		GetAddToCartRate(ctx context.Context, startDate, endDate time.Time) ([]entity.AddToCartRateRow, error)
 		GetBrowserBreakdown(ctx context.Context, startDate, endDate time.Time) ([]entity.BrowserBreakdownRow, error)
 		GetNewsletterSignups(ctx context.Context, startDate, endDate time.Time) ([]entity.NewsletterMetricRow, error)
 		GetAbandonedCart(ctx context.Context, startDate, endDate time.Time) ([]entity.AbandonedCartRow, error)
 		GetCampaignAttribution(ctx context.Context, startDate, endDate time.Time) ([]entity.CampaignAttributionRow, error)
+		GetTimeOnPage(ctx context.Context, startDate, endDate time.Time) ([]entity.TimeOnPageRow, error)
+		GetProductZoom(ctx context.Context, startDate, endDate time.Time) ([]entity.ProductZoomRow, error)
+		GetImageSwipes(ctx context.Context, startDate, endDate time.Time) ([]entity.ImageSwipeRow, error)
+		GetSizeGuideClicks(ctx context.Context, startDate, endDate time.Time) ([]entity.SizeGuideClickRow, error)
+		GetDetailsExpansion(ctx context.Context, startDate, endDate time.Time) ([]entity.DetailsExpansionRow, error)
+		GetNotifyMeIntent(ctx context.Context, startDate, endDate time.Time) ([]entity.NotifyMeIntentRow, error)
 	}
 
 	// GA4DataStore handles GA4 Data API persistence (raw GA4 metrics)
@@ -270,12 +275,17 @@ type (
 		GetBQSizeConfidence(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeConfidenceMetric, error)
 		GetBQPaymentRecovery(ctx context.Context, from, to time.Time) ([]entity.PaymentRecoveryMetric, error)
 		GetBQCheckoutTimings(ctx context.Context, from, to time.Time) ([]entity.CheckoutTimingMetric, error)
-		GetBQScrollDepth(ctx context.Context, from, to time.Time) ([]entity.ScrollDepthRow, error)
-		GetBQAddToCartRate(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.AddToCartRateRow, error)
+		GetBQAddToCartRate(ctx context.Context, from, to time.Time, granularity entity.TrendGranularity, limit, offset int) (*entity.AddToCartRateAnalysis, error)
 		GetBQBrowserBreakdown(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.BrowserBreakdownRow, error)
 		GetBQNewsletter(ctx context.Context, from, to time.Time) ([]entity.NewsletterMetricRow, error)
 		GetBQAbandonedCart(ctx context.Context, from, to time.Time) ([]entity.AbandonedCartRow, error)
 		GetBQCampaignAttribution(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionRow, error)
+		GetBQTimeOnPage(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.TimeOnPageRow, error)
+		GetBQProductZoom(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductZoomRow, error)
+		GetBQImageSwipes(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ImageSwipeRow, error)
+		GetBQSizeGuideClicks(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeGuideClickRow, error)
+		GetBQDetailsExpansion(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.DetailsExpansionRow, error)
+		GetBQNotifyMeIntent(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotifyMeIntentRow, error)
 	}
 
 	// BQCacheStoreWriter handles BigQuery precomputed analytics cache writes
@@ -298,12 +308,17 @@ type (
 		SaveBQSizeConfidence(ctx context.Context, rows []entity.SizeConfidenceMetric) error
 		SaveBQPaymentRecovery(ctx context.Context, rows []entity.PaymentRecoveryMetric) error
 		SaveBQCheckoutTimings(ctx context.Context, rows []entity.CheckoutTimingMetric) error
-		SaveBQScrollDepth(ctx context.Context, rows []entity.ScrollDepthRow) error
 		SaveBQAddToCartRate(ctx context.Context, rows []entity.AddToCartRateRow) error
 		SaveBQBrowserBreakdown(ctx context.Context, rows []entity.BrowserBreakdownRow) error
 		SaveBQNewsletter(ctx context.Context, rows []entity.NewsletterMetricRow) error
 		SaveBQAbandonedCart(ctx context.Context, rows []entity.AbandonedCartRow) error
 		SaveBQCampaignAttribution(ctx context.Context, rows []entity.CampaignAttributionRow) error
+		SaveBQTimeOnPage(ctx context.Context, rows []entity.TimeOnPageRow) error
+		SaveBQProductZoom(ctx context.Context, rows []entity.ProductZoomRow) error
+		SaveBQImageSwipes(ctx context.Context, rows []entity.ImageSwipeRow) error
+		SaveBQSizeGuideClicks(ctx context.Context, rows []entity.SizeGuideClickRow) error
+		SaveBQDetailsExpansion(ctx context.Context, rows []entity.DetailsExpansionRow) error
+		SaveBQNotifyMeIntent(ctx context.Context, rows []entity.NotifyMeIntentRow) error
 	}
 
 	// BQCacheStore combines read and write for backward compatibility

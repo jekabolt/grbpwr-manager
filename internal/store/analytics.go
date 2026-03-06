@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,6 +11,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
+
+// returnByProductRawRow is the raw DB row before aggregation.
+type returnByProductRawRow struct {
+	ProductID     int     `db:"product_id"`
+	ProductName   string  `db:"product_name"`
+	RefundReason  string  `db:"refund_reason"`
+	RefundedQty   int64   `db:"refunded_qty"`
+	TotalSold     int64   `db:"total_sold"`
+	ReturnRatePct float64 `db:"return_rate_pct"`
+}
 
 type analyticsStore struct {
 	*MYSQLStore
@@ -71,7 +82,28 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 	return result, nil
 }
 
-// GetReturnByProduct returns return/refund rate per product.
+// normalizeRefundReason maps DB refund_reason text to chart keys.
+func normalizeRefundReason(s string) string {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if lower == "" {
+		return "other"
+	}
+	switch {
+	case strings.Contains(lower, "size") && !strings.Contains(lower, "quality"):
+		return "wrong_size"
+	case strings.Contains(lower, "defective") || strings.Contains(lower, "damaged"):
+		return "defective"
+	case strings.Contains(lower, "quality") || strings.Contains(lower, "wrong item") || strings.Contains(lower, "not as described"):
+		return "not_as_described"
+	case strings.Contains(lower, "changed") || strings.Contains(lower, "mistake") || strings.Contains(lower, "ordered by mistake"):
+		return "changed_mind"
+	default:
+		return "other"
+	}
+}
+
+// GetReturnByProduct returns return/refund rate per product with breakdown by refund reason.
+// Uses refunded_order_item for accurate refund quantities (not order_item).
 func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.Time, limit int) ([]entity.ReturnByProductRow, error) {
 	statusIDs := joinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
@@ -88,51 +120,81 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 				AND co.placed >= :from AND co.placed < :to
 			GROUP BY oi.product_id
 		),
-		returned AS (
+		returned_by_reason AS (
 			SELECT
 				oi.product_id,
-				COUNT(DISTINCT co.id) AS return_orders,
-				SUM(oi.quantity) AS returned_qty,
-				SUM(oi.product_price * oi.quantity) AS return_value
-			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			WHERE co.order_status_id IN (
-				SELECT os.id FROM order_status os WHERE os.name IN ('refunded', 'partially_refunded')
-			)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
-			GROUP BY oi.product_id
+				COALESCE(NULLIF(TRIM(co.refund_reason), ''), 'Not specified') AS refund_reason,
+				SUM(roi.quantity_refunded) AS refunded_qty
+			FROM refunded_order_item roi
+			JOIN order_item oi ON roi.order_item_id = oi.id
+			JOIN customer_order co ON roi.order_id = co.id
+			WHERE co.placed >= :from AND co.placed < :to
+			GROUP BY oi.product_id, COALESCE(NULLIF(TRIM(co.refund_reason), ''), 'Not specified')
 		)
 		SELECT
-			s.product_id,
+			p.id AS product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
 				p.brand
 			) AS product_name,
+			COALESCE(r.refund_reason, '') AS refund_reason,
+			COALESCE(r.refunded_qty, 0) AS refunded_qty,
 			s.total_sold,
-			COALESCE(r.returned_qty, 0) AS total_returned,
-			CASE WHEN s.total_sold > 0
-				THEN COALESCE(r.returned_qty, 0) / s.total_sold * 100
+			CASE WHEN s.total_sold > 0 AND COALESCE(r.refunded_qty, 0) > 0
+				THEN r.refunded_qty / s.total_sold * 100
 				ELSE 0
-			END AS return_rate,
-			COALESCE(r.return_value, 0) AS return_value
+			END AS return_rate_pct
 		FROM sold s
 		JOIN product p ON p.id = s.product_id
-		LEFT JOIN returned r ON r.product_id = s.product_id
-		ORDER BY return_rate DESC
-		LIMIT :limit
+		LEFT JOIN returned_by_reason r ON r.product_id = s.product_id
+		WHERE p.deleted_at IS NULL
+		ORDER BY s.total_sold DESC, p.id, r.refund_reason
 	`, statusIDs)
 
-	result, err := QueryListNamed[entity.ReturnByProductRow](ctx, as.DB(), query, map[string]any{
+	rawRows, err := QueryListNamed[returnByProductRawRow](ctx, as.DB(), query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"from":         from,
 		"to":           to,
-		"limit":        limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get return by product: %w", err)
 	}
+
+	// Aggregate by product: group raw rows, normalize reasons, build Reasons map
+	byProduct := make(map[int]*entity.ReturnByProductRow)
+	for _, r := range rawRows {
+		row, ok := byProduct[r.ProductID]
+		if !ok {
+			row = &entity.ReturnByProductRow{
+				ProductName:     r.ProductName,
+				TotalReturnRate: 0,
+				Reasons:         make(map[string]float64),
+			}
+			byProduct[r.ProductID] = row
+		}
+		if r.ReturnRatePct > 0 {
+			key := normalizeRefundReason(r.RefundReason)
+			row.Reasons[key] += r.ReturnRatePct
+			row.TotalReturnRate += r.ReturnRatePct
+		}
+	}
+
+	// Build result sorted by total_return_rate descending, limit
+	result := make([]entity.ReturnByProductRow, 0, len(byProduct))
+	for _, row := range byProduct {
+		result = append(result, *row)
+	}
+	sortReturnByProductDesc(result)
+	if len(result) > limit {
+		result = result[:limit]
+	}
 	return result, nil
+}
+
+func sortReturnByProductDesc(rows []entity.ReturnByProductRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].TotalReturnRate > rows[j].TotalReturnRate
+	})
 }
 
 // GetReturnBySize returns return/refund rate per size across all products.

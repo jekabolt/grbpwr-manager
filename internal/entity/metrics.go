@@ -45,15 +45,15 @@ type BusinessMetrics struct {
 	TotalDiscount  MetricWithComparison
 
 	// GA4 Traffic & Engagement
-	Sessions              MetricWithComparison
-	Users                 MetricWithComparison
-	NewUsers              MetricWithComparison
-	PageViews             MetricWithComparison
-	BounceRate            MetricWithComparison
-	AvgSessionDuration    MetricWithComparison
-	PagesPerSession       MetricWithComparison
-	ConversionRate        MetricWithComparison // orders / sessions
-	RevenuePerSession     MetricWithComparison // revenue / sessions
+	Sessions           MetricWithComparison
+	Users              MetricWithComparison
+	NewUsers           MetricWithComparison
+	PageViews          MetricWithComparison
+	BounceRate         MetricWithComparison
+	AvgSessionDuration MetricWithComparison
+	PagesPerSession    MetricWithComparison
+	ConversionRate     MetricWithComparison // orders / sessions
+	RevenuePerSession  MetricWithComparison // revenue / sessions
 
 	// Geography
 	RevenueByCountry  []GeographyMetric
@@ -403,13 +403,13 @@ type SessionDurationMetric struct {
 
 type CohortRetentionRow struct {
 	CohortMonth time.Time
-	CohortSize  int64   `db:"cohort_size"`
-	M1          int64   `db:"m1"`
-	M2          int64   `db:"m2"`
-	M3          int64   `db:"m3"`
-	M4          int64   `db:"m4"`
-	M5          int64   `db:"m5"`
-	M6          int64   `db:"m6"`
+	CohortSize  int64 `db:"cohort_size"`
+	M1          int64 `db:"m1"`
+	M2          int64 `db:"m2"`
+	M3          int64 `db:"m3"`
+	M4          int64 `db:"m4"`
+	M5          int64 `db:"m5"`
+	M6          int64 `db:"m6"`
 }
 
 type OrderSequenceMetric struct {
@@ -479,13 +479,11 @@ type SlowMoverRow struct {
 
 // --- Return Analysis ---
 
+// ReturnByProductRow holds return rate by product with refund reason breakdown for horizontal stacked bar chart.
 type ReturnByProductRow struct {
-	ProductID     int             `db:"product_id"`
-	ProductName   string          `db:"product_name"`
-	TotalSold     int64           `db:"total_sold"`
-	TotalReturned int64           `db:"total_returned"`
-	ReturnRate    float64         `db:"return_rate"`
-	ReturnValue   decimal.Decimal `db:"return_value"`
+	ProductName     string             `json:"product_name"`
+	TotalReturnRate float64            `json:"total_return_rate"`
+	Reasons         map[string]float64 `json:"reasons"` // wrong_size, not_as_described, defective, changed_mind, other
 }
 
 type ReturnBySizeRow struct {
@@ -527,21 +525,71 @@ type ProductTrendRow struct {
 	ProductName     string          `db:"product_name"`
 	CurrentRevenue  decimal.Decimal `db:"current_revenue"`
 	PreviousRevenue decimal.Decimal `db:"previous_revenue"`
-	ChangePct       float64        `db:"change_pct"`
-	CurrentUnits    int64          `db:"current_units"`
-	PreviousUnits   int64          `db:"previous_units"`
+	ChangePct       float64         `db:"change_pct"`
+	CurrentUnits    int64           `db:"current_units"`
+	PreviousUnits   int64           `db:"previous_units"`
 }
 
-// --- Scroll Depth (BQ) ---
+// --- Time on Page (BQ) ---
 
-type ScrollDepthRow struct {
-	Date       time.Time
-	PageType   string
-	Scroll25   int64
-	Scroll50   int64
-	Scroll75   int64
-	Scroll100  int64
-	TotalUsers int64
+type TimeOnPageRow struct {
+	Date                  time.Time
+	PagePath              string
+	AvgVisibleTimeSeconds float64
+	AvgTotalTimeSeconds   float64
+	AvgEngagementScore    float64
+	PageViews             int64
+}
+
+// --- Product Zoom (BQ) ---
+
+type ProductZoomRow struct {
+	Date        time.Time
+	ProductID   string
+	ProductName string
+	ZoomMethod  string // double_click, pinch
+	ZoomCount   int64
+}
+
+// --- Image Swipes (BQ) ---
+
+type ImageSwipeRow struct {
+	Date           time.Time
+	ProductID      string
+	ProductName    string
+	SwipeDirection string // next, previous
+	SwipeCount     int64
+}
+
+// --- Size Guide Clicks (BQ) ---
+
+type SizeGuideClickRow struct {
+	Date         time.Time
+	ProductID    string
+	ProductName  string
+	PageLocation string // desktop, mobile
+	ClickCount   int64
+}
+
+// --- Details Expansion (BQ) ---
+
+type DetailsExpansionRow struct {
+	Date        time.Time
+	ProductID   string
+	ProductName string
+	SectionName string // description, composition, care
+	ExpandCount int64
+}
+
+// --- Notify Me Intent (BQ) ---
+
+type NotifyMeIntentRow struct {
+	Date           time.Time
+	ProductID      string
+	ProductName    string
+	Action         string // opened, submitted, closed_without_submit
+	Count          int64
+	ConversionRate float64 // submitted / opened
 }
 
 // --- Add-to-Cart Rate (BQ) ---
@@ -553,6 +601,41 @@ type AddToCartRateRow struct {
 	ViewCount      int64
 	AddToCartCount int64
 	CartRate       float64
+}
+
+// TrendGranularity defines time bucket size for trend analysis
+type TrendGranularity int
+
+const (
+	TrendGranularityDaily   TrendGranularity = 0
+	TrendGranularityWeekly  TrendGranularity = 1
+	TrendGranularityMonthly TrendGranularity = 2
+)
+
+// AddToCartRateAnalysis contains both per-product aggregate data for scatter plot
+// and store-wide trend data for time series visualization
+type AddToCartRateAnalysis struct {
+	Products     []AddToCartRateProductRow
+	GlobalTrend  []AddToCartRateGlobalRow
+	AvgViewCount int64
+	AvgCartRate  float64
+}
+
+// AddToCartRateProductRow represents per-product aggregate metrics for scatter plot matrix
+type AddToCartRateProductRow struct {
+	ProductID      string
+	ProductName    string
+	ViewCount      int64
+	AddToCartCount int64
+	CartRate       float64
+}
+
+// AddToCartRateGlobalRow represents store-wide daily/weekly/monthly ATC rate for trend line
+type AddToCartRateGlobalRow struct {
+	Date            time.Time
+	TotalViews      int64
+	TotalAddToCarts int64
+	GlobalCartRate  float64
 }
 
 // --- Browser Breakdown (BQ) ---
@@ -577,12 +660,12 @@ type NewsletterMetricRow struct {
 // --- Abandoned Cart (BQ) ---
 
 type AbandonedCartRow struct {
-	Date                  time.Time
-	CartsStarted          int64
-	CheckoutsStarted      int64
-	AbandonmentRate       float64
-	AvgMinutesToCheckout  float64
-	AvgMinutesToAbandon   float64
+	Date                 time.Time
+	CartsStarted         int64
+	CheckoutsStarted     int64
+	AbandonmentRate      float64
+	AvgMinutesToCheckout float64
+	AvgMinutesToAbandon  float64
 }
 
 // --- Campaign Attribution (BQ) ---
