@@ -45,15 +45,15 @@ type BusinessMetrics struct {
 	TotalDiscount  MetricWithComparison
 
 	// GA4 Traffic & Engagement
-	Sessions              MetricWithComparison
-	Users                 MetricWithComparison
-	NewUsers              MetricWithComparison
-	PageViews             MetricWithComparison
-	BounceRate            MetricWithComparison
-	AvgSessionDuration    MetricWithComparison
-	PagesPerSession       MetricWithComparison
-	ConversionRate        MetricWithComparison // orders / sessions
-	RevenuePerSession     MetricWithComparison // revenue / sessions
+	Sessions           MetricWithComparison
+	Users              MetricWithComparison
+	NewUsers           MetricWithComparison
+	PageViews          MetricWithComparison
+	BounceRate         MetricWithComparison
+	AvgSessionDuration MetricWithComparison
+	PagesPerSession    MetricWithComparison
+	ConversionRate     MetricWithComparison // orders / sessions
+	RevenuePerSession  MetricWithComparison // revenue / sessions
 
 	// Geography
 	RevenueByCountry  []GeographyMetric
@@ -403,13 +403,13 @@ type SessionDurationMetric struct {
 
 type CohortRetentionRow struct {
 	CohortMonth time.Time
-	CohortSize  int64   `db:"cohort_size"`
-	M1          int64   `db:"m1"`
-	M2          int64   `db:"m2"`
-	M3          int64   `db:"m3"`
-	M4          int64   `db:"m4"`
-	M5          int64   `db:"m5"`
-	M6          int64   `db:"m6"`
+	CohortSize  int64 `db:"cohort_size"`
+	M1          int64 `db:"m1"`
+	M2          int64 `db:"m2"`
+	M3          int64 `db:"m3"`
+	M4          int64 `db:"m4"`
+	M5          int64 `db:"m5"`
+	M6          int64 `db:"m6"`
 }
 
 type OrderSequenceMetric struct {
@@ -525,9 +525,9 @@ type ProductTrendRow struct {
 	ProductName     string          `db:"product_name"`
 	CurrentRevenue  decimal.Decimal `db:"current_revenue"`
 	PreviousRevenue decimal.Decimal `db:"previous_revenue"`
-	ChangePct       float64        `db:"change_pct"`
-	CurrentUnits    int64          `db:"current_units"`
-	PreviousUnits   int64          `db:"previous_units"`
+	ChangePct       float64         `db:"change_pct"`
+	CurrentUnits    int64           `db:"current_units"`
+	PreviousUnits   int64           `db:"previous_units"`
 }
 
 // --- Time on Page (BQ) ---
@@ -587,7 +587,7 @@ type NotifyMeIntentRow struct {
 	Date           time.Time
 	ProductID      string
 	ProductName    string
-	Action         string  // opened, submitted, closed_without_submit
+	Action         string // opened, submitted, closed_without_submit
 	Count          int64
 	ConversionRate float64 // submitted / opened
 }
@@ -660,12 +660,12 @@ type NewsletterMetricRow struct {
 // --- Abandoned Cart (BQ) ---
 
 type AbandonedCartRow struct {
-	Date                  time.Time
-	CartsStarted          int64
-	CheckoutsStarted      int64
-	AbandonmentRate       float64
-	AvgMinutesToCheckout  float64
-	AvgMinutesToAbandon   float64
+	Date                 time.Time
+	CartsStarted         int64
+	CheckoutsStarted     int64
+	AbandonmentRate      float64
+	AvgMinutesToCheckout float64
+	AvgMinutesToAbandon  float64
 }
 
 // --- Campaign Attribution (BQ) ---

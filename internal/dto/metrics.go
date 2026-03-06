@@ -806,8 +806,8 @@ func ConvertReturnByProductToPb(list []entity.ReturnByProductRow) []*pb_admin.Re
 	for i, r := range list {
 		pb[i] = &pb_admin.ReturnByProductRow{
 			ProductName:     r.ProductName,
-			TotalReturnRate:  r.TotalReturnRate,
-			Reasons:          r.Reasons,
+			TotalReturnRate: r.TotalReturnRate,
+			Reasons:         r.Reasons,
 		}
 	}
 	return pb
@@ -1094,12 +1094,12 @@ func ConvertAbandonedCartToPb(list []entity.AbandonedCartRow) []*pb_admin.Abando
 	pb := make([]*pb_admin.AbandonedCartRow, len(list))
 	for i, r := range list {
 		pb[i] = &pb_admin.AbandonedCartRow{
-			Date:                  timestamppb.New(r.Date),
-			CartsStarted:          r.CartsStarted,
-			CheckoutsStarted:      r.CheckoutsStarted,
-			AbandonmentRate:       r.AbandonmentRate,
-			AvgMinutesToCheckout:  r.AvgMinutesToCheckout,
-			AvgMinutesToAbandon:   r.AvgMinutesToAbandon,
+			Date:                 timestamppb.New(r.Date),
+			CartsStarted:         r.CartsStarted,
+			CheckoutsStarted:     r.CheckoutsStarted,
+			AbandonmentRate:      r.AbandonmentRate,
+			AvgMinutesToCheckout: r.AvgMinutesToCheckout,
+			AvgMinutesToAbandon:  r.AvgMinutesToAbandon,
 		}
 	}
 	return pb

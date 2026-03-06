@@ -1039,14 +1039,14 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		case pb_admin.TrendGranularity_TREND_GRANULARITY_MONTHLY:
 			granularity = entity.TrendGranularityMonthly
 		}
-		
+
 		analysis, err := s.repo.BQCache().GetBQAddToCartRate(ctx, from, to, granularity, limit, 0)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get add to cart rate", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get add to cart rate")
 		}
 		resp.AddToCartRateAnalysis = dto.ConvertAddToCartRateAnalysisToPb(analysis)
-		
+
 		// For backwards compatibility, also populate the old field with product data
 		if analysis != nil && len(analysis.Products) > 0 {
 			legacyRows := make([]entity.AddToCartRateRow, 0, len(analysis.Products))

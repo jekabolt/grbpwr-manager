@@ -85,10 +85,10 @@ func (s *bqCacheStoreRead) GetBQOOSImpact(ctx context.Context, from, to time.Tim
 		ProductName          string          `db:"product_name"`
 		SizeID               int             `db:"size_id"`
 		SizeName             string          `db:"size_name"`
-		ProductPrice         decimal.Decimal  `db:"product_price"`
+		ProductPrice         decimal.Decimal `db:"product_price"`
 		Currency             string          `db:"currency"`
 		ClickCount           int64           `db:"click_count"`
-		EstimatedLostSales   decimal.Decimal  `db:"estimated_lost_sales"`
+		EstimatedLostSales   decimal.Decimal `db:"estimated_lost_sales"`
 		EstimatedLostRevenue decimal.Decimal `db:"estimated_lost_revenue"`
 	}
 	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.effectiveLimit(), "offset": page.effectiveOffset()}
@@ -222,7 +222,7 @@ func (s *bqCacheStoreRead) GetBQSessionDuration(ctx context.Context, from, to ti
 	type row struct {
 		Date                        string  `db:"date"`
 		AvgTimeBetweenEventsSeconds float64 `db:"avg_time_between_events_seconds"`
-		MedianTimeBetweenEvents    float64 `db:"median_time_between_events"`
+		MedianTimeBetweenEvents     float64 `db:"median_time_between_events"`
 	}
 	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02")}
 	rows, err := QueryListNamed[row](ctx, s.DB(), query, params)
@@ -791,7 +791,7 @@ func (s *bqCacheStoreRead) GetBQNotifyMeIntent(ctx context.Context, from, to tim
 
 func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time.Time, granularity entity.TrendGranularity, limit, offset int) (*entity.AddToCartRateAnalysis, error) {
 	page := BQPageParams{Limit: limit, Offset: offset}
-	
+
 	// Query 1: Per-product aggregates for scatter plot
 	productQuery := `
 		SELECT
@@ -819,7 +819,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 	if err != nil {
 		return nil, fmt.Errorf("get product aggregates: %w", err)
 	}
-	
+
 	products := make([]entity.AddToCartRateProductRow, 0, len(productRows))
 	var totalViews int64
 	var totalAddToCarts int64
@@ -834,7 +834,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 		totalViews += r.ViewCount
 		totalAddToCarts += r.AddToCartCount
 	}
-	
+
 	// Calculate store averages for quadrant dividing lines
 	avgViewCount := int64(0)
 	avgCartRate := 0.0
@@ -844,7 +844,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 			avgCartRate = float64(totalAddToCarts) / float64(totalViews)
 		}
 	}
-	
+
 	// Query 2: Global trend data for time series
 	var trendQuery string
 	switch granularity {
@@ -885,7 +885,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 			ORDER BY date
 		`
 	}
-	
+
 	type trendRow struct {
 		TrendDate       string  `db:"trend_date"`
 		TotalViews      int64   `db:"total_views"`
@@ -897,7 +897,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 	if err != nil {
 		return nil, fmt.Errorf("get trend data: %w", err)
 	}
-	
+
 	globalTrend := make([]entity.AddToCartRateGlobalRow, 0, len(trendRows))
 	for _, r := range trendRows {
 		date, err := parseDateStr(r.TrendDate)
@@ -911,7 +911,7 @@ func (s *bqCacheStoreRead) GetBQAddToCartRate(ctx context.Context, from, to time
 			GlobalCartRate:  r.GlobalCartRate,
 		})
 	}
-	
+
 	return &entity.AddToCartRateAnalysis{
 		Products:     products,
 		GlobalTrend:  globalTrend,

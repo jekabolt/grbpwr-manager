@@ -239,9 +239,9 @@ func (c *Client) getUserJourneys(
 	for {
 		var r struct {
 			EventDate    civil.Date `bigquery:"event_date"`
-			JourneyPath  string    `bigquery:"journey_path"`
-			SessionCount int64     `bigquery:"session_count"`
-			Conversions  int64     `bigquery:"conversions"`
+			JourneyPath  string     `bigquery:"journey_path"`
+			SessionCount int64      `bigquery:"session_count"`
+			Conversions  int64      `bigquery:"conversions"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -338,8 +338,8 @@ func (c *Client) getSessionDuration(
 	for {
 		var r struct {
 			EventDate                   civil.Date `bigquery:"event_date"`
-			AvgTimeBetweenEventsSeconds float64   `bigquery:"avg_time_between_events_seconds"`
-			MedianTimeBetweenEvents     float64   `bigquery:"median_time_between_events"`
+			AvgTimeBetweenEventsSeconds float64    `bigquery:"avg_time_between_events_seconds"`
+			MedianTimeBetweenEvents     float64    `bigquery:"median_time_between_events"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -423,11 +423,11 @@ func (c *Client) getBrowserBreakdown(
 	for {
 		var r struct {
 			EventDate      civil.Date `bigquery:"event_date"`
-			Browser        string    `bigquery:"browser"`
-			Sessions       int64     `bigquery:"sessions"`
-			Users          int64     `bigquery:"users"`
-			Conversions    int64     `bigquery:"conversions"`
-			ConversionRate float64   `bigquery:"conversion_rate"`
+			Browser        string     `bigquery:"browser"`
+			Sessions       int64      `bigquery:"sessions"`
+			Users          int64      `bigquery:"users"`
+			Conversions    int64      `bigquery:"conversions"`
+			ConversionRate float64    `bigquery:"conversion_rate"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -502,8 +502,8 @@ func (c *Client) getNewsletterSignups(
 	for {
 		var r struct {
 			EventDate   civil.Date `bigquery:"event_date"`
-			SignupCount int64     `bigquery:"signup_count"`
-			UniqueUsers int64     `bigquery:"unique_users"`
+			SignupCount int64      `bigquery:"signup_count"`
+			UniqueUsers int64      `bigquery:"unique_users"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -600,14 +600,14 @@ func (c *Client) getCampaignAttribution(
 	for {
 		var r struct {
 			EventDate      civil.Date `bigquery:"event_date"`
-			UTMSource      string    `bigquery:"utm_source"`
-			UTMMedium      string    `bigquery:"utm_medium"`
-			UTMCampaign    string    `bigquery:"utm_campaign"`
-			Sessions       int64     `bigquery:"sessions"`
-			Users          int64     `bigquery:"users"`
-			Conversions    int64     `bigquery:"conversions"`
-			Revenue        float64   `bigquery:"revenue"`
-			ConversionRate float64   `bigquery:"conversion_rate"`
+			UTMSource      string     `bigquery:"utm_source"`
+			UTMMedium      string     `bigquery:"utm_medium"`
+			UTMCampaign    string     `bigquery:"utm_campaign"`
+			Sessions       int64      `bigquery:"sessions"`
+			Users          int64      `bigquery:"users"`
+			Conversions    int64      `bigquery:"conversions"`
+			Revenue        float64    `bigquery:"revenue"`
+			ConversionRate float64    `bigquery:"conversion_rate"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
