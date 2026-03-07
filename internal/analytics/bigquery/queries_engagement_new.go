@@ -43,8 +43,8 @@ func (c *Client) getTimeOnPage(
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') AS page_path,
-			AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_ms') AS FLOAT64) / 1000.0) AS avg_visible_time_seconds,
-			AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'total_time_ms') AS FLOAT64) / 1000.0) AS avg_total_time_seconds,
+			COALESCE(AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_ms') AS FLOAT64) / 1000.0), 0.0) AS avg_visible_time_seconds,
+			COALESCE(AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'total_time_ms') AS FLOAT64) / 1000.0), 0.0) AS avg_total_time_seconds,
 			AVG(COALESCE(SAFE_CAST((SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'engagement_score') AS FLOAT64), 0.0)) AS avg_engagement_score,
 			COUNT(*) AS page_views
 		FROM %s
