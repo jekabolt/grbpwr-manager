@@ -176,6 +176,23 @@ enum StockChangeSource {
   STOCK_CHANGE_SOURCE_ORDER_CANCELLED = 5;
   STOCK_CHANGE_SOURCE_ORDER_EXPIRED = 6;
   STOCK_CHANGE_SOURCE_ORDER_REFUNDED = 7;
+  STOCK_CHANGE_SOURCE_RECEIVING = 8;
+  STOCK_CHANGE_SOURCE_TRANSFER_IN = 9;
+  STOCK_CHANGE_SOURCE_TRANSFER_OUT = 10;
+  STOCK_CHANGE_SOURCE_DAMAGE = 11;
+  STOCK_CHANGE_SOURCE_LOSS = 12;
+  STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT = 13;
+}
+
+enum StockChangeReason {
+  STOCK_CHANGE_REASON_UNSPECIFIED = 0;
+  STOCK_CHANGE_REASON_DAMAGED = 1;
+  STOCK_CHANGE_REASON_LOST = 2;
+  STOCK_CHANGE_REASON_FOUND = 3;
+  STOCK_CHANGE_REASON_RESTOCK = 4;
+  STOCK_CHANGE_REASON_INVENTORY_CORRECTION = 5;
+  STOCK_CHANGE_REASON_RETURN_DEFECTIVE = 6;
+  STOCK_CHANGE_REASON_THEFT = 7;
 }
 
 message StockChange {
@@ -189,5 +206,8 @@ message StockChange {
   int32 order_id = 8;
   string order_uuid = 9;
   google.protobuf.Timestamp created_at = 11;
-  string admin_username = 12; // Admin who made the change (for admin flows only)
+  string admin_username = 12;
+  string reference_id = 13;
+  optional StockChangeReason reason = 14;
+  optional string comment = 15;
 }

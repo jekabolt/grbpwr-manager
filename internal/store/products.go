@@ -1637,7 +1637,11 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 
 	dataQuery := `SELECT id, product_id, size_id, quantity_delta, quantity_before, quantity_after, source,
 		COALESCE(order_id, 0) AS order_id, COALESCE(order_uuid, '') AS order_uuid,
-		COALESCE(admin_username, '') AS admin_username, created_at ` + baseQuery + ` ` + orderBy
+		COALESCE(admin_username, '') AS admin_username, 
+		COALESCE(reference_id, '') AS reference_id,
+		COALESCE(reason, '') AS reason,
+		COALESCE(comment, '') AS comment,
+		created_at ` + baseQuery + ` ` + orderBy
 	if limit > 0 {
 		dataQuery += ` LIMIT :limit OFFSET :offset`
 	} else {
@@ -1648,6 +1652,74 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get stock change history: %w", err)
 	}
+	return changes, total, nil
+}
+
+// GetStockChanges returns simplified stock changes for reporting API.
+func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int) ([]entity.StockChangeRow, int, error) {
+	baseQuery := `
+		FROM product_stock_change_history psch
+		JOIN product p ON p.id = psch.product_id
+		JOIN size s ON s.id = psch.size_id
+		WHERE psch.created_at >= :dateFrom 
+		AND psch.created_at <= :dateTo
+	`
+
+	params := map[string]any{
+		"dateFrom": dateFrom,
+		"dateTo":   dateTo,
+		"limit":    limit,
+		"offset":   offset,
+	}
+
+	if sku != nil && *sku != "" {
+		baseQuery += ` AND p.sku = :sku`
+		params["sku"] = *sku
+	}
+
+	if source != nil && *source != "" {
+		baseQuery += ` AND psch.source = :source`
+		params["source"] = *source
+	}
+
+	// Count query
+	countQuery := `SELECT COUNT(*) ` + baseQuery
+	total, err := QueryCountNamed(ctx, ms.db, countQuery, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't count stock changes: %w", err)
+	}
+
+	// Data query - select raw data for transformation in DTO layer
+	dataQuery := `
+		SELECT 
+			psch.created_at,
+			p.sku,
+			s.name as size_name,
+			psch.quantity_delta,
+			psch.source,
+			COALESCE(psch.reference_id, '') as reference_id,
+			COALESCE(psch.order_uuid, '') as order_uuid,
+			COALESCE(psch.admin_username, '') as admin_username,
+			COALESCE(psch.reason, '') as reason,
+			COALESCE(psch.comment, '') as comment
+	` + baseQuery + ` 
+		ORDER BY psch.created_at DESC
+	`
+
+	// Add pagination only if limit is positive (limit < 0 means return all)
+	if limit > 0 {
+		dataQuery += ` LIMIT :limit OFFSET :offset`
+	} else {
+		// Remove limit and offset from params when returning all
+		delete(params, "limit")
+		delete(params, "offset")
+	}
+
+	changes, err := QueryListNamed[entity.StockChangeRow](ctx, ms.db, dataQuery, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't get stock changes: %w", err)
+	}
+
 	return changes, total, nil
 }
 
@@ -1676,7 +1748,7 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 	return nil
 }
 
-func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int) error {
+func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int, reason string, comment string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		prevQty, _, err := rep.Products().GetProductSizeStock(ctx, productId, sizeId)
 		if err != nil {
@@ -1697,6 +1769,14 @@ func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, pro
 		}
 		if adminUsername := auth.GetAdminUsername(ctx); adminUsername != "" {
 			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}
+			// Auto-generate reference_id with admin username
+			e.ReferenceId = sql.NullString{String: "admin:" + adminUsername, Valid: true}
+		}
+		if reason != "" {
+			e.Reason = sql.NullString{String: reason, Valid: true}
+		}
+		if comment != "" {
+			e.Comment = sql.NullString{String: comment, Valid: true}
 		}
 		return rep.Products().RecordStockChange(ctx, []entity.StockChangeInsert{e})
 	})

@@ -259,6 +259,25 @@ const (
 	StockChangeSourceOrderCancelled       StockChangeSource = "order_cancelled"
 	StockChangeSourceOrderExpired         StockChangeSource = "order_expired"
 	StockChangeSourceOrderRefunded        StockChangeSource = "order_refunded"
+	StockChangeSourceReceiving            StockChangeSource = "receiving"
+	StockChangeSourceTransferIn           StockChangeSource = "transfer_in"
+	StockChangeSourceTransferOut          StockChangeSource = "transfer_out"
+	StockChangeSourceDamage               StockChangeSource = "damage"
+	StockChangeSourceLoss                 StockChangeSource = "loss"
+	StockChangeSourceManualAdjustment     StockChangeSource = "manual_adjustment"
+)
+
+// StockChangeReason represents the reason for a stock change.
+type StockChangeReason string
+
+const (
+	StockChangeReasonDamaged            StockChangeReason = "damaged"
+	StockChangeReasonLost               StockChangeReason = "lost"
+	StockChangeReasonFound              StockChangeReason = "found"
+	StockChangeReasonRestock            StockChangeReason = "restock"
+	StockChangeReasonInventoryCorrection StockChangeReason = "inventory_correction"
+	StockChangeReasonReturnDefective    StockChangeReason = "return_defective"
+	StockChangeReasonTheft              StockChangeReason = "theft"
 )
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.
@@ -269,9 +288,12 @@ type StockChangeInsert struct {
 	QuantityBefore decimal.Decimal `db:"quantity_before"`
 	QuantityAfter  decimal.Decimal `db:"quantity_after"`
 	Source         string          `db:"source"`
-	OrderId       sql.NullInt32  `db:"order_id"`
-	OrderUUID     sql.NullString `db:"order_uuid"`
-	AdminUsername sql.NullString `db:"admin_username"`
+	OrderId        sql.NullInt32   `db:"order_id"`
+	OrderUUID      sql.NullString  `db:"order_uuid"`
+	AdminUsername  sql.NullString  `db:"admin_username"`
+	ReferenceId    sql.NullString  `db:"reference_id"`
+	Reason         sql.NullString  `db:"reason"`
+	Comment        sql.NullString  `db:"comment"`
 }
 
 // StockChange represents a row from product_stock_change_history.
@@ -283,9 +305,12 @@ type StockChange struct {
 	QuantityBefore decimal.Decimal `db:"quantity_before"`
 	QuantityAfter  decimal.Decimal `db:"quantity_after"`
 	Source         string          `db:"source"`
-	OrderId       int             `db:"order_id"`
-	OrderUUID     string          `db:"order_uuid"`
-	AdminUsername string          `db:"admin_username"`
+	OrderId        int             `db:"order_id"`
+	OrderUUID      string          `db:"order_uuid"`
+	AdminUsername  string          `db:"admin_username"`
+	ReferenceId    string          `db:"reference_id"`
+	Reason         string          `db:"reason"`
+	Comment        string          `db:"comment"`
 	CreatedAt      time.Time       `db:"created_at"`
 }
 
@@ -294,4 +319,18 @@ type StockHistoryParams struct {
 	Source    StockChangeSource
 	OrderId   int
 	OrderUUID string
+}
+
+// StockChangeRow represents a simplified stock change for API responses.
+type StockChangeRow struct {
+	Date          time.Time       `db:"created_at"`
+	SKU           string          `db:"sku"`
+	SizeName      string          `db:"size_name"`
+	AmountChanged decimal.Decimal `db:"quantity_delta"`
+	Source        string          `db:"source"`
+	ReferenceId   string          `db:"reference_id"`
+	OrderUUID     string          `db:"order_uuid"`
+	AdminUsername string          `db:"admin_username"`
+	Reason        string          `db:"reason"`
+	Comment       string          `db:"comment"`
 }

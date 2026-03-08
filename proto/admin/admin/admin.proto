@@ -94,6 +94,11 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/stock-change-history"};
   }
 
+  // Lists stock changes with simplified format for reporting.
+  rpc ListStockChanges(ListStockChangesRequest) returns (ListStockChangesResponse) {
+    option (google.api.http) = {get: "/api/admin/stock-changes"};
+  }
+
   // PROMO MANAGER
 
   // Adds a new promotional code
@@ -370,6 +375,8 @@ message UpdateProductSizeStockRequest {
   int32 product_id = 1;
   int32 size_id = 2;
   int32 quantity = 3;
+  common.StockChangeReason reason = 4; // Required: reason for stock adjustment
+  optional string comment = 5; // Optional: additional context
 }
 
 message UpdateProductSizeStockResponse {}
@@ -387,6 +394,30 @@ message ListStockChangeHistoryRequest {
 
 message ListStockChangeHistoryResponse {
   repeated common.StockChange changes = 1;
+  int32 total = 2;
+}
+
+message ListStockChangesRequest {
+  google.protobuf.Timestamp from = 1; // Required: start date (inclusive)
+  google.protobuf.Timestamp to = 2; // Required: end date (inclusive)
+  optional string sku = 3; // Optional: filter by SKU
+  optional string source = 4; // Optional: filter by source type
+  int32 limit = 5; // Pagination limit: 0=default(100), -1=all, >0=specified (max 10000)
+  int32 offset = 6; // Pagination offset (ignored when limit=-1)
+}
+
+message StockChangeRow {
+  google.protobuf.Timestamp date = 1;
+  string sku = 2;
+  google.type.Decimal amount_changed = 3;
+  string source = 4;
+  string reference = 5;
+  optional common.StockChangeReason reason = 6;
+  optional string comment = 7;
+}
+
+message ListStockChangesResponse {
+  repeated StockChangeRow changes = 1;
   int32 total = 2;
 }
 

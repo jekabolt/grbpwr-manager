@@ -294,6 +294,23 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 	sizeId := int(req.SizeId)
 	newQuantity := int(req.Quantity)
 
+	// Validate reason is provided
+	if req.Reason == pb_common.StockChangeReason_STOCK_CHANGE_REASON_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "reason is required for stock adjustment")
+	}
+
+	// Convert reason enum to string
+	reason := dto.StockChangeReasonToString(req.Reason)
+	if reason == "" {
+		return nil, status.Error(codes.InvalidArgument, "invalid reason value")
+	}
+
+	// Get comment if provided
+	comment := ""
+	if req.Comment != nil {
+		comment = *req.Comment
+	}
+
 	// Get previous quantity to detect stock transition
 	previousQuantity, _, err := s.repo.Products().GetProductSizeStock(ctx, productId, sizeId)
 	if err != nil {
@@ -304,7 +321,7 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		previousQuantity = decimal.Zero
 	}
 
-	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity)
+	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity, reason, comment)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
@@ -380,6 +397,66 @@ func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListS
 	}
 	return &pb_admin.ListStockChangeHistoryResponse{
 		Changes: pbChanges,
+		Total:   int32(total),
+	}, nil
+}
+
+// ListStockChanges returns simplified stock changes for reporting.
+func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockChangesRequest) (*pb_admin.ListStockChangesResponse, error) {
+	// Validate required fields
+	if req.From == nil || req.To == nil {
+		return nil, status.Error(codes.InvalidArgument, "from and to dates are required")
+	}
+
+	dateFrom := req.From.AsTime()
+	dateTo := req.To.AsTime()
+
+	// Validate date range
+	if dateTo.Before(dateFrom) {
+		return nil, status.Error(codes.InvalidArgument, "to date must be after from date")
+	}
+
+	// Set defaults and limits
+	limit := int(req.Limit)
+	// If limit is negative, return all records (no pagination)
+	// If limit is 0, use default of 100
+	// If limit > 0 and <= 10000, use as specified
+	if limit == 0 {
+		limit = 100 // Default pagination
+	} else if limit > 0 && limit > 10000 {
+		limit = 10000 // Max limit for safety
+	}
+	// If limit < 0, it means "return all" - pass it as-is to repository
+	offset := int(req.Offset)
+
+	// Optional filters
+	var sku *string
+	if req.Sku != nil && *req.Sku != "" {
+		sku = req.Sku
+	}
+
+	var source *string
+	if req.Source != nil && *req.Source != "" {
+		source = req.Source
+	}
+
+	// Get data from repository
+	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, sku, source, limit, offset)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get stock changes",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Error(codes.Internal, "failed to get stock changes")
+	}
+
+	// Map to proto
+	protoChanges := make([]*pb_admin.StockChangeRow, 0, len(changes))
+	for i := range changes {
+		protoChanges = append(protoChanges, dto.StockChangeRowToProto(&changes[i]))
+	}
+
+	return &pb_admin.ListStockChangesResponse{
+		Changes: protoChanges,
 		Total:   int32(total),
 	}, nil
 }

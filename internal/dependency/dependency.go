@@ -50,7 +50,7 @@ type (
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
-		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int) error
+		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int, reason string, comment string) error
 		// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 		GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error)
 		// AddToWaitlist adds an email to the waitlist for a specific product/size combination.
@@ -67,6 +67,8 @@ type (
 		RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error
 		// GetStockChangeHistory returns paginated stock change history with optional filters.
 		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
+		// GetStockChanges returns simplified stock changes for reporting API.
+		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int) ([]entity.StockChangeRow, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error

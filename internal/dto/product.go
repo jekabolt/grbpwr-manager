@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -33,6 +34,12 @@ var (
 		string(entity.StockChangeSourceOrderCancelled):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
 		string(entity.StockChangeSourceOrderExpired):         pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED,
 		string(entity.StockChangeSourceOrderRefunded):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED,
+		string(entity.StockChangeSourceReceiving):            pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_RECEIVING,
+		string(entity.StockChangeSourceTransferIn):           pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_IN,
+		string(entity.StockChangeSourceTransferOut):          pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_OUT,
+		string(entity.StockChangeSourceDamage):               pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_DAMAGE,
+		string(entity.StockChangeSourceLoss):                 pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_LOSS,
+		string(entity.StockChangeSourceManualAdjustment):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
 	}
 	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT:      string(entity.StockChangeSourceAdminAddProduct),
@@ -41,7 +48,31 @@ var (
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED:            string(entity.StockChangeSourceOrderPlaced),
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:         string(entity.StockChangeSourceOrderCancelled),
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED:           string(entity.StockChangeSourceOrderExpired),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED:         string(entity.StockChangeSourceOrderRefunded),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED:          string(entity.StockChangeSourceOrderRefunded),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_RECEIVING:               string(entity.StockChangeSourceReceiving),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_IN:             string(entity.StockChangeSourceTransferIn),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_OUT:            string(entity.StockChangeSourceTransferOut),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_DAMAGE:                  string(entity.StockChangeSourceDamage),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_LOSS:                    string(entity.StockChangeSourceLoss),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT:       string(entity.StockChangeSourceManualAdjustment),
+	}
+	stockChangeReasonToProto = map[string]pb_common.StockChangeReason{
+		string(entity.StockChangeReasonDamaged):             pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED,
+		string(entity.StockChangeReasonLost):                pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST,
+		string(entity.StockChangeReasonFound):               pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND,
+		string(entity.StockChangeReasonRestock):             pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK,
+		string(entity.StockChangeReasonInventoryCorrection): pb_common.StockChangeReason_STOCK_CHANGE_REASON_INVENTORY_CORRECTION,
+		string(entity.StockChangeReasonReturnDefective):     pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE,
+		string(entity.StockChangeReasonTheft):               pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT,
+	}
+	stockChangeReasonToEntity = map[pb_common.StockChangeReason]string{
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED:             string(entity.StockChangeReasonDamaged),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST:                string(entity.StockChangeReasonLost),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:               string(entity.StockChangeReasonFound),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK:             string(entity.StockChangeReasonRestock),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_INVENTORY_CORRECTION: string(entity.StockChangeReasonInventoryCorrection),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE:    string(entity.StockChangeReasonReturnDefective),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT:               string(entity.StockChangeReasonTheft),
 	}
 )
 
@@ -519,6 +550,111 @@ func GetProductSlug(id int, brand, name, gender string) string {
 	sb.WriteString(fmt.Sprint(id))
 
 	return sb.String()
+}
+
+// FormatSKUWithSize formats SKU with 5-character padded size suffix using dash separator.
+// Removes decimal points from numeric sizes and pads to 5 characters with leading zeros.
+// Examples:
+//   - "HOO-BLA-M1763463513" + "xxl" -> "HOO-BLA-M1763463513-00XXL"
+//   - "PAN-PIN-M1768402195" + "xs" -> "PAN-PIN-M1768402195-00XXS"
+//   - "SHO-WHI-U1234567890" + "35.5" -> "SHO-WHI-U1234567890-03550"
+//   - "SHO-WHI-U1234567890" + "26" -> "SHO-WHI-U1234567890-00026"
+func FormatSKUWithSize(sku string, sizeName string) string {
+	// Remove decimal points from size (35.5 -> 355)
+	sizeClean := strings.ReplaceAll(sizeName, ".", "")
+
+	// Pad to exactly 5 characters with leading zeros
+	paddedSize := fmt.Sprintf("%05s", sizeClean)
+
+	// Uppercase the size
+	paddedSize = strings.ToUpper(paddedSize)
+
+	// Use dash separator
+	return sku + "-" + paddedSize
+}
+
+// MapStockChangeSourceToAPI maps internal source types to API-friendly names.
+// Simplifies source categories for end-user consumption.
+func MapStockChangeSourceToAPI(internalSource string) string {
+	mapping := map[string]string{
+		string(entity.StockChangeSourceOrderPlaced):          "order",
+		string(entity.StockChangeSourceOrderCancelled):       "return",
+		string(entity.StockChangeSourceOrderExpired):         "return",
+		string(entity.StockChangeSourceOrderRefunded):        "return",
+		string(entity.StockChangeSourceAdminAddProduct):      "receiving",
+		string(entity.StockChangeSourceAdminUpdateProduct):   "receiving",
+		string(entity.StockChangeSourceAdminUpdateSizeStock): "manual_adjustment",
+		string(entity.StockChangeSourceReceiving):            "receiving",
+		string(entity.StockChangeSourceTransferIn):           "transfer",
+		string(entity.StockChangeSourceTransferOut):          "transfer",
+		string(entity.StockChangeSourceDamage):               "write_off",
+		string(entity.StockChangeSourceLoss):                 "write_off",
+		string(entity.StockChangeSourceManualAdjustment):     "manual_adjustment",
+	}
+
+	if mapped, ok := mapping[internalSource]; ok {
+		return mapped
+	}
+	return "other"
+}
+
+// FormatStockChangeReference builds reference string from available data.
+// Priority: reference_id > order_uuid > admin:{username} > system:auto
+func FormatStockChangeReference(referenceId, orderUUID, adminUsername string) string {
+	if referenceId != "" {
+		return referenceId
+	}
+	if orderUUID != "" {
+		return orderUUID
+	}
+	if adminUsername != "" {
+		return "admin:" + adminUsername
+	}
+	return "system:auto"
+}
+
+// StockChangeReasonToString converts proto StockChangeReason to entity string.
+func StockChangeReasonToString(r pb_common.StockChangeReason) string {
+	return stockChangeReasonToEntity[r]
+}
+
+// StockChangeRowToProto converts entity.StockChangeRow to pb_admin.StockChangeRow.
+func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
+	if e == nil {
+		return nil
+	}
+
+	// Format SKU with size
+	formattedSKU := FormatSKUWithSize(e.SKU, e.SizeName)
+
+	// Map source to API-friendly name
+	apiSource := MapStockChangeSourceToAPI(e.Source)
+
+	// Format reference
+	reference := FormatStockChangeReference(e.ReferenceId, e.OrderUUID, e.AdminUsername)
+
+	// Build proto message
+	row := &pb_admin.StockChangeRow{
+		Date:          timestamppb.New(e.Date),
+		Sku:           formattedSKU,
+		AmountChanged: &pb_decimal.Decimal{Value: e.AmountChanged.String()},
+		Source:        apiSource,
+		Reference:     reference,
+	}
+
+	// Add reason if present
+	if e.Reason != "" {
+		if reason, ok := stockChangeReasonToProto[e.Reason]; ok {
+			row.Reason = &reason
+		}
+	}
+
+	// Add comment if present
+	if e.Comment != "" {
+		row.Comment = &e.Comment
+	}
+
+	return row
 }
 
 // ConvertEntityProductToCommon converts entity.Product to pb_common.Product
