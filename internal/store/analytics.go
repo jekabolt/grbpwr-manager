@@ -198,6 +198,7 @@ func sortReturnByProductDesc(rows []entity.ReturnByProductRow) {
 }
 
 // GetReturnBySize returns return/refund rate per size across all products.
+// Uses refunded_order_item table to accurately track partial refunds and avoid double-counting.
 func (as *analyticsStore) GetReturnBySize(ctx context.Context, from, to time.Time) ([]entity.ReturnBySizeRow, error) {
 	statusIDs := joinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
@@ -217,13 +218,11 @@ func (as *analyticsStore) GetReturnBySize(ctx context.Context, from, to time.Tim
 		returned AS (
 			SELECT
 				oi.size_id,
-				SUM(oi.quantity) AS returned_qty
-			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			WHERE co.order_status_id IN (
-				SELECT os.id FROM order_status os WHERE os.name IN ('refunded', 'partially_refunded')
-			)
-				AND co.currency = :baseCurrency
+				SUM(roi.quantity_refunded) AS returned_qty
+			FROM refunded_order_item roi
+			JOIN order_item oi ON oi.id = roi.order_item_id
+			JOIN customer_order co ON co.id = roi.order_id
+			WHERE co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
 			GROUP BY oi.size_id
 		)
@@ -254,6 +253,7 @@ func (as *analyticsStore) GetReturnBySize(ctx context.Context, from, to time.Tim
 }
 
 // GetSizeAnalytics returns units sold and revenue by product+size with % of product total.
+// Correctly handles partial refunds by subtracting refunded quantities and revenue.
 func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeAnalyticsRow, error) {
 	statusIDs := joinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
@@ -263,14 +263,16 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			SELECT
 				oi.product_id,
 				oi.size_id,
-				SUM(oi.quantity) AS units_sold,
-				SUM(oi.product_price * oi.quantity) AS revenue
+				SUM(oi.quantity) - COALESCE(SUM(roi.quantity_refunded), 0) AS units_sold,
+				SUM(oi.product_price * oi.quantity) - COALESCE(SUM(oi.product_price * roi.quantity_refunded), 0) AS revenue
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
+			LEFT JOIN refunded_order_item roi ON roi.order_item_id = oi.id
 			WHERE co.order_status_id IN (%s)
 				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
 			GROUP BY oi.product_id, oi.size_id
+			HAVING units_sold > 0
 		),
 		product_totals AS (
 			SELECT product_id, SUM(units_sold) AS total_units

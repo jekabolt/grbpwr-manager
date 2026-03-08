@@ -165,22 +165,41 @@ func (c *Client) getSizeConfidence(
 ) ([]entity.SizeConfidenceMetric, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
 	if err != nil {
 		return nil, fmt.Errorf("GetSizeConfidence: %w", err)
 	}
 	sql := fmt.Sprintf(`
+		WITH size_confidence_events AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
+				event_name
+			FROM %s
+			WHERE %s
+				AND event_name IN ('size_guide_view', 'size_selected')
+				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
+		),
+		product_names AS (
+			SELECT DISTINCT
+				item.item_id AS product_id,
+				ANY_VALUE(item.item_name) AS product_name
+			FROM %s AS e, UNNEST(e.items) AS item
+			WHERE %s
+				AND item.item_id IS NOT NULL
+			GROUP BY item.item_id
+		)
 		SELECT
-			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
-			COUNTIF(event_name = 'size_guide_view') AS size_guide_views,
-			COUNTIF(event_name = 'size_selected') AS size_selections
-		FROM %s
-		WHERE %s
-			AND event_name IN ('size_guide_view', 'size_selected')
-			AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
-		GROUP BY event_date, product_id
-	`, src, c.dateFilterSQL(startDate, endDate))
+			sc.event_date,
+			sc.product_id,
+			COALESCE(pn.product_name, sc.product_id) AS product_name,
+			COUNTIF(sc.event_name = 'size_guide_view') AS size_guide_views,
+			COUNTIF(sc.event_name = 'size_selected') AS size_selections
+		FROM size_confidence_events sc
+		LEFT JOIN product_names pn ON pn.product_id = sc.product_id
+		GROUP BY sc.event_date, sc.product_id, product_name
+		ORDER BY sc.event_date, size_guide_views DESC
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -200,6 +219,7 @@ func (c *Client) getSizeConfidence(
 		var r struct {
 			EventDate      civil.Date `bigquery:"event_date"`
 			ProductID      string    `bigquery:"product_id"`
+			ProductName    string    `bigquery:"product_name"`
 			SizeGuideViews int64     `bigquery:"size_guide_views"`
 			SizeSelections int64     `bigquery:"size_selections"`
 		}
@@ -211,6 +231,7 @@ func (c *Client) getSizeConfidence(
 		rows = append(rows, entity.SizeConfidenceMetric{
 			Date:           civilDateToTime(r.EventDate),
 			ProductID:      r.ProductID,
+			ProductName:    r.ProductName,
 			SizeGuideViews: ClampInt64(r.SizeGuideViews),
 			SizeSelections: ClampInt64(r.SizeSelections),
 		})

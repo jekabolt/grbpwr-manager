@@ -278,11 +278,11 @@ func (s *bqCacheStoreWrite) SaveBQSizeConfidence(ctx context.Context, rows []ent
 	if len(rows) == 0 {
 		return nil
 	}
-	cols := []string{"date", "product_id", "size_guide_views", "size_selections"}
+	cols := []string{"date", "product_id", "product_name", "size_guide_views", "size_selections"}
 	args := make([][]any, 0, len(rows))
 	for _, r := range rows {
 		args = append(args, []any{
-			r.Date.Format("2006-01-02"), r.ProductID, r.SizeGuideViews, r.SizeSelections,
+			r.Date.Format("2006-01-02"), r.ProductID, r.ProductName, r.SizeGuideViews, r.SizeSelections,
 		})
 	}
 	if err := BulkReplaceByDate(ctx, s.DB(), "bq_size_confidence", cols, args); err != nil {

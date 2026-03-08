@@ -338,6 +338,7 @@ type HeroFunnelMetric struct {
 type SizeConfidenceMetric struct {
 	Date           time.Time
 	ProductID      string
+	ProductName    string
 	SizeGuideViews int64
 	SizeSelections int64
 }

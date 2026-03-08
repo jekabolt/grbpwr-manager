@@ -483,7 +483,7 @@ func (s *bqCacheStoreRead) GetBQHeroFunnel(ctx context.Context, from, to time.Ti
 func (s *bqCacheStoreRead) GetBQSizeConfidence(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeConfidenceMetric, error) {
 	page := BQPageParams{Limit: limit, Offset: offset}
 	query := `
-		SELECT date, product_id, size_guide_views, size_selections
+		SELECT date, product_id, product_name, size_guide_views, size_selections
 		FROM bq_size_confidence
 		WHERE date >= :fromDate AND date <= :toDate
 		ORDER BY size_guide_views DESC
@@ -492,6 +492,7 @@ func (s *bqCacheStoreRead) GetBQSizeConfidence(ctx context.Context, from, to tim
 	type row struct {
 		Date           string `db:"date"`
 		ProductID      string `db:"product_id"`
+		ProductName    string `db:"product_name"`
 		SizeGuideViews int64  `db:"size_guide_views"`
 		SizeSelections int64  `db:"size_selections"`
 	}
@@ -506,7 +507,7 @@ func (s *bqCacheStoreRead) GetBQSizeConfidence(ctx context.Context, from, to tim
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, entity.SizeConfidenceMetric{Date: date, ProductID: r.ProductID, SizeGuideViews: r.SizeGuideViews, SizeSelections: r.SizeSelections})
+		result = append(result, entity.SizeConfidenceMetric{Date: date, ProductID: r.ProductID, ProductName: r.ProductName, SizeGuideViews: r.SizeGuideViews, SizeSelections: r.SizeSelections})
 	}
 	return result, nil
 }

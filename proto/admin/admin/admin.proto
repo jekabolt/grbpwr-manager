@@ -1107,8 +1107,9 @@ message HeroFunnelMetric {
 message SizeConfidenceMetric {
   google.protobuf.Timestamp date = 1;
   string product_id = 2;
-  int64 size_guide_views = 3;
-  int64 size_selections = 4;
+  string product_name = 3;
+  int64 size_guide_views = 4;
+  int64 size_selections = 5;
 }
 
 // --- Analytics: Payment Recovery ---

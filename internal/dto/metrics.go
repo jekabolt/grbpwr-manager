@@ -20,7 +20,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
 		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
 		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
-		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true), // lower is better
+		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true),           // lower is better
 		PromoUsageRate:                 metricWithComparisonToPb(m.PromoUsageRate),
 		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
 		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
@@ -642,6 +642,7 @@ func ConvertSizeConfidenceMetricsToPb(list []entity.SizeConfidenceMetric) []*pb_
 		pb[i] = &pb_admin.SizeConfidenceMetric{
 			Date:           timestamppb.New(m.Date),
 			ProductId:      m.ProductID,
+			ProductName:    m.ProductName,
 			SizeGuideViews: m.SizeGuideViews,
 			SizeSelections: m.SizeSelections,
 		}
