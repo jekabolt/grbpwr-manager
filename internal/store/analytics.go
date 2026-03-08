@@ -141,7 +141,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			COALESCE(r.refunded_qty, 0) AS refunded_qty,
 			s.total_sold,
 			CASE WHEN s.total_sold > 0 AND COALESCE(r.refunded_qty, 0) > 0
-				THEN r.refunded_qty / s.total_sold * 100
+				THEN r.refunded_qty * 100 / s.total_sold
 				ELSE 0
 			END AS return_rate_pct
 		FROM sold s
@@ -233,7 +233,7 @@ func (as *analyticsStore) GetReturnBySize(ctx context.Context, from, to time.Tim
 			s.total_sold,
 			COALESCE(r.returned_qty, 0) AS total_returned,
 			CASE WHEN s.total_sold > 0
-				THEN COALESCE(r.returned_qty, 0) / s.total_sold * 100
+				THEN COALESCE(r.returned_qty, 0) * 100 / s.total_sold
 				ELSE 0
 			END AS return_rate
 		FROM sold s
@@ -288,7 +288,7 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			ss.units_sold,
 			ss.revenue,
 			CASE WHEN pt.total_units > 0
-				THEN ss.units_sold / pt.total_units * 100
+				THEN ss.units_sold * 100 / pt.total_units
 				ELSE 0
 			END AS pct_of_product
 		FROM size_sales ss

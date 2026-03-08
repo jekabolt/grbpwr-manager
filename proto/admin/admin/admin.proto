@@ -673,6 +673,8 @@ message MetricWithComparison {
   google.type.Decimal value = 1;
   google.type.Decimal compare_value = 2;
   double change_pct = 3;
+  // When true, a negative change is good (e.g. refund rate, bounce rate). Frontend should show green for decrease, red for increase.
+  bool lower_is_better = 4;
 }
 
 message GeographyMetric {
@@ -1021,8 +1023,8 @@ message WebVitalMetric {
   google.protobuf.Timestamp date = 1;
   string metric_name = 2;
   string metric_rating = 3;
-  int64 session_count = 4;
-  int64 conversions = 5;
+  int32 session_count = 4;
+  int32 conversions = 5;
   double avg_metric_value = 6;
 }
 
@@ -1031,8 +1033,8 @@ message WebVitalMetric {
 message UserJourneyMetric {
   google.protobuf.Timestamp date = 1;
   string journey_path = 2;
-  int64 session_count = 3;
-  int64 conversions = 4;
+  int32 session_count = 3;
+  int32 conversions = 4;
 }
 
 // --- Analytics: Session Duration ---
@@ -1048,10 +1050,10 @@ message SessionDurationMetric {
 message DeviceFunnelMetric {
   google.protobuf.Timestamp date = 1;
   string device_category = 2;
-  int64 sessions = 3;
-  int64 add_to_cart_users = 4;
-  int64 checkout_users = 5;
-  int64 purchase_users = 6;
+  int32 sessions = 3;
+  int32 add_to_cart_users = 4;
+  int32 checkout_users = 5;
+  int32 purchase_users = 6;
 }
 
 // --- Analytics: Product Engagement ---
@@ -1381,9 +1383,9 @@ message AddToCartRateGlobalRow {
 message BrowserBreakdownRow {
   google.protobuf.Timestamp date = 1;
   string browser = 2;
-  int64 sessions = 3;
-  int64 users = 4;
-  int64 conversions = 5;
+  int32 sessions = 3;
+  int32 users = 4;
+  int32 conversions = 5;
   double conversion_rate = 6;
 }
 
@@ -1391,16 +1393,16 @@ message BrowserBreakdownRow {
 
 message NewsletterMetricRow {
   google.protobuf.Timestamp date = 1;
-  int64 signup_count = 2;
-  int64 unique_users = 3;
+  int32 signup_count = 2;
+  int32 unique_users = 3;
 }
 
 // --- Analytics: Abandoned Cart (BQ) ---
 
 message AbandonedCartRow {
   google.protobuf.Timestamp date = 1;
-  int64 carts_started = 2;
-  int64 checkouts_started = 3;
+  int32 carts_started = 2;
+  int32 checkouts_started = 3;
   double abandonment_rate = 4;
   double avg_minutes_to_checkout = 5;
   double avg_minutes_to_abandon = 6;
@@ -1413,9 +1415,9 @@ message CampaignAttributionRow {
   string utm_source = 2;
   string utm_medium = 3;
   string utm_campaign = 4;
-  int64 sessions = 5;
-  int64 users = 6;
-  int64 conversions = 7;
+  int32 sessions = 5;
+  int32 users = 6;
+  int32 conversions = 7;
   google.type.Decimal revenue = 8;
   double conversion_rate = 9;
 }

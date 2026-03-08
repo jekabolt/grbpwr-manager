@@ -103,7 +103,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 				COALESCE(sq.total_sold, 0) AS sold,
 				CASE
 					WHEN (ps.quantity + COALESCE(sq.total_sold, 0)) > 0
-					THEN COALESCE(sq.total_sold, 0) / (ps.quantity + COALESCE(sq.total_sold, 0))
+					THEN COALESCE(sq.total_sold, 0) * 100 / (ps.quantity + COALESCE(sq.total_sold, 0))
 					ELSE 0
 				END AS sell_through_pct
 			FROM product_size ps
@@ -117,7 +117,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			) AS product_name,
 			COUNT(*) AS total_sizes,
 			SUM(CASE WHEN sa.sell_through_pct > 0.5 THEN 1 ELSE 0 END) AS sold_through_sizes,
-			SUM(CASE WHEN sa.sell_through_pct > 0.5 THEN 1 ELSE 0 END) / COUNT(*) * 100 AS efficiency_pct
+			SUM(CASE WHEN sa.sell_through_pct > 50 THEN 1 ELSE 0 END) * 100 / COUNT(*) AS efficiency_pct
 		FROM size_analysis sa
 		JOIN product p ON p.id = sa.product_id
 		WHERE sa.initial_qty > 0

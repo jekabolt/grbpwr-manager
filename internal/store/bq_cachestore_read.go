@@ -312,10 +312,23 @@ func (s *bqCacheStoreRead) GetBQDeviceFunnel(ctx context.Context, from, to time.
 
 func (s *bqCacheStoreRead) GetBQProductEngagement(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductEngagementMetric, error) {
 	page := BQPageParams{Limit: limit, Offset: offset}
+	// Aggregate by product_name across the date range so each product appears once.
+	// Deduplicates both same product on different dates and same product under different
+	// product_ids (e.g. numeric ID vs SKU from GA4 view_item).
 	query := `
-		SELECT date, product_id, product_name, image_views, zoom_events, scroll_75, scroll_100
-		FROM bq_product_engagement
-		WHERE date >= :fromDate AND date <= :toDate
+		SELECT :toDate AS date, product_id, product_name, image_views, zoom_events, scroll_75, scroll_100
+		FROM (
+			SELECT
+				product_name,
+				SUBSTRING_INDEX(GROUP_CONCAT(product_id ORDER BY image_views DESC, product_id), ',', 1) AS product_id,
+				SUM(image_views) AS image_views,
+				SUM(zoom_events) AS zoom_events,
+				SUM(scroll_75) AS scroll_75,
+				SUM(scroll_100) AS scroll_100
+			FROM bq_product_engagement
+			WHERE date >= :fromDate AND date <= :toDate
+			GROUP BY product_name
+		) agg
 		ORDER BY image_views DESC
 		LIMIT :limit OFFSET :offset
 	`

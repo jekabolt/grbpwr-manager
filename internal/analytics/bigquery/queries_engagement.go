@@ -549,38 +549,74 @@ func (c *Client) getCampaignAttribution(
 		return nil, fmt.Errorf("GetCampaignAttribution: %w", err)
 	}
 	sql := fmt.Sprintf(`
-		WITH session_campaigns AS (
+		WITH purchase_dedup AS (
+			SELECT
+				user_pseudo_id,
+				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+				ecommerce.transaction_id,
+				MAX(ecommerce.purchase_revenue) AS purchase_revenue
+			FROM %[1]s
+			WHERE %[2]s
+				AND event_name = 'purchase'
+				AND ecommerce.transaction_id IS NOT NULL
+				AND ecommerce.transaction_id != 'false'
+			GROUP BY user_pseudo_id, session_id, ecommerce.transaction_id
+		),
+		session_purchases AS (
+			SELECT
+				user_pseudo_id,
+				session_id,
+				COUNT(DISTINCT transaction_id) AS conversions,
+				SUM(COALESCE(purchase_revenue, 0)) AS total_revenue
+			FROM purchase_dedup
+			GROUP BY user_pseudo_id, session_id
+		),
+		session_campaigns AS (
 			SELECT
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				user_pseudo_id,
 				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
-				IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_source'),
-					IFNULL(traffic_source.source, '(direct)')) AS utm_source,
-				IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_medium'),
-					IFNULL(traffic_source.medium, '(none)')) AS utm_medium,
-				IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_campaign'),
-					IFNULL(traffic_source.name, '(not set)')) AS utm_campaign,
-				MAX(CASE WHEN event_name = 'purchase' THEN 1 ELSE 0 END) AS converted,
-				MAX(CASE WHEN event_name = 'purchase'
-					THEN ecommerce.purchase_revenue ELSE 0 END) AS purchase_revenue
-			FROM %s
-			WHERE %s
-			GROUP BY event_date, user_pseudo_id, session_id, utm_source, utm_medium, utm_campaign
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_source') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source') END),
+					MAX(IFNULL(traffic_source.source, '(direct)'))
+				) AS utm_source,
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_medium') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium') END),
+					MAX(IFNULL(traffic_source.medium, '(none)'))
+				) AS utm_medium,
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_campaign') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign') END),
+					MAX(IFNULL(traffic_source.name, '(not set)'))
+				) AS utm_campaign
+			FROM %[1]s
+			WHERE %[2]s
+			GROUP BY event_date, user_pseudo_id, session_id
 		)
 		SELECT
-			event_date,
-			utm_source,
-			utm_medium,
-			utm_campaign,
+			sc.event_date,
+			sc.utm_source,
+			sc.utm_medium,
+			sc.utm_campaign,
 			COUNT(*) AS sessions,
-			COUNT(DISTINCT user_pseudo_id) AS users,
-			SUM(converted) AS conversions,
-			COALESCE(SUM(purchase_revenue), 0) AS revenue,
-			SAFE_DIVIDE(SUM(converted), COUNT(*)) AS conversion_rate
-		FROM session_campaigns
-		GROUP BY event_date, utm_source, utm_medium, utm_campaign
-		HAVING sessions > 0
-		ORDER BY event_date DESC, sessions DESC
+			COUNT(DISTINCT sc.user_pseudo_id) AS users,
+			COALESCE(SUM(sp.conversions), 0) AS conversions,
+			COALESCE(SUM(sp.total_revenue), 0) AS revenue,
+			SAFE_DIVIDE(SUM(CASE WHEN sp.conversions > 0 THEN 1 ELSE 0 END), COUNT(*)) AS conversion_rate
+		FROM session_campaigns sc
+		LEFT JOIN session_purchases sp
+			ON sc.user_pseudo_id = sp.user_pseudo_id AND sc.session_id = sp.session_id
+		GROUP BY sc.event_date, sc.utm_source, sc.utm_medium, sc.utm_campaign
+		HAVING COUNT(*) > 0
+		ORDER BY sc.event_date DESC, COUNT(*) DESC
 	`, src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)

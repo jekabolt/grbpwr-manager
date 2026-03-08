@@ -1,8 +1,11 @@
 package dto
 
 import (
+	"math"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	shopspring "github.com/shopspring/decimal"
 	"google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -16,17 +19,17 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		Revenue:                        metricWithComparisonToPb(m.Revenue),
 		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
 		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
-		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder),
-		RefundRate:                     metricWithComparisonToPb(m.RefundRate),
+		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
+		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true), // lower is better
 		PromoUsageRate:                 metricWithComparisonToPb(m.PromoUsageRate),
 		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
-		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded),
+		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
 		TotalDiscount:                  metricWithComparisonToPb(m.TotalDiscount),
 		Sessions:                       metricWithComparisonToPb(m.Sessions),
 		Users:                          metricWithComparisonToPb(m.Users),
 		NewUsers:                       metricWithComparisonToPb(m.NewUsers),
 		PageViews:                      metricWithComparisonToPb(m.PageViews),
-		BounceRate:                     metricWithComparisonToPb(m.BounceRate),
+		BounceRate:                     metricWithComparisonToPb(m.BounceRate, true), // lower is better
 		AvgSessionDuration:             metricWithComparisonToPb(m.AvgSessionDuration),
 		PagesPerSession:                metricWithComparisonToPb(m.PagesPerSession),
 		ConversionRate:                 metricWithComparisonToPb(m.ConversionRate),
@@ -96,15 +99,51 @@ func timeRangeToPb(tr entity.TimeRange) *pb_admin.TimeRange {
 	}
 }
 
-func metricWithComparisonToPb(m entity.MetricWithComparison) *pb_admin.MetricWithComparison {
+func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...bool) *pb_admin.MetricWithComparison {
+	lowerIsBetter := len(opts) > 0 && opts[0]
+	roundToInt := len(opts) > 1 && opts[1]
+	// Always derive changePct from Value vs CompareValue when we have both (single source of truth)
+	var changePct float64
+	if m.CompareValue != nil && !m.CompareValue.IsZero() {
+		curr, prev := m.Value, *m.CompareValue
+		if roundToInt {
+			curr = curr.Round(0)
+			prev = prev.Round(0)
+		}
+		if pct := computeChangePct(curr, prev); pct != nil {
+			changePct = *pct
+		}
+	} else {
+		changePct = ptrFloat64ToVal(m.ChangePct)
+	}
 	pb := &pb_admin.MetricWithComparison{
 		Value:     &decimal.Decimal{Value: m.Value.String()},
-		ChangePct: ptrFloat64ToVal(m.ChangePct),
+		ChangePct: changePct,
 	}
 	if m.CompareValue != nil {
 		pb.CompareValue = &decimal.Decimal{Value: m.CompareValue.String()}
 	}
+	if lowerIsBetter {
+		pb.LowerIsBetter = true
+	}
 	return pb
+}
+
+// computeChangePct returns (current - previous) / previous * 100, or nil if previous is zero.
+// Float64() returns (f, exact); we ignore exact because many decimals (e.g. from NewFromFloat)
+// report exact=false due to binary float representation, but the value is fine for % display.
+func computeChangePct(current, previous shopspring.Decimal) *float64 {
+	if previous.IsZero() {
+		return nil
+	}
+	curr, _ := current.Float64()
+	prev, _ := previous.Float64()
+	if prev == 0 {
+		return nil
+	}
+	pct := (curr - prev) / prev * 100
+	pct = math.Round(pct*100) / 100 // round to 2 decimal places
+	return &pct
 }
 
 func geographyMetricsToPb(list []entity.GeographyMetric) []*pb_admin.GeographyMetric {
@@ -456,8 +495,8 @@ func ConvertWebVitalMetricsToPb(list []entity.WebVitalMetric) []*pb_admin.WebVit
 			Date:           timestamppb.New(m.Date),
 			MetricName:     m.MetricName,
 			MetricRating:   m.MetricRating,
-			SessionCount:   m.SessionCount,
-			Conversions:    m.Conversions,
+			SessionCount:   int32(m.SessionCount),
+			Conversions:    int32(m.Conversions),
 			AvgMetricValue: m.AvgMetricValue,
 		}
 	}
@@ -473,8 +512,8 @@ func ConvertUserJourneyMetricsToPb(list []entity.UserJourneyMetric) []*pb_admin.
 		pb[i] = &pb_admin.UserJourneyMetric{
 			Date:         timestamppb.New(m.Date),
 			JourneyPath:  m.JourneyPath,
-			SessionCount: m.SessionCount,
-			Conversions:  m.Conversions,
+			SessionCount: int32(m.SessionCount),
+			Conversions:  int32(m.Conversions),
 		}
 	}
 	return pb
@@ -504,10 +543,10 @@ func ConvertDeviceFunnelMetricsToPb(list []entity.DeviceFunnelMetric) []*pb_admi
 		pb[i] = &pb_admin.DeviceFunnelMetric{
 			Date:           timestamppb.New(m.Date),
 			DeviceCategory: m.DeviceCategory,
-			Sessions:       m.Sessions,
-			AddToCartUsers: m.AddToCartUsers,
-			CheckoutUsers:  m.CheckoutUsers,
-			PurchaseUsers:  m.PurchaseUsers,
+			Sessions:       int32(m.Sessions),
+			AddToCartUsers: int32(m.AddToCartUsers),
+			CheckoutUsers:  int32(m.CheckoutUsers),
+			PurchaseUsers:  int32(m.PurchaseUsers),
 		}
 	}
 	return pb
@@ -1063,9 +1102,9 @@ func ConvertBrowserBreakdownToPb(list []entity.BrowserBreakdownRow) []*pb_admin.
 		pb[i] = &pb_admin.BrowserBreakdownRow{
 			Date:           timestamppb.New(r.Date),
 			Browser:        r.Browser,
-			Sessions:       r.Sessions,
-			Users:          r.Users,
-			Conversions:    r.Conversions,
+			Sessions:       int32(r.Sessions),
+			Users:          int32(r.Users),
+			Conversions:    int32(r.Conversions),
 			ConversionRate: r.ConversionRate,
 		}
 	}
@@ -1080,8 +1119,8 @@ func ConvertNewsletterToPb(list []entity.NewsletterMetricRow) []*pb_admin.Newsle
 	for i, r := range list {
 		pb[i] = &pb_admin.NewsletterMetricRow{
 			Date:        timestamppb.New(r.Date),
-			SignupCount: r.SignupCount,
-			UniqueUsers: r.UniqueUsers,
+			SignupCount: int32(r.SignupCount),
+			UniqueUsers: int32(r.UniqueUsers),
 		}
 	}
 	return pb
@@ -1095,8 +1134,8 @@ func ConvertAbandonedCartToPb(list []entity.AbandonedCartRow) []*pb_admin.Abando
 	for i, r := range list {
 		pb[i] = &pb_admin.AbandonedCartRow{
 			Date:                 timestamppb.New(r.Date),
-			CartsStarted:         r.CartsStarted,
-			CheckoutsStarted:     r.CheckoutsStarted,
+			CartsStarted:         int32(r.CartsStarted),
+			CheckoutsStarted:     int32(r.CheckoutsStarted),
 			AbandonmentRate:      r.AbandonmentRate,
 			AvgMinutesToCheckout: r.AvgMinutesToCheckout,
 			AvgMinutesToAbandon:  r.AvgMinutesToAbandon,
@@ -1109,19 +1148,51 @@ func ConvertCampaignAttributionToPb(list []entity.CampaignAttributionRow) []*pb_
 	if len(list) == 0 {
 		return nil
 	}
-	pb := make([]*pb_admin.CampaignAttributionRow, len(list))
-	for i, r := range list {
-		pb[i] = &pb_admin.CampaignAttributionRow{
-			Date:           timestamppb.New(r.Date),
-			UtmSource:      r.UTMSource,
-			UtmMedium:      r.UTMMedium,
-			UtmCampaign:    r.UTMCampaign,
-			Sessions:       r.Sessions,
-			Users:          r.Users,
-			Conversions:    r.Conversions,
-			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
-			ConversionRate: r.ConversionRate,
+
+	type aggKey struct {
+		Source, Medium, Campaign string
+	}
+	type aggVal struct {
+		Sessions, Users, Conversions int64
+		Revenue                      shopspring.Decimal
+	}
+	agg := make(map[aggKey]*aggVal)
+	order := make([]aggKey, 0)
+	for _, r := range list {
+		k := aggKey{r.UTMSource, r.UTMMedium, r.UTMCampaign}
+		if v, ok := agg[k]; ok {
+			v.Sessions += r.Sessions
+			v.Users += r.Users
+			v.Conversions += r.Conversions
+			v.Revenue = v.Revenue.Add(r.Revenue)
+		} else {
+			agg[k] = &aggVal{
+				Sessions:    r.Sessions,
+				Users:       r.Users,
+				Conversions: r.Conversions,
+				Revenue:     r.Revenue,
+			}
+			order = append(order, k)
 		}
+	}
+
+	pb := make([]*pb_admin.CampaignAttributionRow, 0, len(order))
+	for _, k := range order {
+		v := agg[k]
+		var convRate float64
+		if v.Sessions > 0 {
+			convRate = float64(v.Conversions) / float64(v.Sessions)
+		}
+		pb = append(pb, &pb_admin.CampaignAttributionRow{
+			UtmSource:      k.Source,
+			UtmMedium:      k.Medium,
+			UtmCampaign:    k.Campaign,
+			Sessions:       int32(v.Sessions),
+			Users:          int32(v.Users),
+			Conversions:    int32(v.Conversions),
+			Revenue:        &decimal.Decimal{Value: v.Revenue.String()},
+			ConversionRate: convRate,
+		})
 	}
 	return pb
 }
