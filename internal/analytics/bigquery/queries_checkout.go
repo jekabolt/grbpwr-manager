@@ -242,17 +242,17 @@ func (c *Client) getOOSImpact(
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_name') AS product_name,
+			ANY_VALUE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_name')) AS product_name,
 			SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'size_id') AS INT64) AS size_id,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'size_name') AS size_name,
-			(SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'product_price') AS product_price,
-			COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'currency'), 'USD') AS currency,
+			ANY_VALUE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'size_name')) AS size_name,
+			COALESCE(MAX((SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'product_price')), 0) AS product_price,
+			ANY_VALUE(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'currency'), 'USD')) AS currency,
 			COUNT(*) AS click_count
 		FROM %s
 		WHERE %s
 			AND event_name = 'out_of_stock_click'
 			AND (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'size_id') IS NOT NULL
-		GROUP BY event_date, product_id, product_name, size_id, size_name, product_price, currency
+		GROUP BY event_date, product_id, size_id
 	`, src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)
@@ -272,13 +272,13 @@ func (c *Client) getOOSImpact(
 	for {
 		var r struct {
 			EventDate    civil.Date `bigquery:"event_date"`
-			ProductID    string    `bigquery:"product_id"`
-			ProductName  string    `bigquery:"product_name"`
-			SizeID       int64     `bigquery:"size_id"`
-			SizeName     string    `bigquery:"size_name"`
-			ProductPrice float64   `bigquery:"product_price"`
-			Currency     string    `bigquery:"currency"`
-			ClickCount   int64     `bigquery:"click_count"`
+			ProductID    string     `bigquery:"product_id"`
+			ProductName  string     `bigquery:"product_name"`
+			SizeID       int64      `bigquery:"size_id"`
+			SizeName     string     `bigquery:"size_name"`
+			ProductPrice float64    `bigquery:"product_price"`
+			Currency     string     `bigquery:"currency"`
+			ClickCount   int64      `bigquery:"click_count"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break

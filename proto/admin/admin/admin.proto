@@ -3,6 +3,7 @@ syntax = "proto3";
 package admin;
 
 import "common/archive.proto";
+import "common/buyer.proto";
 import "common/dict.proto";
 import "common/filter.proto";
 import "common/hero.proto";
@@ -188,6 +189,14 @@ service AdminService {
   rpc AddOrderComment(AddOrderCommentRequest) returns (AddOrderCommentResponse) {
     option (google.api.http) = {
       post: "/api/admin/orders/{order_uuid}/comment"
+      body: "*"
+    };
+  }
+
+  // Creates a custom order with bank_invoice or cash payment (admin-only, supports custom prices).
+  rpc CreateCustomOrder(CreateCustomOrderRequest) returns (CreateCustomOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/orders/custom"
       body: "*"
     };
   }
@@ -839,6 +848,21 @@ message AddOrderCommentRequest {
 }
 
 message AddOrderCommentResponse {}
+
+message CreateCustomOrderRequest {
+  repeated common.CustomOrderItemInsert items = 1;
+  common.AddressInsert shipping_address = 2;
+  common.AddressInsert billing_address = 3;
+  common.BuyerInsert buyer = 4;
+  common.PaymentMethodNameEnum payment_method = 5; // bank_invoice or cash only
+  int32 shipment_carrier_id = 6;
+  string currency = 7;
+  google.type.Decimal shipment_cost = 8; // optional custom shipment cost
+}
+
+message CreateCustomOrderResponse {
+  common.Order order = 1;
+}
 
 // HERO MANAGER
 

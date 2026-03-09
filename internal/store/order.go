@@ -57,6 +57,90 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 	return validateOrderItemsStockAvailabilityWithLock(ctx, rep, items, currency, false)
 }
 
+// validateOrderItemsStockForCustomOrder validates stock availability for custom-priced items.
+// Keeps the existing ProductPrice, ProductSalePercentage, ProductPriceWithSale from items (no catalog lookup).
+func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
+	if len(items) == 0 {
+		return nil, nil, &entity.ValidationError{Message: "zero items to validate"}
+	}
+	prdIds := getProductIdsFromItems(items)
+	prds, err := getProductsByIds(ctx, rep, prdIds)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't get products by ids: %w", err)
+	}
+	prdMap := make(map[int]entity.Product)
+	for _, prd := range prds {
+		prdMap[prd.Id] = prd
+	}
+	prdSizes, err := getProductsSizesByIdsForUpdate(ctx, rep, items)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't get products sizes by ids: %w", err)
+	}
+	prdSizeMap := make(map[string]entity.ProductSize)
+	for _, ps := range prdSizes {
+		prdSizeMap[fmt.Sprintf("%d-%d", ps.ProductId, ps.SizeId)] = ps
+	}
+	validItems := make([]entity.OrderItem, 0, len(items))
+	adjustments := make([]entity.OrderItemAdjustment, 0)
+	for _, item := range items {
+		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
+		prdSize, exists := prdSizeMap[sizeKey]
+		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:           item.SizeId,
+				RequestedQuantity: item.QuantityDecimal(),
+				AdjustedQuantity: decimal.Zero,
+				Reason:           entity.AdjustmentReasonOutOfStock,
+			})
+			continue
+		}
+		requestedQty := item.QuantityDecimal()
+		if requestedQty.GreaterThan(prdSize.QuantityDecimal()) {
+			item.Quantity = prdSize.QuantityDecimal()
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:           item.SizeId,
+				RequestedQuantity: requestedQty,
+				AdjustedQuantity: prdSize.QuantityDecimal(),
+				Reason:           entity.AdjustmentReasonQuantityReduced,
+			})
+		}
+		prd, exists := prdMap[item.ProductId]
+		if !exists {
+			adjustments = append(adjustments, entity.OrderItemAdjustment{
+				ProductId:         item.ProductId,
+				SizeId:           item.SizeId,
+				RequestedQuantity: item.QuantityDecimal(),
+				AdjustedQuantity: decimal.Zero,
+				Reason:           entity.AdjustmentReasonOutOfStock,
+			})
+			continue
+		}
+		var productName string
+		if len(prd.ProductDisplay.ProductBody.Translations) > 0 {
+			productName = prd.ProductDisplay.ProductBody.Translations[0].Name
+		}
+		pb := &prd.ProductDisplay.ProductBody
+		validItems = append(validItems, entity.OrderItem{
+			OrderItemInsert: item,
+			Thumbnail:      prd.ProductDisplay.Thumbnail.ThumbnailMediaURL,
+			BlurHash:       prd.ProductDisplay.Thumbnail.BlurHash.String,
+			ProductBrand:   pb.ProductBodyInsert.Brand,
+			Color:          pb.ProductBodyInsert.Color,
+			SKU:            prd.SKU,
+			Slug:           dto.GetProductSlug(prd.Id, pb.ProductBodyInsert.Brand, productName, pb.ProductBodyInsert.TargetGender.String()),
+			TopCategoryId:  pb.ProductBodyInsert.TopCategoryId,
+			SubCategoryId:  pb.ProductBodyInsert.SubCategoryId,
+			TypeId:         pb.ProductBodyInsert.TypeId,
+			TargetGender:   pb.ProductBodyInsert.TargetGender,
+			Preorder:       pb.ProductBodyInsert.Preorder,
+			Translations:   pb.Translations,
+		})
+	}
+	return validItems, adjustments, nil
+}
+
 // validateOrderItemsStockAvailabilityForUpdate validates stock and locks product_size rows to prevent race conditions
 func validateOrderItemsStockAvailabilityForUpdate(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	return validateOrderItemsStockAvailabilityWithLock(ctx, rep, items, currency, true)
@@ -359,6 +443,23 @@ func insertPaymentRecord(ctx context.Context, rep dependency.Repository, payment
 		return fmt.Errorf("can't insert payment record: %w", err)
 	}
 
+	return nil
+}
+
+func insertPaymentRecordForCustomOrder(ctx context.Context, rep dependency.Repository, paymentMethodId, orderId int, totalAmount decimal.Decimal) error {
+	insertQuery := `
+		INSERT INTO payment (order_id, payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done, expired_at)
+		VALUES (:orderId, :paymentMethodId, :transactionAmount, :transactionAmountPaymentCurrency, true, NULL);
+	`
+	err := ExecNamed(ctx, rep.DB(), insertQuery, map[string]interface{}{
+		"orderId":                      orderId,
+		"paymentMethodId":              paymentMethodId,
+		"transactionAmount":             totalAmount,
+		"transactionAmountPaymentCurrency": totalAmount,
+	})
+	if err != nil {
+		return fmt.Errorf("can't insert payment record for custom order: %w", err)
+	}
 	return nil
 }
 
@@ -973,6 +1074,85 @@ func (ms *MYSQLStore) CreateOrder(ctx context.Context, orderNew *entity.OrderNew
 	})
 
 	return order, sendEmail, err
+}
+
+// CreateCustomOrder creates an order with bank_invoice or cash payment, custom item prices, and confirmed status.
+func (ms *MYSQLStore) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error) {
+	if err := validateOrderInput(orderNew); err != nil {
+		return nil, err
+	}
+	if orderNew.PaymentMethod != entity.BANK_INVOICE && orderNew.PaymentMethod != entity.CASH {
+		return nil, &entity.ValidationError{Message: "payment method must be bank_invoice or cash for custom orders"}
+	}
+	paymentMethod, err := validatePaymentMethod(orderNew.PaymentMethod)
+	if err != nil {
+		return nil, err
+	}
+	shippingCountry := ""
+	if orderNew.ShippingAddress != nil {
+		shippingCountry = orderNew.ShippingAddress.Country
+	}
+	shipmentCarrier, err := validateShipmentCarrier(orderNew.ShipmentCarrierId, shippingCountry)
+	if err != nil {
+		return nil, err
+	}
+
+	var order *entity.Order
+	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		orderNew.Items = mergeOrderItems(orderNew.Items)
+		validItems, _, err := validateOrderItemsStockForCustomOrder(ctx, rep, orderNew.Items)
+		if err != nil {
+			return err
+		}
+		if len(validItems) == 0 {
+			return &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
+		}
+		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(validItems)
+		providers := entity.ConvertOrderItemInsertsToProductInfoProviders(validItemsInsert)
+		subtotal, err := calculateTotalAmount(ctx, rep, providers, orderNew.Currency)
+		if err != nil {
+			return fmt.Errorf("error calculating total: %w", err)
+		}
+		var shipmentPrice decimal.Decimal
+		if orderNew.CustomShipmentCost != nil {
+			shipmentPrice = orderNew.CustomShipmentCost.Round(2)
+		} else {
+			shipmentPrice, err = shipmentCarrier.PriceDecimal(orderNew.Currency)
+			if err != nil {
+				return fmt.Errorf("can't get shipment carrier price: %w", err)
+			}
+		}
+		totalPrice := dto.RoundForCurrency(subtotal.Add(shipmentPrice), orderNew.Currency)
+		order = &entity.Order{
+			TotalPrice:    totalPrice,
+			Currency:      orderNew.Currency,
+			OrderStatusId: cache.OrderStatusConfirmed.Status.Id,
+		}
+		if err = ms.insertOrderDetails(ctx, rep, order, validItemsInsert, shipmentCarrier, shipmentPrice, false, orderNew); err != nil {
+			return err
+		}
+		if err = insertPaymentRecordForCustomOrder(ctx, rep, paymentMethod.Method.Id, order.Id, totalPrice); err != nil {
+			return err
+		}
+		history := &entity.StockHistoryParams{
+			Source:    entity.StockChangeSourceOrderPlaced,
+			OrderId:   order.Id,
+			OrderUUID: order.UUID,
+		}
+		if err = rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert, history); err != nil {
+			return fmt.Errorf("error reducing stock: %w", err)
+		}
+		return insertOrderStatusHistoryEntry(ctx, rep, order.Id, cache.OrderStatusConfirmed.Status.Id, "admin", "custom order")
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Fetch the full order to return correct timestamps and all fields
+	fullOrder, err := ms.Order().GetOrderById(ctx, order.Id)
+	if err != nil {
+		return nil, fmt.Errorf("order created but failed to fetch: %w", err)
+	}
+	return &fullOrder.Order, nil
 }
 
 // Helper function for validating order input

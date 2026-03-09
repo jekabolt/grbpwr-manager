@@ -69,10 +69,18 @@ var (
 	PaymentMethodCardTest = PaymentMethod{Method: entity.PaymentMethod{
 		Name: entity.CARD_TEST,
 	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST}
+	PaymentMethodBankInvoice = PaymentMethod{Method: entity.PaymentMethod{
+		Name: entity.BANK_INVOICE,
+	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE}
+	PaymentMethodCash = PaymentMethod{Method: entity.PaymentMethod{
+		Name: entity.CASH,
+	}, PB: pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH}
 
 	paymentMethods = []*PaymentMethod{
 		&PaymentMethodCard,
 		&PaymentMethodCardTest,
+		&PaymentMethodBankInvoice,
+		&PaymentMethodCash,
 	}
 
 	entityPaymentMethods = []entity.PaymentMethod{}
@@ -80,13 +88,17 @@ var (
 	paymentMethodsById = map[int]*PaymentMethod{}
 
 	paymentMethodsByName = map[entity.PaymentMethodName]*PaymentMethod{
-		entity.CARD:      &PaymentMethodCard,
-		entity.CARD_TEST: &PaymentMethodCardTest,
+		entity.CARD:         &PaymentMethodCard,
+		entity.CARD_TEST:    &PaymentMethodCardTest,
+		entity.BANK_INVOICE: &PaymentMethodBankInvoice,
+		entity.CASH:         &PaymentMethodCash,
 	}
 
 	paymentMethodIdByPbId = map[pb_common.PaymentMethodNameEnum]int{
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:      PaymentMethodCard.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST: PaymentMethodCardTest.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:         PaymentMethodCard.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:    PaymentMethodCardTest.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE:  PaymentMethodBankInvoice.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:          PaymentMethodCash.Method.Id,
 	}
 
 	sizeById = map[int]entity.Size{}
@@ -196,6 +208,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 				p.Method.Allowed = pm.Allowed
 				entityPaymentMethods = append(entityPaymentMethods, pm)
 				paymentMethodsById[pm.Id] = p
+				paymentMethodIdByPbId[p.PB] = pm.Id
 			}
 		}
 	}

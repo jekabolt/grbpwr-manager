@@ -20,14 +20,15 @@ func (e *ValidationError) Error() string {
 }
 
 type OrderNew struct {
-	Items             []OrderItemInsert `valid:"required"`
-	ShippingAddress   *AddressInsert    `valid:"required"`
-	BillingAddress    *AddressInsert    `valid:"required"`
-	Buyer             *BuyerInsert      `valid:"required"`
-	PaymentMethod     PaymentMethodName `valid:"required"`
-	ShipmentCarrierId int               `valid:"required"`
-	PromoCode         string            `valid:"-"`
-	Currency          string            `valid:"required,length(3|3)"` // ISO 4217 currency code
+	Items               []OrderItemInsert `valid:"required"`
+	ShippingAddress     *AddressInsert    `valid:"required"`
+	BillingAddress      *AddressInsert    `valid:"required"`
+	Buyer               *BuyerInsert      `valid:"required"`
+	PaymentMethod       PaymentMethodName `valid:"required"`
+	ShipmentCarrierId   int               `valid:"required"`
+	PromoCode           string            `valid:"-"`
+	Currency            string            `valid:"required,length(3|3)"` // ISO 4217 currency code
+	CustomShipmentCost  *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
 }
 
 type OrderFull struct {

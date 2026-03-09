@@ -8,6 +8,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -46,6 +47,77 @@ func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderI
 		ProductPriceWithSale:  priceWithSale,
 		Quantity:              quantity,
 		SizeId:                int(pbOrderItem.OrderItem.SizeId),
+	}, nil
+}
+
+// ConvertCreateCustomOrderRequestToEntity converts CreateCustomOrderRequest to entity.OrderNew.
+func ConvertCreateCustomOrderRequestToEntity(req *pb_admin.CreateCustomOrderRequest) (*entity.OrderNew, error) {
+	if req == nil {
+		return nil, fmt.Errorf("create_custom_order_request is nil")
+	}
+	items := make([]entity.OrderItemInsert, 0, len(req.Items))
+	for _, it := range req.Items {
+		item, err := ConvertCustomOrderItemInsertToEntity(it)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	orderNew := &entity.OrderNew{
+		Items:             items,
+		ShippingAddress:   convertAddress(req.ShippingAddress),
+		BillingAddress:   convertAddress(req.BillingAddress),
+		Buyer:             convertBuyer(req.Buyer),
+		PaymentMethod:     ConvertPbPaymentMethodToEntity(req.PaymentMethod),
+		ShipmentCarrierId: int(req.ShipmentCarrierId),
+		Currency:          req.Currency,
+	}
+	if req.ShipmentCost != nil && req.ShipmentCost.GetValue() != "" {
+		sc, err := decimal.NewFromString(req.ShipmentCost.GetValue())
+		if err != nil {
+			return nil, fmt.Errorf("invalid shipment_cost: %w", err)
+		}
+		if sc.LessThan(decimal.Zero) {
+			return nil, fmt.Errorf("shipment_cost must be >= 0")
+		}
+		orderNew.CustomShipmentCost = &sc
+	}
+	return orderNew, nil
+}
+
+func convertBuyer(pb *pb_common.BuyerInsert) *entity.BuyerInsert {
+	if pb == nil {
+		return nil
+	}
+	return &entity.BuyerInsert{
+		FirstName: pb.FirstName,
+		LastName:  pb.LastName,
+		Email:     pb.Email,
+		Phone:     pb.Phone,
+	}
+}
+
+// ConvertCustomOrderItemInsertToEntity converts a common.CustomOrderItemInsert to entity.OrderItemInsert.
+// Uses custom_price for ProductPrice; ProductSalePercentage is 0, ProductPriceWithSale = ProductPrice.
+func ConvertCustomOrderItemInsertToEntity(pb *pb_common.CustomOrderItemInsert) (entity.OrderItemInsert, error) {
+	if pb == nil || pb.CustomPrice == nil {
+		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price is required")
+	}
+	price, err := decimal.NewFromString(pb.CustomPrice.GetValue())
+	if err != nil {
+		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: invalid custom_price: %w", err)
+	}
+	price = price.Round(2)
+	if price.LessThan(decimal.Zero) {
+		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price must be >= 0")
+	}
+	return entity.OrderItemInsert{
+		ProductId:             int(pb.ProductId),
+		Quantity:              decimal.NewFromInt32(pb.Quantity).Round(0),
+		SizeId:                int(pb.SizeId),
+		ProductPrice:          price,
+		ProductSalePercentage: decimal.Zero,
+		ProductPriceWithSale:  price,
 	}, nil
 }
 

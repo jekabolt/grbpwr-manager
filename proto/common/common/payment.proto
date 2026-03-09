@@ -28,6 +28,8 @@ enum PaymentMethodNameEnum {
   PAYMENT_METHOD_NAME_ENUM_UNKNOWN = 0;
   PAYMENT_METHOD_NAME_ENUM_CARD = 1;
   PAYMENT_METHOD_NAME_ENUM_CARD_TEST = 2;
+  PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE = 3;
+  PAYMENT_METHOD_NAME_ENUM_CASH = 4;
 }
 
 // PaymentMethod represents the payment_method table

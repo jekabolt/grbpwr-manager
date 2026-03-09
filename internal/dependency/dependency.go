@@ -85,6 +85,7 @@ type (
 
 	Order interface {
 		CreateOrder(ctx context.Context, orderNew *entity.OrderNew, receivePromo bool, expiredAt time.Time) (*entity.Order, bool, error)
+		CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew) (*entity.Order, error)
 		ValidateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) (*entity.OrderItemValidation, error)
 		ValidateOrderItemsInsertWithReservation(ctx context.Context, items []entity.OrderItemInsert, currency string, sessionID string) (*entity.OrderItemValidation, error)
 		ValidateOrderByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)

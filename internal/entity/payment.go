@@ -36,14 +36,18 @@ type PaymentInsert struct {
 type PaymentMethodName string
 
 const (
-	CARD      PaymentMethodName = "card"
-	CARD_TEST PaymentMethodName = "card-test"
+	CARD         PaymentMethodName = "card"
+	CARD_TEST    PaymentMethodName = "card-test"
+	BANK_INVOICE PaymentMethodName = "bank-invoice"
+	CASH         PaymentMethodName = "cash"
 )
 
 // ValidPaymentMethodNames is a set of valid payment method names
 var ValidPaymentMethodNames = map[PaymentMethodName]bool{
-	CARD:      true,
-	CARD_TEST: true,
+	CARD:         true,
+	CARD_TEST:    true,
+	BANK_INVOICE: true,
+	CASH:         true,
 }
 
 // PaymentMethod represents the payment_method table

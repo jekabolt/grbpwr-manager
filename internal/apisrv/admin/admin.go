@@ -1403,6 +1403,35 @@ func (s *Server) AddOrderComment(ctx context.Context, req *pb_admin.AddOrderComm
 	return &pb_admin.AddOrderCommentResponse{}, nil
 }
 
+func (s *Server) CreateCustomOrder(ctx context.Context, req *pb_admin.CreateCustomOrderRequest) (*pb_admin.CreateCustomOrderResponse, error) {
+	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
+	if pm != entity.BANK_INVOICE && pm != entity.CASH {
+		return nil, status.Errorf(codes.InvalidArgument, "payment method must be bank_invoice or cash for custom orders")
+	}
+	orderNew, err := dto.ConvertCreateCustomOrderRequestToEntity(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid request: %v", err)
+	}
+	if _, err := v.ValidateStruct(orderNew); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "validation failed: %v", err)
+	}
+	order, err := s.repo.Order().CreateCustomOrder(ctx, orderNew)
+	if err != nil {
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			return nil, status.Errorf(codes.InvalidArgument, "%s", validationErr.Message)
+		}
+		slog.Default().ErrorContext(ctx, "can't create custom order", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't create custom order: %v", err)
+	}
+	orderPb, err := dto.ConvertEntityOrderToPbCommonOrder(*order)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert order to proto", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't convert order: %v", err)
+	}
+	return &pb_admin.CreateCustomOrderResponse{Order: orderPb}, nil
+}
+
 // HERO MANAGER
 
 func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb_admin.AddHeroResponse, error) {
