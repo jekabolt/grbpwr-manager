@@ -39,52 +39,48 @@ var (
 		pb_common.SeasonEnum_SEASON_ENUM_RC: entity.SeasonRC,
 	}
 	stockChangeSourceToProto = map[string]pb_common.StockChangeSource{
-		string(entity.StockChangeSourceAdminAddProduct):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT,
-		string(entity.StockChangeSourceAdminUpdateProduct):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT,
-		string(entity.StockChangeSourceAdminUpdateSizeStock): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK,
-		string(entity.StockChangeSourceOrderPlaced):          pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED,
-		string(entity.StockChangeSourceOrderCancelled):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
-		string(entity.StockChangeSourceOrderExpired):         pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED,
-		string(entity.StockChangeSourceOrderRefunded):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED,
-		string(entity.StockChangeSourceReceiving):            pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_RECEIVING,
-		string(entity.StockChangeSourceTransferIn):           pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_IN,
-		string(entity.StockChangeSourceTransferOut):          pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_OUT,
-		string(entity.StockChangeSourceDamage):               pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_DAMAGE,
-		string(entity.StockChangeSourceLoss):                 pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_LOSS,
-		string(entity.StockChangeSourceManualAdjustment):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
+		string(entity.StockChangeSourceAdminNewProduct):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT,
+		string(entity.StockChangeSourceManualAdjustment):    pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
+		string(entity.StockChangeSourceOrderReserved):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RESERVED,
+		string(entity.StockChangeSourceOrderCustomReserved): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM_RESERVED,
+		string(entity.StockChangeSourceOrderReturned):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED,
+		string(entity.StockChangeSourceOrderCancelled):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
 	}
 	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT:       string(entity.StockChangeSourceAdminAddProduct),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT:    string(entity.StockChangeSourceAdminUpdateProduct),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK: string(entity.StockChangeSourceAdminUpdateSizeStock),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED:            string(entity.StockChangeSourceOrderPlaced),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:         string(entity.StockChangeSourceOrderCancelled),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_EXPIRED:           string(entity.StockChangeSourceOrderExpired),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_REFUNDED:          string(entity.StockChangeSourceOrderRefunded),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_RECEIVING:               string(entity.StockChangeSourceReceiving),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_IN:             string(entity.StockChangeSourceTransferIn),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_TRANSFER_OUT:            string(entity.StockChangeSourceTransferOut),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_DAMAGE:                  string(entity.StockChangeSourceDamage),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_LOSS:                    string(entity.StockChangeSourceLoss),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT:       string(entity.StockChangeSourceManualAdjustment),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT:      string(entity.StockChangeSourceAdminNewProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT:      string(entity.StockChangeSourceManualAdjustment),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RESERVED:         string(entity.StockChangeSourceOrderReserved),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM_RESERVED:  string(entity.StockChangeSourceOrderCustomReserved),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED:         string(entity.StockChangeSourceOrderReturned),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:        string(entity.StockChangeSourceOrderCancelled),
 	}
 	stockChangeReasonToProto = map[string]pb_common.StockChangeReason{
-		string(entity.StockChangeReasonDamaged):             pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED,
-		string(entity.StockChangeReasonLost):                pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST,
-		string(entity.StockChangeReasonFound):               pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND,
-		string(entity.StockChangeReasonRestock):             pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK,
-		string(entity.StockChangeReasonInventoryCorrection): pb_common.StockChangeReason_STOCK_CHANGE_REASON_INVENTORY_CORRECTION,
-		string(entity.StockChangeReasonReturnDefective):     pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE,
-		string(entity.StockChangeReasonTheft):               pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT,
+		string(entity.StockChangeReasonInitialStock):    pb_common.StockChangeReason_STOCK_CHANGE_REASON_INITIAL_STOCK,
+		string(entity.StockChangeReasonStockCount):      pb_common.StockChangeReason_STOCK_CHANGE_REASON_STOCK_COUNT,
+		string(entity.StockChangeReasonDamage):          pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGE,
+		string(entity.StockChangeReasonLoss):            pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOSS,
+		string(entity.StockChangeReasonFound):           pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND,
+		string(entity.StockChangeReasonCorrection):      pb_common.StockChangeReason_STOCK_CHANGE_REASON_CORRECTION,
+		string(entity.StockChangeReasonReservedRelease): pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESERVED_RELEASE,
+		string(entity.StockChangeReasonOther):           pb_common.StockChangeReason_STOCK_CHANGE_REASON_OTHER,
+		string(entity.StockChangeReasonOrder):           pb_common.StockChangeReason_STOCK_CHANGE_REASON_ORDER,
+		string(entity.StockChangeReasonCustomOrder):     pb_common.StockChangeReason_STOCK_CHANGE_REASON_CUSTOM_ORDER,
+		string(entity.StockChangeReasonReturnToStock):   pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_TO_STOCK,
+		string(entity.StockChangeReasonOrderCancelled):  pb_common.StockChangeReason_STOCK_CHANGE_REASON_ORDER_CANCELLED,
 	}
 	stockChangeReasonToEntity = map[pb_common.StockChangeReason]string{
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED:              string(entity.StockChangeReasonDamaged),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST:                 string(entity.StockChangeReasonLost),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:                string(entity.StockChangeReasonFound),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK:              string(entity.StockChangeReasonRestock),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_INVENTORY_CORRECTION: string(entity.StockChangeReasonInventoryCorrection),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE:     string(entity.StockChangeReasonReturnDefective),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT:                string(entity.StockChangeReasonTheft),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_INITIAL_STOCK:    string(entity.StockChangeReasonInitialStock),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_STOCK_COUNT:      string(entity.StockChangeReasonStockCount),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGE:           string(entity.StockChangeReasonDamage),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOSS:             string(entity.StockChangeReasonLoss),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:            string(entity.StockChangeReasonFound),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_CORRECTION:       string(entity.StockChangeReasonCorrection),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESERVED_RELEASE: string(entity.StockChangeReasonReservedRelease),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_OTHER:            string(entity.StockChangeReasonOther),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_ORDER:            string(entity.StockChangeReasonOrder),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_CUSTOM_ORDER:     string(entity.StockChangeReasonCustomOrder),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_TO_STOCK:  string(entity.StockChangeReasonReturnToStock),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_ORDER_CANCELLED:  string(entity.StockChangeReasonOrderCancelled),
 	}
 )
 
@@ -617,19 +613,12 @@ func FormatSKUWithSize(sku string, sizeName string) string {
 // Simplifies source categories for end-user consumption.
 func MapStockChangeSourceToAPI(internalSource string) string {
 	mapping := map[string]string{
-		string(entity.StockChangeSourceOrderPlaced):          "order",
-		string(entity.StockChangeSourceOrderCancelled):       "return",
-		string(entity.StockChangeSourceOrderExpired):         "return",
-		string(entity.StockChangeSourceOrderRefunded):        "return",
-		string(entity.StockChangeSourceAdminAddProduct):      "receiving",
-		string(entity.StockChangeSourceAdminUpdateProduct):   "receiving",
-		string(entity.StockChangeSourceAdminUpdateSizeStock): "manual_adjustment",
-		string(entity.StockChangeSourceReceiving):            "receiving",
-		string(entity.StockChangeSourceTransferIn):           "transfer",
-		string(entity.StockChangeSourceTransferOut):          "transfer",
-		string(entity.StockChangeSourceDamage):               "write_off",
-		string(entity.StockChangeSourceLoss):                 "write_off",
-		string(entity.StockChangeSourceManualAdjustment):     "manual_adjustment",
+		string(entity.StockChangeSourceAdminNewProduct):     "admin_new_product",
+		string(entity.StockChangeSourceManualAdjustment):    "manual_adjustment",
+		string(entity.StockChangeSourceOrderReserved):       "order_reserved",
+		string(entity.StockChangeSourceOrderCustomReserved): "order_custom_reserved",
+		string(entity.StockChangeSourceOrderReturned):       "order_returned",
+		string(entity.StockChangeSourceOrderCancelled):      "order_cancelled",
 	}
 
 	if mapped, ok := mapping[internalSource]; ok {
@@ -639,13 +628,17 @@ func MapStockChangeSourceToAPI(internalSource string) string {
 }
 
 // FormatStockChangeReference builds reference string from available data.
-// Priority: reference_id > order_uuid > admin:{username} > system:auto
+// Priority: reference_id > ORD-XXXXXXX (order_uuid) > admin:{username} > system:auto
 func FormatStockChangeReference(referenceId, orderUUID, adminUsername string) string {
 	if referenceId != "" {
 		return referenceId
 	}
 	if orderUUID != "" {
-		return orderUUID
+		// Format as ORD-XXXXXXX (first 7 chars of UUID)
+		if len(orderUUID) >= 7 {
+			return "ORD-" + strings.ToUpper(orderUUID[:7])
+		}
+		return "ORD-" + strings.ToUpper(orderUUID)
 	}
 	if adminUsername != "" {
 		return "admin:" + adminUsername
@@ -664,8 +657,11 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 		return nil
 	}
 
-	// Format SKU with size
-	formattedSKU := FormatSKUWithSize(e.SKU, e.SizeName)
+	// Format SKU with size (or use "SHIPPING" if it's a shipping entry)
+	formattedSKU := e.SKU
+	if e.SKU != "SHIPPING" && e.SizeName != "" {
+		formattedSKU = FormatSKUWithSize(e.SKU, e.SizeName)
+	}
 
 	// Map source to API-friendly name
 	apiSource := MapStockChangeSourceToAPI(e.Source)
@@ -692,6 +688,26 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	// Add comment if present
 	if e.Comment != "" {
 		row.Comment = &e.Comment
+	}
+
+	// Add financial fields if present
+	if e.PriceBeforeDiscount != "" {
+		row.PriceBeforeDiscount = &e.PriceBeforeDiscount
+	}
+	if e.DiscountAmount != "" {
+		row.DiscountAmount = &e.DiscountAmount
+	}
+	if e.PaidCurrency != "" {
+		row.PaidCurrency = &e.PaidCurrency
+	}
+	if e.PaidAmount != "" {
+		row.PaidAmount = &e.PaidAmount
+	}
+	if e.PayoutBaseAmount != "" {
+		row.PayoutBaseAmount = &e.PayoutBaseAmount
+	}
+	if e.PayoutBaseCurrency != "" {
+		row.PayoutBaseCurrency = &e.PayoutBaseCurrency
 	}
 
 	return row

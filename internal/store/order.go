@@ -1135,7 +1135,7 @@ func (ms *MYSQLStore) CreateCustomOrder(ctx context.Context, orderNew *entity.Or
 			return err
 		}
 		history := &entity.StockHistoryParams{
-			Source:    entity.StockChangeSourceOrderPlaced,
+			Source:    entity.StockChangeSourceOrderCustomReserved,
 			OrderId:   order.Id,
 			OrderUUID: order.UUID,
 		}
@@ -1945,7 +1945,7 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		// Reduce stock for valid items (validation already locked the rows, so this is atomic)
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 		history := &entity.StockHistoryParams{
-			Source:    entity.StockChangeSourceOrderPlaced,
+			Source:    entity.StockChangeSourceOrderReserved,
 			OrderId:   orderFull.Order.Id,
 			OrderUUID: orderFull.Order.UUID,
 		}
@@ -2823,9 +2823,26 @@ func (ms *MYSQLStore) ExpireOrderPayment(ctx context.Context, orderUUID string) 
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
-		err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderExpired, "")
-		if err != nil {
-			return fmt.Errorf("can't cancel order: %w", err)
+		// Restore stock silently (no history entry for expired orders)
+		if err := rep.Products().RestoreStockSilently(ctx, orderItems); err != nil {
+			return fmt.Errorf("can't restore stock: %w", err)
+		}
+
+		// Update order status to Cancelled
+		statusCancelled, ok := cache.GetOrderStatusByName(entity.Cancelled)
+		if !ok {
+			return fmt.Errorf("can't get order status by name %s", entity.Cancelled)
+		}
+
+		if err := updateOrderStatus(ctx, rep, order.Id, statusCancelled.Status.Id); err != nil {
+			return fmt.Errorf("can't update order status: %w", err)
+		}
+
+		// Remove promo if present
+		if order.PromoId.Int32 != 0 {
+			if err := removePromo(ctx, rep, order.Id); err != nil {
+				return fmt.Errorf("can't remove promo: %w", err)
+			}
 		}
 
 		return nil
@@ -3078,7 +3095,7 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 			itemsForStock[i] = itemsToRefund[i].OrderItemInsert
 		}
 		history := &entity.StockHistoryParams{
-			Source:    entity.StockChangeSourceOrderRefunded,
+			Source:    entity.StockChangeSourceOrderReturned,
 			OrderId:   order.Id,
 			OrderUUID: order.UUID,
 		}
@@ -3157,7 +3174,15 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		return fmt.Errorf("order cannot be cancelled: %w", err)
 	}
 
+	// For AwaitingPayment orders: restore stock silently (expired orders that never completed payment)
+	// For other statuses: record history with the provided source
 	if st == entity.AwaitingPayment {
+		err := rep.Products().RestoreStockSilently(ctx, orderItems)
+		if err != nil {
+			return fmt.Errorf("can't restore stock for product sizes: %w", err)
+		}
+	} else {
+		// For confirmed/other orders, use history tracking
 		history := &entity.StockHistoryParams{
 			Source:    source,
 			OrderId:   order.Id,

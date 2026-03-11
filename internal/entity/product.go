@@ -289,85 +289,171 @@ type ProductTranslationInsert struct {
 type StockChangeSource string
 
 const (
-	StockChangeSourceAdminAddProduct      StockChangeSource = "admin_add_product"
-	StockChangeSourceAdminUpdateProduct   StockChangeSource = "admin_update_product"
-	StockChangeSourceAdminUpdateSizeStock StockChangeSource = "admin_update_size_stock"
-	StockChangeSourceOrderPlaced          StockChangeSource = "order_placed"
-	StockChangeSourceOrderCancelled       StockChangeSource = "order_cancelled"
-	StockChangeSourceOrderExpired         StockChangeSource = "order_expired"
-	StockChangeSourceOrderRefunded        StockChangeSource = "order_refunded"
-	StockChangeSourceReceiving            StockChangeSource = "receiving"
-	StockChangeSourceTransferIn           StockChangeSource = "transfer_in"
-	StockChangeSourceTransferOut          StockChangeSource = "transfer_out"
-	StockChangeSourceDamage               StockChangeSource = "damage"
-	StockChangeSourceLoss                 StockChangeSource = "loss"
-	StockChangeSourceManualAdjustment     StockChangeSource = "manual_adjustment"
+	StockChangeSourceAdminNewProduct     StockChangeSource = "admin_new_product"
+	StockChangeSourceManualAdjustment    StockChangeSource = "manual_adjustment"
+	StockChangeSourceOrderReserved       StockChangeSource = "order_reserved"
+	StockChangeSourceOrderCustomReserved StockChangeSource = "order_custom_reserved"
+	StockChangeSourceOrderReturned       StockChangeSource = "order_returned"
+	StockChangeSourceOrderCancelled      StockChangeSource = "order_cancelled"
 )
 
 // StockChangeReason represents the reason for a stock change.
 type StockChangeReason string
 
 const (
-	StockChangeReasonDamaged             StockChangeReason = "damaged"
-	StockChangeReasonLost                StockChangeReason = "lost"
-	StockChangeReasonFound               StockChangeReason = "found"
-	StockChangeReasonRestock             StockChangeReason = "restock"
-	StockChangeReasonInventoryCorrection StockChangeReason = "inventory_correction"
-	StockChangeReasonReturnDefective     StockChangeReason = "return_defective"
-	StockChangeReasonTheft               StockChangeReason = "theft"
+	// admin_new_product reasons
+	StockChangeReasonInitialStock StockChangeReason = "initial_stock"
+	// manual_adjustment reasons
+	StockChangeReasonStockCount      StockChangeReason = "stock_count"
+	StockChangeReasonDamage          StockChangeReason = "damage"
+	StockChangeReasonLoss            StockChangeReason = "loss"
+	StockChangeReasonFound           StockChangeReason = "found"
+	StockChangeReasonCorrection      StockChangeReason = "correction"
+	StockChangeReasonReservedRelease StockChangeReason = "reserved_release"
+	StockChangeReasonOther           StockChangeReason = "other"
+	// order_reserved reasons
+	StockChangeReasonOrder StockChangeReason = "order"
+	// order_custom_reserved reasons
+	StockChangeReasonCustomOrder StockChangeReason = "custom_order"
+	// order_returned reasons
+	StockChangeReasonReturnToStock StockChangeReason = "return_to_stock"
+	// order_cancelled reasons
+	StockChangeReasonOrderCancelled StockChangeReason = "order_cancelled"
+)
+
+// ValidReasonsForSource maps each source to its allowed reasons.
+var ValidReasonsForSource = map[StockChangeSource][]StockChangeReason{
+	StockChangeSourceAdminNewProduct:     {StockChangeReasonInitialStock},
+	StockChangeSourceManualAdjustment:    {StockChangeReasonStockCount, StockChangeReasonDamage, StockChangeReasonLoss, StockChangeReasonFound, StockChangeReasonCorrection, StockChangeReasonReservedRelease, StockChangeReasonOther},
+	StockChangeSourceOrderReserved:       {StockChangeReasonOrder},
+	StockChangeSourceOrderCustomReserved: {StockChangeReasonCustomOrder},
+	StockChangeSourceOrderReturned:       {StockChangeReasonReturnToStock},
+	StockChangeSourceOrderCancelled:      {StockChangeReasonOrderCancelled},
+}
+
+// StockChangeSignPositive means the source only allows positive deltas.
+// StockChangeSignNegative means the source only allows negative deltas.
+// StockChangeSignBoth means the source allows both.
+type StockChangeSign int
+
+const (
+	StockChangeSignPositive StockChangeSign = iota
+	StockChangeSignNegative
+	StockChangeSignBoth
+)
+
+// AllowedSignForSource maps each source to its allowed sign direction.
+var AllowedSignForSource = map[StockChangeSource]StockChangeSign{
+	StockChangeSourceAdminNewProduct:     StockChangeSignPositive,
+	StockChangeSourceManualAdjustment:    StockChangeSignBoth,
+	StockChangeSourceOrderReserved:       StockChangeSignNegative,
+	StockChangeSourceOrderCustomReserved: StockChangeSignNegative,
+	StockChangeSourceOrderReturned:       StockChangeSignPositive,
+	StockChangeSourceOrderCancelled:      StockChangeSignPositive,
+}
+
+// IsValidReasonForSource checks if a reason is valid for a given source.
+func IsValidReasonForSource(source StockChangeSource, reason StockChangeReason) bool {
+	reasons, ok := ValidReasonsForSource[source]
+	if !ok {
+		return false
+	}
+	for _, r := range reasons {
+		if r == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// StockAdjustmentMode represents the mode of stock adjustment.
+type StockAdjustmentMode string
+
+const (
+	StockAdjustmentModeSet    StockAdjustmentMode = "set"
+	StockAdjustmentModeAdjust StockAdjustmentMode = "adjust"
+)
+
+// StockAdjustmentDirection represents the direction of stock adjustment.
+type StockAdjustmentDirection string
+
+const (
+	StockAdjustmentDirectionIncrease StockAdjustmentDirection = "increase"
+	StockAdjustmentDirectionDecrease StockAdjustmentDirection = "decrease"
 )
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.
 type StockChangeInsert struct {
-	ProductId      int             `db:"product_id"`
-	SizeId         int             `db:"size_id"`
-	QuantityDelta  decimal.Decimal `db:"quantity_delta"`
-	QuantityBefore decimal.Decimal `db:"quantity_before"`
-	QuantityAfter  decimal.Decimal `db:"quantity_after"`
-	Source         string          `db:"source"`
-	OrderId        sql.NullInt32   `db:"order_id"`
-	OrderUUID      sql.NullString  `db:"order_uuid"`
-	AdminUsername  sql.NullString  `db:"admin_username"`
-	ReferenceId    sql.NullString  `db:"reference_id"`
-	Reason         sql.NullString  `db:"reason"`
-	Comment        sql.NullString  `db:"comment"`
+	ProductId           sql.NullInt32       `db:"product_id"`
+	SizeId              sql.NullInt32       `db:"size_id"`
+	QuantityDelta       decimal.Decimal     `db:"quantity_delta"`
+	QuantityBefore      decimal.Decimal     `db:"quantity_before"`
+	QuantityAfter       decimal.Decimal     `db:"quantity_after"`
+	Source              string              `db:"source"`
+	OrderId             sql.NullInt32       `db:"order_id"`
+	OrderUUID           sql.NullString      `db:"order_uuid"`
+	AdminUsername       sql.NullString      `db:"admin_username"`
+	ReferenceId         sql.NullString      `db:"reference_id"`
+	Reason              sql.NullString      `db:"reason"`
+	Comment             sql.NullString      `db:"comment"`
+	PriceBeforeDiscount decimal.NullDecimal `db:"price_before_discount"`
+	DiscountAmount      decimal.NullDecimal `db:"discount_amount"`
+	PaidCurrency        sql.NullString      `db:"paid_currency"`
+	PaidAmount          decimal.NullDecimal `db:"paid_amount"`
+	PayoutBaseAmount    decimal.NullDecimal `db:"payout_base_amount"`
+	PayoutBaseCurrency  sql.NullString      `db:"payout_base_currency"`
 }
 
 // StockChange represents a row from product_stock_change_history.
 type StockChange struct {
-	Id             int             `db:"id"`
-	ProductId      int             `db:"product_id"`
-	SizeId         int             `db:"size_id"`
-	QuantityDelta  decimal.Decimal `db:"quantity_delta"`
-	QuantityBefore decimal.Decimal `db:"quantity_before"`
-	QuantityAfter  decimal.Decimal `db:"quantity_after"`
-	Source         string          `db:"source"`
-	OrderId        int             `db:"order_id"`
-	OrderUUID      string          `db:"order_uuid"`
-	AdminUsername  string          `db:"admin_username"`
-	ReferenceId    string          `db:"reference_id"`
-	Reason         string          `db:"reason"`
-	Comment        string          `db:"comment"`
-	CreatedAt      time.Time       `db:"created_at"`
+	Id                  int             `db:"id"`
+	ProductId           int             `db:"product_id"`
+	SizeId              int             `db:"size_id"`
+	QuantityDelta       decimal.Decimal `db:"quantity_delta"`
+	QuantityBefore      decimal.Decimal `db:"quantity_before"`
+	QuantityAfter       decimal.Decimal `db:"quantity_after"`
+	Source              string          `db:"source"`
+	OrderId             int             `db:"order_id"`
+	OrderUUID           string          `db:"order_uuid"`
+	AdminUsername       string          `db:"admin_username"`
+	ReferenceId         string          `db:"reference_id"`
+	Reason              string          `db:"reason"`
+	Comment             string          `db:"comment"`
+	PriceBeforeDiscount string          `db:"price_before_discount"`
+	DiscountAmount      string          `db:"discount_amount"`
+	PaidCurrency        string          `db:"paid_currency"`
+	PaidAmount          string          `db:"paid_amount"`
+	PayoutBaseAmount    string          `db:"payout_base_amount"`
+	PayoutBaseCurrency  string          `db:"payout_base_currency"`
+	CreatedAt           time.Time       `db:"created_at"`
 }
 
 // StockHistoryParams is passed when recording stock changes from order-related flows.
 type StockHistoryParams struct {
-	Source    StockChangeSource
-	OrderId   int
-	OrderUUID string
+	Source           StockChangeSource
+	OrderId          int
+	OrderUUID        string
+	OrderCurrency    string
+	PayoutBaseAmount decimal.Decimal // total payout in base currency (EUR)
 }
 
 // StockChangeRow represents a simplified stock change for API responses.
 type StockChangeRow struct {
-	Date          time.Time       `db:"created_at"`
-	SKU           string          `db:"sku"`
-	SizeName      string          `db:"size_name"`
-	AmountChanged decimal.Decimal `db:"quantity_delta"`
-	Source        string          `db:"source"`
-	ReferenceId   string          `db:"reference_id"`
-	OrderUUID     string          `db:"order_uuid"`
-	AdminUsername string          `db:"admin_username"`
-	Reason        string          `db:"reason"`
-	Comment       string          `db:"comment"`
+	Date                time.Time       `db:"created_at"`
+	SKU                 string          `db:"sku"`
+	SizeName            string          `db:"size_name"`
+	AmountChanged       decimal.Decimal `db:"quantity_delta"`
+	RemainingStock      decimal.Decimal `db:"quantity_after"`
+	Source              string          `db:"source"`
+	ReferenceId         string          `db:"reference_id"`
+	OrderUUID           string          `db:"order_uuid"`
+	AdminUsername       string          `db:"admin_username"`
+	Reason              string          `db:"reason"`
+	Comment             string          `db:"comment"`
+	PriceBeforeDiscount string          `db:"price_before_discount"`
+	DiscountAmount      string          `db:"discount_amount"`
+	PaidCurrency        string          `db:"paid_currency"`
+	PaidAmount          string          `db:"paid_amount"`
+	PayoutBaseAmount    string          `db:"payout_base_amount"`
+	PayoutBaseCurrency  string          `db:"payout_base_currency"`
 }

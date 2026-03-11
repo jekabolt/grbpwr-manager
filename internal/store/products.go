@@ -207,7 +207,7 @@ func insertTags(ctx context.Context, rep dependency.Repository, tagsInsert []ent
 	return tags, BulkInsert(ctx, rep.DB(), "product_tag", rows)
 }
 
-func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.Repository, productID int, sizeMeasurements []entity.SizeWithMeasurementInsert, source entity.StockChangeSource) error {
+func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.Repository, productID int, sizeMeasurements []entity.SizeWithMeasurementInsert, source entity.StockChangeSource, reason entity.StockChangeReason) error {
 	if len(sizeMeasurements) == 0 {
 		return nil
 	}
@@ -216,12 +216,13 @@ func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.R
 	for _, sm := range sizeMeasurements {
 		qty := sm.ProductSize.QuantityDecimal()
 		e := entity.StockChangeInsert{
-			ProductId:      productID,
-			SizeId:         sm.ProductSize.SizeId,
+			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
+			SizeId:         sql.NullInt32{Int32: int32(sm.ProductSize.SizeId), Valid: true},
 			QuantityDelta:  qty,
 			QuantityBefore: decimal.Zero,
 			QuantityAfter:  qty,
 			Source:         string(source),
+			Reason:         sql.NullString{String: string(reason), Valid: true},
 		}
 		if adminUsername != "" {
 			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}
@@ -262,7 +263,7 @@ func (ms *MYSQLStore) AddProduct(ctx context.Context, prd *entity.ProductNew) (i
 		}
 
 		// Record stock change history for initial sizes
-		if err := recordStockChangeFromSizeMeasurements(ctx, rep, prdId, prd.SizeMeasurements, entity.StockChangeSourceAdminAddProduct); err != nil {
+		if err := recordStockChangeFromSizeMeasurements(ctx, rep, prdId, prd.SizeMeasurements, entity.StockChangeSourceAdminNewProduct, entity.StockChangeReasonInitialStock); err != nil {
 			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
@@ -323,8 +324,8 @@ func (ms *MYSQLStore) UpdateProduct(ctx context.Context, prd *entity.ProductNew,
 			return fmt.Errorf("can't update product measurements: %w", err)
 		}
 
-		// Record stock change history for updated sizes
-		if err := recordStockChangeFromSizeMeasurements(ctx, rep, id, prd.SizeMeasurements, entity.StockChangeSourceAdminUpdateProduct); err != nil {
+		// Record stock change history for updated sizes (manual adjustment via product update)
+		if err := recordStockChangeFromSizeMeasurements(ctx, rep, id, prd.SizeMeasurements, entity.StockChangeSourceManualAdjustment, entity.StockChangeReasonCorrection); err != nil {
 			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
@@ -1500,16 +1501,40 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 		quantityAfter := quantityBefore.Sub(item.QuantityDecimal())
 
 		if history != nil {
-			historyEntries = append(historyEntries, entity.StockChangeInsert{
-				ProductId:      item.ProductId,
-				SizeId:         item.SizeId,
+			entry := entity.StockChangeInsert{
+				ProductId:      sql.NullInt32{Int32: int32(item.ProductId), Valid: true},
+				SizeId:         sql.NullInt32{Int32: int32(item.SizeId), Valid: true},
 				QuantityDelta:  item.QuantityDecimal().Neg(),
 				QuantityBefore: quantityBefore,
 				QuantityAfter:  quantityAfter,
 				Source:         string(history.Source),
 				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
 				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
-			})
+			}
+			// Populate financial fields from order item data
+			if history.OrderCurrency != "" {
+				itemPrice := item.ProductPriceDecimal()
+				itemPriceWithSale := item.ProductPriceWithSaleDecimal()
+				discountAmt := itemPrice.Sub(itemPriceWithSale).Mul(item.QuantityDecimal())
+				paidAmt := itemPriceWithSale.Mul(item.QuantityDecimal())
+
+				entry.PriceBeforeDiscount = decimal.NullDecimal{Decimal: itemPrice.Mul(item.QuantityDecimal()), Valid: true}
+				entry.DiscountAmount = decimal.NullDecimal{Decimal: discountAmt, Valid: true}
+				entry.PaidCurrency = sql.NullString{String: history.OrderCurrency, Valid: true}
+				entry.PaidAmount = decimal.NullDecimal{Decimal: paidAmt, Valid: true}
+				if history.PayoutBaseAmount.IsPositive() {
+					entry.PayoutBaseAmount = decimal.NullDecimal{Decimal: history.PayoutBaseAmount, Valid: true}
+					entry.PayoutBaseCurrency = sql.NullString{String: "EUR", Valid: true}
+				}
+			}
+			// Auto-set reason based on source
+			switch entity.StockChangeSource(history.Source) {
+			case entity.StockChangeSourceOrderReserved:
+				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonOrder), Valid: true}
+			case entity.StockChangeSourceOrderCustomReserved:
+				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonCustomOrder), Valid: true}
+			}
+			historyEntries = append(historyEntries, entry)
 		}
 	}
 	if len(historyEntries) > 0 {
@@ -1538,20 +1563,45 @@ func (ms *MYSQLStore) RestoreStockForProductSizes(ctx context.Context, items []e
 		}
 
 		if history != nil {
-			historyEntries = append(historyEntries, entity.StockChangeInsert{
-				ProductId:      item.ProductId,
-				SizeId:         item.SizeId,
+			entry := entity.StockChangeInsert{
+				ProductId:      sql.NullInt32{Int32: int32(item.ProductId), Valid: true},
+				SizeId:         sql.NullInt32{Int32: int32(item.SizeId), Valid: true},
 				QuantityDelta:  item.QuantityDecimal(),
 				QuantityBefore: quantityBefore,
 				QuantityAfter:  quantityAfter,
 				Source:         string(history.Source),
 				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
 				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
-			})
+			}
+			// Auto-set reason based on source
+			switch entity.StockChangeSource(history.Source) {
+			case entity.StockChangeSourceOrderReturned:
+				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonReturnToStock), Valid: true}
+			case entity.StockChangeSourceOrderCancelled:
+				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonOrderCancelled), Valid: true}
+			}
+			historyEntries = append(historyEntries, entry)
 		}
 	}
 	if len(historyEntries) > 0 {
 		return ms.RecordStockChange(ctx, historyEntries)
+	}
+	return nil
+}
+
+// RestoreStockSilently restores stock without recording history.
+// Used for expired orders that never reached payment confirmation.
+func (ms *MYSQLStore) RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error {
+	for _, item := range items {
+		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
+		err := ExecNamed(ctx, ms.db, updateQuery, map[string]any{
+			"quantity":  item.QuantityDecimal(),
+			"productId": item.ProductId,
+			"sizeId":    item.SizeId,
+		})
+		if err != nil {
+			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
+		}
 	}
 	return nil
 }
@@ -1587,12 +1637,21 @@ func (ms *MYSQLStore) RecordStockChange(ctx context.Context, entries []entity.St
 	rows := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		row := map[string]any{
-			"product_id":      e.ProductId,
-			"size_id":         e.SizeId,
 			"quantity_delta":  e.QuantityDelta,
 			"quantity_before": e.QuantityBefore,
 			"quantity_after":  e.QuantityAfter,
 			"source":          e.Source,
+		}
+		// product_id and size_id are nullable for SHIPPING entries
+		if e.ProductId.Valid {
+			row["product_id"] = e.ProductId.Int32
+		} else {
+			row["product_id"] = nil
+		}
+		if e.SizeId.Valid {
+			row["size_id"] = e.SizeId.Int32
+		} else {
+			row["size_id"] = nil
 		}
 		if e.OrderId.Valid {
 			row["order_id"] = e.OrderId.Int32
@@ -1609,9 +1668,84 @@ func (ms *MYSQLStore) RecordStockChange(ctx context.Context, entries []entity.St
 		} else {
 			row["admin_username"] = nil
 		}
+		if e.ReferenceId.Valid {
+			row["reference_id"] = e.ReferenceId.String
+		} else {
+			row["reference_id"] = nil
+		}
+		if e.Reason.Valid {
+			row["reason"] = e.Reason.String
+		} else {
+			row["reason"] = nil
+		}
+		if e.Comment.Valid {
+			row["comment"] = e.Comment.String
+		} else {
+			row["comment"] = nil
+		}
+		// Financial columns
+		if e.PriceBeforeDiscount.Valid {
+			row["price_before_discount"] = e.PriceBeforeDiscount.Decimal
+		} else {
+			row["price_before_discount"] = nil
+		}
+		if e.DiscountAmount.Valid {
+			row["discount_amount"] = e.DiscountAmount.Decimal
+		} else {
+			row["discount_amount"] = nil
+		}
+		if e.PaidCurrency.Valid {
+			row["paid_currency"] = e.PaidCurrency.String
+		} else {
+			row["paid_currency"] = nil
+		}
+		if e.PaidAmount.Valid {
+			row["paid_amount"] = e.PaidAmount.Decimal
+		} else {
+			row["paid_amount"] = nil
+		}
+		if e.PayoutBaseAmount.Valid {
+			row["payout_base_amount"] = e.PayoutBaseAmount.Decimal
+		} else {
+			row["payout_base_amount"] = nil
+		}
+		if e.PayoutBaseCurrency.Valid {
+			row["payout_base_currency"] = e.PayoutBaseCurrency.String
+		} else {
+			row["payout_base_currency"] = nil
+		}
 		rows = append(rows, row)
 	}
 	return BulkInsert(ctx, ms.db, "product_stock_change_history", rows)
+}
+
+// RecordShippingStockChange creates a SHIPPING entry in stock change history for order shipping costs.
+// SHIPPING entries have NULL product_id and size_id, with financial fields populated.
+func (ms *MYSQLStore) RecordShippingStockChange(ctx context.Context, history *entity.StockHistoryParams, shippingCost decimal.Decimal) error {
+	if history == nil {
+		return nil
+	}
+	entry := entity.StockChangeInsert{
+		// product_id and size_id are NULL for SHIPPING entries
+		QuantityDelta:  decimal.Zero,
+		QuantityBefore: decimal.Zero,
+		QuantityAfter:  decimal.Zero,
+		Source:         string(history.Source),
+		OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
+		OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
+		Reason:         sql.NullString{String: string(entity.StockChangeReasonOrder), Valid: true},
+	}
+	if history.OrderCurrency != "" {
+		entry.PriceBeforeDiscount = decimal.NullDecimal{Decimal: shippingCost, Valid: true}
+		entry.DiscountAmount = decimal.NullDecimal{Decimal: decimal.Zero, Valid: true}
+		entry.PaidCurrency = sql.NullString{String: history.OrderCurrency, Valid: true}
+		entry.PaidAmount = decimal.NullDecimal{Decimal: shippingCost, Valid: true}
+		if history.PayoutBaseAmount.IsPositive() {
+			entry.PayoutBaseAmount = decimal.NullDecimal{Decimal: history.PayoutBaseAmount, Valid: true}
+			entry.PayoutBaseCurrency = sql.NullString{String: "EUR", Valid: true}
+		}
+	}
+	return ms.RecordStockChange(ctx, []entity.StockChangeInsert{entry})
 }
 
 func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error) {
@@ -1649,12 +1783,19 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 		return nil, 0, fmt.Errorf("can't count stock change history: %w", err)
 	}
 
-	dataQuery := `SELECT id, product_id, size_id, quantity_delta, quantity_before, quantity_after, source,
+	dataQuery := `SELECT id, COALESCE(product_id, 0) AS product_id, COALESCE(size_id, 0) AS size_id,
+		quantity_delta, quantity_before, quantity_after, source,
 		COALESCE(order_id, 0) AS order_id, COALESCE(order_uuid, '') AS order_uuid,
-		COALESCE(admin_username, '') AS admin_username, 
+		COALESCE(admin_username, '') AS admin_username,
 		COALESCE(reference_id, '') AS reference_id,
 		COALESCE(reason, '') AS reason,
 		COALESCE(comment, '') AS comment,
+		COALESCE(price_before_discount, '') AS price_before_discount,
+		COALESCE(discount_amount, '') AS discount_amount,
+		COALESCE(paid_currency, '') AS paid_currency,
+		COALESCE(paid_amount, '') AS paid_amount,
+		COALESCE(payout_base_amount, '') AS payout_base_amount,
+		COALESCE(payout_base_currency, '') AS payout_base_currency,
 		created_at ` + baseQuery + ` ` + orderBy
 	if limit > 0 {
 		dataQuery += ` LIMIT :limit OFFSET :offset`
@@ -1670,12 +1811,13 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 }
 
 // GetStockChanges returns simplified stock changes for reporting API.
-func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int) ([]entity.StockChangeRow, int, error) {
+// Uses LEFT JOIN to include SHIPPING entries (which have NULL product_id/size_id).
+func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
 	baseQuery := `
 		FROM product_stock_change_history psch
-		JOIN product p ON p.id = psch.product_id
-		JOIN size s ON s.id = psch.size_id
-		WHERE psch.created_at >= :dateFrom 
+		LEFT JOIN product p ON p.id = psch.product_id
+		LEFT JOIN size s ON s.id = psch.size_id
+		WHERE psch.created_at >= :dateFrom
 		AND psch.created_at <= :dateTo
 	`
 
@@ -1687,7 +1829,7 @@ func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time
 	}
 
 	if sku != nil && *sku != "" {
-		baseQuery += ` AND p.sku = :sku`
+		baseQuery += ` AND (p.sku = :sku OR (psch.product_id IS NULL AND :sku = 'SHIPPING'))`
 		params["sku"] = *sku
 	}
 
@@ -1704,20 +1846,28 @@ func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time
 	}
 
 	// Data query - select raw data for transformation in DTO layer
+	// SHIPPING entries have NULL product_id/size_id, so use COALESCE for SKU
 	dataQuery := `
-		SELECT 
+		SELECT
 			psch.created_at,
-			p.sku,
-			s.name as size_name,
+			COALESCE(p.sku, 'SHIPPING') as sku,
+			COALESCE(s.name, '') as size_name,
 			psch.quantity_delta,
+			psch.quantity_after,
 			psch.source,
 			COALESCE(psch.reference_id, '') as reference_id,
 			COALESCE(psch.order_uuid, '') as order_uuid,
 			COALESCE(psch.admin_username, '') as admin_username,
 			COALESCE(psch.reason, '') as reason,
-			COALESCE(psch.comment, '') as comment
-	` + baseQuery + ` 
-		ORDER BY psch.created_at DESC
+			COALESCE(psch.comment, '') as comment,
+			COALESCE(psch.price_before_discount, '') as price_before_discount,
+			COALESCE(psch.discount_amount, '') as discount_amount,
+			COALESCE(psch.paid_currency, '') as paid_currency,
+			COALESCE(psch.paid_amount, '') as paid_amount,
+			COALESCE(psch.payout_base_amount, '') as payout_base_amount,
+			COALESCE(psch.payout_base_currency, '') as payout_base_currency
+	` + baseQuery + `
+		ORDER BY psch.created_at ` + orderFactor.String() + `
 	`
 
 	// Add pagination only if limit is positive (limit < 0 means return all)
@@ -1762,24 +1912,24 @@ func (ms *MYSQLStore) UpdateProductSizeStock(ctx context.Context, productId int,
 	return nil
 }
 
-func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int, reason string, comment string) error {
+func (ms *MYSQLStore) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, newQuantity int, reason string, comment string) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		prevQty, _, err := rep.Products().GetProductSizeStock(ctx, productId, sizeId)
 		if err != nil {
 			return err
 		}
-		if err := rep.Products().UpdateProductSizeStock(ctx, productId, sizeId, quantity); err != nil {
+		if err := rep.Products().UpdateProductSizeStock(ctx, productId, sizeId, newQuantity); err != nil {
 			return err
 		}
-		newQty := decimal.NewFromInt(int64(quantity))
+		newQty := decimal.NewFromInt(int64(newQuantity))
 		delta := newQty.Sub(prevQty)
 		e := entity.StockChangeInsert{
-			ProductId:      productId,
-			SizeId:         sizeId,
+			ProductId:      sql.NullInt32{Int32: int32(productId), Valid: true},
+			SizeId:         sql.NullInt32{Int32: int32(sizeId), Valid: true},
 			QuantityDelta:  delta,
 			QuantityBefore: prevQty,
 			QuantityAfter:  newQty,
-			Source:         string(entity.StockChangeSourceAdminUpdateSizeStock),
+			Source:         string(entity.StockChangeSourceManualAdjustment),
 		}
 		if adminUsername := auth.GetAdminUsername(ctx); adminUsername != "" {
 			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}

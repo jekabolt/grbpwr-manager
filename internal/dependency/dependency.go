@@ -47,6 +47,8 @@ type (
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
+		// RestoreStockSilently restores stock without recording history (for expired orders).
+		RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
@@ -68,7 +70,7 @@ type (
 		// GetStockChangeHistory returns paginated stock change history with optional filters.
 		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
 		// GetStockChanges returns simplified stock changes for reporting API.
-		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int) ([]entity.StockChangeRow, int, error)
+		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error

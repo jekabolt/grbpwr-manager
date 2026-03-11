@@ -292,7 +292,20 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
 	productId := int(req.ProductId)
 	sizeId := int(req.SizeId)
-	newQuantity := int(req.Quantity)
+	quantity := int(req.Quantity)
+
+	// Validate required fields
+	if productId == 0 {
+		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	}
+	if sizeId == 0 {
+		return nil, status.Error(codes.InvalidArgument, "size_id is required")
+	}
+
+	// Validate mode
+	if req.Mode == pb_common.StockAdjustmentMode_STOCK_ADJUSTMENT_MODE_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "mode is required (set or adjust)")
+	}
 
 	// Validate reason is provided
 	if req.Reason == pb_common.StockChangeReason_STOCK_CHANGE_REASON_UNSPECIFIED {
@@ -311,7 +324,105 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		comment = *req.Comment
 	}
 
-	// Get previous quantity to detect stock transition
+	isSetMode := req.Mode == pb_common.StockAdjustmentMode_STOCK_ADJUSTMENT_MODE_SET
+	isAdjustMode := req.Mode == pb_common.StockAdjustmentMode_STOCK_ADJUSTMENT_MODE_ADJUST
+
+	// validation matrix
+
+	switch req.Reason {
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_STOCK_COUNT:
+		// stock_count: allowed only with mode="set", direction not allowed
+		if !isSetMode {
+			return nil, status.Error(codes.InvalidArgument, "stock_count reason is only allowed with mode=set")
+		}
+		if req.Direction != pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED {
+			return nil, status.Error(codes.InvalidArgument, "direction must not be specified for stock_count reason")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGE:
+		// damage: allowed only with mode="adjust", direction must be "decrease"
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "damage reason is only allowed with mode=adjust")
+		}
+		if req.Direction != pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_DECREASE {
+			return nil, status.Error(codes.InvalidArgument, "damage reason requires direction=decrease")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOSS:
+		// loss: allowed only with mode="adjust", direction must be "decrease"
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "loss reason is only allowed with mode=adjust")
+		}
+		if req.Direction != pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_DECREASE {
+			return nil, status.Error(codes.InvalidArgument, "loss reason requires direction=decrease")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:
+		// found: allowed only with mode="adjust", direction must be "increase"
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "found reason is only allowed with mode=adjust")
+		}
+		if req.Direction != pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE {
+			return nil, status.Error(codes.InvalidArgument, "found reason requires direction=increase")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_CORRECTION:
+		// correction: allowed only with mode="adjust", direction can be increase or decrease
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "correction reason is only allowed with mode=adjust")
+		}
+		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED {
+			return nil, status.Error(codes.InvalidArgument, "direction is required for correction reason")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESERVED_RELEASE:
+		// reserved_release: allowed only with mode="adjust", direction must be "increase"
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "reserved_release reason is only allowed with mode=adjust")
+		}
+		if req.Direction != pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE {
+			return nil, status.Error(codes.InvalidArgument, "reserved_release reason requires direction=increase")
+		}
+
+	case pb_common.StockChangeReason_STOCK_CHANGE_REASON_OTHER:
+		// other: allowed only with mode="adjust", direction can be increase or decrease, comment required
+		if !isAdjustMode {
+			return nil, status.Error(codes.InvalidArgument, "other reason is only allowed with mode=adjust")
+		}
+		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED {
+			return nil, status.Error(codes.InvalidArgument, "direction is required for other reason")
+		}
+		if comment == "" {
+			return nil, status.Error(codes.InvalidArgument, "comment is required when reason is other")
+		}
+
+	default:
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("unsupported reason for manual stock adjustment: %s", reason))
+	}
+
+	// quantity validation
+
+	if isSetMode {
+		// mode="set": quantity means final stock value, must be >= 0
+		if quantity < 0 {
+			return nil, status.Error(codes.InvalidArgument, "quantity must be >= 0 for mode=set")
+		}
+	}
+
+	if isAdjustMode {
+		// mode="adjust": quantity means delta amount, must be > 0
+		if quantity <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "quantity must be > 0 for mode=adjust")
+		}
+		// direction is required for adjust mode (already validated per-reason above)
+		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED {
+			return nil, status.Error(codes.InvalidArgument, "direction is required for mode=adjust")
+		}
+	}
+
+	// compute new quantity
+
+	// Get previous quantity to detect stock transition and compute final value
 	previousQuantity, _, err := s.repo.Products().GetProductSizeStock(ctx, productId, sizeId)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get previous product size quantity",
@@ -319,6 +430,23 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		)
 		// Continue anyway, we'll just skip waitlist notifications
 		previousQuantity = decimal.Zero
+	}
+
+	var newQuantity int
+	if isSetMode {
+		// mode="set": quantity IS the final stock value
+		newQuantity = quantity
+	} else {
+		// mode="adjust": compute final value from direction + quantity
+		prevQtyInt := int(previousQuantity.IntPart())
+		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE {
+			newQuantity = prevQtyInt + quantity
+		} else {
+			newQuantity = prevQtyInt - quantity
+			if newQuantity < 0 {
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("adjustment would result in negative stock (%d - %d = %d)", prevQtyInt, quantity, newQuantity))
+			}
+		}
 	}
 
 	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity, reason, comment)
@@ -440,8 +568,14 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 		source = req.Source
 	}
 
+	// Order factor (default DESC = newest first)
+	orderFactor := entity.Descending
+	if req.OrderFactor != nil {
+		orderFactor = dto.ConvertPBCommonOrderFactorToEntity(*req.OrderFactor)
+	}
+
 	// Get data from repository
-	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, sku, source, limit, offset)
+	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, sku, source, limit, offset, orderFactor)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get stock changes",
 			slog.String("err", err.Error()),

@@ -85,7 +85,7 @@ service AdminService {
   // Updates the stock for a specific product size.
   rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/size/{size_id}/updatestock"
+      post: "/api/admin/stock/update"
       body: "*"
     };
   }
@@ -381,11 +381,13 @@ message DeleteProductByIDRequest {
 message DeleteProductByIDResponse {}
 
 message UpdateProductSizeStockRequest {
-  int32 product_id = 1;
-  int32 size_id = 2;
-  int32 quantity = 3;
-  common.StockChangeReason reason = 4; // Required: reason for stock adjustment
-  optional string comment = 5; // Optional: additional context
+  common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta
+  int32 product_id = 2; // Required: product ID
+  int32 size_id = 3; // Required: size ID
+  int32 quantity = 4; // Required: final value for "set", delta amount for "adjust" (always unsigned)
+  common.StockAdjustmentDirection direction = 5; // Required for "adjust" mode, ignored for "set"
+  common.StockChangeReason reason = 6; // Required: reason for stock adjustment
+  optional string comment = 7; // Optional, but required for reason=OTHER
 }
 
 message UpdateProductSizeStockResponse {}
@@ -413,6 +415,7 @@ message ListStockChangesRequest {
   optional string source = 4; // Optional: filter by source type
   int32 limit = 5; // Pagination limit: 0=default(100), -1=all, >0=specified (max 10000)
   int32 offset = 6; // Pagination offset (ignored when limit=-1)
+  optional common.OrderFactor order_factor = 7; // Optional: default DESC (newest first)
 }
 
 message StockChangeRow {
@@ -423,6 +426,12 @@ message StockChangeRow {
   string reference = 5;
   optional common.StockChangeReason reason = 6;
   optional string comment = 7;
+  optional string price_before_discount = 8;
+  optional string discount_amount = 9;
+  optional string paid_currency = 10;
+  optional string paid_amount = 11;
+  optional string payout_base_amount = 12;
+  optional string payout_base_currency = 13;
 }
 
 message ListStockChangesResponse {
