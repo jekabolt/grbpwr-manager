@@ -34,4 +34,5 @@ message FilterConditions {
   bool preorder = 11;
   string by_tag = 12;
   repeated string collections = 13;
+  repeated common.SeasonEnum seasons = 14;
 }

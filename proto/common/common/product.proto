@@ -39,6 +39,14 @@ enum GenderEnum {
   GENDER_ENUM_UNISEX = 3;
 }
 
+enum SeasonEnum {
+  SEASON_ENUM_UNKNOWN = 0;
+  SEASON_ENUM_SS = 1; // Spring/Summer
+  SEASON_ENUM_FW = 2; // Fall/Winter
+  SEASON_ENUM_PF = 3; // Pre-Fall
+  SEASON_ENUM_RC = 4; // Resort/Cruise
+}
+
 message ProductNew {
   ProductInsert product = 1;
   repeated SizeWithMeasurementInsert size_measurements = 2;
@@ -87,6 +95,7 @@ message ProductBodyInsert {
   string composition = 13;
   bool hidden = 14;
   GenderEnum target_gender = 15;
+  SeasonEnum season = 19;
   string version = 16;
   string collection = 17;
   string fit = 18;

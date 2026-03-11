@@ -31,9 +31,9 @@ func (ms *MYSQLStore) Products() dependency.Products {
 
 func insertProduct(ctx context.Context, rep dependency.Repository, product *entity.ProductInsert, id int, sku string) (int, error) {
 	query := `
-	INSERT INTO product 
-	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, version, collection, fit)
-	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :version, :collection, :fit)`
+	INSERT INTO product
+	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit)
+	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit)`
 
 	params := map[string]any{
 		"id":                   id,
@@ -53,6 +53,7 @@ func insertProduct(ctx context.Context, rep dependency.Repository, product *enti
 		"modelWearsSizeId":     product.ProductBodyInsert.ModelWearsSizeId,
 		"hidden":               product.ProductBodyInsert.Hidden,
 		"targetGender":         product.ProductBodyInsert.TargetGender,
+		"season":               product.ProductBodyInsert.Season,
 		"careInstructions":     product.ProductBodyInsert.CareInstructions,
 		"composition":          product.ProductBodyInsert.Composition,
 		"version":              product.ProductBodyInsert.Version,
@@ -379,6 +380,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		model_wears_size_id = :modelWearsSizeId, 
 		hidden = :hidden,
 		target_gender = :targetGender,
+		season = :season,
 		care_instructions = :careInstructions,
 		composition = :composition,
 		version = :version,
@@ -402,6 +404,7 @@ func updateProduct(ctx context.Context, rep dependency.Repository, prd *entity.P
 		"modelWearsSizeId":     prd.ProductBodyInsert.ModelWearsSizeId,
 		"hidden":               prd.ProductBodyInsert.Hidden,
 		"targetGender":         prd.ProductBodyInsert.TargetGender,
+		"season":               prd.ProductBodyInsert.Season,
 		"careInstructions":     prd.ProductBodyInsert.CareInstructions,
 		"composition":          prd.ProductBodyInsert.Composition,
 		"version":              prd.ProductBodyInsert.Version,
@@ -649,6 +652,14 @@ func (ms *MYSQLStore) GetProductsPaged(ctx context.Context, limit int, offset in
 		if len(filterConditions.Collections) != 0 {
 			whereClauses = append(whereClauses, "p.collection IN (:collections)")
 			args["collections"] = filterConditions.Collections
+		}
+		if len(filterConditions.Seasons) != 0 {
+			seasons := make([]string, len(filterConditions.Seasons))
+			for i, s := range filterConditions.Seasons {
+				seasons[i] = string(s)
+			}
+			whereClauses = append(whereClauses, "p.season IN (:seasons)")
+			args["seasons"] = seasons
 		}
 	}
 
@@ -935,6 +946,7 @@ type productQueryResult struct {
 	Version            string              `db:"version"`
 	Hidden             sql.NullBool        `db:"hidden"`
 	TargetGender       entity.GenderEnum   `db:"target_gender"`
+	Season             entity.SeasonEnum   `db:"season"`
 	Collection         string              `db:"collection"`
 	Fit                sql.NullString      `db:"fit"`
 
@@ -1024,6 +1036,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					Version:            pqr.Version,
 					Hidden:             pqr.Hidden,
 					TargetGender:       pqr.TargetGender,
+					Season:             pqr.Season,
 					Fit:                pqr.Fit,
 				},
 				Translations: translations,
@@ -1258,8 +1271,9 @@ func (ms *MYSQLStore) getProductDetails(ctx context.Context, filters map[string]
 		p.secondary_thumbnail_id,
 		p.version,
 		p.collection,
+		p.season,
 		p.fit,
-		m.created_at AS thumbnail_created_at, 
+		m.created_at AS thumbnail_created_at,
 		m.full_size,
 		m.full_size_width,
 		m.full_size_height,
@@ -1464,7 +1478,7 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 			WHERE product_id = :productId 
 			AND size_id = :sizeId 
 			AND quantity >= :quantity`
-		
+
 		result, err := ms.db.NamedExecContext(ctx, query, map[string]any{
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
@@ -1977,7 +1991,7 @@ func getProductsSizesByIdsWithLock(ctx context.Context, rep dependency.Repositor
 	}
 
 	productSizeQuery += strings.Join(productSizeConditions, " OR ")
-	
+
 	if forUpdate {
 		productSizeQuery += " FOR UPDATE"
 	}

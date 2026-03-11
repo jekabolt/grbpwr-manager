@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -11,12 +12,25 @@ import (
 )
 
 // GenerateSKU builds an immutable SKU.
-// Format: CAT-COL-GID  e.g. TSH-BLK-M34
+// Format: CAT-COL-GID-SSYY  e.g. OTH-BLA-U1771975603-SS26
+// The last segment combines a season code (SS, FW, PF, RC) with a two-digit year.
 func GenerateSKU(p *entity.ProductInsert, id int) string {
 	cat := categoryCode(p.ProductBodyInsert.SubCategoryId, p.ProductBodyInsert.TopCategoryId)
 	col := alphaPrefix(p.ProductBodyInsert.Color, 3, "UNK")
 	g := genderLetter(p.ProductBodyInsert.TargetGender)
-	return fmt.Sprintf("%s-%s-%s%d", cat, col, g, id)
+	seasonYear := seasonYearCode(p.ProductBodyInsert.Season, time.Now())
+	return fmt.Sprintf("%s-%s-%s%d-%s", cat, col, g, id, seasonYear)
+}
+
+// seasonYearCode returns the season-year segment, e.g. "SS26", "FW25".
+// It combines the season enum string with the last two digits of the year.
+func seasonYearCode(season entity.SeasonEnum, t time.Time) string {
+	code := string(season)
+	if code == "" {
+		code = "SS" // default to Spring/Summer
+	}
+	year := t.Year() % 100
+	return fmt.Sprintf("%s%02d", code, year)
 }
 
 func alphaPrefix(s string, n int, fallback string) string {

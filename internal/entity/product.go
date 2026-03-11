@@ -64,6 +64,42 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
+type SeasonEnum string
+
+const (
+	SeasonSS SeasonEnum = "SS" // Spring/Summer
+	SeasonFW SeasonEnum = "FW" // Fall/Winter
+	SeasonPF SeasonEnum = "PF" // Pre-Fall
+	SeasonRC SeasonEnum = "RC" // Resort/Cruise
+)
+
+func (se SeasonEnum) String() string {
+	switch se {
+	case SeasonSS:
+		return string(SeasonSS)
+	case SeasonFW:
+		return string(SeasonFW)
+	case SeasonPF:
+		return string(SeasonPF)
+	case SeasonRC:
+		return string(SeasonRC)
+	default:
+		return ""
+	}
+}
+
+func IsValidSeason(s SeasonEnum) bool {
+	_, ok := ValidSeasons[s]
+	return ok
+}
+
+var ValidSeasons = map[SeasonEnum]bool{
+	SeasonSS: true,
+	SeasonFW: true,
+	SeasonPF: true,
+	SeasonRC: true,
+}
+
 func (ge GenderEnum) String() string {
 	switch ge {
 	case Male:
@@ -105,6 +141,7 @@ type ProductBodyInsert struct {
 	Composition        sql.NullString      `db:"composition" valid:"-"`
 	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
+	Season             SeasonEnum          `db:"season" valid:"required"`
 	Version            string              `db:"version" valid:"-"`
 	Collection         string              `db:"collection" valid:"-"`
 	Fit                sql.NullString      `db:"fit" valid:"-"`
@@ -271,13 +308,13 @@ const (
 type StockChangeReason string
 
 const (
-	StockChangeReasonDamaged            StockChangeReason = "damaged"
-	StockChangeReasonLost               StockChangeReason = "lost"
-	StockChangeReasonFound              StockChangeReason = "found"
-	StockChangeReasonRestock            StockChangeReason = "restock"
+	StockChangeReasonDamaged             StockChangeReason = "damaged"
+	StockChangeReasonLost                StockChangeReason = "lost"
+	StockChangeReasonFound               StockChangeReason = "found"
+	StockChangeReasonRestock             StockChangeReason = "restock"
 	StockChangeReasonInventoryCorrection StockChangeReason = "inventory_correction"
-	StockChangeReasonReturnDefective    StockChangeReason = "return_defective"
-	StockChangeReasonTheft              StockChangeReason = "theft"
+	StockChangeReasonReturnDefective     StockChangeReason = "return_defective"
+	StockChangeReasonTheft               StockChangeReason = "theft"
 )
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.

@@ -61,4 +61,5 @@ type FilterConditions struct {
 	Preorder       bool
 	ByTag          string
 	Collections    []string
+	Seasons        []SeasonEnum
 }

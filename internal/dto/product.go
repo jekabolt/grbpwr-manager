@@ -26,6 +26,18 @@ var (
 		pb_common.GenderEnum_GENDER_ENUM_FEMALE: entity.Female,
 		pb_common.GenderEnum_GENDER_ENUM_UNISEX: entity.Unisex,
 	}
+	seasonEntityPbMap = map[entity.SeasonEnum]pb_common.SeasonEnum{
+		entity.SeasonSS: pb_common.SeasonEnum_SEASON_ENUM_SS,
+		entity.SeasonFW: pb_common.SeasonEnum_SEASON_ENUM_FW,
+		entity.SeasonPF: pb_common.SeasonEnum_SEASON_ENUM_PF,
+		entity.SeasonRC: pb_common.SeasonEnum_SEASON_ENUM_RC,
+	}
+	seasonPbEntityMap = map[pb_common.SeasonEnum]entity.SeasonEnum{
+		pb_common.SeasonEnum_SEASON_ENUM_SS: entity.SeasonSS,
+		pb_common.SeasonEnum_SEASON_ENUM_FW: entity.SeasonFW,
+		pb_common.SeasonEnum_SEASON_ENUM_PF: entity.SeasonPF,
+		pb_common.SeasonEnum_SEASON_ENUM_RC: entity.SeasonRC,
+	}
 	stockChangeSourceToProto = map[string]pb_common.StockChangeSource{
 		string(entity.StockChangeSourceAdminAddProduct):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT,
 		string(entity.StockChangeSourceAdminUpdateProduct):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT,
@@ -42,8 +54,8 @@ var (
 		string(entity.StockChangeSourceManualAdjustment):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
 	}
 	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT:      string(entity.StockChangeSourceAdminAddProduct),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT:   string(entity.StockChangeSourceAdminUpdateProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_ADD_PRODUCT:       string(entity.StockChangeSourceAdminAddProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_PRODUCT:    string(entity.StockChangeSourceAdminUpdateProduct),
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_UPDATE_SIZE_STOCK: string(entity.StockChangeSourceAdminUpdateSizeStock),
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PLACED:            string(entity.StockChangeSourceOrderPlaced),
 		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:         string(entity.StockChangeSourceOrderCancelled),
@@ -66,13 +78,13 @@ var (
 		string(entity.StockChangeReasonTheft):               pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT,
 	}
 	stockChangeReasonToEntity = map[pb_common.StockChangeReason]string{
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED:             string(entity.StockChangeReasonDamaged),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST:                string(entity.StockChangeReasonLost),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:               string(entity.StockChangeReasonFound),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK:             string(entity.StockChangeReasonRestock),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_DAMAGED:              string(entity.StockChangeReasonDamaged),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_LOST:                 string(entity.StockChangeReasonLost),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_FOUND:                string(entity.StockChangeReasonFound),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RESTOCK:              string(entity.StockChangeReasonRestock),
 		pb_common.StockChangeReason_STOCK_CHANGE_REASON_INVENTORY_CORRECTION: string(entity.StockChangeReasonInventoryCorrection),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE:    string(entity.StockChangeReasonReturnDefective),
-		pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT:               string(entity.StockChangeReasonTheft),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_RETURN_DEFECTIVE:     string(entity.StockChangeReasonReturnDefective),
+		pb_common.StockChangeReason_STOCK_CHANGE_REASON_THEFT:                string(entity.StockChangeReasonTheft),
 	}
 )
 
@@ -90,6 +102,22 @@ func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_c
 		return pb_common.GenderEnum(0), fmt.Errorf("bad entity target gender %v", g)
 	}
 	return g, nil
+}
+
+func ConvertPbSeasonEnumToEntitySeasonEnum(pbSeasonEnum pb_common.SeasonEnum) (entity.SeasonEnum, error) {
+	s, ok := seasonPbEntityMap[pbSeasonEnum]
+	if !ok {
+		return entity.SeasonEnum(""), fmt.Errorf("bad pb season %v", pbSeasonEnum)
+	}
+	return s, nil
+}
+
+func ConvertEntitySeasonToPbSeasonEnum(entitySeasonEnum entity.SeasonEnum) (pb_common.SeasonEnum, error) {
+	s, ok := seasonEntityPbMap[entitySeasonEnum]
+	if !ok {
+		return pb_common.SeasonEnum(0), fmt.Errorf("bad entity season %v", s)
+	}
+	return s, nil
 }
 
 func convertDecimal(value string) (decimal.Decimal, error) {
@@ -114,6 +142,11 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		return nil, err
 	}
 
+	season, err := ConvertPbSeasonEnumToEntitySeasonEnum(pbProductBodyInsert.Season)
+	if err != nil {
+		return nil, err
+	}
+
 	pb := &entity.ProductBody{
 		ProductBodyInsert: entity.ProductBodyInsert{
 			Preorder:           sql.NullTime{Time: pbProductBodyInsert.Preorder.AsTime(), Valid: pbProductBodyInsert.Preorder.IsValid()},
@@ -129,6 +162,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsSizeId), Valid: pbProductBodyInsert.ModelWearsSizeId != 0},
 			Hidden:             sql.NullBool{Bool: pbProductBodyInsert.Hidden, Valid: true},
 			TargetGender:       targetGender,
+			Season:             season,
 			CareInstructions:   sql.NullString{String: pbProductBodyInsert.CareInstructions, Valid: pbProductBodyInsert.CareInstructions != ""},
 			Composition:        sql.NullString{String: pbProductBodyInsert.Composition, Valid: pbProductBodyInsert.Composition != ""},
 			Version:            pbProductBodyInsert.Version,
@@ -356,6 +390,11 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		return nil, err
 	}
 
+	sn, err := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
+	if err != nil {
+		return nil, err
+	}
+
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation
 	for _, trans := range productBody.Translations {
@@ -388,6 +427,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 				ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
 				Hidden:             productBodyInsert.Hidden.Bool,
 				TargetGender:       tg,
+				Season:             sn,
 				CareInstructions:   productBodyInsert.CareInstructions.String,
 				Composition:        productBodyInsert.Composition.String,
 				Version:            productBodyInsert.Version,
@@ -516,17 +556,17 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 		source = s
 	}
 	return &pb_common.StockChange{
-		Id:            int32(e.Id),
-		ProductId:     int32(e.ProductId),
-		SizeId:        int32(e.SizeId),
-		QuantityDelta: &pb_decimal.Decimal{Value: e.QuantityDelta.String()},
+		Id:             int32(e.Id),
+		ProductId:      int32(e.ProductId),
+		SizeId:         int32(e.SizeId),
+		QuantityDelta:  &pb_decimal.Decimal{Value: e.QuantityDelta.String()},
 		QuantityBefore: &pb_decimal.Decimal{Value: e.QuantityBefore.String()},
 		QuantityAfter:  &pb_decimal.Decimal{Value: e.QuantityAfter.String()},
-		Source:        source,
-		OrderId:       int32(e.OrderId),
-		OrderUuid:     e.OrderUUID,
-		CreatedAt:     timestamppb.New(e.CreatedAt),
-		AdminUsername: e.AdminUsername,
+		Source:         source,
+		OrderId:        int32(e.OrderId),
+		OrderUuid:      e.OrderUUID,
+		CreatedAt:      timestamppb.New(e.CreatedAt),
+		AdminUsername:  e.AdminUsername,
 	}
 }
 
@@ -667,6 +707,11 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		return nil, err
 	}
 
+	sn, err := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
+	if err != nil {
+		return nil, err
+	}
+
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation
 	for _, trans := range productBody.Translations {
@@ -714,6 +759,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 					ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
 					Hidden:             productBodyInsert.Hidden.Bool,
 					TargetGender:       tg,
+					Season:             sn,
 					CareInstructions:   productBodyInsert.CareInstructions.String,
 					Composition:        productBodyInsert.Composition.String,
 					Version:            productBodyInsert.Version,

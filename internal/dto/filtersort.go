@@ -28,6 +28,13 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		types[i] = int32(v)
 	}
 
+	seasons := make([]pb_common.SeasonEnum, 0, len(fc.Seasons))
+	for _, v := range fc.Seasons {
+		if pbSeason, ok := seasonEntityPbMap[v]; ok {
+			seasons = append(seasons, pbSeason)
+		}
+	}
+
 	return &pb_common.FilterConditions{
 		From:           fc.From.String(),
 		To:             fc.To.String(),
@@ -41,6 +48,7 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		Preorder:       fc.Preorder,
 		ByTag:          fc.ByTag,
 		Collections:    fc.Collections,
+		Seasons:        seasons,
 	}
 }
 
@@ -112,6 +120,13 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		genders[i] = genderPbEntityMap[v]
 	}
 
+	seasons := make([]entity.SeasonEnum, 0, len(fc.Seasons))
+	for _, v := range fc.Seasons {
+		if s, ok := seasonPbEntityMap[v]; ok {
+			seasons = append(seasons, s)
+		}
+	}
+
 	return &entity.FilterConditions{
 		From:           from,
 		To:             to,
@@ -126,5 +141,6 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		Preorder:       fc.Preorder,
 		ByTag:          fc.ByTag,
 		Collections:    fc.Collections,
+		Seasons:        seasons,
 	}
 }
