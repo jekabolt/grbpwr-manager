@@ -115,9 +115,11 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		to = decimal.Zero
 	}
 
-	genders := make([]entity.GenderEnum, len(fc.Gender))
-	for i, v := range fc.Gender {
-		genders[i] = genderPbEntityMap[v]
+	genders := make([]entity.GenderEnum, 0, len(fc.Gender))
+	for _, v := range fc.Gender {
+		if g, ok := genderPbEntityMap[v]; ok {
+			genders = append(genders, g)
+		}
 	}
 
 	seasons := make([]entity.SeasonEnum, 0, len(fc.Seasons))

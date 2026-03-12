@@ -95,7 +95,8 @@ func ConvertPbGenderEnumToEntityGenderEnum(pbGenderEnum pb_common.GenderEnum) (e
 func ConvertEntityGenderToPbGenderEnum(entityGenderEnum entity.GenderEnum) (pb_common.GenderEnum, error) {
 	g, ok := genderEntityPbMap[entityGenderEnum]
 	if !ok {
-		return pb_common.GenderEnum(0), fmt.Errorf("bad entity target gender %q (product may have NULL/invalid target_gender in DB)", entityGenderEnum)
+		// DB may have proto enum string (GENDER_ENUM_UNKNOWN), empty, or invalid - default to UNKNOWN
+		return pb_common.GenderEnum_GENDER_ENUM_UNKNOWN, nil
 	}
 	return g, nil
 }
@@ -111,7 +112,8 @@ func ConvertPbSeasonEnumToEntitySeasonEnum(pbSeasonEnum pb_common.SeasonEnum) (e
 func ConvertEntitySeasonToPbSeasonEnum(entitySeasonEnum entity.SeasonEnum) (pb_common.SeasonEnum, error) {
 	s, ok := seasonEntityPbMap[entitySeasonEnum]
 	if !ok {
-		return pb_common.SeasonEnum(0), fmt.Errorf("bad entity season %q (product may have NULL/invalid season in DB)", entitySeasonEnum)
+		// DB may have proto enum string (SEASON_ENUM_UNKNOWN), empty, or invalid - default to UNKNOWN
+		return pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN, nil
 	}
 	return s, nil
 }
@@ -381,15 +383,8 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	productBody := &e.Product.ProductDisplay.ProductBody
 	productBodyInsert := &productBody.ProductBodyInsert
 
-	tg, err := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
-	if err != nil {
-		return nil, err
-	}
-
-	sn, err := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
-	if err != nil {
-		return nil, err
-	}
+	tg, _ := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
+	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
 
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation
@@ -718,15 +713,8 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 	productBody := &e.ProductDisplay.ProductBody
 	productBodyInsert := &productBody.ProductBodyInsert
 
-	tg, err := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
-	if err != nil {
-		return nil, err
-	}
-
-	sn, err := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
-	if err != nil {
-		return nil, err
-	}
+	tg, _ := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
+	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
 
 	// Convert translations to protobuf format
 	var pbTranslations []*pb_common.ProductInsertTranslation

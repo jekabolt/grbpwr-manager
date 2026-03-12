@@ -277,9 +277,10 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
+				slog.Int("product_id", prd.Id),
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
+			return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product: product_id=%d: %v", prd.Id, err)
 		}
 		prdsPb = append(prdsPb, pbPrd)
 	}
