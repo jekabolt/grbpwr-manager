@@ -53,8 +53,8 @@ func (s *supportStore) GetSupportTicketsPaged(ctx context.Context, limit, offset
 		args["email"] = "%" + filters.Email + "%"
 	}
 	if filters.OrderReference != "" {
-		whereConditions = append(whereConditions, "order_reference LIKE :order_reference")
-		args["order_reference"] = "%" + filters.OrderReference + "%"
+		whereConditions = append(whereConditions, "order_reference LIKE :oref")
+		args["oref"] = "%" + filters.OrderReference + "%"
 	}
 	if filters.Topic != "" {
 		whereConditions = append(whereConditions, "topic LIKE :topic")

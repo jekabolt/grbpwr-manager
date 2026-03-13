@@ -264,8 +264,27 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 
 	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
 
+	// Price sorting requires currency; default to base currency when not specified (admin UX)
+	baseCurrency := cache.GetBaseCurrency()
+	if baseCurrency == "" {
+		baseCurrency = "EUR"
+	}
+	for _, sf := range sfs {
+		if sf == entity.Price {
+			if fc == nil {
+				fc = &entity.FilterConditions{Currency: baseCurrency}
+			} else if fc.Currency == "" {
+				fc.Currency = baseCurrency
+			}
+			break
+		}
+	}
+
 	prds, _, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, req.ShowHidden)
 	if err != nil {
+		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),
 		)
@@ -1997,7 +2016,7 @@ func (s *Server) GetSupportTicketsPaged(ctx context.Context, req *pb_admin.GetSu
 		slog.Default().ErrorContext(ctx, "can't get support tickets paged",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get support tickets paged")
+		return nil, status.Errorf(codes.Internal, "can't get support tickets paged: %v", err)
 	}
 
 	return &pb_admin.GetSupportTicketsPagedResponse{
