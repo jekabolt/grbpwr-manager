@@ -70,11 +70,11 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 		slog.Default().ErrorContext(ctx, "can't upload content image",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to upload image: %v", err)
 	}
 	return &pb_admin.UploadContentImageResponse{
 		Media: m,
-	}, err
+	}, nil
 }
 
 // UploadContentVideo
@@ -84,7 +84,7 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 		slog.Default().ErrorContext(ctx, "can't upload content video",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to upload video: %v", err)
 	}
 	return &pb_admin.UploadContentVideoResponse{
 		Media: media,
@@ -99,7 +99,7 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 		slog.Default().ErrorContext(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
-		return resp, err
+		return nil, status.Errorf(codes.Internal, "failed to delete media: %v", err)
 	}
 
 	err = s.repo.Hero().RefreshHero(ctx)
@@ -107,9 +107,9 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 		slog.Default().ErrorContext(ctx, "can't refresh hero",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't refresh hero")
+		return nil, status.Errorf(codes.Internal, "media deleted but failed to refresh hero: %v", err)
 	}
-	return resp, err
+	return resp, nil
 }
 
 // ListObjects
@@ -120,7 +120,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 		slog.Default().ErrorContext(ctx, "can't list objects from bucket",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to list media: %v", err)
 	}
 
 	entities := make([]*pb_common.MediaFull, 0, len(list))
@@ -130,7 +130,7 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 
 	return &pb_admin.ListObjectsPagedResponse{
 		List: entities,
-	}, err
+	}, nil
 }
 
 // PRODUCT MANAGER
@@ -230,10 +230,13 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 
 	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "product not found")
+		}
 		slog.Default().ErrorContext(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get product by id")
+		return nil, status.Errorf(codes.Internal, "failed to get product: %v", err)
 	}
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
@@ -707,7 +710,7 @@ func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*
 // delete_promo.go
 func (s *Server) DeletePromoCode(ctx context.Context, req *pb_admin.DeletePromoCodeRequest) (*pb_admin.DeletePromoCodeResponse, error) {
 	if req.Code == "" {
-		return &pb_admin.DeletePromoCodeResponse{}, fmt.Errorf("code is empty")
+		return nil, status.Error(codes.InvalidArgument, "promo code is required")
 	}
 	err := s.repo.Promo().DeletePromoCode(ctx, req.Code)
 	if err != nil {
@@ -722,7 +725,7 @@ func (s *Server) DeletePromoCode(ctx context.Context, req *pb_admin.DeletePromoC
 // disable_promo.go
 func (s *Server) DisablePromoCode(ctx context.Context, req *pb_admin.DisablePromoCodeRequest) (*pb_admin.DisablePromoCodeResponse, error) {
 	if req.Code == "" {
-		return &pb_admin.DisablePromoCodeResponse{}, fmt.Errorf("code is empty")
+		return nil, status.Error(codes.InvalidArgument, "promo code is required")
 	}
 
 	err := s.repo.Promo().DisablePromoCode(ctx, req.Code)
@@ -1689,7 +1692,7 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 		slog.Default().ErrorContext(ctx, "can't delete archive by id",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to delete archive: %v", err)
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
@@ -1711,10 +1714,13 @@ func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByI
 
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "archive not found")
+		}
 		slog.Default().ErrorContext(ctx, "can't get archive by id",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get archive by id")
+		return nil, status.Errorf(codes.Internal, "failed to get archive: %v", err)
 	}
 
 	return &pb_admin.GetArchiveByIDResponse{
@@ -1779,7 +1785,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set site availability",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set site availability: %v", err)
 	}
 
 	err = s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
@@ -1787,7 +1793,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set max order items",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set max order items: %v", err)
 	}
 
 	err = s.repo.Settings().SetBigMenu(ctx, req.BigMenu)
@@ -1795,7 +1801,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set big menu",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set big menu: %v", err)
 	}
 
 	// Convert protobuf announce to entity format
@@ -1816,7 +1822,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set announce",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set announce: %v", err)
 	}
 
 	err = s.repo.Settings().SetOrderExpirationSeconds(ctx, int(req.OrderExpirationSeconds))
@@ -1824,7 +1830,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set order expiration seconds",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set order expiration seconds: %v", err)
 	}
 
 	err = s.repo.Settings().SetPaymentIsProd(ctx, req.IsProd)
@@ -1832,7 +1838,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		slog.Default().ErrorContext(ctx, "can't set payment is prod",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to set payment mode: %v", err)
 	}
 
 	if req.ComplimentaryShippingPrices != nil && len(req.ComplimentaryShippingPrices) > 0 {
@@ -1855,7 +1861,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 				slog.Default().ErrorContext(ctx, "can't set complimentary shipping prices",
 					slog.String("err", err.Error()),
 				)
-				return nil, err
+				return nil, status.Errorf(codes.Internal, "failed to set complimentary shipping prices: %v", err)
 			}
 		}
 	}

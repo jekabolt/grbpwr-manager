@@ -115,10 +115,13 @@ func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequ
 
 	pf, err := s.repo.Products().GetProductByIdNoHidden(ctx, int(req.Id))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "product not found")
+		}
 		slog.Default().ErrorContext(ctx, "can't get product by id",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get product by id")
+		return nil, status.Errorf(codes.Internal, "failed to get product")
 	}
 
 	pbPrd, err := dto.ConvertToPbProductFull(pf)
@@ -212,7 +215,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		slog.Default().ErrorContext(ctx, "validation order create request failed",
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, fmt.Errorf("validation order create request failed: %v", err).Error())
+		return nil, status.Errorf(codes.InvalidArgument, "validation failed")
 	}
 
 	// RATE LIMIT CHECK: Prevent cart bombing and order spam
@@ -222,7 +225,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			slog.String("email", orderNew.Buyer.Email),
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded")
 	}
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
@@ -230,7 +233,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	pme, ok := cache.GetPaymentMethodByName(pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
-		return nil, status.Errorf(codes.Internal, "internal error")
+		return nil, status.Errorf(codes.Internal, "payment method not configured")
 	}
 	if !pme.Method.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
@@ -273,19 +276,19 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			// Ensure PaymentIntent amount matches order total (order may have been updated on ErrOrderItemsUpdated)
 			if err := s.ensurePaymentIntentAmountMatchesOrder(ctx, handler, req.PaymentIntentId, existingOrder); err != nil {
 				slog.Default().ErrorContext(ctx, "can't sync payment intent amount on idempotent retry", slog.String("err", err.Error()))
-				return nil, status.Errorf(codes.Internal, "can't sync payment intent amount: %v", err)
+				return nil, status.Errorf(codes.Internal, "can't sync payment intent amount")
 			}
 
 			eos, ok := cache.GetOrderStatusById(existingOrder.Order.OrderStatusId)
 			if !ok {
 				slog.Default().ErrorContext(ctx, "failed to retrieve order status")
-				return nil, status.Errorf(codes.Internal, "internal error")
+				return nil, status.Errorf(codes.Internal, "order status not found")
 			}
 
 			os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
 			if !ok {
 				slog.Default().ErrorContext(ctx, "failed to convert order status")
-				return nil, status.Errorf(codes.Internal, "internal error")
+				return nil, status.Errorf(codes.Internal, "invalid order status")
 			}
 
 			pbPi, err := dto.ConvertEntityToPbPaymentInsert(&existingOrder.Payment.PaymentInsert)
@@ -356,7 +359,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 			orderFull, err = s.retryInsertFiatInvoiceAfterItemsUpdated(ctx, order.UUID, req.PaymentIntentId, pme.Method, expirationDuration, handler)
 			if err != nil {
 				slog.Default().ErrorContext(ctx, "can't complete payment after items update", slog.String("err", err.Error()))
-				return nil, status.Errorf(codes.Internal, "can't complete payment after items update: %v", err)
+				return nil, status.Errorf(codes.Internal, "can't complete payment after items update")
 			}
 		} else {
 			slog.Default().ErrorContext(ctx, "InsertFiatInvoice failed, cancelling order",
@@ -410,7 +413,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 				slog.String("payment_intent_id", req.PaymentIntentId),
 				slog.String("expected_amount", orderTotal.String()),
 			)
-			return nil, status.Errorf(codes.Internal, "payment amount mismatch: expected %s but PaymentIntent has %s", orderTotal.String(), piAmount.String())
+			return nil, status.Errorf(codes.Internal, "payment amount mismatch")
 		}
 
 		slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
@@ -431,13 +434,13 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	eos, ok := cache.GetOrderStatusById(orderForResponse.OrderStatusId)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve order status")
-		return nil, status.Errorf(codes.Internal, "internal error")
+		return nil, status.Errorf(codes.Internal, "order status not found")
 	}
 
 	os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to convert order status")
-		return nil, status.Errorf(codes.Internal, "internal error")
+		return nil, status.Errorf(codes.Internal, "invalid order status")
 	}
 
 	pbPi, err := dto.ConvertEntityToPbPaymentInsert(pi)
@@ -550,7 +553,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 			slog.String("ip", clientIP),
 			slog.String("err", err.Error()),
 		)
-		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded")
 	}
 
 	itemsToInsert := make([]entity.OrderItemInsert, 0, len(req.Items))
@@ -672,7 +675,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 				slog.String("payment_method", string(pm)),
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Internal, "payment unavailable: %s", err.Error())
+			return nil, status.Errorf(codes.Internal, "payment unavailable")
 		}
 
 		// Use provided currency or fall back to base currency from cache
@@ -705,7 +708,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 				slog.String("total", roundedTotal.String()),
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.Internal, "failed to create payment intent: %s", err.Error())
+			return nil, status.Errorf(codes.Internal, "failed to create payment intent")
 		}
 
 		if pi.ClientSecret == "" {
@@ -752,7 +755,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 	pme, ok := cache.GetPaymentMethodByName(pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
-		return nil, status.Errorf(codes.Internal, "internal error")
+		return nil, status.Errorf(codes.Internal, "payment method not configured")
 	}
 	if !pme.Method.Allowed {
 		slog.Default().ErrorContext(ctx, "payment method not allowed")
@@ -893,7 +896,10 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 
 	handler, err := s.getPaymentHandler(ctx, pme.Method.Name)
 	if err != nil {
-		return nil, err
+		slog.Default().ErrorContext(ctx, "can't get payment handler for cancel",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to get payment handler")
 	}
 	if err = handler.CancelMonitorPayment(req.OrderUuid); err != nil {
 		slog.Default().ErrorContext(ctx, "can't cancel monitor payment",
@@ -979,7 +985,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 			slog.String("err", err.Error()),
 			slog.String("order_uuid", req.OrderUuid),
 		)
-		return nil, status.Errorf(codes.Internal, "can't get order: %v", err)
+		return nil, status.Errorf(codes.Internal, "can't get order")
 	}
 
 	os, ok := cache.GetOrderStatusById(orderFull.Order.OrderStatusId)
@@ -1002,7 +1008,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				slog.String("err", err.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
-			return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+			return nil, status.Errorf(codes.Internal, "can't cancel order")
 		}
 		s.reservationMgr.Release(ctx, req.OrderUuid)
 
@@ -1022,7 +1028,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				slog.String("err", err.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
-			return nil, status.Errorf(codes.Internal, "can't cancel order: %v", err)
+			return nil, status.Errorf(codes.Internal, "can't cancel order")
 		}
 
 		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
@@ -1041,7 +1047,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),
 				)
-				return nil, status.Errorf(codes.Internal, "can't refund payment: %v", err)
+				return nil, status.Errorf(codes.Internal, "can't refund payment")
 			}
 
 			// RefundOrder transitions RefundInProgress → Refunded, restores stock, records refunded items
@@ -1050,7 +1056,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),
 				)
-				return nil, status.Errorf(codes.Internal, "can't refund order: %v", err)
+				return nil, status.Errorf(codes.Internal, "can't refund order")
 			}
 		} else {
 			slog.Default().InfoContext(ctx, "confirmed order cancellation requested; refund not auto-handled for payment method",
@@ -1062,7 +1068,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 		// Refresh to get final Refunded status
 		orderFull, err = s.repo.Order().GetOrderByUUIDAndEmail(ctx, req.OrderUuid, email)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "can't refresh order: %v", err)
+			return nil, status.Errorf(codes.Internal, "can't refresh order")
 		}
 
 		// Send "refund initiated" email
@@ -1088,7 +1094,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				slog.String("err", err.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
-			return nil, status.Errorf(codes.Internal, "can't set order to pending return: %v", err)
+			return nil, status.Errorf(codes.Internal, "can't set order to pending return")
 		}
 
 		slog.Default().InfoContext(ctx, "order set to pending return by user",
@@ -1310,7 +1316,7 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 		slog.Default().ErrorContext(ctx, "can't get archives paged",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "failed to list archives")
 	}
 
 	pbAfs := make([]*pb_common.ArchiveList, 0, len(afs))
@@ -1330,8 +1336,11 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 
 	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get archive by slug", slog.String("err", err.Error()))
-		return nil, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "archive not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get archive by id", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 
 	pbAf := dto.ConvertArchiveFullEntityToPb(af)
@@ -1351,7 +1360,7 @@ func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.Submi
 			slog.String("err", err.Error()),
 			slog.String("email", ticket.Email),
 		)
-		return nil, status.Errorf(codes.InvalidArgument, "invalid ticket: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid ticket: %s", err.Error())
 	}
 
 	if err := s.rateLimiter.CheckSupportTicket(clientIP, ticket.Email); err != nil {
@@ -1359,7 +1368,7 @@ func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.Submi
 			slog.String("ip", clientIP),
 			slog.String("email", ticket.Email),
 		)
-		return nil, status.Errorf(codes.ResourceExhausted, err.Error())
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded")
 	}
 
 	caseNumber, err := s.repo.Support().SubmitTicket(ctx, ticket)
