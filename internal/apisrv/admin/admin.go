@@ -184,6 +184,15 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		return nil, status.Errorf(codes.Internal, "can't refresh hero: %v", err)
 	}
 
+	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
+			slog.String("err", err.Error()),
+		)
+	} else {
+		cache.RefreshDictionary(di)
+	}
+
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
 		Products: []int{id},
 		Hero:     true,
@@ -211,6 +220,15 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete product")
+	}
+
+	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
+			slog.String("err", err.Error()),
+		)
+	} else {
+		cache.RefreshDictionary(di)
 	}
 
 	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
@@ -1955,7 +1973,7 @@ func validateShipmentCarrierRequest(carrier, trackingURL string, prices map[stri
 			return fmt.Errorf("missing required currency: %s", c)
 		}
 	}
-	// Validate each price meets currency minimum (e.g. KRW >= 100)
+	// Validate each price is non-negative (zero allowed for free shipping)
 	for currency, pbPrice := range prices {
 		if pbPrice == nil {
 			continue
@@ -1964,10 +1982,8 @@ func validateShipmentCarrierRequest(carrier, trackingURL string, prices map[stri
 		if err != nil {
 			return fmt.Errorf("invalid price for %s: %w", currency, err)
 		}
-		currencyUpper := strings.ToUpper(currency)
-		rounded := dto.RoundForCurrency(p, currencyUpper)
-		if err := dto.ValidatePriceMeetsMinimum(rounded, currencyUpper); err != nil {
-			return err
+		if p.IsNegative() {
+			return fmt.Errorf("price for %s cannot be negative", strings.ToUpper(currency))
 		}
 	}
 	for _, r := range allowedRegions {

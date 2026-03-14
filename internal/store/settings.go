@@ -59,11 +59,10 @@ func (ms *MYSQLStore) AddShipmentCarrier(ctx context.Context, carrier *entity.Sh
 		}
 		carrierId = id
 
-		// Insert prices (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD)
+		// Insert prices (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD). Zero allowed.
 		for currency, price := range prices {
-			rounded := dto.RoundForCurrency(price, currency)
-			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
-				return fmt.Errorf("price validation for %s: %w", currency, err)
+			if price.IsNegative() {
+				return fmt.Errorf("price for %s cannot be negative", currency)
 			}
 			priceQuery := `INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price) VALUES (:carrierId, :currency, :price)`
 			if err := ExecNamed(ctx, ms.DB(), priceQuery, map[string]any{
@@ -119,9 +118,8 @@ func (ms *MYSQLStore) UpdateShipmentCarrier(ctx context.Context, id int, carrier
 			return fmt.Errorf("failed to delete existing prices: %w", err)
 		}
 		for currency, price := range prices {
-			rounded := dto.RoundForCurrency(price, currency)
-			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
-				return fmt.Errorf("price validation for %s: %w", currency, err)
+			if price.IsNegative() {
+				return fmt.Errorf("price for %s cannot be negative", currency)
 			}
 			priceQuery := `INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price) VALUES (:carrierId, :currency, :price)`
 			if err := ExecNamed(ctx, ms.DB(), priceQuery, map[string]any{
@@ -206,11 +204,10 @@ func (ms *MYSQLStore) SetShipmentCarrierPrices(ctx context.Context, carrier stri
 		}
 		carrierId := carrierResult.Id
 
-		// Upsert prices for each currency (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD)
+		// Upsert prices for each currency (rounded per currency: 0 for KRW/JPY, 2 for EUR/USD). Zero allowed.
 		for currency, price := range prices {
-			rounded := dto.RoundForCurrency(price, currency)
-			if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
-				return fmt.Errorf("price validation for %s: %w", currency, err)
+			if price.IsNegative() {
+				return fmt.Errorf("price for %s cannot be negative", currency)
 			}
 			upsertQuery := `
 				INSERT INTO shipment_carrier_price (shipment_carrier_id, currency, price)

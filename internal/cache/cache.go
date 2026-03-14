@@ -286,6 +286,21 @@ func UpdateHero(hf *entity.HeroFullWithTranslations) {
 	hero = hf
 }
 
+// RefreshDictionary updates categories, sizes, and collections (including CountMen/CountWomen) in the in-memory cache.
+// Call after product add/update/delete so counts stay accurate.
+func RefreshDictionary(dInfo *entity.DictionaryInfo) {
+	if dInfo == nil {
+		return
+	}
+	entityCategories = dInfo.Categories
+	entitySizes = dInfo.Sizes
+	entityCollections = dInfo.Collections
+	sizeById = make(map[int]entity.Size, len(entitySizes))
+	for _, s := range entitySizes {
+		sizeById[s.Id] = s
+	}
+}
+
 func UpdatePromos(promos []entity.PromoCode) {
 	promoCodesMu.Lock()
 	promoCodes = make(map[string]entity.PromoCode, len(promos))
