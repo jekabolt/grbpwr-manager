@@ -59,6 +59,7 @@ func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Rep
 
 // validateOrderItemsStockForCustomOrder validates stock availability for custom-priced items.
 // Keeps the existing ProductPrice, ProductSalePercentage, ProductPriceWithSale from items (no catalog lookup).
+// Does NOT apply max_order_items limit—custom orders (admin-created) are exempt from quantity caps.
 func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	if len(items) == 0 {
 		return nil, nil, &entity.ValidationError{Message: "zero items to validate"}
@@ -1100,9 +1101,16 @@ func (ms *MYSQLStore) CreateCustomOrder(ctx context.Context, orderNew *entity.Or
 	var order *entity.Order
 	err = ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		orderNew.Items = mergeOrderItems(orderNew.Items)
-		validItems, _, err := validateOrderItemsStockForCustomOrder(ctx, rep, orderNew.Items)
+		validItems, adjustments, err := validateOrderItemsStockForCustomOrder(ctx, rep, orderNew.Items)
 		if err != nil {
 			return err
+		}
+		if len(adjustments) > 0 {
+			var invalidItems []string
+			for _, adj := range adjustments {
+				invalidItems = append(invalidItems, fmt.Sprintf("product_id=%d size_id=%d (reason: %s)", adj.ProductId, adj.SizeId, adj.Reason))
+			}
+			return &entity.ValidationError{Message: fmt.Sprintf("cannot create custom order: some items are invalid or out of stock: %s", strings.Join(invalidItems, "; "))}
 		}
 		if len(validItems) == 0 {
 			return &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
