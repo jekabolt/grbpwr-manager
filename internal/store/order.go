@@ -88,10 +88,10 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
-				SizeId:           item.SizeId,
+				SizeId:            item.SizeId,
 				RequestedQuantity: item.QuantityDecimal(),
-				AdjustedQuantity: decimal.Zero,
-				Reason:           entity.AdjustmentReasonOutOfStock,
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
 			})
 			continue
 		}
@@ -100,20 +100,20 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			item.Quantity = prdSize.QuantityDecimal()
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
-				SizeId:           item.SizeId,
+				SizeId:            item.SizeId,
 				RequestedQuantity: requestedQty,
-				AdjustedQuantity: prdSize.QuantityDecimal(),
-				Reason:           entity.AdjustmentReasonQuantityReduced,
+				AdjustedQuantity:  prdSize.QuantityDecimal(),
+				Reason:            entity.AdjustmentReasonQuantityReduced,
 			})
 		}
 		prd, exists := prdMap[item.ProductId]
 		if !exists {
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
-				SizeId:           item.SizeId,
+				SizeId:            item.SizeId,
 				RequestedQuantity: item.QuantityDecimal(),
-				AdjustedQuantity: decimal.Zero,
-				Reason:           entity.AdjustmentReasonOutOfStock,
+				AdjustedQuantity:  decimal.Zero,
+				Reason:            entity.AdjustmentReasonOutOfStock,
 			})
 			continue
 		}
@@ -124,18 +124,18 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 		pb := &prd.ProductDisplay.ProductBody
 		validItems = append(validItems, entity.OrderItem{
 			OrderItemInsert: item,
-			Thumbnail:      prd.ProductDisplay.Thumbnail.ThumbnailMediaURL,
-			BlurHash:       prd.ProductDisplay.Thumbnail.BlurHash.String,
-			ProductBrand:   pb.ProductBodyInsert.Brand,
-			Color:          pb.ProductBodyInsert.Color,
-			SKU:            prd.SKU,
-			Slug:           dto.GetProductSlug(prd.Id, pb.ProductBodyInsert.Brand, productName, pb.ProductBodyInsert.TargetGender.String()),
-			TopCategoryId:  pb.ProductBodyInsert.TopCategoryId,
-			SubCategoryId:  pb.ProductBodyInsert.SubCategoryId,
-			TypeId:         pb.ProductBodyInsert.TypeId,
-			TargetGender:   pb.ProductBodyInsert.TargetGender,
-			Preorder:       pb.ProductBodyInsert.Preorder,
-			Translations:   pb.Translations,
+			Thumbnail:       prd.ProductDisplay.Thumbnail.ThumbnailMediaURL,
+			BlurHash:        prd.ProductDisplay.Thumbnail.BlurHash.String,
+			ProductBrand:    pb.ProductBodyInsert.Brand,
+			Color:           pb.ProductBodyInsert.Color,
+			SKU:             prd.SKU,
+			Slug:            dto.GetProductSlug(prd.Id, pb.ProductBodyInsert.Brand, productName, pb.ProductBodyInsert.TargetGender.String()),
+			TopCategoryId:   pb.ProductBodyInsert.TopCategoryId,
+			SubCategoryId:   pb.ProductBodyInsert.SubCategoryId,
+			TypeId:          pb.ProductBodyInsert.TypeId,
+			TargetGender:    pb.ProductBodyInsert.TargetGender,
+			Preorder:        pb.ProductBodyInsert.Preorder,
+			Translations:    pb.Translations,
 		})
 	}
 	return validItems, adjustments, nil
@@ -452,9 +452,9 @@ func insertPaymentRecordForCustomOrder(ctx context.Context, rep dependency.Repos
 		VALUES (:orderId, :paymentMethodId, :transactionAmount, :transactionAmountPaymentCurrency, true, NULL);
 	`
 	err := ExecNamed(ctx, rep.DB(), insertQuery, map[string]interface{}{
-		"orderId":                      orderId,
-		"paymentMethodId":              paymentMethodId,
-		"transactionAmount":             totalAmount,
+		"orderId":                          orderId,
+		"paymentMethodId":                  paymentMethodId,
+		"transactionAmount":                totalAmount,
 		"transactionAmountPaymentCurrency": totalAmount,
 	})
 	if err != nil {
@@ -1135,9 +1135,10 @@ func (ms *MYSQLStore) CreateCustomOrder(ctx context.Context, orderNew *entity.Or
 			return err
 		}
 		history := &entity.StockHistoryParams{
-			Source:    entity.StockChangeSourceOrderCustomReserved,
-			OrderId:   order.Id,
-			OrderUUID: order.UUID,
+			Source:        entity.StockChangeSourceOrderCustom,
+			OrderId:       order.Id,
+			OrderUUID:     order.UUID,
+			OrderCurrency: orderNew.Currency,
 		}
 		if err = rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert, history); err != nil {
 			return fmt.Errorf("error reducing stock: %w", err)
@@ -1487,10 +1488,14 @@ var ValidStatusTransitions = map[entity.OrderStatusName][]entity.OrderStatusName
 		entity.Refunded,
 		entity.PartiallyRefunded,
 	},
+	// PartiallyRefunded can receive additional refunds
+	entity.PartiallyRefunded: {
+		entity.Refunded,
+		entity.PartiallyRefunded,
+	},
 	// Terminal states - no transitions allowed
-	entity.Cancelled:         {},
-	entity.Refunded:          {},
-	entity.PartiallyRefunded: {},
+	entity.Cancelled: {},
+	entity.Refunded:  {},
 }
 
 // isValidStatusTransition checks if transition from currentStatus to newStatus is allowed
@@ -1684,6 +1689,73 @@ func updateOrderStatusAndRefundedAmountWithValidation(
 
 func updateOrderStatusAndRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string) error {
 	return updateOrderStatusAndRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, refundReason, "admin")
+}
+
+// updateOrderStatusAndAccumulateRefundedAmount updates order status and ACCUMULATES the refunded amount
+// (adds to existing refunded_amount rather than replacing it). Used for partial refunds that may happen multiple times.
+func updateOrderStatusAndAccumulateRefundedAmount(ctx context.Context, rep dependency.Repository, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string) error {
+	return updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx, rep, orderId, orderStatusId, refundedAmount, refundReason, "admin")
+}
+
+func updateOrderStatusAndAccumulateRefundedAmountWithValidation(
+	ctx context.Context,
+	rep dependency.Repository,
+	orderId int,
+	orderStatusId int,
+	refundedAmount decimal.Decimal,
+	refundReason string,
+	changedBy string,
+) error {
+	// Get current order status for validation
+	var currentStatusId int
+	query := `SELECT order_status_id FROM customer_order WHERE id = ?`
+	err := rep.DB().GetContext(ctx, &currentStatusId, query, orderId)
+	if err != nil {
+		return fmt.Errorf("get current status: %w", err)
+	}
+
+	// Get status names for validation
+	currentStatus, err := getOrderStatus(currentStatusId)
+	if err != nil {
+		return fmt.Errorf("get current status name: %w", err)
+	}
+
+	newStatus, err := getOrderStatus(orderStatusId)
+	if err != nil {
+		return fmt.Errorf("get new status name: %w", err)
+	}
+
+	// Validate transition
+	if !isValidStatusTransition(currentStatus.Status.Name, newStatus.Status.Name) {
+		return fmt.Errorf(
+			"invalid status transition: cannot change from %s to %s",
+			currentStatus.Status.Name,
+			newStatus.Status.Name,
+		)
+	}
+
+	// Accumulate refunded amount (add to existing) and update status
+	updateQuery := `
+		UPDATE customer_order 
+		SET order_status_id = :orderStatusId,
+			refunded_amount = refunded_amount + :refundedAmount,
+			refund_reason = COALESCE(NULLIF(:refundReason, ''), refund_reason),
+			modified = CURRENT_TIMESTAMP
+		WHERE id = :orderId
+	`
+
+	err = ExecNamed(ctx, rep.DB(), updateQuery, map[string]any{
+		"orderId":        orderId,
+		"orderStatusId":  orderStatusId,
+		"refundedAmount": refundedAmount.Round(2),
+		"refundReason":   refundReason,
+	})
+	if err != nil {
+		return fmt.Errorf("update order: %w", err)
+	}
+
+	notes := fmt.Sprintf("Refunded amount: %s (accumulated)", refundedAmount.String())
+	return insertOrderStatusHistoryEntry(ctx, rep, orderId, orderStatusId, changedBy, notes)
 }
 
 func refundAmountFromItems(items []entity.OrderItemInsert, currency string) decimal.Decimal {
@@ -1945,9 +2017,12 @@ func (ms *MYSQLStore) insertOrderInvoice(ctx context.Context, orderUUID string, 
 		// Reduce stock for valid items (validation already locked the rows, so this is atomic)
 		validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 		history := &entity.StockHistoryParams{
-			Source:    entity.StockChangeSourceOrderReserved,
-			OrderId:   orderFull.Order.Id,
-			OrderUUID: orderFull.Order.UUID,
+			Source:        entity.StockChangeSourceOrderPaid,
+			OrderId:       orderFull.Order.Id,
+			OrderUUID:     orderFull.Order.UUID,
+			OrderCurrency: orderFull.Order.Currency,
+			OrderComment:  orderFull.Order.OrderComment.String,
+			PromoDiscount: orderFull.PromoCode.Discount,
 		}
 		if err := rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert, history); err != nil {
 			return fmt.Errorf("error reducing stock for product sizes: %w", err)
@@ -3039,7 +3114,7 @@ func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
 // Allowed statuses: refund_in_progress, pending_return, delivered, confirmed.
 // Full or partial: RefundInProgress, PendingReturn, Delivered.
 // Full refund only: Confirmed.
-func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error {
+func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string, refundShipping bool) error {
 	return ms.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUIDForUpdate(ctx, rep, orderUUID)
 		if err != nil {
@@ -3052,9 +3127,9 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 		}
 		os := orderStatus.Status.Name
 
-		allowed := os == entity.RefundInProgress || os == entity.PendingReturn || os == entity.Delivered || os == entity.Confirmed
+		allowed := os == entity.RefundInProgress || os == entity.PendingReturn || os == entity.Delivered || os == entity.Confirmed || os == entity.PartiallyRefunded
 		if !allowed {
-			return fmt.Errorf("order status must be refund_in_progress, pending_return, delivered or confirmed, got %s", orderStatus.Status.Name)
+			return fmt.Errorf("order status must be refund_in_progress, pending_return, delivered, confirmed or partially_refunded, got %s", orderStatus.Status.Name)
 		}
 		if os == entity.Confirmed && len(orderItemIDs) > 0 {
 			return fmt.Errorf("confirmed orders support only full refund")
@@ -3111,8 +3186,21 @@ func (ms *MYSQLStore) RefundOrder(ctx context.Context, orderUUID string, orderIt
 			return fmt.Errorf("insert refunded order items: %w", err)
 		}
 
+		// Calculate refund amount from items
 		refundedAmount := refundAmountFromItems(itemsForStock, order.Currency)
-		return updateOrderStatusAndRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount, reason)
+
+		// Include shipping cost in refund if requested
+		if refundShipping {
+			shipment, err := getOrderShipment(ctx, rep, order.Id)
+			if err != nil {
+				return fmt.Errorf("get order shipment: %w", err)
+			}
+			if !shipment.FreeShipping {
+				refundedAmount = refundedAmount.Add(shipment.CostDecimal(order.Currency))
+			}
+		}
+
+		return updateOrderStatusAndAccumulateRefundedAmount(ctx, rep, order.Id, targetStatus.Status.Id, refundedAmount, reason)
 	})
 }
 

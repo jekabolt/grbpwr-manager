@@ -70,7 +70,7 @@ type (
 		// GetStockChangeHistory returns paginated stock change history with optional filters.
 		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
 		// GetStockChanges returns simplified stock changes for reporting API.
-		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error)
+		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error
@@ -105,7 +105,7 @@ type (
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
-		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string) error
+		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string, refundShipping bool) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
 		GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error)

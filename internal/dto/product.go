@@ -39,20 +39,20 @@ var (
 		pb_common.SeasonEnum_SEASON_ENUM_RC: entity.SeasonRC,
 	}
 	stockChangeSourceToProto = map[string]pb_common.StockChangeSource{
-		string(entity.StockChangeSourceAdminNewProduct):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT,
-		string(entity.StockChangeSourceManualAdjustment):    pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
-		string(entity.StockChangeSourceOrderReserved):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RESERVED,
-		string(entity.StockChangeSourceOrderCustomReserved): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM_RESERVED,
-		string(entity.StockChangeSourceOrderReturned):       pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED,
-		string(entity.StockChangeSourceOrderCancelled):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
+		string(entity.StockChangeSourceAdminNewProduct):  pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT,
+		string(entity.StockChangeSourceManualAdjustment): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
+		string(entity.StockChangeSourceOrderPaid):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID,
+		string(entity.StockChangeSourceOrderCustom):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM,
+		string(entity.StockChangeSourceOrderReturned):    pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED,
+		string(entity.StockChangeSourceOrderCancelled):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
 	}
 	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT:      string(entity.StockChangeSourceAdminNewProduct),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT:      string(entity.StockChangeSourceManualAdjustment),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RESERVED:         string(entity.StockChangeSourceOrderReserved),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM_RESERVED:  string(entity.StockChangeSourceOrderCustomReserved),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED:         string(entity.StockChangeSourceOrderReturned),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:        string(entity.StockChangeSourceOrderCancelled),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT: string(entity.StockChangeSourceAdminNewProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT: string(entity.StockChangeSourceManualAdjustment),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID:        string(entity.StockChangeSourceOrderPaid),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM:      string(entity.StockChangeSourceOrderCustom),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED:    string(entity.StockChangeSourceOrderReturned),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:   string(entity.StockChangeSourceOrderCancelled),
 	}
 	stockChangeReasonToProto = map[string]pb_common.StockChangeReason{
 		string(entity.StockChangeReasonInitialStock):    pb_common.StockChangeReason_STOCK_CHANGE_REASON_INITIAL_STOCK,
@@ -608,12 +608,12 @@ func FormatSKUWithSize(sku string, sizeName string) string {
 // Simplifies source categories for end-user consumption.
 func MapStockChangeSourceToAPI(internalSource string) string {
 	mapping := map[string]string{
-		string(entity.StockChangeSourceAdminNewProduct):     "admin_new_product",
-		string(entity.StockChangeSourceManualAdjustment):    "manual_adjustment",
-		string(entity.StockChangeSourceOrderReserved):       "order_reserved",
-		string(entity.StockChangeSourceOrderCustomReserved): "order_custom_reserved",
-		string(entity.StockChangeSourceOrderReturned):       "order_returned",
-		string(entity.StockChangeSourceOrderCancelled):      "order_cancelled",
+		string(entity.StockChangeSourceAdminNewProduct):  "admin_new_product",
+		string(entity.StockChangeSourceManualAdjustment): "manual_adjustment",
+		string(entity.StockChangeSourceOrderPaid):        "order_paid",
+		string(entity.StockChangeSourceOrderCustom):      "order_custom",
+		string(entity.StockChangeSourceOrderReturned):    "order_returned",
+		string(entity.StockChangeSourceOrderCancelled):   "order_cancelled",
 	}
 
 	if mapped, ok := mapping[internalSource]; ok {
@@ -623,22 +623,18 @@ func MapStockChangeSourceToAPI(internalSource string) string {
 }
 
 // FormatStockChangeReference builds reference string from available data.
-// Priority: reference_id > ORD-XXXXXXX (order_uuid) > admin:{username} > system:auto
+// For order-related changes: returns the order_uuid directly (already in ORD-XXXXXXX format)
+// For admin changes: "-"
 func FormatStockChangeReference(referenceId, orderUUID, adminUsername string) string {
+	if orderUUID != "" {
+		// order_uuid is already in ORD-XXXXXXX format, return as-is
+		return strings.ToUpper(orderUUID)
+	}
 	if referenceId != "" {
 		return referenceId
 	}
-	if orderUUID != "" {
-		// Format as ORD-XXXXXXX (first 7 chars of UUID)
-		if len(orderUUID) >= 7 {
-			return "ORD-" + strings.ToUpper(orderUUID[:7])
-		}
-		return "ORD-" + strings.ToUpper(orderUUID)
-	}
-	if adminUsername != "" {
-		return "admin:" + adminUsername
-	}
-	return "system:auto"
+	// Admin changes show "-" as reference
+	return "-"
 }
 
 // StockChangeReasonToString converts proto StockChangeReason to entity string.
@@ -661,16 +657,26 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	// Map source to API-friendly name
 	apiSource := MapStockChangeSourceToAPI(e.Source)
 
-	// Format reference
+	// Format reference: for order-related sources use ORD-XXXXXXX, for admin use "-"
 	reference := FormatStockChangeReference(e.ReferenceId, e.OrderUUID, e.AdminUsername)
+
+	// Derive direction from amount_changed sign
+	direction := pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED
+	if e.AmountChanged.IsPositive() {
+		direction = pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE
+	} else if e.AmountChanged.IsNegative() {
+		direction = pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_DECREASE
+	}
 
 	// Build proto message
 	row := &pb_admin.StockChangeRow{
-		Date:          timestamppb.New(e.Date),
-		Sku:           formattedSKU,
-		AmountChanged: &pb_decimal.Decimal{Value: e.AmountChanged.String()},
-		Source:        apiSource,
-		Reference:     reference,
+		Date:           timestamppb.New(e.Date),
+		Sku:            formattedSKU,
+		AmountChanged:  &pb_decimal.Decimal{Value: e.AmountChanged.Abs().String()},
+		Direction:      direction,
+		RemainingStock: &pb_decimal.Decimal{Value: e.RemainingStock.String()},
+		Source:         apiSource,
+		Reference:      reference,
 	}
 
 	// Add reason if present
@@ -680,12 +686,16 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 		}
 	}
 
-	// Add comment if present
-	if e.Comment != "" {
-		row.Comment = &e.Comment
+	// Add comment: prefer order_comment for order-related entries, fall back to stock change comment
+	comment := e.OrderComment
+	if comment == "" {
+		comment = e.Comment
+	}
+	if comment != "" {
+		row.Comment = &comment
 	}
 
-	// Add financial fields if present
+	// Add financial fields if present (raw numeric values, currency separate)
 	if e.PriceBeforeDiscount != "" {
 		row.PriceBeforeDiscount = &e.PriceBeforeDiscount
 	}
@@ -698,10 +708,8 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	if e.PaidAmount != "" {
 		row.PaidAmount = &e.PaidAmount
 	}
-	if e.PayoutBaseAmount != "" {
+	if e.PayoutBaseAmount != "" && e.PayoutBaseCurrency != "" {
 		row.PayoutBaseAmount = &e.PayoutBaseAmount
-	}
-	if e.PayoutBaseCurrency != "" {
 		row.PayoutBaseCurrency = &e.PayoutBaseCurrency
 	}
 

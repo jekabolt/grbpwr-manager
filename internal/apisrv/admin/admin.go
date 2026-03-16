@@ -599,14 +599,30 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 	offset := int(req.Offset)
 
 	// Optional filters
-	var sku *string
-	if req.Sku != nil && *req.Sku != "" {
-		sku = req.Sku
+	var productId *int
+	if req.ProductId != nil {
+		pid := int(*req.ProductId)
+		productId = &pid
 	}
 
-	var source *string
-	if req.Source != nil && *req.Source != "" {
-		source = req.Source
+	var sizeId *int
+	if req.SizeId != nil {
+		sid := int(*req.SizeId)
+		sizeId = &sid
+	}
+
+	// Convert source enum to string (empty string for UNSPECIFIED = no filter)
+	source := dto.StockChangeSourceToFilterString(req.Source)
+
+	// Sort by direction (default = unspecified = no direction filter)
+	var sortByDirection entity.StockAdjustmentDirection
+	if req.SortByDirection != nil {
+		switch *req.SortByDirection {
+		case pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE:
+			sortByDirection = entity.StockAdjustmentDirectionIncrease
+		case pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_DECREASE:
+			sortByDirection = entity.StockAdjustmentDirectionDecrease
+		}
 	}
 
 	// Order factor (default DESC = newest first)
@@ -616,7 +632,7 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 	}
 
 	// Get data from repository
-	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, sku, source, limit, offset, orderFactor)
+	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, productId, sizeId, source, limit, offset, sortByDirection, orderFactor)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get stock changes",
 			slog.String("err", err.Error()),
@@ -1452,9 +1468,9 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 	}
 
 	allowed := orderStatus.Status.Name == entity.RefundInProgress || orderStatus.Status.Name == entity.PendingReturn ||
-		orderStatus.Status.Name == entity.Delivered || orderStatus.Status.Name == entity.Confirmed
+		orderStatus.Status.Name == entity.Delivered || orderStatus.Status.Name == entity.Confirmed || orderStatus.Status.Name == entity.PartiallyRefunded
 	if !allowed {
-		return nil, status.Errorf(codes.InvalidArgument, "order status must be refund_in_progress, pending_return, delivered or confirmed, got %s", orderStatus.Status.Name)
+		return nil, status.Errorf(codes.InvalidArgument, "order status must be refund_in_progress, pending_return, delivered, confirmed or partially_refunded, got %s", orderStatus.Status.Name)
 	}
 
 	// Confirmed orders support only full refund
@@ -1462,44 +1478,54 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		return nil, status.Errorf(codes.InvalidArgument, "confirmed orders support only full refund")
 	}
 
-	// Stripe refund only for Confirmed status with Stripe payment
-	if orderStatus.Status.Name == entity.Confirmed {
-		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
-		if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
-			handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
-			if err != nil {
-				slog.Default().ErrorContext(ctx, "can't get payment handler for refund",
-					slog.String("err", err.Error()),
-				)
-				return nil, status.Errorf(codes.Internal, "can't get payment handler")
-			}
+	// Determine refund_shipping:
+	// - For confirmed (not yet shipped) orders doing full refund: always include shipping
+	// - For other statuses: use the request flag
+	refundShipping := req.RefundShipping
+	if orderStatus.Status.Name == entity.Confirmed && len(req.OrderItemIds) == 0 {
+		// Full refund of not-yet-shipped order: always include shipping fee
+		refundShipping = true
+	}
 
-			// Calculate refund amount based on order items
-			var refundAmount *decimal.Decimal
-			if orderStatus.Status.Name == entity.Confirmed {
-				// Full refund for Confirmed only
-				refundAmount = nil // nil = full refund
-			} else {
-				// RefundInProgress, PendingReturn, Delivered: full or partial based on orderItemIds
-				if len(req.OrderItemIds) == 0 {
-					refundAmount = nil
-				} else {
-					amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds, orderFull.Order.Currency)
-					refundAmount = &amount
-				}
-			}
+	// Stripe refund for Stripe payment methods (CARD / CARD_TEST)
+	pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+	if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
+		handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment handler for refund",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't get payment handler")
+		}
 
-			if err := handler.Refund(ctx, orderFull.Payment, req.OrderUuid, refundAmount, orderFull.Order.Currency); err != nil {
-				slog.Default().ErrorContext(ctx, "stripe refund failed",
-					slog.String("err", err.Error()),
-					slog.String("orderUuid", req.OrderUuid),
-				)
-				return nil, status.Errorf(codes.Internal, "stripe refund failed: %v", err)
+		// Calculate refund amount for Stripe
+		var refundAmount *decimal.Decimal
+		if orderStatus.Status.Name == entity.Confirmed && len(req.OrderItemIds) == 0 {
+			// Full refund for Confirmed: nil = full refund on Stripe (includes everything)
+			refundAmount = nil
+		} else if len(req.OrderItemIds) == 0 {
+			// Full refund for other statuses: calculate total items + optional shipping
+			amount := calculateFullRefundAmount(orderFull, refundShipping)
+			refundAmount = &amount
+		} else {
+			// Partial refund: calculate from specified items + optional shipping
+			amount := calculateRefundAmount(orderFull.OrderItems, req.OrderItemIds, orderFull.Order.Currency)
+			if refundShipping && !orderFull.Shipment.FreeShipping {
+				amount = amount.Add(orderFull.Shipment.CostDecimal(orderFull.Order.Currency))
 			}
+			refundAmount = &amount
+		}
+
+		if err := handler.Refund(ctx, orderFull.Payment, req.OrderUuid, refundAmount, orderFull.Order.Currency); err != nil {
+			slog.Default().ErrorContext(ctx, "stripe refund failed",
+				slog.String("err", err.Error()),
+				slog.String("orderUuid", req.OrderUuid),
+			)
+			return nil, status.Errorf(codes.Internal, "stripe refund failed: %v", err)
 		}
 	}
 
-	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds, req.Reason)
+	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds, req.Reason, refundShipping)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),
@@ -1527,6 +1553,19 @@ func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32, 
 		}
 	}
 	return dto.RoundForCurrency(total, currency)
+}
+
+// calculateFullRefundAmount calculates the total refund amount for a full refund (all items + optional shipping).
+// Used when doing a full refund on non-confirmed orders where we need an explicit amount for Stripe.
+func calculateFullRefundAmount(orderFull *entity.OrderFull, includeShipping bool) decimal.Decimal {
+	var total decimal.Decimal
+	for _, item := range orderFull.OrderItems {
+		total = total.Add(item.ProductPriceWithSale.Mul(item.Quantity))
+	}
+	if includeShipping && !orderFull.Shipment.FreeShipping {
+		total = total.Add(orderFull.Shipment.CostDecimal(orderFull.Order.Currency))
+	}
+	return dto.RoundForCurrency(total, orderFull.Order.Currency)
 }
 
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {

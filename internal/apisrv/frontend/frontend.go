@@ -55,10 +55,14 @@ func New(
 	reservationMgr *stockreserve.Manager,
 ) *Server {
 	// Set reservation manager on stripe processors if they support it
-	if sp, ok := stripePayment.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
+	if sp, ok := stripePayment.(interface {
+		SetReservationManager(dependency.StockReservationManager)
+	}); ok {
 		sp.SetReservationManager(reservationMgr)
 	}
-	if spt, ok := stripePaymentTest.(interface{ SetReservationManager(dependency.StockReservationManager) }); ok {
+	if spt, ok := stripePaymentTest.(interface {
+		SetReservationManager(dependency.StockReservationManager)
+	}); ok {
 		spt.SetReservationManager(reservationMgr)
 	}
 
@@ -1051,7 +1055,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 			}
 
 			// RefundOrder transitions RefundInProgress → Refunded, restores stock, records refunded items
-			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason); err != nil {
+			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason, true); err != nil {
 				slog.Default().ErrorContext(ctx, "can't finalize refund in DB",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),
@@ -1373,7 +1377,7 @@ func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.Submi
 
 	caseNumber, err := s.repo.Support().SubmitTicket(ctx, ticket)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't create support ticket", 
+		slog.Default().ErrorContext(ctx, "can't create support ticket",
 			slog.String("err", err.Error()),
 			slog.String("email", ticket.Email),
 		)

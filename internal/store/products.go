@@ -1512,17 +1512,31 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
 				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
 			}
+			// Populate order comment if present
+			if history.OrderComment != "" {
+				entry.OrderComment = sql.NullString{String: history.OrderComment, Valid: true}
+			}
 			// Populate financial fields from order item data
 			if history.OrderCurrency != "" {
 				itemPrice := item.ProductPriceDecimal()
 				itemPriceWithSale := item.ProductPriceWithSaleDecimal()
-				discountAmt := itemPrice.Sub(itemPriceWithSale).Mul(item.QuantityDecimal())
-				paidAmt := itemPriceWithSale.Mul(item.QuantityDecimal())
 
-				entry.PriceBeforeDiscount = decimal.NullDecimal{Decimal: itemPrice.Mul(item.QuantityDecimal()), Valid: true}
-				entry.DiscountAmount = decimal.NullDecimal{Decimal: discountAmt, Valid: true}
+				// Calculate total discount: sale discount + promo code discount
+				// sale discount per item = (itemPrice - itemPriceWithSale)
+				// promo discount is applied on top of sale price: itemPriceWithSale * (promoDiscount / 100)
+				saleDiscountPerItem := itemPrice.Sub(itemPriceWithSale)
+				promoDiscountPerItem := decimal.Zero
+				if history.PromoDiscount.IsPositive() {
+					promoDiscountPerItem = itemPriceWithSale.Mul(history.PromoDiscount).Div(decimal.NewFromInt(100))
+				}
+				totalDiscountPerItem := saleDiscountPerItem.Add(promoDiscountPerItem)
+				paidPerItem := itemPrice.Sub(totalDiscountPerItem)
+
+				qty := item.QuantityDecimal()
+				entry.PriceBeforeDiscount = decimal.NullDecimal{Decimal: itemPrice.Mul(qty), Valid: true}
+				entry.DiscountAmount = decimal.NullDecimal{Decimal: totalDiscountPerItem.Mul(qty), Valid: true}
 				entry.PaidCurrency = sql.NullString{String: history.OrderCurrency, Valid: true}
-				entry.PaidAmount = decimal.NullDecimal{Decimal: paidAmt, Valid: true}
+				entry.PaidAmount = decimal.NullDecimal{Decimal: paidPerItem.Mul(qty), Valid: true}
 				if history.PayoutBaseAmount.IsPositive() {
 					entry.PayoutBaseAmount = decimal.NullDecimal{Decimal: history.PayoutBaseAmount, Valid: true}
 					entry.PayoutBaseCurrency = sql.NullString{String: "EUR", Valid: true}
@@ -1530,9 +1544,9 @@ func (ms *MYSQLStore) ReduceStockForProductSizes(ctx context.Context, items []en
 			}
 			// Auto-set reason based on source
 			switch entity.StockChangeSource(history.Source) {
-			case entity.StockChangeSourceOrderReserved:
+			case entity.StockChangeSourceOrderPaid:
 				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonOrder), Valid: true}
-			case entity.StockChangeSourceOrderCustomReserved:
+			case entity.StockChangeSourceOrderCustom:
 				entry.Reason = sql.NullString{String: string(entity.StockChangeReasonCustomOrder), Valid: true}
 			}
 			historyEntries = append(historyEntries, entry)
@@ -1684,6 +1698,11 @@ func (ms *MYSQLStore) RecordStockChange(ctx context.Context, entries []entity.St
 		} else {
 			row["comment"] = nil
 		}
+		if e.OrderComment.Valid {
+			row["order_comment"] = e.OrderComment.String
+		} else {
+			row["order_comment"] = nil
+		}
 		// Financial columns
 		if e.PriceBeforeDiscount.Valid {
 			row["price_before_discount"] = e.PriceBeforeDiscount.Decimal
@@ -1813,7 +1832,7 @@ func (ms *MYSQLStore) GetStockChangeHistory(ctx context.Context, productId, size
 
 // GetStockChanges returns simplified stock changes for reporting API.
 // Uses LEFT JOIN to include SHIPPING entries (which have NULL product_id/size_id).
-func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, sku *string, source *string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
+func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
 	baseQuery := `
 		FROM product_stock_change_history psch
 		LEFT JOIN product p ON p.id = psch.product_id
@@ -1829,14 +1848,25 @@ func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time
 		"offset":   offset,
 	}
 
-	if sku != nil && *sku != "" {
-		baseQuery += ` AND (p.sku = :sku OR (psch.product_id IS NULL AND :sku = 'SHIPPING'))`
-		params["sku"] = *sku
+	if productId != nil {
+		baseQuery += ` AND psch.product_id = :productId`
+		params["productId"] = *productId
 	}
 
-	if source != nil && *source != "" {
+	if sizeId != nil {
+		baseQuery += ` AND psch.size_id = :sizeId`
+		params["sizeId"] = *sizeId
+	}
+
+	if source != "" {
 		baseQuery += ` AND psch.source = :source`
-		params["source"] = *source
+		params["source"] = source
+	}
+
+	if sortByDirection == entity.StockAdjustmentDirectionIncrease {
+		baseQuery += ` AND psch.quantity_delta > 0`
+	} else if sortByDirection == entity.StockAdjustmentDirectionDecrease {
+		baseQuery += ` AND psch.quantity_delta < 0`
 	}
 
 	// Count query
@@ -1861,12 +1891,13 @@ func (ms *MYSQLStore) GetStockChanges(ctx context.Context, dateFrom, dateTo time
 			COALESCE(psch.admin_username, '') as admin_username,
 			COALESCE(psch.reason, '') as reason,
 			COALESCE(psch.comment, '') as comment,
+			COALESCE(psch.order_comment, '') as order_comment,
 			COALESCE(psch.price_before_discount, '') as price_before_discount,
 			COALESCE(psch.discount_amount, '') as discount_amount,
 			COALESCE(psch.paid_currency, '') as paid_currency,
 			COALESCE(psch.paid_amount, '') as paid_amount,
 			COALESCE(psch.payout_base_amount, '') as payout_base_amount,
-			COALESCE(psch.payout_base_currency, '') as payout_base_currency
+			CASE WHEN psch.payout_base_amount IS NOT NULL THEN COALESCE(psch.payout_base_currency, '') ELSE '' END as payout_base_currency
 	` + baseQuery + `
 		ORDER BY psch.created_at ` + orderFactor.String() + `
 	`

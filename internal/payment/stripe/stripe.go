@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	curr "github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -172,6 +173,8 @@ func trimSecret(s string) string {
 // Refund creates a refund for the order via Stripe API.
 // If amount is nil, performs full refund. Otherwise refunds the specified amount in the given currency.
 // Requires payment with valid ClientSecret (PaymentIntent) and IsTransactionDone.
+// Each refund call generates a unique idempotency key based on orderUUID + timestamp to support
+// multiple partial refunds for the same order.
 func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error {
 	ok := payment.ClientSecret.Valid
 	if !ok {
@@ -200,7 +203,10 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 		params.Amount = stripe.Int64(amountCents)
 	}
 
-	params.SetIdempotencyKey(orderUUID)
+	// Use unique idempotency key per refund operation to support multiple partial refunds.
+	// Format: orderUUID_refund_<timestamp> ensures each refund call is unique.
+	idempotencyKey := fmt.Sprintf("%s_refund_%d", orderUUID, time.Now().UnixNano())
+	params.SetIdempotencyKey(idempotencyKey)
 
 	_, err := p.stripeClient.Refunds.New(params)
 	if err != nil {

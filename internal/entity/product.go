@@ -289,12 +289,12 @@ type ProductTranslationInsert struct {
 type StockChangeSource string
 
 const (
-	StockChangeSourceAdminNewProduct     StockChangeSource = "admin_new_product"
-	StockChangeSourceManualAdjustment    StockChangeSource = "manual_adjustment"
-	StockChangeSourceOrderReserved       StockChangeSource = "order_reserved"
-	StockChangeSourceOrderCustomReserved StockChangeSource = "order_custom_reserved"
-	StockChangeSourceOrderReturned       StockChangeSource = "order_returned"
-	StockChangeSourceOrderCancelled      StockChangeSource = "order_cancelled"
+	StockChangeSourceAdminNewProduct  StockChangeSource = "admin_new_product"
+	StockChangeSourceManualAdjustment StockChangeSource = "manual_adjustment"
+	StockChangeSourceOrderPaid        StockChangeSource = "order_paid"
+	StockChangeSourceOrderCustom      StockChangeSource = "order_custom"
+	StockChangeSourceOrderReturned    StockChangeSource = "order_returned"
+	StockChangeSourceOrderCancelled   StockChangeSource = "order_cancelled"
 )
 
 // StockChangeReason represents the reason for a stock change.
@@ -323,12 +323,12 @@ const (
 
 // ValidReasonsForSource maps each source to its allowed reasons.
 var ValidReasonsForSource = map[StockChangeSource][]StockChangeReason{
-	StockChangeSourceAdminNewProduct:     {StockChangeReasonInitialStock},
-	StockChangeSourceManualAdjustment:    {StockChangeReasonStockCount, StockChangeReasonDamage, StockChangeReasonLoss, StockChangeReasonFound, StockChangeReasonCorrection, StockChangeReasonReservedRelease, StockChangeReasonOther},
-	StockChangeSourceOrderReserved:       {StockChangeReasonOrder},
-	StockChangeSourceOrderCustomReserved: {StockChangeReasonCustomOrder},
-	StockChangeSourceOrderReturned:       {StockChangeReasonReturnToStock},
-	StockChangeSourceOrderCancelled:      {StockChangeReasonOrderCancelled},
+	StockChangeSourceAdminNewProduct:  {StockChangeReasonInitialStock},
+	StockChangeSourceManualAdjustment: {StockChangeReasonStockCount, StockChangeReasonDamage, StockChangeReasonLoss, StockChangeReasonFound, StockChangeReasonCorrection, StockChangeReasonReservedRelease, StockChangeReasonOther},
+	StockChangeSourceOrderPaid:        {StockChangeReasonOrder},
+	StockChangeSourceOrderCustom:      {StockChangeReasonCustomOrder},
+	StockChangeSourceOrderReturned:    {StockChangeReasonReturnToStock},
+	StockChangeSourceOrderCancelled:   {StockChangeReasonOrderCancelled},
 }
 
 // StockChangeSignPositive means the source only allows positive deltas.
@@ -344,12 +344,12 @@ const (
 
 // AllowedSignForSource maps each source to its allowed sign direction.
 var AllowedSignForSource = map[StockChangeSource]StockChangeSign{
-	StockChangeSourceAdminNewProduct:     StockChangeSignPositive,
-	StockChangeSourceManualAdjustment:    StockChangeSignBoth,
-	StockChangeSourceOrderReserved:       StockChangeSignNegative,
-	StockChangeSourceOrderCustomReserved: StockChangeSignNegative,
-	StockChangeSourceOrderReturned:       StockChangeSignPositive,
-	StockChangeSourceOrderCancelled:      StockChangeSignPositive,
+	StockChangeSourceAdminNewProduct:  StockChangeSignPositive,
+	StockChangeSourceManualAdjustment: StockChangeSignBoth,
+	StockChangeSourceOrderPaid:        StockChangeSignNegative,
+	StockChangeSourceOrderCustom:      StockChangeSignNegative,
+	StockChangeSourceOrderReturned:    StockChangeSignPositive,
+	StockChangeSourceOrderCancelled:   StockChangeSignPositive,
 }
 
 // IsValidReasonForSource checks if a reason is valid for a given source.
@@ -396,6 +396,7 @@ type StockChangeInsert struct {
 	ReferenceId         sql.NullString      `db:"reference_id"`
 	Reason              sql.NullString      `db:"reason"`
 	Comment             sql.NullString      `db:"comment"`
+	OrderComment        sql.NullString      `db:"order_comment"`
 	PriceBeforeDiscount decimal.NullDecimal `db:"price_before_discount"`
 	DiscountAmount      decimal.NullDecimal `db:"discount_amount"`
 	PaidCurrency        sql.NullString      `db:"paid_currency"`
@@ -419,6 +420,7 @@ type StockChange struct {
 	ReferenceId         string          `db:"reference_id"`
 	Reason              string          `db:"reason"`
 	Comment             string          `db:"comment"`
+	OrderComment        string          `db:"order_comment"`
 	PriceBeforeDiscount string          `db:"price_before_discount"`
 	DiscountAmount      string          `db:"discount_amount"`
 	PaidCurrency        string          `db:"paid_currency"`
@@ -434,6 +436,8 @@ type StockHistoryParams struct {
 	OrderId          int
 	OrderUUID        string
 	OrderCurrency    string
+	OrderComment     string          // order comment from customer
+	PromoDiscount    decimal.Decimal // promo code discount percentage (0-100)
 	PayoutBaseAmount decimal.Decimal // total payout in base currency (EUR)
 }
 
@@ -450,6 +454,7 @@ type StockChangeRow struct {
 	AdminUsername       string          `db:"admin_username"`
 	Reason              string          `db:"reason"`
 	Comment             string          `db:"comment"`
+	OrderComment        string          `db:"order_comment"`
 	PriceBeforeDiscount string          `db:"price_before_discount"`
 	DiscountAmount      string          `db:"discount_amount"`
 	PaidCurrency        string          `db:"paid_currency"`

@@ -411,17 +411,21 @@ message ListStockChangeHistoryResponse {
 message ListStockChangesRequest {
   google.protobuf.Timestamp from = 1; // Required: start date (inclusive)
   google.protobuf.Timestamp to = 2; // Required: end date (inclusive)
-  optional string sku = 3; // Optional: filter by SKU
-  optional string source = 4; // Optional: filter by source type
+  optional int32 product_id = 3; // Optional: filter by product ID
+  common.StockChangeSource source = 4; // Optional: filter by source type (enum, UNSPECIFIED = no filter)
   int32 limit = 5; // Pagination limit: 0=default(100), -1=all, >0=specified (max 10000)
   int32 offset = 6; // Pagination offset (ignored when limit=-1)
   optional common.OrderFactor order_factor = 7; // Optional: default DESC (newest first)
+  optional int32 size_id = 8; // Optional: filter by size ID
+  optional common.StockAdjustmentDirection sort_by_direction = 9; // Optional: sort by stock adjustment direction (increase/decrease)
 }
 
 message StockChangeRow {
   google.protobuf.Timestamp date = 1;
   string sku = 2;
   google.type.Decimal amount_changed = 3;
+  common.StockAdjustmentDirection direction = 14; // INCREASE or DECREASE derived from amount_changed sign
+  google.type.Decimal remaining_stock = 15; // Stock level after this change
   string source = 4;
   string reference = 5;
   optional common.StockChangeReason reason = 6;
@@ -835,6 +839,10 @@ message RefundOrderRequest {
   repeated int32 order_item_ids = 2;
   // Optional reason for the refund (stored in order for audit).
   string reason = 3;
+  // Whether to include shipping fee in the refund amount.
+  // For full refund of not-yet-shipped orders this is automatically true.
+  // For partial refunds, the caller decides whether to refund shipping.
+  bool refund_shipping = 4;
 }
 
 message RefundOrderResponse {}
