@@ -1,0 +1,113 @@
+---
+description: Protobuf definition and code generation conventions
+globs: proto/**/*.proto
+alwaysApply: false
+---
+
+# Protobuf Rules
+
+## Rationale
+
+All API contracts are defined proto-first. Changes to the API **always start** in `.proto` files. Generated code must never be edited manually.
+
+## File Organization
+
+```
+proto/
+├── admin/admin/admin.proto    → AdminService (JWT-protected)
+├── auth/auth/auth.proto       → AuthService (login, user management)
+├── common/common/             → Shared message types
+│   ├── product.proto
+│   ├── order.proto
+│   ├── buyer.proto
+│   ├── dict.proto
+│   ├── filter.proto
+│   ├── hero.proto
+│   ├── media.proto
+│   ├── payment.proto
+│   └── ...
+└── frontend/frontend/         → FrontendService (public)
+```
+
+## Naming Conventions
+
+- **Package names:** lowercase, single word (`admin`, `common`, `auth`)
+- **Service names:** PascalCase with `Service` suffix (`AdminService`, `FrontendService`)
+- **RPC methods:** PascalCase verb-noun (`GetProductByID`, `UpsertProduct`, `ListOrders`)
+- **Messages:** PascalCase. Request/Response pairs match RPC name:
+  - `GetProductByIDRequest` / `GetProductByIDResponse`
+  - `UpsertProductRequest` / `UpsertProductResponse`
+- **Fields:** snake_case (`product_id`, `order_uuid`, `created_at`)
+- **Enums:** SCREAMING_SNAKE_CASE with type prefix (`GENDER_ENUM_MALE`, `SEASON_ENUM_SS`)
+- **Enum zero value:** always `*_UNKNOWN` (e.g., `GENDER_ENUM_UNKNOWN = 0`)
+
+## gRPC-Gateway Annotations
+
+Every RPC must include `google.api.http` annotations for REST/JSON exposure:
+
+```protobuf
+// ✅ GET for reads, POST for mutations
+rpc GetProductByID(GetProductByIDRequest) returns (GetProductByIDResponse) {
+  option (google.api.http) = {get: "/api/admin/product/{id}"};
+}
+
+rpc UpsertProduct(UpsertProductRequest) returns (UpsertProductResponse) {
+  option (google.api.http) = {
+    post: "/api/admin/product/upsert"
+    body: "*"
+  };
+}
+```
+
+### URL Conventions
+
+- Admin routes: `/api/admin/*`
+- Auth routes: `/api/auth/*`
+- Frontend routes: `/api/frontend/*`
+- Use kebab-case for URL path segments
+- Use `{field_name}` for path parameters
+
+## Shared Types
+
+- Place reusable message types in `proto/common/common/`.
+- Import common types in service protos: `import "common/product.proto";`
+- Use `google.type.Decimal` for monetary/decimal values — never `float` or `double`.
+- Use `google.protobuf.Timestamp` for all date/time fields.
+
+```protobuf
+// ✅ Use google.type.Decimal for money
+import "google/type/decimal.proto";
+
+message ProductPrice {
+  string currency = 1;
+  google.type.Decimal price = 2;
+}
+
+// ❌ Never use float/double for money
+message BadPrice {
+  double price = 1;  // WRONG
+}
+```
+
+## Code Generation
+
+- Run `make proto` (or `buf generate`) to regenerate.
+- Generated output goes to `proto/gen/` — **never edit these files**.
+- Format protos before generation: `make format-proto`.
+- Lint protos: `make lint-proto` (uses `buf lint`).
+
+## Adding a New RPC
+
+1. Define request/response messages in the appropriate `.proto` file
+2. Add the RPC method with `google.api.http` annotation
+3. Run `make proto` to regenerate
+4. Implement the handler in `internal/apisrv/admin/` or `internal/apisrv/frontend/`
+5. Add DTO conversion functions in `internal/dto/` if needed
+6. Update `internal/dependency/dependency.go` if new store methods are needed
+7. Run `make generate-mocks` to regenerate mocks
+
+## Cross-References
+
+- API service layer: [100-grpc-api.mdc](mdc:100-grpc-api.mdc)
+- DTO conversions: [200-dto.mdc](mdc:200-dto.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

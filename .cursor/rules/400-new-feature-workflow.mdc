@@ -1,0 +1,103 @@
+---
+description: End-to-end workflow for adding new features across the full stack
+alwaysApply: false
+---
+
+# New Feature Workflow
+
+## Rationale
+
+Adding a feature in this project touches multiple layers in a specific order. Following this workflow prevents missed steps, broken mocks, and inconsistent types.
+
+## Before Starting
+
+1. **Search the codebase** for similar existing features. Find the closest analogy and use it as a template.
+2. **Clarify requirements** if the scope is ambiguous — don't guess.
+3. **Identify which layers are affected** — not every feature touches all layers.
+
+## Full-Stack Feature Checklist
+
+Work **top-down** (API contract → implementation → tests):
+
+### Step 1: Proto Definition (if API-exposed)
+
+- [ ] Add/modify messages in `proto/common/common/*.proto` for shared types
+- [ ] Add/modify RPC in `proto/admin/admin/admin.proto` or `proto/frontend/frontend/frontend.proto`
+- [ ] Include `google.api.http` annotation with correct route
+- [ ] Run `make proto` to regenerate
+
+See [100-protobuf.mdc](mdc:100-protobuf.mdc) for conventions.
+
+### Step 2: Entity Structs
+
+- [ ] Add/modify structs in `internal/entity/<domain>.go`
+- [ ] Use `*Insert` suffix for write models, `*Full` for read models
+- [ ] Include `db:"column_name"` and `valid:"..."` tags
+- [ ] Use `sql.Null*` for nullable fields, `decimal.Decimal` for money
+
+See [200-entity.mdc](mdc:200-entity.mdc) for conventions.
+
+### Step 3: Database Migration (if schema changes)
+
+- [ ] Check latest migration number: `ls -1 internal/store/sql/ | tail -1`
+- [ ] Create `internal/store/sql/NNNN_description.sql` with Up and Down
+- [ ] Use `NULL DEFAULT NULL` for new columns
+
+See [200-migration-workflow.mdc](mdc:200-migration-workflow.mdc) for step-by-step guide.
+
+### Step 4: Dependency Interface
+
+- [ ] Add method signature to the appropriate interface in `internal/dependency/dependency.go`
+- [ ] Include Go doc comment describing the method's purpose
+- [ ] Run `make generate-mocks` to regenerate mocks
+
+See [200-dependency.mdc](mdc:200-dependency.mdc) for conventions.
+
+### Step 5: Store Implementation
+
+- [ ] Implement the method in `internal/store/<domain>.go`
+- [ ] Use `sqlx` named parameters — never string concatenation
+- [ ] List columns explicitly in SELECT — never `SELECT *`
+- [ ] Use `Tx()` for multi-statement operations
+
+See [200-store.mdc](mdc:200-store.mdc) for conventions.
+
+### Step 6: DTO Conversion (if API-exposed)
+
+- [ ] Add conversion functions in `internal/dto/<domain>.go`
+- [ ] Follow `ConvertPb*ToEntity*` / `ConvertEntityTo*` naming
+- [ ] Handle nullable fields and decimal conversions
+
+See [200-dto.mdc](mdc:200-dto.mdc) for conventions.
+
+### Step 7: API Handler (if API-exposed)
+
+- [ ] Implement the gRPC handler in `internal/apisrv/admin/` or `internal/apisrv/frontend/`
+- [ ] Validate input, convert via DTO, call store, convert response
+- [ ] Set gRPC status codes at this layer only
+- [ ] Access store via `s.repo.Domain().Method(ctx, ...)`
+
+See [100-grpc-api.mdc](mdc:100-grpc-api.mdc) for conventions.
+
+### Step 8: Tests
+
+- [ ] Write unit tests for the API handler using mockery mocks
+- [ ] Test success path, validation errors, and store errors
+- [ ] Use `t.Run()` subtests with fresh mocks per case
+
+See [300-testing.mdc](mdc:300-testing.mdc) for conventions.
+
+## Quick Reference: Which Files to Touch
+
+| Change Type | Files |
+|---|---|
+| New API endpoint | proto → entity → migration → dependency → store → dto → apisrv → test |
+| New DB column | migration → entity → store queries |
+| New business logic (no API) | dependency → store → test |
+| New payment method | entity → dependency → payment → store → dto → proto |
+| Bug fix in store | store → test |
+
+## Cross-References
+
+- Core rules: [000-core.mdc](mdc:000-core.mdc)
+- Project overview: [000-project-overview.mdc](mdc:000-project-overview.mdc)

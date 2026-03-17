@@ -1,0 +1,121 @@
+---
+description: MySQL store / data access layer conventions
+globs: internal/store/**/*.go
+alwaysApply: false
+---
+
+# Store Layer Rules
+
+## Rationale
+
+The store layer (`internal/store/`) is the sole data access layer. It uses raw SQL via `sqlx` with named parameters. Consistent patterns here prevent SQL injection, ensure proper transaction handling, and maintain readability.
+
+## Architecture
+
+Each domain has its own store file and a private struct embedding `*MYSQLStore`:
+
+```go
+// ✅ Standard store struct pattern
+type productStore struct {
+    *MYSQLStore
+}
+
+// ✅ Factory method on MYSQLStore returns the dependency interface
+func (ms *MYSQLStore) Products() dependency.Products {
+    return &productStore{MYSQLStore: ms}
+}
+```
+
+## SQL Query Conventions
+
+- Write all SQL **inline** in store methods — no ORM, no query builder.
+- Use `sqlx` named parameters (`:paramName`) for all dynamic values — never string concatenation.
+- Use UPPERCASE for all SQL keywords (`SELECT`, `FROM`, `WHERE`, `JOIN`).
+- Use `snake_case` for all table and column names.
+- Use helper functions `ExecNamedLastId`, `SelectContext`, `GetContext` from the store package.
+
+```go
+// ✅ Named parameters with sqlx
+query := `
+    SELECT id, brand, color
+    FROM product
+    WHERE id = :productId AND deleted_at IS NULL`
+
+params := map[string]any{
+    "productId": id,
+}
+```
+
+```go
+// ❌ Never concatenate values into SQL
+query := fmt.Sprintf("SELECT * FROM product WHERE id = %d", id) // SQL INJECTION RISK
+```
+
+## Transaction Pattern
+
+Use the `Tx()` method for operations that need atomicity:
+
+```go
+// ✅ Transaction via Repository.Tx()
+err := s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+    if _, err := insertProduct(ctx, rep, product, id, sku); err != nil {
+        return fmt.Errorf("insert product: %w", err)
+    }
+    if err := insertProductTranslations(ctx, rep, id, translations); err != nil {
+        return fmt.Errorf("insert translations: %w", err)
+    }
+    return nil
+})
+```
+
+- Transaction functions receive `(ctx context.Context, rep dependency.Repository)`.
+- Use the `rep` parameter (not the outer store) inside transaction callbacks to ensure queries run within the transaction.
+- Return an error to rollback; return nil to commit.
+
+## Helper Functions
+
+Use existing store generic helpers instead of raw `sqlx` calls:
+
+| Helper | Use For |
+|---|---|
+| `QueryListNamed[T](ctx, db, query, params)` | SELECT multiple rows (generic, returns `[]T`) |
+| `QueryNamedOne[T](ctx, db, query, params)` | SELECT single row (generic, returns `T`) |
+| `QueryCountNamed(ctx, db, query, params)` | COUNT queries (returns `int`) |
+| `ExecNamedLastId(ctx, db, query, params)` | INSERT returning last insert ID |
+
+For UPDATE/DELETE operations, use `rep.DB().NamedExecContext(ctx, query, params)` (raw `sqlx`).
+
+## Pagination Pattern
+
+Always use `LIMIT :limit OFFSET :offset` for paginated queries. Return `([]T, totalCount, error)`:
+
+```go
+func (ps *productStore) GetProductsPaged(ctx context.Context, limit, offset int, ...) ([]entity.Product, int, error) {
+    // Count query
+    countQuery := `SELECT COUNT(*) FROM product WHERE ...`
+    // Data query with LIMIT/OFFSET
+    dataQuery := `SELECT ... FROM product WHERE ... LIMIT :limit OFFSET :offset`
+    // ...
+}
+```
+
+## Naming Conventions
+
+- Store files: `products.go`, `order.go`, `hero.go` — one per domain.
+- Private helper functions: `insertProduct()`, `updateOrderStatus()` — verb + noun.
+- Public methods: match the interface in `dependency.go` exactly.
+
+## Do Not
+
+- Never use an ORM (GORM, ent, etc.)
+- Never use `SELECT *` in production queries — always list columns explicitly. Exception: `table.*` (e.g., `SELECT co.*`) is acceptable in JOINs when all columns of that table are needed.
+- Never log SQL queries with parameter values in production (security risk)
+- Never call `os.Exit()` or `panic()` in store methods
+
+## Cross-References
+
+- SQL style guide: [200-sql-style.mdc](mdc:200-sql-style.mdc)
+- Database migrations: [200-database.mdc](mdc:200-database.mdc)
+- Interface contracts: [200-dependency.mdc](mdc:200-dependency.mdc)
+- Entity models: [200-entity.mdc](mdc:200-entity.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

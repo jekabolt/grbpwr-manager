@@ -1,0 +1,196 @@
+---
+description: Testing conventions, mock usage, and quality gates
+globs: **/*_test.go
+alwaysApply: false
+---
+
+# Testing Rules
+
+## Rationale
+
+Tests use mockery-generated mocks from `internal/dependency/mocks/` and follow table-driven test patterns. Consistent test structure ensures readability and maintainability.
+
+## Test Framework
+
+- **Testing:** standard `testing` package
+- **Assertions:** `github.com/stretchr/testify/assert` and `testify/mock`
+- **Mocks:** `mockery`-generated from `internal/dependency/dependency.go`
+
+## File Organization
+
+- Test files are **co-located** with source: `products.go` → `products_test.go`
+- Test package: same package as source (e.g., `package admin`, `package store`)
+- Integration tests that need MySQL: `internal/store/mysql_test.go`
+
+## Test Structure
+
+Use subtests with `t.Run()` for organized test cases:
+
+```go
+// ✅ Standard test structure
+func TestGetProductByID(t *testing.T) {
+    t.Run("Successful retrieval", func(t *testing.T) {
+        // Setup
+        ctx := context.Background()
+        mockRepo := mocks.NewRepository(t)
+        mockProducts := mocks.NewProducts(t)
+
+        // Configure mocks
+        mockRepo.On("Products").Return(mockProducts)
+        mockProducts.On("GetProductByIdShowHidden", mock.Anything, 1).
+            Return(&entity.ProductFull{...}, nil)
+
+        // Execute
+        resp, err := server.GetProductByID(ctx, req)
+
+        // Assert
+        assert.NoError(t, err)
+        assert.NotNil(t, resp)
+        assert.Equal(t, expected, resp.Product)
+    })
+
+    t.Run("Product not found", func(t *testing.T) {
+        // ...
+    })
+
+    t.Run("Invalid ID", func(t *testing.T) {
+        // ...
+    })
+}
+```
+
+## Mock Setup Pattern
+
+Always create fresh mocks per subtest using the `t` parameter:
+
+```go
+// ✅ Fresh mocks per subtest — pass t for automatic cleanup
+mockRepo := mocks.NewRepository(t)
+mockBucket := mocks.NewFileStore(t)
+mockMailer := mocks.NewMailer(t)
+mockStripe := mocks.NewInvoicer(t)
+mockStripeTest := mocks.NewInvoicer(t)
+mockRe := mocks.NewRevalidationService(t)
+
+server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
+```
+
+```go
+// ❌ Don't reuse mocks across subtests
+mockRepo := mocks.NewRepository(t) // shared — expectations leak between subtests
+```
+
+## Mock Expectations
+
+- Use `mock.Anything` for `context.Context` parameters.
+- Use `mock.AnythingOfType("string")` for dynamic string values.
+- Use `mock.MatchedBy(func)` for custom matchers.
+- Call `mockObj.AssertExpectations(t)` at the end of tests that need strict verification.
+
+```go
+// ✅ Mock expectation patterns
+mockBucket.On("UploadContentImage",
+    mock.Anything,                    // ctx
+    testRawB64Image,                  // exact match
+    testBaseFolder,                   // exact match
+    mock.AnythingOfType("string"),    // dynamic name
+).Return(expectedMedia, nil)
+
+// ✅ Custom matcher
+mockBucket.On("UploadContentVideo",
+    mock.Anything,
+    testRawVideo,
+    testBaseFolder,
+    mock.MatchedBy(func(name string) bool {
+        return len(name) == 17 // timestamp format
+    }),
+    testContentType,
+).Return(&pb_common.MediaFull{}, nil)
+```
+
+## Sub-Repository Mock Chaining
+
+When the code accesses sub-repositories via `repo.Products()`, `repo.Order()`, etc., mock the chain:
+
+```go
+// ✅ Chain sub-repository mocks
+mockProducts := mocks.NewProducts(t)
+mockRepo.On("Products").Return(mockProducts)
+mockProducts.On("GetProductByIdShowHidden", mock.Anything, 1).Return(product, nil)
+```
+
+## Test Constants
+
+Define test constants at the top of test files:
+
+```go
+const (
+    testBaseFolder  = "test-base-folder"
+    testRawB64Image = "data:image/png;base64,iVBORw0KGgo..."
+    testContentType = "video/mp4"
+)
+```
+
+## Error Testing
+
+Test both success and failure paths:
+
+```go
+// ✅ Test error cases
+t.Run("Upload failure", func(t *testing.T) {
+    expectedErr := errors.New("upload failed")
+    mockBucket.On("UploadContentImage", ...).Return(nil, expectedErr)
+
+    resp, err := server.UploadContentImage(ctx, req)
+
+    assert.Error(t, err)
+    assert.Nil(t, resp)
+    assert.Equal(t, expectedErr, err)
+})
+```
+
+## gRPC Status Code Testing
+
+For API layer tests, verify gRPC status codes:
+
+```go
+// ✅ Verify gRPC status codes
+st, ok := status.FromError(err)
+assert.True(t, ok)
+assert.Equal(t, codes.InvalidArgument, st.Code())
+```
+
+## Running Tests
+
+```bash
+# Run all tests
+go test ./...
+
+# Run with coverage
+make cov
+
+# Run specific package tests
+go test ./internal/apisrv/admin/...
+
+# Run specific test
+go test ./internal/apisrv/admin/ -run TestGetProductByID
+```
+
+## Coverage
+
+- Aim for **≥70%** line coverage on business-critical packages (`internal/apisrv/`, `internal/store/`, `internal/payment/`).
+- Run `make cov` to check coverage. Review uncovered lines before merging.
+
+## Do Not
+
+- Never use `time.Sleep()` in tests — use channels, contexts, or test clocks.
+- Never make real HTTP/gRPC calls in unit tests — always mock external dependencies.
+- Never test generated code (`proto/gen/`, `internal/dependency/mocks/`, `openapi/gen/`).
+- Prefer `assert.*` functions over `t.Fatal()` for test assertions. Use `t.Fatal()` / `require.*` only for test setup failures where continuing the test is meaningless (e.g., failed to load a test fixture).
+- Never hardcode absolute file paths in tests.
+
+## Cross-References
+
+- Mock generation: [200-dependency.mdc](mdc:200-dependency.mdc)
+- API service layer: [100-grpc-api.mdc](mdc:100-grpc-api.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

@@ -1,0 +1,91 @@
+---
+description: Stripe payment integration conventions
+globs: internal/payment/**/*.go
+alwaysApply: false
+---
+
+# Payment / Stripe Integration Rules
+
+## Rationale
+
+Payment processing is security-critical. Consistent patterns prevent double-charges, ensure proper refund handling, and maintain audit trails.
+
+## Architecture
+
+- **Dual Stripe accounts:** Production (`CARD`) and test (`CARD_TEST`) processors run simultaneously.
+- **Pre-order PaymentIntent flow:** PaymentIntents are created before order submission, then associated with the order.
+- **Payment monitoring:** Background goroutines monitor pending payments for completion.
+- **Reconciliation worker:** Cleans up orphaned pre-order PaymentIntents.
+
+## Key Interfaces
+
+Payment processing is defined via the `Invoicer` interface in [`internal/dependency/dependency.go`](internal/dependency/dependency.go):
+
+```go
+type Invoicer interface {
+    GetOrderInvoice(ctx context.Context, orderUUID string) (*entity.PaymentInsert, error)
+    CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string, idempotencyKey string) (*stripe.PaymentIntent, error)
+    UpdatePaymentIntentWithOrder(ctx context.Context, paymentIntentID string, order entity.OrderFull) error
+    Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error
+    // ...
+}
+```
+
+## Monetary Value Rules
+
+- **Always** use `shopspring/decimal.Decimal` for amounts — never `float64` or `int64` cents.
+- Convert to Stripe's cent-based `int64` only at the Stripe API boundary.
+- Round amounts using `decimal.Round(2)` before sending to Stripe.
+- Always specify currency explicitly — never assume a default.
+
+```go
+// ✅ Decimal until the Stripe boundary
+amount := decimal.NewFromString("99.99")
+stripeAmount := amount.Mul(decimal.NewFromInt(100)).IntPart() // Convert to cents at boundary
+
+// ❌ Never use float for money
+var amount float64 = 99.99
+```
+
+## Idempotency
+
+- Always use idempotency keys for PaymentIntent creation to prevent duplicate charges.
+- Idempotency keys should be UUIDs or deterministic hashes of the operation.
+- Handle `ErrPaymentAlreadyCompleted` when a PI was already used.
+
+## Error Handling
+
+- Stripe API errors should be wrapped with context: `fmt.Errorf("create payment intent: %w", err)`.
+- Never expose Stripe error details to end users — log them and return generic gRPC errors.
+- Handle network timeouts gracefully — Stripe operations are idempotent by design.
+
+## Refund Rules
+
+- Full refunds: pass `nil` for amount.
+- Partial refunds: pass the specific `*decimal.Decimal` amount in order currency.
+- Non-Stripe payment methods (BANK_INVOICE, CASH): refund is a no-op.
+- Always record refund reason for audit trail.
+
+## Supported Payment Methods
+
+Defined in `entity.PaymentMethodName`:
+
+| Method | Description |
+|---|---|
+| `CARD` | Production Stripe |
+| `CARD_TEST` | Test Stripe |
+| `BANK_INVOICE` | Manual bank transfer |
+| `CASH` | Cash on delivery |
+
+## Do Not
+
+- Never store raw Stripe API keys in code — use environment variables via config.
+- Never log full PaymentIntent objects (contain sensitive data).
+- Never modify payment state without going through the `Invoicer` interface.
+- Never call Stripe APIs directly from the API service layer — always go through `internal/payment/stripe/`.
+
+## Cross-References
+
+- Interface contracts: [200-dependency.mdc](mdc:200-dependency.mdc)
+- Order processing: [200-store.mdc](mdc:200-store.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

@@ -1,0 +1,285 @@
+---
+description: Project overview and architecture guide for grbpwr-products-manager
+alwaysApply: false
+---
+
+# GRBPWR Products Manager — Project Overview
+
+## What This Project Is
+
+**grbpwr-products-manager** is a Go backend service that powers the **GRBPWR** fashion e-commerce platform. It serves as the complete backend API handling product catalog management, order processing, payment integration, analytics, and content management for a clothing brand storefront.
+
+**Module path:** `github.com/jekabolt/grbpwr-manager`
+**Go version:** 1.26+
+**Database:** MySQL (via `sqlx` + `golang-migrate`)
+**API transport:** gRPC with gRPC-Gateway (REST/JSON over HTTP)
+
+---
+
+## Architecture Overview
+
+```
+cmd/main.go          → CLI entrypoint (cobra)
+  └─ app/app.go      → Application bootstrap & lifecycle
+       ├─ internal/apisrv/admin/      → Admin gRPC service (JWT-protected)
+       ├─ internal/apisrv/frontend/   → Public frontend gRPC service
+       ├─ internal/apisrv/auth/       → Authentication service (JWT)
+       ├─ internal/api/http/          → HTTP server (gRPC-Gateway + Swagger UI)
+       ├─ internal/store/             → MySQL data access layer
+       ├─ internal/payment/stripe/    → Stripe payment processing
+       ├─ internal/mail/              → Transactional email (Resend API)
+       ├─ internal/bucket/            → S3-compatible media storage (MinIO)
+       ├─ internal/cache/             → In-memory dictionary/settings cache
+       ├─ internal/analytics/         → GA4 + BigQuery analytics pipeline
+       └─ internal/dependency/        → Interface definitions (contracts)
+```
+
+### Key Design Patterns
+
+- **Interface-driven architecture:** All major subsystems are defined as interfaces in [`internal/dependency/dependency.go`](internal/dependency/dependency.go). The [`Repository`](internal/dependency/dependency.go:390) interface is the central data access contract.
+- **Dependency injection:** [`app.App`](app/app.go:41) wires all dependencies at startup and passes them to service constructors.
+- **Proto-first API design:** All API contracts are defined in `.proto` files under `proto/`, generating Go code, gRPC stubs, REST gateway handlers, and Swagger docs.
+- **Background workers:** Several goroutine-based workers run alongside the API server:
+  - **Order cleanup** — expires stuck/abandoned orders
+  - **Stripe reconciliation** — cleans orphaned pre-order PaymentIntents
+  - **GA4 sync** — periodically fetches analytics from GA4/BigQuery and caches locally
+  - **Mail worker** — async email queue processing
+
+---
+
+## Directory Structure
+
+| Directory | Purpose |
+|---|---|
+| `cmd/` | CLI entrypoint (`main.go`, `run.go`) using Cobra |
+| `app/` | Application lifecycle (start/stop, dependency wiring) |
+| `config/` | Configuration loading (TOML + env vars via Viper) |
+| `proto/` | Protobuf definitions: `admin/`, `auth/`, `common/`, `frontend/` |
+| `internal/apisrv/admin/` | Admin API service implementation (product CRUD, orders, settings, metrics, support) |
+| `internal/apisrv/frontend/` | Public API service (catalog browsing, order submission, newsletter, support tickets) |
+| `internal/apisrv/auth/` | JWT authentication service |
+| `internal/api/http/` | HTTP server setup, gRPC-Gateway mux, Swagger UI, health checks |
+| `internal/store/` | MySQL repository implementation (all SQL queries) |
+| `internal/store/sql/` | SQL migration files (`0001_initial_setup.sql` through `0044_*`) |
+| `internal/entity/` | Domain entities / data models (Go structs) |
+| `internal/dto/` | Data transfer objects (API ↔ service layer conversions) |
+| `internal/dependency/` | Interface definitions for all subsystems + mock generation |
+| `internal/payment/stripe/` | Stripe payment processing (PaymentIntents, refunds, monitoring) |
+| `internal/mail/` | Email service (Resend API, queue worker, templates) |
+| `internal/bucket/` | S3/MinIO file storage (image upload, WebP conversion, blurhash) |
+| `internal/cache/` | In-memory cache for dictionary data and settings |
+| `internal/analytics/ga4/` | Google Analytics 4 Data API client |
+| `internal/analytics/bigquery/` | BigQuery analytics queries (funnel, engagement, errors, etc.) |
+| `internal/analytics/ga4sync/` | Background worker syncing GA4 → MySQL cache |
+| `internal/currency/` | Currency handling utilities |
+| `internal/circuitbreaker/` | Circuit breaker for external service calls (GA4, BigQuery) |
+| `internal/ordercleanup/` | Background worker for expired order cleanup |
+| `internal/stockreserve/` | Temporary stock reservation manager |
+| `internal/stripereconcile/` | Background worker for Stripe PaymentIntent cleanup |
+| `internal/revalidation/` | Vercel ISR revalidation triggers |
+| `internal/middleware/` | HTTP middleware (client ID tracking) |
+| `internal/preorderpayment/` | Pre-order payment intent store |
+| `internal/ratelimit/` | Rate limiting for API endpoints |
+| `internal/metricscache/` | Metrics caching layer |
+| `openapi/` | OpenAPI specs (Resend email API) + generated client |
+| `log/` | Structured logging configuration |
+
+---
+
+## API Layer
+
+### Three gRPC Services
+
+1. **`AuthService`** ([`proto/auth/auth/auth.proto`](proto/auth/auth/auth.proto)) — Login, create/delete admin users, change password. Routes: `/api/auth/*`
+
+2. **`AdminService`** ([`proto/admin/admin/admin.proto`](proto/admin/admin/admin.proto)) — JWT-protected admin operations. Routes: `/api/admin/*`
+   - Product CRUD, stock management, stock change history
+   - Order management (list, refund, cancel, deliver, tracking, custom orders)
+   - Promo code management
+   - Hero/homepage content management
+   - Archive (lookbook) management
+   - Site settings (shipping carriers, payment methods, announcements)
+   - Support ticket management
+   - Business metrics & analytics dashboard
+   - Media/content upload (images, videos)
+
+3. **`FrontendService`** (defined in `proto/frontend/`) — Public storefront API. Routes: `/api/frontend/*`
+   - Product catalog browsing (paged, filtered, sorted)
+   - Order submission with Stripe pre-order PaymentIntent flow
+   - Order lookup by UUID + email
+   - Order cancellation/return by customer
+   - Newsletter subscribe/unsubscribe
+   - Back-in-stock notifications (NotifyMe / waitlist)
+   - Archive browsing
+   - Support ticket submission
+   - Dictionary (categories, sizes, colors, etc.)
+
+### API Transport
+
+- gRPC services are exposed as **REST/JSON** via **gRPC-Gateway** annotations in proto files
+- Swagger UI served at the HTTP endpoint for API documentation
+- HTTP server configured in [`internal/api/http/`](internal/api/http/) with CORS, health checks
+
+---
+
+## Data Layer
+
+### MySQL Store
+
+The primary data store is MySQL, accessed through [`internal/store/`](internal/store/). The store implements the `Repository` interface (defined in [`internal/dependency/dependency.go`](internal/dependency/dependency.go)) which provides sub-repositories:
+
+- `Products()` — Product CRUD, stock management, waitlist, stock change history
+- `Order()` — Full order lifecycle (create → payment → ship → deliver/refund/cancel)
+- `Hero()` — Homepage hero content
+- `Promo()` — Promotional codes and vouchers
+- `Admin()` — Admin user management
+- `Cache()` — Dictionary/settings cache
+- `Mail()` — Email queue persistence
+- `Archive()` — Lookbook/archive collections
+- `GA4Data()` — GA4 analytics data store
+- `BQCache()` — BigQuery analytics cache store
+- `SyncStatus()` — Analytics sync status tracking
+- `Subscribers()` — Newsletter subscriptions
+- `Metrics()` — Business metrics
+- `Inventory()` — Inventory metrics and health
+- `Retention()` — Customer retention and cohort analysis
+- `Analytics()` — Analytics metrics
+- `Media()` — Media asset registry
+- `Settings()` — Shipping carriers, payment methods, site config
+- `Support()` — Customer support tickets
+- `Language()` — Language/i18n management
+
+### Transactions
+
+The store supports **nested transactions** via `Tx()`, `TxBegin()`, `TxCommit()`, `TxRollback()` methods on the Repository interface.
+
+### Migrations
+
+SQL migrations live in [`internal/store/sql/`](internal/store/sql/) numbered `0001` through `0044`. Auto-migration is configurable.
+
+---
+
+## Payment System
+
+### Stripe Integration ([`internal/payment/stripe/`](internal/payment/stripe/))
+
+- **Dual Stripe accounts:** Production (`CARD`) and test (`CARD_TEST`) processors run simultaneously
+- **Pre-order PaymentIntent flow:** PaymentIntents are created before order submission for card payments, then associated with the order
+- **Payment monitoring:** Background goroutines monitor pending payments for completion
+- **Refunds:** Full and partial refunds with per-item tracking
+- **Reconciliation worker:** Cleans up orphaned pre-order PaymentIntents
+
+### Supported Payment Methods
+
+Defined in entity layer: `CARD`, `CARD_TEST`, `BANK_INVOICE`, `CASH`
+
+---
+
+## Analytics Pipeline
+
+### GA4 + BigQuery ([`internal/analytics/`](internal/analytics/))
+
+- **GA4 Data API client** — Fetches daily metrics, product page views, country sessions, ecommerce data
+- **BigQuery client** — Runs complex analytics queries (funnel analysis, user journeys, device funnels, engagement metrics, error tracking, etc.)
+- **GA4 sync worker** — Periodically syncs GA4 and BigQuery data into MySQL cache tables for fast dashboard queries
+- **Circuit breaker** — Protects against GA4/BigQuery outages with configurable failure thresholds
+- **BQ cache store** — Read/write MySQL cache for precomputed BigQuery analytics
+
+### Business Metrics ([`internal/store/metrics*.go`](internal/store/metrics.go))
+
+- Core sales metrics (revenue, AOV, conversion rates)
+- Customer metrics (new vs returning, LTV)
+- Geographic breakdown
+- Time series analysis
+- Cohort retention, order sequence, revenue Pareto
+- Inventory health, size run efficiency
+- Product trends, dead stock, slow movers
+
+---
+
+## External Integrations
+
+| Service | Purpose | Package |
+|---|---|---|
+| **Stripe** | Payment processing (PaymentIntents, refunds) | `internal/payment/stripe/` |
+| **Resend** | Transactional email delivery | `internal/mail/` + `openapi/gen/resend/` |
+| **S3/MinIO** | Media storage (images, videos) | `internal/bucket/` |
+| **Google Analytics 4** | Website analytics data | `internal/analytics/ga4/` |
+| **Google BigQuery** | Advanced analytics queries | `internal/analytics/bigquery/` |
+| **Vercel** | ISR revalidation for Next.js frontend | `internal/revalidation/` |
+
+---
+
+## Configuration
+
+Configuration is loaded via **Viper** from TOML files and/or environment variables ([`config/cfg.go`](config/cfg.go)). Environment variables take precedence. Key config sections:
+
+| Config Key | Env Prefix | Purpose |
+|---|---|---|
+| `mysql` | `MYSQL_*` | Database connection |
+| `http` | `HTTP_*` | HTTP server (port, CORS) |
+| `auth` | `AUTH_*` | JWT secret, master password |
+| `bucket` | `BUCKET_*` | S3 storage credentials |
+| `mailer` | `MAILER_*` | Email service config |
+| `stripe_payment` | `STRIPE_PAYMENT_*` | Stripe production keys |
+| `stripe_payment_test` | `STRIPE_PAYMENT_TEST_*` | Stripe test keys |
+| `revalidation` | `REVALIDATION_*` | Vercel revalidation |
+| `ga4` | `GA4_*` | Google Analytics 4 |
+| `bigquery` | `BIGQUERY_*` | BigQuery analytics |
+| `rates` | `RATES_*` | Base currency |
+
+---
+
+## Build & Development
+
+### Prerequisites
+
+- Go 1.26+
+- `buf` (protobuf toolchain)
+- `protoc-gen-go`, `protoc-gen-go-grpc`, `protoc-gen-grpc-gateway`, `protoc-gen-openapiv2`
+- `mockery` v2.52+ (mock generation)
+- `oapi-codegen` (OpenAPI client generation)
+- `libwebp-dev` (WebP image processing)
+
+### Key Make Targets
+
+```bash
+make init          # Clean + install tools + generate protos + generate mocks
+make build         # Full build (proto + mocks + swagger + binary)
+make build-quick   # Build without mock regeneration
+make run           # Build and run (sources .env)
+make proto         # Regenerate protobuf code
+make generate-mocks # Regenerate mockery mocks
+make lint          # Run golangci-lint
+make cov           # Run tests with coverage
+make image         # Build Docker image
+```
+
+### Docker
+
+Multi-stage Dockerfile: builder stage generates protos, mocks, swagger, and compiles the binary. Runtime image is Alpine with `libwebp` and `ca-certificates`.
+
+### Testing
+
+- Unit tests use **mockery**-generated mocks from `internal/dependency/mocks/`
+- Test files are co-located with source (`*_test.go`)
+- Integration tests connect to MySQL (see `internal/store/mysql_test.go`)
+
+---
+
+## Code Generation
+
+Several artifacts are auto-generated — **do not edit manually**:
+
+| Generated | Source | Tool |
+|---|---|---|
+| `proto/gen/` | `proto/**/*.proto` | `buf generate` |
+| `internal/dependency/mocks/` | `internal/dependency/dependency.go` | `mockery` |
+| `openapi/gen/resend/` | `openapi/resend/openapi.yaml` | `oapi-codegen` |
+| `internal/api/http/static/swagger/` | Proto swagger annotations | `protoc-gen-openapiv2` + merge script |
+
+---
+
+## Key Conventions
+
+For detailed coding conventions (naming, error handling, logging, decimal usage, context propagation), see [000-core.mdc](mdc:000-core.mdc).

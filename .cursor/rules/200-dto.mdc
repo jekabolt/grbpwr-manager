@@ -1,0 +1,133 @@
+---
+description: DTO (Data Transfer Object) conversion conventions between proto and entity types
+globs: internal/dto/**/*.go
+alwaysApply: false
+---
+
+# DTO Layer Rules
+
+## Rationale
+
+The DTO package (`internal/dto/`) is the translation layer between protobuf-generated types (`proto/gen/`) and domain entity types (`internal/entity/`). Centralizing conversions here keeps the API and store layers clean.
+
+## File Organization
+
+- One file per domain: `product.go`, `order.go`, `hero.go`, `shipment.go`, etc.
+- Each file contains bidirectional conversion functions for that domain.
+
+## Naming Conventions
+
+### Proto → Entity
+
+```go
+// ✅ ConvertPb*ToEntity* or ConvertCommon*ToEntity
+func ConvertPbGenderEnumToEntityGenderEnum(pb pb_common.GenderEnum) (entity.GenderEnum, error)
+func ConvertCommonProductToEntity(pb *pb_common.ProductNew) (*entity.ProductNew, error)
+func ConvertPbProductInsertToEntity(pb *pb_common.ProductInsert) (*entity.ProductInsert, error)
+```
+
+### Entity → Proto
+
+```go
+// ✅ ConvertEntityTo* or ConvertToPb*
+func ConvertEntityGenderToPbGenderEnum(e entity.GenderEnum) (pb_common.GenderEnum, error)
+func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, error)
+func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
+```
+
+### Private helpers
+
+```go
+// ✅ Lowercase unexported helpers for internal conversions
+func convertDecimal(value string) (decimal.Decimal, error)
+func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPriceInsert
+func convertSizeMeasurements(pb []*pb_common.SizeWithMeasurementInsert) ([]entity.SizeWithMeasurementInsert, error)
+```
+
+## Enum Mapping Pattern
+
+Use bidirectional maps for enum conversions:
+
+```go
+// ✅ Bidirectional enum maps
+var genderEntityPbMap = map[entity.GenderEnum]pb_common.GenderEnum{
+    entity.Male:   pb_common.GenderEnum_GENDER_ENUM_MALE,
+    entity.Female: pb_common.GenderEnum_GENDER_ENUM_FEMALE,
+    entity.Unisex: pb_common.GenderEnum_GENDER_ENUM_UNISEX,
+}
+
+var genderPbEntityMap = map[pb_common.GenderEnum]entity.GenderEnum{
+    pb_common.GenderEnum_GENDER_ENUM_MALE:   entity.Male,
+    pb_common.GenderEnum_GENDER_ENUM_FEMALE: entity.Female,
+    pb_common.GenderEnum_GENDER_ENUM_UNISEX: entity.Unisex,
+}
+```
+
+## Decimal Conversion
+
+- Proto uses `google.type.Decimal` (string-based `Value` field).
+- Entity uses `shopspring/decimal.Decimal`.
+- Always convert via string: `decimal.NewFromString(pbDecimal.Value)`.
+- Use the `convertDecimal()` helper for nil-safe conversion.
+
+```go
+// ✅ Safe decimal conversion
+func convertDecimal(value string) (decimal.Decimal, error) {
+    if value == "" {
+        return decimal.Zero, nil
+    }
+    return decimal.NewFromString(value)
+}
+```
+
+## Nullable Field Conversion
+
+When converting proto fields to `sql.Null*` entity fields:
+
+```go
+// ✅ Proto → sql.Null* conversion pattern
+SubCategoryId: sql.NullInt32{
+    Int32: int32(pbProduct.SubCategoryId),
+    Valid: pbProduct.SubCategoryId != 0,
+}
+
+CareInstructions: sql.NullString{
+    String: pbProduct.CareInstructions,
+    Valid:  pbProduct.CareInstructions != "",
+}
+
+SalePercentage: decimal.NullDecimal{
+    Decimal: salePercentage,
+    Valid:   pbProduct.SalePercentage.Value != "",
+}
+```
+
+## Error Handling
+
+- Return `error` from conversion functions that can fail (decimal parsing, unknown enums).
+- For unknown enum values, default to the `*_UNKNOWN` proto value rather than erroring, but log a warning with `slog.Warn("unknown enum value", slog.String("value", ...))` to aid debugging.
+- Always nil-check input pointers before accessing fields.
+
+```go
+// ✅ Nil check at function start
+func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, error) {
+    if e == nil {
+        return nil, nil
+    }
+    // ...
+}
+```
+
+## Do Not
+
+- Never perform database queries in DTO functions.
+- Never import `internal/store/` — DTOs must not depend on the store layer.
+- Never skip error returns from decimal conversions — propagate them.
+- Never use `fmt.Sprintf` to convert numbers — use `decimal.NewFromString` or type casting.
+
+## Cross-References
+
+- Entity models: [200-entity.mdc](mdc:200-entity.mdc)
+- Proto definitions: [100-protobuf.mdc](mdc:100-protobuf.mdc)
+- API service layer: [100-grpc-api.mdc](mdc:100-grpc-api.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

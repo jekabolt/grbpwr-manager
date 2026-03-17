@@ -1,0 +1,158 @@
+---
+description: Universal coding rules applied to all files in grbpwr-products-manager
+alwaysApply: true
+---
+
+# Core Rules — grbpwr-products-manager
+
+## Rationale
+
+These rules ensure consistency across the entire codebase. They codify the project's established conventions so that AI-generated code matches the existing style and architecture.
+
+## Language & Runtime
+
+- **Go 1.26+** is the only backend language. Never suggest Node.js, Python, or other runtimes for backend logic.
+- Always use `context.Context` as the **first parameter** of any function that does I/O, database access, or calls external services.
+- Never use `float64` for monetary values. Always use `shopspring/decimal.Decimal` or `decimal.NullDecimal`.
+- Use `database/sql.Null*` types (`sql.NullString`, `sql.NullInt32`, `sql.NullBool`, `sql.NullTime`) for nullable database columns — never use pointers to primitives for DB fields.
+
+## Naming Conventions
+
+- **Files:** `snake_case.go` — one domain concept per file.
+- **Packages:** short, lowercase, single-word when possible (`store`, `entity`, `dto`, `cache`).
+- **Interfaces:** noun or noun phrase (`Products`, `Repository`, `Invoicer`). Never prefix with `I`.
+- **Structs:** PascalCase. Use `*Insert` suffix for insert models, `*Full` suffix for aggregated read models.
+- **Constants:** PascalCase for exported, camelCase for unexported. Use typed string constants for enums (e.g., `type GenderEnum string`).
+- **Variables:** camelCase. Avoid single-letter names except in short lambdas or loop indices.
+- **Errors:** use `fmt.Errorf("context: %w", err)` for wrapping. Use `errors.New("description")` only for root sentinel errors where there is no underlying cause to wrap.
+
+## Import Ordering
+
+Organize imports in three groups separated by blank lines:
+
+```go
+import (
+    // 1. Standard library
+    "context"
+    "database/sql"
+    "fmt"
+    "time"
+
+    // 2. External dependencies
+    "github.com/shopspring/decimal"
+    "github.com/jmoiron/sqlx"
+    "google.golang.org/grpc/codes"
+
+    // 3. Internal packages
+    "github.com/jekabolt/grbpwr-manager/internal/dependency"
+    "github.com/jekabolt/grbpwr-manager/internal/entity"
+)
+```
+
+Never mix groups. `goimports` or editor auto-formatting should handle this, but verify before committing.
+
+## Do
+
+```go
+// ✅ Context first, error last
+func (s *productStore) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
+
+// ✅ Decimal for money
+price := decimal.NewFromInt(100)
+
+// ✅ sql.Null* for nullable DB fields
+type ProductBodyInsert struct {
+    Preorder sql.NullTime `db:"preorder"`
+}
+```
+
+## Don't
+
+```go
+// ❌ No context parameter
+func (s *productStore) GetProduct(id int) (*entity.ProductFull, error) {
+
+// ❌ float64 for money
+var price float64 = 99.99
+
+// ❌ Pointer for nullable DB field
+type ProductBodyInsert struct {
+    Preorder *time.Time `db:"preorder"`
+}
+```
+
+## Date & Time Handling
+
+- Always use `time.Time` for timestamps in Go code.
+- Store all timestamps in **UTC** in the database. Convert to local time only at the presentation layer (frontend).
+- Use `time.Now().UTC()` when generating timestamps, never `time.Now()` without UTC.
+- Never parse date strings manually with custom layouts when `time.Parse(time.RFC3339, s)` suffices.
+- For durations, use `time.Duration` — never store durations as raw integers.
+
+## Environment Variables
+
+- Never call `os.Getenv()` directly in application code — always access configuration through the `config` package (Viper).
+- Never hardcode secrets, API keys, or credentials anywhere in the codebase.
+- All new configuration values must be added to the config struct in `config/cfg.go` with appropriate env var binding.
+
+## Error Handling
+
+- Always return errors — never swallow them silently.
+- Errors bubble up through the stack. gRPC status codes are set **only** at the API service layer (`internal/apisrv/`).
+- Use `fmt.Errorf("descriptive context: %w", err)` for wrapping.
+- Never use `panic()` in production code paths.
+
+## Logging
+
+- Use `log/slog` for all structured logging. Never use `fmt.Println` or `log.Printf` for application logs.
+- Always include relevant context fields: `slog.String("orderUUID", uuid)`, `slog.Int("productId", id)`.
+
+## Code Generation — Do Not Edit
+
+The following paths contain auto-generated code. **Never edit manually**:
+
+- `proto/gen/` — generated from `proto/**/*.proto` via `buf generate`
+- `internal/dependency/mocks/` — generated from `internal/dependency/dependency.go` via `mockery`
+- `openapi/gen/resend/` — generated from `openapi/resend/openapi.yaml` via `oapi-codegen`
+- `internal/api/http/static/swagger/` — generated Swagger JSON
+
+## Architecture Layers
+
+Changes must respect the layered architecture:
+
+1. **Proto** (`proto/`) → API contract (start here for API changes)
+2. **API Service** (`internal/apisrv/`) → gRPC handlers, request validation, proto↔entity conversion
+3. **DTO** (`internal/dto/`) → conversion between proto and entity types
+4. **Entity** (`internal/entity/`) → domain models / DB structs
+5. **Store** (`internal/store/`) → MySQL data access (raw SQL via `sqlx`)
+6. **Dependency** (`internal/dependency/dependency.go`) → interface contracts (single source of truth)
+
+See [000-project-overview.mdc](mdc:000-project-overview.mdc) for full architecture details.
+
+## Function & File Limits
+
+- Keep functions under **80 lines**. If a function exceeds this, extract helpers.
+- Keep files under **500 lines**. If a file exceeds this, split by sub-domain.
+- Exception: generated code and SQL migration files are exempt from these limits.
+
+## AI Behavior Directives
+
+- **Search before generating:** Always search the existing codebase for similar patterns, existing helpers, or prior implementations before generating new code. Use `grep`, file search, or code definition lookups to find relevant existing code.
+- **Ask for clarification when ambiguous:** If a task is ambiguous or could be interpreted multiple ways, ask for clarification rather than guessing. Incorrect assumptions waste more time than a clarifying question.
+- **Match existing patterns:** When adding new code, find the closest existing example in the codebase and follow its patterns exactly (naming, structure, error handling, etc.).
+
+## MCP Tools Policy
+
+- **Always use available MCP tools** from connected MCP servers without asking for permission first.
+- When an MCP server is connected and provides tools relevant to the current task, use them directly.
+- Do not ask the user "should I use MCP tool X?" — just use it if it helps accomplish the task.
+- Treat MCP tools as first-class tools alongside built-in tools (read_file, execute_command, etc.).
+- If an MCP tool fails, fall back to built-in tools and inform the user of the failure.
+
+## Cross-References
+
+- Database conventions: [200-database.mdc](mdc:200-database.mdc)
+- Store layer patterns: [200-store.mdc](mdc:200-store.mdc)
+- API layer patterns: [100-grpc-api.mdc](mdc:100-grpc-api.mdc)
+- Testing conventions: [300-testing.mdc](mdc:300-testing.mdc)
+- Proto conventions: [100-protobuf.mdc](mdc:100-protobuf.mdc)

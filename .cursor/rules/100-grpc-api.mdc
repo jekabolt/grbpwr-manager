@@ -1,0 +1,120 @@
+---
+description: gRPC and gRPC-Gateway API layer conventions
+globs: internal/apisrv/**/*.go,internal/api/**/*.go
+alwaysApply: false
+---
+
+# gRPC API Service Layer Rules
+
+## Rationale
+
+The API service layer (`internal/apisrv/`) is the boundary between external clients and internal business logic. Consistent patterns here ensure proper error handling, validation, and separation of concerns.
+
+## Architecture
+
+- **Admin service** (`internal/apisrv/admin/`) — JWT-protected admin operations
+- **Frontend service** (`internal/apisrv/frontend/`) — public storefront API (no auth)
+- **Auth service** (`internal/apisrv/auth/`) — login, admin user management
+
+Each service struct receives dependencies via constructor injection. Never access global state.
+
+## Constructor Pattern
+
+Always use a `New()` constructor that accepts interface dependencies from `internal/dependency/`:
+
+```go
+// ✅ Correct constructor pattern
+func New(
+    rep dependency.Repository,
+    bucket dependency.FileStore,
+    mailer dependency.Mailer,
+    stripe dependency.Invoicer,
+    stripeTest dependency.Invoicer,
+    revalidation dependency.RevalidationService,
+    bqCacheRead dependency.BQCacheStoreRead,
+) *Server {
+    return &Server{
+        repo:         rep,
+        bucket:       bucket,
+        mailer:       mailer,
+        stripe:       stripe,
+        stripeTest:   stripeTest,
+        revalidation: revalidation,
+        bqCacheRead:  bqCacheRead,
+    }
+}
+```
+
+## Error Handling at API Boundary
+
+- Convert internal errors to gRPC status codes **only** in this layer.
+- Use `google.golang.org/grpc/status` and `google.golang.org/grpc/codes`.
+- Never return raw Go errors to gRPC clients.
+
+```go
+// ✅ Set gRPC status at API layer
+if err != nil {
+    return nil, status.Errorf(codes.Internal, "failed to get product: %v", err)
+}
+
+// ✅ Validation errors → InvalidArgument
+if req.Id <= 0 {
+    return nil, status.Errorf(codes.InvalidArgument, "product id must be positive")
+}
+
+// ✅ Not found → NotFound
+if errors.Is(err, sql.ErrNoRows) {
+    return nil, status.Errorf(codes.NotFound, "product not found: %d", req.Id)
+}
+```
+
+## Proto ↔ Entity Conversion
+
+- Use `internal/dto/` package for all conversions between proto types and entity types.
+- Never convert proto types directly in the API handler — delegate to `dto.Convert*` functions.
+- Naming convention: `ConvertPb*ToEntity*` (proto→entity), `ConvertEntityTo*` or `ConvertToPb*` (entity→proto).
+
+```go
+// ✅ Use dto conversion functions
+entityProduct, err := dto.ConvertCommonProductToEntity(req.Product)
+
+// ❌ Don't inline conversion logic in handlers
+product := &entity.ProductNew{
+    Product: &entity.ProductInsert{Brand: req.Product.Brand}, // Wrong place
+}
+```
+
+## Request Validation
+
+- Validate required fields at the start of each handler method.
+- Return `codes.InvalidArgument` for validation failures.
+- Use `asaskevich/govalidator` for struct-level validation on entity insert models. Validation tags are defined on entity structs (`valid:"required"`, `valid:"hexcolor"`). Call `govalidator.ValidateStruct()` in the API layer after DTO conversion.
+
+```go
+// ✅ Validate insert model at API boundary
+entityProduct, err := dto.ConvertCommonProductToEntity(req.Product)
+if err != nil {
+    return nil, status.Errorf(codes.InvalidArgument, "conversion failed: %v", err)
+}
+
+if _, err := govalidator.ValidateStruct(entityProduct.Product); err != nil {
+    return nil, status.Errorf(codes.InvalidArgument, "validation failed: %v", err)
+}
+```
+
+## Sub-Repository Access
+
+Access sub-repositories through the `Repository` interface methods:
+
+```go
+// ✅ Access via interface methods
+product, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
+order, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
+```
+
+## Cross-References
+
+- Interface contracts: [200-dependency.mdc](mdc:200-dependency.mdc)
+- DTO conversions: [200-dto.mdc](mdc:200-dto.mdc)
+- Proto definitions: [100-protobuf.mdc](mdc:100-protobuf.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

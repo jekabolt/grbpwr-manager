@@ -1,0 +1,149 @@
+---
+description: Entity (domain model) conventions for database structs
+globs: internal/entity/*.go
+alwaysApply: false
+---
+
+# Entity Layer Rules
+
+## Rationale
+
+Entity structs (`internal/entity/`) are the canonical Go representation of database rows. They are used by the store layer and converted to/from proto types via DTOs. Consistent struct tagging and naming ensures `sqlx` scanning works correctly.
+
+## File Organization
+
+- One file per domain: `product.go`, `order.go`, `buyer.go`, `hero.go`, `media.go`, etc.
+- Each file contains related structs, enums, and validation helpers for that domain.
+
+## Struct Conventions
+
+### Read Models (from DB)
+
+```go
+// ✅ DB read model — matches SELECT columns
+type Product struct {
+    Id        int          `db:"id"`
+    CreatedAt time.Time    `db:"created_at"`
+    UpdatedAt time.Time    `db:"updated_at"`
+    DeletedAt sql.NullTime `db:"deleted_at"`
+    Slug      string       `db:"slug"`
+    SKU       string       `db:"sku"`
+}
+```
+
+### Insert Models
+
+Use `*Insert` suffix for structs used in INSERT operations:
+
+```go
+// ✅ Insert model — fields match INSERT columns
+type ProductBodyInsert struct {
+    Brand           string              `db:"brand" valid:"required"`
+    Color           string              `db:"color" valid:"required"`
+    ColorHex        string              `db:"color_hex" valid:"required,hexcolor"`
+    SalePercentage  decimal.NullDecimal `db:"sale_percentage" valid:"-"`
+    Hidden          sql.NullBool        `db:"hidden" valid:"-"`
+    TargetGender    GenderEnum          `db:"target_gender"`
+}
+```
+
+### Full/Aggregated Models
+
+Use `*Full` suffix for structs that combine a base entity with related data:
+
+```go
+// ✅ Aggregated read model
+type ProductFull struct {
+    Product      *Product
+    Sizes        []ProductSize
+    Measurements []ProductMeasurement
+    Media        []MediaFull
+    Tags         []ProductTag
+    Prices       []ProductPrice
+}
+```
+
+### New Models (for creation)
+
+Use `*New` suffix for structs that bundle an insert model with related inserts:
+
+```go
+// ✅ Creation bundle
+type ProductNew struct {
+    Product          *ProductInsert
+    SizeMeasurements []SizeWithMeasurementInsert
+    MediaIds         []int
+    Tags             []ProductTagInsert
+    Prices           []ProductPriceInsert
+}
+```
+
+## Struct Tags
+
+- Always include `db:"column_name"` tags for all fields that map to database columns.
+- Use `valid:"required"` for mandatory fields, `valid:"-"` for optional fields (using `govalidator`).
+- Column names in `db` tags must match the actual MySQL column names exactly (snake_case).
+
+## Nullable Fields
+
+Always use `database/sql.Null*` types for nullable database columns:
+
+| Go Type | Use For |
+|---|---|
+| `sql.NullString` | Nullable `VARCHAR`/`TEXT` |
+| `sql.NullInt32` | Nullable `INT` |
+| `sql.NullBool` | Nullable `BOOLEAN`/`TINYINT(1)` |
+| `sql.NullTime` | Nullable `TIMESTAMP`/`DATETIME` |
+| `decimal.NullDecimal` | Nullable `DECIMAL` (monetary) |
+
+```go
+// ✅ Correct nullable field
+CareInstructions sql.NullString `db:"care_instructions" valid:"-"`
+
+// ❌ Wrong — pointer for nullable DB field
+CareInstructions *string `db:"care_instructions"`
+```
+
+## Typed String Enums
+
+Define enums as typed strings with constants and validation:
+
+```go
+// ✅ Typed string enum pattern
+type GenderEnum string
+
+const (
+    Male   GenderEnum = "male"
+    Female GenderEnum = "female"
+    Unisex GenderEnum = "unisex"
+)
+
+// ✅ Validation map
+var ValidProductTargetGenders = map[GenderEnum]bool{
+    Male: true, Female: true, Unisex: true,
+}
+
+func IsValidTargetGender(g GenderEnum) bool {
+    _, ok := ValidProductTargetGenders[g]
+    return ok
+}
+```
+
+## Monetary Values
+
+- Always use `shopspring/decimal.Decimal` for monetary amounts.
+- Use `decimal.NullDecimal` for nullable monetary columns.
+- Never use `float64` or `int` (cents) for money.
+
+## Do Not
+
+- Never add methods that perform database queries — that belongs in the store layer.
+- Never import `proto/gen/` packages — entities must not depend on proto types.
+- Never add JSON tags unless the struct is also used for non-proto JSON serialization.
+
+## Cross-References
+
+- Store layer: [200-store.mdc](mdc:200-store.mdc)
+- DTO conversions: [200-dto.mdc](mdc:200-dto.mdc)
+- Database schema: [200-database.mdc](mdc:200-database.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

@@ -1,0 +1,110 @@
+---
+description: MySQL database migration and schema conventions
+globs: internal/store/sql/**/*.sql
+alwaysApply: false
+---
+
+# Database Migration Rules
+
+## Rationale
+
+This project uses **MySQL** (not Postgres) with `golang-migrate/migrate` via `rubenv/sql-migrate`. Migrations must be safe, reversible when possible, and follow the established numbering scheme.
+
+## Migration File Location
+
+All migration files live in `internal/store/sql/`.
+
+## Naming Convention
+
+Migration files use a **sequential zero-padded number** prefix:
+
+```
+internal/store/sql/NNNN_short_description.sql
+```
+
+- `NNNN` — four-digit zero-padded sequence number (e.g., `0045`)
+- `short_description` — snake_case description of the change
+- Always check the latest migration number before creating a new one
+
+**Example:**
+```
+0045_add_product_weight_column.sql
+```
+
+## Migration Format
+
+Use `sql-migrate` directives (`-- +migrate Up` / `-- +migrate Down`):
+
+```sql
+-- +migrate Up
+-- Description: Add weight column to product table for shipping calculations
+
+ALTER TABLE product
+  ADD COLUMN weight_grams INT NULL DEFAULT NULL AFTER composition;
+
+-- +migrate Down
+ALTER TABLE product
+  DROP COLUMN weight_grams;
+```
+
+## SQL Guidelines
+
+- Write **MySQL-compatible** SQL — not Postgres, not ANSI SQL.
+- Use UPPERCASE for all SQL keywords (`ALTER TABLE`, `ADD COLUMN`, `CREATE TABLE`).
+- Use `snake_case` for all table and column names.
+- Always include a header comment explaining the purpose of the migration.
+- Include thorough comments for **destructive operations** (DROP, TRUNCATE, column removal).
+- Always provide a `-- +migrate Down` section. If rollback is not safely possible, add a comment explaining why.
+
+```sql
+-- +migrate Down
+-- Cannot reliably undo backfill, leave data as-is
+```
+
+## Table Conventions
+
+- Table names: singular `snake_case` (`product`, `customer_order`, `order_item`)
+- Primary key: `id INT AUTO_INCREMENT PRIMARY KEY`
+- Timestamps: `created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`, `updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`
+- Soft deletes: `deleted_at TIMESTAMP NULL DEFAULT NULL`
+- Foreign keys: `<singular_table>_id` (e.g., `product_id`, `order_id`)
+- Use `DECIMAL(10,2)` for monetary columns, never `FLOAT` or `DOUBLE`
+
+## Do
+
+```sql
+-- ✅ Safe additive migration
+ALTER TABLE product
+  ADD COLUMN fit VARCHAR(255) NULL DEFAULT NULL;
+
+-- ✅ Backfill with WHERE clause to limit scope
+UPDATE product SET fit = 'regular' WHERE fit IS NULL;
+```
+
+## Don't
+
+```sql
+-- ❌ Never use Postgres syntax
+ALTER TABLE product ADD COLUMN fit TEXT DEFAULT 'regular';  -- TEXT default not ideal in MySQL
+
+-- ❌ Never drop columns without a Down migration comment
+ALTER TABLE product DROP COLUMN old_field;
+
+-- ❌ Never use IF NOT EXISTS for columns (MySQL doesn't support it in ALTER)
+ALTER TABLE product ADD COLUMN IF NOT EXISTS fit VARCHAR(255);
+```
+
+## Safety Rules
+
+- Never drop tables or columns in production without explicit approval.
+- Always test migrations against a copy of production data.
+- For large tables, consider the impact of `ALTER TABLE` on MySQL (table locks).
+- Use `NULL DEFAULT NULL` for new columns to avoid full table rewrites.
+- Never modify existing migration files that have been applied — create a new migration instead.
+
+## Cross-References
+
+- SQL style guide: [200-sql-style.mdc](mdc:200-sql-style.mdc)
+- Store layer: [200-store.mdc](mdc:200-store.mdc)
+- Entity models: [200-entity.mdc](mdc:200-entity.mdc)
+- Core rules: [000-core.mdc](mdc:000-core.mdc)

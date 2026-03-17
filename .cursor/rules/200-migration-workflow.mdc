@@ -1,0 +1,119 @@
+---
+description: Step-by-step workflow for creating new MySQL migrations
+alwaysApply: false
+---
+
+# Database: Create Migration Workflow
+
+## Rationale
+
+This rule provides a step-by-step checklist for creating new MySQL migrations. For naming conventions, SQL format, and safety rules, see [200-database.mdc](mdc:200-database.mdc).
+
+## Step-by-Step Process
+
+### 1. Determine the Next Migration Number
+
+Check the latest migration file in `internal/store/sql/`:
+
+```bash
+ls -1 internal/store/sql/ | tail -1
+```
+
+Increment the four-digit prefix by 1 (e.g., if latest is `0044`, next is `0045`).
+
+### 2. Create the Migration File
+
+```
+internal/store/sql/NNNN_short_description.sql
+```
+
+Example: `internal/store/sql/0045_add_product_weight.sql`
+
+### 3. Write the Migration
+
+Follow the format and conventions in [200-database.mdc](mdc:200-database.mdc). Minimal template:
+
+```sql
+-- +migrate Up
+-- Description: <what this migration does>
+-- Affected tables: <table names>
+-- Type: additive (non-breaking) | destructive (breaking)
+
+<SQL statements>
+
+-- +migrate Down
+<rollback SQL statements>
+```
+
+### 4. Pre-Commit Checklist
+
+- [ ] File is in `internal/store/sql/` with correct sequential number
+- [ ] Has `-- +migrate Up` and `-- +migrate Down` sections
+- [ ] Header comment describes purpose, affected tables, and type
+- [ ] Uses lowercase SQL keywords and `snake_case` names
+- [ ] New columns use `NULL DEFAULT NULL` to avoid table rewrites
+- [ ] Destructive operations have detailed comments explaining impact
+- [ ] Down migration is provided (or comment explaining why not)
+- [ ] Tested against a copy of production data for large tables
+
+### 5. Update Entity Structs
+
+If the migration adds/modifies columns, update the corresponding entity struct in `internal/entity/`:
+
+```go
+// Add the new field with proper db tag
+type ProductBodyInsert struct {
+    // ... existing fields
+    WeightGrams sql.NullInt32 `db:"weight_grams" valid:"-"`
+}
+```
+
+### 6. Update Store Queries
+
+Update any affected SQL queries in `internal/store/` to include the new column.
+
+### 7. Update Proto & DTO (if API-exposed)
+
+If the new field should be exposed via API:
+1. Add field to the proto message in `proto/common/common/*.proto`
+2. Run `make proto`
+3. Add conversion in `internal/dto/`
+4. Run `make generate-mocks` if interfaces changed
+
+## Common Migration Patterns
+
+### Add a column
+```sql
+ALTER TABLE product
+  ADD COLUMN weight_grams INT NULL DEFAULT NULL;
+```
+
+### Add an index
+```sql
+CREATE INDEX idx_product_collection ON product(collection);
+```
+
+### Add a new table
+```sql
+CREATE TABLE product_review (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  product_id INT NOT NULL,
+  rating TINYINT NOT NULL,
+  comment TEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
+) COMMENT 'Customer product reviews';
+```
+
+### Backfill data
+```sql
+-- Backfill: set default weight for existing products
+UPDATE product SET weight_grams = 500 WHERE weight_grams IS NULL AND top_category_id = 1;
+```
+
+## Cross-References
+
+- Database conventions & safety rules: [200-database.mdc](mdc:200-database.mdc)
+- SQL style guide: [200-sql-style.mdc](mdc:200-sql-style.mdc)
+- Entity models: [200-entity.mdc](mdc:200-entity.mdc)
+- Store layer: [200-store.mdc](mdc:200-store.mdc)
