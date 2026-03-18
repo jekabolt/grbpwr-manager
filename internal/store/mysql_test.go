@@ -231,7 +231,7 @@ func TestNew(t *testing.T) {
 			require.NotNil(t, store)
 			defer store.Close()
 
-			_, err = store.GetDictionaryInfo(ctx)
+			_, err = store.Cache().GetDictionaryInfo(ctx)
 			require.NoError(t, err)
 		})
 	}
@@ -253,11 +253,11 @@ func TestMigrate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := New(ctx, *tt.cfg, 0)
+			store, err := New(ctx, *tt.cfg)
 			require.NoError(t, err)
 			defer store.Close()
 
-			di, err := store.GetDictionaryInfo(ctx)
+			di, err := store.Cache().GetDictionaryInfo(ctx)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
@@ -275,12 +275,11 @@ func TestMigrate(t *testing.T) {
 
 func TestGetDictionaryInfo(t *testing.T) {
 	ctx := context.Background()
-	store, err := New(ctx, *testCfg, 0)
+	store, err := New(ctx, *testCfg)
 	require.NoError(t, err)
 	require.NotNil(t, store)
 
-	// Test getting dictionary info
-	di, err := store.GetDictionaryInfo(ctx)
+	di, err := store.Cache().GetDictionaryInfo(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, di)
 
@@ -295,13 +294,12 @@ func TestGetDictionaryInfo(t *testing.T) {
 	// Test with cancelled context
 	ctxCancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	_, err = store.GetDictionaryInfo(ctxCancelled)
+	_, err = store.Cache().GetDictionaryInfo(ctxCancelled)
 	assert.Error(t, err, "Should return error with cancelled context")
 
-	// Test with timeout context
 	ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Nanosecond)
 	defer cancel()
-	time.Sleep(2 * time.Nanosecond) // Ensure timeout occurs
-	_, err = store.GetDictionaryInfo(ctxTimeout)
+	time.Sleep(2 * time.Nanosecond)
+	_, err = store.Cache().GetDictionaryInfo(ctxTimeout)
 	assert.Error(t, err, "Should return error with timed out context")
 }

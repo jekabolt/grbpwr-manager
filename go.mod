@@ -3,6 +3,8 @@ module github.com/jekabolt/grbpwr-manager
 go 1.26.0
 
 require (
+	cloud.google.com/go v0.123.0
+	cloud.google.com/go/bigquery v1.74.0
 	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2
 	github.com/bbrks/go-blurhash v1.1.1
@@ -42,10 +44,8 @@ require (
 )
 
 require (
-	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.18.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/bigquery v1.74.0 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
