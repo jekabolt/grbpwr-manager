@@ -296,6 +296,18 @@ service AdminService {
       body: "*"
     };
   }
+
+  // REVIEW MANAGER (internal statistics)
+
+  // Get order reviews paged
+  rpc GetOrderReviewsPaged(GetOrderReviewsPagedRequest) returns (GetOrderReviewsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/reviews/paged"};
+  }
+
+  // Delete an order review and its item reviews
+  rpc DeleteOrderReview(DeleteOrderReviewRequest) returns (DeleteOrderReviewResponse) {
+    option (google.api.http) = {delete: "/api/admin/review/{order_id}"};
+  }
 }
 
 // DICITONARY
@@ -1494,3 +1506,22 @@ message CampaignAttributionRow {
   google.type.Decimal revenue = 8;
   double conversion_rate = 9;
 }
+
+// ==================== Review Messages ====================
+
+message GetOrderReviewsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+}
+
+message GetOrderReviewsPagedResponse {
+  repeated common.OrderReviewFull reviews = 1;
+  int32 total = 2;
+}
+
+message DeleteOrderReviewRequest {
+  int32 order_id = 1;
+}
+
+message DeleteOrderReviewResponse {}

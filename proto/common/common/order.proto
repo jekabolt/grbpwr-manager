@@ -127,3 +127,81 @@ message OrderStatusHistory {
   string changed_by = 5;
   string notes = 6;
 }
+
+// ==================== Review Enums ====================
+
+enum ProductRatingEnum {
+  PRODUCT_RATING_ENUM_UNKNOWN = 0;
+  PRODUCT_RATING_ENUM_POOR = 1;
+  PRODUCT_RATING_ENUM_FAIR = 2;
+  PRODUCT_RATING_ENUM_GOOD = 3;
+  PRODUCT_RATING_ENUM_VERY_GOOD = 4;
+  PRODUCT_RATING_ENUM_EXCELLENT = 5;
+}
+
+enum FitScaleEnum {
+  FIT_SCALE_ENUM_UNKNOWN = 0;
+  FIT_SCALE_ENUM_RUNS_SMALL = 1;
+  FIT_SCALE_ENUM_SLIGHTLY_SMALL = 2;
+  FIT_SCALE_ENUM_TRUE_TO_SIZE = 3;
+  FIT_SCALE_ENUM_SLIGHTLY_LARGE = 4;
+  FIT_SCALE_ENUM_RUNS_LARGE = 5;
+}
+
+enum DeliverySpeedEnum {
+  DELIVERY_SPEED_ENUM_UNKNOWN = 0;
+  DELIVERY_SPEED_ENUM_MUCH_FASTER_THAN_EXPECTED = 1;
+  DELIVERY_SPEED_ENUM_FASTER_THAN_EXPECTED = 2;
+  DELIVERY_SPEED_ENUM_AS_EXPECTED = 3;
+  DELIVERY_SPEED_ENUM_SLOWER_THAN_EXPECTED = 4;
+  DELIVERY_SPEED_ENUM_MUCH_SLOWER_THAN_EXPECTED = 5;
+}
+
+enum PackagingConditionEnum {
+  PACKAGING_CONDITION_ENUM_UNKNOWN = 0;
+  PACKAGING_CONDITION_ENUM_DAMAGED = 1;
+  PACKAGING_CONDITION_ENUM_ACCEPTABLE = 2;
+  PACKAGING_CONDITION_ENUM_GOOD = 3;
+  PACKAGING_CONDITION_ENUM_EXCELLENT = 4;
+}
+
+// ==================== Review Messages ====================
+
+// Order-level review (delivery & packaging)
+message OrderReview {
+  int32 id = 1;
+  int32 order_id = 2;
+  DeliverySpeedEnum delivery_rating = 3;
+  PackagingConditionEnum packaging_rating = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message OrderReviewInsert {
+  DeliverySpeedEnum delivery_rating = 1;
+  PackagingConditionEnum packaging_rating = 2;
+}
+
+// Item-level review (product rating, fit, recommendation, text)
+message OrderItemReview {
+  int32 id = 1;
+  int32 order_item_id = 2;
+  ProductRatingEnum rating = 3;
+  FitScaleEnum fit_rating = 4;
+  bool recommend = 5;
+  string text = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message OrderItemReviewInsert {
+  int32 order_item_id = 1;
+  ProductRatingEnum rating = 2;
+  FitScaleEnum fit_rating = 3;
+  bool recommend = 4;
+  string text = 5;
+}
+
+// Combined review for an order (order-level + item-level)
+message OrderReviewFull {
+  OrderReview order_review = 1;
+  repeated OrderItemReview item_reviews = 2;
+}

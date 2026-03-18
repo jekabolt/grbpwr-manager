@@ -20,15 +20,15 @@ func (e *ValidationError) Error() string {
 }
 
 type OrderNew struct {
-	Items               []OrderItemInsert `valid:"required"`
-	ShippingAddress     *AddressInsert    `valid:"required"`
-	BillingAddress      *AddressInsert    `valid:"required"`
-	Buyer               *BuyerInsert      `valid:"required"`
-	PaymentMethod       PaymentMethodName `valid:"required"`
-	ShipmentCarrierId   int               `valid:"required"`
-	PromoCode           string            `valid:"-"`
-	Currency            string            `valid:"required,length(3|3)"` // ISO 4217 currency code
-	CustomShipmentCost  *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
+	Items              []OrderItemInsert `valid:"required"`
+	ShippingAddress    *AddressInsert    `valid:"required"`
+	BillingAddress     *AddressInsert    `valid:"required"`
+	Buyer              *BuyerInsert      `valid:"required"`
+	PaymentMethod      PaymentMethodName `valid:"required"`
+	ShipmentCarrierId  int               `valid:"required"`
+	PromoCode          string            `valid:"-"`
+	Currency           string            `valid:"required,length(3|3)"` // ISO 4217 currency code
+	CustomShipmentCost *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
 }
 
 type OrderFull struct {
@@ -46,14 +46,14 @@ type OrderFull struct {
 
 // Orders represents the orders table
 type Order struct {
-	Id            int             `db:"id"`
-	UUID          string          `db:"uuid"`
-	Placed        time.Time       `db:"placed"`
-	Modified      time.Time       `db:"modified"`
-	TotalPrice    decimal.Decimal `db:"total_price"`
-	Currency      string          `db:"currency"` // ISO 4217 currency code
-	OrderStatusId int             `db:"order_status_id"`
-	PromoId       sql.NullInt32   `db:"promo_id"`
+	Id             int             `db:"id"`
+	UUID           string          `db:"uuid"`
+	Placed         time.Time       `db:"placed"`
+	Modified       time.Time       `db:"modified"`
+	TotalPrice     decimal.Decimal `db:"total_price"`
+	Currency       string          `db:"currency"` // ISO 4217 currency code
+	OrderStatusId  int             `db:"order_status_id"`
+	PromoId        sql.NullInt32   `db:"promo_id"`
 	RefundReason   sql.NullString  `db:"refund_reason"`
 	OrderComment   sql.NullString  `db:"order_comment"`
 	RefundedAmount decimal.Decimal `db:"refunded_amount"`
@@ -77,20 +77,20 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	Id        int    `db:"id"`
-	OrderId   int    `db:"order_id"`
-	Thumbnail string `db:"thumbnail"`
-	Translations     []ProductTranslationInsert `db:"translations"`
-	BlurHash         string                     `db:"blur_hash"`
-	ProductBrand     string                     `db:"product_brand"`
-	Color            string                     `db:"color"`
-	TopCategoryId    int                        `db:"top_category_id"`
-	SubCategoryId    sql.NullInt32              `db:"sub_category_id"`
-	TypeId           sql.NullInt32              `db:"type_id"`
-	TargetGender     GenderEnum                 `db:"target_gender"`
-	SKU              string                     `db:"product_sku"`
-	Slug             string
-	Preorder         sql.NullTime `db:"preorder"`
+	Id            int                        `db:"id"`
+	OrderId       int                        `db:"order_id"`
+	Thumbnail     string                     `db:"thumbnail"`
+	Translations  []ProductTranslationInsert `db:"translations"`
+	BlurHash      string                     `db:"blur_hash"`
+	ProductBrand  string                     `db:"product_brand"`
+	Color         string                     `db:"color"`
+	TopCategoryId int                        `db:"top_category_id"`
+	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
+	TypeId        sql.NullInt32              `db:"type_id"`
+	TargetGender  GenderEnum                 `db:"target_gender"`
+	SKU           string                     `db:"product_sku"`
+	Slug          string
+	Preorder      sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 
@@ -127,7 +127,7 @@ func (r OrderItemAdjustmentReason) String() string {
 }
 
 const (
-	AdjustmentReasonOutOfStock     OrderItemAdjustmentReason = "out_of_stock"
+	AdjustmentReasonOutOfStock      OrderItemAdjustmentReason = "out_of_stock"
 	AdjustmentReasonQuantityReduced OrderItemAdjustmentReason = "quantity_reduced"
 	AdjustmentReasonQuantityCapped  OrderItemAdjustmentReason = "quantity_capped"
 )
@@ -142,9 +142,9 @@ type OrderItemAdjustment struct {
 }
 
 type OrderItemValidation struct {
-	ValidItems    []OrderItem
-	Subtotal      decimal.Decimal
-	HasChanged    bool
+	ValidItems      []OrderItem
+	Subtotal        decimal.Decimal
+	HasChanged      bool
 	ItemAdjustments []OrderItemAdjustment
 }
 
@@ -207,27 +207,27 @@ func (osn *OrderStatusName) String() string {
 }
 
 const (
-	Placed           OrderStatusName = "placed"
-	AwaitingPayment  OrderStatusName = "awaiting_payment"
-	Confirmed        OrderStatusName = "confirmed"
-	Shipped          OrderStatusName = "shipped"
-	Delivered        OrderStatusName = "delivered"
-	Cancelled        OrderStatusName = "cancelled"
-	PendingReturn    OrderStatusName = "pending_return"
-	RefundInProgress   OrderStatusName = "refund_in_progress"
-	Refunded           OrderStatusName = "refunded"
-	PartiallyRefunded  OrderStatusName = "partially_refunded"
+	Placed            OrderStatusName = "placed"
+	AwaitingPayment   OrderStatusName = "awaiting_payment"
+	Confirmed         OrderStatusName = "confirmed"
+	Shipped           OrderStatusName = "shipped"
+	Delivered         OrderStatusName = "delivered"
+	Cancelled         OrderStatusName = "cancelled"
+	PendingReturn     OrderStatusName = "pending_return"
+	RefundInProgress  OrderStatusName = "refund_in_progress"
+	Refunded          OrderStatusName = "refunded"
+	PartiallyRefunded OrderStatusName = "partially_refunded"
 )
 
 // ValidOrderStatusNames is a set of valid order status names
 var ValidOrderStatusNames = map[OrderStatusName]bool{
-	Placed:           true,
-	AwaitingPayment:  true,
-	Confirmed:        true,
-	Shipped:          true,
-	Delivered:        true,
-	Cancelled:        true,
-	PendingReturn:    true,
+	Placed:            true,
+	AwaitingPayment:   true,
+	Confirmed:         true,
+	Shipped:           true,
+	Delivered:         true,
+	Cancelled:         true,
+	PendingReturn:     true,
 	RefundInProgress:  true,
 	Refunded:          true,
 	PartiallyRefunded: true,
@@ -259,4 +259,158 @@ type OrderStatusHistory struct {
 type OrderStatusHistoryWithStatus struct {
 	OrderStatusHistory
 	StatusName OrderStatusName `db:"status_name"`
+}
+
+// ==================== Review Enums ====================
+
+// ProductRating is the enum for product quality assessment
+type ProductRating string
+
+const (
+	ProductRatingPoor      ProductRating = "poor"
+	ProductRatingFair      ProductRating = "fair"
+	ProductRatingGood      ProductRating = "good"
+	ProductRatingVeryGood  ProductRating = "very_good"
+	ProductRatingExcellent ProductRating = "excellent"
+)
+
+// ValidProductRatings is a set of valid product rating values
+var ValidProductRatings = map[ProductRating]bool{
+	ProductRatingPoor:      true,
+	ProductRatingFair:      true,
+	ProductRatingGood:      true,
+	ProductRatingVeryGood:  true,
+	ProductRatingExcellent: true,
+}
+
+// FitScale is the enum for fit assessment
+type FitScale string
+
+const (
+	FitScaleRunsSmall     FitScale = "runs_small"
+	FitScaleSlightlySmall FitScale = "slightly_small"
+	FitScaleTrueToSize    FitScale = "true_to_size"
+	FitScaleSlightlyLarge FitScale = "slightly_large"
+	FitScaleRunsLarge     FitScale = "runs_large"
+)
+
+// ValidFitScales is a set of valid fit scale values
+var ValidFitScales = map[FitScale]bool{
+	FitScaleRunsSmall:     true,
+	FitScaleSlightlySmall: true,
+	FitScaleTrueToSize:    true,
+	FitScaleSlightlyLarge: true,
+	FitScaleRunsLarge:     true,
+}
+
+// DeliverySpeed is the enum for delivery experience
+type DeliverySpeed string
+
+const (
+	DeliverySpeedMuchFaster DeliverySpeed = "much_faster_than_expected"
+	DeliverySpeedFaster     DeliverySpeed = "faster_than_expected"
+	DeliverySpeedAsExpected DeliverySpeed = "as_expected"
+	DeliverySpeedSlower     DeliverySpeed = "slower_than_expected"
+	DeliverySpeedMuchSlower DeliverySpeed = "much_slower_than_expected"
+)
+
+// ValidDeliverySpeeds is a set of valid delivery speed values
+var ValidDeliverySpeeds = map[DeliverySpeed]bool{
+	DeliverySpeedMuchFaster: true,
+	DeliverySpeedFaster:     true,
+	DeliverySpeedAsExpected: true,
+	DeliverySpeedSlower:     true,
+	DeliverySpeedMuchSlower: true,
+}
+
+// PackagingCondition is the enum for packaging quality
+type PackagingCondition string
+
+const (
+	PackagingConditionDamaged    PackagingCondition = "damaged"
+	PackagingConditionAcceptable PackagingCondition = "acceptable"
+	PackagingConditionGood       PackagingCondition = "good"
+	PackagingConditionExcellent  PackagingCondition = "excellent"
+)
+
+// ValidPackagingConditions is a set of valid packaging condition values
+var ValidPackagingConditions = map[PackagingCondition]bool{
+	PackagingConditionDamaged:    true,
+	PackagingConditionAcceptable: true,
+	PackagingConditionGood:       true,
+	PackagingConditionExcellent:  true,
+}
+
+// ==================== Review Entities ====================
+
+// OrderReview represents the order_review table (order-level: delivery & packaging)
+type OrderReview struct {
+	Id              int                `db:"id"`
+	OrderId         int                `db:"order_id"`
+	DeliveryRating  DeliverySpeed      `db:"delivery_rating"`
+	PackagingRating PackagingCondition `db:"packaging_rating"`
+	CreatedAt       time.Time          `db:"created_at"`
+}
+
+// OrderReviewInsert is the input for creating an order-level review
+type OrderReviewInsert struct {
+	DeliveryRating  DeliverySpeed      `db:"delivery_rating"`
+	PackagingRating PackagingCondition `db:"packaging_rating"`
+}
+
+// OrderItemReview represents the order_item_review table (item-level)
+type OrderItemReview struct {
+	Id          int           `db:"id"`
+	OrderItemId int           `db:"order_item_id"`
+	Rating      ProductRating `db:"rating"`
+	FitRating   FitScale      `db:"fit_rating"`
+	Recommend   bool          `db:"recommend"`
+	Text        string        `db:"text"`
+	CreatedAt   time.Time     `db:"created_at"`
+}
+
+// OrderItemReviewInsert is the input for creating an item-level review
+type OrderItemReviewInsert struct {
+	OrderItemId int           `db:"order_item_id"`
+	Rating      ProductRating `db:"rating"`
+	FitRating   FitScale      `db:"fit_rating"`
+	Recommend   bool          `db:"recommend"`
+	Text        string        `db:"text"`
+}
+
+// OrderReviewFull combines order-level and item-level reviews
+type OrderReviewFull struct {
+	OrderReview OrderReview
+	ItemReviews []OrderItemReview
+}
+
+// ValidateOrderReviewInsert validates the order-level review input
+func ValidateOrderReviewInsert(r *OrderReviewInsert) error {
+	if !ValidDeliverySpeeds[r.DeliveryRating] {
+		return &ValidationError{Message: "invalid delivery_rating value"}
+	}
+	if !ValidPackagingConditions[r.PackagingRating] {
+		return &ValidationError{Message: "invalid packaging_rating value"}
+	}
+	return nil
+}
+
+// ValidateOrderItemReviewInsert validates the item-level review input
+func ValidateOrderItemReviewInsert(r *OrderItemReviewInsert) error {
+	if r.OrderItemId <= 0 {
+		return &ValidationError{Message: "order_item_id is required"}
+	}
+	if !ValidProductRatings[r.Rating] {
+		return &ValidationError{Message: "invalid rating value"}
+	}
+	if !ValidFitScales[r.FitRating] {
+		return &ValidationError{Message: "invalid fit_rating value"}
+	}
+	if r.Text == "" {
+		return &ValidationError{Message: "text is required"}
+	}
+	if len(r.Text) > 2000 {
+		return &ValidationError{Message: "text must not exceed 2000 characters"}
+	}
+	return nil
 }

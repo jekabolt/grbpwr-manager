@@ -113,6 +113,10 @@ type (
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
 		SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error
 		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
+		// Reviews (internal statistics)
+		AddOrderReview(ctx context.Context, orderUUID string, email string, orderReview *entity.OrderReviewInsert, itemReviews []entity.OrderItemReviewInsert) error
+		GetOrderReviewsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderReviewFull, int, error)
+		DeleteOrderReview(ctx context.Context, orderId int) error
 	}
 
 	// TODO: invoice to separate interface

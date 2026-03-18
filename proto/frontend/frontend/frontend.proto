@@ -125,6 +125,14 @@ service FrontendService {
       body: "*"
     };
   }
+
+  // Submit reviews for a delivered order (order-level + per-item, requires delivered order + buyer email)
+  rpc SubmitOrderReview(SubmitOrderReviewRequest) returns (SubmitOrderReviewResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/order/{order_uuid}/review"
+      body: "*"
+    };
+  }
 }
 
 message GetHeroRequest {}
@@ -281,3 +289,12 @@ message SubmitSupportTicketRequest {
 }
 
 message SubmitSupportTicketResponse {}
+
+message SubmitOrderReviewRequest {
+  string order_uuid = 1;
+  string b64_email = 2;
+  common.OrderReviewInsert order_review = 3;
+  repeated common.OrderItemReviewInsert item_reviews = 4;
+}
+
+message SubmitOrderReviewResponse {}
