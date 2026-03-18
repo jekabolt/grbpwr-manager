@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,22 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
+
+// nullString returns sql.NullString: valid when s is non-empty, null otherwise.
+func nullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+// nullBool returns sql.NullBool: valid when b is non-nil, null otherwise.
+func nullBool(b *bool) sql.NullBool {
+	if b == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *b, Valid: true}
+}
 
 // AddOrderReview adds an order-level review (delivery & packaging) and item-level reviews
 // for a delivered order. The buyer is identified by order UUID and email.
@@ -74,8 +91,8 @@ func (s *Store) AddOrderReview(ctx context.Context, orderUUID string, email stri
 			VALUES (:orderId, :deliveryRating, :packagingRating)`,
 			map[string]any{
 				"orderId":         order.Id,
-				"deliveryRating":  string(orderReview.DeliveryRating),
-				"packagingRating": string(orderReview.PackagingRating),
+				"deliveryRating":  nullString(string(orderReview.DeliveryRating)),
+				"packagingRating": nullString(string(orderReview.PackagingRating)),
 			})
 		if err != nil {
 			return fmt.Errorf("can't insert order review: %w", err)
@@ -88,10 +105,10 @@ func (s *Store) AddOrderReview(ctx context.Context, orderUUID string, email stri
 				VALUES (:orderItemId, :rating, :fitRating, :recommend, :text)`,
 				map[string]any{
 					"orderItemId": ir.OrderItemId,
-					"rating":      string(ir.Rating),
-					"fitRating":   string(ir.FitRating),
-					"recommend":   ir.Recommend,
-					"text":        ir.Text,
+					"rating":      nullString(string(ir.Rating)),
+					"fitRating":   nullString(string(ir.FitRating)),
+					"recommend":   nullBool(ir.Recommend),
+					"text":        nullString(ir.Text),
 				})
 			if err != nil {
 				return fmt.Errorf("can't insert item review for order_item_id %d: %w", ir.OrderItemId, err)
@@ -225,4 +242,90 @@ func (s *Store) DeleteOrderReview(ctx context.Context, orderId int) error {
 	}
 
 	return nil
+}
+
+// GetProductReviewsPaged returns paginated item reviews for a specific product.
+func (s *Store) GetProductReviewsPaged(ctx context.Context, productId int, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderItemReview, int, error) {
+	orderDirection := "DESC"
+	if orderFactor == entity.Ascending {
+		orderDirection = "ASC"
+	}
+
+	// Count total reviews for this product
+	count, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*)
+		FROM order_item_review oir
+		INNER JOIN order_item oi ON oi.id = oir.order_item_id
+		WHERE oi.product_id = :productId`,
+		map[string]any{
+			"productId": productId,
+		})
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't count product reviews: %w", err)
+	}
+
+	if count == 0 {
+		return []entity.OrderItemReview{}, 0, nil
+	}
+
+	// Fetch reviews
+	query := fmt.Sprintf(`
+		SELECT oir.*
+		FROM order_item_review oir
+		INNER JOIN order_item oi ON oi.id = oir.order_item_id
+		WHERE oi.product_id = :productId
+		ORDER BY oir.created_at %s
+		LIMIT :limit OFFSET :offset`, orderDirection)
+
+	reviews, err := storeutil.QueryListNamed[entity.OrderItemReview](ctx, s.DB, query, map[string]any{
+		"productId": productId,
+		"limit":     limit,
+		"offset":    offset,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't get product reviews: %w", err)
+	}
+
+	return reviews, count, nil
+}
+
+// GetOrderReviewByUUID returns the order review (order-level + item-level) for a specific order UUID.
+func (s *Store) GetOrderReviewByUUID(ctx context.Context, orderUUID string) (*entity.OrderReviewFull, error) {
+	// Get order by UUID
+	order, err := getOrderByUUID(ctx, s.DB, orderUUID)
+	if err != nil {
+		return nil, fmt.Errorf("can't get order by UUID: %w", err)
+	}
+
+	// Get order-level review
+	orderReview, err := storeutil.QueryNamedOne[entity.OrderReview](ctx, s.DB, `
+		SELECT * FROM order_review WHERE order_id = :orderId`,
+		map[string]any{
+			"orderId": order.Id,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("can't get order review: %w", err)
+	}
+
+	// Get item-level reviews
+	itemReviews, err := storeutil.QueryListNamed[entity.OrderItemReview](ctx, s.DB, `
+		SELECT oir.*
+		FROM order_item_review oir
+		INNER JOIN order_item oi ON oi.id = oir.order_item_id
+		WHERE oi.order_id = :orderId`,
+		map[string]any{
+			"orderId": order.Id,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("can't get item reviews: %w", err)
+	}
+
+	if itemReviews == nil {
+		itemReviews = []entity.OrderItemReview{}
+	}
+
+	return &entity.OrderReviewFull{
+		OrderReview: orderReview,
+		ItemReviews: itemReviews,
+	}, nil
 }

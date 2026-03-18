@@ -345,37 +345,37 @@ var ValidPackagingConditions = map[PackagingCondition]bool{
 
 // OrderReview represents the order_review table (order-level: delivery & packaging)
 type OrderReview struct {
-	Id              int                `db:"id"`
-	OrderId         int                `db:"order_id"`
-	DeliveryRating  DeliverySpeed      `db:"delivery_rating"`
-	PackagingRating PackagingCondition `db:"packaging_rating"`
-	CreatedAt       time.Time          `db:"created_at"`
+	Id              int            `db:"id"`
+	OrderId         int            `db:"order_id"`
+	DeliveryRating  sql.NullString `db:"delivery_rating"`
+	PackagingRating sql.NullString `db:"packaging_rating"`
+	CreatedAt       time.Time      `db:"created_at"`
 }
 
 // OrderReviewInsert is the input for creating an order-level review
 type OrderReviewInsert struct {
-	DeliveryRating  DeliverySpeed      `db:"delivery_rating"`
-	PackagingRating PackagingCondition `db:"packaging_rating"`
+	DeliveryRating  DeliverySpeed      // optional
+	PackagingRating PackagingCondition // optional
 }
 
 // OrderItemReview represents the order_item_review table (item-level)
 type OrderItemReview struct {
-	Id          int           `db:"id"`
-	OrderItemId int           `db:"order_item_id"`
-	Rating      ProductRating `db:"rating"`
-	FitRating   FitScale      `db:"fit_rating"`
-	Recommend   bool          `db:"recommend"`
-	Text        string        `db:"text"`
-	CreatedAt   time.Time     `db:"created_at"`
+	Id          int            `db:"id"`
+	OrderItemId int            `db:"order_item_id"`
+	Rating      sql.NullString `db:"rating"`
+	FitRating   sql.NullString `db:"fit_rating"`
+	Recommend   sql.NullBool   `db:"recommend"`
+	Text        sql.NullString `db:"text"`
+	CreatedAt   time.Time      `db:"created_at"`
 }
 
 // OrderItemReviewInsert is the input for creating an item-level review
 type OrderItemReviewInsert struct {
-	OrderItemId int           `db:"order_item_id"`
-	Rating      ProductRating `db:"rating"`
-	FitRating   FitScale      `db:"fit_rating"`
-	Recommend   bool          `db:"recommend"`
-	Text        string        `db:"text"`
+	OrderItemId int           // required
+	Rating      ProductRating // optional
+	FitRating   FitScale      // optional
+	Recommend   *bool         // optional
+	Text        string        // optional
 }
 
 // OrderReviewFull combines order-level and item-level reviews
@@ -384,30 +384,29 @@ type OrderReviewFull struct {
 	ItemReviews []OrderItemReview
 }
 
-// ValidateOrderReviewInsert validates the order-level review input
+// ValidateOrderReviewInsert validates the order-level review input.
+// All fields are optional, but if provided they must be valid.
 func ValidateOrderReviewInsert(r *OrderReviewInsert) error {
-	if !ValidDeliverySpeeds[r.DeliveryRating] {
+	if r.DeliveryRating != "" && !ValidDeliverySpeeds[r.DeliveryRating] {
 		return &ValidationError{Message: "invalid delivery_rating value"}
 	}
-	if !ValidPackagingConditions[r.PackagingRating] {
+	if r.PackagingRating != "" && !ValidPackagingConditions[r.PackagingRating] {
 		return &ValidationError{Message: "invalid packaging_rating value"}
 	}
 	return nil
 }
 
-// ValidateOrderItemReviewInsert validates the item-level review input
+// ValidateOrderItemReviewInsert validates the item-level review input.
+// Only order_item_id is required. Other fields are optional but validated if provided.
 func ValidateOrderItemReviewInsert(r *OrderItemReviewInsert) error {
 	if r.OrderItemId <= 0 {
 		return &ValidationError{Message: "order_item_id is required"}
 	}
-	if !ValidProductRatings[r.Rating] {
+	if r.Rating != "" && !ValidProductRatings[r.Rating] {
 		return &ValidationError{Message: "invalid rating value"}
 	}
-	if !ValidFitScales[r.FitRating] {
+	if r.FitRating != "" && !ValidFitScales[r.FitRating] {
 		return &ValidationError{Message: "invalid fit_rating value"}
-	}
-	if r.Text == "" {
-		return &ValidationError{Message: "text is required"}
 	}
 	if len(r.Text) > 2000 {
 		return &ValidationError{Message: "text must not exceed 2000 characters"}

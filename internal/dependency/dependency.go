@@ -117,6 +117,8 @@ type (
 		AddOrderReview(ctx context.Context, orderUUID string, email string, orderReview *entity.OrderReviewInsert, itemReviews []entity.OrderItemReviewInsert) error
 		GetOrderReviewsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderReviewFull, int, error)
 		DeleteOrderReview(ctx context.Context, orderId int) error
+		GetProductReviewsPaged(ctx context.Context, productId int, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderItemReview, int, error)
+		GetOrderReviewByUUID(ctx context.Context, orderUUID string) (*entity.OrderReviewFull, error)
 	}
 
 	// TODO: invoice to separate interface

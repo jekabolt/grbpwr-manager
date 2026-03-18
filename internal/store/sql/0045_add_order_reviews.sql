@@ -10,13 +10,13 @@ CREATE TABLE order_review (
         'as_expected',
         'slower_than_expected',
         'much_slower_than_expected'
-    ) NOT NULL,
+    ) DEFAULT NULL,
     packaging_rating ENUM(
         'damaged',
         'acceptable',
         'good',
         'excellent'
-    ) NOT NULL,
+    ) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     FOREIGN KEY (order_id) REFERENCES customer_order(id) ON DELETE CASCADE
 );
@@ -25,16 +25,16 @@ CREATE TABLE order_review (
 CREATE TABLE order_item_review (
     id INT PRIMARY KEY AUTO_INCREMENT,
     order_item_id INT NOT NULL UNIQUE,
-    rating ENUM('poor', 'fair', 'good', 'very_good', 'excellent') NOT NULL,
+    rating ENUM('poor', 'fair', 'good', 'very_good', 'excellent') DEFAULT NULL,
     fit_rating ENUM(
         'runs_small',
         'slightly_small',
         'true_to_size',
         'slightly_large',
         'runs_large'
-    ) NOT NULL,
-    recommend BOOLEAN NOT NULL DEFAULT TRUE,
-    text TEXT NOT NULL,
+    ) DEFAULT NULL,
+    recommend BOOLEAN DEFAULT NULL,
+    text TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     FOREIGN KEY (order_item_id) REFERENCES order_item(id) ON DELETE CASCADE
 );

@@ -162,11 +162,12 @@ func ConvertPbOrderItemReviewInsertToEntity(pb *pb_common.OrderItemReviewInsert)
 	if pb == nil {
 		return entity.OrderItemReviewInsert{}
 	}
+	recommend := pb.Recommend
 	return entity.OrderItemReviewInsert{
 		OrderItemId: int(pb.OrderItemId),
 		Rating:      ConvertPbProductRatingToEntity(pb.Rating),
 		FitRating:   ConvertPbFitScaleToEntity(pb.FitRating),
-		Recommend:   pb.Recommend,
+		Recommend:   &recommend,
 		Text:        pb.Text,
 	}
 }
@@ -188,8 +189,8 @@ func ConvertEntityOrderReviewToPb(r *entity.OrderReview) *pb_common.OrderReview 
 	return &pb_common.OrderReview{
 		Id:              int32(r.Id),
 		OrderId:         int32(r.OrderId),
-		DeliveryRating:  ConvertEntityToPbDeliverySpeed(r.DeliveryRating),
-		PackagingRating: ConvertEntityToPbPackagingCondition(r.PackagingRating),
+		DeliveryRating:  ConvertEntityToPbDeliverySpeed(entity.DeliverySpeed(r.DeliveryRating.String)),
+		PackagingRating: ConvertEntityToPbPackagingCondition(entity.PackagingCondition(r.PackagingRating.String)),
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 	}
 }
@@ -201,10 +202,10 @@ func ConvertEntityOrderItemReviewToPb(r *entity.OrderItemReview) *pb_common.Orde
 	return &pb_common.OrderItemReview{
 		Id:          int32(r.Id),
 		OrderItemId: int32(r.OrderItemId),
-		Rating:      ConvertEntityToPbProductRating(r.Rating),
-		FitRating:   ConvertEntityToPbFitScale(r.FitRating),
-		Recommend:   r.Recommend,
-		Text:        r.Text,
+		Rating:      ConvertEntityToPbProductRating(entity.ProductRating(r.Rating.String)),
+		FitRating:   ConvertEntityToPbFitScale(entity.FitScale(r.FitRating.String)),
+		Recommend:   r.Recommend.Bool,
+		Text:        r.Text.String,
 		CreatedAt:   timestamppb.New(r.CreatedAt),
 	}
 }
