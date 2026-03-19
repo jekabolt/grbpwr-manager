@@ -153,8 +153,10 @@ func ConvertPbOrderReviewInsertToEntity(pb *pb_common.OrderReviewInsert) *entity
 		return nil
 	}
 	return &entity.OrderReviewInsert{
-		DeliveryRating:  ConvertPbDeliverySpeedToEntity(pb.DeliveryRating),
-		PackagingRating: ConvertPbPackagingConditionToEntity(pb.PackagingRating),
+		DeliveryRating:       ConvertPbDeliverySpeedToEntity(pb.DeliveryRating),
+		PackagingRating:      ConvertPbPackagingConditionToEntity(pb.PackagingRating),
+		ReviewText:           pb.ReviewText,
+		SophisticationRating: ConvertPbProductRatingToEntity(pb.SophisticationRating),
 	}
 }
 
@@ -168,7 +170,6 @@ func ConvertPbOrderItemReviewInsertToEntity(pb *pb_common.OrderItemReviewInsert)
 		Rating:      ConvertPbProductRatingToEntity(pb.Rating),
 		FitRating:   ConvertPbFitScaleToEntity(pb.FitRating),
 		Recommend:   &recommend,
-		Text:        pb.Text,
 	}
 }
 
@@ -187,11 +188,13 @@ func ConvertEntityOrderReviewToPb(r *entity.OrderReview) *pb_common.OrderReview 
 		return nil
 	}
 	return &pb_common.OrderReview{
-		Id:              int32(r.Id),
-		OrderId:         int32(r.OrderId),
-		DeliveryRating:  ConvertEntityToPbDeliverySpeed(entity.DeliverySpeed(r.DeliveryRating.String)),
-		PackagingRating: ConvertEntityToPbPackagingCondition(entity.PackagingCondition(r.PackagingRating.String)),
-		CreatedAt:       timestamppb.New(r.CreatedAt),
+		Id:                   int32(r.Id),
+		OrderId:              int32(r.OrderId),
+		DeliveryRating:       ConvertEntityToPbDeliverySpeed(entity.DeliverySpeed(r.DeliveryRating.String)),
+		PackagingRating:      ConvertEntityToPbPackagingCondition(entity.PackagingCondition(r.PackagingRating.String)),
+		CreatedAt:            timestamppb.New(r.CreatedAt),
+		ReviewText:           r.ReviewText.String,
+		SophisticationRating: ConvertEntityToPbProductRating(entity.ProductRating(r.SophisticationRating.String)),
 	}
 }
 
@@ -205,7 +208,6 @@ func ConvertEntityOrderItemReviewToPb(r *entity.OrderItemReview) *pb_common.Orde
 		Rating:      ConvertEntityToPbProductRating(entity.ProductRating(r.Rating.String)),
 		FitRating:   ConvertEntityToPbFitScale(entity.FitScale(r.FitRating.String)),
 		Recommend:   r.Recommend.Bool,
-		Text:        r.Text.String,
 		CreatedAt:   timestamppb.New(r.CreatedAt),
 	}
 }

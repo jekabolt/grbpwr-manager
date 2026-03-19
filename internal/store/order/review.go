@@ -87,12 +87,14 @@ func (s *Store) AddOrderReview(ctx context.Context, orderUUID string, email stri
 
 		// 7. Insert order-level review
 		_, err = storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO order_review (order_id, delivery_rating, packaging_rating)
-			VALUES (:orderId, :deliveryRating, :packagingRating)`,
+			INSERT INTO order_review (order_id, delivery_rating, packaging_rating, review_text, sophistication_rating)
+			VALUES (:orderId, :deliveryRating, :packagingRating, :reviewText, :sophisticationRating)`,
 			map[string]any{
-				"orderId":         order.Id,
-				"deliveryRating":  nullString(string(orderReview.DeliveryRating)),
-				"packagingRating": nullString(string(orderReview.PackagingRating)),
+				"orderId":               order.Id,
+				"deliveryRating":         nullString(string(orderReview.DeliveryRating)),
+				"packagingRating":        nullString(string(orderReview.PackagingRating)),
+				"reviewText":             nullString(orderReview.ReviewText),
+				"sophisticationRating":   nullString(string(orderReview.SophisticationRating)),
 			})
 		if err != nil {
 			return fmt.Errorf("can't insert order review: %w", err)
@@ -101,14 +103,13 @@ func (s *Store) AddOrderReview(ctx context.Context, orderUUID string, email stri
 		// 8. Insert item-level reviews
 		for _, ir := range itemReviews {
 			_, err = storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO order_item_review (order_item_id, rating, fit_rating, recommend, text)
-				VALUES (:orderItemId, :rating, :fitRating, :recommend, :text)`,
+				INSERT INTO order_item_review (order_item_id, rating, fit_rating, recommend)
+				VALUES (:orderItemId, :rating, :fitRating, :recommend)`,
 				map[string]any{
 					"orderItemId": ir.OrderItemId,
 					"rating":      nullString(string(ir.Rating)),
 					"fitRating":   nullString(string(ir.FitRating)),
 					"recommend":   nullBool(ir.Recommend),
-					"text":        nullString(ir.Text),
 				})
 			if err != nil {
 				return fmt.Errorf("can't insert item review for order_item_id %d: %w", ir.OrderItemId, err)

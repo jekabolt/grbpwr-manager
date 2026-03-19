@@ -345,17 +345,21 @@ var ValidPackagingConditions = map[PackagingCondition]bool{
 
 // OrderReview represents the order_review table (order-level: delivery & packaging)
 type OrderReview struct {
-	Id              int            `db:"id"`
-	OrderId         int            `db:"order_id"`
-	DeliveryRating  sql.NullString `db:"delivery_rating"`
-	PackagingRating sql.NullString `db:"packaging_rating"`
-	CreatedAt       time.Time      `db:"created_at"`
+	Id                   int            `db:"id"`
+	OrderId              int            `db:"order_id"`
+	DeliveryRating       sql.NullString `db:"delivery_rating"`
+	PackagingRating      sql.NullString `db:"packaging_rating"`
+	CreatedAt            time.Time      `db:"created_at"`
+	ReviewText           sql.NullString `db:"review_text"`
+	SophisticationRating sql.NullString `db:"sophistication_rating"`
 }
 
 // OrderReviewInsert is the input for creating an order-level review
 type OrderReviewInsert struct {
-	DeliveryRating  DeliverySpeed      // optional
-	PackagingRating PackagingCondition // optional
+	DeliveryRating       DeliverySpeed      // optional
+	PackagingRating      PackagingCondition // optional
+	ReviewText           string            // optional
+	SophisticationRating ProductRating     // optional
 }
 
 // OrderItemReview represents the order_item_review table (item-level)
@@ -365,7 +369,6 @@ type OrderItemReview struct {
 	Rating      sql.NullString `db:"rating"`
 	FitRating   sql.NullString `db:"fit_rating"`
 	Recommend   sql.NullBool   `db:"recommend"`
-	Text        sql.NullString `db:"text"`
 	CreatedAt   time.Time      `db:"created_at"`
 }
 
@@ -375,7 +378,6 @@ type OrderItemReviewInsert struct {
 	Rating      ProductRating // optional
 	FitRating   FitScale      // optional
 	Recommend   *bool         // optional
-	Text        string        // optional
 }
 
 // OrderReviewFull combines order-level and item-level reviews
@@ -393,6 +395,12 @@ func ValidateOrderReviewInsert(r *OrderReviewInsert) error {
 	if r.PackagingRating != "" && !ValidPackagingConditions[r.PackagingRating] {
 		return &ValidationError{Message: "invalid packaging_rating value"}
 	}
+	if len(r.ReviewText) > 2000 {
+		return &ValidationError{Message: "review_text must not exceed 2000 characters"}
+	}
+	if r.SophisticationRating != "" && !ValidProductRatings[r.SophisticationRating] {
+		return &ValidationError{Message: "invalid sophistication_rating value"}
+	}
 	return nil
 }
 
@@ -407,9 +415,6 @@ func ValidateOrderItemReviewInsert(r *OrderItemReviewInsert) error {
 	}
 	if r.FitRating != "" && !ValidFitScales[r.FitRating] {
 		return &ValidationError{Message: "invalid fit_rating value"}
-	}
-	if len(r.Text) > 2000 {
-		return &ValidationError{Message: "text must not exceed 2000 characters"}
 	}
 	return nil
 }

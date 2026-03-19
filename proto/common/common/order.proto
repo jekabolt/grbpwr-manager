@@ -174,22 +174,25 @@ message OrderReview {
   DeliverySpeedEnum delivery_rating = 3;
   PackagingConditionEnum packaging_rating = 4;
   google.protobuf.Timestamp created_at = 5;
+  string review_text = 6;
+  ProductRatingEnum sophistication_rating = 7;
 }
 
 message OrderReviewInsert {
   DeliverySpeedEnum delivery_rating = 1;
   PackagingConditionEnum packaging_rating = 2;
+  string review_text = 3;
+  ProductRatingEnum sophistication_rating = 4;
 }
 
-// Item-level review (product rating, fit, recommendation, text)
+// Item-level review (product rating, fit, recommendation)
 message OrderItemReview {
   int32 id = 1;
   int32 order_item_id = 2;
   ProductRatingEnum rating = 3;
   FitScaleEnum fit_rating = 4;
   bool recommend = 5;
-  string text = 6;
-  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp created_at = 6;
 }
 
 message OrderItemReviewInsert {
@@ -197,7 +200,6 @@ message OrderItemReviewInsert {
   ProductRatingEnum rating = 2;
   FitScaleEnum fit_rating = 3;
   bool recommend = 4;
-  string text = 5;
 }
 
 // Combined review for an order (order-level + item-level)
