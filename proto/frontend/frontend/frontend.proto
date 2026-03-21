@@ -13,6 +13,7 @@ import "common/promo.proto";
 import "common/support.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+import "google/type/date.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/frontend;frontend";
@@ -132,6 +133,88 @@ service FrontendService {
       post: "/api/frontend/order/{order_uuid}/review"
       body: "*"
     };
+  }
+
+  // --- Storefront account (passwordless: OTP + magic link; access + refresh tokens) ---
+
+  rpc RequestAccountLogin(RequestAccountLoginRequest) returns (RequestAccountLoginResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/login/request"
+      body: "*"
+    };
+  }
+
+  rpc VerifyAccountLoginCode(VerifyAccountLoginCodeRequest) returns (VerifyAccountLoginResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/login/verify-code"
+      body: "*"
+    };
+  }
+
+  rpc VerifyAccountMagicLink(VerifyAccountMagicLinkRequest) returns (VerifyAccountLoginResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/login/verify-magic"
+      body: "*"
+    };
+  }
+
+  rpc RefreshAccountSession(RefreshAccountSessionRequest) returns (RefreshAccountSessionResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/session/refresh"
+      body: "*"
+    };
+  }
+
+  // RevokeAccountSession logs out this client: invalidates the Bearer access token and revokes this refresh token's rotation family (other devices unchanged). Requires Bearer token + refresh_token.
+  rpc RevokeAccountSession(RevokeAccountSessionRequest) returns (RevokeAccountSessionResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/session/revoke"
+      body: "*"
+    };
+  }
+
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse) {
+    option (google.api.http) = {get: "/api/frontend/account/me"};
+  }
+
+  rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse) {
+    option (google.api.http) = {
+      put: "/api/frontend/account/me"
+      body: "*"
+    };
+  }
+
+  rpc ListSavedAddresses(ListSavedAddressesRequest) returns (ListSavedAddressesResponse) {
+    option (google.api.http) = {get: "/api/frontend/account/addresses"};
+  }
+
+  rpc AddSavedAddress(AddSavedAddressRequest) returns (AddSavedAddressResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/addresses"
+      body: "*"
+    };
+  }
+
+  rpc UpdateSavedAddress(UpdateSavedAddressRequest) returns (UpdateSavedAddressResponse) {
+    option (google.api.http) = {
+      put: "/api/frontend/account/addresses/{id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteSavedAddress(DeleteSavedAddressRequest) returns (DeleteSavedAddressResponse) {
+    option (google.api.http) = {delete: "/api/frontend/account/addresses/{id}"};
+  }
+
+  rpc SetDefaultSavedAddress(SetDefaultSavedAddressRequest) returns (SetDefaultSavedAddressResponse) {
+    option (google.api.http) = {
+      post: "/api/frontend/account/addresses/{id}/default"
+      body: "*"
+    };
+  }
+
+  rpc ListMyOrders(ListMyOrdersRequest) returns (ListMyOrdersResponse) {
+    option (google.api.http) = {get: "/api/frontend/account/orders"};
   }
 }
 
@@ -298,3 +381,133 @@ message SubmitOrderReviewRequest {
 }
 
 message SubmitOrderReviewResponse {}
+
+// --- Storefront account messages ---
+
+message RequestAccountLoginRequest {
+  string email = 1;
+}
+
+message RequestAccountLoginResponse {}
+
+message VerifyAccountLoginCodeRequest {
+  string email = 1;
+  string code = 2;
+}
+
+message VerifyAccountMagicLinkRequest {
+  string token = 1;
+}
+
+message VerifyAccountLoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_expires_at = 3;
+  StorefrontAccount account = 4;
+}
+
+message RefreshAccountSessionRequest {
+  string refresh_token = 1;
+}
+
+message RevokeAccountSessionRequest {
+  // Current opaque refresh token; its rotation family is revoked (required).
+  string refresh_token = 1;
+}
+
+message RevokeAccountSessionResponse {}
+
+message RefreshAccountSessionResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_expires_at = 3;
+}
+
+// Shopping preference for storefront catalog browsing (not product target_gender).
+enum ShoppingPreferenceEnum {
+  SHOPPING_PREFERENCE_ENUM_UNKNOWN = 0;
+  SHOPPING_PREFERENCE_ENUM_MALE = 1;
+  SHOPPING_PREFERENCE_ENUM_FEMALE = 2;
+  SHOPPING_PREFERENCE_ENUM_ALL = 3;
+}
+
+message StorefrontAccount {
+  string email = 1;
+  string first_name = 2;
+  string last_name = 3;
+  google.type.Date birth_date = 4;
+  ShoppingPreferenceEnum shopping_preference = 5;
+}
+
+message GetAccountRequest {}
+
+message GetAccountResponse {
+  StorefrontAccount account = 1;
+}
+
+message UpdateAccountRequest {
+  optional string first_name = 1;
+  optional string last_name = 2;
+  optional google.type.Date birth_date = 3;
+  optional ShoppingPreferenceEnum shopping_preference = 4;
+}
+
+message UpdateAccountResponse {
+  StorefrontAccount account = 1;
+}
+
+message StorefrontSavedAddress {
+  int32 id = 1;
+  string label = 2;
+  string country = 3;
+  string state = 4;
+  string city = 5;
+  string address_line_one = 6;
+  string address_line_two = 7;
+  string company = 8;
+  string postal_code = 9;
+  bool is_default = 10;
+}
+
+message ListSavedAddressesRequest {}
+
+message ListSavedAddressesResponse {
+  repeated StorefrontSavedAddress addresses = 1;
+}
+
+message AddSavedAddressRequest {
+  StorefrontSavedAddress address = 1;
+}
+
+message AddSavedAddressResponse {
+  int32 id = 1;
+}
+
+message UpdateSavedAddressRequest {
+  int32 id = 1;
+  StorefrontSavedAddress address = 2;
+}
+
+message UpdateSavedAddressResponse {}
+
+message DeleteSavedAddressRequest {
+  int32 id = 1;
+}
+
+message DeleteSavedAddressResponse {}
+
+message SetDefaultSavedAddressRequest {
+  int32 id = 1;
+}
+
+message SetDefaultSavedAddressResponse {}
+
+message ListMyOrdersRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ListMyOrdersResponse {
+  repeated common.OrderFull orders = 1;
+  int32 total = 2;
+}

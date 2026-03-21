@@ -24,6 +24,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 )
 
@@ -44,6 +45,7 @@ type App struct {
 	b    dependency.FileStore
 	ma   dependency.Mailer
 	oc   *ordercleanup.Worker
+	sc   *storefrontcleanup.Worker
 	sr   *stripereconcile.Worker
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
@@ -92,6 +94,14 @@ func (a *App) Start(ctx context.Context) error {
 	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservationMgr)
 	if err = a.oc.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	a.sc = storefrontcleanup.New(&a.c.StorefrontCleanup, a.db)
+	if err = a.sc.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start storefront cleanup worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -191,7 +201,14 @@ func (a *App) Start(ctx context.Context) error {
 
 	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr)
 
-	frontendS := frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr)
+	var frontendS *frontend.Server
+	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed create frontend server",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()

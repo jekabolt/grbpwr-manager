@@ -33,6 +33,7 @@ type Server struct {
 	pwhash          *pwhash.PasswordHasher
 	JwtAuth         *jwtauth.JWTAuth
 	jwtTTL          time.Duration
+	jwtExpectations *jwt.Expectations
 	c               *Config
 	masterHash      string
 }
@@ -40,9 +41,11 @@ type Server struct {
 // Config contains the configuration for the auth server.
 type Config struct {
 	JWTSecret                string `mapstructure:"jwt_secret"`
-	MasterPassword           string `mapstructure:"master_password"`
-	PasswordHasherSaltSize   int    `mapstructure:"password_hasher_salt_size"`
-	PasswordHasherIterations int    `mapstructure:"password_hasher_iterations"`
+	JWTIssuer                string `mapstructure:"jwt_issuer"`
+	JWTAudience              string `mapstructure:"jwt_audience"`
+	MasterPassword            string `mapstructure:"master_password"`
+	PasswordHasherSaltSize    int    `mapstructure:"password_hasher_salt_size"`
+	PasswordHasherIterations  int    `mapstructure:"password_hasher_iterations"`
 	JWTTTL                   string `mapstructure:"jwt_ttl"`
 }
 
@@ -66,16 +69,28 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse jwt ttl: %w", err)
 	}
+	var jwtExp *jwt.Expectations
+	if c.JWTIssuer != "" || c.JWTAudience != "" {
+		jwtExp = &jwt.Expectations{Issuer: c.JWTIssuer, Audience: c.JWTAudience}
+	}
 	s := &Server{
 		adminRepository: ar,
 		pwhash:          ph,
 		JwtAuth:         jwtauth.New("HS256", []byte(c.JWTSecret), nil),
-		c:               c,
 		jwtTTL:          ttl,
+		jwtExpectations: jwtExp,
+		c:               c,
 		masterHash:      hash,
 	}
 
 	return s, nil
+}
+
+func (s *Server) jwtIssueOpts() *jwt.IssueOpts {
+	if s.c.JWTIssuer == "" && s.c.JWTAudience == "" {
+		return nil
+	}
+	return &jwt.IssueOpts{Issuer: s.c.JWTIssuer, Audience: s.c.JWTAudience}
 }
 
 // Login get auth token for provided username and password.
@@ -98,7 +113,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubject(s.JwtAuth, s.jwtTTL, username)
+	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -132,7 +147,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubject(s.JwtAuth, s.jwtTTL, username)
+	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -201,7 +216,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewToken(s.JwtAuth, s.jwtTTL)
+	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, "", s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -231,7 +246,7 @@ type errorMessage struct {
 func (s *Server) WithAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
-		_, err := jwt.VerifyToken(s.JwtAuth, token)
+		_, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
 			// Create a new error message
 			errMsg := errorMessage{Error: err.Error()}
@@ -293,7 +308,7 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		if err != nil {
 			return handler(ctx, req) // no token, continue; auth will fail elsewhere if required
 		}
-		sub, err := jwt.VerifyToken(s.JwtAuth, token)
+		sub, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
 			return handler(ctx, req)
 		}

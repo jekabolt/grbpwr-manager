@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/shopspring/decimal"
@@ -43,6 +44,7 @@ type Server struct {
 	re                dependency.RevalidationService
 	rateLimiter       *ratelimit.MultiKeyLimiter
 	reservationMgr    *stockreserve.Manager
+	storefront        *storefrontAuthRuntime
 }
 
 // New creates a new server with frontend handlers.
@@ -53,7 +55,8 @@ func New(
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
 	reservationMgr *stockreserve.Manager,
-) *Server {
+	storefrontCfg *storefront.Config,
+) (*Server, error) {
 	// Set reservation manager on stripe processors if they support it
 	if sp, ok := stripePayment.(interface {
 		SetReservationManager(dependency.StockReservationManager)
@@ -66,6 +69,11 @@ func New(
 		spt.SetReservationManager(reservationMgr)
 	}
 
+	sa, err := newStorefrontAuthRuntime(storefrontCfg)
+	if err != nil {
+		return nil, fmt.Errorf("storefront auth: %w", err)
+	}
+
 	return &Server{
 		repo:              r,
 		mailer:            m,
@@ -74,7 +82,8 @@ func New(
 		re:                re,
 		rateLimiter:       ratelimit.NewMultiKeyLimiter(),
 		reservationMgr:    reservationMgr,
-	}
+		storefront:        sa,
+	}, nil
 }
 
 func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (*pb_frontend.GetHeroResponse, error) {
@@ -177,7 +186,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 			slog.Default().WarnContext(ctx, "price sorting requires currency",
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't get products paged",
 			slog.String("err", err.Error()),
@@ -587,7 +596,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 			slog.Default().WarnContext(ctx, "validation failed for order items",
 				slog.String("err", err.Error()),
 			)
-			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't validate order items insert",
 			slog.String("err", err.Error()),
@@ -1431,7 +1440,7 @@ func (s *Server) SubmitOrderReview(ctx context.Context, req *pb_frontend.SubmitO
 				slog.String("err", ve.Error()),
 				slog.String("order_uuid", req.OrderUuid),
 			)
-			return nil, status.Errorf(codes.InvalidArgument, ve.Error())
+			return nil, status.Error(codes.InvalidArgument, ve.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't submit order review",
 			slog.String("err", err.Error()),

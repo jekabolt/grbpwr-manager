@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -62,11 +63,12 @@ func insertBuyer(ctx context.Context, db dependency.DB, b *entity.BuyerInsert, s
 		(:orderId, :firstName, :lastName, :email, :phone, :billingAddressId, :shippingAddressId)
 	`
 
+	email := strings.ToLower(strings.TrimSpace(b.Email))
 	err = storeutil.ExecNamed(ctx, db, query, map[string]interface{}{
 		"orderId":           b.OrderId,
 		"firstName":         b.FirstName,
 		"lastName":          b.LastName,
-		"email":             b.Email,
+		"email":             email,
 		"phone":             phone,
 		"billingAddressId":  bAdr,
 		"shippingAddressId": sAdr,

@@ -391,8 +391,10 @@ func TestBuildSendMailRequest(t *testing.T) {
 	t.Run("Valid Template", func(t *testing.T) {
 		data := struct {
 			Preheader string
+			EmailB64  string
 		}{
 			Preheader: "WELCOME TO GRBPWR",
+			EmailB64:  " ",
 		}
 		req, err := mailer.buildSendMailRequest("test@example.com", NewSubscriber, data)
 
@@ -407,8 +409,10 @@ func TestBuildSendMailRequest(t *testing.T) {
 	t.Run("Invalid Template", func(t *testing.T) {
 		data := struct {
 			Preheader string
+			EmailB64  string
 		}{
 			Preheader: "TEST",
+			EmailB64:  " ",
 		}
 		req, err := mailer.buildSendMailRequest("test@example.com", "nonexistent.gohtml", data)
 
@@ -437,6 +441,28 @@ func TestBuildSendMailRequest(t *testing.T) {
 		assert.Equal(t, "Your order has been confirmed", req.Subject)
 		assert.Contains(t, *req.Html, "test-123")
 		assert.Contains(t, *req.Html, "HAS BEEN PLACED")
+	})
+
+	t.Run("Account Login Template", func(t *testing.T) {
+		data := &struct {
+			Preheader    string
+			EmailB64     string
+			OTPCode      string
+			MagicLinkURL string
+		}{
+			Preheader:    "Your GRBPWR sign-in code",
+			EmailB64:     " ",
+			OTPCode:      "123456",
+			MagicLinkURL: "https://example.com/account/verify?token=test",
+		}
+
+		req, err := mailer.buildSendMailRequest("test@example.com", AccountLogin, data)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, req)
+		assert.Equal(t, "Your sign-in code", req.Subject)
+		assert.Contains(t, *req.Html, "123456")
+		assert.Contains(t, *req.Html, "https://example.com/account/verify")
 	})
 
 	t.Run("Order Cancellation Template", func(t *testing.T) {
@@ -490,6 +516,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 func TestTemplateSubjects(t *testing.T) {
 	expectedSubjects := map[templateName]string{
+		AccountLogin:         "Your sign-in code",
 		NewSubscriber:        "Welcome to GRBPWR",
 		OrderCancelled:       "Your order has been cancelled",
 		OrderConfirmed:       "Your order has been confirmed",

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -26,7 +26,7 @@ const (
 func TestAuth(t *testing.T) {
 	ctx := context.Background()
 
-	as := mocks.NewAdmin(t)
+	as := mocks.NewMockAdmin(t)
 	c := &Config{
 		JWTSecret:                jwtSecret,
 		MasterPassword:           masterPassword,

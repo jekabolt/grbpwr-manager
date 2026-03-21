@@ -90,7 +90,7 @@ func getOrderByUUIDAndEmailForUpdate(ctx context.Context, db dependency.DB, orde
 		SELECT co.*
 		FROM customer_order co
 		INNER JOIN buyer b ON co.id = b.order_id
-		WHERE co.uuid = :orderUUID AND b.email = :email
+		WHERE co.uuid = :orderUUID AND LOWER(b.email) = LOWER(:email)
 		FOR UPDATE
 	`
 	order, err := storeutil.QueryNamedOne[entity.Order](ctx, db, query, map[string]interface{}{

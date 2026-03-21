@@ -59,7 +59,7 @@ func (s *Store) GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, em
 		SELECT co.*
 		FROM customer_order co
 		INNER JOIN buyer b ON co.id = b.order_id
-		WHERE co.uuid = :orderUUID AND b.email = :email
+		WHERE co.uuid = :orderUUID AND LOWER(b.email) = LOWER(:email)
 	`
 
 	order, err := storeutil.QueryNamedOne[entity.Order](ctx, s.DB, query, map[string]interface{}{
@@ -134,7 +134,7 @@ func (s *Store) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email 
 		WHERE 
 			(:status = 0 OR co.order_status_id = :status) 
 			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
-			AND (:email = '' OR b.email = :email)
+			AND (:email = '' OR LOWER(b.email) = LOWER(:email))
 			AND (:orderId = 0 OR co.id = :orderId)
 			AND (:orderUUID = '' OR co.uuid = :orderUUID)
 		ORDER BY 

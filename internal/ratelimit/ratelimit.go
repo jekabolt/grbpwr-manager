@@ -105,6 +105,11 @@ func NewMultiKeyLimiter() *MultiKeyLimiter {
 			"ip_validate":   NewLimiter(time.Minute, 20), // 20 validations per IP per minute
 			"ip_support":    NewLimiter(time.Hour, 2),    // 5 tickets per IP per hour
 			"email_support": NewLimiter(time.Hour, 1),    // 3 tickets per email per hour
+			"email_account_login": NewLimiter(time.Hour, 10), // login code requests per email
+			"ip_account_login":    NewLimiter(time.Hour, 60),
+			"ip_account_verify":        NewLimiter(time.Minute, 30), // verify / refresh per IP
+			"email_account_verify":     NewLimiter(time.Minute, 10), // OTP verify per email (anti distributed guess)
+			"challenge_account_verify": NewLimiter(time.Minute, 10), // magic token verify per token hash
 		},
 	}
 }
@@ -177,4 +182,38 @@ func (m *MultiKeyLimiter) GetOrderLimits(ip, email string) (ipRemaining, emailRe
 	}
 
 	return ipRemaining, emailRemaining
+}
+
+// CheckAccountLoginRequest rate-limits passwordless login initiation.
+func (m *MultiKeyLimiter) CheckAccountLoginRequest(ip, email string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_account_login"].Allow(ip) {
+		return fmt.Errorf("too many login requests from this network, please try again later")
+	}
+	if email != "" && !m.limiters["email_account_login"].Allow(email) {
+		return fmt.Errorf("too many login requests for this email, please try again later")
+	}
+	return nil
+}
+
+// CheckAccountVerify rate-limits account verify flows. Always applies per-IP.
+// For OTP login, pass email so attempts are capped per victim address (distributed guessing).
+// For magic-link login, pass a stable challengeKey (e.g. SHA-256 hex of the token) so replays are capped per link.
+// For refresh, pass empty email and challengeKey (IP only).
+func (m *MultiKeyLimiter) CheckAccountVerify(ip, email, challengeKey string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_account_verify"].Allow(ip) {
+		return fmt.Errorf("too many attempts, please try again later")
+	}
+	if email != "" && !m.limiters["email_account_verify"].Allow(email) {
+		return fmt.Errorf("too many attempts for this email, please try again later")
+	}
+	if challengeKey != "" && !m.limiters["challenge_account_verify"].Allow(challengeKey) {
+		return fmt.Errorf("too many attempts, please try again later")
+	}
+	return nil
 }

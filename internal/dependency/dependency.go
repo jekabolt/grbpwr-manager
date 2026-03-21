@@ -119,6 +119,35 @@ type (
 		DeleteOrderReview(ctx context.Context, orderId int) error
 		GetProductReviewsPaged(ctx context.Context, productId int, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderItemReview, int, error)
 		GetOrderReviewByUUID(ctx context.Context, orderUUID string) (*entity.OrderReviewFull, error)
+		// ListOrdersFullByBuyerEmailPaged returns orders where buyer email matches, newest first, with total count.
+		ListOrdersFullByBuyerEmailPaged(ctx context.Context, email string, limit, offset int) ([]entity.OrderFull, int, error)
+	}
+
+	// StorefrontAccount handles customer account login, sessions, and saved addresses.
+	StorefrontAccount interface {
+		InsertLoginChallenge(ctx context.Context, email, otpHash, magicHash string, expiresAt time.Time) error
+		ConsumeLoginChallengeOTP(ctx context.Context, email, otpPlain, otpPepper string) (string, error)
+		ConsumeLoginChallengeMagic(ctx context.Context, magicPlain, magicPepper string) (string, error)
+		GetOrCreateAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
+		GetAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
+		UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference sql.NullString) error
+		InsertRefreshToken(ctx context.Context, accountID int, tokenHash, familyID string, expiresAt time.Time) (int64, error)
+		// RotateRefreshToken validates the current refresh token, revokes it, inserts a new one in the same family, and returns the new raw token and account email.
+		RotateRefreshToken(ctx context.Context, rawRefresh, refreshPepper string, refreshTTL time.Duration, now time.Time) (newRaw string, accountEmail string, err error)
+		// RevokeRefreshTokenFamilyByRawTokenForAccount revokes every refresh token in the family identified by rawRefresh, scoped to accountID.
+		RevokeRefreshTokenFamilyByRawTokenForAccount(ctx context.Context, rawRefresh, refreshPepper string, accountID int) error
+		// RevokeAllRefreshTokensForAccount revokes all refresh tokens for the account (logout all devices).
+		RevokeAllRefreshTokensForAccount(ctx context.Context, accountID int) error
+		InsertJtiDenylist(ctx context.Context, jti string, accountID int, expiresAt time.Time) error
+		IsJtiDenylisted(ctx context.Context, jti string) (bool, error)
+		CleanupExpiredJtiDenylist(ctx context.Context) (int64, error)
+		CleanupExpiredLoginChallenges(ctx context.Context) (int64, error)
+		CleanupExpiredRefreshTokens(ctx context.Context) (int64, error)
+		ListSavedAddresses(ctx context.Context, accountID int) ([]entity.StorefrontSavedAddress, error)
+		AddSavedAddress(ctx context.Context, accountID int, ins *entity.StorefrontSavedAddressInsert) (int, error)
+		UpdateSavedAddress(ctx context.Context, accountID int, id int, ins *entity.StorefrontSavedAddressInsert) error
+		DeleteSavedAddress(ctx context.Context, accountID int, id int) error
+		SetDefaultSavedAddress(ctx context.Context, accountID int, id int) error
 	}
 
 	// TODO: invoice to separate interface
@@ -397,6 +426,7 @@ type (
 		Products() Products
 		Hero() Hero
 		Order() Order
+		StorefrontAccount() StorefrontAccount
 		Promo() Promo
 		Admin() Admin
 		Cache() Cache
@@ -469,6 +499,7 @@ type (
 		SendPendingReturn(ctx context.Context, rep Repository, to string, details *dto.OrderPendingReturn) error
 		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error
 		SendBackInStock(ctx context.Context, rep Repository, to string, productDetails *dto.BackInStock) error
+		QueueAccountLogin(ctx context.Context, rep Repository, to string, otpCode string, magicLinkURL string) error
 		Start(ctx context.Context) error
 		Stop() error
 	}

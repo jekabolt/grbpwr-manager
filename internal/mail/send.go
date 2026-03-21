@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"fmt"
+	"html"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -11,6 +12,7 @@ import (
 type templateName string
 
 const (
+	AccountLogin         templateName = "account_login.gohtml"
 	NewSubscriber        templateName = "new_subscriber.gohtml"
 	OrderCancelled       templateName = "order_cancelled.gohtml"
 	OrderConfirmed       templateName = "order_confirmed.gohtml"
@@ -23,6 +25,7 @@ const (
 
 // Define a map for template names to subjects
 var templateSubjects = map[templateName]string{
+	AccountLogin:         "Your sign-in code",
 	NewSubscriber:        "Welcome to GRBPWR",
 	OrderCancelled:       "Your order has been cancelled",
 	OrderConfirmed:       "Your order has been confirmed",
@@ -61,6 +64,26 @@ func (m *Mailer) QueueNewSubscriber(ctx context.Context, rep dependency.Reposito
 	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for new subscriber: %w", err)
+	}
+	return m.queueEmail(ctx, rep, ser)
+}
+
+// QueueAccountLogin queues a combined OTP + magic link sign-in email.
+func (m *Mailer) QueueAccountLogin(ctx context.Context, rep dependency.Repository, to string, otpCode string, magicLinkURL string) error {
+	data := &struct {
+		Preheader    string
+		EmailB64     string
+		OTPCode      string
+		MagicLinkURL string
+	}{
+		Preheader:    "Your GRBPWR sign-in code",
+		EmailB64:     " ",
+		OTPCode:      html.EscapeString(otpCode),
+		MagicLinkURL: html.EscapeString(magicLinkURL),
+	}
+	ser, err := m.buildSendMailRequest(to, AccountLogin, data)
+	if err != nil {
+		return fmt.Errorf("can't build account login email: %w", err)
 	}
 	return m.queueEmail(ctx, rep, ser)
 }

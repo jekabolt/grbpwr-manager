@@ -14,8 +14,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
@@ -32,10 +34,12 @@ type Config struct {
 	Logger            log.Config             `mapstructure:"logger"`
 	HTTP              httpapi.Config         `mapstructure:"http"`
 	Auth              auth.Config            `mapstructure:"auth"`
+	StorefrontAuth    storefront.Config      `mapstructure:"storefront_auth"`
 	Bucket            bucket.Config          `mapstructure:"bucket"`
 	Mailer            mail.Config            `mapstructure:"mailer"`
-	OrderCleanup      ordercleanup.Config    `mapstructure:"order_cleanup"`
-	StripeReconcile   stripereconcile.Config `mapstructure:"stripe_reconcile"`
+	OrderCleanup        ordercleanup.Config        `mapstructure:"order_cleanup"`
+	StorefrontCleanup   storefrontcleanup.Config   `mapstructure:"storefront_cleanup"`
+	StripeReconcile     stripereconcile.Config     `mapstructure:"stripe_reconcile"`
 	Rates             RatesConfig            `mapstructure:"rates"`
 	StripePayment     stripe.Config          `mapstructure:"stripe_payment"`
 	StripePaymentTest stripe.Config          `mapstructure:"stripe_payment_test"`
@@ -144,10 +148,24 @@ func bindEnvVars() {
 
 	// Auth
 	viper.BindEnv("auth.jwt_secret", "AUTH_JWT_SECRET")
+	viper.BindEnv("auth.jwt_issuer", "AUTH_JWT_ISSUER")
+	viper.BindEnv("auth.jwt_audience", "AUTH_JWT_AUDIENCE")
 	viper.BindEnv("auth.master_password", "AUTH_MASTER_PASSWORD")
 	viper.BindEnv("auth.password_hasher_salt_size", "AUTH_PASSWORD_HASHER_SALT_SIZE")
 	viper.BindEnv("auth.password_hasher_iterations", "AUTH_PASSWORD_HASHER_ITERATIONS")
 	viper.BindEnv("auth.jwt_ttl", "AUTH_JWT_TTL")
+
+	// Storefront account (customer JWT)
+	viper.BindEnv("storefront_auth.access_jwt_secret", "STOREFRONT_AUTH_ACCESS_JWT_SECRET")
+	viper.BindEnv("storefront_auth.access_jwt_issuer", "STOREFRONT_AUTH_ACCESS_JWT_ISSUER")
+	viper.BindEnv("storefront_auth.access_jwt_audience", "STOREFRONT_AUTH_ACCESS_JWT_AUDIENCE")
+	viper.BindEnv("storefront_auth.access_jti_revocation_enabled", "STOREFRONT_AUTH_ACCESS_JTI_REVOCATION_ENABLED")
+	viper.BindEnv("storefront_auth.access_jwt_ttl", "STOREFRONT_AUTH_ACCESS_JWT_TTL")
+	viper.BindEnv("storefront_auth.refresh_ttl", "STOREFRONT_AUTH_REFRESH_TTL")
+	viper.BindEnv("storefront_auth.login_challenge_ttl", "STOREFRONT_AUTH_LOGIN_CHALLENGE_TTL")
+	viper.BindEnv("storefront_auth.login_pepper", "STOREFRONT_AUTH_LOGIN_PEPPER")
+	viper.BindEnv("storefront_auth.refresh_pepper", "STOREFRONT_AUTH_REFRESH_PEPPER")
+	viper.BindEnv("storefront_auth.magic_link_base_url", "STOREFRONT_AUTH_MAGIC_LINK_BASE_URL")
 
 	// Bucket
 	viper.BindEnv("bucket.s3_access_key", "BUCKET_S3_ACCESS_KEY")
@@ -169,6 +187,9 @@ func bindEnvVars() {
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")
 	viper.BindEnv("order_cleanup.placed_threshold", "ORDER_CLEANUP_PLACED_THRESHOLD")
+
+	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
+	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")

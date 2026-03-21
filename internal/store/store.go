@@ -17,6 +17,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/store/account"
 	"github.com/jekabolt/grbpwr-manager/internal/store/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
@@ -66,6 +67,7 @@ type MYSQLStore struct {
 	adminStore    *admin.Store
 	promoStore    *promo.Store
 	langStore     *language.Store
+	accountStore  *account.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -297,6 +299,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.metrics = metrics.New(base, ms)
 	ms.content = content.New(base, ms.Tx)
 	ms.orderStore = order.New(base, ms.Tx, func() dependency.Repository { return ms })
+	ms.accountStore = account.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -315,6 +318,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.metrics = metrics.New(base, txStore)
 	txStore.content = content.New(base, outerTx)
 	txStore.orderStore = order.New(base, outerTx, func() dependency.Repository { return txStore })
+	txStore.accountStore = account.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -356,6 +360,9 @@ func (ms *MYSQLStore) Support() dependency.Support      { return ms.supportStore
 func (ms *MYSQLStore) Admin() dependency.Admin          { return ms.adminStore }
 func (ms *MYSQLStore) Promo() dependency.Promo          { return ms.promoStore }
 func (ms *MYSQLStore) Language() dependency.Language     { return ms.langStore }
+func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
+	return ms.accountStore
+}
 
 // ErrOrderItemsUpdated is re-exported from the order sub-package for backward compatibility.
 var ErrOrderItemsUpdated = order.ErrOrderItemsUpdated

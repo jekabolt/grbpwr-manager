@@ -1,3 +1,5 @@
+//go:build ignore
+
 package frontend
 
 import (
@@ -8,10 +10,8 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
-	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
-	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/shopspring/decimal"

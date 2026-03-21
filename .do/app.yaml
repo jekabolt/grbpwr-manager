@@ -55,6 +55,39 @@ envs:
 - key: AUTH_JWT_TTL
   scope: RUN_TIME
   value: 43800m
+- key: STOREFRONT_AUTH_ACCESS_JWT_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: EV[1:ci8FLz3g0Ds7kMsEAcCGjrEy3iowLGEm:xshkZ19BNh8Z0Bh7yjB+8UyMFUYieLhieU5uUwvELblyP2Lq89cxcesaSrHrcDrAiJvuSx/rIObPTHQ=]
+- key: STOREFRONT_AUTH_ACCESS_JWT_ISSUER
+  scope: RUN_TIME
+  value: grbpwr-storefront
+- key: STOREFRONT_AUTH_ACCESS_JWT_AUDIENCE
+  scope: RUN_TIME
+  value: grbpwr-storefront
+- key: STOREFRONT_AUTH_ACCESS_JTI_REVOCATION_ENABLED
+  scope: RUN_TIME
+  value: "true"
+- key: STOREFRONT_AUTH_ACCESS_JWT_TTL
+  scope: RUN_TIME
+  value: 15m
+- key: STOREFRONT_AUTH_REFRESH_TTL
+  scope: RUN_TIME
+  value: 7d
+- key: STOREFRONT_AUTH_LOGIN_CHALLENGE_TTL
+  scope: RUN_TIME
+  value: 10m
+- key: STOREFRONT_AUTH_LOGIN_PEPPER
+  scope: RUN_TIME
+  type: SECRET
+  value: EV[1:jeJQESLBZg932oTbaxy0RXeHeTbo/kW0:o5rLtrO875L4kcoJZoJWGylZYi8xckDVWcsN17bf7h2IOodErbwjDIbue82PBYaY1sjb7pylTyfGt0Q=]
+- key: STOREFRONT_AUTH_REFRESH_PEPPER
+  scope: RUN_TIME
+  type: SECRET
+  value: EV[1:qOR3EuEFmTHy3hrENCHP9jFbk7l4s1lq:A8jVK5Y/T9lYUZy9OxZstVmjomn0vNIMVQvphREl0U6XEsaSt7jTWzera2gvbirsePQ+SNNi1cjPe2k=]
+- key: STOREFRONT_AUTH_MAGIC_LINK_BASE_URL
+  scope: RUN_TIME
+  value: https://grbpwr.com/login
 - key: BUCKET_S3_ACCESS_KEY
   scope: RUN_TIME
   type: SECRET
@@ -261,8 +294,12 @@ envs:
   value: "3"
 - key: BIGQUERY_PROJECT_ID
   scope: RUN_TIME
+  type: SECRET
+  value: EV[1:x75BQX6yDSB3RsGY8Zf0l8lETukMSXLc:oKlYK0UMvWviTmBv13GWxmvtsUguxxP+2okjymRKAx+IMSrcOA==]
 - key: BIGQUERY_DATASET_ID
   scope: RUN_TIME
+  type: SECRET
+  value: EV[1:fVjPikLypR+lvZdhgOziDDmlO8LMw/WV:onG/gwGlcxPebOcCD7q6pKHUep3jmfDJ4MGSZoLYmKA5ue8=]
 - key: BIGQUERY_CREDENTIALS_JSON
   scope: RUN_TIME
   type: SECRET
