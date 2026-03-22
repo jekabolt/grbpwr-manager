@@ -183,6 +183,10 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.from_email_name", "MAILER_FROM_EMAIL_NAME")
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")
 	viper.BindEnv("mailer.worker_interval", "MAILER_WORKER_INTERVAL")
+	viper.BindEnv("mailer.max_send_attempts", "MAILER_MAX_SEND_ATTEMPTS")
+	viper.BindEnv("mailer.retry_base_interval", "MAILER_RETRY_BASE_INTERVAL")
+	viper.BindEnv("mailer.retry_max_interval", "MAILER_RETRY_MAX_INTERVAL")
+	viper.BindEnv("mailer.inline_send_lease", "MAILER_INLINE_SEND_LEASE")
 
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")

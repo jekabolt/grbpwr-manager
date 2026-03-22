@@ -50,7 +50,8 @@ func (m *Mailer) worker(ctx context.Context) {
 }
 
 func (m *Mailer) handleUnsent(ctx context.Context) error {
-	unsentEmails, err := m.mailRepository.GetAllUnsent(ctx, false)
+	now := time.Now().UTC()
+	unsentEmails, err := m.mailRepository.GetAllUnsent(ctx, false, m.c.MaxSendAttempts, now)
 	if err != nil {
 		return fmt.Errorf("can't get unsent mails: %w", err)
 	}
@@ -64,17 +65,33 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 		if err := m.sendRaw(ctx, &email); err != nil {
 			slog.Default().ErrorContext(ctx, "can't send mail",
 				slog.String("err", err.Error()),
-				slog.Any("mail", email),
+				slog.Int("mailId", email.Id),
+				slog.Int("sendAttemptCount", email.SendAttemptCount),
 			)
 
 			if errors.Is(err, mailApiLimitReached) {
 				return nil // Stop sending mails if API limit is reached
 			}
-
-			if err := m.mailRepository.AddError(ctx, email.Id, err.Error()); err != nil {
-				return fmt.Errorf("can't log error for email %v: %w", email.Id, err)
+			if errors.Is(err, context.Canceled) {
+				return err
 			}
 
+			errMsg := err.Error()
+			newAttemptCount := email.SendAttemptCount + 1
+			transient := IsTransientSendFailure(err)
+			exhausted := newAttemptCount >= m.c.MaxSendAttempts
+			if !transient || exhausted {
+				if err := m.mailRepository.MarkSendDead(ctx, email.Id, errMsg, m.c.MaxSendAttempts); err != nil {
+					return fmt.Errorf("can't mark send dead for email %v: %w", email.Id, err)
+				}
+				continue
+			}
+
+			delay := RetryDelayAfterAttempt(m.c.RetryBaseInterval, m.c.RetryMaxInterval, newAttemptCount)
+			next := time.Now().UTC().Add(delay)
+			if err := m.mailRepository.ScheduleSendRetry(ctx, email.Id, errMsg, next); err != nil {
+				return fmt.Errorf("can't schedule retry for email %v: %w", email.Id, err)
+			}
 		} else {
 			// Update the database to mark the email as sent
 			if err := m.mailRepository.UpdateSent(ctx, email.Id); err != nil {

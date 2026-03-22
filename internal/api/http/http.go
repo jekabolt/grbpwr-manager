@@ -74,13 +74,20 @@ type Config struct {
 	CommitHash     string   `mapstructure:"commit_hash"`
 }
 
+// WebhookHandler handles inbound webhook HTTP requests.
+type WebhookHandler interface {
+	HandleResendEvent(w http.ResponseWriter, r *http.Request)
+	HandleListUnsubscribe(w http.ResponseWriter, r *http.Request)
+}
+
 // Server is the http server
 type Server struct {
-	hs            *http.Server
-	gs            *grpc.Server
-	c             *Config
-	done          chan struct{}
-	healthChecker HealthChecker
+	hs             *http.Server
+	gs             *grpc.Server
+	c              *Config
+	done           chan struct{}
+	healthChecker  HealthChecker
+	webhookHandler WebhookHandler
 }
 
 // New creates a new server
@@ -94,6 +101,11 @@ func New(config *Config) *Server {
 // SetHealthChecker sets an optional health checker for readiness probes
 func (s *Server) SetHealthChecker(checker HealthChecker) {
 	s.healthChecker = checker
+}
+
+// SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
+func (s *Server) SetWebhookHandler(h WebhookHandler) {
+	s.webhookHandler = h
 }
 
 // Done returns a channel that is closed when gRPC server exits
@@ -216,6 +228,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.Mount("/frontend", frontendHandler)
 		r.Mount("/auth", authHandler)
 	})
+
+	// Webhook routes — no CORS, no auth. Must accept POST from external services.
+	if s.webhookHandler != nil {
+		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
+		r.Post("/api/webhooks/list-unsubscribe/{email_b64}", s.webhookHandler.HandleListUnsubscribe)
+	}
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
 

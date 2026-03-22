@@ -3,7 +3,6 @@ package mail
 import (
 	"context"
 	"fmt"
-	"html"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -78,8 +77,8 @@ func (m *Mailer) QueueAccountLogin(ctx context.Context, rep dependency.Repositor
 	}{
 		Preheader:    "Your GRBPWR sign-in code",
 		EmailB64:     " ",
-		OTPCode:      html.EscapeString(otpCode),
-		MagicLinkURL: html.EscapeString(magicLinkURL),
+		OTPCode:      otpCode,
+		MagicLinkURL: magicLinkURL,
 	}
 	ser, err := m.buildSendMailRequest(to, AccountLogin, data)
 	if err != nil {

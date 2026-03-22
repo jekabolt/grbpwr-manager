@@ -1,0 +1,75 @@
+---
+description: Outbound email (Resend), templates, queue/worker conventions
+globs: internal/mail/**/*.go
+alwaysApply: false
+---
+
+# Mail Package (`internal/mail`)
+
+## Rationale
+
+Outbound email is sent through **Resend** (OpenAPI client in `openapi/gen/resend/`). Most sends are **persisted first** in `send_email_request` so a background worker can retry after failures or rate limits.
+
+## Contracts
+
+- Public surface for the app is [`dependency.Mailer`](internal/dependency/dependency.go) — add or change methods there first, then implement on `*Mailer` in this package and run `make generate-mocks`.
+- Persistence and worker eligibility are [`dependency.Mail`](internal/dependency/dependency.go), implemented in [`internal/store/communication/mail.go`](internal/store/communication/mail.go).
+- HTTP transport to Resend is abstracted as [`dependency.Sender`](internal/dependency/dependency.go) (`PostEmails`) for tests.
+
+## File layout
+
+| File | Role |
+|---|---|
+| `mail.go` | `Mailer` construction, Resend client wiring, template parse (`embed`), `buildSendMailRequest`, low-level `send` / `sendRaw`, `sendWithInsert` / `queueEmail` |
+| `send.go` | `templateName` / `templateSubjects`, exported `Send*` and `Queue*` methods |
+| `worker.go` | `Start` / `Stop`, ticker loop over unsent rows |
+| `send_retry.go` | Transient vs permanent classification, backoff, mailer retry defaults |
+
+## Configuration
+
+- `Config` fields use `mapstructure` tags; **new settings** must be added to the main config struct in `config/cfg.go` with env binding — never read env vars inside `internal/mail`.
+- Retry/worker tuning (`WorkerInterval`, `MaxSendAttempts`, `RetryBaseInterval`, `RetryMaxInterval`) belongs in config, not hardcoded magic numbers in call sites.
+
+## Templates
+
+- Templates live under `internal/mail/templates/`: **root** `*.gohtml` files and **`partials/*.gohtml`**.
+- Parsing loads partials once, then **clones** that tree for each root template (`parseTemplates` in `mail.go`).
+- Adding a new email type requires **all** of: new `templates/<name>.gohtml`, a `templateName` const, and a `templateSubjects` entry in `send.go`.
+- Execute with the root file name as the template entry point (`ExecuteTemplate(..., string(tn), data)`).
+
+## HTML and untrusted input
+
+- Use `html/template` (not `text/template`) so all pipeline output is auto-escaped. Do not inject `template.HTML` or raw user HTML into bodies unless the product explicitly requires it and you have a safe pipeline.
+
+## Send vs queue
+
+- **`sendWithInsert`**: insert row, attempt immediate send; on transport failure **log and return `nil`** so the caller is not blocked — the worker picks up the unsent row.
+- **`queueEmail`**: insert only; worker sends later (use for fire-and-forget / must-not-block paths).
+- Convert between Resend requests and DB rows with helpers in `internal/dto` (`ResendSendEmailRequestToEntity`, `EntitySendEmailRequestToResend`).
+
+## Worker and `dependency.Mail`
+
+- Eligible unsent rows: `GetAllUnsent(ctx, false, maxSendAttempts, time.Now().UTC())` (under attempt cap and past `next_retry_at`).
+- On send failure, record state via **`ScheduleSendRetry`** (backoff + increment attempts) or **`MarkSendDead`** when retries are exhausted — keep behavior aligned with `Config.MaxSendAttempts` / retry intervals.
+- **HTTP 429** from Resend maps to `mailApiLimitReached` (`codes.ResourceExhausted`); the worker should **stop processing the current batch** when this is returned so you do not hammer the API.
+
+## Generated code
+
+- **Do not edit** `openapi/gen/resend/` — regenerate from OpenAPI when the contract changes.
+
+## Logging and errors
+
+- Use `log/slog` with `ErrorContext` / structured fields for send and worker failures.
+- Wrap errors with `fmt.Errorf("...: %w", err)` when propagating.
+
+## Testing
+
+- Unit tests use `mocks.NewMockMail` and construct the mailer via `new` or `New` with a test `Config` (see `mail_test.go`).
+- Do not call the real Resend API from tests — mock `dependency.Sender` when testing send paths.
+
+## Cross-references
+
+- Interfaces: [200-dependency.mdc](mdc:200-dependency.mdc)
+- Store implementation: [200-store.mdc](mdc:200-store.mdc)
+- Tests / mocks: [300-testing.mdc](mdc:300-testing.mdc)
+- Core (context, config, logging): [000-core.mdc](mdc:000-core.mdc)

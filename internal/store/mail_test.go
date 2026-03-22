@@ -17,6 +17,8 @@ func cleanupMails(store *MYSQLStore) error {
 	return ExecNamed(ctx, store.DB(), "DELETE FROM send_email_request", map[string]any{})
 }
 
+const testMailMaxAttempts = 10
+
 func TestMailStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -113,26 +115,84 @@ func TestMailStore(t *testing.T) {
 		id2, err := mailStore.AddMail(ctx, req2)
 		require.NoError(t, err)
 
-		// Add error to one email
-		err = mailStore.AddError(ctx, id1, "test error")
+		err = mailStore.MarkSendDead(ctx, id1, "test error", testMailMaxAttempts)
 		require.NoError(t, err)
 
-		// Test GetAllUnsent without errors
-		emails, err := mailStore.GetAllUnsent(ctx, false)
+		now := time.Now().UTC()
+		emails, err := mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, now)
 		require.NoError(t, err)
-		assert.Len(t, emails, 1) // Should only get the email without error
+		assert.Len(t, emails, 1)
 		assert.Equal(t, id2, emails[0].Id)
 
-		// Test GetAllUnsent with errors
-		emails, err = mailStore.GetAllUnsent(ctx, true)
+		emails, err = mailStore.GetAllUnsent(ctx, true, testMailMaxAttempts, now)
 		require.NoError(t, err)
-		assert.Len(t, emails, 2) // Should get both emails
-		// Sort emails by ID to make assertions deterministic
+		assert.Len(t, emails, 2)
 		if emails[0].Id > emails[1].Id {
 			emails[0], emails[1] = emails[1], emails[0]
 		}
 		assert.Equal(t, id1, emails[0].Id)
 		assert.Equal(t, id2, emails[1].Id)
+	})
+
+	t.Run("AddMail_sets_next_retry_at_on_insert", func(t *testing.T) {
+		err := cleanupMails(store)
+		require.NoError(t, err)
+
+		future := time.Now().UTC().Add(30 * time.Minute)
+		req := &entity.SendEmailRequest{
+			From:        "hold@example.com",
+			To:          "to@example.com",
+			Html:        "<p>x</p>",
+			Subject:     "s",
+			ReplyTo:     "r@example.com",
+			Sent:        false,
+			NextRetryAt: sql.NullTime{Time: future, Valid: true},
+		}
+		id, err := mailStore.AddMail(ctx, req)
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		emails, err := mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, now)
+		require.NoError(t, err)
+		assert.Len(t, emails, 0)
+
+		err = mailStore.ClearNextRetryAt(ctx, id)
+		require.NoError(t, err)
+		emails, err = mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, now)
+		require.NoError(t, err)
+		assert.Len(t, emails, 1)
+		assert.Equal(t, id, emails[0].Id)
+	})
+
+	t.Run("GetAllUnsent_respects_next_retry_at", func(t *testing.T) {
+		err := cleanupMails(store)
+		require.NoError(t, err)
+
+		req := &entity.SendEmailRequest{
+			From:    "retry@example.com",
+			To:      "to@example.com",
+			Html:    "<p>x</p>",
+			Subject: "s",
+			ReplyTo: "r@example.com",
+			Sent:    false,
+		}
+		id, err := mailStore.AddMail(ctx, req)
+		require.NoError(t, err)
+
+		future := time.Now().UTC().Add(2 * time.Hour)
+		err = mailStore.ScheduleSendRetry(ctx, id, "transient", future)
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		emails, err := mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, now)
+		require.NoError(t, err)
+		assert.Len(t, emails, 0)
+
+		emails, err = mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, future.Add(time.Minute))
+		require.NoError(t, err)
+		assert.Len(t, emails, 1)
+		assert.Equal(t, id, emails[0].Id)
+		assert.Equal(t, 1, emails[0].SendAttemptCount)
 	})
 
 	t.Run("UpdateSent", func(t *testing.T) {
@@ -158,19 +218,18 @@ func TestMailStore(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify email is not returned in unsent emails
-		emails, err := mailStore.GetAllUnsent(ctx, true)
+		now := time.Now().UTC()
+		emails, err := mailStore.GetAllUnsent(ctx, true, testMailMaxAttempts, now)
 		require.NoError(t, err)
 		for _, email := range emails {
 			assert.NotEqual(t, id, email.Id)
 		}
 	})
 
-	t.Run("AddError", func(t *testing.T) {
-		// Clean up before test
+	t.Run("MarkSendDead", func(t *testing.T) {
 		err := cleanupMails(store)
 		require.NoError(t, err)
 
-		// Add a test email
 		req := &entity.SendEmailRequest{
 			From:    "test@example.com",
 			To:      "recipient@example.com",
@@ -183,26 +242,25 @@ func TestMailStore(t *testing.T) {
 		id, err := mailStore.AddMail(ctx, req)
 		require.NoError(t, err)
 
-		// Add error
 		errMsg := "test error message"
-		err = mailStore.AddError(ctx, id, errMsg)
+		err = mailStore.MarkSendDead(ctx, id, errMsg, testMailMaxAttempts)
 		require.NoError(t, err)
 
-		// Verify email is not returned in unsent emails without errors
-		emails, err := mailStore.GetAllUnsent(ctx, false)
+		now := time.Now().UTC()
+		emails, err := mailStore.GetAllUnsent(ctx, false, testMailMaxAttempts, now)
 		require.NoError(t, err)
 		for _, email := range emails {
 			assert.NotEqual(t, id, email.Id)
 		}
 
-		// Verify email is returned in unsent emails with errors
-		emails, err = mailStore.GetAllUnsent(ctx, true)
+		emails, err = mailStore.GetAllUnsent(ctx, true, testMailMaxAttempts, now)
 		require.NoError(t, err)
 		found := false
 		for _, email := range emails {
 			if email.Id == id {
 				found = true
 				assert.Equal(t, sql.NullString{String: errMsg, Valid: true}, email.ErrMsg)
+				assert.Equal(t, testMailMaxAttempts, email.SendAttemptCount)
 				break
 			}
 		}

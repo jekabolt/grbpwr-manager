@@ -80,9 +80,23 @@ type (
 
 	Mail interface {
 		AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error)
-		GetAllUnsent(ctx context.Context, withError bool) ([]entity.SendEmailRequest, error)
+		// GetAllUnsent returns unsent rows. withError false limits to worker-eligible rows (attempts and next_retry_at).
+		// Rows whose to_email is in email_suppression are always excluded.
+		GetAllUnsent(ctx context.Context, withError bool, maxSendAttempts int, nowUTC time.Time) ([]entity.SendEmailRequest, error)
 		UpdateSent(ctx context.Context, id int) error
-		AddError(ctx context.Context, id int, errMsg string) error
+		// ClearNextRetryAt clears next_retry_at on an unsent row (e.g. after inline send failed) so the worker can retry.
+		ClearNextRetryAt(ctx context.Context, id int) error
+		ScheduleSendRetry(ctx context.Context, id int, errMsg string, nextRetryAt time.Time) error
+		MarkSendDead(ctx context.Context, id int, errMsg string, maxSendAttempts int) error
+		// AddSuppression adds an email address to the suppression list. Idempotent.
+		AddSuppression(ctx context.Context, email string, reason entity.SuppressionReason) error
+		// IsSuppressed returns true if the address is on the suppression list.
+		IsSuppressed(ctx context.Context, email string) (bool, error)
+		// IncrementEmailMetric atomically increments a counter in email_daily_metrics for the given date.
+		// metricType must be one of: "sent", "delivered", "bounced", "opened", "clicked".
+		IncrementEmailMetric(ctx context.Context, metricType string, date time.Time) error
+		// GetEmailMetrics returns daily email metric rows for a date range (inclusive).
+		GetEmailMetrics(ctx context.Context, from, to time.Time) ([]entity.EmailDailyMetrics, error)
 	}
 
 	Order interface {
@@ -218,6 +232,8 @@ type (
 		Inventory
 		Analytics
 		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
+		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
+		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 	}
 
 	Support interface {

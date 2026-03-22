@@ -731,6 +731,14 @@ message BusinessMetrics {
   repeated TimeSeriesPoint users_by_day_compare = 69;
   repeated TimeSeriesPoint page_views_by_day_compare = 70;
   repeated TimeSeriesPoint conversion_rate_by_day_compare = 71;
+
+  // Email delivery metrics (from Resend webhooks)
+  MetricWithComparison emails_sent = 72;
+  MetricWithComparison emails_delivered = 73;
+  MetricWithComparison email_delivery_rate = 74;
+  MetricWithComparison email_open_rate = 75;
+  MetricWithComparison email_click_rate = 76;
+  MetricWithComparison email_bounce_rate = 77;
 }
 
 message PaymentMethodMetric {

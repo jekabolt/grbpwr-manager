@@ -56,7 +56,7 @@ func TestNew(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Nil(t, mailer)
-		assert.Contains(t, err.Error(), "incomplete config")
+		assert.Contains(t, err.Error(), "incomplete mail config")
 	})
 
 	t.Run("Empty From Email", func(t *testing.T) {
@@ -385,8 +385,57 @@ func TestSendPromoCode(t *testing.T) {
 	})
 }
 
+func TestValidateEmailAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"valid simple", "user@example.com", "user@example.com", false},
+		{"valid with display name", "John Doe <john@example.com>", "john@example.com", false},
+		{"valid subdomain", "user@mail.example.co.uk", "user@mail.example.co.uk", false},
+		{"valid with plus", "user+tag@example.com", "user+tag@example.com", false},
+		{"trimmed", "  user@example.com  ", "user@example.com", false},
+		{"empty", "", "", true},
+		{"whitespace only", "   ", "", true},
+		{"no at sign", "userexample.com", "", true},
+		{"no domain", "user@", "", true},
+		{"no local", "@example.com", "", true},
+		{"double at", "user@@example.com", "", true},
+		{"invalid chars", "user<>@example.com", "", true},
+		{"too long", "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := tt.input
+			if tt.name == "too long" {
+				input = strings.Repeat("a", 250) + "@x.co" // 255 chars
+			}
+			got, err := validateEmailAddress(input)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestBuildSendMailRequest(t *testing.T) {
 	mailer := createTestMailer(t)
+
+	t.Run("Invalid email rejected", func(t *testing.T) {
+		data := struct {
+			Preheader string
+			EmailB64  string
+		}{Preheader: "WELCOME", EmailB64: " "}
+		req, err := mailer.buildSendMailRequest("not-an-email", NewSubscriber, data)
+		assert.Error(t, err)
+		assert.Nil(t, req)
+		assert.Contains(t, err.Error(), "invalid recipient")
+	})
 
 	t.Run("Valid Template", func(t *testing.T) {
 		data := struct {

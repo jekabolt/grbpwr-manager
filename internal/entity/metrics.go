@@ -109,6 +109,14 @@ type BusinessMetrics struct {
 	PageViewsByDay          []TimeSeriesPoint
 	ConversionRateByDay     []TimeSeriesPoint
 
+	// Email delivery metrics
+	EmailDeliveryRate MetricWithComparison
+	EmailOpenRate     MetricWithComparison
+	EmailClickRate    MetricWithComparison
+	EmailBounceRate   MetricWithComparison
+	EmailsSent        MetricWithComparison
+	EmailsDelivered   MetricWithComparison
+
 	// Comparison period time series (overlay previous period on charts)
 	RevenueByDayCompare            []TimeSeriesPoint
 	OrdersByDayCompare             []TimeSeriesPoint

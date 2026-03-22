@@ -37,6 +37,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		promoOrders, cPromoOrders     int
 		newSubs, cNewSubs              int
 		repeatRate, avgOrders, avgDays decimal.Decimal
+		emailSummary, cEmailSummary    *entity.EmailMetricsSummary
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -243,6 +244,18 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		repeatRate, avgOrders, avgDays, err = s.getRepeatCustomerMetrics(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		emailSummary, err = s.GetEmailMetricsSummary(gctx, period.From, period.To)
+		return err
+	})
+	if hasCompare {
+		g.Go(func() error {
+			var err error
+			cEmailSummary, err = s.GetEmailMetricsSummary(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+	}
 	g.Go(func() error {
 		var err error
 		m.CLVDistribution, err = s.getCLVStats(gctx, period.From, period.To)
@@ -599,6 +612,36 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.TotalRefunded.ChangePct = changePct(revRefund, cRevRefund)
 		m.TotalDiscount.CompareValue = &cTotalDiscount
 		m.TotalDiscount.ChangePct = changePct(totalDiscount, cTotalDiscount)
+	}
+
+	// Email delivery metrics
+	if emailSummary != nil {
+		m.EmailsSent.Value = decimal.NewFromInt(int64(emailSummary.TotalSent))
+		m.EmailsDelivered.Value = decimal.NewFromInt(int64(emailSummary.TotalDelivered))
+		m.EmailDeliveryRate.Value = decimal.NewFromFloat(emailSummary.DeliveryRate)
+		m.EmailOpenRate.Value = decimal.NewFromFloat(emailSummary.OpenRate)
+		m.EmailClickRate.Value = decimal.NewFromFloat(emailSummary.ClickRate)
+		m.EmailBounceRate.Value = decimal.NewFromFloat(emailSummary.BounceRate)
+	}
+	if hasCompare && cEmailSummary != nil {
+		cEmailsSent := decimal.NewFromInt(int64(cEmailSummary.TotalSent))
+		cEmailsDelivered := decimal.NewFromInt(int64(cEmailSummary.TotalDelivered))
+		cDeliveryRate := decimal.NewFromFloat(cEmailSummary.DeliveryRate)
+		cOpenRate := decimal.NewFromFloat(cEmailSummary.OpenRate)
+		cClickRate := decimal.NewFromFloat(cEmailSummary.ClickRate)
+		cBounceRate := decimal.NewFromFloat(cEmailSummary.BounceRate)
+		m.EmailsSent.CompareValue = &cEmailsSent
+		m.EmailsSent.ChangePct = changePct(m.EmailsSent.Value, cEmailsSent)
+		m.EmailsDelivered.CompareValue = &cEmailsDelivered
+		m.EmailsDelivered.ChangePct = changePct(m.EmailsDelivered.Value, cEmailsDelivered)
+		m.EmailDeliveryRate.CompareValue = &cDeliveryRate
+		m.EmailDeliveryRate.ChangePct = changePct(m.EmailDeliveryRate.Value, cDeliveryRate)
+		m.EmailOpenRate.CompareValue = &cOpenRate
+		m.EmailOpenRate.ChangePct = changePct(m.EmailOpenRate.Value, cOpenRate)
+		m.EmailClickRate.CompareValue = &cClickRate
+		m.EmailClickRate.ChangePct = changePct(m.EmailClickRate.Value, cClickRate)
+		m.EmailBounceRate.CompareValue = &cBounceRate
+		m.EmailBounceRate.ChangePct = changePct(m.EmailBounceRate.Value, cBounceRate)
 	}
 
 	// Region depends on country (run after parallel wait)

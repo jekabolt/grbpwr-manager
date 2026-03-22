@@ -220,6 +220,16 @@ func (a *App) Start(ctx context.Context) error {
 		a.hs.SetHealthChecker(healthChecker)
 	}
 
+	// Set up Resend webhook handler (bounce/complaint suppression + list-unsubscribe)
+	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create webhook handler",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	a.hs.SetWebhookHandler(webhookHandler)
+
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
 		slog.Default().ErrorContext(ctx, "cannot start http server")
 		return err
@@ -228,8 +238,27 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the application and waits for all services to exit
+// Stop stops the application and waits for all services to exit.
+// Workers are stopped first so they release DB connections before database close.
 func (a *App) Stop(ctx context.Context) {
+	// Stop workers before closing DB — avoids panics and error storms from workers
+	// hitting a closed connection. In-flight emails remain in DB and will be retried on next run.
+	if a.ma != nil {
+		_ = a.ma.Stop()
+	}
+	if a.oc != nil {
+		_ = a.oc.Stop()
+	}
+	if a.sc != nil {
+		_ = a.sc.Stop()
+	}
+	if a.sr != nil {
+		_ = a.sr.Stop()
+	}
+	if a.ga4w != nil {
+		_ = a.ga4w.Stop()
+	}
+
 	if a.bqc != nil {
 		a.bqc.Close()
 	}

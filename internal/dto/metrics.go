@@ -85,6 +85,12 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		UsersByDayCompare:              timeSeriesToPb(m.UsersByDayCompare),
 		PageViewsByDayCompare:          timeSeriesToPb(m.PageViewsByDayCompare),
 		ConversionRateByDayCompare:     timeSeriesToPb(m.ConversionRateByDayCompare),
+		EmailsSent:                     metricWithComparisonToPb(m.EmailsSent),
+		EmailsDelivered:                metricWithComparisonToPb(m.EmailsDelivered),
+		EmailDeliveryRate:              metricWithComparisonToPb(m.EmailDeliveryRate),
+		EmailOpenRate:                  metricWithComparisonToPb(m.EmailOpenRate),
+		EmailClickRate:                 metricWithComparisonToPb(m.EmailClickRate),
+		EmailBounceRate:                metricWithComparisonToPb(m.EmailBounceRate, true), // lower is better
 	}
 	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
 		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
