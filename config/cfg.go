@@ -174,7 +174,6 @@ func bindEnvVars() {
 	viper.BindEnv("bucket.s3_bucket_name", "BUCKET_S3_BUCKET_NAME")
 	viper.BindEnv("bucket.s3_bucket_location", "BUCKET_S3_BUCKET_LOCATION")
 	viper.BindEnv("bucket.base_folder", "BUCKET_BASE_FOLDER")
-	viper.BindEnv("bucket.image_store_prefix", "BUCKET_IMAGE_STORE_PREFIX")
 	viper.BindEnv("bucket.subdomain_endpoint", "BUCKET_SUBDOMAIN_ENDPOINT")
 
 	// Mailer

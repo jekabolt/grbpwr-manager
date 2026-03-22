@@ -1,6 +1,8 @@
 package bucket
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -16,9 +18,9 @@ type Config struct {
 	S3BucketName      string `mapstructure:"s3_bucket_name"`
 	S3BucketLocation  string `mapstructure:"s3_bucket_location"`
 	BaseFolder        string `mapstructure:"base_folder"`
-	MediaStorePrefix  string `mapstructure:"media_store_prefix"`
 	SubdomainEndpoint string `mapstructure:"subdomain_endpoint"`
 }
+
 type Bucket struct {
 	*minio.Client
 	*Config
@@ -44,15 +46,13 @@ func (b *Bucket) GetBaseFolder() string {
 	return b.BaseFolder
 }
 
-// GetMediaName generates a file name based on a high-precision current timestamp
-// It follows the convention: yyyyMMddHHmmssSSS
-// Where SSS is milliseconds, ensuring uniqueness even within high-frequency upload scenarios
+// GetMediaName generates a unique file name based on the current UTC timestamp with millisecond
+// precision plus a 4-character random hex suffix to prevent collisions within the same millisecond.
+// Format: yyyyMMddHHmmssSSS<4hex>  (21 characters)
 func GetMediaName() string {
-	// Current time with milliseconds precision
-	currentTime := time.Now().Format("20060102150405.000")
-
-	// Remove the decimal point from the milliseconds for a compact representation
-	currentTime = currentTime[:14] + currentTime[15:]
-
-	return currentTime
+	ts := time.Now().UTC().Format("20060102150405.000")
+	ts = ts[:14] + ts[15:]
+	buf := make([]byte, 2)
+	rand.Read(buf) //nolint:errcheck // crypto/rand.Read never returns an error on supported platforms
+	return ts + hex.EncodeToString(buf)
 }

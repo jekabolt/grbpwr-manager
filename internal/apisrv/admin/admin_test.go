@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
-	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -33,12 +33,12 @@ func TestUploadContentImage(t *testing.T) {
 	t.Run("Successful upload", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create expected response
@@ -91,12 +91,12 @@ func TestUploadContentImage(t *testing.T) {
 	t.Run("Upload failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		expectedErr := errors.New("upload failed")
@@ -127,12 +127,12 @@ func TestUploadContentImage(t *testing.T) {
 	t.Run("Empty image data", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
@@ -161,12 +161,12 @@ func TestUploadContentImage(t *testing.T) {
 	t.Run("Media name format", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
@@ -176,9 +176,8 @@ func TestUploadContentImage(t *testing.T) {
 			testRawB64Image,
 			testBaseFolder,
 			mock.MatchedBy(func(name string) bool {
-				// Verify that the name matches the format from bucket.GetMediaName()
-				// The format should be a timestamp like "20230415123045123"
-				return len(name) == 17 // Length of timestamp format
+				// Format: yyyyMMddHHmmssSSS + 4-char hex suffix = 21 chars
+				return len(name) == 21
 			}),
 		).Return(&pb_common.MediaFull{}, nil)
 
@@ -202,12 +201,12 @@ func TestUploadContentVideo(t *testing.T) {
 	t.Run("Successful upload", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create expected response
@@ -262,12 +261,12 @@ func TestUploadContentVideo(t *testing.T) {
 	t.Run("Upload failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		expectedErr := errors.New("upload failed")
@@ -300,12 +299,12 @@ func TestUploadContentVideo(t *testing.T) {
 	t.Run("Empty video data", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		emptyData := []byte{}
@@ -339,12 +338,12 @@ func TestUploadContentVideo(t *testing.T) {
 	t.Run("Invalid content type", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		invalidContentType := "invalid/type"
@@ -378,12 +377,12 @@ func TestUploadContentVideo(t *testing.T) {
 	t.Run("Media name format", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Set up expectations
@@ -393,9 +392,8 @@ func TestUploadContentVideo(t *testing.T) {
 			testRawVideo,
 			testBaseFolder,
 			mock.MatchedBy(func(name string) bool {
-				// Verify that the name matches the format from bucket.GetMediaName()
-				// The format should be a timestamp like "20230415123045123"
-				return len(name) == 17 // Length of timestamp format
+				// Format: yyyyMMddHHmmssSSS + 4-char hex suffix = 21 chars
+				return len(name) == 21
 			}),
 			testContentType,
 		).Return(&pb_common.MediaFull{}, nil)
@@ -419,19 +417,19 @@ func TestDeleteFromBucket(t *testing.T) {
 	t.Run("Successful deletion", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 
 		// Create mocks for Media and Hero repositories
-		mockMediaRepo := mocks.NewMedia(t)
-		mockHeroRepo := mocks.NewHero(t)
+		mockMediaRepo := mocks.NewMockMedia(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Set up expectations
 		mockMediaRepo.On("DeleteMediaById", mock.Anything, int(mediaID)).Return(nil)
@@ -457,19 +455,19 @@ func TestDeleteFromBucket(t *testing.T) {
 	t.Run("Media deletion failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 		expectedErr := errors.New("media deletion failed")
 
 		// Create mock for Media repository
-		mockMediaRepo := mocks.NewMedia(t)
+		mockMediaRepo := mocks.NewMockMedia(t)
 
 		// Set up expectations
 		mockMediaRepo.On("DeleteMediaById", mock.Anything, int(mediaID)).Return(expectedErr)
@@ -493,20 +491,20 @@ func TestDeleteFromBucket(t *testing.T) {
 	t.Run("Hero refresh failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		mediaID := int32(123)
 		refreshErr := errors.New("hero refresh failed")
 
 		// Create mocks for Media and Hero repositories
-		mockMediaRepo := mocks.NewMedia(t)
-		mockHeroRepo := mocks.NewHero(t)
+		mockMediaRepo := mocks.NewMockMedia(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Set up expectations
 		mockMediaRepo.On("DeleteMediaById", mock.Anything, int(mediaID)).Return(nil)
@@ -533,19 +531,19 @@ func TestDeleteFromBucket(t *testing.T) {
 	t.Run("Invalid media ID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		invalidID := int32(-1)
 		expectedErr := errors.New("invalid media ID")
 
 		// Create mock for Media repository
-		mockMediaRepo := mocks.NewMedia(t)
+		mockMediaRepo := mocks.NewMockMedia(t)
 
 		// Set up expectations
 		mockMediaRepo.On("DeleteMediaById", mock.Anything, int(invalidID)).Return(expectedErr)
@@ -571,17 +569,17 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Create new product successfully", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
-		mockProductsRepo := mocks.NewProducts(t)
-		mockHeroRepo := mocks.NewHero(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Expected product ID to be returned
 		expectedProductID := 123
@@ -651,17 +649,17 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Update existing product successfully", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
-		mockProductsRepo := mocks.NewProducts(t)
-		mockHeroRepo := mocks.NewHero(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Product ID to update
 		productID := int32(123)
@@ -731,12 +729,12 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Invalid product data", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid product (missing required fields)
@@ -786,16 +784,16 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Product creation failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Expected error
 		expectedErr := errors.New("database error")
@@ -856,16 +854,16 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Product update failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Product ID to update
 		productID := int32(123)
@@ -929,17 +927,17 @@ func TestUpsertProduct(t *testing.T) {
 	t.Run("Hero refresh failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mocks for Products and Hero repositories
-		mockProductsRepo := mocks.NewProducts(t)
-		mockHeroRepo := mocks.NewHero(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Expected product ID to be returned
 		expectedProductID := 123
@@ -1008,16 +1006,16 @@ func TestDeleteProductByID(t *testing.T) {
 	t.Run("Successful deletion", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Product ID to delete
 		productID := int32(123)
@@ -1043,16 +1041,16 @@ func TestDeleteProductByID(t *testing.T) {
 	t.Run("Product deletion failure", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Product ID to delete
 		productID := int32(123)
@@ -1082,16 +1080,16 @@ func TestDeleteProductByID(t *testing.T) {
 	t.Run("Invalid product ID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Invalid product ID
 		invalidID := int32(-1)
@@ -1121,16 +1119,16 @@ func TestDeleteProductByID(t *testing.T) {
 	t.Run("Product not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Non-existent product ID
 		nonExistentID := int32(999)
@@ -1159,15 +1157,15 @@ func TestDeleteProductByID(t *testing.T) {
 
 	t.Run("Product exists in orders", func(t *testing.T) {
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 		productID := int32(123)
 
 		mockRepo.On("Products").Return(mockProductsRepo)
@@ -1187,16 +1185,16 @@ func TestGetProductByID(t *testing.T) {
 	t.Run("Successful retrieval", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Product ID to retrieve
 		productID := int32(123)
@@ -1316,16 +1314,16 @@ func TestGetProductByID(t *testing.T) {
 	t.Run("Product not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Non-existent product ID
 		nonExistentID := int32(999)
@@ -1355,16 +1353,16 @@ func TestGetProductByID(t *testing.T) {
 	t.Run("Invalid product ID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Invalid product ID
 		invalidID := int32(-1)
@@ -1394,16 +1392,16 @@ func TestGetProductByID(t *testing.T) {
 	t.Run("Conversion error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Product ID to retrieve
 		productID := int32(123)
@@ -1453,16 +1451,16 @@ func TestGetProductsPaged(t *testing.T) {
 	t.Run("Successful retrieval with default parameters", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Create mock products to be returned
 		mockProducts := []entity.Product{
@@ -1587,16 +1585,16 @@ func TestGetProductsPaged(t *testing.T) {
 	t.Run("Successful retrieval with sort factors and filter conditions", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Create mock products to be returned (filtered by price)
 		mockProducts := []entity.Product{
@@ -1696,16 +1694,16 @@ func TestGetProductsPaged(t *testing.T) {
 	t.Run("Empty result", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Empty result
 		mockProducts := []entity.Product{}
@@ -1750,16 +1748,16 @@ func TestGetProductsPaged(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Request parameters
 		limit := int32(10)
@@ -1809,16 +1807,16 @@ func TestGetProductsPaged(t *testing.T) {
 	t.Run("Duplicate sort factors are removed", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Create mock products to be returned
 		mockProducts := []entity.Product{
@@ -1909,16 +1907,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Successful update", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters
 		productID := int32(123)
@@ -1953,16 +1951,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters
 		productID := int32(123)
@@ -2001,16 +1999,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Invalid product ID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters with invalid product ID
 		productID := int32(-1) // Invalid ID
@@ -2049,16 +2047,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Invalid size ID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters with invalid size ID
 		productID := int32(123)
@@ -2097,16 +2095,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Negative quantity", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters with negative quantity
 		productID := int32(123)
@@ -2145,16 +2143,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Product not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters with non-existent product
 		productID := int32(999) // Non-existent product
@@ -2193,16 +2191,16 @@ func TestUpdateProductSizeStock(t *testing.T) {
 	t.Run("Size not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Products repository
-		mockProductsRepo := mocks.NewProducts(t)
+		mockProductsRepo := mocks.NewMockProducts(t)
 
 		// Test parameters with non-existent size
 		productID := int32(123)
@@ -2243,16 +2241,16 @@ func TestAddPromo(t *testing.T) {
 	t.Run("Successful promo addition", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Create a valid promo code
 		now := time.Now()
@@ -2288,12 +2286,12 @@ func TestAddPromo(t *testing.T) {
 	t.Run("Conversion error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid promo code (invalid discount value)
@@ -2326,16 +2324,16 @@ func TestAddPromo(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Create a valid promo code
 		now := time.Now()
@@ -2375,16 +2373,16 @@ func TestAddPromo(t *testing.T) {
 	t.Run("Duplicate promo code", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Create a valid promo code
 		now := time.Now()
@@ -2425,12 +2423,12 @@ func TestAddPromo(t *testing.T) {
 	t.Run("Missing required fields", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create an invalid promo code (missing required fields)
@@ -2462,16 +2460,16 @@ func TestDeletePromoCode(t *testing.T) {
 	t.Run("Successful promo code deletion", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		promoCode := "TEST10"
@@ -2497,12 +2495,12 @@ func TestDeletePromoCode(t *testing.T) {
 	t.Run("Empty code error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty code
@@ -2522,16 +2520,16 @@ func TestDeletePromoCode(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		promoCode := "TEST10"
@@ -2561,16 +2559,16 @@ func TestDeletePromoCode(t *testing.T) {
 	t.Run("Promo code not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters - non-existent promo code
 		nonExistentCode := "NONEXISTENT"
@@ -2602,16 +2600,16 @@ func TestDisablePromoCode(t *testing.T) {
 	t.Run("Successful promo code disabling", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		promoCode := "TEST10"
@@ -2637,12 +2635,12 @@ func TestDisablePromoCode(t *testing.T) {
 	t.Run("Empty code error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty code
@@ -2662,16 +2660,16 @@ func TestDisablePromoCode(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		promoCode := "TEST10"
@@ -2701,16 +2699,16 @@ func TestDisablePromoCode(t *testing.T) {
 	t.Run("Promo code not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters - non-existent promo code
 		nonExistentCode := "NONEXISTENT"
@@ -2740,16 +2738,16 @@ func TestDisablePromoCode(t *testing.T) {
 	t.Run("Already disabled promo code", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters - already disabled promo code
 		disabledCode := "DISABLED"
@@ -2781,16 +2779,16 @@ func TestListPromos(t *testing.T) {
 	t.Run("Successful promo listing", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		limit := 10
@@ -2851,16 +2849,16 @@ func TestListPromos(t *testing.T) {
 	t.Run("Empty result", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		limit := 10
@@ -2894,16 +2892,16 @@ func TestListPromos(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters
 		limit := 10
@@ -2937,16 +2935,16 @@ func TestListPromos(t *testing.T) {
 	t.Run("Pagination test", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Promo repository
-		mockPromoRepo := mocks.NewPromo(t)
+		mockPromoRepo := mocks.NewMockPromo(t)
 
 		// Test parameters for pagination
 		limit := 2
@@ -3009,12 +3007,12 @@ func TestGetDictionary(t *testing.T) {
 	t.Run("Successful dictionary retrieval", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Initialize cache with mock data
@@ -3094,16 +3092,16 @@ func TestSetTrackingNumber(t *testing.T) {
 	t.Run("Successful tracking number update", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3168,12 +3166,12 @@ func TestSetTrackingNumber(t *testing.T) {
 	t.Run("Empty tracking code", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with empty tracking code
@@ -3194,16 +3192,16 @@ func TestSetTrackingNumber(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3235,16 +3233,16 @@ func TestSetTrackingNumber(t *testing.T) {
 	t.Run("Mailer error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3315,16 +3313,16 @@ func TestListOrders(t *testing.T) {
 	t.Run("Successful order listing", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		email := "test@example.com"
@@ -3397,16 +3395,16 @@ func TestListOrders(t *testing.T) {
 	t.Run("Empty result", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		email := ""
@@ -3458,12 +3456,12 @@ func TestListOrders(t *testing.T) {
 	t.Run("Invalid status parameter", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with invalid status
@@ -3489,12 +3487,12 @@ func TestListOrders(t *testing.T) {
 	t.Run("Invalid payment method parameter", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create request with invalid payment method
@@ -3520,16 +3518,16 @@ func TestListOrders(t *testing.T) {
 	t.Run("Repository error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		email := "test@example.com"
@@ -3588,16 +3586,16 @@ func TestRefundOrder(t *testing.T) {
 	t.Run("Successful refund", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3623,16 +3621,16 @@ func TestRefundOrder(t *testing.T) {
 	t.Run("Empty order UUID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
@@ -3656,16 +3654,16 @@ func TestRefundOrder(t *testing.T) {
 	t.Run("Order not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		nonExistentUUID := "non-existent-uuid"
@@ -3695,16 +3693,16 @@ func TestRefundOrder(t *testing.T) {
 	t.Run("Database error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3734,16 +3732,16 @@ func TestRefundOrder(t *testing.T) {
 	t.Run("Invalid order status", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3775,16 +3773,16 @@ func TestDeliveredOrder(t *testing.T) {
 	t.Run("Successful delivery status update", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3810,16 +3808,16 @@ func TestDeliveredOrder(t *testing.T) {
 	t.Run("Empty order UUID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
@@ -3843,16 +3841,16 @@ func TestDeliveredOrder(t *testing.T) {
 	t.Run("Order not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		nonExistentUUID := "non-existent-uuid"
@@ -3882,16 +3880,16 @@ func TestDeliveredOrder(t *testing.T) {
 	t.Run("Database error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3921,16 +3919,16 @@ func TestDeliveredOrder(t *testing.T) {
 	t.Run("Invalid order status transition", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3962,16 +3960,16 @@ func TestCancelOrder(t *testing.T) {
 	t.Run("Successful order cancellation", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -3997,16 +3995,16 @@ func TestCancelOrder(t *testing.T) {
 	t.Run("Empty order UUID", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Set up expectations
 		mockRepo.On("Order").Return(mockOrderRepo)
@@ -4030,16 +4028,16 @@ func TestCancelOrder(t *testing.T) {
 	t.Run("Order not found", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		nonExistentUUID := "non-existent-uuid"
@@ -4069,16 +4067,16 @@ func TestCancelOrder(t *testing.T) {
 	t.Run("Database error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -4108,16 +4106,16 @@ func TestCancelOrder(t *testing.T) {
 	t.Run("Invalid order status transition", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Order repository
-		mockOrderRepo := mocks.NewOrder(t)
+		mockOrderRepo := mocks.NewMockOrder(t)
 
 		// Test parameters
 		orderUUID := "test-order-uuid"
@@ -4149,16 +4147,16 @@ func TestAddHero(t *testing.T) {
 	t.Run("Successful hero addition", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
-		mockHeroRepo := mocks.NewHero(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Create hero insert request
 		heroInsert := &pb_common.HeroFullInsert{
@@ -4213,16 +4211,16 @@ func TestAddHero(t *testing.T) {
 	t.Run("Invalid hero data", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
-		mockHeroRepo := mocks.NewHero(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Create invalid hero insert (nil entities)
 		heroInsert := &pb_common.HeroFullInsert{
@@ -4263,16 +4261,16 @@ func TestAddHero(t *testing.T) {
 	t.Run("Database error", func(t *testing.T) {
 		// Setup
 		ctx := context.Background()
-		mockRepo := mocks.NewRepository(t)
-		mockBucket := mocks.NewFileStore(t)
-		mockMailer := mocks.NewMailer(t)
-		mockStripe := mocks.NewInvoicer(t)
-		mockStripeTest := mocks.NewInvoicer(t)
-		mockRe := mocks.NewRevalidationService(t)
+		mockRepo := mocks.NewMockRepository(t)
+		mockBucket := mocks.NewMockFileStore(t)
+		mockMailer := mocks.NewMockMailer(t)
+		mockStripe := mocks.NewMockInvoicer(t)
+		mockStripeTest := mocks.NewMockInvoicer(t)
+		mockRe := mocks.NewMockRevalidationService(t)
 		server := New(mockRepo, mockBucket, mockMailer, mockStripe, mockStripeTest, mockRe, nil)
 
 		// Create mock for Hero repository
-		mockHeroRepo := mocks.NewHero(t)
+		mockHeroRepo := mocks.NewMockHero(t)
 
 		// Create valid hero insert with minimal required fields
 		heroInsert := &pb_common.HeroFullInsert{

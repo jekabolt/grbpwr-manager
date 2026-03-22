@@ -3,7 +3,7 @@ package bucket
 import (
 	"bytes"
 	"context"
-
+	"fmt"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -11,12 +11,21 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
+var allowedVideoTypes = map[ContentType]bool{
+	contentTypeMP4:  true,
+	contentTypeWEBM: true,
+}
+
 func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, objectName string, contentType string) (*pb_common.MediaFull, error) {
+	ct := ContentType(contentType)
+	if !allowedVideoTypes[ct] {
+		return nil, fmt.Errorf("unsupported video content type: %s, allowed: video/mp4, video/webm", contentType)
+	}
 
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
 
-	ext, err := fileExtensionFromContentType(ContentType(contentType))
+	ext, err := fileExtensionFromContentType(ct)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get extension from content type",
 			slog.String("err", err.Error()))
@@ -29,10 +38,9 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	_, err = b.Client.PutObject(ctx, b.S3BucketName, fp,
 		r, int64(r.Len()),
 		minio.PutObjectOptions{
-			ContentType:     contentType,
-			CacheControl:    cacheControl,
-			UserMetadata:    userMetaData,
-			ContentEncoding: "gzip",
+			ContentType:  contentType,
+			CacheControl: cacheControl,
+			UserMetadata: userMetaData,
 		})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload video object",

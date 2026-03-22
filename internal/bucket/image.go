@@ -9,12 +9,14 @@ import (
 	"io"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/bbrks/go-blurhash"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/image/draw"
+	"golang.org/x/sync/errgroup"
 )
 
 type B64Image struct {
@@ -46,7 +48,6 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 			UserMetadata: userMetaData,
 		},
 	)
-
 	if err != nil {
 		return "", fmt.Errorf("error putting object: %v", err)
 	}
@@ -84,16 +85,14 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 	return decodeImageFromB64(b64Img.content, b64Img.contentType)
 }
 
-// upload single image with defined quality and	prefix to bucket
+// upload single image with defined quality and prefix to bucket
 func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality int, folder, imageName string) (*pb_common.MediaInfo, error) {
 	var buf bytes.Buffer
 
-	// Encode the image to JPEG format with given quality.
 	if err := encodeWEBP(&buf, img, quality); err != nil {
-		return nil, fmt.Errorf("failed to encode JPG: %v", err)
+		return nil, fmt.Errorf("failed to encode WebP: %v", err)
 	}
 
-	// Upload the JPEG data to S3 bucket.
 	url, err := b.uploadImageToBucket(ctx, &buf, folder, imageName, contentTypeWEBP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload image to bucket: %v", err)
@@ -106,47 +105,75 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 	}, nil
 }
 
-// compose internal image object (with FullSize & Compressed formats) and upload it to S3
+// uploadImageObj composes 3 image variants (full-size, compressed, thumbnail) in parallel via errgroup,
+// then computes blurhash from the thumbnail and records the result in the media DB table.
 func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.MediaFull, error) {
-	imgObj := &pb_common.MediaItem{}
-
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
 	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
 	thumbnailName := fmt.Sprintf("%s-%s", imageName, "thumb")
-	var err error
 
-	// Upload full size image
-	imgObj.FullSize, err = b.uploadSingleImage(ctx, img, 100, folder, fullSizeName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to upload full-size image: %v", err)
+	thumbImg := resizeImage(img, 1080)
+
+	var (
+		mu                     sync.Mutex
+		fullSize, compressed   *pb_common.MediaInfo
+		thumbnail              *pb_common.MediaInfo
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		info, err := b.uploadSingleImage(gctx, img, 100, folder, fullSizeName)
+		if err != nil {
+			return fmt.Errorf("full-size: %w", err)
+		}
+		mu.Lock()
+		fullSize = info
+		mu.Unlock()
+		return nil
+	})
+
+	g.Go(func() error {
+		info, err := b.uploadSingleImage(gctx, img, 60, folder, compressedName)
+		if err != nil {
+			return fmt.Errorf("compressed: %w", err)
+		}
+		mu.Lock()
+		compressed = info
+		mu.Unlock()
+		return nil
+	})
+
+	g.Go(func() error {
+		info, err := b.uploadSingleImage(gctx, thumbImg, 90, folder, thumbnailName)
+		if err != nil {
+			return fmt.Errorf("thumbnail: %w", err)
+		}
+		mu.Lock()
+		thumbnail = info
+		mu.Unlock()
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("failed to upload image variants: %w", err)
 	}
 
-	// Upload compressed image
-	imgObj.Compressed, err = b.uploadSingleImage(ctx, img, 60, folder, compressedName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
-	}
-
-	imgObj.Thumbnail, err = b.uploadSingleImage(ctx, resizeImage(img, 1080), 90, folder, thumbnailName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to upload compressed image: %v", err)
-	}
-
-	h, err := getBlurHash(img)
+	h, err := getBlurHash(thumbImg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get blurhash: %v", err)
 	}
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
-		FullSizeMediaURL:   imgObj.FullSize.MediaUrl,
-		FullSizeWidth:      int(imgObj.FullSize.Width),
-		FullSizeHeight:     int(imgObj.FullSize.Height),
-		CompressedMediaURL: imgObj.Compressed.MediaUrl,
-		CompressedWidth:    int(imgObj.Compressed.Width),
-		CompressedHeight:   int(imgObj.Compressed.Height),
-		ThumbnailMediaURL:  imgObj.Thumbnail.MediaUrl,
-		ThumbnailWidth:     int(imgObj.Thumbnail.Width),
-		ThumbnailHeight:    int(imgObj.Thumbnail.Height),
+		FullSizeMediaURL:   fullSize.MediaUrl,
+		FullSizeWidth:      int(fullSize.Width),
+		FullSizeHeight:     int(fullSize.Height),
+		CompressedMediaURL: compressed.MediaUrl,
+		CompressedWidth:    int(compressed.Width),
+		CompressedHeight:   int(compressed.Height),
+		ThumbnailMediaURL:  thumbnail.MediaUrl,
+		ThumbnailWidth:     int(thumbnail.Width),
+		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: true},
 	})
 	if err != nil {
@@ -154,8 +181,13 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	}
 
 	return &pb_common.MediaFull{
-		Id:    int32(mediaId),
-		Media: imgObj,
+		Id: int32(mediaId),
+		Media: &pb_common.MediaItem{
+			FullSize:   fullSize,
+			Compressed: compressed,
+			Thumbnail:  thumbnail,
+			Blurhash:   h,
+		},
 	}, nil
 }
 
@@ -188,25 +220,17 @@ func getBlurHash(img image.Image) (string, error) {
 	}
 	return hash, nil
 }
-// resizeImage checks the height of the given image. If it's greater than minWidth in px,
-// it resizes the image to have a height of 'minWidth' while maintaining the aspect ratio.
-func resizeImage(img image.Image, minWidth int) image.Image {
+
+// resizeImage resizes img so that its height is at most maxHeight px, preserving aspect ratio.
+// Returns the original if no resizing is needed.
+func resizeImage(img image.Image, maxHeight int) image.Image {
 	bounds := img.Bounds()
-
-	// Check if the height is greater than 1080px
-	if bounds.Dy() > minWidth {
-		// Calculate new width to maintain aspect ratio
-		newWidth := minWidth * bounds.Dx() / bounds.Dy()
-
-		// Create a new image with the desired dimensions
-		newImg := image.NewRGBA(image.Rect(0, 0, newWidth, minWidth))
-
-		// Resize the image using high-quality resampling
-		draw.CatmullRom.Scale(newImg, newImg.Bounds(), img, bounds, draw.Over, nil)
-
-		return newImg
+	if bounds.Dy() <= maxHeight {
+		return img
 	}
 
-	// Return the original image if no resizing is needed
-	return img
+	newWidth := maxHeight * bounds.Dx() / bounds.Dy()
+	newImg := image.NewRGBA(image.Rect(0, 0, newWidth, maxHeight))
+	draw.ApproxBiLinear.Scale(newImg, newImg.Bounds(), img, bounds, draw.Over, nil)
+	return newImg
 }

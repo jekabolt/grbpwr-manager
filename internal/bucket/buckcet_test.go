@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -57,7 +57,7 @@ func skipCI(t *testing.T) {
 type testFileStore struct {
 	fs dependency.FileStore
 
-	mediaStoreMock *mocks.Media
+	mediaStoreMock *mocks.MockMedia
 }
 
 func BucketFromConfig(t *testing.T) (*testFileStore, error) {
@@ -67,7 +67,7 @@ func BucketFromConfig(t *testing.T) (*testFileStore, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	mediaStoreMock := mocks.NewMedia(t)
+	mediaStoreMock := mocks.NewMockMedia(t)
 	fs, err := New(cfg, mediaStoreMock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
