@@ -149,6 +149,28 @@ See [000-project-overview.mdc](mdc:000-project-overview.mdc) for full architectu
 - Treat MCP tools as first-class tools alongside built-in tools (read_file, execute_command, etc.).
 - If an MCP tool fails, fall back to built-in tools and inform the user of the failure.
 
+### Live MySQL — default `user-mysql-grbpwr`
+
+Use the MySQL MCP **proactively** whenever live data would help: debugging orders or payments, verifying schema vs. migrations, spot-checking rows, investigating incidents, or answering "what does the DB look like?" — **not only** when the user runs a slash command (e.g. db-inspect).
+
+- **Default server:** `user-mysql-grbpwr` (production GRBPWR DB). Prefer it for all ad-hoc queries unless the user or task explicitly names another environment.
+- **Other MySQL MCPs:** `user-mysql-beta-09`, `user-mysql-beta-10` — use only when explicitly requested or clearly about that environment.
+- **How:** call the server's SQL/query tool (read its schema under the workspace `mcps/<server>/tools/` first). Never ask the user for permission to query; never substitute guessing from code when a quick MCP query would settle the question.
+
+### BigQuery — default `user-bigquery`
+
+Use the BigQuery MCP **proactively** whenever warehouse data would help: validating SQL or table names against the live dataset, checking row counts or samples, debugging `internal/analytics/bigquery/` queries, reconciling BQ exports with app behavior, or answering questions that require running a BQ query — **not only** when the user runs a slash command (e.g. bq-inspect).
+
+- **Default server:** `user-bigquery`.
+- **How:** read tool schemas under `mcps/user-bigquery/tools/` (or the MCP tool list) and call the appropriate query/metadata tools. If the server is disconnected or errors, say so briefly and fall back to code + docs — do not pretend a BQ result without running the tool.
+
+### GA4 / Analytics — default `user-analytics-mcp`
+
+Use the analytics MCP **proactively** whenever GA4 schema or live metrics would help: finding the right dimensions/metrics for a dashboard or API change, checking property schema, pulling sample GA4 reports, debugging `internal/analytics/ga4/` or sync/metrics code — **not only** when the user runs a slash command (e.g. analytics-inspect).
+
+- **Default server:** `user-analytics-mcp`.
+- **How:** prefer `search_schema` to discover fields, then `get_ga4_data` (or other listed tools) as needed; read schemas under `mcps/user-analytics-mcp/tools/` first. Never ask permission to query; do not invent GA4 field names when the MCP can confirm them.
+
 ## Cross-References
 
 - Database conventions: [200-database.mdc](mdc:200-database.mdc)
