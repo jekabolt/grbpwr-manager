@@ -11,30 +11,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-const sendEmailRequestColumns = `
-	id,
-	from_email,
-	to_email,
-	html,
-	subject,
-	reply_to,
-	sent,
-	sent_at,
-	created_at,
-	error_msg,
-	send_attempt_count,
-	next_retry_at
-`
-
 // sendEmailRequestUnsentColumns lists only columns needed by the worker for sending.
+// Table-qualified for use with JOINs (email_suppression also has id).
 const sendEmailRequestUnsentColumns = `
-	id,
-	from_email,
-	to_email,
-	html,
-	subject,
-	reply_to,
-	send_attempt_count
+	send_email_request.id,
+	send_email_request.from_email,
+	send_email_request.to_email,
+	send_email_request.html,
+	send_email_request.subject,
+	send_email_request.reply_to,
+	send_email_request.send_attempt_count
 `
 
 // AddMail queues a new email to be sent.
