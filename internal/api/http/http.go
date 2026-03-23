@@ -252,12 +252,20 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 }
 
 func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
-	// dial options for the grpc-gateway
 	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux()
+	mux := runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
+			switch key {
+			case "Grpc-Metadata-Authorization":
+				return key, true
+			default:
+				return runtime.DefaultHeaderMatcher(key)
+			}
+		}),
+	)
 
 	err := pb_admin.RegisterAdminServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
@@ -267,12 +275,20 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 }
 
 func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) {
-	// dial options for the grpc-gateway
 	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux()
+	mux := runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
+			switch key {
+			case "Grpc-Metadata-Authorization":
+				return key, true
+			default:
+				return runtime.DefaultHeaderMatcher(key)
+			}
+		}),
+	)
 	err := pb_frontend.RegisterFrontendServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
 		return nil, err
@@ -281,12 +297,20 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 }
 
 func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
-	// dial options for the grpc-gateway
 	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 
-	mux := runtime.NewServeMux()
+	mux := runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
+			switch key {
+			case "Grpc-Metadata-Authorization":
+				return key, true
+			default:
+				return runtime.DefaultHeaderMatcher(key)
+			}
+		}),
+	)
 
 	err := pb_auth.RegisterAuthServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
