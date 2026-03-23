@@ -149,7 +149,7 @@ func (cb *CircuitBreaker) onSuccess() {
 
 func (cb *CircuitBreaker) onFailure(err error) {
 	cb.failures++
-	cb.lastFailureTime = time.Now()
+	cb.lastFailureTime = time.Now().UTC()
 
 	switch cb.state {
 	case StateClosed:

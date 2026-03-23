@@ -12,13 +12,27 @@ import (
 
 // ConvertPbCommonToEntity converts a PromoCodeInsert object from pb_common to entity.
 func ConvertPbCommonPromoToEntity(pbPromo *pb_common.PromoCodeInsert) (*entity.PromoCodeInsert, error) {
-	// Convert the Discount field from string to decimal.Decimal
+	if pbPromo == nil {
+		return nil, fmt.Errorf("pbPromo is nil")
+	}
+
+	if pbPromo.Discount == nil {
+		return nil, fmt.Errorf("pbPromo.Discount is nil")
+	}
+
+	if pbPromo.Expiration == nil {
+		return nil, fmt.Errorf("pbPromo.Expiration is nil")
+	}
+
+	if pbPromo.Start == nil {
+		return nil, fmt.Errorf("pbPromo.Start is nil")
+	}
+
 	discountDecimal, err := decimal.NewFromString(pbPromo.Discount.Value)
 	if err != nil {
 		return nil, fmt.Errorf("error converting discount to decimal: %v", err)
 	}
 
-	// Create the entity.PromoCodeInsert object and populate its fields from the pb_common.PromoCodeInsert object
 	entityPromo := &entity.PromoCodeInsert{
 		Code:         pbPromo.Code,
 		FreeShipping: pbPromo.FreeShipping,

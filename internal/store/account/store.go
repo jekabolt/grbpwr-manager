@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -273,7 +274,12 @@ func (s *Store) RotateRefreshToken(ctx context.Context, rawRefresh, refreshPeppe
 			return fmt.Errorf("lock refresh row: %w", err)
 		}
 		if locked.RevokedAt.Valid {
-			_ = s.revokeFamily(ctx, db, locked.FamilyID, now)
+			if err := s.revokeFamily(ctx, db, locked.FamilyID, now); err != nil {
+				slog.Default().ErrorContext(ctx, "failed to revoke token family",
+					slog.String("err", err.Error()),
+					slog.String("family_id", locked.FamilyID),
+				)
+			}
 			return storefront.ErrRefreshTokenRevoked
 		}
 		if !locked.ExpiresAt.After(now) {

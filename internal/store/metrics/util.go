@@ -134,7 +134,7 @@ func buildDataFreshness(statuses []entity.SyncSourceStatus, ga4Threshold, bqThre
 		return nil
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	f := &entity.DataFreshness{
 		Sources: make([]entity.SyncSourceStatus, 0, len(statuses)),
 	}

@@ -17,8 +17,15 @@ import (
 
 // ConvertPbOrderItemToEntity converts a protobuf OrderItem to an entity OrderItem
 func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderItemInsert, error) {
-
 	oii := entity.OrderItemInsert{}
+
+	if pbOrderItem == nil {
+		return oii, fmt.Errorf("pbOrderItem is nil")
+	}
+
+	if pbOrderItem.OrderItem == nil {
+		return oii, fmt.Errorf("pbOrderItem.OrderItem is nil")
+	}
 
 	price, err := decimal.NewFromString(pbOrderItem.ProductPrice)
 	if err != nil {

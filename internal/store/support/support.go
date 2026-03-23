@@ -24,7 +24,7 @@ func New(base storeutil.Base) *Store {
 }
 
 func (s *Store) generateCaseNumber(ctx context.Context) (string, error) {
-	year := time.Now().Year()
+	year := time.Now().UTC().Year()
 	var maxNum int
 	query := `SELECT COALESCE(MAX(CAST(SUBSTRING(case_number, 9) AS UNSIGNED)), 0) 
               FROM support_ticket 
@@ -119,6 +119,9 @@ func (s *Store) GetSupportTicketsPaged(ctx context.Context, limit, offset int, o
 			return nil, 0, fmt.Errorf("can't scan total count: %w", err)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("count rows iteration error: %w", err)
+	}
 
 	return tickets, totalCount, nil
 }
@@ -167,7 +170,7 @@ func (s *Store) GetSupportTicketByCaseNumber(ctx context.Context, caseNumber str
 func (s *Store) UpdateStatus(ctx context.Context, id int, status entity.SupportTicketStatus) error {
 	var resolvedAt sql.NullTime
 	if status == entity.SupportStatusResolved || status == entity.SupportStatusClosed {
-		resolvedAt = sql.NullTime{Time: time.Now(), Valid: true}
+		resolvedAt = sql.NullTime{Time: time.Now().UTC(), Valid: true}
 	}
 
 	query := `

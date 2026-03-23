@@ -495,16 +495,20 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 			m.ConversionRate.CompareValue = &cConvRate
 			if !m.ConversionRate.Value.IsZero() {
 				changePct := m.ConversionRate.Value.Sub(cConvRate).Div(cConvRate).Mul(decimal.NewFromInt(100))
-				f, _ := changePct.Float64()
-				m.ConversionRate.ChangePct = &f
+				f, ok := changePct.Round(2).Float64()
+				if ok {
+					m.ConversionRate.ChangePct = &f
+				}
 			}
 
 			cRevPerSession := cRev.Div(decimal.NewFromInt(int64(cTotalSessions)))
 			m.RevenuePerSession.CompareValue = &cRevPerSession
 			if !m.RevenuePerSession.Value.IsZero() {
 				changePct := m.RevenuePerSession.Value.Sub(cRevPerSession).Div(cRevPerSession).Mul(decimal.NewFromInt(100))
-				f, _ := changePct.Float64()
-				m.RevenuePerSession.ChangePct = &f
+				f, ok := changePct.Round(2).Float64()
+				if ok {
+					m.RevenuePerSession.ChangePct = &f
+				}
 			}
 		}
 

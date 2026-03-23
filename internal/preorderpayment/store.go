@@ -25,6 +25,7 @@ type Store struct {
 	sessions   map[string]*Session
 	ttl        time.Duration
 	cleanupCh  chan struct{}
+	stopOnce   sync.Once
 }
 
 // NewStore creates a new pre-order payment session store with the given TTL.
@@ -43,7 +44,7 @@ func (s *Store) Get(key string) (*Session, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sess, ok := s.sessions[key]
-	if !ok || sess == nil || time.Now().After(sess.ExpiresAt) {
+	if !ok || sess == nil || time.Now().UTC().After(sess.ExpiresAt) {
 		return nil, false
 	}
 	return sess, true
@@ -56,8 +57,8 @@ func (s *Store) Put(key string, sess *Session) string {
 	if key == "" {
 		key = uuid.New().String()
 	}
-	sess.ExpiresAt = time.Now().Add(s.ttl)
-	sess.CreatedAt = time.Now()
+	sess.ExpiresAt = time.Now().UTC().Add(s.ttl)
+	sess.CreatedAt = time.Now().UTC()
 	s.sessions[key] = sess
 	return key
 }
@@ -79,7 +80,7 @@ func (s *Store) cleanup() {
 			return
 		case <-ticker.C:
 			s.mu.Lock()
-			now := time.Now()
+			now := time.Now().UTC()
 			expired := 0
 			for k, sess := range s.sessions {
 				if now.After(sess.ExpiresAt) {
@@ -97,5 +98,7 @@ func (s *Store) cleanup() {
 
 // Stop stops the cleanup goroutine.
 func (s *Store) Stop() {
-	close(s.cleanupCh)
+	s.stopOnce.Do(func() {
+		close(s.cleanupCh)
+	})
 }

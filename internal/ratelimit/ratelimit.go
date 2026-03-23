@@ -35,7 +35,7 @@ func (l *Limiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	c, exists := l.counters[key]
 
 	if !exists || now.After(c.expiresAt) {
@@ -59,7 +59,7 @@ func (l *Limiter) GetRemaining(key string) int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	c, exists := l.counters[key]
 
 	if !exists || now.After(c.expiresAt) {
@@ -80,7 +80,7 @@ func (l *Limiter) cleanup() {
 
 	for range ticker.C {
 		l.mu.Lock()
-		now := time.Now()
+		now := time.Now().UTC()
 		for key, c := range l.counters {
 			if now.After(c.expiresAt) {
 				delete(l.counters, key)

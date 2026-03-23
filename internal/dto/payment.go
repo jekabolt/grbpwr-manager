@@ -13,10 +13,25 @@ import (
 )
 
 func ConvertToEntityPaymentInsert(pbPayment *pb_common.PaymentInsert) (*entity.PaymentInsert, error) {
-	// Convert TransactionAmount from pb_common's Decimal to shopspring's Decimal
+	if pbPayment == nil {
+		return nil, fmt.Errorf("pbPayment is nil")
+	}
+
+	if pbPayment.TransactionAmount == nil {
+		return nil, fmt.Errorf("pbPayment.TransactionAmount is nil")
+	}
+
 	transactionAmount, err := decimal.NewFromString(pbPayment.TransactionAmount.GetValue())
 	if err != nil {
 		return nil, err
+	}
+
+	var expiredAt sql.NullTime
+	if pbPayment.ExpiredAt != nil {
+		expiredAt = sql.NullTime{
+			Time:  pbPayment.ExpiredAt.AsTime(),
+			Valid: true,
+		}
 	}
 
 	return &entity.PaymentInsert{
@@ -24,7 +39,7 @@ func ConvertToEntityPaymentInsert(pbPayment *pb_common.PaymentInsert) (*entity.P
 		TransactionID:     sql.NullString{String: pbPayment.TransactionId, Valid: pbPayment.TransactionId != ""},
 		TransactionAmount: transactionAmount,
 		IsTransactionDone: pbPayment.IsTransactionDone,
-		ExpiredAt:         sql.NullTime{Time: pbPayment.ExpiredAt.AsTime(), Valid: pbPayment.ExpiredAt != nil},
+		ExpiredAt:         expiredAt,
 	}, nil
 }
 

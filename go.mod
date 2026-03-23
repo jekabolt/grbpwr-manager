@@ -5,7 +5,6 @@ go 1.26.0
 require (
 	cloud.google.com/go v0.123.0
 	cloud.google.com/go/bigquery v1.74.0
-	github.com/Knetic/go-namedParameterQuery v0.0.0-20150709205813-b7327e472dfd
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2
 	github.com/bbrks/go-blurhash v1.1.1
 	github.com/go-chi/chi/v5 v5.0.4
@@ -13,14 +12,12 @@ require (
 	github.com/go-chi/jwtauth/v5 v5.0.2
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/golang-migrate/migrate/v4 v4.15.2
-	github.com/golang/protobuf v1.5.4
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.0.0-rc.5
-	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.21.0
 	github.com/jmoiron/sqlx v1.3.5
 	github.com/kolesa-team/go-webp v1.0.4
-	github.com/lib/pq v1.10.7
+	github.com/lestrrat-go/jwx v1.2.6
 	github.com/minio/minio-go/v7 v7.0.62
 	github.com/oapi-codegen/runtime v1.1.0
 	github.com/rubenv/sql-migrate v1.4.0
@@ -30,6 +27,7 @@ require (
 	github.com/spf13/viper v1.15.0
 	github.com/stretchr/testify v1.11.1
 	github.com/stripe/stripe-go/v79 v79.11.0
+	github.com/svix/svix-webhooks v1.89.0
 	golang.org/x/crypto v0.47.0
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	golang.org/x/image v0.14.0
@@ -77,7 +75,6 @@ require (
 	github.com/lestrrat-go/blackmagic v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.0 // indirect
 	github.com/lestrrat-go/iter v1.0.1 // indirect
-	github.com/lestrrat-go/jwx v1.2.6 // indirect
 	github.com/lestrrat-go/option v1.0.0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -97,7 +94,6 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/subosito/gotenv v1.4.2 // indirect
-	github.com/svix/svix-webhooks v1.89.0 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect

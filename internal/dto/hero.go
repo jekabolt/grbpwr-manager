@@ -24,10 +24,16 @@ func ConvertCommonHeroFullInsertToEntity(hi *pb_common.HeroFullInsert) entity.He
 }
 
 func ConvertCommonNavFeaturedInsertToEntity(hi *pb_common.NavFeaturedInsert) entity.NavFeaturedInsert {
-	result := entity.NavFeaturedInsert{
-		Men:   ConvertCommonNavFeaturedEntityInsertToEntity(hi.Men),
-		Women: ConvertCommonNavFeaturedEntityInsertToEntity(hi.Women),
+	result := entity.NavFeaturedInsert{}
+
+	if hi.Men != nil {
+		result.Men = ConvertCommonNavFeaturedEntityInsertToEntity(hi.Men)
 	}
+
+	if hi.Women != nil {
+		result.Women = ConvertCommonNavFeaturedEntityInsertToEntity(hi.Women)
+	}
+
 	return result
 }
 
@@ -73,7 +79,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_DOUBLE:
-		if hi.Double != nil {
+		if hi.Double != nil && hi.Double.Left != nil && hi.Double.Right != nil {
 			leftTranslations := make([]entity.HeroSingleInsertTranslation, len(hi.Double.Left.Translations))
 			for i, trans := range hi.Double.Left.Translations {
 				leftTranslations[i] = entity.HeroSingleInsertTranslation{

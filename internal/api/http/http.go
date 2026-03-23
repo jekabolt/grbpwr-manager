@@ -160,7 +160,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	r.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			slog.Default().Error("failed to write livez response", slog.String("err", err.Error()))
+		}
 	})
 
 	// Readiness probe - indicates the container is ready to accept traffic
@@ -176,14 +178,18 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 				)
 				w.Header().Set("Content-Type", "text/plain")
 				w.WriteHeader(http.StatusServiceUnavailable)
-				w.Write([]byte(fmt.Sprintf("NOT READY: %v", err)))
+				if _, err := w.Write([]byte(fmt.Sprintf("NOT READY: %v", err))); err != nil {
+					slog.Default().Error("failed to write readyz error response", slog.String("err", err.Error()))
+				}
 				return
 			}
 		}
 
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			slog.Default().Error("failed to write readyz response", slog.String("err", err.Error()))
+		}
 	})
 
 	// Health check endpoint - backward compatibility
@@ -191,7 +197,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			slog.Default().Error("failed to write health response", slog.String("err", err.Error()))
+		}
 	})
 
 	// handle static swagger at root
@@ -217,6 +225,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		if err := tpl.Execute(w, nil); err != nil {
+			slog.Default().ErrorContext(ctx, "failed to execute swagger template",
+				slog.String("err", err.Error()),
+			)
 			return
 		}
 	})

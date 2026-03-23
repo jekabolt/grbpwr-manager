@@ -56,7 +56,7 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 				Decimal: decimal.NewFromFloat(0),
 			}
 		}
-		id := time.Now().Unix()
+		id := time.Now().UTC().Unix()
 		sku := GenerateSKU(prd.Product, int(id))
 		prdId, err = insertProduct(ctx, rep.DB(), prd.Product, int(id), sku)
 		if err != nil {

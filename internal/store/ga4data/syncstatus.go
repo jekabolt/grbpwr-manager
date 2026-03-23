@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -177,8 +178,12 @@ func (s *SyncStatusStore) DeleteOldAnalyticsData(ctx context.Context, olderThan 
 			if err != nil {
 				return fmt.Errorf("delete old data from %s: %w", t, err)
 			}
-			n, _ := res.RowsAffected()
-			total += n
+			n, err := res.RowsAffected()
+			if err != nil {
+				slog.Warn("failed to get rows affected", "table", t, "err", err)
+			} else {
+				total += n
+			}
 		}
 		return nil
 	})

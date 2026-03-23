@@ -129,7 +129,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 // Create creates a new user requires an admin password.
 func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.CreateResponse, error) {
 
-	err := s.pwhash.Validate(s.c.MasterPassword, s.masterHash)
+	err := s.pwhash.Validate(req.MasterPassword, s.masterHash)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to validate master password",
 			slog.String("err", err.Error()),
@@ -180,7 +180,11 @@ func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.Del
 	username := strings.ToLower(req.Username)
 	err = s.adminRepository.DeleteAdmin(ctx, username)
 	if err != nil {
-		return nil, err
+		slog.Default().ErrorContext(ctx, "failed to delete admin",
+			slog.String("username", username),
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to delete admin")
 	}
 	return &auth.DeleteResponse{}, nil
 }
@@ -216,7 +220,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, "", s.jwtIssueOpts())
+	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -248,16 +252,18 @@ func (s *Server) WithAuth(next http.Handler) http.Handler {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
 		_, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			// Create a new error message
-			errMsg := errorMessage{Error: err.Error()}
+		// Create a new error message
+		errMsg := errorMessage{Error: err.Error()}
 
-			// Set content type to JSON
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
+		// Set content type to JSON
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
 
-			// Write the JSON error message
-			json.NewEncoder(w).Encode(errMsg)
-			return
+		// Write the JSON error message
+		if err := json.NewEncoder(w).Encode(errMsg); err != nil {
+			slog.Default().Error("failed to encode auth error response", slog.String("err", err.Error()))
+		}
+		return
 		}
 
 		next.ServeHTTP(w, r)
@@ -297,8 +303,8 @@ func PutAdminUsername(ctx context.Context, username string) context.Context {
 
 const adminServicePrefix = "/admin.AdminService/"
 
-// UnaryAdminAuthInterceptor returns an interceptor that extracts the JWT subject (admin username)
-// from admin RPCs and puts it in context for downstream use (e.g. stock change history).
+// UnaryAdminAuthInterceptor returns an interceptor that enforces JWT authentication
+// for all admin RPCs and extracts the JWT subject (admin username) into context.
 func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !strings.HasPrefix(info.FullMethod, adminServicePrefix) {
@@ -306,11 +312,11 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		}
 		token, err := GetTokenMetadata(ctx)
 		if err != nil {
-			return handler(ctx, req) // no token, continue; auth will fail elsewhere if required
+			return nil, status.Errorf(codes.Unauthenticated, "missing auth token: %v", err)
 		}
 		sub, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			return handler(ctx, req)
+			return nil, status.Errorf(codes.Unauthenticated, "invalid auth token: %v", err)
 		}
 		if sub != "" {
 			ctx = PutAdminUsername(ctx, sub)

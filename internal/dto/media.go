@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -49,25 +50,41 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 }
 
 func ConvertPbMediaFullToEntity(m *pb_common.MediaFull) entity.MediaFull {
+	var createdAt time.Time
+	if m.CreatedAt != nil {
+		createdAt = m.CreatedAt.AsTime()
+	}
+
 	return entity.MediaFull{
 		Id:        int(m.Id),
-		CreatedAt: m.CreatedAt.AsTime(),
+		CreatedAt: createdAt,
 		MediaItem: convertPbMediaItemToEntity(m.Media),
 	}
 }
 
 // Convert a protobuf MediaItem to an entity MediaItem
 func convertPbMediaItemToEntity(m *pb_common.MediaItem) entity.MediaItem {
-	return entity.MediaItem{
-		FullSizeMediaURL:   m.FullSize.MediaUrl,
-		FullSizeWidth:      int(m.FullSize.Width),
-		FullSizeHeight:     int(m.FullSize.Height),
-		ThumbnailMediaURL:  m.Thumbnail.MediaUrl,
-		ThumbnailWidth:     int(m.Thumbnail.Width),
-		ThumbnailHeight:    int(m.Thumbnail.Height),
-		CompressedMediaURL: m.Compressed.MediaUrl,
-		CompressedWidth:    int(m.Compressed.Width),
-		CompressedHeight:   int(m.Compressed.Height),
-		BlurHash:           sql.NullString{String: m.Blurhash, Valid: m.Blurhash != ""},
+	mediaItem := entity.MediaItem{
+		BlurHash: sql.NullString{String: m.Blurhash, Valid: m.Blurhash != ""},
 	}
+
+	if m.FullSize != nil {
+		mediaItem.FullSizeMediaURL = m.FullSize.MediaUrl
+		mediaItem.FullSizeWidth = int(m.FullSize.Width)
+		mediaItem.FullSizeHeight = int(m.FullSize.Height)
+	}
+
+	if m.Thumbnail != nil {
+		mediaItem.ThumbnailMediaURL = m.Thumbnail.MediaUrl
+		mediaItem.ThumbnailWidth = int(m.Thumbnail.Width)
+		mediaItem.ThumbnailHeight = int(m.Thumbnail.Height)
+	}
+
+	if m.Compressed != nil {
+		mediaItem.CompressedMediaURL = m.Compressed.MediaUrl
+		mediaItem.CompressedWidth = int(m.Compressed.Width)
+		mediaItem.CompressedHeight = int(m.Compressed.Height)
+	}
+
+	return mediaItem
 }

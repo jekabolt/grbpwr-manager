@@ -136,19 +136,22 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...bool) *pb_a
 }
 
 // computeChangePct returns (current - previous) / previous * 100, or nil if previous is zero.
-// Float64() returns (f, exact); we ignore exact because many decimals (e.g. from NewFromFloat)
-// report exact=false due to binary float representation, but the value is fine for % display.
+// Float64() returns (f, exact); we check exact=false due to binary float representation,
+// but the value is acceptable for % display. Returns nil if conversion fails.
 func computeChangePct(current, previous shopspring.Decimal) *float64 {
 	if previous.IsZero() {
 		return nil
 	}
-	curr, _ := current.Float64()
-	prev, _ := previous.Float64()
+	curr, exactCurr := current.Float64()
+	prev, exactPrev := previous.Float64()
+	if !exactCurr || !exactPrev {
+		return nil
+	}
 	if prev == 0 {
 		return nil
 	}
 	pct := (curr - prev) / prev * 100
-	pct = math.Round(pct*100) / 100 // round to 2 decimal places
+	pct = math.Round(pct*100) / 100
 	return &pct
 }
 

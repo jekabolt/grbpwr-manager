@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -55,7 +56,12 @@ func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency
 				return nil
 			}
 		}
-		_ = pst.TxRollback(ctx)
+		if rbErr := pst.TxRollback(ctx); rbErr != nil {
+			slog.Default().ErrorContext(ctx, "transaction rollback failed",
+				slog.String("err", rbErr.Error()),
+				slog.String("original_err", err.Error()),
+			)
+		}
 		if ms.IsErrorRepeat(err) {
 			continue
 		}
@@ -88,7 +94,7 @@ func (ms *MYSQLStore) TxBegin(ctx context.Context) (dependency.Repository, error
 // Now returns current time for the store. It is frozen during transactions.
 func (ms *MYSQLStore) Now() time.Time {
 	if ms.ts.IsZero() {
-		return time.Now()
+		return time.Now().UTC()
 	}
 	return ms.ts
 }

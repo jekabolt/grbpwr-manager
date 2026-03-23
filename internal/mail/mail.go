@@ -290,7 +290,11 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 		return mailApiLimitReached
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed to read error response body", slog.String("err", err.Error()))
+			return &HTTPSendError{StatusCode: resp.StatusCode, Body: ""}
+		}
 		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 

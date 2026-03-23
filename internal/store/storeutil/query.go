@@ -4,20 +4,28 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Knetic/go-namedParameterQuery"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jmoiron/sqlx"
 )
 
-// MakeQuery converts a named-parameter query into a positional-parameter query.
-func MakeQuery(query string, params map[string]any) (string, []any, error) {
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryNamed.SetValuesFromMap(params)
-	query, args, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+func makeQuery(query string, params map[string]any) (string, []any, error) {
+	if params == nil {
+		params = map[string]any{}
+	}
+	q, args, err := sqlx.Named(query, params)
+	if err != nil {
+		return "", nil, fmt.Errorf("named: %w", err)
+	}
+	q, args, err = sqlx.In(q, args...)
 	if err != nil {
 		return "", nil, fmt.Errorf("in: %w", err)
 	}
-	return query, args, nil
+	return q, args, nil
+}
+
+// MakeQuery converts a named-parameter query into a positional-parameter query.
+func MakeQuery(query string, params map[string]any) (string, []any, error) {
+	return makeQuery(query, params)
 }
 
 // QueryListNamed executes a named-parameter SELECT and scans multiple rows into []T.
@@ -27,11 +35,9 @@ func QueryListNamed[T any](
 	query string,
 	params map[string]any,
 ) ([]T, error) {
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryNamed.SetValuesFromMap(params)
-	query, args, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+	query, args, err := makeQuery(query, params)
 	if err != nil {
-		return nil, fmt.Errorf("in: %w", err)
+		return nil, err
 	}
 	rows, err := conn.QueryxContext(ctx, query, args...)
 	if err != nil {
@@ -47,18 +53,18 @@ func QueryListNamed[T any](
 		}
 		target = append(target, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
 	return target, nil
 }
 
 // QueryNamedOne executes a named-parameter SELECT and scans a single row into T.
 func QueryNamedOne[T any](ctx context.Context, conn dependency.DB, query string, params map[string]any) (T, error) {
 	var target T
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryNamed.SetValuesFromMap(params)
-
-	query, args, err := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
+	query, args, err := makeQuery(query, params)
 	if err != nil {
-		return target, fmt.Errorf("sqlx in: %w", err)
+		return target, err
 	}
 
 	row := conn.QueryRowxContext(ctx, query, args...)
@@ -79,12 +85,9 @@ func QueryCountNamed(
 	query string,
 	params map[string]any,
 ) (int, error) {
-	queryCountNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryCountNamed.SetValuesFromMap(params)
-
-	query, args, err := sqlx.In(queryCountNamed.GetParsedQuery(), queryCountNamed.GetParsedParameters()...)
+	query, args, err := makeQuery(query, params)
 	if err != nil {
-		return 0, fmt.Errorf("sqlx in: %w", err)
+		return 0, err
 	}
 
 	var count int
@@ -102,13 +105,11 @@ func ExecNamed(
 	query string,
 	params map[string]any,
 ) error {
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryNamed.SetValuesFromMap(params)
-	query, args, argsErr := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
-	if argsErr != nil {
-		return fmt.Errorf("sqlx In: %w", argsErr)
+	query, args, err := makeQuery(query, params)
+	if err != nil {
+		return err
 	}
-	_, err := conn.ExecContext(ctx, query, args...)
+	_, err = conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("ExecContext: %w", err)
 	}
@@ -123,11 +124,9 @@ func ExecNamedLastId(
 	query string,
 	params map[string]any,
 ) (int, error) {
-	queryNamed := namedParameterQuery.NewNamedParameterQuery(query)
-	queryNamed.SetValuesFromMap(params)
-	query, args, argsErr := sqlx.In(queryNamed.GetParsedQuery(), queryNamed.GetParsedParameters()...)
-	if argsErr != nil {
-		return 0, fmt.Errorf("sqlx In: %w", argsErr)
+	query, args, err := makeQuery(query, params)
+	if err != nil {
+		return 0, err
 	}
 
 	res, err := conn.ExecContext(ctx, query, args...)

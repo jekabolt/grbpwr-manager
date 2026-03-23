@@ -66,6 +66,7 @@ type Manager struct {
 	orderTTL     time.Duration
 	limits       Limits
 	stopCh       chan struct{}
+	stopOnce     sync.Once
 }
 
 // NewManager creates a new reservation manager with abuse prevention
@@ -92,7 +93,9 @@ func NewDefaultManager() *Manager {
 
 // Stop gracefully shuts down the cleanup goroutine
 func (rm *Manager) Stop() {
-	close(rm.stopCh)
+	rm.stopOnce.Do(func() {
+		close(rm.stopCh)
+	})
 }
 
 // Reserve temporarily holds stock for a cart with abuse prevention checks
@@ -133,7 +136,7 @@ func (rm *Manager) Reserve(ctx context.Context, sessionID string, productID, siz
 		return fmt.Errorf("service is busy, please try again later")
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	if isUpdate {
 		// TTL refresh protection: don't extend expiry, keep original.
@@ -197,7 +200,7 @@ func (rm *Manager) Commit(ctx context.Context, sessionID, orderUUID string) {
 	defer rm.mu.Unlock()
 
 	keys := rm.bySession[sessionID]
-	newExpiry := time.Now().Add(rm.orderTTL)
+	newExpiry := time.Now().UTC().Add(rm.orderTTL)
 
 	for _, key := range keys {
 		if res, exists := rm.reservations[key]; exists {
@@ -266,7 +269,7 @@ func (rm *Manager) GetReservedQuantity(productID, sizeID int, excludeSessionID s
 	defer rm.mu.RUnlock()
 
 	total := decimal.Zero
-	now := time.Now()
+	now := time.Now().UTC()
 
 	psKey := productSizeKey{ProductID: productID, SizeID: sizeID}
 	keys := rm.byProductSize[psKey]
@@ -305,7 +308,7 @@ func (rm *Manager) cleanup() {
 			return
 		case <-ticker.C:
 			rm.mu.Lock()
-			now := time.Now()
+			now := time.Now().UTC()
 			expiredCount := 0
 
 			for key, res := range rm.reservations {
@@ -371,7 +374,7 @@ func (rm *Manager) removeReservation(key string, res *Reservation) {
 // allowSessionRate checks if a session is within its Reserve call rate limit.
 // Must be called with rm.mu held.
 func (rm *Manager) allowSessionRate(sessionID string) bool {
-	now := time.Now()
+	now := time.Now().UTC()
 	entry, exists := rm.sessionRates[sessionID]
 
 	if !exists || now.After(entry.expiresAt) {

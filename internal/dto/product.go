@@ -130,9 +130,15 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		return nil, fmt.Errorf("ProductBodyInsert is nil")
 	}
 
-	salePercentage, err := convertDecimal(pbProductBodyInsert.SalePercentage.Value)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+	var salePercentage decimal.Decimal
+	var salePercentageValid bool
+	if pbProductBodyInsert.SalePercentage != nil {
+		var err error
+		salePercentage, err = convertDecimal(pbProductBodyInsert.SalePercentage.Value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+		}
+		salePercentageValid = pbProductBodyInsert.SalePercentage.Value != ""
 	}
 
 	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductBodyInsert.TargetGender)
@@ -145,14 +151,25 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		return nil, err
 	}
 
+	var preorderTime sql.NullTime
+	if pbProductBodyInsert.Preorder != nil {
+		preorderTime = sql.NullTime{
+			Time:  pbProductBodyInsert.Preorder.AsTime(),
+			Valid: pbProductBodyInsert.Preorder.IsValid(),
+		}
+		if preorderTime.Valid && preorderTime.Time.Year() < time.Now().UTC().Year() {
+			preorderTime.Valid = false
+		}
+	}
+
 	pb := &entity.ProductBody{
 		ProductBodyInsert: entity.ProductBodyInsert{
-			Preorder:           sql.NullTime{Time: pbProductBodyInsert.Preorder.AsTime(), Valid: pbProductBodyInsert.Preorder.IsValid()},
+			Preorder:           preorderTime,
 			Brand:              pbProductBodyInsert.Brand,
 			Color:              pbProductBodyInsert.Color,
 			ColorHex:           pbProductBodyInsert.ColorHex,
 			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
-			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: pbProductBodyInsert.SalePercentage.Value != ""},
+			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
 			TopCategoryId:      int(pbProductBodyInsert.TopCategoryId),
 			SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBodyInsert.SubCategoryId), Valid: pbProductBodyInsert.SubCategoryId != 0},
 			TypeId:             sql.NullInt32{Int32: int32(pbProductBodyInsert.TypeId), Valid: pbProductBodyInsert.TypeId != 0},
@@ -167,11 +184,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Collection:         pbProductBodyInsert.Collection,
 			Fit:                sql.NullString{String: pbProductBodyInsert.Fit, Valid: pbProductBodyInsert.Fit != ""},
 		},
-		Translations: []entity.ProductTranslationInsert{}, // Will be set by caller if needed
-	}
-
-	if pbProductBodyInsert.Preorder.AsTime().Year() < time.Now().Year() {
-		pb.ProductBodyInsert.Preorder.Valid = false
+		Translations: []entity.ProductTranslationInsert{},
 	}
 
 	return pb, nil
@@ -229,7 +242,7 @@ func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPri
 		}
 		priceVal, err := convertDecimal(pbPrice.Price.Value)
 		if err != nil {
-			continue // Skip invalid prices
+			continue
 		}
 		currency := strings.ToUpper(pbPrice.Currency)
 		prices = append(prices, entity.ProductPriceInsert{
@@ -247,6 +260,14 @@ func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpd
 
 	var measurements []entity.ProductMeasurementUpdate
 	for _, pbMeasurement := range mUpd {
+		if pbMeasurement == nil {
+			continue
+		}
+
+		if pbMeasurement.MeasurementValue == nil {
+			return nil, fmt.Errorf("MeasurementValue is nil for measurement name id %v", pbMeasurement.MeasurementNameId)
+		}
+
 		measurementValue, err := convertDecimal(pbMeasurement.MeasurementValue.Value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert product measurement value: %w", err)
@@ -267,13 +288,15 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
 
-	// Create a ProductBody from ProductBodyInsert
+	if pbProductNew.Product == nil {
+		return nil, fmt.Errorf("pbProductNew.Product is nil")
+	}
+
 	productBody, err := convertProductBodyInsertToProductBody(pbProductNew.Product.ProductBodyInsert)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert translations
 	var translations []entity.ProductTranslationInsert
 	for _, trans := range pbProductNew.Product.Translations {
 		translations = append(translations, entity.ProductTranslationInsert{
@@ -283,7 +306,6 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 		})
 	}
 
-	// Set translations on the product body
 	productBody.Translations = translations
 
 	productInsert := &entity.ProductInsert{
@@ -318,6 +340,18 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurementInsert) ([]entity.SizeWithMeasurementInsert, error) {
 	var sizeMeasurements []entity.SizeWithMeasurementInsert
 	for _, pbSizeMeasurement := range pbSizeMeasurements {
+		if pbSizeMeasurement == nil {
+			continue
+		}
+
+		if pbSizeMeasurement.ProductSize == nil {
+			return nil, fmt.Errorf("ProductSize is nil in SizeWithMeasurementInsert")
+		}
+
+		if pbSizeMeasurement.ProductSize.Quantity == nil {
+			return nil, fmt.Errorf("ProductSize.Quantity is nil for size id %v", pbSizeMeasurement.ProductSize.SizeId)
+		}
+
 		quantity, err := convertDecimal(pbSizeMeasurement.ProductSize.Quantity.Value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert product size quantity: %w for size id  %v", err, pbSizeMeasurement.ProductSize.SizeId)
@@ -344,6 +378,14 @@ func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurement
 func convertMeasurements(pbMeasurements []*pb_common.ProductMeasurementInsert) ([]entity.ProductMeasurementInsert, error) {
 	var measurements []entity.ProductMeasurementInsert
 	for _, pbMeasurement := range pbMeasurements {
+		if pbMeasurement == nil {
+			continue
+		}
+
+		if pbMeasurement.MeasurementValue == nil {
+			return nil, fmt.Errorf("MeasurementValue is nil for measurement name id %v", pbMeasurement.MeasurementNameId)
+		}
+
 		measurementValue, err := convertDecimal(pbMeasurement.MeasurementValue.Value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert product measurement value: %w for measurement name id %v", err, pbMeasurement.MeasurementNameId)

@@ -313,7 +313,7 @@ func (w *Worker) runWithBackoff(ctx context.Context, name string, fn func(contex
 // Skips when already synced through yesterday — the GA4 Data API has ~24h lag so there's
 // nothing new to fetch until the next daily export lands.
 func (w *Worker) syncGA4API(ctx context.Context) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	endDate := now.AddDate(0, 0, -1) // yesterday
 
 	startDate := endDate.AddDate(0, 0, -w.c.LookbackDays)
@@ -368,7 +368,7 @@ func (w *Worker) syncBQ(ctx context.Context) error {
 		return nil
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	startDate := now.AddDate(0, 0, -w.c.LookbackDays)
 	endDate := now // includes today's intraday
 

@@ -1,0 +1,515 @@
+package admin
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest) (*pb_admin.GetMetricsResponse, error) {
+	if strings.TrimSpace(req.Period) == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d)")
+	}
+	dur, err := parseMetricsPeriod(req.Period)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
+	}
+
+	endAt := time.Now().UTC()
+	if req.EndAt != nil {
+		endAt = req.EndAt.AsTime()
+	}
+
+	periodTo := endAt
+	periodFrom := endAt.Add(-dur)
+	from, to := periodFrom, periodTo
+
+	comparePeriod := entity.TimeRange{}
+	switch req.CompareMode {
+	case pb_admin.CompareMode_COMPARE_MODE_PREVIOUS_PERIOD:
+		comparePeriod = entity.TimeRange{
+			From: periodFrom.Add(-dur),
+			To:   periodFrom,
+		}
+	case pb_admin.CompareMode_COMPARE_MODE_SAME_PERIOD_LAST_YEAR:
+		comparePeriod = entity.TimeRange{
+			From: periodFrom.AddDate(-1, 0, 0),
+			To:   periodTo.AddDate(-1, 0, 0),
+		}
+	}
+
+	limit := int(req.Limit)
+	if limit <= 0 {
+		limit = 50
+	}
+
+	sections := req.Sections
+	wantAll := len(sections) == 0
+	want := func(sec pb_admin.MetricsSection) bool {
+		if wantAll {
+			return sec == pb_admin.MetricsSection_METRICS_SECTION_BUSINESS
+		}
+		for _, s := range sections {
+			if s == sec {
+				return true
+			}
+		}
+		return false
+	}
+
+	resp := &pb_admin.GetMetricsResponse{}
+
+	if wantAll || want(pb_admin.MetricsSection_METRICS_SECTION_BUSINESS) {
+		period := entity.TimeRange{From: periodFrom, To: periodTo}
+		granularity := inferMetricsGranularity(dur)
+		metrics, err := s.repo.Metrics().GetBusinessMetrics(ctx, period, comparePeriod, granularity)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get business metrics", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get business metrics")
+		}
+		resp.Business = dto.ConvertEntityBusinessMetricsToPb(metrics)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_FUNNEL) {
+		agg, err := s.repo.BQCache().SumBQFunnelAnalysis(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get funnel aggregate", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get funnel aggregate")
+		}
+		daily, err := s.repo.BQCache().GetDailyBQFunnelAnalysis(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get daily funnel", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get daily funnel")
+		}
+		resp.Funnel = &pb_admin.FunnelSection{
+			Aggregate: dto.ConvertFunnelAggregateToPb(agg),
+			Daily:     dto.ConvertDailyFunnelsToPb(daily),
+		}
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_OOS_IMPACT) {
+		items, err := s.repo.BQCache().GetBQOOSImpact(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get OOS impact", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get OOS impact")
+		}
+		resp.OosImpact = dto.ConvertOOSImpactMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PAYMENT_FAILURES) {
+		items, err := s.repo.BQCache().GetBQPaymentFailures(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment failures", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get payment failures")
+		}
+		resp.PaymentFailures = dto.ConvertPaymentFailureMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_WEB_VITALS) {
+		items, err := s.repo.BQCache().GetBQWebVitals(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get web vitals", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get web vitals")
+		}
+		resp.WebVitals = dto.ConvertWebVitalMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_USER_JOURNEYS) {
+		items, err := s.repo.BQCache().GetBQUserJourneys(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get user journeys", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get user journeys")
+		}
+		resp.UserJourneys = dto.ConvertUserJourneyMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SESSION_DURATION) {
+		items, err := s.repo.BQCache().GetBQSessionDuration(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get session duration", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get session duration")
+		}
+		resp.SessionDuration = dto.ConvertSessionDurationMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_DEVICE_FUNNEL) {
+		items, err := s.repo.BQCache().GetBQDeviceFunnel(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get device funnel", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get device funnel")
+		}
+		resp.DeviceFunnel = dto.ConvertDeviceFunnelMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PRODUCT_ENGAGEMENT) {
+		items, err := s.repo.BQCache().GetBQProductEngagement(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get product engagement", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get product engagement")
+		}
+		resp.ProductEngagement = dto.ConvertProductEngagementMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_FORM_ERRORS) {
+		items, err := s.repo.BQCache().GetBQFormErrors(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get form errors", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get form errors")
+		}
+		resp.FormErrors = dto.ConvertFormErrorMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_EXCEPTIONS) {
+		items, err := s.repo.BQCache().GetBQExceptions(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get exceptions", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get exceptions")
+		}
+		resp.Exceptions = dto.ConvertExceptionMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_NOT_FOUND) {
+		items, err := s.repo.BQCache().GetBQNotFoundPages(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get 404 pages", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get 404 pages")
+		}
+		resp.NotFound = dto.ConvertNotFoundMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_HERO_FUNNEL) {
+		items, err := s.repo.BQCache().GetBQHeroFunnel(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get hero funnel", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get hero funnel")
+		}
+		resp.HeroFunnel = dto.ConvertHeroFunnelMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SIZE_CONFIDENCE) {
+		items, err := s.repo.BQCache().GetBQSizeConfidence(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get size confidence", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get size confidence")
+		}
+		resp.SizeConfidence = dto.ConvertSizeConfidenceMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PAYMENT_RECOVERY) {
+		items, err := s.repo.BQCache().GetBQPaymentRecovery(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get payment recovery", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get payment recovery")
+		}
+		resp.PaymentRecovery = dto.ConvertPaymentRecoveryMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_CHECKOUT_TIMINGS) {
+		items, err := s.repo.BQCache().GetBQCheckoutTimings(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get checkout timings", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get checkout timings")
+		}
+		resp.CheckoutTimings = dto.ConvertCheckoutTimingMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_COHORT_RETENTION) {
+		items, err := s.repo.Metrics().GetCohortRetention(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get cohort retention", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get cohort retention")
+		}
+		resp.CohortRetention = dto.ConvertCohortRetentionToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_ORDER_SEQUENCE) {
+		items, err := s.repo.Metrics().GetOrderSequenceMetrics(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get order sequence metrics", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get order sequence metrics")
+		}
+		resp.OrderSequence = dto.ConvertOrderSequenceMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_ENTRY_PRODUCTS) {
+		items, err := s.repo.Metrics().GetEntryProducts(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get entry products", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get entry products")
+		}
+		resp.EntryProducts = dto.ConvertEntryProductMetricsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_REVENUE_PARETO) {
+		items, err := s.repo.Metrics().GetRevenuePareto(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get revenue pareto", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get revenue pareto")
+		}
+		resp.RevenuePareto = dto.ConvertRevenueParetoToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SPENDING_CURVE) {
+		items, err := s.repo.Metrics().GetCustomerSpendingCurve(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get spending curve", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get spending curve")
+		}
+		resp.SpendingCurve = dto.ConvertSpendingCurveToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_CATEGORY_LOYALTY) {
+		items, err := s.repo.Metrics().GetCategoryLoyalty(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get category loyalty", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get category loyalty")
+		}
+		resp.CategoryLoyalty = dto.ConvertCategoryLoyaltyToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_INVENTORY_HEALTH) {
+		items, err := s.repo.Metrics().GetInventoryHealth(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get inventory health", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get inventory health")
+		}
+		resp.InventoryHealth = dto.ConvertInventoryHealthToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SIZE_RUN_EFFICIENCY) {
+		items, err := s.repo.Metrics().GetSizeRunEfficiency(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get size run efficiency", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get size run efficiency")
+		}
+		resp.SizeRunEfficiency = dto.ConvertSizeRunEfficiencyToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SLOW_MOVERS) {
+		items, err := s.repo.Metrics().GetSlowMovers(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get slow movers", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get slow movers")
+		}
+		resp.SlowMovers = dto.ConvertSlowMoversToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
+		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get return by product", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get return by product")
+		}
+		resp.ReturnByProduct = dto.ConvertReturnByProductToPb(byProduct)
+
+		bySize, err := s.repo.Metrics().GetReturnBySize(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get return by size", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get return by size")
+		}
+		resp.ReturnBySize = dto.ConvertReturnBySizeToPb(bySize)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SIZE_ANALYTICS) {
+		items, err := s.repo.Metrics().GetSizeAnalytics(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get size analytics", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get size analytics")
+		}
+		resp.SizeAnalytics = dto.ConvertSizeAnalyticsToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_DEAD_STOCK) {
+		items, err := s.repo.Metrics().GetDeadStock(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get dead stock", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get dead stock")
+		}
+		resp.DeadStock = dto.ConvertDeadStockToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PRODUCT_TREND) {
+		items, err := s.repo.Metrics().GetProductTrend(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get product trend", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get product trend")
+		}
+		resp.ProductTrend = dto.ConvertProductTrendToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_TIME_ON_PAGE) {
+		items, err := s.repo.BQCache().GetBQTimeOnPage(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get time on page", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get time on page")
+		}
+		resp.TimeOnPage = dto.ConvertTimeOnPageToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PRODUCT_ZOOM) {
+		items, err := s.repo.BQCache().GetBQProductZoom(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get product zoom", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get product zoom")
+		}
+		resp.ProductZoom = dto.ConvertProductZoomToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_IMAGE_SWIPES) {
+		items, err := s.repo.BQCache().GetBQImageSwipes(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get image swipes", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get image swipes")
+		}
+		resp.ImageSwipes = dto.ConvertImageSwipesToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SIZE_GUIDE_CLICKS) {
+		items, err := s.repo.BQCache().GetBQSizeGuideClicks(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get size guide clicks", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get size guide clicks")
+		}
+		resp.SizeGuideClicks = dto.ConvertSizeGuideClicksToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_DETAILS_EXPANSION) {
+		items, err := s.repo.BQCache().GetBQDetailsExpansion(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get details expansion", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get details expansion")
+		}
+		resp.DetailsExpansion = dto.ConvertDetailsExpansionToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_NOTIFY_ME_INTENT) {
+		items, err := s.repo.BQCache().GetBQNotifyMeIntent(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get notify me intent", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get notify me intent")
+		}
+		resp.NotifyMeIntent = dto.ConvertNotifyMeIntentToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_ADD_TO_CART_RATE) {
+		// Convert protobuf granularity to entity granularity
+		granularity := entity.TrendGranularityDaily
+		switch req.TrendGranularity {
+		case pb_admin.TrendGranularity_TREND_GRANULARITY_WEEKLY:
+			granularity = entity.TrendGranularityWeekly
+		case pb_admin.TrendGranularity_TREND_GRANULARITY_MONTHLY:
+			granularity = entity.TrendGranularityMonthly
+		}
+
+		analysis, err := s.repo.BQCache().GetBQAddToCartRate(ctx, from, to, granularity, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get add to cart rate", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get add to cart rate")
+		}
+		resp.AddToCartRateAnalysis = dto.ConvertAddToCartRateAnalysisToPb(analysis)
+
+		// For backwards compatibility, also populate the old field with product data
+		if analysis != nil && len(analysis.Products) > 0 {
+			legacyRows := make([]entity.AddToCartRateRow, 0, len(analysis.Products))
+			for _, p := range analysis.Products {
+				legacyRows = append(legacyRows, entity.AddToCartRateRow{
+					Date:           from,
+					ProductID:      p.ProductID,
+					ProductName:    p.ProductName,
+					ViewCount:      p.ViewCount,
+					AddToCartCount: p.AddToCartCount,
+					CartRate:       p.CartRate,
+				})
+			}
+			resp.AddToCartRate = dto.ConvertAddToCartRateToPb(legacyRows)
+		}
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_BROWSER_BREAKDOWN) {
+		items, err := s.repo.BQCache().GetBQBrowserBreakdown(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get browser breakdown", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get browser breakdown")
+		}
+		resp.BrowserBreakdown = dto.ConvertBrowserBreakdownToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_NEWSLETTER) {
+		items, err := s.repo.BQCache().GetBQNewsletter(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get newsletter metrics", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get newsletter metrics")
+		}
+		resp.Newsletter = dto.ConvertNewsletterToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_ABANDONED_CART) {
+		items, err := s.repo.BQCache().GetBQAbandonedCart(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get abandoned cart", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get abandoned cart")
+		}
+		resp.AbandonedCart = dto.ConvertAbandonedCartToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_CAMPAIGN_ATTRIBUTION) {
+		items, err := s.repo.BQCache().GetBQCampaignAttribution(ctx, from, to, limit, 0)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get campaign attribution", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get campaign attribution")
+		}
+		resp.CampaignAttribution = dto.ConvertCampaignAttributionToPb(items)
+	}
+
+	return resp, nil
+}
+
+// parseMetricsPeriod parses "7d", "30d", "90d" or ISO8601 duration (e.g. P7D, P30D) into time.Duration.
+func parseMetricsPeriod(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	// Shorthand: Nd
+	if m := regexp.MustCompile(`^(\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+		days, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid days value: %w", err)
+		}
+		if days < 1 || days > 365 {
+			return 0, fmt.Errorf("days must be 1-365")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	// ISO8601: P{n}D
+	if m := regexp.MustCompile(`^[pP](\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+		days, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid days value: %w", err)
+		}
+		if days < 1 || days > 365 {
+			return 0, fmt.Errorf("days must be 1-365")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return 0, fmt.Errorf("expected format: 7d, 30d, 90d or P7D, P30D")
+}
+
+// inferMetricsGranularity derives granularity from period length: <=14d→day, 15-90d→week, >90d→month.
+func inferMetricsGranularity(dur time.Duration) entity.MetricsGranularity {
+	days := int(dur / (24 * time.Hour))
+	if days <= 14 {
+		return entity.MetricsGranularityDay
+	}
+	if days <= 90 {
+		return entity.MetricsGranularityWeek
+	}
+	return entity.MetricsGranularityMonth
+}

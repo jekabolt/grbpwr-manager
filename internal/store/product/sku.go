@@ -17,7 +17,7 @@ func GenerateSKU(p *entity.ProductInsert, id int) string {
 	cat := categoryCode(p.ProductBodyInsert.SubCategoryId, p.ProductBodyInsert.TopCategoryId)
 	col := alphaPrefix(p.ProductBodyInsert.Color, 3, "UNK")
 	g := genderLetter(p.ProductBodyInsert.TargetGender)
-	seasonYear := seasonYearCode(p.ProductBodyInsert.Season, time.Now())
+	seasonYear := seasonYearCode(p.ProductBodyInsert.Season, time.Now().UTC())
 	return fmt.Sprintf("%s-%s-%s%d-%s", cat, col, g, id, seasonYear)
 }
 

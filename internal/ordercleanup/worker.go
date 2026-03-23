@@ -32,7 +32,7 @@ func (w *Worker) worker(ctx context.Context) {
 }
 
 func (w *Worker) cancelStuckPlacedOrders(ctx context.Context) error {
-	olderThan := time.Now().Add(-w.c.PlacedThreshold)
+	olderThan := time.Now().UTC().Add(-w.c.PlacedThreshold)
 	orders, err := w.repo.Order().GetStuckPlacedOrders(ctx, olderThan)
 	if err != nil {
 		return fmt.Errorf("can't get stuck placed orders: %w", err)
@@ -64,7 +64,7 @@ func (w *Worker) cancelStuckPlacedOrders(ctx context.Context) error {
 }
 
 func (w *Worker) cancelExpiredAwaitingPaymentOrders(ctx context.Context) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	orders, err := w.repo.Order().GetExpiredAwaitingPaymentOrders(ctx, now)
 	if err != nil {
 		return fmt.Errorf("can't get expired awaiting payment orders: %w", err)

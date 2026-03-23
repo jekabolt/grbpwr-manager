@@ -220,7 +220,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 
 	// Order has unexpired invoice, return it.
 	if payment.ClientSecret.Valid {
-		if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now()) {
+		if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now().UTC()) {
 			return &payment.PaymentInsert, nil
 		}
 	}
@@ -242,7 +242,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		}
 
 		if payment.ClientSecret.Valid {
-			if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now()) {
+			if !payment.PaymentInsert.ExpiredAt.Valid || payment.PaymentInsert.ExpiredAt.Time.After(time.Now().UTC()) {
 				return nil // Invoice already exists and is valid, skip PI creation
 			}
 		}
@@ -257,7 +257,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		idempotencyKey := orderUUID
 		if payment.ClientSecret.Valid {
 			// Had ClientSecret but expired - rotate key to get new PaymentIntent
-			idempotencyKey = orderUUID + "_" + strconv.FormatInt(time.Now().Unix(), 10)
+			idempotencyKey = orderUUID + "_" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
 		}
 
 		// Create PaymentIntent on Stripe (external API call inside TX - acceptable for idempotency)
@@ -270,7 +270,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		// PaymentIntent.Amount is in smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
 		paymentCurrencyAmount = AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
 
-		of, err = rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().Add(p.expirationDuration()))
+		of, err = rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().UTC().Add(p.expirationDuration()))
 		if err != nil {
 			return fmt.Errorf("can't insert fiat invoice: %w", err)
 		}
@@ -303,11 +303,11 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	}
 
 	payment.PaymentInsert.ExpiredAt = sql.NullTime{
-		Time:  time.Now().Add(p.expirationDuration()),
+		Time:  time.Now().UTC().Add(p.expirationDuration()),
 		Valid: true,
 	}
 
-	go p.monitorPayment(context.TODO(), orderUUID, payment)
+	go p.monitorPayment(context.Background(), orderUUID, payment)
 
 	return &payment.PaymentInsert, nil
 }
@@ -330,7 +330,7 @@ func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, paymen
 	}
 
 	// Calculate the expiration time based on the payment.ModifiedAt and p.c.InvoiceExpiration.
-	expirationDuration := time.Until(time.Now().Add(p.c.InvoiceExpiration))
+	expirationDuration := time.Until(time.Now().UTC().Add(p.c.InvoiceExpiration))
 	if payment.PaymentInsert.ExpiredAt.Valid {
 		expirationDuration = time.Until(payment.PaymentInsert.ExpiredAt.Time)
 	}
@@ -494,8 +494,8 @@ func (p *Processor) GetOrCreatePreOrderPaymentIntent(ctx context.Context, idempo
 	}
 
 	// Session expired - rotate: create new PI, return new key
-	if time.Now().After(sess.ExpiresAt) {
-		stripeKey := idempotencyKey + "_rotated_" + strconv.FormatInt(time.Now().Unix(), 10)
+	if time.Now().UTC().After(sess.ExpiresAt) {
+		stripeKey := idempotencyKey + "_rotated_" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
 		newPi, err := p.CreatePreOrderPaymentIntent(ctx, amount, currency, country, stripeKey)
 		if err != nil {
 			return nil, "", err

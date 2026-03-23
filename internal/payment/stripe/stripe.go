@@ -205,7 +205,7 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 
 	// Use unique idempotency key per refund operation to support multiple partial refunds.
 	// Format: orderUUID_refund_<timestamp> ensures each refund call is unique.
-	idempotencyKey := fmt.Sprintf("%s_refund_%d", orderUUID, time.Now().UnixNano())
+	idempotencyKey := fmt.Sprintf("%s_refund_%d", orderUUID, time.Now().UTC().UnixNano())
 	params.SetIdempotencyKey(idempotencyKey)
 
 	_, err := p.stripeClient.Refunds.New(params)

@@ -265,6 +265,9 @@ func (s *Store) GetArchivesPaged(ctx context.Context, limit, offset int, orderFa
 		al.Thumbnail = thumbnail
 		archives = append(archives, al)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("rows iteration error: %w", err)
+	}
 
 	// Fetch translations for each archive
 	for i := range archives {
@@ -349,6 +352,9 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 	defer rows.Close()
 
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("rows iteration error: %w", err)
+		}
 		return nil, errors.New("archive not found")
 	}
 

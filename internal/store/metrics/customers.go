@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -119,6 +120,7 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 	for _, r := range rows {
 		f, ok := r.CLV.Float64()
 		if !ok {
+			slog.Warn("CLV decimal to float64 conversion failed, skipping", "clv", r.CLV.String())
 			continue
 		}
 		clvs = append(clvs, f)

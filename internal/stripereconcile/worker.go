@@ -13,7 +13,7 @@ func (w *Worker) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			olderThan := time.Now().Add(-w.c.PreOrderThreshold)
+			olderThan := time.Now().UTC().Add(-w.c.PreOrderThreshold)
 			for _, c := range w.cleaners {
 				if err := ctx.Err(); err != nil {
 					return
