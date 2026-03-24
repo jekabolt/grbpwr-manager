@@ -1206,3 +1206,23 @@ func ConvertCampaignAttributionToPb(list []entity.CampaignAttributionRow) []*pb_
 	}
 	return pb
 }
+
+func ConvertCampaignAttributionAggregatedToPb(list []entity.CampaignAttributionAggregatedFull) []*pb_admin.CampaignAttributionRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CampaignAttributionRow, 0, len(list))
+	for _, r := range list {
+		pb = append(pb, &pb_admin.CampaignAttributionRow{
+			UtmSource:      r.UTMSource,
+			UtmMedium:      r.UTMMedium,
+			UtmCampaign:    r.UTMCampaign,
+			Sessions:       int32(r.Sessions),
+			Users:          int32(r.Users),
+			Conversions:    int32(r.Conversions),
+			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
+			ConversionRate: r.ConversionRate,
+		})
+	}
+	return pb
+}

@@ -78,10 +78,10 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, b.email,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -161,10 +161,10 @@ func (s *Store) getRevenueByPromo(ctx context.Context, from, to time.Time) ([]en
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, ob.promo_id, ob.code, ob.discount,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, pc.id AS promo_id, pc.code, pc.discount,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,

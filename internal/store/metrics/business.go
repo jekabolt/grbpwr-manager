@@ -165,21 +165,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 
 	// Traffic Sources (from BQ campaign attribution — single source of truth)
 	g.Go(func() error {
-		rows, err := s.repo.BQCache().GetBQCampaignAttribution(gctx, period.From, period.To, 10000, 0)
+		rows, err := s.repo.BQCache().GetBQCampaignAttributionBySourceMedium(gctx, period.From, period.To)
 		if err != nil {
 			return err
 		}
-		seen := make(map[string]int)
+		trafficBySource := make([]entity.TrafficSourceMetric, 0, len(rows))
 		for _, r := range rows {
-			key := r.UTMSource + "|" + r.UTMMedium
-			if idx, ok := seen[key]; ok {
-				m.TrafficBySource[idx].Sessions += int(r.Sessions)
-				m.TrafficBySource[idx].Users += int(r.Users)
-				m.TrafficBySource[idx].Revenue = m.TrafficBySource[idx].Revenue.Add(r.Revenue)
-				continue
-			}
-			seen[key] = len(m.TrafficBySource)
-			m.TrafficBySource = append(m.TrafficBySource, entity.TrafficSourceMetric{
+			trafficBySource = append(trafficBySource, entity.TrafficSourceMetric{
 				Source:   r.UTMSource,
 				Medium:   r.UTMMedium,
 				Sessions: int(r.Sessions),
@@ -187,12 +179,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 				Revenue:  r.Revenue,
 			})
 		}
-		sort.Slice(m.TrafficBySource, func(i, j int) bool {
-			return m.TrafficBySource[i].Sessions > m.TrafficBySource[j].Sessions
-		})
-		if len(m.TrafficBySource) > 20 {
-			m.TrafficBySource = m.TrafficBySource[:20]
+		if len(trafficBySource) > 20 {
+			trafficBySource = trafficBySource[:20]
 		}
+		m.TrafficBySource = trafficBySource
 		return nil
 	})
 	// Device metrics (from BQ device funnel — single source of truth)
@@ -214,15 +204,17 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 				}
 			}
 		}
+		trafficByDevice := make([]entity.DeviceMetric, 0, len(agg))
 		for _, dm := range agg {
 			if dm.Sessions > 0 {
 				dm.ConversionRate = float64(dm.Users) / float64(dm.Sessions)
 			}
-			m.TrafficByDevice = append(m.TrafficByDevice, *dm)
+			trafficByDevice = append(trafficByDevice, *dm)
 		}
-		sort.Slice(m.TrafficByDevice, func(i, j int) bool {
-			return m.TrafficByDevice[i].Sessions > m.TrafficByDevice[j].Sessions
+		sort.Slice(trafficByDevice, func(i, j int) bool {
+			return trafficByDevice[i].Sessions > trafficByDevice[j].Sessions
 		})
+		m.TrafficByDevice = trafficByDevice
 		return nil
 	})
 
@@ -457,15 +449,16 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 
 	// GA4 aggregate metrics for period (sum from errgroup fetch above)
 	var totalSessions, totalUsers, totalNewUsers, totalPageViews int
-	var totalBounceRate, totalAvgSessionDuration, totalPagesPerSession float64
+	var weightedBounceRate, weightedAvgSessionDuration, weightedPagesPerSession float64
 	for _, d := range ga4Daily {
 		totalSessions += d.Sessions
 		totalUsers += d.Users
 		totalNewUsers += d.NewUsers
 		totalPageViews += d.PageViews
-		totalBounceRate += d.BounceRate
-		totalAvgSessionDuration += d.AvgSessionDuration
-		totalPagesPerSession += d.PagesPerSession
+		// Session-weighted averages: sum(rate_i * sessions_i) for later division by totalSessions
+		weightedBounceRate += d.BounceRate * float64(d.Sessions)
+		weightedAvgSessionDuration += d.AvgSessionDuration * float64(d.Sessions)
+		weightedPagesPerSession += d.PagesPerSession * float64(d.Sessions)
 	}
 
 	if hasCompare {
@@ -558,10 +551,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.Users.Value = decimal.NewFromInt(int64(totalUsers))
 	m.NewUsers.Value = decimal.NewFromInt(int64(totalNewUsers))
 	m.PageViews.Value = decimal.NewFromInt(int64(totalPageViews))
-	if len(ga4Daily) > 0 {
-		m.BounceRate.Value = decimal.NewFromFloat(totalBounceRate / float64(len(ga4Daily)))
-		m.AvgSessionDuration.Value = decimal.NewFromFloat(totalAvgSessionDuration / float64(len(ga4Daily)))
-		m.PagesPerSession.Value = decimal.NewFromFloat(totalPagesPerSession / float64(len(ga4Daily)))
+	if totalSessions > 0 {
+		// Session-weighted averages: divide weighted sums by total sessions
+		m.BounceRate.Value = decimal.NewFromFloat(weightedBounceRate / float64(totalSessions))
+		m.AvgSessionDuration.Value = decimal.NewFromFloat(weightedAvgSessionDuration / float64(totalSessions))
+		m.PagesPerSession.Value = decimal.NewFromFloat(weightedPagesPerSession / float64(totalSessions))
 	}
 
 	// Conversion rate = orders / sessions
@@ -667,6 +661,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.ReturningCustomersByDay = fillTimeSeriesGaps(m.ReturningCustomersByDay, period.From, period.To, granularity)
 	m.ShippedByDay = fillTimeSeriesGaps(m.ShippedByDay, period.From, period.To, granularity)
 	m.DeliveredByDay = fillTimeSeriesGaps(m.DeliveredByDay, period.From, period.To, granularity)
+	// Gap-fill GA4 time series to align with MySQL-sourced series
+	m.SessionsByDay = fillTimeSeriesGaps(m.SessionsByDay, period.From, period.To, granularity)
+	m.UsersByDay = fillTimeSeriesGaps(m.UsersByDay, period.From, period.To, granularity)
+	m.PageViewsByDay = fillTimeSeriesGaps(m.PageViewsByDay, period.From, period.To, granularity)
 	if hasCompare {
 		m.RevenueByDayCompare = fillTimeSeriesGaps(m.RevenueByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.OrdersByDayCompare = fillTimeSeriesGaps(m.OrdersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
@@ -679,6 +677,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.ReturningCustomersByDayCompare = fillTimeSeriesGaps(m.ReturningCustomersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.ShippedByDayCompare = fillTimeSeriesGaps(m.ShippedByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.DeliveredByDayCompare = fillTimeSeriesGaps(m.DeliveredByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
+		// Gap-fill GA4 compare time series to align with MySQL-sourced series
+		m.SessionsByDayCompare = fillTimeSeriesGaps(m.SessionsByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
+		m.UsersByDayCompare = fillTimeSeriesGaps(m.UsersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
+		m.PageViewsByDayCompare = fillTimeSeriesGaps(m.PageViewsByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 	}
 
 	return m, nil

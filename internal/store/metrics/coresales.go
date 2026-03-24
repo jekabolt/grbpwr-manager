@@ -19,7 +19,7 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 	query := `
 		WITH order_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -37,7 +37,7 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 		)
 		SELECT
 			COALESCE(SUM(
-				(items_base * (100 - discount) / 100 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
+				(items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
 				* (total_price - refunded_amount) / NULLIF(total_price, 0)
 			), 0) AS revenue,
 			COUNT(*) AS orders
@@ -90,7 +90,7 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 	query := `
 		WITH order_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -108,7 +108,7 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 		)
 		SELECT
 			COALESCE(SUM(
-				refunded_amount * (items_base * (100 - discount) / 100 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END) / NULLIF(total_price, 0)
+				refunded_amount * (items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END) / NULLIF(total_price, 0)
 			), 0) AS amount,
 			COUNT(*) AS cnt
 		FROM order_base
@@ -126,7 +126,7 @@ func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decim
 	productDiscount, err := storeutil.QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
 	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(pp_base.price * COALESCE(oi.product_sale_percentage, 0) / 100 * oi.quantity), 0) AS v
+		SELECT COALESCE(SUM(pp_base.price * COALESCE(oi.product_sale_percentage, 0) / 100.0 * oi.quantity), 0) AS v
 		FROM customer_order co
 		JOIN order_item oi ON co.id = oi.order_id
 		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -141,7 +141,7 @@ func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decim
 	}](ctx, s.DB, `
 		WITH order_items_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(pc.discount, 0) AS discount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -151,7 +151,7 @@ func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decim
 			AND co.order_status_id IN (:statusIds) AND co.promo_id IS NOT NULL
 			GROUP BY co.id, pc.discount
 		)
-		SELECT COALESCE(SUM(items_base * discount / 100), 0) AS v
+		SELECT COALESCE(SUM(items_base * discount / 100.0), 0) AS v
 		FROM order_items_base
 	`, params)
 	if err != nil {

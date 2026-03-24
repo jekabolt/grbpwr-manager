@@ -24,7 +24,6 @@ func (s *Store) retention() *retentionStore {
 // Groups customers by the month of their first order, then tracks period retention:
 // M1 = customers who ordered specifically in month 1, M2 = month 2, etc.
 func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.Time) ([]entity.CohortRetentionRow, error) {
-	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 
 	query := fmt.Sprintf(`
@@ -35,7 +34,6 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
 			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
 			GROUP BY b.email
 		),
 		cohort_orders AS (
@@ -47,7 +45,6 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 			JOIN buyer b ON cfo.email = b.email
 			JOIN customer_order co ON co.id = b.order_id
 			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
 				AND cfo.first_order_date >= :from AND cfo.first_order_date < :to
 		)
 		SELECT
@@ -74,7 +71,7 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 		M5          int64  `db:"m5"`
 		M6          int64  `db:"m6"`
 	}
-	params := map[string]any{"baseCurrency": baseCurrency, "from": from, "to": to}
+	params := map[string]any{"from": from, "to": to}
 	rows, err := storeutil.QueryListNamed[row](ctx, rs.DB, query, params)
 	if err != nil {
 		return nil, fmt.Errorf("get cohort retention: %w", err)
@@ -94,28 +91,43 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 }
 
 // GetOrderSequenceMetrics returns AOV and timing by order sequence number.
+// Revenue is normalized to base currency via product_price join.
 func (rs *retentionStore) GetOrderSequenceMetrics(ctx context.Context, from, to time.Time) ([]entity.OrderSequenceMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 
 	query := fmt.Sprintf(`
-		WITH numbered_orders AS (
+		WITH order_revenue_base AS (
+			SELECT
+				co.id,
+				co.placed,
+				(COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
+					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END)
+					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
+			FROM customer_order co
+			LEFT JOIN order_item oi ON co.id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			LEFT JOIN shipment s ON co.id = s.order_id
+			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+			LEFT JOIN promo_code pc ON co.promo_id = pc.id
+			WHERE co.order_status_id IN (%s)
+				AND co.placed >= :from AND co.placed < :to
+			GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
+		),
+		numbered_orders AS (
 			SELECT
 				b.email,
-				co.total_price,
-				co.placed,
-				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY co.placed) AS order_num,
-				LAG(co.placed) OVER (PARTITION BY b.email ORDER BY co.placed) AS prev_placed
-			FROM customer_order co
-			JOIN buyer b ON co.id = b.order_id
-			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
+				orb.revenue_base,
+				orb.placed,
+				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY orb.placed) AS order_num,
+				LAG(orb.placed) OVER (PARTITION BY b.email ORDER BY orb.placed) AS prev_placed
+			FROM order_revenue_base orb
+			JOIN buyer b ON orb.id = b.order_id
 		)
 		SELECT
 			order_num,
 			COUNT(*) AS order_count,
-			AVG(total_price) AS avg_order_value,
+			AVG(revenue_base) AS avg_order_value,
 			AVG(CASE WHEN prev_placed IS NOT NULL
 				THEN DATEDIFF(placed, prev_placed)
 			END) AS avg_days_since_prev
@@ -150,6 +162,7 @@ func (rs *retentionStore) GetOrderSequenceMetrics(ctx context.Context, from, to 
 }
 
 // GetEntryProducts returns top products bought by first-time customers.
+// Revenue is normalized to base currency via product_price join.
 func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Time, limit int) ([]entity.EntryProductMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
@@ -162,7 +175,6 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
 			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
 			GROUP BY b.email
 			HAVING MIN(co.placed) >= :from AND MIN(co.placed) < :to
 		)
@@ -173,10 +185,11 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 				p.brand
 			) AS product_name,
 			COUNT(*) AS purchase_count,
-			SUM(oi.product_price * oi.quantity) AS total_revenue
+			SUM(pp_base.price * oi.quantity) AS total_revenue
 		FROM first_orders fo
 		JOIN order_item oi ON oi.order_id = fo.first_order_id
 		JOIN product p ON p.id = oi.product_id
+		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		GROUP BY oi.product_id, product_name
 		ORDER BY purchase_count DESC
 		LIMIT :limit
@@ -195,6 +208,7 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 }
 
 // GetRevenuePareto returns cumulative revenue % by ranked products.
+// Revenue is normalized to base currency via product_price join.
 func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Time, limit int) ([]entity.RevenueParetoRow, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
@@ -207,12 +221,12 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 					(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
 					p.brand
 				) AS product_name,
-				SUM(oi.product_price * oi.quantity) AS revenue
+				SUM(pp_base.price * oi.quantity) AS revenue
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
 			JOIN product p ON p.id = oi.product_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
 			GROUP BY oi.product_id, product_name
 		),
@@ -252,27 +266,42 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 }
 
 // GetCustomerSpendingCurve returns avg cumulative spend per customer by order sequence.
+// Revenue is normalized to base currency via product_price join.
 func (rs *retentionStore) GetCustomerSpendingCurve(ctx context.Context, from, to time.Time) ([]entity.SpendingCurvePoint, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 
 	query := fmt.Sprintf(`
-		WITH numbered_orders AS (
+		WITH order_revenue_base AS (
+			SELECT
+				co.id,
+				co.placed,
+				(COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
+					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END)
+					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
+			FROM customer_order co
+			LEFT JOIN order_item oi ON co.id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			LEFT JOIN shipment s ON co.id = s.order_id
+			LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+			LEFT JOIN promo_code pc ON co.promo_id = pc.id
+			WHERE co.order_status_id IN (%s)
+				AND co.placed >= :from AND co.placed < :to
+			GROUP BY co.id, co.placed, co.total_price, co.refunded_amount
+		),
+		numbered_orders AS (
 			SELECT
 				b.email,
-				co.total_price,
-				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY co.placed) AS order_num
-			FROM customer_order co
-			JOIN buyer b ON co.id = b.order_id
-			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
+				orb.revenue_base,
+				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY orb.placed) AS order_num
+			FROM order_revenue_base orb
+			JOIN buyer b ON orb.id = b.order_id
 		),
 		cumulative AS (
 			SELECT
 				email,
 				order_num,
-				SUM(total_price) OVER (PARTITION BY email ORDER BY order_num) AS cumulative_spend
+				SUM(revenue_base) OVER (PARTITION BY email ORDER BY order_num) AS cumulative_spend
 			FROM numbered_orders
 		)
 		SELECT
@@ -298,7 +327,6 @@ func (rs *retentionStore) GetCustomerSpendingCurve(ctx context.Context, from, to
 
 // GetCategoryLoyalty returns a cross-tab of first vs second purchase categories for repeat customers.
 func (rs *retentionStore) GetCategoryLoyalty(ctx context.Context, from, to time.Time) ([]entity.CategoryLoyaltyRow, error) {
-	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 
 	query := fmt.Sprintf(`
@@ -311,7 +339,6 @@ func (rs *retentionStore) GetCategoryLoyalty(ctx context.Context, from, to time.
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
 			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
 		),
 		first_cat AS (
@@ -341,9 +368,8 @@ func (rs *retentionStore) GetCategoryLoyalty(ctx context.Context, from, to time.
 	`, statusIDs)
 
 	result, err := storeutil.QueryListNamed[entity.CategoryLoyaltyRow](ctx, rs.DB, query, map[string]any{
-		"baseCurrency": baseCurrency,
-		"from":         from,
-		"to":           to,
+		"from": from,
+		"to":   to,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get category loyalty: %w", err)

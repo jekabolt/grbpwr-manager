@@ -690,3 +690,22 @@ type CampaignAttributionRow struct {
 	Revenue        decimal.Decimal
 	ConversionRate float64
 }
+
+type CampaignAttributionAggregated struct {
+	UTMSource string
+	UTMMedium string
+	Sessions  int64
+	Users     int64
+	Revenue   decimal.Decimal
+}
+
+type CampaignAttributionAggregatedFull struct {
+	UTMSource      string
+	UTMMedium      string
+	UTMCampaign    string
+	Sessions       int64
+	Users          int64
+	Conversions    int64
+	Revenue        decimal.Decimal
+	ConversionRate float64
+}

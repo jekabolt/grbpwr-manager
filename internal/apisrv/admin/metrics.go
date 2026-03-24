@@ -463,12 +463,12 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_CAMPAIGN_ATTRIBUTION) {
-		items, err := s.repo.BQCache().GetBQCampaignAttribution(ctx, from, to, limit, 0)
+		items, err := s.repo.BQCache().GetBQCampaignAttributionAggregated(ctx, from, to, limit, 0)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get campaign attribution", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get campaign attribution")
 		}
-		resp.CampaignAttribution = dto.ConvertCampaignAttributionToPb(items)
+		resp.CampaignAttribution = dto.ConvertCampaignAttributionAggregatedToPb(items)
 	}
 
 	return resp, nil

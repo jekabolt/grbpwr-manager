@@ -30,11 +30,11 @@ FROM
 	email_daily_metrics
 WHERE
 	date >= :from
-	AND date <= :to
+	AND date < :to
 `
 	row, err := storeutil.QueryNamedOne[emailMetricsSumRow](ctx, s.DB, query, map[string]any{
-		"from": from.UTC().Format("2006-01-02"),
-		"to":   to.UTC().Format("2006-01-02"),
+		"from": from,
+		"to":   to,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get email metrics summary: %w", err)

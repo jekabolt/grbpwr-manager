@@ -1032,3 +1032,92 @@ func (s *ReadStore) GetBQCampaignAttribution(ctx context.Context, from, to time.
 	}
 	return result, nil
 }
+
+func (s *ReadStore) GetBQCampaignAttributionBySourceMedium(ctx context.Context, from, to time.Time) ([]entity.CampaignAttributionAggregated, error) {
+	query := `
+		SELECT
+			utm_source,
+			utm_medium,
+			SUM(sessions) AS sessions,
+			SUM(users) AS users,
+			SUM(revenue) AS revenue
+		FROM bq_campaign_attribution
+		WHERE date >= :fromDate AND date <= :toDate
+		GROUP BY utm_source, utm_medium
+		ORDER BY sessions DESC
+	`
+	type row struct {
+		UTMSource string          `db:"utm_source"`
+		UTMMedium string          `db:"utm_medium"`
+		Sessions  int64           `db:"sessions"`
+		Users     int64           `db:"users"`
+		Revenue   decimal.Decimal `db:"revenue"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02")}
+	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("get campaign attribution by source/medium: %w", err)
+	}
+	result := make([]entity.CampaignAttributionAggregated, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, entity.CampaignAttributionAggregated{
+			UTMSource: r.UTMSource,
+			UTMMedium: r.UTMMedium,
+			Sessions:  r.Sessions,
+			Users:     r.Users,
+			Revenue:   r.Revenue,
+		})
+	}
+	return result, nil
+}
+
+func (s *ReadStore) GetBQCampaignAttributionAggregated(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionAggregatedFull, error) {
+	page := storeutil.BQPageParams{Limit: limit, Offset: offset}
+	query := `
+		SELECT
+			utm_source,
+			utm_medium,
+			utm_campaign,
+			SUM(sessions) AS sessions,
+			SUM(users) AS users,
+			SUM(conversions) AS conversions,
+			SUM(revenue) AS revenue
+		FROM bq_campaign_attribution
+		WHERE date >= :fromDate AND date <= :toDate
+		GROUP BY utm_source, utm_medium, utm_campaign
+		ORDER BY sessions DESC
+		LIMIT :limit OFFSET :offset
+	`
+	type row struct {
+		UTMSource   string          `db:"utm_source"`
+		UTMMedium   string          `db:"utm_medium"`
+		UTMCampaign string          `db:"utm_campaign"`
+		Sessions    int64           `db:"sessions"`
+		Users       int64           `db:"users"`
+		Conversions int64           `db:"conversions"`
+		Revenue     decimal.Decimal `db:"revenue"`
+	}
+	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.EffectiveLimit(), "offset": page.EffectiveOffset()}
+	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("get campaign attribution aggregated: %w", err)
+	}
+	result := make([]entity.CampaignAttributionAggregatedFull, 0, len(rows))
+	for _, r := range rows {
+		var convRate float64
+		if r.Sessions > 0 {
+			convRate = float64(r.Conversions) / float64(r.Sessions)
+		}
+		result = append(result, entity.CampaignAttributionAggregatedFull{
+			UTMSource:      r.UTMSource,
+			UTMMedium:      r.UTMMedium,
+			UTMCampaign:    r.UTMCampaign,
+			Sessions:       r.Sessions,
+			Users:          r.Users,
+			Conversions:    r.Conversions,
+			Revenue:        r.Revenue,
+			ConversionRate: convRate,
+		})
+	}
+	return result, nil
+}

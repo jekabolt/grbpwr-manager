@@ -17,10 +17,10 @@ func (s *Store) getRevenueByPeriod(ctx context.Context, from, to time.Time, date
 	query := fmt.Sprintf(`
 		WITH order_base AS (
 			SELECT ob.id, ob.placed,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -110,10 +110,10 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 	query := fmt.Sprintf(`
 		WITH order_base AS (
 			SELECT ob.id, ob.placed,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
@@ -139,7 +139,7 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 		D     time.Time       `db:"d"`
 		Value decimal.Decimal `db:"value"`
 		Count int             `db:"cnt"`
-	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForRefund()})
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
@@ -155,10 +155,10 @@ func (s *Store) getRefundsByPeriod(ctx context.Context, from, to time.Time, date
 	query := fmt.Sprintf(`
 		WITH order_base AS (
 			SELECT ob.id, ob.placed,
-				refunded_amount * (ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) / NULLIF(ob.total_price, 0) AS refunded_base
+				refunded_amount * (ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) / NULLIF(ob.total_price, 0) AS refunded_base
 			FROM (
 				SELECT co.id, co.placed, COALESCE(co.refunded_amount, 0) AS refunded_amount,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -202,10 +202,10 @@ func (s *Store) getAvgOrderValueByPeriod(ctx context.Context, from, to time.Time
 	query := fmt.Sprintf(`
 		WITH order_base AS (
 			SELECT ob.id, ob.placed,
-				(ob.items_base * (100 - ob.discount) / 100 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -277,20 +277,28 @@ func (s *Store) getUnitsSoldByPeriod(ctx context.Context, from, to time.Time, da
 
 func (s *Store) getNewVsReturningCustomersByPeriod(ctx context.Context, from, to time.Time, dateExpr string) (newCustomers, returningCustomers []entity.TimeSeriesPoint, err error) {
 	query := fmt.Sprintf(`
-		WITH ranked AS (
-			SELECT co.placed,
-				%s AS bucket,
-				ROW_NUMBER() OVER (PARTITION BY b.email ORDER BY co.placed) AS rn
+		WITH first_order AS (
+			SELECT b.email, MIN(co.placed) AS first_placed
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
 			WHERE co.order_status_id IN (:statusIds)
+			GROUP BY b.email
+		),
+		period_orders AS (
+			SELECT co.placed,
+				%s AS bucket,
+				b.email
+			FROM customer_order co
+			JOIN buyer b ON co.id = b.order_id
+			WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (:statusIds)
 		)
-		SELECT bucket AS d,
-			SUM(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS new_cnt,
-			SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS ret_cnt
-		FROM ranked
-		WHERE placed >= :from AND placed < :to
-		GROUP BY bucket
+		SELECT po.bucket AS d,
+			SUM(CASE WHEN fo.first_placed >= :from THEN 1 ELSE 0 END) AS new_cnt,
+			SUM(CASE WHEN fo.first_placed < :from THEN 1 ELSE 0 END) AS ret_cnt
+		FROM period_orders po
+		JOIN first_order fo ON po.email = fo.email
+		GROUP BY po.bucket
 		ORDER BY d
 	`, dateExpr)
 	rows, err := storeutil.QueryListNamed[struct {

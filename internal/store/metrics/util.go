@@ -8,13 +8,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// mysqlUTCExpr evaluates to the offset '+00:00' without a ':00' substring in the query text.
+// sqlx.Named treats ':00' inside a literal like '+00:00' as a bind parameter named "00".
+const mysqlUTCExpr = "CONCAT('+', '00', CHAR(58), '00')"
+
 // granularitySQL returns date expression for ORDER BY/SELECT and GROUP BY.
 // dateExpr for order tables (co.placed), subDateExpr for subscriber (created_at).
 // Uses CONVERT_TZ to UTC so date bucketing matches Go's bucketStart (UTC).
 func granularitySQL(g entity.MetricsGranularity) (dateExpr, subDateExpr string) {
-	// CONVERT_TZ(col, @@session.time_zone, '+00:00') ensures DATE() uses UTC regardless of MySQL server timezone
-	placedUTC := "CONVERT_TZ(co.placed, @@session.time_zone, '+00:00')"
-	createdUTC := "CONVERT_TZ(created_at, @@session.time_zone, '+00:00')"
+	// CONVERT_TZ to UTC (same as offset '+00:00') so DATE() uses UTC regardless of MySQL session TZ
+	placedUTC := "CONVERT_TZ(co.placed, @@session.time_zone, " + mysqlUTCExpr + ")"
+	createdUTC := "CONVERT_TZ(created_at, @@session.time_zone, " + mysqlUTCExpr + ")"
 	switch g {
 	case entity.MetricsGranularityWeek:
 		return fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", placedUTC, placedUTC),
@@ -30,7 +34,7 @@ func granularitySQL(g entity.MetricsGranularity) (dateExpr, subDateExpr string) 
 // granularityDateExpr returns date expression for a given column (e.g. osh.changed_at).
 // Uses CONVERT_TZ to UTC for alignment with Go bucketStart.
 func granularityDateExpr(g entity.MetricsGranularity, col string) string {
-	colUTC := fmt.Sprintf("CONVERT_TZ(%s, @@session.time_zone, '+00:00')", col)
+	colUTC := fmt.Sprintf("CONVERT_TZ(%s, @@session.time_zone, %s)", col, mysqlUTCExpr)
 	switch g {
 	case entity.MetricsGranularityWeek:
 		return fmt.Sprintf("DATE(DATE_SUB(%s, INTERVAL WEEKDAY(%s) DAY))", colUTC, colUTC)
@@ -64,7 +68,7 @@ func fillTimeSeriesGaps(points []entity.TimeSeriesPoint, from, to time.Time, gra
 }
 
 // bucketStart returns the start of the bucket containing t. Uses UTC to align with MySQL
-// CONVERT_TZ(..., '+00:00') in granularitySQL; avoids timezone mismatch between Go and MySQL.
+// CONVERT_TZ(..., UTC offset) in granularitySQL; avoids timezone mismatch between Go and MySQL.
 func bucketStart(t time.Time, g entity.MetricsGranularity) time.Time {
 	t = t.UTC()
 	loc := time.UTC
