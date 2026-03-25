@@ -30,6 +30,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(),
 			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
 			IsProd:                      cache.GetPaymentIsProd(),
+			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
 		}),
 		Rates: nil,
 	}, nil

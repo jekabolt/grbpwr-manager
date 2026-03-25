@@ -119,6 +119,8 @@ var (
 	siteEnabled                  = true
 	defaultCurrency              = "EUR"
 	bigMenu                      = false
+	backgroundHeroColor          string
+	backgroundHeroColorMu        sync.RWMutex
 	announce                     = &entity.AnnounceWithTranslations{}
 	orderExpirationSeconds       = 0 // 0 = use payment handler default
 	complimentaryShippingPrices  = make(map[string]decimal.Decimal)
@@ -185,6 +187,10 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
 	announce = dInfo.Announce
+
+	backgroundHeroColorMu.Lock()
+	backgroundHeroColor = dInfo.BackgroundHeroColor
+	backgroundHeroColorMu.Unlock()
 
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
@@ -438,6 +444,20 @@ func SetMaxOrderItems(n int) {
 
 func SetBigMenu(enabled bool) {
 	bigMenu = enabled
+}
+
+// GetBackgroundHeroColor returns the storefront hero background CSS color (may be empty).
+func GetBackgroundHeroColor() string {
+	backgroundHeroColorMu.RLock()
+	defer backgroundHeroColorMu.RUnlock()
+	return backgroundHeroColor
+}
+
+// SetBackgroundHeroColor updates the in-memory hero background color cache.
+func SetBackgroundHeroColor(color string) {
+	backgroundHeroColorMu.Lock()
+	backgroundHeroColor = color
+	backgroundHeroColorMu.Unlock()
 }
 
 func SetAnnounce(link string, translations []entity.AnnounceTranslation) {

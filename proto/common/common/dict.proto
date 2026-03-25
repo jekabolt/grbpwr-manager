@@ -29,6 +29,8 @@ message Dictionary {
   int32 order_expiration_seconds = 14; // 0 = use payment handler default
   map<string, google.type.Decimal> complimentary_shipping_prices = 15; // Map of currency code to minimum subtotal for free shipping
   bool is_prod = 16; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
+  // Hero section background color for the storefront (CSS). Empty if unset.
+  string background_hero_color = 17;
 }
 
 message Collection {

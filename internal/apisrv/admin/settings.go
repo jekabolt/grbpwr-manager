@@ -3,7 +3,9 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -159,4 +161,50 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
 	}
 	return &pb_admin.UpdateSettingsResponse{}, nil
+}
+
+const maxBackgroundHeroColorRunes = 128
+
+// GetBackgroundHeroColor returns the persisted hero background CSS color.
+func (s *Server) GetBackgroundHeroColor(ctx context.Context, _ *pb_admin.GetBackgroundHeroColorRequest) (*pb_admin.GetBackgroundHeroColorResponse, error) {
+	color, err := s.repo.Settings().GetBackgroundHeroColor(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get background hero color",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to get background hero color: %v", err)
+	}
+	return &pb_admin.GetBackgroundHeroColorResponse{Color: color}, nil
+}
+
+// SetBackgroundHeroColor updates the hero background color and revalidates the storefront hero cache.
+func (s *Server) SetBackgroundHeroColor(ctx context.Context, req *pb_admin.SetBackgroundHeroColorRequest) (*pb_admin.SetBackgroundHeroColorResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if utf8.RuneCountInString(req.Color) > maxBackgroundHeroColorRunes {
+		return nil, status.Errorf(codes.InvalidArgument, "color must be at most %d characters", maxBackgroundHeroColorRunes)
+	}
+
+	err := s.repo.Settings().SetBackgroundHeroColor(ctx, req.Color)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't set background hero color",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to set background hero color: %v", err)
+	}
+
+	cache.SetBackgroundHeroColor(req.Color)
+
+	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+		Hero: true,
+	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't revalidate hero after background color change",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
+	}
+
+	return &pb_admin.SetBackgroundHeroColorResponse{}, nil
 }

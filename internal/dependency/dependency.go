@@ -437,6 +437,8 @@ type (
 		SetOrderExpirationSeconds(ctx context.Context, seconds int) error
 		SetComplimentaryShippingPrices(ctx context.Context, prices map[string]decimal.Decimal) error
 		GetComplimentaryShippingPrices(ctx context.Context) (map[string]decimal.Decimal, error)
+		GetBackgroundHeroColor(ctx context.Context) (string, error)
+		SetBackgroundHeroColor(ctx context.Context, color string) error
 	}
 
 	Waitlist interface {

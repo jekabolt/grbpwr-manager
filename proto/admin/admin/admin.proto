@@ -246,6 +246,17 @@ service AdminService {
     };
   }
 
+  rpc GetBackgroundHeroColor(GetBackgroundHeroColorRequest) returns (GetBackgroundHeroColorResponse) {
+    option (google.api.http) = {get: "/api/admin/settings/background-hero-color"};
+  }
+
+  rpc SetBackgroundHeroColor(SetBackgroundHeroColorRequest) returns (SetBackgroundHeroColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/background-hero-color"
+      body: "*"
+    };
+  }
+
   // AddShipmentCarrier adds a new shipping carrier.
   rpc AddShipmentCarrier(AddShipmentCarrierRequest) returns (AddShipmentCarrierResponse) {
     option (google.api.http) = {
@@ -993,6 +1004,20 @@ message UpdateSettingsRequest {
 }
 
 message UpdateSettingsResponse {}
+
+message GetBackgroundHeroColorRequest {}
+
+message GetBackgroundHeroColorResponse {
+  // CSS color string (e.g. "#0a0a0a", "rgb(0,0,0)"). Empty if unset.
+  string color = 1;
+}
+
+message SetBackgroundHeroColorRequest {
+  // CSS color string; empty clears to default (none).
+  string color = 1;
+}
+
+message SetBackgroundHeroColorResponse {}
 
 message ShipmentCarrierAllowancePrice {
   string carrier = 1;

@@ -61,6 +61,11 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get complimentary shipping prices: %w", err)
 	}
 
+	dict.BackgroundHeroColor, err = s.GetBackgroundHeroColor(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get background hero color: %w", err)
+	}
+
 	return &dict, nil
 }
 

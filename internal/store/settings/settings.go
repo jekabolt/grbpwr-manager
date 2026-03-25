@@ -3,6 +3,8 @@ package settings
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -384,6 +386,42 @@ func (s *Store) SetComplimentaryShippingPrices(ctx context.Context, prices map[s
 // GetComplimentaryShippingPrices returns all complimentary shipping prices.
 func (s *Store) GetComplimentaryShippingPrices(ctx context.Context) (map[string]decimal.Decimal, error) {
 	return getComplimentaryShippingPrices(ctx, s.DB)
+}
+
+const heroBackgroundColorSingletonID = 1
+
+// GetBackgroundHeroColor returns the CSS color string for the hero background (singleton row).
+func (s *Store) GetBackgroundHeroColor(ctx context.Context) (string, error) {
+	type row struct {
+		Color string `db:"color"`
+	}
+	query := `SELECT color FROM hero_background_color WHERE id = :id`
+	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{"id": heroBackgroundColorSingletonID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get background hero color: %w", err)
+	}
+	return r.Color, nil
+}
+
+// SetBackgroundHeroColor persists the hero background color (empty string clears to default).
+func (s *Store) SetBackgroundHeroColor(ctx context.Context, color string) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		query := `UPDATE hero_background_color SET color = :color WHERE id = :id`
+		if err := storeutil.ExecNamed(ctx, rep.DB(), query, map[string]any{
+			"id":    heroBackgroundColorSingletonID,
+			"color": color,
+		}); err != nil {
+			return fmt.Errorf("failed to update background hero color: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set background hero color: %w", err)
+	}
+	return nil
 }
 
 func getComplimentaryShippingPrices(ctx context.Context, db dependency.DB) (map[string]decimal.Decimal, error) {
