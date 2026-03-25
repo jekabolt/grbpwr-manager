@@ -340,26 +340,26 @@ func (ms *MYSQLStore) Ping(ctx context.Context) error {
 
 // ========== Repository Accessor Methods ==========
 
-func (ms *MYSQLStore) Products() dependency.Products  { return ms.productStore }
-func (ms *MYSQLStore) Order() dependency.Order         { return ms.orderStore }
-func (ms *MYSQLStore) BQCache() dependency.BQCacheStore { return ms.bqcache }
-func (ms *MYSQLStore) GA4Data() dependency.GA4DataStore { return ms.ga4 }
+func (ms *MYSQLStore) Products() dependency.Products       { return ms.productStore }
+func (ms *MYSQLStore) Order() dependency.Order             { return ms.orderStore }
+func (ms *MYSQLStore) BQCache() dependency.BQCacheStore    { return ms.bqcache }
+func (ms *MYSQLStore) GA4Data() dependency.GA4DataStore    { return ms.ga4 }
 func (ms *MYSQLStore) SyncStatus() dependency.SyncStatusStore { return ms.syncStatus }
-func (ms *MYSQLStore) Metrics() dependency.Metrics     { return ms.metrics }
-func (ms *MYSQLStore) Retention() dependency.Retention  { return ms.metrics }
-func (ms *MYSQLStore) Inventory() dependency.Inventory  { return ms.metrics }
-func (ms *MYSQLStore) Analytics() dependency.Analytics  { return ms.metrics }
-func (ms *MYSQLStore) Hero() dependency.Hero            { return ms.content }
-func (ms *MYSQLStore) Archive() dependency.Archive      { return ms.content }
-func (ms *MYSQLStore) Media() dependency.Media          { return ms.content }
-func (ms *MYSQLStore) Settings() dependency.Settings    { return ms.settingsStore }
-func (ms *MYSQLStore) Cache() dependency.Cache          { return ms.settingsStore }
-func (ms *MYSQLStore) Mail() dependency.Mail            { return ms.comm }
+func (ms *MYSQLStore) Metrics() dependency.Metrics         { return ms.metrics }
+func (ms *MYSQLStore) Retention() dependency.Retention     { return ms.metrics }
+func (ms *MYSQLStore) Inventory() dependency.Inventory     { return ms.metrics }
+func (ms *MYSQLStore) Analytics() dependency.Analytics     { return ms.metrics }
+func (ms *MYSQLStore) Hero() dependency.Hero               { return ms.content }
+func (ms *MYSQLStore) Archive() dependency.Archive         { return ms.content }
+func (ms *MYSQLStore) Media() dependency.Media             { return ms.content }
+func (ms *MYSQLStore) Settings() dependency.Settings       { return ms.settingsStore }
+func (ms *MYSQLStore) Cache() dependency.Cache             { return ms.settingsStore }
+func (ms *MYSQLStore) Mail() dependency.Mail               { return ms.comm }
 func (ms *MYSQLStore) Subscribers() dependency.Subscribers { return ms.comm }
-func (ms *MYSQLStore) Support() dependency.Support      { return ms.supportStore }
-func (ms *MYSQLStore) Admin() dependency.Admin          { return ms.adminStore }
-func (ms *MYSQLStore) Promo() dependency.Promo          { return ms.promoStore }
-func (ms *MYSQLStore) Language() dependency.Language     { return ms.langStore }
+func (ms *MYSQLStore) Support() dependency.Support         { return ms.supportStore }
+func (ms *MYSQLStore) Admin() dependency.Admin             { return ms.adminStore }
+func (ms *MYSQLStore) Promo() dependency.Promo             { return ms.promoStore }
+func (ms *MYSQLStore) Language() dependency.Language       { return ms.langStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }

@@ -150,9 +150,10 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 	p90 := clvs[p90Idx]
 
 	return entity.CLVStats{
-		Mean:   decimal.NewFromFloat(mean).Round(2),
-		Median: decimal.NewFromFloat(median).Round(2),
-		P90:    decimal.NewFromFloat(p90).Round(2),
+		Mean:       decimal.NewFromFloat(mean).Round(2),
+		Median:     decimal.NewFromFloat(median).Round(2),
+		P90:        decimal.NewFromFloat(p90).Round(2),
+		SampleSize: len(clvs),
 	}, nil
 }
 
@@ -221,7 +222,7 @@ func (s *Store) getOrdersByStatus(ctx context.Context, from, to time.Time) ([]en
 	rows, err := storeutil.QueryListNamed[struct {
 		Name  string `db:"name"`
 		Count int    `db:"cnt"`
-	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to})
 	if err != nil {
 		return nil, err
 	}

@@ -359,6 +359,7 @@ func TestClient_GetWebVitals_Integration(t *testing.T) {
 		ProjectID:       projectID,
 		DatasetID:       datasetID,
 		CredentialsJSON: credsPath,
+		UseLiteralDates: true,
 	}
 	client, err := NewClient(ctx, cfg)
 	require.NoError(t, err)
@@ -370,6 +371,19 @@ func TestClient_GetWebVitals_Integration(t *testing.T) {
 	rows, err := client.GetWebVitals(ctx, start, end)
 	require.NoError(t, err)
 	t.Logf("GetWebVitals returned %d rows", len(rows))
+
+	nonZeroCount := 0
+	for _, r := range rows {
+		if r.AvgMetricValue > 0 {
+			nonZeroCount++
+			t.Logf("Sample: date=%s metric=%s rating=%s sessions=%d avg=%.2f",
+				r.Date.Format("2006-01-02"), r.MetricName, r.MetricRating, r.SessionCount, r.AvgMetricValue)
+		}
+	}
+	if len(rows) > 0 {
+		t.Logf("Found %d/%d rows with non-zero avg_metric_value", nonZeroCount, len(rows))
+		assert.Greater(t, nonZeroCount, 0, "Expected at least some rows with non-zero avg_metric_value (LCP/FCP/TTFB should always be >0)")
+	}
 }
 
 func TestClient_GetUserJourneys_Integration(t *testing.T) {

@@ -13,14 +13,16 @@ import (
 
 // GetProductEngagement returns engagement metrics per product per day.
 // Uses view_item (ecommerce items[]) for product identification,
-// scroll_depth events on product pages for engagement depth, and
-// product_zoom custom events (event_params.product_id) for zoom counts.
+// scroll and scroll_depth events on product pages for engagement depth
+// (GA4 sends built-in scroll with percent_scrolled=90; scroll_depth uses 25/50/75/100),
+// product_zoom custom events (event_params.product_id) for zoom counts, and
+// time_on_page events (event_params.visible_time_seconds) for avg time on page.
 //
-// Both sides use product_id for the JOIN: product_views from item.item_id (must be
-// product ID string per frontend convention), product_scrolls from the last path
-// segment of /product/... URLs (dto.GetProductSlug format), zoom from the same
-// string as GetProductZoom. If item_id uses SKU instead of product ID, scroll and
-// zoom joins will not match — frontend must send consistent product IDs.
+// All CTEs use the 10-digit product ID extracted via REGEXP_EXTRACT:
+// - product_views: extracts from item.item_id SKU (e.g., BOT-NAV-F1773009533-SS26 → 1773009533)
+// - product_scrolls: extracts from page_path trailing segment (e.g., /product/.../1773009533 → 1773009533)
+// - product_zoom_counts: uses event_params.product_id directly (already numeric string)
+// - product_time_on_page: extracts from page_path, takes last heartbeat per visit, caps at 1800s
 func (c *Client) GetProductEngagement(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -52,13 +54,14 @@ func (c *Client) getProductEngagement(
 		WITH product_views AS (
 			SELECT
 				DATE(TIMESTAMP_MICROS(e.event_timestamp)) AS event_date,
-				item.item_id AS product_id,
+				REGEXP_EXTRACT(item.item_id, r'(\d{10})') AS product_id,
 				ANY_VALUE(item.item_name) AS product_name,
 				COUNT(*) AS view_count
 			FROM %[1]s AS e, UNNEST(e.items) AS item
 			WHERE %[2]s
 				AND e.event_name = 'view_item'
 				AND item.item_id IS NOT NULL
+				AND REGEXP_EXTRACT(item.item_id, r'(\d{10})') IS NOT NULL
 			GROUP BY event_date, product_id
 		),
 		product_scrolls AS (
@@ -66,23 +69,23 @@ func (c *Client) getProductEngagement(
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				REGEXP_EXTRACT(
 					(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-					r'/([0-9]+)/?$'
+					r'/(\d{10})/?$'
 				) AS product_id,
 				COUNTIF((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') >= 75
 					AND (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') < 100
 				) AS scroll_75,
-				COUNTIF((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') = 100
+				COUNTIF((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') IN (90, 100)
 				) AS scroll_100
 			FROM %[1]s
 			WHERE %[2]s
-				AND event_name = 'scroll_depth'
+				AND event_name IN ('scroll', 'scroll_depth')
 				AND REGEXP_CONTAINS(
 					IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), ''),
 					r'/product[s]?/'
 				)
 				AND REGEXP_EXTRACT(
 					(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-					r'/([0-9]+)/?$'
+					r'/(\d{10})/?$'
 				) IS NOT NULL
 			GROUP BY event_date, product_id
 		),
@@ -96,6 +99,49 @@ func (c *Client) getProductEngagement(
 				AND event_name = 'product_zoom'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 			GROUP BY event_date, product_id
+		),
+		product_time_on_page AS (
+			SELECT
+				event_date,
+				product_id,
+				AVG(visible_time) AS avg_visible_time_seconds
+			FROM (
+				SELECT
+					DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+					user_pseudo_id,
+					(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+					REGEXP_EXTRACT(
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
+						r'/(\d{10})/?$'
+					) AS product_id,
+					SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_seconds') AS FLOAT64) AS visible_time,
+					ROW_NUMBER() OVER (
+						PARTITION BY
+							DATE(TIMESTAMP_MICROS(event_timestamp)),
+							user_pseudo_id,
+							(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id'),
+							REGEXP_EXTRACT(
+								(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
+								r'/(\d{10})/?$'
+							)
+						ORDER BY event_timestamp DESC
+					) AS rn
+				FROM %[1]s
+				WHERE %[2]s
+					AND event_name = 'time_on_page'
+					AND REGEXP_CONTAINS(
+						IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), ''),
+						r'/product[s]?/'
+					)
+					AND REGEXP_EXTRACT(
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
+						r'/(\d{10})/?$'
+					) IS NOT NULL
+			)
+			WHERE rn = 1
+				AND visible_time IS NOT NULL
+				AND visible_time <= 1800
+			GROUP BY event_date, product_id
 		)
 		SELECT
 			pv.event_date,
@@ -104,7 +150,8 @@ func (c *Client) getProductEngagement(
 			pv.view_count AS image_views,
 			COALESCE(pz.zoom_count, 0) AS zoom_events,
 			COALESCE(ps.scroll_75, 0) AS scroll_75,
-			COALESCE(ps.scroll_100, 0) AS scroll_100
+			COALESCE(ps.scroll_100, 0) AS scroll_100,
+			COALESCE(pt.avg_visible_time_seconds, 0.0) AS avg_time_on_page_seconds
 		FROM product_views pv
 		LEFT JOIN product_scrolls ps
 			ON pv.event_date = ps.event_date
@@ -112,6 +159,9 @@ func (c *Client) getProductEngagement(
 		LEFT JOIN product_zoom_counts pz
 			ON pv.event_date = pz.event_date
 			AND pv.product_id = pz.product_id
+		LEFT JOIN product_time_on_page pt
+			ON pv.event_date = pt.event_date
+			AND pv.product_id = pt.product_id
 	`, src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)
@@ -130,13 +180,14 @@ func (c *Client) getProductEngagement(
 	var rows []entity.ProductEngagementMetric
 	for {
 		var r struct {
-			EventDate   civil.Date `bigquery:"event_date"`
-			ProductID   string    `bigquery:"product_id"`
-			ProductName string    `bigquery:"product_name"`
-			ImageViews  int64     `bigquery:"image_views"`
-			ZoomEvents  int64     `bigquery:"zoom_events"`
-			Scroll75    int64     `bigquery:"scroll_75"`
-			Scroll100   int64     `bigquery:"scroll_100"`
+			EventDate            civil.Date `bigquery:"event_date"`
+			ProductID            string     `bigquery:"product_id"`
+			ProductName          string     `bigquery:"product_name"`
+			ImageViews           int64      `bigquery:"image_views"`
+			ZoomEvents           int64      `bigquery:"zoom_events"`
+			Scroll75             int64      `bigquery:"scroll_75"`
+			Scroll100            int64      `bigquery:"scroll_100"`
+			AvgTimeOnPageSeconds float64    `bigquery:"avg_time_on_page_seconds"`
 		}
 		if err := it.Next(&r); err == iterator.Done {
 			break
@@ -144,13 +195,14 @@ func (c *Client) getProductEngagement(
 			return nil, fmt.Errorf("GetProductEngagement iterate: %w", err)
 		}
 		rows = append(rows, entity.ProductEngagementMetric{
-			Date:        civilDateToTime(r.EventDate),
-			ProductID:   r.ProductID,
-			ProductName: r.ProductName,
-			ImageViews:  ClampInt64(r.ImageViews),
-			ZoomEvents:  ClampInt64(r.ZoomEvents),
-			Scroll75:    ClampInt64(r.Scroll75),
-			Scroll100:   ClampInt64(r.Scroll100),
+			Date:                 civilDateToTime(r.EventDate),
+			ProductID:            r.ProductID,
+			ProductName:          r.ProductName,
+			ImageViews:           ClampInt64(r.ImageViews),
+			ZoomEvents:           ClampInt64(r.ZoomEvents),
+			Scroll75:             ClampInt64(r.Scroll75),
+			Scroll100:            ClampInt64(r.Scroll100),
+			AvgTimeOnPageSeconds: SanitizeFloat64(r.AvgTimeOnPageSeconds),
 		})
 	}
 	return rows, nil

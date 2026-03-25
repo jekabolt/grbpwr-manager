@@ -13,11 +13,13 @@ import (
 )
 
 // GetFunnelAnalysis runs a full 10-step ecommerce funnel query.
-// Enforces sequential funnel logic: users can only appear at step N if they completed step N-1.
+// Counts sessions (user_pseudo_id + ga_session_id) to match GA4's session definition.
+// Enforces sequential funnel logic: sessions can only appear at step N if they completed step N-1.
 // size_selected uses GREATEST(did_size_selected, did_add_to_cart) so that one-size products
 // (where the explicit size_selected event never fires) still count as passing the size step.
 // This keeps the funnel monotonically decreasing while not gating add_to_cart on size_selected.
-// Optimized to only scan required columns (user_pseudo_id, event_timestamp, event_name).
+// The first step counts all sessions with any funnel event (not just session_start events),
+// ensuring alignment with GA4 Data API session counts.
 func (c *Client) GetFunnelAnalysis(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -64,6 +66,7 @@ func (c *Client) buildFunnelAnalysisSQL(src string, startDate, endDate time.Time
 		WITH user_events AS (
 			SELECT
 				user_pseudo_id,
+				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				event_name
 			FROM %s
@@ -75,10 +78,11 @@ func (c *Client) buildFunnelAnalysisSQL(src string, startDate, endDate time.Time
 					'add_payment_info', 'purchase'
 				)
 		),
-		daily_user_events AS (
+		session_events AS (
 			SELECT
 				event_date,
 				user_pseudo_id,
+				session_id,
 				MAX(CASE WHEN event_name = 'session_start'      THEN 1 ELSE 0 END) AS did_session_start,
 				MAX(CASE WHEN event_name = 'view_item_list'     THEN 1 ELSE 0 END) AS did_view_item_list,
 				MAX(CASE WHEN event_name = 'select_item'        THEN 1 ELSE 0 END) AS did_select_item,
@@ -90,36 +94,36 @@ func (c *Client) buildFunnelAnalysisSQL(src string, startDate, endDate time.Time
 				MAX(CASE WHEN event_name = 'add_payment_info'   THEN 1 ELSE 0 END) AS did_add_payment_info,
 				MAX(CASE WHEN event_name = 'purchase'           THEN 1 ELSE 0 END) AS did_purchase
 			FROM user_events
-			GROUP BY event_date, user_pseudo_id
+			WHERE session_id IS NOT NULL
+			GROUP BY event_date, user_pseudo_id, session_id
 		),
 		sequential_funnel AS (
 			SELECT
 				event_date,
 				user_pseudo_id,
-				did_session_start,
-				CASE WHEN did_session_start = 1
-					THEN did_view_item_list ELSE 0 END AS seq_view_item_list,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1
+				session_id,
+				did_view_item_list AS seq_view_item_list,
+				CASE WHEN did_view_item_list = 1
 					THEN did_select_item ELSE 0 END AS seq_select_item,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1
 					THEN did_view_item ELSE 0 END AS seq_view_item,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
 					THEN GREATEST(did_size_selected, did_add_to_cart) ELSE 0 END AS seq_size_selected,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
 					THEN did_add_to_cart ELSE 0 END AS seq_add_to_cart,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1
 					THEN did_begin_checkout ELSE 0 END AS seq_begin_checkout,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1
 					THEN did_add_shipping_info ELSE 0 END AS seq_add_shipping_info,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1
 					THEN did_add_payment_info ELSE 0 END AS seq_add_payment_info,
-				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1 AND did_add_payment_info = 1
+				CASE WHEN did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1 AND did_add_payment_info = 1
 					THEN did_purchase ELSE 0 END AS seq_purchase
-			FROM daily_user_events
+			FROM session_events
 		)
 		SELECT
 			event_date,
-			COUNTIF(did_session_start = 1)       AS session_start_users,
+			COUNT(*)                             AS session_start_users,
 			COUNTIF(seq_view_item_list = 1)      AS view_item_list_users,
 			COUNTIF(seq_select_item = 1)         AS select_item_users,
 			COUNTIF(seq_view_item = 1)           AS view_item_users,
@@ -147,7 +151,7 @@ func (c *Client) getFunnelAnalysis(
 
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "user_pseudo_id", "event_timestamp", "event_name")
+	src, err := c.eventsSourceColumns(startDate, endDate, "user_pseudo_id", "event_timestamp", "event_params", "event_name")
 	if err != nil {
 		return nil, fmt.Errorf("GetFunnelAnalysis: %w", err)
 	}
@@ -226,7 +230,7 @@ func (c *Client) getFunnelAnalysisStream(
 
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "user_pseudo_id", "event_timestamp", "event_name")
+	src, err := c.eventsSourceColumns(startDate, endDate, "user_pseudo_id", "event_timestamp", "event_params", "event_name")
 	if err != nil {
 		return fmt.Errorf("GetFunnelAnalysisStream: %w", err)
 	}
@@ -601,6 +605,164 @@ func (c *Client) getHeroFunnel(
 		slog.String("query", "getHeroFunnel"),
 		slog.Int("rows_returned", len(rows)))
 	return rows, nil
+}
+
+// GetHeroFunnelAggregate returns period-level unique users for the hero funnel.
+// Unlike GetHeroFunnel which returns daily unique users, this counts each user_pseudo_id
+// only once across the entire period, providing accurate period-level metrics.
+func (c *Client) GetHeroFunnelAggregate(
+	ctx context.Context,
+	startDate, endDate time.Time,
+) (*entity.HeroFunnelAggregate, error) {
+	var result *entity.HeroFunnelAggregate
+	err := c.withCircuitBreaker(ctx, func(ctx context.Context) error {
+		agg, err := c.getHeroFunnelAggregate(ctx, startDate, endDate)
+		if err != nil {
+			return err
+		}
+		result = agg
+		return nil
+	})
+	return result, err
+}
+
+func (c *Client) getHeroFunnelAggregate(
+	ctx context.Context,
+	startDate, endDate time.Time,
+) (*entity.HeroFunnelAggregate, error) {
+	slog.Default().InfoContext(ctx, "bq hero funnel aggregate query start",
+		slog.String("query", "getHeroFunnelAggregate"),
+		slog.String("start_date", startDate.Format("2006-01-02")),
+		slog.String("end_date", endDate.Format("2006-01-02")),
+		slog.String("project_id", c.projectID),
+		slog.String("dataset_id", c.datasetID))
+
+	ctx, cancel := c.queryContext(ctx)
+	defer cancel()
+	scanEnd := endDate.AddDate(0, 0, heroFunnelPurchaseLookaheadDays)
+	src, err := c.eventsSourceColumns(startDate, scanEnd, "user_pseudo_id", "event_timestamp", "event_name", "event_params")
+	if err != nil {
+		return nil, fmt.Errorf("getHeroFunnelAggregate: %w", err)
+	}
+
+	var scanWhere, heroWhere, viewWhere string
+	if c.useLiteralDates {
+		scanWhere = fmt.Sprintf(
+			`DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE('%s') AND DATE('%s')`,
+			startDate.UTC().Format("2006-01-02"),
+			scanEnd.UTC().Format("2006-01-02"),
+		)
+		heroWhere = fmt.Sprintf(
+			`DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE('%s') AND DATE('%s')`,
+			startDate.UTC().Format("2006-01-02"),
+			endDate.UTC().Format("2006-01-02"),
+		)
+		viewWhere = fmt.Sprintf(
+			`DATE(TIMESTAMP_MICROS(r.event_timestamp)) BETWEEN DATE('%s') AND DATE('%s')`,
+			startDate.UTC().Format("2006-01-02"),
+			endDate.UTC().Format("2006-01-02"),
+		)
+	} else {
+		scanWhere = `DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE(@scan_start) AND DATE(@scan_end)`
+		heroWhere = `DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE(@out_start) AND DATE(@out_end)`
+		viewWhere = `DATE(TIMESTAMP_MICROS(r.event_timestamp)) BETWEEN DATE(@out_start) AND DATE(@out_end)`
+	}
+
+	// Groups by user_pseudo_id across the full period (not per date) so each user
+	// is counted at most once, giving true period-level unique user counts.
+	sql := fmt.Sprintf(`
+		WITH raw AS (
+			SELECT
+				user_pseudo_id,
+				event_timestamp,
+				event_name
+			FROM %s
+			WHERE %s
+				AND event_name IN ('hero_click', 'view_item', 'purchase')
+				AND (
+					event_name != 'purchase'
+					OR NOT (
+						COALESCE(
+							(SELECT ep.value.int_value FROM UNNEST(event_params) ep WHERE ep.key = 'server_side' LIMIT 1),
+							0
+						) = 1
+						OR LOWER(COALESCE(
+							(SELECT ep.value.string_value FROM UNNEST(event_params) ep WHERE ep.key = 'server_side' LIMIT 1),
+							''
+						)) IN ('true', '1')
+					)
+				)
+		),
+		hero AS (
+			SELECT
+				user_pseudo_id,
+				MIN(event_timestamp) AS first_hero_ts
+			FROM raw
+			WHERE event_name = 'hero_click'
+				AND %s
+			GROUP BY user_pseudo_id
+		),
+		user_funnel AS (
+			SELECT
+				h.user_pseudo_id,
+				EXISTS (
+					SELECT 1 FROM raw r
+					WHERE r.user_pseudo_id = h.user_pseudo_id
+						AND r.event_name = 'view_item'
+						AND r.event_timestamp >= h.first_hero_ts
+						AND %s
+				) AS after_view_item,
+				EXISTS (
+					SELECT 1 FROM raw r
+					WHERE r.user_pseudo_id = h.user_pseudo_id
+						AND r.event_name = 'purchase'
+						AND r.event_timestamp >= h.first_hero_ts
+						AND TIMESTAMP_MICROS(r.event_timestamp) <= TIMESTAMP_ADD(TIMESTAMP_MICROS(h.first_hero_ts), INTERVAL %d DAY)
+				) AS after_purchase
+			FROM hero h
+		)
+		SELECT
+			COUNT(*) AS hero_click_users,
+			COUNTIF(after_view_item) AS view_item_users,
+			COUNTIF(after_view_item AND after_purchase) AS purchase_users
+		FROM user_funnel
+	`, src, scanWhere, heroWhere, viewWhere, heroFunnelPurchaseLookaheadDays)
+
+	query := c.client.Query(sql)
+	if !c.useLiteralDates {
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "scan_start", Value: startDate},
+			{Name: "scan_end", Value: scanEnd},
+			{Name: "out_start", Value: startDate},
+			{Name: "out_end", Value: endDate},
+		}
+	}
+
+	it, err := query.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getHeroFunnelAggregate: %w", err)
+	}
+
+	var r struct {
+		HeroClickUsers int64 `bigquery:"hero_click_users"`
+		ViewItemUsers  int64 `bigquery:"view_item_users"`
+		PurchaseUsers  int64 `bigquery:"purchase_users"`
+	}
+	if err := it.Next(&r); err == iterator.Done {
+		return &entity.HeroFunnelAggregate{}, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("getHeroFunnelAggregate iterate: %w", err)
+	}
+
+	slog.Default().InfoContext(ctx, "bq hero funnel aggregate query done",
+		slog.String("query", "getHeroFunnelAggregate"),
+		slog.Int64("hero_click_users", r.HeroClickUsers))
+
+	return &entity.HeroFunnelAggregate{
+		HeroClickUsers: ClampInt64(r.HeroClickUsers),
+		ViewItemUsers:  ClampInt64(r.ViewItemUsers),
+		PurchaseUsers:  ClampInt64(r.PurchaseUsers),
+	}, nil
 }
 
 // GetAbandonedCart measures cart abandonment: add_to_cart users who never start checkout.

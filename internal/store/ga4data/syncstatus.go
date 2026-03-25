@@ -128,6 +128,30 @@ func (s *SyncStatusStore) GetAllSyncStatuses(ctx context.Context) ([]entity.Sync
 	return result, nil
 }
 
+// InvalidateBQAnalyticsSyncStatus sets success=false for all sync_type values prefixed with bq_
+// so metrics freshness treats BQ cache as stale until the next successful worker run.
+func (s *SyncStatusStore) InvalidateBQAnalyticsSyncStatus(ctx context.Context, reason string) (int64, error) {
+	query := `
+		UPDATE ga4_sync_status
+		SET success = 0,
+		    error_message = :reason,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE sync_type LIKE 'bq_%'
+	`
+	params := map[string]any{
+		"reason": reason,
+	}
+	result, err := s.DB.NamedExecContext(ctx, query, params)
+	if err != nil {
+		return 0, fmt.Errorf("invalidate BQ analytics sync status: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("get rows affected: %w", err)
+	}
+	return rowsAffected, nil
+}
+
 // DeleteOldAnalyticsData removes rows with date < olderThan from all GA4 and BQ cache tables.
 // Returns total rows deleted across all tables. Executes within a transaction to ensure atomicity.
 func (s *SyncStatusStore) DeleteOldAnalyticsData(ctx context.Context, olderThan time.Time) (int64, error) {

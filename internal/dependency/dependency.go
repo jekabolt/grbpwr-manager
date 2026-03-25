@@ -234,6 +234,8 @@ type (
 		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
+		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).
+		GetPeriodOrderCount(ctx context.Context, from, to time.Time) (int, error)
 	}
 
 	Support interface {
@@ -328,17 +330,18 @@ type (
 		GetBQExceptions(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ExceptionMetric, error)
 		GetBQNotFoundPages(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotFoundMetric, error)
 		GetBQHeroFunnel(ctx context.Context, from, to time.Time) ([]entity.HeroFunnelMetric, error)
+		SumBQHeroFunnel(ctx context.Context, from, to time.Time) (*entity.HeroFunnelAggregate, error)
 		GetBQSizeConfidence(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeConfidenceMetric, error)
 		GetBQPaymentRecovery(ctx context.Context, from, to time.Time) ([]entity.PaymentRecoveryMetric, error)
 		GetBQCheckoutTimings(ctx context.Context, from, to time.Time) ([]entity.CheckoutTimingMetric, error)
 		GetBQAddToCartRate(ctx context.Context, from, to time.Time, granularity entity.TrendGranularity, limit, offset int) (*entity.AddToCartRateAnalysis, error)
 		GetBQBrowserBreakdown(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.BrowserBreakdownRow, error)
-	GetBQNewsletter(ctx context.Context, from, to time.Time) ([]entity.NewsletterMetricRow, error)
-	GetBQAbandonedCart(ctx context.Context, from, to time.Time) ([]entity.AbandonedCartRow, error)
-	GetBQCampaignAttribution(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionRow, error)
-	GetBQCampaignAttributionBySourceMedium(ctx context.Context, from, to time.Time) ([]entity.CampaignAttributionAggregated, error)
-	GetBQCampaignAttributionAggregated(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionAggregatedFull, error)
-	GetBQTimeOnPage(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.TimeOnPageRow, error)
+		GetBQNewsletter(ctx context.Context, from, to time.Time) ([]entity.NewsletterMetricRow, error)
+		GetBQAbandonedCart(ctx context.Context, from, to time.Time) ([]entity.AbandonedCartRow, error)
+		GetBQCampaignAttribution(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionRow, error)
+		GetBQCampaignAttributionBySourceMedium(ctx context.Context, from, to time.Time) ([]entity.CampaignAttributionAggregated, error)
+		GetBQCampaignAttributionAggregated(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionAggregatedFull, error)
+		GetBQTimeOnPage(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.TimeOnPageRow, error)
 		GetBQProductZoom(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductZoomRow, error)
 		GetBQImageSwipes(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ImageSwipeRow, error)
 		GetBQSizeGuideClicks(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeGuideClickRow, error)
@@ -391,6 +394,9 @@ type (
 		GetGA4LastSyncDate(ctx context.Context, syncType string) (time.Time, error)
 		GetGA4MinLastSyncDate(ctx context.Context) (time.Time, error)
 		GetAllSyncStatuses(ctx context.Context) ([]entity.SyncSourceStatus, error)
+		// InvalidateBQAnalyticsSyncStatus sets success=false for all sync_type values prefixed with bq_
+		// so metrics freshness treats BQ cache as stale until the next successful worker run.
+		InvalidateBQAnalyticsSyncStatus(ctx context.Context, reason string) (rowsAffected int64, err error)
 		DeleteOldAnalyticsData(ctx context.Context, olderThan time.Time) (int64, error)
 	}
 

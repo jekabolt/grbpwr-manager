@@ -18,7 +18,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
 		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
 		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
-		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true),           // lower is better
+		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true), // lower is better
 		PromoUsageRate:                 metricWithComparisonToPb(m.PromoUsageRate),
 		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
 		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
@@ -30,7 +30,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		NewUsers:                       metricWithComparisonToPb(m.NewUsers),
 		PageViews:                      metricWithComparisonToPb(m.PageViews),
 		BounceRate:                     metricWithComparisonToPb(m.BounceRate, true), // lower is better
-		AvgSessionDuration:             metricWithComparisonToPb(m.AvgSessionDuration),
+		AvgSessionDuration:             metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // round to 1 decimal place for consistent delta display
 		PagesPerSession:                metricWithComparisonToPb(m.PagesPerSession),
 		ConversionRate:                 metricWithComparisonToPb(m.ConversionRate),
 		RevenuePerSession:              metricWithComparisonToPb(m.RevenuePerSession),
@@ -105,35 +105,100 @@ func timeRangeToPb(tr entity.TimeRange) *pb_admin.TimeRange {
 	}
 }
 
-func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...bool) *pb_admin.MetricWithComparison {
-	lowerIsBetter := len(opts) > 0 && opts[0]
-	roundToInt := len(opts) > 1 && opts[1]
-	// Always derive changePct from Value vs CompareValue when we have both (single source of truth)
-	var changePct float64
-	if m.CompareValue != nil && !m.CompareValue.IsZero() {
-		curr, prev := m.Value, *m.CompareValue
-		if roundToInt {
-			curr = curr.Round(0)
-			prev = prev.Round(0)
+// metricWithComparisonToPb converts entity.MetricWithComparison to protobuf.
+// Optional parameters (variadic):
+//   - opts[0] (bool): lowerIsBetter — when true, negative change is good (e.g., refund rate, bounce rate)
+//   - opts[1] (bool): roundToInt — when true, rounds values to 0 decimal places before computing delta
+//   - opts[2] (int32): roundToDecimalPlaces — when > 0, rounds values to N decimal places before computing delta (overrides roundToInt)
+func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_admin.MetricWithComparison {
+	lowerIsBetter := false
+	roundToInt := false
+	var roundToDecimalPlaces int32 = -1
+
+	if len(opts) > 0 {
+		if v, ok := opts[0].(bool); ok {
+			lowerIsBetter = v
 		}
-		if pct := computeChangePct(curr, prev); pct != nil {
+	}
+	if len(opts) > 1 {
+		if v, ok := opts[1].(bool); ok {
+			roundToInt = v
+		}
+	}
+	if len(opts) > 2 {
+		if v, ok := opts[2].(int32); ok {
+			roundToDecimalPlaces = v
+		}
+	}
+
+	// Apply rounding to match display precision
+	displayValue := m.Value
+	var displayCompareValue *shopspring.Decimal
+	if m.CompareValue != nil {
+		cv := *m.CompareValue
+		displayCompareValue = &cv
+	}
+	
+	var decimalPlaces int32 = -1
+	if roundToDecimalPlaces >= 0 {
+		decimalPlaces = roundToDecimalPlaces
+		displayValue = displayValue.Round(roundToDecimalPlaces)
+		if displayCompareValue != nil {
+			rounded := displayCompareValue.Round(roundToDecimalPlaces)
+			displayCompareValue = &rounded
+		}
+	} else if roundToInt {
+		decimalPlaces = 0
+		displayValue = displayValue.Round(0)
+		if displayCompareValue != nil {
+			rounded := displayCompareValue.Round(0)
+			displayCompareValue = &rounded
+		}
+	}
+
+	// Always derive changePct from displayValue vs displayCompareValue (ensures consistency with displayed numbers)
+	var changePct float64
+	var changeAbsolute float64
+	if displayCompareValue != nil && !displayCompareValue.IsZero() {
+		if pct := computeChangePct(displayValue, *displayCompareValue); pct != nil {
 			changePct = *pct
 		} else {
 			// e.g. Float64 inexact on diff — use store-computed pct
 			changePct = ptrFloat64ToVal(m.ChangePct)
 		}
+		// Compute absolute delta (current - previous) for all metrics
+		changeAbsolute = displayValue.Sub(*displayCompareValue).Round(2).InexactFloat64()
 	} else {
 		changePct = ptrFloat64ToVal(m.ChangePct)
 	}
-	pb := &pb_admin.MetricWithComparison{
-		Value:     &decimal.Decimal{Value: m.Value.String()},
-		ChangePct: changePct,
+	
+	// Format decimal strings with fixed precision when rounding was applied (preserves trailing zeros)
+	var valueStr, compareValueStr string
+	if decimalPlaces >= 0 {
+		valueStr = displayValue.StringFixed(decimalPlaces)
+		if displayCompareValue != nil {
+			compareValueStr = displayCompareValue.StringFixed(decimalPlaces)
+		}
+	} else {
+		valueStr = displayValue.String()
+		if displayCompareValue != nil {
+			compareValueStr = displayCompareValue.String()
+		}
 	}
-	if m.CompareValue != nil {
-		pb.CompareValue = &decimal.Decimal{Value: m.CompareValue.String()}
+	
+	pb := &pb_admin.MetricWithComparison{
+		Value:          &decimal.Decimal{Value: valueStr},
+		ChangePct:      changePct,
+		ChangeAbsolute: changeAbsolute,
+	}
+	if displayCompareValue != nil {
+		pb.CompareValue = &decimal.Decimal{Value: compareValueStr}
 	}
 	if lowerIsBetter {
 		pb.LowerIsBetter = true
+	}
+	if m.Caveat != "" {
+		pb.Caveat = m.Caveat
 	}
 	return pb
 }
@@ -304,9 +369,10 @@ func statusCountsToPb(list []entity.StatusCount) []*pb_admin.StatusCount {
 
 func clvStatsToPb(c entity.CLVStats) *pb_admin.CLVStats {
 	return &pb_admin.CLVStats{
-		Mean:   &decimal.Decimal{Value: c.Mean.String()},
-		Median: &decimal.Decimal{Value: c.Median.String()},
-		P90:    &decimal.Decimal{Value: c.P90.String()},
+		Mean:       &decimal.Decimal{Value: c.Mean.String()},
+		Median:     &decimal.Decimal{Value: c.Median.String()},
+		P90:        &decimal.Decimal{Value: c.P90.String()},
+		SampleSize: int32(c.SampleSize),
 	}
 }
 

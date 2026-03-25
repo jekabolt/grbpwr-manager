@@ -49,7 +49,10 @@ func (c *Client) getWebVitals(
 				user_pseudo_id,
 				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
 				event_name,
-				(SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'value') AS metric_value,
+				COALESCE(
+					(SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'value'),
+					(SELECT CAST(value.int_value AS FLOAT64) FROM UNNEST(event_params) WHERE key = 'value')
+				) AS metric_value,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'metric_rating') AS metric_rating
 			FROM %s
 			WHERE %s
@@ -447,6 +450,7 @@ func (c *Client) getBrowserBreakdown(
 }
 
 // GetNewsletterSignups returns newsletter_signup events aggregated per day.
+// signup_count is raw events; unique_users is COUNT(DISTINCT user_pseudo_id) for that day (not email dedupe; same person can generate multiple events).
 func (c *Client) GetNewsletterSignups(
 	ctx context.Context,
 	startDate, endDate time.Time,

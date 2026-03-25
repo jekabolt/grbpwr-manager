@@ -57,6 +57,8 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN daily_sales ds ON ds.product_id = ps.product_id AND ds.size_id = ps.size_id
 		WHERE ps.quantity > 0
+			AND p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY days_on_hand ASC
 		LIMIT :limit
 	`, statusIDs)
@@ -118,6 +120,8 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 		FROM size_analysis sa
 		JOIN product p ON p.id = sa.product_id
 		WHERE sa.initial_qty > 0
+			AND p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 		GROUP BY sa.product_id, product_name
 		ORDER BY efficiency_pct DESC
 		LIMIT :limit

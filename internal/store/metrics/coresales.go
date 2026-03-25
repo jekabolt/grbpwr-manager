@@ -179,3 +179,24 @@ func (s *Store) getPromoUsageCount(ctx context.Context, from, to time.Time) (int
 	}
 	return r.N, nil
 }
+
+func (s *Store) GetPeriodOrderCount(ctx context.Context, from, to time.Time) (int, error) {
+	query := `
+		SELECT COUNT(*) AS cnt
+		FROM customer_order
+		WHERE placed >= :from AND placed < :to
+		AND order_status_id IN (:statusIds)
+	`
+	type row struct {
+		Cnt int `db:"cnt"`
+	}
+	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{
+		"from":      from,
+		"to":        to,
+		"statusIds": cache.OrderStatusIDsForNetRevenue(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return r.Cnt, nil
+}

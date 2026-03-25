@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -27,7 +28,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 
 	endAt := time.Now().UTC()
 	if req.EndAt != nil {
-		endAt = req.EndAt.AsTime()
+		endAt = req.EndAt.AsTime().UTC()
 	}
 
 	periodTo := endAt
@@ -91,9 +92,22 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get daily funnel", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get daily funnel")
 		}
+
+		dbOrders, ga4Sessions := funnelReconciliation(ctx, s.repo, from, to)
+
+		var caveat string
+		if agg != nil && (dbOrders > int64(agg.PurchaseUsers) || ga4Sessions > 0 && ga4Sessions != agg.SessionStartUsers) {
+			caveat = "Funnel purchase count is GA4 session-scoped (requires all sequential steps); " +
+				"DB orders count all placed orders. Session start counts BQ raw events which may " +
+				"differ from GA4 API sessions due to bot filtering and event deduplication."
+		}
+
 		resp.Funnel = &pb_admin.FunnelSection{
-			Aggregate: dto.ConvertFunnelAggregateToPb(agg),
-			Daily:     dto.ConvertDailyFunnelsToPb(daily),
+			Aggregate:     dto.ConvertFunnelAggregateToPb(agg),
+			Daily:         dto.ConvertDailyFunnelsToPb(daily),
+			DbOrdersCount: dbOrders,
+			Ga4Sessions:   ga4Sessions,
+			Caveat:        caveat,
 		}
 	}
 
@@ -295,6 +309,11 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get size run efficiency", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get size run efficiency")
 		}
+		slog.Default().DebugContext(ctx, "size run efficiency query",
+			slog.Time("from", from),
+			slog.Time("to", to),
+			slog.Int("limit", limit),
+			slog.Int("result_count", len(items)))
 		resp.SizeRunEfficiency = dto.ConvertSizeRunEfficiencyToPb(items)
 	}
 
@@ -564,6 +583,27 @@ func buildBubbleMatrix(items []entity.ProductEngagementMetric) *entity.ProductEn
 			AvgTimeOnPageSeconds: avgOverallTime,
 		},
 	}
+}
+
+// funnelReconciliation fetches DB order count and GA4 session count for the funnel
+// period so the UI can reconcile with BQ-sourced funnel metrics. Errors are logged
+// but non-fatal — zero values are returned on failure.
+func funnelReconciliation(ctx context.Context, repo dependency.Repository, from, to time.Time) (dbOrders, ga4Sessions int64) {
+	if cnt, err := repo.Metrics().GetPeriodOrderCount(ctx, from, to); err != nil {
+		slog.Default().WarnContext(ctx, "funnel: failed to get DB order count", slog.String("err", err.Error()))
+	} else {
+		dbOrders = int64(cnt)
+	}
+
+	ga4Daily, err := repo.GA4Data().GetGA4DailyMetrics(ctx, from, to)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "funnel: failed to get GA4 daily metrics", slog.String("err", err.Error()))
+	} else {
+		for _, d := range ga4Daily {
+			ga4Sessions += int64(d.Sessions)
+		}
+	}
+	return dbOrders, ga4Sessions
 }
 
 // parseMetricsPeriod parses "7d", "30d", "90d" or ISO8601 duration (e.g. P7D, P30D) into time.Duration.

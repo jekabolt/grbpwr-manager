@@ -110,12 +110,11 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 	query := fmt.Sprintf(`
 		WITH order_base AS (
 			SELECT ob.id, ob.placed,
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
+				(ob.items_list_price + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -150,18 +149,19 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 	return result, nil
 }
 
-// getGrossRevenueTotal matches the sum of getGrossRevenueByPeriod (pre-refund subtotals in base currency).
+// getGrossRevenueTotal returns total revenue at list prices (before any discounts or refunds) + shipping.
+// This is the true "gross" revenue: items_list_price + shipping, before product sale discounts,
+// promo code discounts, or refunds are applied. Matches the sum of getGrossRevenueByPeriod.
 func (s *Store) getGrossRevenueTotal(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		WITH order_base AS (
 			SELECT
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
+				(ob.items_list_price + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
 			FROM (
 				SELECT co.id,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(pp_base.price * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -180,7 +180,7 @@ func (s *Store) getGrossRevenueTotal(ctx context.Context, from, to time.Time) (d
 	type row struct {
 		Total decimal.Decimal `db:"total"`
 	}
-	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForRefund()})
 	if err != nil {
 		return decimal.Zero, err
 	}

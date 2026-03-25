@@ -119,7 +119,9 @@ func (c *Client) getTimeOnPage(
 	return rows, nil
 }
 
-// GetProductZoom returns product zoom interactions per day
+// GetProductZoom returns product zoom interactions per day.
+// Deduplicates events within 2 seconds per user/product/method to mitigate
+// frontend over-firing (e.g., firing on every zoom animation frame).
 func (c *Client) GetProductZoom(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -142,21 +144,43 @@ func (c *Client) getProductZoom(
 ) ([]entity.ProductZoomRow, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name", "items")
 	if err != nil {
 		return nil, fmt.Errorf("GetProductZoom: %w", err)
 	}
 
 	sql := fmt.Sprintf(`
-		WITH zoom_events AS (
+		WITH raw_zoom_events AS (
 			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				event_timestamp,
+				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'zoom_method'), 'unknown') AS zoom_method
 			FROM %s
 			WHERE %s
 				AND event_name = 'product_zoom'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
+		),
+		ranked_zooms AS (
+			SELECT
+				event_timestamp,
+				user_pseudo_id,
+				product_id,
+				zoom_method,
+				LAG(event_timestamp) OVER (
+					PARTITION BY user_pseudo_id, product_id, zoom_method 
+					ORDER BY event_timestamp
+				) AS prev_timestamp
+			FROM raw_zoom_events
+		),
+		deduplicated_zooms AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				product_id,
+				zoom_method
+			FROM ranked_zooms
+			WHERE prev_timestamp IS NULL
+				OR (event_timestamp - prev_timestamp) > 2000000
 		),
 		product_names AS (
 			SELECT DISTINCT
@@ -173,7 +197,7 @@ func (c *Client) getProductZoom(
 			COALESCE(pn.product_name, z.product_id) AS product_name,
 			z.zoom_method,
 			COUNT(*) AS zoom_count
-		FROM zoom_events z
+		FROM deduplicated_zooms z
 		LEFT JOIN product_names pn ON pn.product_id = z.product_id
 		GROUP BY z.event_date, z.product_id, product_name, z.zoom_method
 		ORDER BY z.event_date, zoom_count DESC
@@ -217,7 +241,9 @@ func (c *Client) getProductZoom(
 	return rows, nil
 }
 
-// GetImageSwipes returns image swipe interactions per day
+// GetImageSwipes returns image swipe interactions per day.
+// Deduplicates events within 2 seconds per user/product/direction to mitigate
+// frontend over-firing (e.g., firing on every scroll tick instead of once per swipe).
 func (c *Client) GetImageSwipes(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -240,21 +266,43 @@ func (c *Client) getImageSwipes(
 ) ([]entity.ImageSwipeRow, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name", "items")
 	if err != nil {
 		return nil, fmt.Errorf("GetImageSwipes: %w", err)
 	}
 
 	sql := fmt.Sprintf(`
-		WITH swipe_events AS (
+		WITH raw_swipe_events AS (
 			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				event_timestamp,
+				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'swipe_direction'), 'unknown') AS swipe_direction
 			FROM %s
 			WHERE %s
 				AND event_name = 'product_image_swipe'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
+		),
+		ranked_swipes AS (
+			SELECT
+				event_timestamp,
+				user_pseudo_id,
+				product_id,
+				swipe_direction,
+				LAG(event_timestamp) OVER (
+					PARTITION BY user_pseudo_id, product_id, swipe_direction 
+					ORDER BY event_timestamp
+				) AS prev_timestamp
+			FROM raw_swipe_events
+		),
+		deduplicated_swipes AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				product_id,
+				swipe_direction
+			FROM ranked_swipes
+			WHERE prev_timestamp IS NULL
+				OR (event_timestamp - prev_timestamp) > 2000000
 		),
 		product_names AS (
 			SELECT DISTINCT
@@ -271,7 +319,7 @@ func (c *Client) getImageSwipes(
 			COALESCE(pn.product_name, s.product_id) AS product_name,
 			s.swipe_direction,
 			COUNT(*) AS swipe_count
-		FROM swipe_events s
+		FROM deduplicated_swipes s
 		LEFT JOIN product_names pn ON pn.product_id = s.product_id
 		GROUP BY s.event_date, s.product_id, product_name, s.swipe_direction
 		ORDER BY s.event_date, swipe_count DESC
@@ -511,7 +559,9 @@ func (c *Client) getDetailsExpansion(
 	return rows, nil
 }
 
-// GetNotifyMeIntent returns notify-me intent events per day with conversion rate
+// GetNotifyMeIntent returns notify-me intent events per day with conversion rate.
+// Deduplicates events within 2 seconds per user/product/action to mitigate
+// frontend over-firing (e.g., firing multiple times on modal open/close).
 func (c *Client) GetNotifyMeIntent(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -534,21 +584,43 @@ func (c *Client) getNotifyMeIntent(
 ) ([]entity.NotifyMeIntentRow, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name", "items")
 	if err != nil {
 		return nil, fmt.Errorf("GetNotifyMeIntent: %w", err)
 	}
 
 	sql := fmt.Sprintf(`
-		WITH notify_events AS (
+		WITH raw_notify_events AS (
 			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				event_timestamp,
+				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'action'), 'unknown') AS action
 			FROM %s
 			WHERE %s
-				AND event_name = 'notify_me_action'
+				AND event_name = 'notify_me_intent'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
+		),
+		ranked_notify AS (
+			SELECT
+				event_timestamp,
+				user_pseudo_id,
+				product_id,
+				action,
+				LAG(event_timestamp) OVER (
+					PARTITION BY user_pseudo_id, product_id, action 
+					ORDER BY event_timestamp
+				) AS prev_timestamp
+			FROM raw_notify_events
+		),
+		deduplicated_notify AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				product_id,
+				action
+			FROM ranked_notify
+			WHERE prev_timestamp IS NULL
+				OR (event_timestamp - prev_timestamp) > 2000000
 		),
 		product_names AS (
 			SELECT DISTINCT
@@ -566,7 +638,7 @@ func (c *Client) getNotifyMeIntent(
 				COALESCE(pn.product_name, ne.product_id) AS product_name,
 				ne.action,
 				COUNT(*) AS count
-			FROM notify_events ne
+			FROM deduplicated_notify ne
 			LEFT JOIN product_names pn ON pn.product_id = ne.product_id
 			GROUP BY ne.event_date, ne.product_id, product_name, ne.action
 		),

@@ -500,6 +500,37 @@ func (s *ReadStore) GetBQHeroFunnel(ctx context.Context, from, to time.Time) ([]
 	return result, nil
 }
 
+// SumBQHeroFunnel returns the period-level sum of hero funnel metrics from the cached daily data.
+// Note: summing daily unique users over-counts users who appear on multiple days.
+// Use alongside the daily breakdown for the HeroFunnelSection response.
+func (s *ReadStore) SumBQHeroFunnel(ctx context.Context, from, to time.Time) (*entity.HeroFunnelAggregate, error) {
+	query := `
+		SELECT
+			COALESCE(SUM(hero_click_users), 0) AS hero_click_users,
+			COALESCE(SUM(view_item_users), 0) AS view_item_users,
+			COALESCE(SUM(purchase_users), 0) AS purchase_users
+		FROM bq_hero_funnel
+		WHERE date >= :fromDate AND date <= :toDate
+	`
+	type row struct {
+		HeroClickUsers int64 `db:"hero_click_users"`
+		ViewItemUsers  int64 `db:"view_item_users"`
+		PurchaseUsers  int64 `db:"purchase_users"`
+	}
+	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{
+		"fromDate": from.Format("2006-01-02"),
+		"toDate":   to.Format("2006-01-02"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sum bq hero funnel: %w", err)
+	}
+	return &entity.HeroFunnelAggregate{
+		HeroClickUsers: r.HeroClickUsers,
+		ViewItemUsers:  r.ViewItemUsers,
+		PurchaseUsers:  r.PurchaseUsers,
+	}, nil
+}
+
 func (s *ReadStore) GetBQSizeConfidence(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeConfidenceMetric, error) {
 	page := storeutil.BQPageParams{Limit: limit, Offset: offset}
 	query := `

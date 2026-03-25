@@ -667,6 +667,20 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.TotalRefunded.ChangePct = changePct(revRefund, cRevRefund)
 		m.TotalDiscount.CompareValue = &cTotalDiscount
 		m.TotalDiscount.ChangePct = changePct(totalDiscount, cTotalDiscount)
+		
+		// When previous period had zero discounts, gross revenue and net revenue baselines are identical.
+		// Add caveat to clarify this is correct data, not a display error.
+		if cTotalDiscount.IsZero() && !totalDiscount.IsZero() {
+			m.GrossRevenue.Caveat = "Gross revenue before discounts; previous period had no active discounts."
+		}
+		
+		// Add caveat when gross revenue includes fully refunded orders (status=Refunded).
+		// This clarifies that gross revenue is calculated at list prices before any refunds are applied.
+		if grossRev.GreaterThan(decimal.Zero) && revRefund.GreaterThan(decimal.Zero) {
+			if m.GrossRevenue.Caveat == "" {
+				m.GrossRevenue.Caveat = "Gross revenue at list prices before discounts/refunds. Includes original value of fully refunded orders. Net revenue = Gross - Refunds - Discounts."
+			}
+		}
 		m.ProductSaleDiscount.CompareValue = &cProductSaleDiscount
 		m.ProductSaleDiscount.ChangePct = changePct(productSaleDiscount, cProductSaleDiscount)
 		m.PromoCodeDiscount.CompareValue = &cPromoCodeDiscount
@@ -689,6 +703,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.EmailOpenRate.Value = decimal.NewFromFloat(emailSummary.OpenRate)
 		m.EmailClickRate.Value = decimal.NewFromFloat(emailSummary.ClickRate)
 		m.EmailBounceRate.Value = decimal.NewFromFloat(emailSummary.BounceRate)
+
+		// Data quality caveat: open tracking relies on pixel loading (blocked by privacy features like Apple Mail Privacy Protection),
+		// while click tracking is more reliable (redirect links). If we have clicks but zero or very low opens, flag it.
+		if emailSummary.TotalDelivered > 0 && emailSummary.TotalClicked > 0 && emailSummary.OpenRate < 10.0 {
+			m.EmailOpenRate.Caveat = "Open rate may be underreported due to email privacy features blocking tracking pixels. Click rate is more reliable."
+			m.EmailClickRate.Caveat = "Click rate is reliable. Low open rate is likely due to privacy-driven pixel blocking, not actual engagement."
+		}
 	}
 	if hasCompare && cEmailSummary != nil {
 		cEmailsSent := decimal.NewFromInt(int64(cEmailSummary.TotalSent))

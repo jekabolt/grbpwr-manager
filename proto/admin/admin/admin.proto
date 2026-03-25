@@ -647,6 +647,14 @@ message GetMetricsResponse {
 message FunnelSection {
   FunnelAggregate aggregate = 1;
   repeated DailyFunnel daily = 2;
+  // DB-sourced order count for the same period; reconcile with aggregate.purchase_users
+  // (GA4 session-scoped) to surface tracking gaps.
+  int64 db_orders_count = 3;
+  // GA4 Data API session count for the same period; reconcile with aggregate.session_start_users
+  // (BQ raw event-scoped) to surface counting methodology differences.
+  int64 ga4_sessions = 4;
+  // Human-readable note explaining known discrepancies between funnel and overview metrics.
+  string caveat = 5;
 }
 
 message BusinessMetrics {
@@ -661,6 +669,9 @@ message BusinessMetrics {
   // Share of orders with a promo_code attached (customer_order.promo_id). Unrelated to total_discount
   // when discounts come only from product sale percentages — see product_sale_discount / promo_code_discount.
   MetricWithComparison promo_usage_rate = 7;
+  // Gross revenue at list prices (before any discounts or refunds) + shipping.
+  // Includes original order value of fully refunded orders (status=Refunded).
+  // Revenue = GrossRevenue - ProductSaleDiscount - PromoCodeDiscount - TotalRefunded.
   MetricWithComparison gross_revenue = 39;
   MetricWithComparison total_refunded = 40;
   // Sum of product_sale_discount + promo_code_discount (base currency, net-revenue order statuses).
@@ -769,6 +780,11 @@ message MetricWithComparison {
   double change_pct = 3;
   // When true, a negative change is good (e.g. refund rate, bounce rate). Frontend should show green for decrease, red for increase.
   bool lower_is_better = 4;
+  // Absolute delta (current - previous) for rate metrics. For percentage/ratio metrics, this is the percentage point change (e.g., 5.0% → 3.0% = -2.0 pp).
+  // Frontend should prefer displaying this over change_pct for rate metrics to avoid misleading "rate-of-rates" semantics.
+  double change_absolute = 5;
+  // Optional tooltip/caveat text to clarify metric interpretation (e.g., data limitations, calculation notes).
+  string caveat = 6;
 }
 
 message GeographyMetric {
@@ -832,6 +848,7 @@ message CLVStats {
   google.type.Decimal mean = 1;
   google.type.Decimal median = 2;
   google.type.Decimal p90 = 3;
+  int32 sample_size = 4;
 }
 
 message TimeSeriesPoint {

@@ -40,6 +40,8 @@ type BusinessMetrics struct {
 	ItemsPerOrder  MetricWithComparison
 	RefundRate     MetricWithComparison
 	PromoUsageRate MetricWithComparison
+	// GrossRevenue is revenue at list prices (before any discounts or refunds) + shipping.
+	// Revenue = GrossRevenue - ProductSaleDiscount - PromoCodeDiscount - TotalRefunded.
 	GrossRevenue   MetricWithComparison
 	TotalRefunded  MetricWithComparison
 	TotalDiscount  MetricWithComparison
@@ -165,6 +167,7 @@ type MetricWithComparison struct {
 	Value        decimal.Decimal
 	CompareValue *decimal.Decimal
 	ChangePct    *float64
+	Caveat       string
 }
 
 type GeographyMetric struct {
@@ -227,9 +230,10 @@ type StatusCount struct {
 }
 
 type CLVStats struct {
-	Mean   decimal.Decimal
-	Median decimal.Decimal
-	P90    decimal.Decimal
+	Mean       decimal.Decimal
+	Median     decimal.Decimal
+	P90        decimal.Decimal
+	SampleSize int
 }
 
 type TimeSeriesPoint struct {
@@ -369,6 +373,12 @@ type NotFoundMetric struct {
 
 type HeroFunnelMetric struct {
 	Date           time.Time
+	HeroClickUsers int64
+	ViewItemUsers  int64
+	PurchaseUsers  int64
+}
+
+type HeroFunnelAggregate struct {
 	HeroClickUsers int64
 	ViewItemUsers  int64
 	PurchaseUsers  int64

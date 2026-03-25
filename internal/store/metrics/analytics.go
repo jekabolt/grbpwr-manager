@@ -145,6 +145,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 		JOIN product p ON p.id = s.product_id
 		LEFT JOIN returned_by_reason r ON r.product_id = s.product_id
 		WHERE p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY s.total_sold DESC, p.id, r.refund_reason
 	`, statusIDs)
 
@@ -294,6 +295,8 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 		JOIN product p ON p.id = ss.product_id
 		JOIN size s ON s.id = ss.size_id
 		JOIN product_totals pt ON pt.product_id = ss.product_id
+		WHERE p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY ss.revenue DESC
 		LIMIT :limit
 	`, statusIDs)
@@ -365,6 +368,8 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN last_sales ls ON ls.product_id = ps.product_id AND ls.size_id = ps.size_id
 		WHERE ps.quantity > 0
+			AND p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 			AND DATEDIFF(:to, COALESCE(ls.last_sale_date, p.created_at)) > 180
 		ORDER BY days_without_sale DESC
 		LIMIT :limit
@@ -438,6 +443,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		FROM current_period c
 		LEFT JOIN previous_period pr ON pr.product_id = c.product_id
 		JOIN product p ON p.id = COALESCE(c.product_id, pr.product_id)
+		WHERE p.deleted_at IS NULL AND (p.hidden IS NULL OR p.hidden = 0)
 		UNION ALL
 		SELECT
 			pr.product_id,
@@ -451,6 +457,8 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		LEFT JOIN current_period c ON c.product_id = pr.product_id
 		JOIN product p ON p.id = pr.product_id
 		WHERE c.product_id IS NULL
+			AND p.deleted_at IS NULL
+			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY change_pct ASC
 		LIMIT :limit
 	`, statusIDs)
