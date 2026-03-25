@@ -46,7 +46,7 @@ func (c *Client) getProductEngagement(
 ) ([]entity.ProductEngagementMetric, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name", "items")
 	if err != nil {
 		return nil, fmt.Errorf("GetProductEngagement: %w", err)
 	}
