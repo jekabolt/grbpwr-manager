@@ -13,9 +13,10 @@ type DailyMetrics struct {
 	Users              int
 	NewUsers           int
 	PageViews          int
-	BounceRate         float64
-	AvgSessionDuration float64
-	PagesPerSession    float64
+	BounceRate              float64 // percentage (0-100), not ratio (0-1)
+	AvgSessionDuration      float64 // seconds
+	UserEngagementSeconds   int64   // total foreground engagement seconds
+	PagesPerSession         float64
 }
 
 // ProductPageMetrics represents GA4 metrics for a specific product page.

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	curr "github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -218,4 +219,9 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 // SetReservationManager sets the stock reservation manager for this processor
 func (p *Processor) SetReservationManager(mgr dependency.StockReservationManager) {
 	p.reservationMgr = mgr
+}
+
+// SetGA4MP sets the GA4 Measurement Protocol client for server-side purchase tracking
+func (p *Processor) SetGA4MP(c *ga4mp.Client) {
+	p.ga4mp = c
 }

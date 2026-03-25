@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -17,10 +18,10 @@ import (
 // property_id 299206603
 // Config holds GA4 client configuration.
 type Config struct {
-	PropertyID      string                   `mapstructure:"property_id"`
-	CredentialsJSON string                   `mapstructure:"credentials_json"` // path to service account JSON file, or raw JSON (for env vars)
-	Enabled         bool                     `mapstructure:"enabled"`
-	CircuitBreaker  circuitbreaker.Config    `mapstructure:"circuit_breaker"`
+	PropertyID      string                `mapstructure:"property_id"`
+	CredentialsJSON string                `mapstructure:"credentials_json"` // path to service account JSON file, or raw JSON (for env vars)
+	Enabled         bool                  `mapstructure:"enabled"`
+	CircuitBreaker  circuitbreaker.Config `mapstructure:"circuit_breaker"`
 }
 
 // Client wraps the GA4 Data API client.
@@ -112,6 +113,7 @@ func (c *Client) getDailyMetrics(ctx context.Context, startDate, endDate time.Ti
 			{Name: "bounceRate"},
 			{Name: "averageSessionDuration"},
 			{Name: "screenPageViewsPerSession"},
+			{Name: "userEngagementDuration"},
 		},
 		OrderBys: []*analyticsdata.OrderBy{
 			{
@@ -126,9 +128,16 @@ func (c *Client) getDailyMetrics(ctx context.Context, startDate, endDate time.Ti
 		return nil, fmt.Errorf("failed to run GA4 report: %w", err)
 	}
 
+	idx, hasEngagement, ok := resolveGA4DailyIndices(resp.MetricHeaders)
+	if !ok {
+		return nil, fmt.Errorf("GA4 daily metrics: unexpected metric headers in response")
+	}
+	mh := resp.MetricHeaders
+	maxCol := idx.maxMetricCol(hasEngagement)
+
 	var metrics []DailyMetrics
 	for _, row := range resp.Rows {
-		if len(row.DimensionValues) == 0 || len(row.MetricValues) < 7 {
+		if len(row.DimensionValues) == 0 || len(row.MetricValues) <= maxCol {
 			continue
 		}
 
@@ -141,15 +150,30 @@ func (c *Client) getDailyMetrics(ctx context.Context, startDate, endDate time.Ti
 			continue
 		}
 
+		sessions := parseInt(row.MetricValues[idx.sessions].Value)
+		wallSec := metricValueToSeconds(
+			row.MetricValues[idx.averageSessionDuration].Value,
+			metricHeaderAt(mh, idx.averageSessionDuration),
+		)
+		var engagementTotalSec float64
+		if hasEngagement {
+			engagementTotalSec = metricValueToSeconds(
+				row.MetricValues[idx.userEngagementDuration].Value,
+				metricHeaderAt(mh, idx.userEngagementDuration),
+			)
+		}
 		m := DailyMetrics{
-			Date:               date,
-			Sessions:           parseInt(row.MetricValues[0].Value),
-			Users:              parseInt(row.MetricValues[1].Value),
-			NewUsers:           parseInt(row.MetricValues[2].Value),
-			PageViews:          parseInt(row.MetricValues[3].Value),
-			BounceRate:         parseFloat(row.MetricValues[4].Value),
-			AvgSessionDuration: parseFloat(row.MetricValues[5].Value),
-			PagesPerSession:    parseFloat(row.MetricValues[6].Value),
+			Date:       date,
+			Sessions:   sessions,
+			Users:      parseInt(row.MetricValues[idx.totalUsers].Value),
+			NewUsers:   parseInt(row.MetricValues[idx.newUsers].Value),
+			PageViews:  parseInt(row.MetricValues[idx.screenPageViews].Value),
+			BounceRate: parseFloat(row.MetricValues[idx.bounceRate].Value) * 100,
+			AvgSessionDuration: avgSessionDurationForStorage(
+				sessions, wallSec, engagementTotalSec, hasEngagement,
+			),
+			UserEngagementSeconds: int64(math.Round(engagementTotalSec)),
+			PagesPerSession:       parseFloat(row.MetricValues[idx.screenPageViewsPerSession].Value),
 		}
 		metrics = append(metrics, m)
 	}
@@ -317,6 +341,111 @@ func (c *Client) getCountryMetrics(ctx context.Context, startDate, endDate time.
 	}
 
 	return metrics, nil
+}
+
+// ga4DailyMetricIdx holds column indices for RunReport metric columns (by header
+// name when present, else fixed positions matching our request order).
+type ga4DailyMetricIdx struct {
+	sessions, totalUsers, newUsers, screenPageViews                                       int
+	bounceRate, averageSessionDuration, screenPageViewsPerSession, userEngagementDuration int
+}
+
+func ga4MetricNameIndex(headers []*analyticsdata.MetricHeader) map[string]int {
+	m := make(map[string]int, len(headers))
+	for i, h := range headers {
+		if h != nil && h.Name != "" {
+			m[h.Name] = i
+		}
+	}
+	return m
+}
+
+func resolveGA4DailyIndices(headers []*analyticsdata.MetricHeader) (idx ga4DailyMetricIdx, hasEngagement bool, ok bool) {
+	if len(headers) == 0 {
+		return ga4DailyMetricIdx{
+			sessions: 0, totalUsers: 1, newUsers: 2, screenPageViews: 3,
+			bounceRate: 4, averageSessionDuration: 5, screenPageViewsPerSession: 6, userEngagementDuration: 7,
+		}, true, true
+	}
+	n := ga4MetricNameIndex(headers)
+	must := []string{"sessions", "totalUsers", "newUsers", "screenPageViews", "bounceRate", "averageSessionDuration", "screenPageViewsPerSession"}
+	for _, name := range must {
+		if _, found := n[name]; !found {
+			return ga4DailyMetricIdx{}, false, false
+		}
+	}
+	idx = ga4DailyMetricIdx{
+		sessions:                  n["sessions"],
+		totalUsers:                n["totalUsers"],
+		newUsers:                  n["newUsers"],
+		screenPageViews:           n["screenPageViews"],
+		bounceRate:                n["bounceRate"],
+		averageSessionDuration:    n["averageSessionDuration"],
+		screenPageViewsPerSession: n["screenPageViewsPerSession"],
+	}
+	ued, found := n["userEngagementDuration"]
+	if found {
+		idx.userEngagementDuration = ued
+		return idx, true, true
+	}
+	return idx, false, true
+}
+
+func metricHeaderAt(headers []*analyticsdata.MetricHeader, col int) *analyticsdata.MetricHeader {
+	if col < 0 || col >= len(headers) {
+		return nil
+	}
+	return headers[col]
+}
+
+// metricValueToSeconds converts a metric cell to seconds using MetricHeader.Type.
+// GA4 reports TYPE_MILLISECONDS for some duration metrics; the numeric Value is
+// then in ms and must be scaled (e.g. 13635 ms → 13.635 s).
+func metricValueToSeconds(val string, header *analyticsdata.MetricHeader) float64 {
+	v := parseFloat(val)
+	if header == nil {
+		return v
+	}
+	switch header.Type {
+	case "TYPE_MILLISECONDS":
+		return v / 1000.0
+	case "TYPE_MINUTES":
+		return v * 60
+	case "TYPE_HOURS":
+		return v * 3600
+	default:
+		return v
+	}
+}
+
+func (idx ga4DailyMetricIdx) maxMetricCol(hasEngagement bool) int {
+	mx := idx.sessions
+	for _, c := range []int{
+		idx.totalUsers, idx.newUsers, idx.screenPageViews, idx.bounceRate,
+		idx.averageSessionDuration, idx.screenPageViewsPerSession,
+	} {
+		if c > mx {
+			mx = c
+		}
+	}
+	if hasEngagement && idx.userEngagementDuration > mx {
+		mx = idx.userEngagementDuration
+	}
+	return mx
+}
+
+// avgSessionDurationForStorage picks a per-session duration (seconds) to persist
+// in avg_session_duration. Prefer userEngagementDuration / sessions when that
+// metric is present (foreground time; sane for ecommerce). Otherwise use
+// averageSessionDuration after metricValueToSeconds (handles TYPE_MILLISECONDS).
+func avgSessionDurationForStorage(sessions int, wallClockSec, engagementTotalSec float64, hasEngagement bool) float64 {
+	if sessions > 0 && hasEngagement {
+		return engagementTotalSec / float64(sessions)
+	}
+	if sessions > 0 {
+		return wallClockSec
+	}
+	return wallClockSec
 }
 
 // Helper functions

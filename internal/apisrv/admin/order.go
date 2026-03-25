@@ -310,6 +310,19 @@ func (s *Server) CreateCustomOrder(ctx context.Context, req *pb_admin.CreateCust
 		slog.Default().ErrorContext(ctx, "can't create custom order", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't create custom order: %v", err)
 	}
+
+	if s.ga4mp != nil {
+		of, err := s.repo.Order().GetOrderFullByUUID(ctx, order.UUID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "ga4mp: can't get order for tracking",
+				slog.String("orderUUID", order.UUID),
+				slog.String("err", err.Error()),
+			)
+		} else {
+			s.ga4mp.TrackPurchase(ctx, *of)
+		}
+	}
+
 	orderPb, err := dto.ConvertEntityOrderToPbCommonOrder(*order)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert order to proto", slog.String("err", err.Error()))

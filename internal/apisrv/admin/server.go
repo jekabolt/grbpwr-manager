@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -20,6 +21,7 @@ type Server struct {
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
 	reservationMgr    dependency.StockReservationManager
+	ga4mp             *ga4mp.Client
 }
 
 // New creates a new server with admin handlers.
@@ -31,6 +33,7 @@ func New(
 	stripePaymentTest dependency.Invoicer,
 	re dependency.RevalidationService,
 	reservationMgr dependency.StockReservationManager,
+	ga4mpClient *ga4mp.Client,
 ) *Server {
 	return &Server{
 		repo:              r,
@@ -40,6 +43,7 @@ func New(
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
 		reservationMgr:    reservationMgr,
+		ga4mp:             ga4mpClient,
 	}
 }
 

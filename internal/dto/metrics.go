@@ -1,8 +1,6 @@
 package dto
 
 import (
-	"math"
-
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	shopspring "github.com/shopspring/decimal"
@@ -25,6 +23,8 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
 		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
 		TotalDiscount:                  metricWithComparisonToPb(m.TotalDiscount),
+		ProductSaleDiscount:            metricWithComparisonToPb(m.ProductSaleDiscount),
+		PromoCodeDiscount:              metricWithComparisonToPb(m.PromoCodeDiscount),
 		Sessions:                       metricWithComparisonToPb(m.Sessions),
 		Users:                          metricWithComparisonToPb(m.Users),
 		NewUsers:                       metricWithComparisonToPb(m.NewUsers),
@@ -118,6 +118,9 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...bool) *pb_a
 		}
 		if pct := computeChangePct(curr, prev); pct != nil {
 			changePct = *pct
+		} else {
+			// e.g. Float64 inexact on diff — use store-computed pct
+			changePct = ptrFloat64ToVal(m.ChangePct)
 		}
 	} else {
 		changePct = ptrFloat64ToVal(m.ChangePct)
@@ -136,23 +139,15 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...bool) *pb_a
 }
 
 // computeChangePct returns (current - previous) / previous * 100, or nil if previous is zero.
-// Float64() returns (f, exact); we check exact=false due to binary float representation,
-// but the value is acceptable for % display. Returns nil if conversion fails.
+// Uses decimal arithmetic so operands like 5665.96 (inexact as float64) still yield a correct %;
+// the rounded result is converted with InexactFloat64 for protobuf display.
 func computeChangePct(current, previous shopspring.Decimal) *float64 {
 	if previous.IsZero() {
 		return nil
 	}
-	curr, exactCurr := current.Float64()
-	prev, exactPrev := previous.Float64()
-	if !exactCurr || !exactPrev {
-		return nil
-	}
-	if prev == 0 {
-		return nil
-	}
-	pct := (curr - prev) / prev * 100
-	pct = math.Round(pct*100) / 100
-	return &pct
+	diff := current.Sub(previous).Div(previous).Mul(shopspring.NewFromInt(100))
+	f := diff.Round(2).InexactFloat64()
+	return &f
 }
 
 func geographyMetricsToPb(list []entity.GeographyMetric) []*pb_admin.GeographyMetric {

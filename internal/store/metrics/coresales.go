@@ -120,7 +120,11 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 	return r.Amount, r.Count, nil
 }
 
-func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
+// getDiscountComponents returns discount amounts in base currency: (1) line-item product sale
+// percentage off list price, (2) extra percentage off subtotal from an applied promo_code.
+// Total discount shown on the dashboard is product_sale + promo_code. Promo usage rate counts
+// only orders with promo_id set, so high (1) with zero promo orders is expected.
+func (s *Store) getDiscountComponents(ctx context.Context, from, to time.Time) (productSale, promoCode decimal.Decimal, err error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	params := map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()}
 	productDiscount, err := storeutil.QueryNamedOne[struct {
@@ -134,7 +138,7 @@ func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decim
 		AND co.order_status_id IN (:statusIds)
 	`, params)
 	if err != nil {
-		return decimal.Zero, err
+		return decimal.Zero, decimal.Zero, err
 	}
 	promoDiscount, err := storeutil.QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
@@ -155,9 +159,9 @@ func (s *Store) getTotalDiscount(ctx context.Context, from, to time.Time) (decim
 		FROM order_items_base
 	`, params)
 	if err != nil {
-		return decimal.Zero, err
+		return decimal.Zero, decimal.Zero, err
 	}
-	return productDiscount.V.Add(promoDiscount.V), nil
+	return productDiscount.V, promoDiscount.V, nil
 }
 
 func (s *Store) getPromoUsageCount(ctx context.Context, from, to time.Time) (int, error) {

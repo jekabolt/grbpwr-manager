@@ -43,6 +43,11 @@ type BusinessMetrics struct {
 	GrossRevenue   MetricWithComparison
 	TotalRefunded  MetricWithComparison
 	TotalDiscount  MetricWithComparison
+	// ProductSaleDiscount is sum of list-price reductions from order_item.product_sale_percentage.
+	// PromoCodeDiscount is promo_code percentage applied to post–product-sale subtotal.
+	// TotalDiscount.Value == ProductSaleDiscount + PromoCodeDiscount.
+	ProductSaleDiscount MetricWithComparison
+	PromoCodeDiscount   MetricWithComparison
 
 	// GA4 Traffic & Engagement
 	Sessions           MetricWithComparison

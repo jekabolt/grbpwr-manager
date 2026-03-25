@@ -101,11 +101,7 @@ func changePct(current, previous decimal.Decimal) *float64 {
 		return nil
 	}
 	diff := current.Sub(previous).Div(previous).Mul(decimal.NewFromInt(100))
-	// Round to 2 decimal places to avoid Float64() precision edge cases
-	f, ok := diff.Round(2).Float64()
-	if !ok {
-		return nil
-	}
+	f := diff.Round(2).InexactFloat64()
 	return &f
 }
 

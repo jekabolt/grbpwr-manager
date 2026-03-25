@@ -13,10 +13,10 @@ import (
 )
 
 // GetFunnelAnalysis runs a full 10-step ecommerce funnel query.
-// Browsing steps (view_item_list through size_selected) are independent counts — users
-// arriving via direct links, ads, or non-standard paths still appear at each step they triggered.
-// Checkout steps (add_to_cart → purchase) enforce sequential logic: each step requires the
-// immediately prior checkout step, preventing misleading later-step > earlier-step counts.
+// Enforces sequential funnel logic: users can only appear at step N if they completed step N-1.
+// size_selected uses GREATEST(did_size_selected, did_add_to_cart) so that one-size products
+// (where the explicit size_selected event never fires) still count as passing the size step.
+// This keeps the funnel monotonically decreasing while not gating add_to_cart on size_selected.
 // Optimized to only scan required columns (user_pseudo_id, event_timestamp, event_name).
 func (c *Client) GetFunnelAnalysis(
 	ctx context.Context,
@@ -92,35 +92,44 @@ func (c *Client) buildFunnelAnalysisSQL(src string, startDate, endDate time.Time
 			FROM user_events
 			GROUP BY event_date, user_pseudo_id
 		),
-		checkout_funnel AS (
+		sequential_funnel AS (
 			SELECT
 				event_date,
 				user_pseudo_id,
 				did_session_start,
-				did_view_item_list,
-				did_select_item,
-				did_view_item,
-				did_size_selected,
-				did_add_to_cart,
-				CASE WHEN did_add_to_cart = 1 THEN did_begin_checkout ELSE 0 END AS seq_begin_checkout,
-				CASE WHEN did_add_to_cart = 1 AND did_begin_checkout = 1 THEN did_add_shipping_info ELSE 0 END AS seq_add_shipping_info,
-				CASE WHEN did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1 THEN did_add_payment_info ELSE 0 END AS seq_add_payment_info,
-				CASE WHEN did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1 AND did_add_payment_info = 1 THEN did_purchase ELSE 0 END AS seq_purchase
+				CASE WHEN did_session_start = 1
+					THEN did_view_item_list ELSE 0 END AS seq_view_item_list,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1
+					THEN did_select_item ELSE 0 END AS seq_select_item,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1
+					THEN did_view_item ELSE 0 END AS seq_view_item,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
+					THEN GREATEST(did_size_selected, did_add_to_cart) ELSE 0 END AS seq_size_selected,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1
+					THEN did_add_to_cart ELSE 0 END AS seq_add_to_cart,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1
+					THEN did_begin_checkout ELSE 0 END AS seq_begin_checkout,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1
+					THEN did_add_shipping_info ELSE 0 END AS seq_add_shipping_info,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1
+					THEN did_add_payment_info ELSE 0 END AS seq_add_payment_info,
+				CASE WHEN did_session_start = 1 AND did_view_item_list = 1 AND did_select_item = 1 AND did_view_item = 1 AND did_add_to_cart = 1 AND did_begin_checkout = 1 AND did_add_shipping_info = 1 AND did_add_payment_info = 1
+					THEN did_purchase ELSE 0 END AS seq_purchase
 			FROM daily_user_events
 		)
 		SELECT
 			event_date,
-			COUNTIF(did_session_start = 1)      AS session_start_users,
-			COUNTIF(did_view_item_list = 1)     AS view_item_list_users,
-			COUNTIF(did_select_item = 1)        AS select_item_users,
-			COUNTIF(did_view_item = 1)          AS view_item_users,
-			COUNTIF(did_size_selected = 1)      AS size_selected_users,
-			COUNTIF(did_add_to_cart = 1)        AS add_to_cart_users,
-			COUNTIF(seq_begin_checkout = 1)     AS begin_checkout_users,
-			COUNTIF(seq_add_shipping_info = 1)  AS add_shipping_info_users,
-			COUNTIF(seq_add_payment_info = 1)   AS add_payment_info_users,
-			COUNTIF(seq_purchase = 1)           AS purchase_users
-		FROM checkout_funnel
+			COUNTIF(did_session_start = 1)       AS session_start_users,
+			COUNTIF(seq_view_item_list = 1)      AS view_item_list_users,
+			COUNTIF(seq_select_item = 1)         AS select_item_users,
+			COUNTIF(seq_view_item = 1)           AS view_item_users,
+			COUNTIF(seq_size_selected = 1)       AS size_selected_users,
+			COUNTIF(seq_add_to_cart = 1)         AS add_to_cart_users,
+			COUNTIF(seq_begin_checkout = 1)      AS begin_checkout_users,
+			COUNTIF(seq_add_shipping_info = 1)   AS add_shipping_info_users,
+			COUNTIF(seq_add_payment_info = 1)    AS add_payment_info_users,
+			COUNTIF(seq_purchase = 1)            AS purchase_users
+		FROM sequential_funnel
 		GROUP BY event_date
 	`, src, c.dateFilterSQL(startDate, endDate))
 }
@@ -295,8 +304,8 @@ func (c *Client) getFunnelAnalysisStream(
 }
 
 // GetDeviceFunnel returns funnel metrics segmented by device category per day.
-// Sessions are counted independently; checkout steps (add_to_cart → purchase) enforce
-// sequential logic so totals align with GetFunnelAnalysis.
+// Enforces sequential funnel logic (session → add_to_cart → checkout → purchase)
+// so totals align with GetFunnelAnalysis.
 func (c *Client) GetDeviceFunnel(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -357,25 +366,25 @@ func (c *Client) getDeviceFunnel(
 			FROM device_events
 			GROUP BY event_date, device_category, user_pseudo_id
 		),
-		checkout_funnel AS (
+		sequential_funnel AS (
 			SELECT
 				event_date,
 				device_category,
 				user_pseudo_id,
 				did_session,
-				did_atc,
-				CASE WHEN did_atc = 1 THEN did_checkout ELSE 0 END AS seq_checkout,
-				CASE WHEN did_atc = 1 AND did_checkout = 1 THEN did_purchase ELSE 0 END AS seq_purchase
+				CASE WHEN did_session = 1 THEN did_atc ELSE 0 END AS seq_atc,
+				CASE WHEN did_session = 1 AND did_atc = 1 THEN did_checkout ELSE 0 END AS seq_checkout,
+				CASE WHEN did_session = 1 AND did_atc = 1 AND did_checkout = 1 THEN did_purchase ELSE 0 END AS seq_purchase
 			FROM daily_user_events
 		)
 		SELECT
 			event_date,
 			device_category,
-			COUNTIF(did_session = 1)   AS sessions,
-			COUNTIF(did_atc = 1)       AS add_to_cart_users,
-			COUNTIF(seq_checkout = 1)  AS checkout_users,
-			COUNTIF(seq_purchase = 1)  AS purchase_users
-		FROM checkout_funnel
+			COUNTIF(did_session = 1)    AS sessions,
+			COUNTIF(seq_atc = 1)        AS add_to_cart_users,
+			COUNTIF(seq_checkout = 1)   AS checkout_users,
+			COUNTIF(seq_purchase = 1)   AS purchase_users
+		FROM sequential_funnel
 		GROUP BY event_date, device_category
 	`, src, c.dateFilterSQL(startDate, endDate))
 

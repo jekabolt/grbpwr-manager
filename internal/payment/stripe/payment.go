@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/preorderpayment"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -42,6 +43,7 @@ type Processor struct {
 	pm               entity.PaymentMethod
 	reservationMgr   dependency.StockReservationManager
 	preOrderStore    *preorderpayment.Store
+	ga4mp            *ga4mp.Client
 
 	monCtxt map[string]context.CancelFunc // tracks monitoring contexts by order uuid
 	ctxMu   sync.Mutex
@@ -187,6 +189,10 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	of, err := rep.Order().GetOrderFullByUUID(ctx, orderUUID)
 	if err != nil {
 		return fmt.Errorf("can't get order by id: %w", err)
+	}
+
+	if p.ga4mp != nil {
+		p.ga4mp.TrackPurchase(ctx, *of)
 	}
 
 	orderDetails := dto.OrderFullToOrderConfirmed(of)

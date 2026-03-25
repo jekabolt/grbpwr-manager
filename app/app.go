@@ -9,6 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/config"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
@@ -199,7 +200,19 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr)
+	// GA4 Measurement Protocol (server-side purchase tracking)
+	ga4mpClient := ga4mp.New(&a.c.GA4MP)
+	if ga4mpClient.Enabled() {
+		slog.Default().InfoContext(ctx, "ga4mp: server-side purchase tracking enabled")
+		if p, ok := stripeMain.(*stripe.Processor); ok {
+			p.SetGA4MP(ga4mpClient)
+		}
+		if p, ok := stripeTest.(*stripe.Processor); ok {
+			p.SetGA4MP(ga4mpClient)
+		}
+	}
+
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient)
 
 	var frontendS *frontend.Server
 	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)

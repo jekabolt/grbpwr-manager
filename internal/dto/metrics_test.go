@@ -17,6 +17,7 @@ func TestComputeChangePct(t *testing.T) {
 		{"revenue +24.9%", 20419.91, 16350.97, 24.88},
 		{"avg order value -23.7%", 1134.44, 1486.45, -23.62},
 		{"items per order +3.4%", 1.22, 1.18, 3.39},
+		{"revenue vs prior period (inexact float operands)", 110, 5665.96, -98.06},
 		{"1 vs 1 should be 0%", 1.0, 1.0, 0},
 	}
 	for _, tt := range tests {

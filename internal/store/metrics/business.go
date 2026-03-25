@@ -33,10 +33,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		aov, cAov                      decimal.Decimal
 		itemsPerOrder, cItemsPerOrder  decimal.Decimal
 		revRefund, cRevRefund          decimal.Decimal
-		totalDiscount, cTotalDiscount  decimal.Decimal
-		promoOrders, cPromoOrders     int
+		grossTotal, cGrossTotal        decimal.Decimal
+		productSaleDiscount, promoCodeDiscount     decimal.Decimal
+		cProductSaleDiscount, cPromoCodeDiscount   decimal.Decimal
+		promoOrders, cPromoOrders                  int
 		newSubs, cNewSubs              int
 		repeatRate, avgOrders, avgDays decimal.Decimal
+		cRepeatRate, cAvgOrders, cAvgDays decimal.Decimal
 		emailSummary, cEmailSummary    *entity.EmailMetricsSummary
 	)
 
@@ -63,7 +66,12 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	})
 	g.Go(func() error {
 		var err error
-		totalDiscount, err = s.getTotalDiscount(gctx, period.From, period.To)
+		grossTotal, err = s.getGrossRevenueTotal(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		productSaleDiscount, promoCodeDiscount, err = s.getDiscountComponents(gctx, period.From, period.To)
 		return err
 	})
 	g.Go(func() error {
@@ -91,7 +99,12 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		})
 		g.Go(func() error {
 			var err error
-			cTotalDiscount, err = s.getTotalDiscount(gctx, comparePeriod.From, comparePeriod.To)
+			cGrossTotal, err = s.getGrossRevenueTotal(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cProductSaleDiscount, cPromoCodeDiscount, err = s.getDiscountComponents(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 		g.Go(func() error {
@@ -236,6 +249,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		repeatRate, avgOrders, avgDays, err = s.getRepeatCustomerMetrics(gctx, period.From, period.To)
 		return err
 	})
+	if hasCompare {
+		g.Go(func() error {
+			var err error
+			cRepeatRate, cAvgOrders, cAvgDays, err = s.getRepeatCustomerMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+	}
 	g.Go(func() error {
 		var err error
 		emailSummary, err = s.GetEmailMetricsSummary(gctx, period.From, period.To)
@@ -449,12 +469,14 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 
 	// GA4 aggregate metrics for period (sum from errgroup fetch above)
 	var totalSessions, totalUsers, totalNewUsers, totalPageViews int
+	var totalUserEngagementSeconds int64
 	var weightedBounceRate, weightedAvgSessionDuration, weightedPagesPerSession float64
 	for _, d := range ga4Daily {
 		totalSessions += d.Sessions
 		totalUsers += d.Users
 		totalNewUsers += d.NewUsers
 		totalPageViews += d.PageViews
+		totalUserEngagementSeconds += d.UserEngagementSeconds
 		// Session-weighted averages: sum(rate_i * sessions_i) for later division by totalSessions
 		weightedBounceRate += d.BounceRate * float64(d.Sessions)
 		weightedAvgSessionDuration += d.AvgSessionDuration * float64(d.Sessions)
@@ -467,11 +489,17 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 
 		// GA4 compare metrics (sum from errgroup fetch above)
 		var cTotalSessions, cTotalUsers, cTotalNewUsers, cTotalPageViews int
+		var cTotalUserEngagementSeconds int64
+		var cWeightedBounceRate, cWeightedAvgSessionDuration, cWeightedPagesPerSession float64
 		for _, d := range ga4DailyCompare {
 			cTotalSessions += d.Sessions
 			cTotalUsers += d.Users
 			cTotalNewUsers += d.NewUsers
 			cTotalPageViews += d.PageViews
+			cTotalUserEngagementSeconds += d.UserEngagementSeconds
+			cWeightedBounceRate += d.BounceRate * float64(d.Sessions)
+			cWeightedAvgSessionDuration += d.AvgSessionDuration * float64(d.Sessions)
+			cWeightedPagesPerSession += d.PagesPerSession * float64(d.Sessions)
 		}
 		m.Sessions.CompareValue = ptr(decimal.NewFromInt(int64(cTotalSessions)))
 		m.Sessions.ChangePct = changePctInt(totalSessions, cTotalSessions)
@@ -481,6 +509,26 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.NewUsers.ChangePct = changePctInt(totalNewUsers, cTotalNewUsers)
 		m.PageViews.CompareValue = ptr(decimal.NewFromInt(int64(cTotalPageViews)))
 		m.PageViews.ChangePct = changePctInt(totalPageViews, cTotalPageViews)
+
+		// GA4 weighted average metrics for comparison period
+		if cTotalSessions > 0 {
+			cBounceRate := decimal.NewFromFloat(cWeightedBounceRate / float64(cTotalSessions))
+			m.BounceRate.CompareValue = &cBounceRate
+			m.BounceRate.ChangePct = changePct(m.BounceRate.Value, cBounceRate)
+
+			var cAvgSessionDuration decimal.Decimal
+			if cTotalUserEngagementSeconds > 0 {
+				cAvgSessionDuration = decimal.NewFromFloat(float64(cTotalUserEngagementSeconds) / float64(cTotalSessions))
+			} else {
+				cAvgSessionDuration = decimal.NewFromFloat(cWeightedAvgSessionDuration / float64(cTotalSessions))
+			}
+			m.AvgSessionDuration.CompareValue = &cAvgSessionDuration
+			m.AvgSessionDuration.ChangePct = changePct(m.AvgSessionDuration.Value, cAvgSessionDuration)
+
+			cPagesPerSession := decimal.NewFromFloat(cWeightedPagesPerSession / float64(cTotalSessions))
+			m.PagesPerSession.CompareValue = &cPagesPerSession
+			m.PagesPerSession.ChangePct = changePct(m.PagesPerSession.Value, cPagesPerSession)
+		}
 
 		// Conversion rate compare
 		if cTotalSessions > 0 {
@@ -527,17 +575,20 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	}
 
 	// Derived values from core sales
+	totalDiscount := productSaleDiscount.Add(promoCodeDiscount)
 	m.Revenue.Value = rev
 	m.OrdersCount.Value = decimal.NewFromInt(int64(orders))
 	m.AvgOrderValue.Value = aov
 	m.ItemsPerOrder.Value = itemsPerOrder
-	grossRev := rev.Add(revRefund)
+	grossRev := grossTotal
 	if grossRev.GreaterThan(decimal.Zero) {
 		m.RefundRate.Value = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100))
 	}
 	m.GrossRevenue.Value = grossRev
 	m.TotalRefunded.Value = revRefund
 	m.TotalDiscount.Value = totalDiscount
+	m.ProductSaleDiscount.Value = productSaleDiscount
+	m.PromoCodeDiscount.Value = promoCodeDiscount
 	if orders > 0 {
 		m.PromoUsageRate.Value = decimal.NewFromInt(int64(promoOrders)).Div(decimal.NewFromInt(int64(orders))).Mul(decimal.NewFromInt(100))
 	}
@@ -554,7 +605,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if totalSessions > 0 {
 		// Session-weighted averages: divide weighted sums by total sessions
 		m.BounceRate.Value = decimal.NewFromFloat(weightedBounceRate / float64(totalSessions))
-		m.AvgSessionDuration.Value = decimal.NewFromFloat(weightedAvgSessionDuration / float64(totalSessions))
+		// Prefer total foreground engagement / total sessions (column from GA4 sync).
+		// Falls back to weighted avg_session_duration when engagement was not stored (pre-migration / legacy rows).
+		if totalUserEngagementSeconds > 0 {
+			m.AvgSessionDuration.Value = decimal.NewFromFloat(float64(totalUserEngagementSeconds) / float64(totalSessions))
+		} else {
+			m.AvgSessionDuration.Value = decimal.NewFromFloat(weightedAvgSessionDuration / float64(totalSessions))
+		}
 		m.PagesPerSession.Value = decimal.NewFromFloat(weightedPagesPerSession / float64(totalSessions))
 	}
 
@@ -585,6 +642,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	}
 
 	if hasCompare {
+		cTotalDiscount := cProductSaleDiscount.Add(cPromoCodeDiscount)
 		m.Revenue.CompareValue = &cRev
 		m.OrdersCount.CompareValue = ptr(decimal.NewFromInt(int64(cOrders)))
 		m.AvgOrderValue.CompareValue = &cAov
@@ -593,9 +651,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.AvgOrderValue.ChangePct = changePct(aov, cAov)
 		m.ItemsPerOrder.CompareValue = &cItemsPerOrder
 		m.ItemsPerOrder.ChangePct = changePct(itemsPerOrder, cItemsPerOrder)
-		cGross := cRev.Add(cRevRefund)
-		if cGross.GreaterThan(decimal.Zero) {
-			cRefundRate := cRevRefund.Div(cGross).Mul(decimal.NewFromInt(100))
+		if cGrossTotal.GreaterThan(decimal.Zero) {
+			cRefundRate := cRevRefund.Div(cGrossTotal).Mul(decimal.NewFromInt(100))
 			m.RefundRate.CompareValue = &cRefundRate
 			m.RefundRate.ChangePct = changePct(m.RefundRate.Value, cRefundRate)
 		}
@@ -604,12 +661,24 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 			m.PromoUsageRate.CompareValue = &cPromoRate
 			m.PromoUsageRate.ChangePct = changePct(m.PromoUsageRate.Value, cPromoRate)
 		}
-		m.GrossRevenue.CompareValue = ptr(cRev.Add(cRevRefund))
+		m.GrossRevenue.CompareValue = &cGrossTotal
 		m.TotalRefunded.CompareValue = &cRevRefund
-		m.GrossRevenue.ChangePct = changePct(grossRev, cRev.Add(cRevRefund))
+		m.GrossRevenue.ChangePct = changePct(grossRev, cGrossTotal)
 		m.TotalRefunded.ChangePct = changePct(revRefund, cRevRefund)
 		m.TotalDiscount.CompareValue = &cTotalDiscount
 		m.TotalDiscount.ChangePct = changePct(totalDiscount, cTotalDiscount)
+		m.ProductSaleDiscount.CompareValue = &cProductSaleDiscount
+		m.ProductSaleDiscount.ChangePct = changePct(productSaleDiscount, cProductSaleDiscount)
+		m.PromoCodeDiscount.CompareValue = &cPromoCodeDiscount
+		m.PromoCodeDiscount.ChangePct = changePct(promoCodeDiscount, cPromoCodeDiscount)
+
+		// Repeat customer metrics comparison
+		m.RepeatCustomersRate.CompareValue = &cRepeatRate
+		m.RepeatCustomersRate.ChangePct = changePct(repeatRate, cRepeatRate)
+		m.AvgOrdersPerCustomer.CompareValue = &cAvgOrders
+		m.AvgOrdersPerCustomer.ChangePct = changePct(avgOrders, cAvgOrders)
+		m.AvgDaysBetweenOrders.CompareValue = &cAvgDays
+		m.AvgDaysBetweenOrders.ChangePct = changePct(avgDays, cAvgDays)
 	}
 
 	// Email delivery metrics

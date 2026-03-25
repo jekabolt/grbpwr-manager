@@ -150,6 +150,43 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 	return result, nil
 }
 
+// getGrossRevenueTotal matches the sum of getGrossRevenueByPeriod (pre-refund subtotals in base currency).
+func (s *Store) getGrossRevenueTotal(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	query := `
+		WITH order_base AS (
+			SELECT
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (:statusIds)
+				GROUP BY co.id
+			) ob
+		)
+		SELECT COALESCE(SUM(gross_revenue_base), 0) AS total
+		FROM order_base
+	`
+	type row struct {
+		Total decimal.Decimal `db:"total"`
+	}
+	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return r.Total, nil
+}
+
 func (s *Store) getRefundsByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`

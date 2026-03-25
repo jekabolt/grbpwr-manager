@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	analyticsdata "google.golang.org/api/analyticsdata/v1beta"
 )
 
 const testPropertyID = "299206603"
@@ -33,6 +34,95 @@ func findCredsPath(t *testing.T) string {
 		}
 	}
 	return ""
+}
+
+func TestAvgSessionDurationForStorage(t *testing.T) {
+	t.Parallel()
+	assert.InDelta(t, 851.0/39.0, avgSessionDurationForStorage(39, 2213, 851, true), 0.001)
+	assert.InDelta(t, 25.3, avgSessionDurationForStorage(10, 25.3, 0, false), 0.001)
+	assert.InDelta(t, 0.0, avgSessionDurationForStorage(10, 25.3, 0, true), 0.001)
+	assert.InDelta(t, 100.0, avgSessionDurationForStorage(0, 100, 50, false), 0.001)
+}
+
+func TestMetricValueToSeconds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		value      string
+		headerType string
+		want       float64
+	}{
+		{"milliseconds to seconds", "13635", "TYPE_MILLISECONDS", 13.635},
+		{"seconds as-is", "25.3", "TYPE_SECONDS", 25.3},
+		{"minutes to seconds", "2.5", "TYPE_MINUTES", 150.0},
+		{"hours to seconds", "1.5", "TYPE_HOURS", 5400.0},
+		{"no header - assume seconds", "100", "", 100.0},
+		{"nil header - assume seconds", "42.5", "", 42.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var h *analyticsdata.MetricHeader
+			if tt.headerType != "" {
+				h = &analyticsdata.MetricHeader{Type: tt.headerType}
+			}
+			got := metricValueToSeconds(tt.value, h)
+			assert.InDelta(t, tt.want, got, 0.0001)
+		})
+	}
+}
+
+func TestResolveGA4DailyIndices(t *testing.T) {
+	t.Parallel()
+	t.Run("with userEngagementDuration", func(t *testing.T) {
+		headers := []*analyticsdata.MetricHeader{
+			{Name: "sessions"},
+			{Name: "totalUsers"},
+			{Name: "newUsers"},
+			{Name: "screenPageViews"},
+			{Name: "bounceRate"},
+			{Name: "averageSessionDuration"},
+			{Name: "screenPageViewsPerSession"},
+			{Name: "userEngagementDuration"},
+		}
+		idx, hasEngagement, ok := resolveGA4DailyIndices(headers)
+		assert.True(t, ok)
+		assert.True(t, hasEngagement)
+		assert.Equal(t, 0, idx.sessions)
+		assert.Equal(t, 7, idx.userEngagementDuration)
+	})
+
+	t.Run("without userEngagementDuration", func(t *testing.T) {
+		headers := []*analyticsdata.MetricHeader{
+			{Name: "sessions"},
+			{Name: "totalUsers"},
+			{Name: "newUsers"},
+			{Name: "screenPageViews"},
+			{Name: "bounceRate"},
+			{Name: "averageSessionDuration"},
+			{Name: "screenPageViewsPerSession"},
+		}
+		idx, hasEngagement, ok := resolveGA4DailyIndices(headers)
+		assert.True(t, ok)
+		assert.False(t, hasEngagement)
+		assert.Equal(t, 0, idx.sessions)
+	})
+
+	t.Run("missing required metric", func(t *testing.T) {
+		headers := []*analyticsdata.MetricHeader{
+			{Name: "sessions"},
+			{Name: "totalUsers"},
+		}
+		_, _, ok := resolveGA4DailyIndices(headers)
+		assert.False(t, ok)
+	})
+
+	t.Run("empty headers - use positional fallback", func(t *testing.T) {
+		idx, hasEngagement, ok := resolveGA4DailyIndices(nil)
+		assert.True(t, ok)
+		assert.True(t, hasEngagement)
+		assert.Equal(t, 0, idx.sessions)
+		assert.Equal(t, 7, idx.userEngagementDuration)
+	})
 }
 
 func TestNewClient_WithConfigCreds(t *testing.T) {

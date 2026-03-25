@@ -657,10 +657,17 @@ message BusinessMetrics {
   MetricWithComparison avg_order_value = 5;
   MetricWithComparison items_per_order = 25;
   MetricWithComparison refund_rate = 6;
+  // Share of orders with a promo_code attached (customer_order.promo_id). Unrelated to total_discount
+  // when discounts come only from product sale percentages — see product_sale_discount / promo_code_discount.
   MetricWithComparison promo_usage_rate = 7;
   MetricWithComparison gross_revenue = 39;
   MetricWithComparison total_refunded = 40;
+  // Sum of product_sale_discount + promo_code_discount (base currency, net-revenue order statuses).
   MetricWithComparison total_discount = 41;
+  // Line-item sale % off list price (not from promo codes).
+  MetricWithComparison product_sale_discount = 78;
+  // Extra % off subtotal from an applied promo_code (orders with promo_id only).
+  MetricWithComparison promo_code_discount = 79;
 
   repeated GeographyMetric revenue_by_country = 8;
   repeated GeographyMetric revenue_by_city = 9;
@@ -713,6 +720,9 @@ message BusinessMetrics {
   MetricWithComparison new_users = 53;
   MetricWithComparison page_views = 54;
   MetricWithComparison bounce_rate = 55;
+  // Average engagement time per session (seconds), derived from GA4
+  // userEngagementDuration / sessions at sync — not raw averageSessionDuration
+  // (wall-clock first-to-last event, often inflated by background tabs).
   MetricWithComparison avg_session_duration = 56;
   MetricWithComparison pages_per_session = 57;
   MetricWithComparison conversion_rate = 58;

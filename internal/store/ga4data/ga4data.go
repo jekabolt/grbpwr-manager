@@ -32,14 +32,14 @@ func (s *Store) SaveGA4DailyMetrics(ctx context.Context, metrics []ga4.DailyMetr
 	if len(metrics) == 0 {
 		return nil
 	}
-	cols := []string{"date", "sessions", "users", "new_users", "page_views", "bounce_rate", "avg_session_duration", "pages_per_session"}
+	cols := []string{"date", "sessions", "users", "new_users", "page_views", "bounce_rate", "avg_session_duration", "user_engagement_seconds", "pages_per_session"}
 	updCols := cols[1:]
 	args := make([][]any, 0, len(metrics))
 	for _, m := range metrics {
 		args = append(args, []any{
 			m.Date.Format("2006-01-02"),
 			m.Sessions, m.Users, m.NewUsers, m.PageViews,
-			m.BounceRate, m.AvgSessionDuration, m.PagesPerSession,
+			m.BounceRate, m.AvgSessionDuration, m.UserEngagementSeconds, m.PagesPerSession,
 		})
 	}
 	if err := storeutil.BulkUpsert(ctx, s.DB, "ga4_daily_metrics", cols, updCols, args); err != nil {
@@ -155,20 +155,21 @@ func (s *Store) GetGA4DailyMetrics(ctx context.Context, from, to time.Time) ([]g
 	query := `
 		SELECT
 			date, sessions, users, new_users, page_views,
-			bounce_rate, avg_session_duration, pages_per_session
+			bounce_rate, avg_session_duration, user_engagement_seconds, pages_per_session
 		FROM ga4_daily_metrics
 		WHERE date >= :fromDate AND date <= :toDate
 		ORDER BY date ASC
 	`
 	type row struct {
-		Date               string  `db:"date"`
-		Sessions           int     `db:"sessions"`
-		Users              int     `db:"users"`
-		NewUsers           int     `db:"new_users"`
-		PageViews          int     `db:"page_views"`
-		BounceRate         float64 `db:"bounce_rate"`
-		AvgSessionDuration float64 `db:"avg_session_duration"`
-		PagesPerSession    float64 `db:"pages_per_session"`
+		Date                  string  `db:"date"`
+		Sessions              int     `db:"sessions"`
+		Users                 int     `db:"users"`
+		NewUsers              int     `db:"new_users"`
+		PageViews             int     `db:"page_views"`
+		BounceRate            float64 `db:"bounce_rate"`
+		AvgSessionDuration    float64 `db:"avg_session_duration"`
+		UserEngagementSeconds int64   `db:"user_engagement_seconds"`
+		PagesPerSession       float64 `db:"pages_per_session"`
 	}
 	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02")}
 	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, query, params)
@@ -184,7 +185,9 @@ func (s *Store) GetGA4DailyMetrics(ctx context.Context, from, to time.Time) ([]g
 		metrics = append(metrics, ga4.DailyMetrics{
 			Date: date, Sessions: r.Sessions, Users: r.Users, NewUsers: r.NewUsers,
 			PageViews: r.PageViews, BounceRate: r.BounceRate,
-			AvgSessionDuration: r.AvgSessionDuration, PagesPerSession: r.PagesPerSession,
+			AvgSessionDuration:    r.AvgSessionDuration,
+			UserEngagementSeconds: r.UserEngagementSeconds,
+			PagesPerSession:       r.PagesPerSession,
 		})
 	}
 	return metrics, nil

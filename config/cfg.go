@@ -7,6 +7,7 @@ import (
 
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
+	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4sync"
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -45,6 +46,7 @@ type Config struct {
 	StripePaymentTest stripe.Config          `mapstructure:"stripe_payment_test"`
 	Revalidation      revalidation.Config    `mapstructure:"revalidation"`
 	GA4               ga4.Config             `mapstructure:"ga4"`
+	GA4MP             ga4mp.Config           `mapstructure:"ga4mp"`
 	GA4Sync           ga4sync.Config         `mapstructure:"ga4_sync"`
 	BigQuery          bq.Config              `mapstructure:"bigquery"`
 }
@@ -221,6 +223,11 @@ func bindEnvVars() {
 	viper.BindEnv("ga4.enabled", "GA4_ENABLED")
 	viper.BindEnv("ga4.property_id", "GA4_PROPERTY_ID")
 	viper.BindEnv("ga4.credentials_json", "GA4_CREDENTIALS_JSON")
+
+	// GA4 Measurement Protocol (server-side events)
+	viper.BindEnv("ga4mp.enabled", "GA4MP_ENABLED")
+	viper.BindEnv("ga4mp.measurement_id", "GA4MP_MEASUREMENT_ID")
+	viper.BindEnv("ga4mp.api_secret", "GA4MP_API_SECRET")
 
 	// GA4 Sync Worker
 	viper.BindEnv("ga4_sync.worker_interval", "GA4_SYNC_WORKER_INTERVAL")
