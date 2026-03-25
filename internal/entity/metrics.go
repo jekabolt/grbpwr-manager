@@ -313,13 +313,39 @@ type DeviceFunnelMetric struct {
 }
 
 type ProductEngagementMetric struct {
-	Date        time.Time
-	ProductID   string
-	ProductName string
-	ImageViews  int64
-	ZoomEvents  int64
-	Scroll75    int64
-	Scroll100   int64
+	Date                  time.Time
+	ProductID             string
+	ProductName           string
+	ImageViews            int64
+	ZoomEvents            int64
+	Scroll75              int64
+	Scroll100             int64
+	AvgTimeOnPageSeconds  float64
+}
+
+type ProductEngagementBubbleRow struct {
+	ProductID             string
+	ProductName           string
+	TotalImageViews       int64
+	TotalZoomEvents       int64
+	TotalScroll75         int64
+	TotalScroll100        int64
+	ZoomRatePct           float64
+	Scroll75RatePct       float64
+	Scroll100RatePct      float64
+	AvgTimeOnPageSeconds  float64
+}
+
+type ProductEngagementMetricsPct struct {
+	AvgZoomRatePct        float64
+	AvgScroll75RatePct    float64
+	AvgScroll100RatePct   float64
+	AvgTimeOnPageSeconds  float64
+}
+
+type ProductEngagementBubbleMatrix struct {
+	Rows    []ProductEngagementBubbleRow
+	Overall ProductEngagementMetricsPct
 }
 
 type FormErrorMetric struct {

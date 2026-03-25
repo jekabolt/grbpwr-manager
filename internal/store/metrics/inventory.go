@@ -49,7 +49,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			ps.quantity,
 			COALESCE(ds.total_sold / GREATEST(DATEDIFF(:to, :from), 1), 0) AS avg_daily_sales,
 			CASE
-				WHEN COALESCE(ds.total_sold, 0) = 0 THEN -1
+				WHEN COALESCE(ds.total_sold, 0) = 0 THEN 99999
 				ELSE ps.quantity / (ds.total_sold / GREATEST(DATEDIFF(:to, :from), 1))
 			END AS days_on_hand
 		FROM product_size ps
@@ -73,7 +73,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 	return result, nil
 }
 
-// GetSizeRunEfficiency returns the percentage of sizes that have >50% sell-through
+// GetSizeRunEfficiency returns the percentage of sizes that have any sales activity
 // for each product. Sell-through is computed from initial stock vs current stock.
 func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error) {
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
@@ -113,8 +113,8 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 				p.brand
 			) AS product_name,
 			COUNT(*) AS total_sizes,
-			SUM(CASE WHEN sa.sell_through_pct > 50 THEN 1 ELSE 0 END) AS sold_through_sizes,
-			SUM(CASE WHEN sa.sell_through_pct > 50 THEN 1 ELSE 0 END) * 100 / COUNT(*) AS efficiency_pct
+			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) AS sold_through_sizes,
+			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) * 100 / COUNT(*) AS efficiency_pct
 		FROM size_analysis sa
 		JOIN product p ON p.id = sa.product_id
 		WHERE sa.initial_qty > 0

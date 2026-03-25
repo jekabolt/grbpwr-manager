@@ -12,14 +12,15 @@ import (
 )
 
 // GetProductEngagement returns engagement metrics per product per day.
-// Uses view_item (ecommerce items[]) for product identification and
-// scroll_depth events on product pages for engagement depth.
-// image_views = view_item count, zoom_events = 0 (event not implemented yet).
+// Uses view_item (ecommerce items[]) for product identification,
+// scroll_depth events on product pages for engagement depth, and
+// product_zoom custom events (event_params.product_id) for zoom counts.
 //
 // Both sides use product_id for the JOIN: product_views from item.item_id (must be
 // product ID string per frontend convention), product_scrolls from the last path
-// segment of /product/... URLs (dto.GetProductSlug format). If item_id uses SKU
-// instead of product ID, the JOIN will not match — frontend must send product ID.
+// segment of /product/... URLs (dto.GetProductSlug format), zoom from the same
+// string as GetProductZoom. If item_id uses SKU instead of product ID, scroll and
+// zoom joins will not match — frontend must send consistent product IDs.
 func (c *Client) GetProductEngagement(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -84,19 +85,33 @@ func (c *Client) getProductEngagement(
 					r'/([0-9]+)/?$'
 				) IS NOT NULL
 			GROUP BY event_date, product_id
+		),
+		product_zoom_counts AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
+				COUNT(*) AS zoom_count
+			FROM %[1]s
+			WHERE %[2]s
+				AND event_name = 'product_zoom'
+				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
+			GROUP BY event_date, product_id
 		)
 		SELECT
 			pv.event_date,
 			pv.product_id,
 			pv.product_name,
 			pv.view_count AS image_views,
-			0 AS zoom_events,
+			COALESCE(pz.zoom_count, 0) AS zoom_events,
 			COALESCE(ps.scroll_75, 0) AS scroll_75,
 			COALESCE(ps.scroll_100, 0) AS scroll_100
 		FROM product_views pv
 		LEFT JOIN product_scrolls ps
 			ON pv.event_date = ps.event_date
 			AND pv.product_id = ps.product_id
+		LEFT JOIN product_zoom_counts pz
+			ON pv.event_date = pz.event_date
+			AND pv.product_id = pz.product_id
 	`, src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)

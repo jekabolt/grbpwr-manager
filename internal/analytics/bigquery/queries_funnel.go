@@ -431,7 +431,22 @@ func (c *Client) getDeviceFunnel(
 	return rows, nil
 }
 
-// GetHeroFunnel returns hero_click → view_item → purchase mini-funnel per day.
+// heroFunnelPurchaseLookaheadDays is how long after the first hero_click (same user, UTC day)
+// we still count a client-side purchase toward that hero day.
+const heroFunnelPurchaseLookaheadDays = 7
+
+// GetHeroFunnel returns hero_click → view_item → purchase mini-funnel per calendar day (UTC).
+//
+// Semantics (fixed from same-day bag-of-events):
+//   - hero_click_users: distinct users with hero_click on that date.
+//   - view_item_users: among those, users with at least one view_item on the same UTC date
+//     at or after their first hero_click timestamp that day.
+//   - purchase_users: among those with view_item as above, users with at least one
+//     client-side purchase (excludes Measurement Protocol purchases tagged server_side)
+//     at or after first hero_click and within heroFunnelPurchaseLookaheadDays.
+//
+// The events scan extends endDate by heroFunnelPurchaseLookaheadDays so delayed purchases
+// are visible; output rows are still limited to [startDate, endDate].
 func (c *Client) GetHeroFunnel(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -462,37 +477,98 @@ func (c *Client) getHeroFunnel(
 
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "user_pseudo_id", "event_timestamp", "event_name")
+	scanEnd := endDate.AddDate(0, 0, heroFunnelPurchaseLookaheadDays)
+	src, err := c.eventsSourceColumns(startDate, scanEnd, "user_pseudo_id", "event_timestamp", "event_name", "event_params")
 	if err != nil {
 		return nil, fmt.Errorf("GetHeroFunnel: %w", err)
 	}
+
+	var scanWhere, outWhere string
+	if c.useLiteralDates {
+		scanWhere = fmt.Sprintf(
+			`DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE('%s') AND DATE('%s')`,
+			startDate.UTC().Format("2006-01-02"),
+			scanEnd.UTC().Format("2006-01-02"),
+		)
+		outWhere = fmt.Sprintf(
+			`event_date BETWEEN DATE('%s') AND DATE('%s')`,
+			startDate.UTC().Format("2006-01-02"),
+			endDate.UTC().Format("2006-01-02"),
+		)
+	} else {
+		scanWhere = `DATE(TIMESTAMP_MICROS(event_timestamp)) BETWEEN DATE(@scan_start) AND DATE(@scan_end)`
+		outWhere = `event_date BETWEEN DATE(@out_start) AND DATE(@out_end)`
+	}
+
 	sql := fmt.Sprintf(`
-		WITH user_events AS (
+		WITH raw AS (
 			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				user_pseudo_id,
-				MAX(CASE WHEN event_name = 'hero_click' THEN 1 ELSE 0 END) AS did_hero_click,
-				MAX(CASE WHEN event_name = 'view_item'  THEN 1 ELSE 0 END) AS did_view_item,
-				MAX(CASE WHEN event_name = 'purchase'   THEN 1 ELSE 0 END) AS did_purchase
+				event_timestamp,
+				event_name
 			FROM %s
 			WHERE %s
 				AND event_name IN ('hero_click', 'view_item', 'purchase')
-			GROUP BY event_date, user_pseudo_id
+				AND (
+					event_name != 'purchase'
+					OR NOT (
+						COALESCE(
+							(SELECT ep.value.int_value FROM UNNEST(event_params) ep WHERE ep.key = 'server_side' LIMIT 1),
+							0
+						) = 1
+						OR LOWER(COALESCE(
+							(SELECT ep.value.string_value FROM UNNEST(event_params) ep WHERE ep.key = 'server_side' LIMIT 1),
+							''
+						)) IN ('true', '1')
+					)
+				)
+		),
+		hero AS (
+			SELECT
+				user_pseudo_id,
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS hero_date,
+				MIN(event_timestamp) AS first_hero_ts
+			FROM raw
+			WHERE event_name = 'hero_click'
+			GROUP BY user_pseudo_id, hero_date
+		),
+		user_funnel AS (
+			SELECT
+				h.hero_date AS event_date,
+				h.user_pseudo_id,
+				EXISTS (
+					SELECT 1 FROM raw r
+					WHERE r.user_pseudo_id = h.user_pseudo_id
+						AND r.event_name = 'view_item'
+						AND r.event_timestamp >= h.first_hero_ts
+						AND DATE(TIMESTAMP_MICROS(r.event_timestamp)) = h.hero_date
+				) AS after_view_item,
+				EXISTS (
+					SELECT 1 FROM raw r
+					WHERE r.user_pseudo_id = h.user_pseudo_id
+						AND r.event_name = 'purchase'
+						AND r.event_timestamp >= h.first_hero_ts
+						AND TIMESTAMP_MICROS(r.event_timestamp) <= TIMESTAMP_ADD(TIMESTAMP_MICROS(h.first_hero_ts), INTERVAL %d DAY)
+				) AS after_purchase
+			FROM hero h
 		)
 		SELECT
 			event_date,
-			COUNTIF(did_hero_click = 1) AS hero_click_users,
-			COUNTIF(did_hero_click = 1 AND did_view_item = 1) AS view_item_users,
-			COUNTIF(did_hero_click = 1 AND did_view_item = 1 AND did_purchase = 1) AS purchase_users
-		FROM user_events
+			COUNT(*) AS hero_click_users,
+			COUNTIF(after_view_item) AS view_item_users,
+			COUNTIF(after_view_item AND after_purchase) AS purchase_users
+		FROM user_funnel
+		WHERE %s
 		GROUP BY event_date
-	`, src, c.dateFilterSQL(startDate, endDate))
+	`, src, scanWhere, heroFunnelPurchaseLookaheadDays, outWhere)
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
 		query.Parameters = []bigquery.QueryParameter{
-			{Name: "start_date", Value: startDate},
-			{Name: "end_date", Value: endDate},
+			{Name: "scan_start", Value: startDate},
+			{Name: "scan_end", Value: scanEnd},
+			{Name: "out_start", Value: startDate},
+			{Name: "out_end", Value: endDate},
 		}
 	}
 

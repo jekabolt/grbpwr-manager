@@ -563,16 +563,47 @@ func ConvertProductEngagementMetricsToPb(list []entity.ProductEngagementMetric) 
 	pb := make([]*pb_admin.ProductEngagementMetric, len(list))
 	for i, m := range list {
 		pb[i] = &pb_admin.ProductEngagementMetric{
-			Date:        timestamppb.New(m.Date),
-			ProductId:   m.ProductID,
-			ProductName: m.ProductName,
-			ImageViews:  m.ImageViews,
-			ZoomEvents:  m.ZoomEvents,
-			Scroll_75:   m.Scroll75,
-			Scroll_100:  m.Scroll100,
+			Date:                   timestamppb.New(m.Date),
+			ProductId:              m.ProductID,
+			ProductName:            m.ProductName,
+			ImageViews:             m.ImageViews,
+			ZoomEvents:             m.ZoomEvents,
+			Scroll_75:              m.Scroll75,
+			Scroll_100:             m.Scroll100,
+			AvgTimeOnPageSeconds:   m.AvgTimeOnPageSeconds,
 		}
 	}
 	return pb
+}
+
+func ConvertProductEngagementBubbleMatrixToPb(m *entity.ProductEngagementBubbleMatrix) *pb_admin.ProductEngagementBubbleMatrix {
+	if m == nil {
+		return nil
+	}
+	rows := make([]*pb_admin.ProductEngagementBubbleRow, len(m.Rows))
+	for i, r := range m.Rows {
+		rows[i] = &pb_admin.ProductEngagementBubbleRow{
+			ProductId:            r.ProductID,
+			ProductName:          r.ProductName,
+			TotalImageViews:      r.TotalImageViews,
+			TotalZoomEvents:      r.TotalZoomEvents,
+			TotalScroll_75:       r.TotalScroll75,
+			TotalScroll_100:      r.TotalScroll100,
+			ZoomRatePct:          r.ZoomRatePct,
+			Scroll_75RatePct:     r.Scroll75RatePct,
+			Scroll_100RatePct:    r.Scroll100RatePct,
+			AvgTimeOnPageSeconds: r.AvgTimeOnPageSeconds,
+		}
+	}
+	return &pb_admin.ProductEngagementBubbleMatrix{
+		Rows: rows,
+		Overall: &pb_admin.ProductEngagementMetricsPct{
+			AvgZoomRatePct:       m.Overall.AvgZoomRatePct,
+			AvgScroll_75RatePct:  m.Overall.AvgScroll75RatePct,
+			AvgScroll_100RatePct: m.Overall.AvgScroll100RatePct,
+			AvgTimeOnPageSeconds: m.Overall.AvgTimeOnPageSeconds,
+		},
+	}
 }
 
 func ConvertFormErrorMetricsToPb(list []entity.FormErrorMetric) []*pb_admin.FormErrorMetric {

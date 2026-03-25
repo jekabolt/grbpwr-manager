@@ -42,6 +42,12 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:XTwRb1GN7nCdm0tgfaWvY4s6uwOqOj7w:q9Ixg4Rp4+7OwZG83InfFFzk5zsBz+EozCRm]
+- key: AUTH_JWT_ISSUER
+  scope: RUN_TIME
+  value: grbpwr-admin
+- key: AUTH_JWT_AUDIENCE
+  scope: RUN_TIME
+  value: grbpwr-admin
 - key: AUTH_MASTER_PASSWORD
   scope: RUN_TIME
   type: SECRET
@@ -109,9 +115,6 @@ envs:
 - key: BUCKET_BASE_FOLDER
   scope: RUN_TIME
   value: grbpwr-com
-- key: BUCKET_IMAGE_STORE_PREFIX
-  scope: RUN_TIME
-  value: grbpwr-com
 - key: BUCKET_SUBDOMAIN_ENDPOINT
   scope: RUN_TIME
   value: files.grbpwr.com
@@ -131,84 +134,43 @@ envs:
 - key: MAILER_WORKER_INTERVAL
   scope: RUN_TIME
   value: 1h
+- key: MAILER_MAX_SEND_ATTEMPTS
+  scope: RUN_TIME
+  value: "10"
+- key: MAILER_RETRY_BASE_INTERVAL
+  scope: RUN_TIME
+  value: 1m
+- key: MAILER_RETRY_MAX_INTERVAL
+  scope: RUN_TIME
+  value: 1h
+- key: MAILER_INLINE_SEND_LEASE
+  scope: RUN_TIME
+  value: 10m
+- key: MAILER_UNSUBSCRIBE_BASE_URL
+  scope: RUN_TIME
+  value: https://backend.grbpwr.com
+- key: MAILER_WEBHOOK_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: EV[1:BBBBBBBBBBBBBBBBBBBBBB:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=]
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
 - key: ORDER_CLEANUP_PLACED_THRESHOLD
   scope: RUN_TIME
   value: 24h
+- key: STOREFRONT_CLEANUP_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 1h
 - key: STRIPE_RECONCILE_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
 - key: STRIPE_RECONCILE_PRE_ORDER_THRESHOLD
   scope: RUN_TIME
   value: 24h
-- key: RATES_API_KEY
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:TH7d3J0MiQe2PoHe1c/z/wkJx7CTKmdi:q+4tbeundOdxx6liugGQ8boRZX+jaU7KtjrErko3quYgOs0hxIq4Yw==]
-- key: RATES_UPDATE_PERIOD
-  scope: RUN_TIME
-  value: 24h
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR
-- key: USDT_TRON_PAYMENT_ADDRESSES
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:s4Shqd+180clvUbCaz/Jbm6KdzsI/HTQ:PrtpVB0bRzZkHfP1jZmrXtSHAGQ/T9YN0GtHInujlrovF9sT0oAZKR515PJHEeI3s5wRMVCa]
-- key: USDT_TRON_PAYMENT_NODE
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:Pa7V7rtx0jmnR6a8N4UyAYvD7gNGafIf:HYVitYK4khSjadi9BXCe4dt8LfE0YfoQ+go9MpiHzl/W0qCM1bvWTde0eLGsTw==]
-- key: USDT_TRON_PAYMENT_INVOICE_EXPIRATION
-  scope: RUN_TIME
-  value: 30m
-- key: USDT_TRON_PAYMENT_CHECK_INCOMING_TX_INTERVAL
-  scope: RUN_TIME
-  value: 30s
-- key: USDT_TRON_PAYMENT_CONTRACT_ADDRESS
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:UOKyTA2zEqW6awwUqQFyFGiT7oCVVnnQ:7WcuVzPiAsvzLW3jey3eICymm4cTgSkhWYnOtDCmri/Bc4VR6Jw9P9XpgFqD2VAna1g=]
-- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_ADDRESSES
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:taMZSisG/jaUFcH1UKFS2SDPhVGRMh9w:wfYypMTGKEYEzRCCzjnLFBWeT9XCx31xQObodmoptSrCMreWI1gqX2wUoGe7zaLFKfnLWWMEb+DAflXmhhr6EytEUT9XGhOxQJidR2CA5HqFnv2eB+3vl3XEgUye00xDagMG66TpDSCv9jTDEq/HidrDvdpoEvfZUVIoR7TPMV153nAiTMfUrfOdKQuAx929afqt8ifXoynG/BoAXzlY1EHYX/+x]
-- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_NODE
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:Eu4nySnPtCmJXye4CTr65gPPkviANQw9:1SH+lzXOhQNsXw6wT72jvm7iCpnCYNCySWwe5rHVLi7CFRj3czrKBJ0FQ28IEA==]
-- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_INVOICE_EXPIRATION
-  scope: RUN_TIME
-  value: 1m
-- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_CHECK_INCOMING_TX_INTERVAL
-  scope: RUN_TIME
-  value: 30s
-- key: USDT_TRON_SHASTA_TESTNET_PAYMENT_CONTRACT_ADDRESS
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:2aLHGhL+MNsKU4XLU8D59XOi5mMSM4em:SH5WU/eRS0+zVz6w0yFIPN+dXfW1pC9v/D82AQ7QxaWzGpG8/wRklGCOH8vVyqfN4Ic=]
-- key: TRONGRID_API_KEY
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:y1ICc/Cq2wFWl7OmHHrdAIEUteUZQc+w:X5JsOhoPxmzhfaSbmR4aIgE6TdXJj5kRgXm1UBxwhLoh2ZL5E8TANUhc2X/JGfm1OpHcAg==]
-- key: TRONGRID_BASE_URL
-  scope: RUN_TIME
-  value: https://api.trongrid.io
-- key: TRONGRID_TIMEOUT
-  scope: RUN_TIME
-  value: 30s
-- key: TRONGRID_SHASTA_TESTNET_API_KEY
-  scope: RUN_TIME
-  type: SECRET
-  value: EV[1:fjImNtn8PNKfMwLTe8PTlJiOPJeYrtFQ:lbvWC+vVHodcJDFEfyqFV9iFqZ70RkcB5lW6DcusWr/YTEX2J+nj4jyfaK2UEe4byynShg==]
-- key: TRONGRID_SHASTA_TESTNET_BASE_URL
-  scope: RUN_TIME
-  value: https://api.shasta.trongrid.io
-- key: TRONGRID_SHASTA_TESTNET_TIMEOUT
-  scope: RUN_TIME
-  value: 30s
 - key: STRIPE_PAYMENT_SECRET_KEY
   scope: RUN_TIME
   type: SECRET
@@ -246,6 +208,16 @@ envs:
 - key: REVALIDATION_HTTP_TIMEOUT
   scope: RUN_TIME
   value: 10s
+- key: GA4MP_ENABLED
+  scope: RUN_TIME
+  value: "true"
+- key: GA4MP_MEASUREMENT_ID
+  scope: RUN_TIME
+  value: G-XXXXXXXXXX
+- key: GA4MP_API_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: EV[1:riMZ1Z6jrSpxT2ITneHDZlzWJPH9JbjE:UFmdGFSUfsUM4F+xiQk+DlIKkmYfdFpvhNEGp+KnfAsZq9QZA5RTZDmSQGXPws1pXE32xeTIBqHbpCUyFcOYKfmCpL70joM6hQ4RGuAOdOb3VUZqzamxMbU=]
 - key: GA4_ENABLED
   scope: RUN_TIME
   value: "true"
@@ -347,9 +319,11 @@ ingress:
       - OPTIONS
       allow_origins:
       - exact: https://grbpwr.com
+      - exact: https://admin.grbpwr.com
       - exact: https://backend.grbpwr.com
       - regex: ^http://localhost(:[0-9]+)?$
       - regex: ^https://[a-z0-9-]+\.github\.io$
+      - regex: ^https://.*\.vercel\.app$
       expose_headers:
       - Content-Length
       - X-Request-Id
@@ -362,9 +336,6 @@ region: fra
 services:
 - dockerfile_path: /Dockerfile
   envs:
-  - key: DATABASE_URL
-    scope: RUN_TIME
-    value: ${production-database.DATABASE_URL}
   - key: DATABASE_URL
     scope: RUN_TIME
     value: ${mysql-grbpwr.DATABASE_URL}

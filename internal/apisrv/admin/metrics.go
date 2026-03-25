@@ -158,6 +158,9 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			return nil, status.Errorf(codes.Internal, "can't get product engagement")
 		}
 		resp.ProductEngagement = dto.ConvertProductEngagementMetricsToPb(items)
+		resp.ProductEngagementBubbleMatrix = dto.ConvertProductEngagementBubbleMatrixToPb(
+			buildBubbleMatrix(items),
+		)
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_FORM_ERRORS) {
@@ -472,6 +475,95 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 	}
 
 	return resp, nil
+}
+
+// buildBubbleMatrix aggregates per-product engagement rows into a bubble-chart matrix
+// with percentage rates and an overall summary.
+func buildBubbleMatrix(items []entity.ProductEngagementMetric) *entity.ProductEngagementBubbleMatrix {
+	if len(items) == 0 {
+		return nil
+	}
+
+	type agg struct {
+		name       string
+		views      int64
+		zooms      int64
+		scroll75   int64
+		scroll100  int64
+		timeOnPage float64
+		timeCount  int
+	}
+
+	byProduct := make(map[string]*agg)
+	for _, m := range items {
+		a, ok := byProduct[m.ProductID]
+		if !ok {
+			a = &agg{name: m.ProductName}
+			byProduct[m.ProductID] = a
+		}
+		a.views += m.ImageViews
+		a.zooms += m.ZoomEvents
+		a.scroll75 += m.Scroll75
+		a.scroll100 += m.Scroll100
+		if m.AvgTimeOnPageSeconds > 0 {
+			a.timeOnPage += m.AvgTimeOnPageSeconds
+			a.timeCount++
+		}
+	}
+
+	pctSafe := func(part, total int64) float64 {
+		if total == 0 {
+			return 0
+		}
+		return float64(part) / float64(total) * 100
+	}
+
+	rows := make([]entity.ProductEngagementBubbleRow, 0, len(byProduct))
+	var totalViews, totalZooms, totalS75, totalS100 int64
+	var totalTime float64
+	var timeProducts int
+
+	for pid, a := range byProduct {
+		avgTime := 0.0
+		if a.timeCount > 0 {
+			avgTime = a.timeOnPage / float64(a.timeCount)
+		}
+		rows = append(rows, entity.ProductEngagementBubbleRow{
+			ProductID:            pid,
+			ProductName:          a.name,
+			TotalImageViews:      a.views,
+			TotalZoomEvents:      a.zooms,
+			TotalScroll75:        a.scroll75,
+			TotalScroll100:       a.scroll100,
+			ZoomRatePct:          pctSafe(a.zooms, a.views),
+			Scroll75RatePct:      pctSafe(a.scroll75, a.views),
+			Scroll100RatePct:     pctSafe(a.scroll100, a.views),
+			AvgTimeOnPageSeconds: avgTime,
+		})
+		totalViews += a.views
+		totalZooms += a.zooms
+		totalS75 += a.scroll75
+		totalS100 += a.scroll100
+		if avgTime > 0 {
+			totalTime += avgTime
+			timeProducts++
+		}
+	}
+
+	avgOverallTime := 0.0
+	if timeProducts > 0 {
+		avgOverallTime = totalTime / float64(timeProducts)
+	}
+
+	return &entity.ProductEngagementBubbleMatrix{
+		Rows: rows,
+		Overall: entity.ProductEngagementMetricsPct{
+			AvgZoomRatePct:       pctSafe(totalZooms, totalViews),
+			AvgScroll75RatePct:   pctSafe(totalS75, totalViews),
+			AvgScroll100RatePct:  pctSafe(totalS100, totalViews),
+			AvgTimeOnPageSeconds: avgOverallTime,
+		},
+	}
 }
 
 // parseMetricsPeriod parses "7d", "30d", "90d" or ISO8601 duration (e.g. P7D, P30D) into time.Duration.

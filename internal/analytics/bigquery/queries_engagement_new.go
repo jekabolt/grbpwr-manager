@@ -34,23 +34,47 @@ func (c *Client) getTimeOnPage(
 ) ([]entity.TimeOnPageRow, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "event_name")
 	if err != nil {
 		return nil, fmt.Errorf("GetTimeOnPage: %w", err)
 	}
 
+	// The frontend fires time_on_page as periodic heartbeats (~40 s interval).
+	// Each heartbeat carries cumulative visible/total time for the current page visit.
+	// We keep only the LAST heartbeat per (user, session, page, day) — the final
+	// measurement — and cap values at 1800 s (30 min) to filter bots/background tabs.
 	sql := fmt.Sprintf(`
+		WITH ranked AS (
+			SELECT
+				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				user_pseudo_id,
+				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') AS page_path,
+				SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_seconds') AS FLOAT64) AS visible_time,
+				SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'total_time_seconds') AS FLOAT64) AS total_time,
+				SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'engagement_score') AS FLOAT64) AS engagement_score,
+				ROW_NUMBER() OVER (
+					PARTITION BY
+						DATE(TIMESTAMP_MICROS(event_timestamp)),
+						user_pseudo_id,
+						(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id'),
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path')
+					ORDER BY event_timestamp DESC
+				) AS rn
+			FROM %s
+			WHERE %s
+				AND event_name = 'time_on_page'
+				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') IS NOT NULL
+		)
 		SELECT
-			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') AS page_path,
-			COALESCE(AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_seconds') AS FLOAT64)), 0.0) AS avg_visible_time_seconds,
-			COALESCE(AVG(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'total_time_seconds') AS FLOAT64)), 0.0) AS avg_total_time_seconds,
-			AVG(COALESCE(SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'engagement_score') AS FLOAT64), 0.0)) AS avg_engagement_score,
+			event_date,
+			page_path,
+			COALESCE(AVG(LEAST(COALESCE(visible_time, 0), 1800)), 0.0) AS avg_visible_time_seconds,
+			COALESCE(AVG(LEAST(COALESCE(total_time, 0), 1800)), 0.0) AS avg_total_time_seconds,
+			COALESCE(AVG(COALESCE(engagement_score, 0)), 0.0) AS avg_engagement_score,
 			COUNT(*) AS page_views
-		FROM %s
-		WHERE %s
-			AND event_name = 'time_on_page'
-			AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') IS NOT NULL
+		FROM ranked
+		WHERE rn = 1
 		GROUP BY event_date, page_path
 		ORDER BY event_date, page_views DESC
 	`, src, c.dateFilterSQL(startDate, endDate))

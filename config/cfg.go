@@ -188,6 +188,8 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.retry_base_interval", "MAILER_RETRY_BASE_INTERVAL")
 	viper.BindEnv("mailer.retry_max_interval", "MAILER_RETRY_MAX_INTERVAL")
 	viper.BindEnv("mailer.inline_send_lease", "MAILER_INLINE_SEND_LEASE")
+	viper.BindEnv("mailer.webhook_secret", "MAILER_WEBHOOK_SECRET")
+	viper.BindEnv("mailer.unsubscribe_base_url", "MAILER_UNSUBSCRIBE_BASE_URL")
 
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")

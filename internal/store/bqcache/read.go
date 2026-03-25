@@ -315,7 +315,15 @@ func (s *ReadStore) GetBQDeviceFunnel(ctx context.Context, from, to time.Time) (
 func (s *ReadStore) GetBQProductEngagement(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.ProductEngagementMetric, error) {
 	page := storeutil.BQPageParams{Limit: limit, Offset: offset}
 	query := `
-		SELECT :toDate AS date, product_id, product_name, image_views, zoom_events, scroll_75, scroll_100
+		SELECT
+			:toDate AS date,
+			agg.product_id,
+			agg.product_name,
+			agg.image_views,
+			agg.zoom_events,
+			agg.scroll_75,
+			agg.scroll_100,
+			COALESCE(top.avg_time_on_page, 0) AS avg_time_on_page_seconds
 		FROM (
 			SELECT
 				product_name,
@@ -328,17 +336,29 @@ func (s *ReadStore) GetBQProductEngagement(ctx context.Context, from, to time.Ti
 			WHERE date >= :fromDate AND date <= :toDate
 			GROUP BY product_name
 		) agg
-		ORDER BY image_views DESC
+		LEFT JOIN (
+			SELECT
+				SUBSTRING_INDEX(page_path, '/', -1) AS product_id,
+				CASE WHEN SUM(page_views) > 0
+					THEN SUM(avg_visible_time_seconds * page_views) / SUM(page_views)
+					ELSE 0 END AS avg_time_on_page
+			FROM bq_time_on_page
+			WHERE date >= :fromDate AND date <= :toDate
+				AND page_path LIKE '%%/product/%%'
+			GROUP BY SUBSTRING_INDEX(page_path, '/', -1)
+		) top ON top.product_id = agg.product_id
+		ORDER BY agg.image_views DESC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
-		Date        string `db:"date"`
-		ProductID   string `db:"product_id"`
-		ProductName string `db:"product_name"`
-		ImageViews  int64  `db:"image_views"`
-		ZoomEvents  int64  `db:"zoom_events"`
-		Scroll75    int64  `db:"scroll_75"`
-		Scroll100   int64  `db:"scroll_100"`
+		Date                 string  `db:"date"`
+		ProductID            string  `db:"product_id"`
+		ProductName          string  `db:"product_name"`
+		ImageViews           int64   `db:"image_views"`
+		ZoomEvents           int64   `db:"zoom_events"`
+		Scroll75             int64   `db:"scroll_75"`
+		Scroll100            int64   `db:"scroll_100"`
+		AvgTimeOnPageSeconds float64 `db:"avg_time_on_page_seconds"`
 	}
 	params := map[string]any{"fromDate": from.Format("2006-01-02"), "toDate": to.Format("2006-01-02"), "limit": page.EffectiveLimit(), "offset": page.EffectiveOffset()}
 	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, query, params)
@@ -354,6 +374,7 @@ func (s *ReadStore) GetBQProductEngagement(ctx context.Context, from, to time.Ti
 		result = append(result, entity.ProductEngagementMetric{
 			Date: date, ProductID: r.ProductID, ProductName: r.ProductName,
 			ImageViews: r.ImageViews, ZoomEvents: r.ZoomEvents, Scroll75: r.Scroll75, Scroll100: r.Scroll100,
+			AvgTimeOnPageSeconds: r.AvgTimeOnPageSeconds,
 		})
 	}
 	return result, nil
@@ -573,9 +594,22 @@ func (s *ReadStore) GetBQCheckoutTimings(ctx context.Context, from, to time.Time
 func (s *ReadStore) GetBQTimeOnPage(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.TimeOnPageRow, error) {
 	page := storeutil.BQPageParams{Limit: limit, Offset: offset}
 	query := `
-		SELECT date, page_path, avg_visible_time_seconds, avg_total_time_seconds, avg_engagement_score, page_views
+		SELECT
+			:toDate AS date,
+			page_path,
+			CASE WHEN SUM(page_views) > 0
+				THEN SUM(avg_visible_time_seconds * page_views) / SUM(page_views)
+				ELSE 0 END AS avg_visible_time_seconds,
+			CASE WHEN SUM(page_views) > 0
+				THEN SUM(avg_total_time_seconds * page_views) / SUM(page_views)
+				ELSE 0 END AS avg_total_time_seconds,
+			CASE WHEN SUM(page_views) > 0
+				THEN SUM(avg_engagement_score * page_views) / SUM(page_views)
+				ELSE 0 END AS avg_engagement_score,
+			SUM(page_views) AS page_views
 		FROM bq_time_on_page
 		WHERE date >= :fromDate AND date <= :toDate
+		GROUP BY page_path
 		ORDER BY page_views DESC
 		LIMIT :limit OFFSET :offset
 	`

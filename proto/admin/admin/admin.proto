@@ -641,6 +641,7 @@ message GetMetricsResponse {
   repeated SizeGuideClickRow size_guide_clicks = 41;
   repeated DetailsExpansionRow details_expansion = 42;
   repeated NotifyMeIntentRow notify_me_intent = 43;
+  ProductEngagementBubbleMatrix product_engagement_bubble_matrix = 44;
 }
 
 message FunnelSection {
@@ -1178,6 +1179,32 @@ message ProductEngagementMetric {
   int64 zoom_events = 5;
   int64 scroll_75 = 6;
   int64 scroll_100 = 7;
+  double avg_time_on_page_seconds = 8;
+}
+
+message ProductEngagementBubbleRow {
+  string product_id = 1;
+  string product_name = 2;
+  int64 total_image_views = 3;
+  int64 total_zoom_events = 4;
+  int64 total_scroll_75 = 5;
+  int64 total_scroll_100 = 6;
+  double zoom_rate_pct = 7;
+  double scroll_75_rate_pct = 8;
+  double scroll_100_rate_pct = 9;
+  double avg_time_on_page_seconds = 10;
+}
+
+message ProductEngagementMetricsPct {
+  double avg_zoom_rate_pct = 1;
+  double avg_scroll_75_rate_pct = 2;
+  double avg_scroll_100_rate_pct = 3;
+  double avg_time_on_page_seconds = 4;
+}
+
+message ProductEngagementBubbleMatrix {
+  repeated ProductEngagementBubbleRow rows = 1;
+  ProductEngagementMetricsPct overall = 2;
 }
 
 // --- Analytics: Form Errors ---
@@ -1316,8 +1343,8 @@ message SizeRunEfficiencyRow {
   int32 product_id = 1;
   string product_name = 2;
   int32 total_sizes = 3;
-  int32 sold_through_sizes = 4;
-  double efficiency_pct = 5;
+  int32 sold_through_sizes = 4; // Count of sizes with any sales activity (>0 units sold)
+  double efficiency_pct = 5; // (sold_through_sizes / total_sizes) * 100
 }
 
 // --- Analytics: Slow Movers ---
