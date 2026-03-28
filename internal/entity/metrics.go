@@ -91,7 +91,12 @@ type BusinessMetrics struct {
 	RepeatCustomersRate  MetricWithComparison
 	AvgOrdersPerCustomer MetricWithComparison
 	AvgDaysBetweenOrders MetricWithComparison
+	NewCustomers         MetricWithComparison // Aggregate of new_customers_by_day series
 	CLVDistribution      CLVStats
+
+	// Shipping / logistics metrics
+	AvgShippingCost   MetricWithComparison
+	TotalShippingCost MetricWithComparison
 
 	// Promo
 	RevenueByPromo []PromoMetric
@@ -178,6 +183,8 @@ type GeographyMetric struct {
 	CompareValue *decimal.Decimal
 	Count        int
 	CompareCount *int // optional, for comparison period
+	SharePct     *float64 // percentage of total revenue
+	AvgOrderValue *decimal.Decimal // average order value for this geography
 }
 
 // RegionMetric aggregates by shipping region (AFRICA, AMERICAS, EUROPE, etc.)
@@ -203,10 +210,11 @@ type ProductMetric struct {
 }
 
 type CategoryMetric struct {
-	CategoryId   int
-	CategoryName string
-	Value        decimal.Decimal
-	Count        int
+	CategoryId          int
+	CategoryName        string
+	Value               decimal.Decimal
+	Count               int
+	CategoryDisplayName string
 }
 
 type CrossSellPair struct {
@@ -460,6 +468,12 @@ type CohortRetentionRow struct {
 	M4          int64 `db:"m4"`
 	M5          int64 `db:"m5"`
 	M6          int64 `db:"m6"`
+	M1Revenue   decimal.Decimal `db:"m1_revenue"`
+	M2Revenue   decimal.Decimal `db:"m2_revenue"`
+	M3Revenue   decimal.Decimal `db:"m3_revenue"`
+	M4Revenue   decimal.Decimal `db:"m4_revenue"`
+	M5Revenue   decimal.Decimal `db:"m5_revenue"`
+	M6Revenue   decimal.Decimal `db:"m6_revenue"`
 }
 
 type OrderSequenceMetric struct {
@@ -496,6 +510,27 @@ type CategoryLoyaltyRow struct {
 	CustomerCount  int64  `db:"customer_count"`
 }
 
+// CustomerSegmentRow represents AOV-based customer value segmentation.
+type CustomerSegmentRow struct {
+	Email         string
+	OrderCount    int64
+	TotalRevenue  decimal.Decimal
+	AvgOrderValue decimal.Decimal
+	Segment       string // "high", "medium", "low"
+}
+
+// RFMSegmentRow represents RFM (Recency, Frequency, Monetary) analysis results.
+type RFMSegmentRow struct {
+	Email          string
+	RecencyScore   int // 1-5 (5 = purchased recently)
+	FrequencyScore int // 1-5 (5 = frequent buyer)
+	MonetaryScore  int // 1-5 (5 = high spender)
+	RFMLabel       string // "Champions", "Loyal", "At-Risk", "Lost", etc.
+	LastPurchase   time.Time
+	OrderCount     int64
+	TotalSpent     decimal.Decimal
+}
+
 // --- Inventory Health entity types ---
 
 type InventoryHealthRow struct {
@@ -525,6 +560,8 @@ type SlowMoverRow struct {
 	UnitsSold    int64           `db:"units_sold"`
 	DaysInStock  float64         `db:"days_in_stock"`
 	LastSaleDate *time.Time      `db:"last_sale_date"`
+	ProductHidden bool           `db:"product_hidden"`
+	TotalViews    int64          `db:"total_views"`
 }
 
 // --- Return Analysis ---

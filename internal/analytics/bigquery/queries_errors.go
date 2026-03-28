@@ -86,6 +86,10 @@ func (c *Client) getFormErrors(
 }
 
 // GetExceptions returns JS exception events aggregated by page path per day.
+// Note: page_location from GA4 contains full URLs (e.g., https://example.com/checkout?step=2),
+// not just paths. Frontend filtering by checkout path substring should work but may need
+// normalization if URLs vary (query params, domains). For more robust filtering, consider
+// extracting path-only via REGEXP_EXTRACT in the SQL below.
 func (c *Client) GetExceptions(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -113,10 +117,14 @@ func (c *Client) getExceptions(
 	if err != nil {
 		return nil, fmt.Errorf("GetExceptions: %w", err)
 	}
+	// page_location is typically a full URL (https://domain.com/path?query).
+	// For checkout filtering, storing the full URL allows substring matching on "/checkout".
+	// If more precise path extraction is needed, uncomment the REGEXP_EXTRACT line below.
 	sql := fmt.Sprintf(`
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), '/') AS page_path,
+			-- For path-only extraction: REGEXP_EXTRACT(page_location, r'https?://[^/]+(/[^?]*)') AS page_path,
 			COUNT(*) AS exception_count,
 			IFNULL(
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'description'),

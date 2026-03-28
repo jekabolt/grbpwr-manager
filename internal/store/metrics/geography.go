@@ -21,7 +21,7 @@ func (s *Store) getRevenueByGeography(ctx context.Context, from, to time.Time, g
 		selectCol = "a.country, a.state, a.city"
 	} else {
 		groupCol = "a.country"
-		selectCol = "a.country AS country, NULL AS state, NULL AS city"
+		selectCol = "a.country, NULL AS state, NULL AS city"
 	}
 	query := fmt.Sprintf(`
 		WITH order_base AS (
@@ -45,10 +45,15 @@ func (s *Store) getRevenueByGeography(ctx context.Context, from, to time.Time, g
 				AND co.order_status_id IN (:statusIds)
 				GROUP BY co.id, co.total_price, co.refunded_amount
 			) ob
+		),
+		total_revenue AS (
+			SELECT COALESCE(SUM(revenue_base), 0) AS total FROM order_base
 		)
 		SELECT %s,
 			COALESCE(SUM(ob.revenue_base), 0) AS value,
-			COUNT(DISTINCT ob.id) AS cnt
+			COUNT(DISTINCT ob.id) AS cnt,
+			COALESCE(SUM(ob.revenue_base) / NULLIF((SELECT total FROM total_revenue), 0) * 100, 0) AS share_pct,
+			COALESCE(AVG(ob.revenue_base), 0) AS aov
 		FROM order_base ob
 		JOIN buyer b ON ob.id = b.order_id
 		JOIN address a ON b.shipping_address_id = a.id
@@ -61,11 +66,13 @@ func (s *Store) getRevenueByGeography(ctx context.Context, from, to time.Time, g
 
 	params := map[string]any{"from": from, "to": to, "country": country, "city": city, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()}
 	rows, err := storeutil.QueryListNamed[struct {
-		Country string          `db:"country"`
-		State   *string         `db:"state"`
-		City    *string         `db:"city"`
-		Value   decimal.Decimal `db:"value"`
-		Count   int             `db:"cnt"`
+		Country  string          `db:"country"`
+		State    *string         `db:"state"`
+		City     *string         `db:"city"`
+		Value    decimal.Decimal `db:"value"`
+		Count    int             `db:"cnt"`
+		SharePct float64         `db:"share_pct"`
+		AOV      decimal.Decimal `db:"aov"`
 	}](ctx, s.DB, query, params)
 	if err != nil {
 		return nil, err
@@ -74,11 +81,13 @@ func (s *Store) getRevenueByGeography(ctx context.Context, from, to time.Time, g
 	result := make([]entity.GeographyMetric, len(rows))
 	for i, r := range rows {
 		result[i] = entity.GeographyMetric{
-			Country: r.Country,
-			State:   r.State,
-			City:    r.City,
-			Value:   r.Value,
-			Count:   r.Count,
+			Country:       r.Country,
+			State:         r.State,
+			City:          r.City,
+			Value:         r.Value,
+			Count:         r.Count,
+			SharePct:      &r.SharePct,
+			AvgOrderValue: &r.AOV,
 		}
 	}
 	return result, nil
@@ -157,4 +166,10 @@ func (s *Store) getRevenueByRegion(byCountry []entity.GeographyMetric) ([]entity
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Value.GreaterThan(result[j].Value) })
 	return result, nil
+}
+
+// GetRevenueByCountry returns revenue breakdown by country for the given time period.
+// Public wrapper for geography breakdown used in dedicated geography section.
+func (s *Store) GetRevenueByCountry(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error) {
+	return s.getRevenueByGeography(ctx, from, to, "country", nil, nil)
 }

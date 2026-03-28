@@ -41,6 +41,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		repeatRate, avgOrders, avgDays decimal.Decimal
 		cRepeatRate, cAvgOrders, cAvgDays decimal.Decimal
 		emailSummary, cEmailSummary    *entity.EmailMetricsSummary
+		avgShipCost, cAvgShipCost      decimal.Decimal
+		totalShipCost, cTotalShipCost  decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -79,6 +81,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		promoOrders, err = s.getPromoUsageCount(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		avgShipCost, totalShipCost, err = s.getShippingCostMetrics(gctx, period.From, period.To)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
@@ -110,6 +117,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		g.Go(func() error {
 			var err error
 			cPromoOrders, err = s.getPromoUsageCount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cAvgShipCost, cTotalShipCost, err = s.getShippingCostMetrics(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -597,6 +609,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.AvgOrdersPerCustomer.Value = avgOrders
 	m.AvgDaysBetweenOrders.Value = avgDays
 
+	// Shipping cost metrics
+	m.AvgShippingCost.Value = avgShipCost
+	m.TotalShippingCost.Value = totalShipCost
+
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
 	m.Users.Value = decimal.NewFromInt(int64(totalUsers))
@@ -693,6 +709,12 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.AvgOrdersPerCustomer.ChangePct = changePct(avgOrders, cAvgOrders)
 		m.AvgDaysBetweenOrders.CompareValue = &cAvgDays
 		m.AvgDaysBetweenOrders.ChangePct = changePct(avgDays, cAvgDays)
+
+		// Shipping cost comparison
+		m.AvgShippingCost.CompareValue = &cAvgShipCost
+		m.AvgShippingCost.ChangePct = changePct(avgShipCost, cAvgShipCost)
+		m.TotalShippingCost.CompareValue = &cTotalShipCost
+		m.TotalShippingCost.ChangePct = changePct(totalShipCost, cTotalShipCost)
 	}
 
 	// Email delivery metrics
@@ -755,6 +777,14 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.SessionsByDay = fillTimeSeriesGaps(m.SessionsByDay, period.From, period.To, granularity)
 	m.UsersByDay = fillTimeSeriesGaps(m.UsersByDay, period.From, period.To, granularity)
 	m.PageViewsByDay = fillTimeSeriesGaps(m.PageViewsByDay, period.From, period.To, granularity)
+
+	// Compute NewCustomers aggregate from gap-filled series (sum of Count field)
+	var totalNewCustomers int
+	for _, point := range m.NewCustomersByDay {
+		totalNewCustomers += point.Count
+	}
+	m.NewCustomers.Value = decimal.NewFromInt(int64(totalNewCustomers))
+
 	if hasCompare {
 		m.RevenueByDayCompare = fillTimeSeriesGaps(m.RevenueByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.OrdersByDayCompare = fillTimeSeriesGaps(m.OrdersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
@@ -771,6 +801,14 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.SessionsByDayCompare = fillTimeSeriesGaps(m.SessionsByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.UsersByDayCompare = fillTimeSeriesGaps(m.UsersByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
 		m.PageViewsByDayCompare = fillTimeSeriesGaps(m.PageViewsByDayCompare, comparePeriod.From, comparePeriod.To, granularity)
+
+		// Compute NewCustomers comparison aggregate
+		var totalNewCustomersCompare int
+		for _, point := range m.NewCustomersByDayCompare {
+			totalNewCustomersCompare += point.Count
+		}
+		m.NewCustomers.CompareValue = ptr(decimal.NewFromInt(int64(totalNewCustomersCompare)))
+		m.NewCustomers.ChangePct = changePctInt(totalNewCustomers, totalNewCustomersCompare)
 	}
 
 	return m, nil

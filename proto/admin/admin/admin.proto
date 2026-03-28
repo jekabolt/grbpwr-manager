@@ -337,7 +337,6 @@ message GetDictionaryRequest {}
 
 message GetDictionaryResponse {
   common.Dictionary dictionary = 1;
-  common.CurrencyMap rates = 2;
 }
 
 // MEDIA MANAGER
@@ -598,6 +597,9 @@ enum MetricsSection {
   METRICS_SECTION_SIZE_GUIDE_CLICKS = 39;
   METRICS_SECTION_DETAILS_EXPANSION = 40;
   METRICS_SECTION_NOTIFY_ME_INTENT = 41;
+  METRICS_SECTION_GEOGRAPHY = 42;
+  METRICS_SECTION_CUSTOMER_SEGMENTATION = 43;
+  METRICS_SECTION_RFM = 44;
 }
 
 message GetMetricsRequest {
@@ -653,6 +655,9 @@ message GetMetricsResponse {
   repeated DetailsExpansionRow details_expansion = 42;
   repeated NotifyMeIntentRow notify_me_intent = 43;
   ProductEngagementBubbleMatrix product_engagement_bubble_matrix = 44;
+  GeographySection geography = 45;
+  repeated CustomerSegmentRow customer_segments = 46;
+  repeated RFMSegmentRow rfm_analysis = 47;
 }
 
 message FunnelSection {
@@ -772,6 +777,13 @@ message BusinessMetrics {
   MetricWithComparison email_open_rate = 75;
   MetricWithComparison email_click_rate = 76;
   MetricWithComparison email_bounce_rate = 77;
+
+  // Customer acquisition aggregate (sum of new_customers_by_day series)
+  MetricWithComparison new_customers = 80;
+
+  // Shipping / logistics metrics
+  MetricWithComparison avg_shipping_cost = 82;
+  MetricWithComparison total_shipping_cost = 83;
 }
 
 message PaymentMethodMetric {
@@ -806,12 +818,19 @@ message GeographyMetric {
   google.type.Decimal compare_value = 5;
   int32 count = 6;
   int32 compare_count = 7;
+  double share_pct = 8; // percentage of total revenue for this geography
+  google.type.Decimal avg_order_value = 9; // AOV for this geography
 }
 
 message RegionMetric {
   string region = 1;
   google.type.Decimal value = 2;
   int32 count = 3;
+}
+
+message GeographySection {
+  repeated GeographyMetric by_country = 1;
+  repeated GeographySessionMetric sessions_by_country = 2;
 }
 
 message CurrencyMetric {
@@ -830,9 +849,10 @@ message ProductMetric {
 
 message CategoryMetric {
   int32 category_id = 1;
-  string category_name = 2;
+  string category_name = 2; // Slug/key (e.g., hoodies_sweatshirts)
   google.type.Decimal value = 3;
   int32 count = 4;
+  string category_display_name = 5; // Human-readable label (e.g., Hoodies & Sweatshirts)
 }
 
 message CrossSellPair {
@@ -1321,6 +1341,12 @@ message CohortRetentionRow {
   int64 m4 = 6;
   int64 m5 = 7;
   int64 m6 = 8;
+  google.type.Decimal m1_revenue = 9;
+  google.type.Decimal m2_revenue = 10;
+  google.type.Decimal m3_revenue = 11;
+  google.type.Decimal m4_revenue = 12;
+  google.type.Decimal m5_revenue = 13;
+  google.type.Decimal m6_revenue = 14;
 }
 
 // --- Analytics: Order Sequence ---
@@ -1339,6 +1365,29 @@ message EntryProductMetric {
   string product_name = 2;
   int64 purchase_count = 3;
   google.type.Decimal total_revenue = 4;
+}
+
+// --- Analytics: Customer Segmentation ---
+
+message CustomerSegmentRow {
+  string email = 1;
+  int64 order_count = 2;
+  google.type.Decimal total_revenue = 3;
+  google.type.Decimal avg_order_value = 4;
+  string segment = 5; // "high", "medium", "low"
+}
+
+// --- Analytics: RFM Analysis ---
+
+message RFMSegmentRow {
+  string email = 1;
+  int32 recency_score = 2;
+  int32 frequency_score = 3;
+  int32 monetary_score = 4;
+  string rfm_label = 5;
+  google.protobuf.Timestamp last_purchase = 6;
+  int64 order_count = 7;
+  google.type.Decimal total_spent = 8;
 }
 
 // --- Analytics: Revenue Pareto ---
@@ -1398,6 +1447,8 @@ message SlowMoverRow {
   int64 units_sold = 4;
   double days_in_stock = 5;
   google.protobuf.Timestamp last_sale_date = 6;
+  bool product_hidden = 7; // Product visibility flag (from product.hidden)
+  int64 total_views = 8; // GA4 page views for period (from ga4_product_page_metrics)
 }
 
 // --- Analytics: Return Analysis ---

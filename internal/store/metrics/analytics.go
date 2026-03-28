@@ -32,6 +32,7 @@ func (s *Store) analytics() *analyticsStore {
 
 // GetSlowMovers returns bottom-performing products ordered by revenue (ascending).
 // Products with zero sales in the period appear first with revenue=0.
+// Includes hidden products with product_hidden flag and GA4 page views.
 func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time, limit int) ([]entity.SlowMoverRow, error) {
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
@@ -49,6 +50,14 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
 			GROUP BY oi.product_id
+		),
+		ga4_views AS (
+			SELECT
+				product_id,
+				SUM(page_views) AS total_views
+			FROM ga4_product_page_metrics
+			WHERE date >= :fromDate AND date < :toDate
+			GROUP BY product_id
 		)
 		SELECT
 			p.id AS product_id,
@@ -59,10 +68,12 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			COALESCE(ps.revenue, 0) AS revenue,
 			COALESCE(ps.units_sold, 0) AS units_sold,
 			DATEDIFF(NOW(), p.created_at) AS days_in_stock,
-			ps.last_sale_date
+			ps.last_sale_date,
+			COALESCE(p.hidden, 0) AS product_hidden,
+			COALESCE(gv.total_views, 0) AS total_views
 		FROM product p
 		LEFT JOIN product_sales ps ON ps.product_id = p.id
-		WHERE p.hidden = 0
+		LEFT JOIN ga4_views gv ON gv.product_id = p.id
 		ORDER BY revenue ASC, days_in_stock DESC
 		LIMIT :limit
 	`, statusIDs)
@@ -71,6 +82,8 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 		"baseCurrency": baseCurrency,
 		"from":         from,
 		"to":           to,
+		"fromDate":     from.Format("2006-01-02"),
+		"toDate":       to.Format("2006-01-02"),
 		"limit":        limit,
 	})
 	if err != nil {

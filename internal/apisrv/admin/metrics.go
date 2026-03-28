@@ -19,20 +19,32 @@ import (
 
 func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest) (*pb_admin.GetMetricsResponse, error) {
 	if strings.TrimSpace(req.Period) == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d)")
+		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d, today, WTD, MTD, QTD, YTD)")
 	}
-	dur, err := parseMetricsPeriod(req.Period)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
-	}
-
+	
 	endAt := time.Now().UTC()
 	if req.EndAt != nil {
 		endAt = req.EndAt.AsTime().UTC()
 	}
+	
+	// Check if period is a special "to date" format first
+	periodFrom, periodTo, isSpecial := computePeriodBounds(req.Period, endAt)
+	var dur time.Duration
+	
+	if !isSpecial {
+		// Parse as duration (7d, 30d, P7D, etc.)
+		var err error
+		dur, err = parseMetricsPeriod(req.Period)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
+		}
+		periodTo = endAt
+		periodFrom = endAt.Add(-dur)
+	} else {
+		// For special periods (today, WTD, etc.), compute duration for comparison periods
+		dur = periodTo.Sub(periodFrom)
+	}
 
-	periodTo := endAt
-	periodFrom := endAt.Add(-dur)
 	from, to := periodFrom, periodTo
 
 	comparePeriod := entity.TimeRange{}
@@ -423,6 +435,20 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.NotifyMeIntent = dto.ConvertNotifyMeIntentToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_GEOGRAPHY) {
+		byCountry, err := s.repo.Metrics().GetRevenueByCountry(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get geography revenue by country", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+		}
+		sessions, err := s.repo.GA4Data().GetGA4SessionsByCountry(ctx, from, to, 50)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get geography sessions by country", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+		}
+		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_ADD_TO_CART_RATE) {
 		// Convert protobuf granularity to entity granularity
 		granularity := entity.TrendGranularityDaily
@@ -491,6 +517,22 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			return nil, status.Errorf(codes.Internal, "can't get campaign attribution")
 		}
 		resp.CampaignAttribution = dto.ConvertCampaignAttributionAggregatedToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_CUSTOMER_SEGMENTATION) {
+		items, err := s.repo.Metrics().GetCustomerSegmentation(ctx, from, to)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't get customer segmentation")
+		}
+		resp.CustomerSegments = dto.ConvertCustomerSegmentationToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_RFM) {
+		items, err := s.repo.Metrics().GetRFMAnalysis(ctx, from, to)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't get RFM analysis")
+		}
+		resp.RfmAnalysis = dto.ConvertRFMAnalysisToPb(items)
 	}
 
 	return resp, nil
@@ -606,9 +648,25 @@ func funnelReconciliation(ctx context.Context, repo dependency.Repository, from,
 	return dbOrders, ga4Sessions
 }
 
-// parseMetricsPeriod parses "7d", "30d", "90d" or ISO8601 duration (e.g. P7D, P30D) into time.Duration.
+// parseMetricsPeriod parses period strings into time.Duration or special flags.
+// Supports:
+// - Shorthand: "7d", "30d", "90d" (N days back from end)
+// - ISO8601: "P7D", "P30D" (N days back)
+// - Today: "today", "1d" (start of today to now)
+// - WTD/MTD/QTD/YTD: "WTD", "MTD", "QTD", "YTD" (week/month/quarter/year to date)
+//
+// Note: GetMetrics calls computePeriodBounds first, so the special-period branch below
+// is unreachable in normal flows. Kept as a safety net for direct callers.
 func parseMetricsPeriod(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
+	sl := strings.ToLower(s)
+	
+	// Special: today or "to date" periods — handled in GetMetrics via computePeriodBounds
+	// This branch is unreachable from GetMetrics but preserved for direct callers.
+	if sl == "today" || sl == "1d" || sl == "wtd" || sl == "mtd" || sl == "qtd" || sl == "ytd" {
+		return 0, nil // signal: use computePeriodBounds
+	}
+	
 	// Shorthand: Nd
 	if m := regexp.MustCompile(`^(\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
 		days, err := strconv.Atoi(m[1])
@@ -631,7 +689,51 @@ func parseMetricsPeriod(s string) (time.Duration, error) {
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	return 0, fmt.Errorf("expected format: 7d, 30d, 90d or P7D, P30D")
+	return 0, fmt.Errorf("expected format: 7d, 30d, today, WTD, MTD, QTD, YTD, or P7D, P30D")
+}
+
+// computePeriodBounds returns (from, to) for special period strings like "today", "WTD", "MTD", "QTD", "YTD".
+// Returns (zero, zero, false) if the period is not a special case.
+func computePeriodBounds(period string, endAt time.Time) (from, to time.Time, isSpecial bool) {
+	pl := strings.ToLower(strings.TrimSpace(period))
+	now := endAt
+	
+	switch pl {
+	case "today", "1d":
+		// Start of today (00:00:00) to now
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		to = now
+		return from, to, true
+		
+	case "wtd": // Week to date (Monday 00:00 to now)
+		weekday := now.Weekday()
+		daysFromMonday := int(weekday - time.Monday)
+		if daysFromMonday < 0 {
+			daysFromMonday += 7 // Sunday is 0, Monday is 1
+		}
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -daysFromMonday)
+		to = now
+		return from, to, true
+		
+	case "mtd": // Month to date (1st of month 00:00 to now)
+		from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		to = now
+		return from, to, true
+		
+	case "qtd": // Quarter to date (start of Q1/Q2/Q3/Q4 to now)
+		quarter := int((now.Month()-1)/3) + 1
+		quarterStartMonth := time.Month((quarter-1)*3 + 1)
+		from = time.Date(now.Year(), quarterStartMonth, 1, 0, 0, 0, 0, time.UTC)
+		to = now
+		return from, to, true
+		
+	case "ytd": // Year to date (Jan 1 00:00 to now)
+		from = time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
+		to = now
+		return from, to, true
+	}
+	
+	return time.Time{}, time.Time{}, false
 }
 
 // inferMetricsGranularity derives granularity from period length: <=14d→day, 15-90d→week, >90d→month.

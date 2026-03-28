@@ -236,6 +236,12 @@ type (
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).
 		GetPeriodOrderCount(ctx context.Context, from, to time.Time) (int, error)
+		// GetRevenueByCountry returns revenue breakdown by country with share % and AOV.
+		GetRevenueByCountry(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error)
+		// GetCustomerSegmentation returns AOV-based customer segmentation (high/medium/low tiers).
+		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
+		// GetRFMAnalysis returns RFM (Recency, Frequency, Monetary) customer segmentation.
+		GetRFMAnalysis(ctx context.Context, from, to time.Time) ([]entity.RFMSegmentRow, error)
 	}
 
 	Support interface {

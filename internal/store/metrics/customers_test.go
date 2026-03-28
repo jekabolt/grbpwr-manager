@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"math"
-	"sort"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -108,35 +107,68 @@ func TestP90IndexCalculation(t *testing.T) {
 }
 
 func calculateCLVStatsFromFloats(clvs []float64) entity.CLVStats {
-	if len(clvs) == 0 {
-		return entity.CLVStats{}
+	d := make([]decimal.Decimal, len(clvs))
+	for i, v := range clvs {
+		d[i] = decimal.NewFromFloat(v)
+	}
+	return calculateCLVStatsFromDecimals(d)
+}
+
+func TestRFMLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		r, f, m  int
+		expected string
+	}{
+		{"Champions - high all", 5, 5, 5, "Champions"},
+		{"Champions - threshold", 4, 4, 4, "Champions"},
+		{"Loyal - good all", 3, 3, 3, "Loyal"},
+		{"Loyal - high recency moderate freq high monetary", 5, 3, 5, "Loyal"},
+		{"Potential Loyalist - recent moderate freq", 4, 2, 3, "Potential Loyalist"},
+		{"At Risk - good spender low recency", 2, 3, 3, "At Risk"},
+		{"At Risk - good spender lowest recency", 1, 3, 3, "At Risk"},
+		{"Can't Lose Them - high spender no recency", 1, 4, 4, "Can't Lose Them"},
+		{"Lost - single purchase long ago", 1, 1, 1, "Lost"},
+		{"Lost - single purchase medium recency", 2, 1, 2, "Lost"},
+		{"New Customers - recent first purchase", 5, 1, 3, "New Customers"},
+		{"New Customers - good recency first purchase", 3, 1, 2, "New Customers"},
+		{"Promising - recent low freq/monetary", 3, 2, 2, "Promising"},
+		{"Potential Loyalist - recent moderate freq low monetary", 4, 2, 1, "Potential Loyalist"},
+		{"Need Attention - mid slipping", 3, 2, 3, "Need Attention"},
+		{"About to Sleep - below avg", 2, 2, 2, "About to Sleep"},
+		{"Hibernating - low recency freq some value", 2, 2, 1, "Hibernating"},
+		{"Hibernating - lowest recency some freq", 1, 2, 2, "Hibernating"},
+		{"Hibernating - edge case low recency moderate freq low monetary", 2, 3, 1, "Hibernating"},
 	}
 
-	sort.Float64s(clvs)
-
-	mean := 0.0
-	for _, v := range clvs {
-		mean += v
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := rfmLabel(tt.r, tt.f, tt.m)
+			assert.Equal(t, tt.expected, result, "RFM(%d,%d,%d)", tt.r, tt.f, tt.m)
+		})
 	}
-	mean /= float64(len(clvs))
+}
 
-	median := 0.0
-	if len(clvs)%2 == 1 {
-		median = clvs[len(clvs)/2]
-	} else {
-		median = (clvs[len(clvs)/2-1] + clvs[len(clvs)/2]) / 2
+func TestFormatCategoryDisplayName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"Empty string", "", ""},
+		{"Single word", "jackets", "Jackets"},
+		{"Two words with underscore", "hoodies_sweatshirts", "Hoodies Sweatshirts"},
+		{"Three words", "t_shirts_tops", "T Shirts Tops"},
+		{"Already capitalized", "Hoodies_Sweatshirts", "Hoodies Sweatshirts"},
+		{"Mixed case", "Hoodies_sweatshirts", "Hoodies Sweatshirts"},
+		{"Single char", "a", "A"},
+		{"Multiple underscores", "a_b_c_d", "A B C D"},
 	}
 
-	p90Idx := int(math.Ceil(float64(len(clvs))*0.9)) - 1
-	if p90Idx < 0 {
-		p90Idx = 0
-	}
-	p90 := clvs[p90Idx]
-
-	return entity.CLVStats{
-		Mean:       decimal.NewFromFloat(mean).Round(2),
-		Median:     decimal.NewFromFloat(median).Round(2),
-		P90:        decimal.NewFromFloat(p90).Round(2),
-		SampleSize: len(clvs),
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatCategoryDisplayName(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
 	}
 }

@@ -38,7 +38,13 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		RepeatCustomersRate:            metricWithComparisonToPb(m.RepeatCustomersRate),
 		AvgOrdersPerCustomer:           metricWithComparisonToPb(m.AvgOrdersPerCustomer),
 		AvgDaysBetweenOrders:           metricWithComparisonToPb(m.AvgDaysBetweenOrders),
+		NewCustomers:                   metricWithComparisonToPb(m.NewCustomers),
 		ClvDistribution:                clvStatsToPb(m.CLVDistribution),
+
+		// Shipping / logistics metrics
+		AvgShippingCost:   metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)), // Round to 2 decimal places
+		TotalShippingCost: metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
+
 		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
 		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
 		RevenueByRegion:                regionMetricsToPb(m.RevenueByRegion),
@@ -238,6 +244,12 @@ func geographyMetricsToPb(list []entity.GeographyMetric) []*pb_admin.GeographyMe
 		if g.CompareCount != nil {
 			pb[i].CompareCount = int32(*g.CompareCount)
 		}
+		if g.SharePct != nil {
+			pb[i].SharePct = *g.SharePct
+		}
+		if g.AvgOrderValue != nil {
+			pb[i].AvgOrderValue = &decimal.Decimal{Value: g.AvgOrderValue.String()}
+		}
 	}
 	return pb
 }
@@ -311,10 +323,11 @@ func categoryMetricsToPb(list []entity.CategoryMetric) []*pb_admin.CategoryMetri
 	pb := make([]*pb_admin.CategoryMetric, len(list))
 	for i, c := range list {
 		pb[i] = &pb_admin.CategoryMetric{
-			CategoryId:   int32(c.CategoryId),
-			CategoryName: c.CategoryName,
-			Value:        &decimal.Decimal{Value: c.Value.String()},
-			Count:        int32(c.Count),
+			CategoryId:          int32(c.CategoryId),
+			CategoryName:        c.CategoryName,
+			CategoryDisplayName: c.CategoryDisplayName,
+			Value:               &decimal.Decimal{Value: c.Value.String()},
+			Count:               int32(c.Count),
 		}
 	}
 	return pb
@@ -470,6 +483,14 @@ func geographySessionMetricsToPb(list []entity.GeographySessionMetric) []*pb_adm
 		}
 	}
 	return pb
+}
+
+// ConvertGeographyToPb converts geography metrics and session data to protobuf GeographySection.
+func ConvertGeographyToPb(byCountry []entity.GeographyMetric, sessions []entity.GeographySessionMetric) *pb_admin.GeographySection {
+	return &pb_admin.GeographySection{
+		ByCountry:         geographyMetricsToPb(byCountry),
+		SessionsByCountry: geographySessionMetricsToPb(sessions),
+	}
 }
 
 // --- BQ Analytics DTO converters ---
@@ -799,6 +820,12 @@ func ConvertCohortRetentionToPb(list []entity.CohortRetentionRow) []*pb_admin.Co
 			M4:          r.M4,
 			M5:          r.M5,
 			M6:          r.M6,
+			M1Revenue:   &decimal.Decimal{Value: r.M1Revenue.Round(2).String()},
+			M2Revenue:   &decimal.Decimal{Value: r.M2Revenue.Round(2).String()},
+			M3Revenue:   &decimal.Decimal{Value: r.M3Revenue.Round(2).String()},
+			M4Revenue:   &decimal.Decimal{Value: r.M4Revenue.Round(2).String()},
+			M5Revenue:   &decimal.Decimal{Value: r.M5Revenue.Round(2).String()},
+			M6Revenue:   &decimal.Decimal{Value: r.M6Revenue.Round(2).String()},
 		}
 	}
 	return pb
@@ -926,11 +953,13 @@ func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow 
 	pb := make([]*pb_admin.SlowMoverRow, len(list))
 	for i, r := range list {
 		pb[i] = &pb_admin.SlowMoverRow{
-			ProductId:   int32(r.ProductID),
-			ProductName: r.ProductName,
-			Revenue:     &decimal.Decimal{Value: r.Revenue.String()},
-			UnitsSold:   r.UnitsSold,
-			DaysInStock: r.DaysInStock,
+			ProductId:     int32(r.ProductID),
+			ProductName:   r.ProductName,
+			Revenue:       &decimal.Decimal{Value: r.Revenue.String()},
+			UnitsSold:     r.UnitsSold,
+			DaysInStock:   r.DaysInStock,
+			ProductHidden: r.ProductHidden,
+			TotalViews:    r.TotalViews,
 		}
 		if r.LastSaleDate != nil {
 			pb[i].LastSaleDate = timestamppb.New(*r.LastSaleDate)
@@ -1317,4 +1346,37 @@ func ConvertCampaignAttributionAggregatedToPb(list []entity.CampaignAttributionA
 		})
 	}
 	return pb
+}
+
+// ConvertCustomerSegmentationToPb converts AOV customer segments to protobuf.
+func ConvertCustomerSegmentationToPb(rows []entity.CustomerSegmentRow) []*pb_admin.CustomerSegmentRow {
+	result := make([]*pb_admin.CustomerSegmentRow, len(rows))
+	for i, r := range rows {
+		result[i] = &pb_admin.CustomerSegmentRow{
+			Email:         r.Email,
+			OrderCount:    r.OrderCount,
+			TotalRevenue:  &decimal.Decimal{Value: r.TotalRevenue.Round(2).String()},
+			AvgOrderValue: &decimal.Decimal{Value: r.AvgOrderValue.Round(2).String()},
+			Segment:       r.Segment,
+		}
+	}
+	return result
+}
+
+// ConvertRFMAnalysisToPb converts RFM analysis results to protobuf.
+func ConvertRFMAnalysisToPb(rows []entity.RFMSegmentRow) []*pb_admin.RFMSegmentRow {
+	result := make([]*pb_admin.RFMSegmentRow, len(rows))
+	for i, r := range rows {
+		result[i] = &pb_admin.RFMSegmentRow{
+			Email:          r.Email,
+			RecencyScore:   int32(r.RecencyScore),
+			FrequencyScore: int32(r.FrequencyScore),
+			MonetaryScore:  int32(r.MonetaryScore),
+			RfmLabel:       r.RFMLabel,
+			LastPurchase:   timestamppb.New(r.LastPurchase),
+			OrderCount:     r.OrderCount,
+			TotalSpent:     &decimal.Decimal{Value: r.TotalSpent.Round(2).String()},
+		}
+	}
+	return result
 }

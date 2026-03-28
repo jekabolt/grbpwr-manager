@@ -24,10 +24,35 @@ func (s *Store) retention() *retentionStore {
 // Groups customers by the month of their first order, then tracks period retention:
 // M1 = customers who ordered specifically in month 1, M2 = month 2, etc.
 func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.Time) ([]entity.CohortRetentionRow, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 
 	query := fmt.Sprintf(`
-		WITH customer_first_order AS (
+		WITH order_revenue_base AS (
+			SELECT ob.id, b.email, co.placed,
+				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+			FROM (
+				SELECT co.id,
+					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price,
+					COALESCE(co.refunded_amount, 0) AS refunded_amount
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER('%s')
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER('%s')
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.order_status_id IN (%s)
+					AND co.placed >= :from
+				GROUP BY co.id, co.total_price, co.refunded_amount
+			) ob
+			JOIN customer_order co ON ob.id = co.id
+			JOIN buyer b ON co.id = b.order_id
+		),
+		customer_first_order AS (
 			SELECT
 				b.email,
 				MIN(co.placed) AS first_order_date
@@ -40,12 +65,11 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 			SELECT
 				cfo.email,
 				DATE_FORMAT(cfo.first_order_date, '%%Y-%%m-01') AS cohort_month,
-				TIMESTAMPDIFF(MONTH, cfo.first_order_date, co.placed) AS months_since_first
+				TIMESTAMPDIFF(MONTH, cfo.first_order_date, orb.placed) AS months_since_first,
+				orb.revenue_base
 			FROM customer_first_order cfo
-			JOIN buyer b ON cfo.email = b.email
-			JOIN customer_order co ON co.id = b.order_id
-			WHERE co.order_status_id IN (%s)
-				AND cfo.first_order_date >= :from AND cfo.first_order_date < :to
+			JOIN order_revenue_base orb ON cfo.email = orb.email
+			WHERE cfo.first_order_date >= :from AND cfo.first_order_date < :to
 		)
 		SELECT
 			cohort_month,
@@ -55,21 +79,33 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 			COUNT(DISTINCT CASE WHEN months_since_first = 3 THEN email END) AS m3,
 			COUNT(DISTINCT CASE WHEN months_since_first = 4 THEN email END) AS m4,
 			COUNT(DISTINCT CASE WHEN months_since_first = 5 THEN email END) AS m5,
-			COUNT(DISTINCT CASE WHEN months_since_first = 6 THEN email END) AS m6
+			COUNT(DISTINCT CASE WHEN months_since_first = 6 THEN email END) AS m6,
+			COALESCE(SUM(CASE WHEN months_since_first = 1 THEN revenue_base END), 0) AS m1_revenue,
+			COALESCE(SUM(CASE WHEN months_since_first = 2 THEN revenue_base END), 0) AS m2_revenue,
+			COALESCE(SUM(CASE WHEN months_since_first = 3 THEN revenue_base END), 0) AS m3_revenue,
+			COALESCE(SUM(CASE WHEN months_since_first = 4 THEN revenue_base END), 0) AS m4_revenue,
+			COALESCE(SUM(CASE WHEN months_since_first = 5 THEN revenue_base END), 0) AS m5_revenue,
+			COALESCE(SUM(CASE WHEN months_since_first = 6 THEN revenue_base END), 0) AS m6_revenue
 		FROM cohort_orders
 		GROUP BY cohort_month
 		ORDER BY cohort_month
-	`, statusIDs, statusIDs)
+	`, baseCurrency, baseCurrency, statusIDs, statusIDs)
 
 	type row struct {
-		CohortMonth string `db:"cohort_month"`
-		CohortSize  int64  `db:"cohort_size"`
-		M1          int64  `db:"m1"`
-		M2          int64  `db:"m2"`
-		M3          int64  `db:"m3"`
-		M4          int64  `db:"m4"`
-		M5          int64  `db:"m5"`
-		M6          int64  `db:"m6"`
+		CohortMonth string          `db:"cohort_month"`
+		CohortSize  int64           `db:"cohort_size"`
+		M1          int64           `db:"m1"`
+		M2          int64           `db:"m2"`
+		M3          int64           `db:"m3"`
+		M4          int64           `db:"m4"`
+		M5          int64           `db:"m5"`
+		M6          int64           `db:"m6"`
+		M1Revenue   decimal.Decimal `db:"m1_revenue"`
+		M2Revenue   decimal.Decimal `db:"m2_revenue"`
+		M3Revenue   decimal.Decimal `db:"m3_revenue"`
+		M4Revenue   decimal.Decimal `db:"m4_revenue"`
+		M5Revenue   decimal.Decimal `db:"m5_revenue"`
+		M6Revenue   decimal.Decimal `db:"m6_revenue"`
 	}
 	params := map[string]any{"from": from, "to": to}
 	rows, err := storeutil.QueryListNamed[row](ctx, rs.DB, query, params)
@@ -83,8 +119,20 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 			return nil, err
 		}
 		result = append(result, entity.CohortRetentionRow{
-			CohortMonth: month, CohortSize: r.CohortSize,
-			M1: r.M1, M2: r.M2, M3: r.M3, M4: r.M4, M5: r.M5, M6: r.M6,
+			CohortMonth: month,
+			CohortSize:  r.CohortSize,
+			M1:          r.M1,
+			M2:          r.M2,
+			M3:          r.M3,
+			M4:          r.M4,
+			M5:          r.M5,
+			M6:          r.M6,
+			M1Revenue:   r.M1Revenue,
+			M2Revenue:   r.M2Revenue,
+			M3Revenue:   r.M3Revenue,
+			M4Revenue:   r.M4Revenue,
+			M5Revenue:   r.M5Revenue,
+			M6Revenue:   r.M6Revenue,
 		})
 	}
 	return result, nil

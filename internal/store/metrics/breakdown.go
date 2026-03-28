@@ -11,6 +11,24 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// formatCategoryDisplayName converts slug-style category names to human-readable labels.
+// Examples: "hoodies_sweatshirts" -> "Hoodies Sweatshirts", "jackets" -> "Jackets"
+func formatCategoryDisplayName(name string) string {
+	if name == "" {
+		return ""
+	}
+	// Replace underscores with spaces
+	formatted := strings.ReplaceAll(name, "_", " ")
+	// Title case each word
+	words := strings.Fields(formatted)
+	for i, word := range words {
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(word[:1]) + word[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
+
 func (s *Store) getRevenueByPaymentMethod(ctx context.Context, from, to time.Time) ([]entity.PaymentMethodMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
@@ -187,6 +205,7 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
 		SELECT p.top_category_id AS category_id, c.name AS category_name,
+			c.name AS category_display_name,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
@@ -201,17 +220,24 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 		LIMIT 30
 	`
 	rows, err := storeutil.QueryListNamed[struct {
-		CategoryId   int             `db:"category_id"`
-		CategoryName string          `db:"category_name"`
-		Value        decimal.Decimal `db:"value"`
-		Count        int             `db:"cnt"`
+		CategoryId          int             `db:"category_id"`
+		CategoryName        string          `db:"category_name"`
+		CategoryDisplayName string          `db:"category_display_name"`
+		Value               decimal.Decimal `db:"value"`
+		Count               int             `db:"cnt"`
 	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
 	}
 	result := make([]entity.CategoryMetric, len(rows))
 	for i, r := range rows {
-		result[i] = entity.CategoryMetric{CategoryId: r.CategoryId, CategoryName: r.CategoryName, Value: r.Value, Count: r.Count}
+		result[i] = entity.CategoryMetric{
+			CategoryId:          r.CategoryId,
+			CategoryName:        r.CategoryName,
+			CategoryDisplayName: formatCategoryDisplayName(r.CategoryDisplayName),
+			Value:               r.Value,
+			Count:               r.Count,
+		}
 	}
 	return result, nil
 }
