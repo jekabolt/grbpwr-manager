@@ -167,8 +167,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, currency, order_status_id, promo_id)
-	 VALUES (:uuid, :totalPrice, :currency, :orderStatusId, :promoId)
+	 (uuid, total_price, currency, order_status_id, promo_id, ga_client_id)
+	 VALUES (:uuid, :totalPrice, :currency, :orderStatusId, :promoId, :gaClientId)
 	`
 
 	orderRef := generateOrderReference()
@@ -178,6 +178,7 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 		"currency":      order.Currency,
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
+		"gaClientId":    order.GAClientID,
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)

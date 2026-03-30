@@ -19,7 +19,6 @@ const (
 )
 
 type Config struct {
-	Enabled       bool   `mapstructure:"enabled"`
 	MeasurementID string `mapstructure:"measurement_id"` // G-XXXXXXX
 	APISecret     string `mapstructure:"api_secret"`
 }
@@ -30,9 +29,7 @@ type Client struct {
 }
 
 func New(cfg *Config) *Client {
-	if cfg == nil || !cfg.Enabled || cfg.MeasurementID == "" || cfg.APISecret == "" {
-		return &Client{cfg: &Config{Enabled: false}}
-	}
+
 	return &Client{
 		cfg: cfg,
 		httpClient: &http.Client{
@@ -41,25 +38,23 @@ func New(cfg *Config) *Client {
 	}
 }
 
-func (c *Client) Enabled() bool {
-	return c.cfg.Enabled
-}
-
 // TrackPurchase sends a server-side purchase event to GA4 via the Measurement Protocol.
-// Uses a deterministic client_id derived from buyer email for cross-purchase association.
+// Uses order.Order.GAClientID (from browser _ga cookie) when available so the event
+// stitches into the same GA4 session/funnel. Falls back to a deterministic UUID from buyer email.
 // Non-blocking: errors are logged but never propagated to callers.
 func (c *Client) TrackPurchase(ctx context.Context, order entity.OrderFull) {
-	if !c.cfg.Enabled {
-		return
-	}
-
 	go func() {
 		if err := c.sendPurchaseEvent(ctx, order); err != nil {
 			slog.Default().ErrorContext(ctx, "ga4mp: failed to send purchase event",
 				slog.String("orderUUID", order.Order.UUID),
 				slog.String("err", err.Error()),
+				slog.String("clientID", order.Order.GAClientID.String),
 			)
 		}
+		slog.Default().InfoContext(ctx, "ga4mp: purchase event sent",
+			slog.String("orderUUID", order.Order.UUID),
+			slog.String("clientID", order.Order.GAClientID.String),
+		)
 	}()
 }
 
@@ -67,7 +62,10 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	clientID := deterministicClientID(order.Buyer.Email)
+	clientID := order.Order.GAClientID.String
+	if !order.Order.GAClientID.Valid || clientID == "" {
+		clientID = deterministicClientID(order.Buyer.Email)
+	}
 	val, _ := order.Order.TotalPrice.Float64()
 
 	items := make([]mpItem, 0, len(order.OrderItems))

@@ -28,6 +28,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	clientSession := middleware.GetClientSession(ctx)
 
 	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
+	orderNew.GAClientID = req.GaClientId
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
@@ -286,7 +287,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	// Revalidate cache asynchronously - no need to block the response
 	go func() {
-		revalidateCtx := context.Background() // Use background context to avoid cancellation when request completes
+		revalidateCtx := context.Background()
 		if err := s.re.RevalidateAll(revalidateCtx, &dto.RevalidationData{
 			Products: pids,
 			Hero:     true,

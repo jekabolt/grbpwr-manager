@@ -203,6 +203,13 @@ func (a *App) Start(ctx context.Context) error {
 	// GA4 Measurement Protocol client for server-side event tracking
 	ga4mpClient := ga4mp.New(&a.c.GA4MP)
 
+	if p, ok := stripeMain.(*stripe.Processor); ok {
+		p.SetGA4MP(ga4mpClient)
+	}
+	if p, ok := stripeTest.(*stripe.Processor); ok {
+		p.SetGA4MP(ga4mpClient)
+	}
+
 	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient)
 
 	var frontendS *frontend.Server

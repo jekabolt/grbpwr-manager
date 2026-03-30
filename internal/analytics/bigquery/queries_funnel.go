@@ -439,13 +439,13 @@ func (c *Client) getDeviceFunnel(
 // we still count a client-side purchase toward that hero day.
 const heroFunnelPurchaseLookaheadDays = 7
 
-// GetHeroFunnel returns hero_click → view_item → purchase mini-funnel per calendar day (UTC).
+// GetHeroFunnel returns hero_click → view_item_list → purchase mini-funnel per calendar day (UTC).
 //
 // Semantics (fixed from same-day bag-of-events):
-//   - hero_click_users: distinct users with hero_click on that date.
-//   - view_item_users: among those, users with at least one view_item on the same UTC date
+//   - hero_click_users: distinct users with hero_click on that date (excludes null user_pseudo_id).
+//   - view_item_users: among those, users with at least one view_item_list on the same UTC date
 //     at or after their first hero_click timestamp that day.
-//   - purchase_users: among those with view_item as above, users with at least one
+//   - purchase_users: among those with view_item_list as above, users with at least one
 //     client-side purchase (excludes Measurement Protocol purchases tagged server_side)
 //     at or after first hero_click and within heroFunnelPurchaseLookaheadDays.
 //
@@ -512,7 +512,8 @@ func (c *Client) getHeroFunnel(
 				event_name
 			FROM %s
 			WHERE %s
-				AND event_name IN ('hero_click', 'view_item', 'purchase')
+				AND user_pseudo_id IS NOT NULL
+				AND event_name IN ('hero_click', 'view_item_list', 'purchase')
 				AND (
 					event_name != 'purchase'
 					OR NOT (
@@ -543,7 +544,7 @@ func (c *Client) getHeroFunnel(
 				EXISTS (
 					SELECT 1 FROM raw r
 					WHERE r.user_pseudo_id = h.user_pseudo_id
-						AND r.event_name = 'view_item'
+						AND r.event_name = 'view_item_list'
 						AND r.event_timestamp >= h.first_hero_ts
 						AND DATE(TIMESTAMP_MICROS(r.event_timestamp)) = h.hero_date
 				) AS after_view_item,
@@ -678,7 +679,8 @@ func (c *Client) getHeroFunnelAggregate(
 				event_name
 			FROM %s
 			WHERE %s
-				AND event_name IN ('hero_click', 'view_item', 'purchase')
+				AND user_pseudo_id IS NOT NULL
+				AND event_name IN ('hero_click', 'view_item_list', 'purchase')
 				AND (
 					event_name != 'purchase'
 					OR NOT (
@@ -708,7 +710,7 @@ func (c *Client) getHeroFunnelAggregate(
 				EXISTS (
 					SELECT 1 FROM raw r
 					WHERE r.user_pseudo_id = h.user_pseudo_id
-						AND r.event_name = 'view_item'
+						AND r.event_name = 'view_item_list'
 						AND r.event_timestamp >= h.first_hero_ts
 						AND %s
 				) AS after_view_item,

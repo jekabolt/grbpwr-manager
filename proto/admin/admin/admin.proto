@@ -1542,7 +1542,7 @@ message SizeGuideClickRow {
   google.protobuf.Timestamp date = 1;
   string product_id = 2;
   string product_name = 3;
-  string page_location = 4; // desktop, mobile
+  string page_location = 4; // device category: desktop, mobile, tablet, unknown
   int64 click_count = 5;
 }
 

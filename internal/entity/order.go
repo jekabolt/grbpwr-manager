@@ -29,6 +29,7 @@ type OrderNew struct {
 	PromoCode          string            `valid:"-"`
 	Currency           string            `valid:"required,length(3|3)"` // ISO 4217 currency code
 	CustomShipmentCost *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
+	GAClientID         string            `valid:"-"`                    // GA4 client ID from browser _ga cookie
 }
 
 type OrderFull struct {
@@ -57,6 +58,7 @@ type Order struct {
 	RefundReason   sql.NullString  `db:"refund_reason"`
 	OrderComment   sql.NullString  `db:"order_comment"`
 	RefundedAmount decimal.Decimal `db:"refunded_amount"`
+	GAClientID     sql.NullString  `db:"ga_client_id"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {

@@ -386,7 +386,7 @@ func (c *Client) getSizeGuideClicks(
 ) ([]entity.SizeGuideClickRow, error) {
 	ctx, cancel := c.queryContext(ctx)
 	defer cancel()
-	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items")
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name", "items", "device.category AS device_category")
 	if err != nil {
 		return nil, fmt.Errorf("GetSizeGuideClicks: %w", err)
 	}
@@ -396,7 +396,7 @@ func (c *Client) getSizeGuideClicks(
 			SELECT
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
-				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), 'unknown') AS page_location
+				COALESCE(device_category, 'unknown') AS page_location
 			FROM %s
 			WHERE %s
 				AND event_name = 'size_guide_click'

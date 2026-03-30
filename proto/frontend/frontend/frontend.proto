@@ -251,6 +251,7 @@ message GetProductsPagedResponse {
 message SubmitOrderRequest {
   common.OrderNew order = 1;
   string payment_intent_id = 2; // optional, for pre-created PaymentIntent
+  string ga_client_id = 3; // GA4 client ID from _ga cookie for server-side purchase attribution
 }
 
 message SubmitOrderResponse {

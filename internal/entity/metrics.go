@@ -654,7 +654,7 @@ type SizeGuideClickRow struct {
 	Date         time.Time
 	ProductID    string
 	ProductName  string
-	PageLocation string // desktop, mobile
+	PageLocation string // device category: desktop, mobile, tablet, unknown
 	ClickCount   int64
 }
 
