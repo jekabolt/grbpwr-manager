@@ -363,7 +363,7 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 
 	pbStatusHistory := ConvertEntityOrderStatusHistoryToPb(e.StatusHistory)
 
-	return &pb_common.OrderFull{
+	out := &pb_common.OrderFull{
 		Order:              pbOrder,
 		OrderItems:         pbOrderItems,
 		RefundedOrderItems: pbRefundedOrderItems,
@@ -374,7 +374,11 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		Billing:            pbBilling,
 		Shipping:           pbShipping,
 		StatusHistory:      pbStatusHistory,
-	}, nil
+	}
+	if e.OrderReview != nil {
+		out.OrderReview = ConvertEntityOrderReviewFullToPb(e.OrderReview)
+	}
+	return out, nil
 }
 
 // ConvertEntityOrderStatusHistoryToPb converts entity status history to protobuf

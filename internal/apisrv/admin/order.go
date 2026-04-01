@@ -62,6 +62,21 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUI
 		o.Payment = *payment
 	}
 
+	if entity.OrderStatusExposesOrderReview(os.Status.Name) {
+		review, err := s.repo.Order().GetOrderReviewByUUID(ctx, o.Order.UUID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				slog.Default().ErrorContext(ctx, "can't get order review by uuid",
+					slog.String("err", err.Error()),
+					slog.String("order_uuid", o.Order.UUID),
+				)
+				return nil, status.Errorf(codes.Internal, "can't get order review")
+			}
+		} else {
+			o.OrderReview = review
+		}
+	}
+
 	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",

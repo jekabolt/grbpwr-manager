@@ -43,6 +43,7 @@ type OrderFull struct {
 	Billing            Address
 	Shipping           Address
 	StatusHistory      []OrderStatusHistoryWithStatus
+	OrderReview        *OrderReviewFull
 }
 
 // Orders represents the orders table
@@ -233,6 +234,17 @@ var ValidOrderStatusNames = map[OrderStatusName]bool{
 	RefundInProgress:  true,
 	Refunded:          true,
 	PartiallyRefunded: true,
+}
+
+// OrderStatusExposesOrderReview is true for post-fulfillment statuses where an existing
+// order review may be returned on order-detail APIs (excludes cancelled and pre-delivered).
+func OrderStatusExposesOrderReview(name OrderStatusName) bool {
+	switch name {
+	case Delivered, PendingReturn, RefundInProgress, Refunded, PartiallyRefunded:
+		return true
+	default:
+		return false
+	}
 }
 
 // OrderStatus represents the order_status table

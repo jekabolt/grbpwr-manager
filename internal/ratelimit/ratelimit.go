@@ -100,16 +100,16 @@ type MultiKeyLimiter struct {
 func NewMultiKeyLimiter() *MultiKeyLimiter {
 	return &MultiKeyLimiter{
 		limiters: map[string]*Limiter{
-			"ip_order":      NewLimiter(time.Hour, 100),  // 100 orders per IP per hour
-			"email_order":   NewLimiter(time.Hour, 100),  // 100 orders per email per hour
-			"ip_validate":   NewLimiter(time.Minute, 20), // 20 validations per IP per minute
-			"ip_support":    NewLimiter(time.Hour, 2),    // 5 tickets per IP per hour
-			"email_support": NewLimiter(time.Hour, 1),    // 3 tickets per email per hour
-			"email_account_login": NewLimiter(time.Hour, 10), // login code requests per email
-			"ip_account_login":    NewLimiter(time.Hour, 60),
-			"ip_account_verify":        NewLimiter(time.Minute, 30), // verify / refresh per IP
-			"email_account_verify":     NewLimiter(time.Minute, 10), // OTP verify per email (anti distributed guess)
-			"challenge_account_verify": NewLimiter(time.Minute, 10), // magic token verify per token hash
+			"ip_order":                 NewLimiter(10*time.Minute, 100), // 100 orders per IP per hour
+			"email_order":              NewLimiter(10*time.Minute, 100), // 100 orders per email per hour
+			"ip_validate":              NewLimiter(time.Minute, 20),     // 20 validations per IP per minute
+			"ip_support":               NewLimiter(10*time.Minute, 5),   // 5 per IP per 10 minutes
+			"email_support":            NewLimiter(10*time.Minute, 10),  // 10 per email per 10 minutes
+			"email_account_login":      NewLimiter(10*time.Minute, 10),  // login code requests per email
+			"ip_account_login":         NewLimiter(10*time.Minute, 10),
+			"ip_account_verify":        NewLimiter(10*time.Minute, 30), // verify / refresh per IP
+			"email_account_verify":     NewLimiter(10*time.Minute, 10), // OTP verify per email (anti distributed guess)
+			"challenge_account_verify": NewLimiter(10*time.Minute, 10), // magic token verify per token hash
 		},
 	}
 }

@@ -34,6 +34,7 @@ message OrderFull {
   Address billing = 8;
   Address shipping = 9;
   repeated OrderStatusHistory status_history = 10;
+  optional OrderReviewFull order_review = 11;
 }
 
 message Order {

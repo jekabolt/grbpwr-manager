@@ -67,18 +67,3 @@ func (s *Server) GetProductReviewsPaged(ctx context.Context, req *pb_admin.GetPr
 		Total:   int32(total),
 	}, nil
 }
-
-func (s *Server) GetOrderReviewByUUID(ctx context.Context, req *pb_admin.GetOrderReviewByUUIDRequest) (*pb_admin.GetOrderReviewByUUIDResponse, error) {
-	review, err := s.repo.Order().GetOrderReviewByUUID(ctx, req.OrderUuid)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get order review by UUID",
-			slog.String("err", err.Error()),
-			slog.String("order_uuid", req.OrderUuid),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get order review")
-	}
-
-	return &pb_admin.GetOrderReviewByUUIDResponse{
-		Review: dto.ConvertEntityOrderReviewFullToPb(review),
-	}, nil
-}

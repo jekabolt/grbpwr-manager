@@ -324,11 +324,6 @@ service AdminService {
   rpc GetProductReviewsPaged(GetProductReviewsPagedRequest) returns (GetProductReviewsPagedResponse) {
     option (google.api.http) = {get: "/api/admin/product/{product_id}/reviews"};
   }
-
-  // Get review for a specific order by UUID
-  rpc GetOrderReviewByUUID(GetOrderReviewByUUIDRequest) returns (GetOrderReviewByUUIDResponse) {
-    option (google.api.http) = {get: "/api/admin/order/{order_uuid}/review"};
-  }
 }
 
 // DICITONARY
@@ -1684,12 +1679,4 @@ message GetProductReviewsPagedRequest {
 message GetProductReviewsPagedResponse {
   repeated common.OrderItemReview reviews = 1;
   int32 total = 2;
-}
-
-message GetOrderReviewByUUIDRequest {
-  string order_uuid = 1;
-}
-
-message GetOrderReviewByUUIDResponse {
-  common.OrderReviewFull review = 1;
 }
