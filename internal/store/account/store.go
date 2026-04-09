@@ -175,7 +175,7 @@ func execNamedExpectOneRow(ctx context.Context, db dependency.DB, query string, 
 
 // GetAccountByEmail loads a storefront account by email.
 func (s *Store) GetAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error) {
-	q := `SELECT id, email, first_name, last_name, birth_date, shopping_preference, created_at, updated_at FROM storefront_account WHERE email = :email`
+	q := `SELECT id, email, first_name, last_name, birth_date, shopping_preference, phone, account_tier, subscribe_newsletter, subscribe_new_arrivals, subscribe_events, default_country, default_language, created_at, updated_at FROM storefront_account WHERE email = :email`
 	a, err := storeutil.QueryNamedOne[entity.StorefrontAccount](ctx, s.DB, q, map[string]any{"email": email})
 	if err != nil {
 		return nil, err
@@ -208,22 +208,26 @@ func (s *Store) GetOrCreateAccountByEmail(ctx context.Context, email string) (*e
 }
 
 // UpdateAccountProfile updates profile fields for the given email.
-func (s *Store) UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference sql.NullString) error {
-	if shoppingPreference.Valid {
-		if !entity.IsValidStorefrontShoppingPreference(shoppingPreference.String) {
-			return fmt.Errorf("invalid storefront shopping preference: %q", shoppingPreference.String)
-		}
+func (s *Store) UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference entity.StorefrontShoppingPreference, phone sql.NullString, subscribeNewsletter, subscribeNewArrivals, subscribeEvents bool, defaultCountry, defaultLanguage sql.NullString) error {
+	if !entity.IsValidStorefrontShoppingPreference(string(shoppingPreference)) {
+		return fmt.Errorf("invalid storefront shopping preference: %q", shoppingPreference)
 	}
 	q := `
 		UPDATE storefront_account
-		SET first_name = :fn, last_name = :ln, birth_date = :bd, shopping_preference = :shoppingPreference, updated_at = CURRENT_TIMESTAMP
+		SET first_name = :fn, last_name = :ln, birth_date = :bd, shopping_preference = :shoppingPreference, phone = :phone, subscribe_newsletter = :subscribeNewsletter, subscribe_new_arrivals = :subscribeNewArrivals, subscribe_events = :subscribeEvents, default_country = :defaultCountry, default_language = :defaultLanguage, updated_at = CURRENT_TIMESTAMP
 		WHERE email = :email`
 	return storeutil.ExecNamed(ctx, s.DB, q, map[string]any{
-		"fn":                 firstName,
-		"ln":                 lastName,
-		"bd":                 birthDate,
-		"shoppingPreference": shoppingPreference,
-		"email":              email,
+		"fn":                   firstName,
+		"ln":                   lastName,
+		"bd":                   birthDate,
+		"shoppingPreference":   shoppingPreference,
+		"phone":                phone,
+		"subscribeNewsletter":  subscribeNewsletter,
+		"subscribeNewArrivals": subscribeNewArrivals,
+		"subscribeEvents":      subscribeEvents,
+		"defaultCountry":       defaultCountry,
+		"defaultLanguage":      defaultLanguage,
+		"email":                email,
 	})
 }
 

@@ -432,12 +432,28 @@ enum ShoppingPreferenceEnum {
   SHOPPING_PREFERENCE_ENUM_ALL = 3;
 }
 
+// Account tier / membership level
+enum AccountTierEnum {
+  ACCOUNT_TIER_ENUM_UNKNOWN = 0;
+  ACCOUNT_TIER_ENUM_PLUS = 1;
+  ACCOUNT_TIER_ENUM_PLUS_PLUS = 2;
+  ACCOUNT_TIER_ENUM_HACKER = 3;
+}
+
 message StorefrontAccount {
   string email = 1;
   string first_name = 2;
   string last_name = 3;
   google.type.Date birth_date = 4;
   ShoppingPreferenceEnum shopping_preference = 5;
+  string phone = 6;
+  bool subscribe_newsletter = 7;
+  bool subscribe_new_arrivals = 8;
+  bool subscribe_events = 9;
+  AccountTierEnum account_tier = 10;
+  repeated StorefrontSavedAddress addresses = 11;
+  string default_country = 12;
+  string default_language = 13;
 }
 
 message GetAccountRequest {}
@@ -451,6 +467,12 @@ message UpdateAccountRequest {
   optional string last_name = 2;
   optional google.type.Date birth_date = 3;
   optional ShoppingPreferenceEnum shopping_preference = 4;
+  optional string phone = 5;
+  optional bool subscribe_newsletter = 6;
+  optional bool subscribe_new_arrivals = 7;
+  optional bool subscribe_events = 8;
+  optional string default_country = 9;
+  optional string default_language = 10;
 }
 
 message UpdateAccountResponse {

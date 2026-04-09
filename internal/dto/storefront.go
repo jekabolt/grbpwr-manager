@@ -22,6 +22,12 @@ var storefrontShoppingPbEntityMap = map[pb_frontend.ShoppingPreferenceEnum]entit
 	pb_frontend.ShoppingPreferenceEnum_SHOPPING_PREFERENCE_ENUM_ALL:    entity.StorefrontShoppingAll,
 }
 
+var storefrontAccountTierEntityPbMap = map[entity.StorefrontAccountTier]pb_frontend.AccountTierEnum{
+	entity.StorefrontAccountTierPlus:     pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_PLUS,
+	entity.StorefrontAccountTierPlusPlus: pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_PLUS_PLUS,
+	entity.StorefrontAccountTierHacker:   pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_HACKER,
+}
+
 // ConvertPbShoppingPreferenceEnumToEntity maps API enum to DB string values.
 func ConvertPbShoppingPreferenceEnumToEntity(pb pb_frontend.ShoppingPreferenceEnum) (entity.StorefrontShoppingPreference, error) {
 	g, ok := storefrontShoppingPbEntityMap[pb]
@@ -40,8 +46,17 @@ func ConvertEntityShoppingPreferenceToPb(s entity.StorefrontShoppingPreference) 
 	return g, nil
 }
 
+// ConvertEntityAccountTierToPb maps DB account tier to API enum.
+func ConvertEntityAccountTierToPb(t entity.StorefrontAccountTier) pb_frontend.AccountTierEnum {
+	pb, ok := storefrontAccountTierEntityPbMap[t]
+	if !ok {
+		return pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_UNKNOWN
+	}
+	return pb
+}
+
 // EntityStorefrontAccountToPb maps a DB account to the frontend API message.
-func EntityStorefrontAccountToPb(a *entity.StorefrontAccount) (*pb_frontend.StorefrontAccount, error) {
+func EntityStorefrontAccountToPb(a *entity.StorefrontAccount, addresses []*pb_frontend.StorefrontSavedAddress) (*pb_frontend.StorefrontAccount, error) {
 	if a == nil {
 		return nil, fmt.Errorf("account is nil")
 	}
@@ -55,21 +70,41 @@ func EntityStorefrontAccountToPb(a *entity.StorefrontAccount) (*pb_frontend.Stor
 		}
 	}
 	shoppingPref := pb_frontend.ShoppingPreferenceEnum_SHOPPING_PREFERENCE_ENUM_UNKNOWN
-	if a.ShoppingPreference.Valid && a.ShoppingPreference.String != "" {
-		sp := entity.StorefrontShoppingPreference(a.ShoppingPreference.String)
-		g, err := ConvertEntityShoppingPreferenceToPb(sp)
+	if a.ShoppingPreference != "" {
+		g, err := ConvertEntityShoppingPreferenceToPb(a.ShoppingPreference)
 		if err != nil {
 			shoppingPref = pb_frontend.ShoppingPreferenceEnum_SHOPPING_PREFERENCE_ENUM_UNKNOWN
 		} else {
 			shoppingPref = g
 		}
 	}
+	phone := ""
+	if a.Phone.Valid {
+		phone = a.Phone.String
+	}
+	defaultCountry := ""
+	if a.DefaultCountry.Valid {
+		defaultCountry = a.DefaultCountry.String
+	}
+	defaultLanguage := ""
+	if a.DefaultLanguage.Valid {
+		defaultLanguage = a.DefaultLanguage.String
+	}
+	accountTier := ConvertEntityAccountTierToPb(entity.StorefrontAccountTier(a.AccountTier))
 	return &pb_frontend.StorefrontAccount{
-		Email:              a.Email,
-		FirstName:          a.FirstName,
-		LastName:           a.LastName,
-		BirthDate:          bd,
-		ShoppingPreference: shoppingPref,
+		Email:                a.Email,
+		FirstName:            a.FirstName,
+		LastName:             a.LastName,
+		BirthDate:            bd,
+		ShoppingPreference:   shoppingPref,
+		Phone:                phone,
+		SubscribeNewsletter:  a.SubscribeNewsletter,
+		SubscribeNewArrivals: a.SubscribeNewArrivals,
+		SubscribeEvents:      a.SubscribeEvents,
+		AccountTier:          accountTier,
+		Addresses:            addresses,
+		DefaultCountry:       defaultCountry,
+		DefaultLanguage:      defaultLanguage,
 	}, nil
 }
 

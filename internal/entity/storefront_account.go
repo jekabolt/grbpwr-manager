@@ -26,17 +26,44 @@ func IsValidStorefrontShoppingPreference(s string) bool {
 	return ok
 }
 
+// StorefrontAccountTier is a value for storefront_account.account_tier ENUM.
+type StorefrontAccountTier string
+
+const (
+	StorefrontAccountTierPlus     StorefrontAccountTier = "plus"
+	StorefrontAccountTierPlusPlus StorefrontAccountTier = "plus_plus"
+	StorefrontAccountTierHacker   StorefrontAccountTier = "hacker"
+)
+
+var validStorefrontAccountTiers = map[StorefrontAccountTier]struct{}{
+	StorefrontAccountTierPlus:     {},
+	StorefrontAccountTierPlusPlus: {},
+	StorefrontAccountTierHacker:   {},
+}
+
+// IsValidStorefrontAccountTier reports whether t is allowed for storefront_account.account_tier.
+func IsValidStorefrontAccountTier(t string) bool {
+	_, ok := validStorefrontAccountTiers[StorefrontAccountTier(t)]
+	return ok
+}
+
 // StorefrontAccount is a row in storefront_account.
 type StorefrontAccount struct {
-	ID        int          `db:"id"`
-	Email     string       `db:"email"`
-	FirstName string       `db:"first_name"`
-	LastName  string       `db:"last_name"`
-	BirthDate sql.NullTime `db:"birth_date"`
-	// ShoppingPreference: when Valid, String is male|female|all (catalog / browse preference).
-	ShoppingPreference sql.NullString `db:"shopping_preference"`
-	CreatedAt          time.Time      `db:"created_at"`
-	UpdatedAt          time.Time      `db:"updated_at"`
+	ID                   int                          `db:"id"`
+	Email                string                       `db:"email"`
+	FirstName            string                       `db:"first_name"`
+	LastName             string                       `db:"last_name"`
+	BirthDate            sql.NullTime                 `db:"birth_date"`
+	ShoppingPreference   StorefrontShoppingPreference `db:"shopping_preference"`
+	Phone                sql.NullString               `db:"phone"`
+	AccountTier          string                       `db:"account_tier"`
+	SubscribeNewsletter  bool                         `db:"subscribe_newsletter"`
+	SubscribeNewArrivals bool                         `db:"subscribe_new_arrivals"`
+	SubscribeEvents      bool                         `db:"subscribe_events"`
+	DefaultCountry       sql.NullString               `db:"default_country"`
+	DefaultLanguage      sql.NullString               `db:"default_language"`
+	CreatedAt            time.Time                    `db:"created_at"`
+	UpdatedAt            time.Time                    `db:"updated_at"`
 }
 
 // StorefrontSavedAddress is a row in storefront_saved_address.

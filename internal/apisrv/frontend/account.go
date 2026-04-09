@@ -229,7 +229,7 @@ func (s *Server) finishLogin(ctx context.Context, email string) (*pb_frontend.Ve
 		slog.Default().ErrorContext(ctx, "issue tokens", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't complete login")
 	}
-	pbAcc, err := dto.EntityStorefrontAccountToPb(acc)
+	pbAcc, err := dto.EntityStorefrontAccountToPb(acc, nil)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "can't build account")
 	}
@@ -333,7 +333,15 @@ func (s *Server) GetAccount(ctx context.Context, _ *pb_frontend.GetAccountReques
 		}
 		return nil, status.Error(codes.Internal, "can't load account")
 	}
-	pbAcc, err := dto.EntityStorefrontAccountToPb(acc)
+	addressList, err := s.repo.StorefrontAccount().ListSavedAddresses(ctx, acc.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "can't load addresses")
+	}
+	pbAddresses := make([]*pb_frontend.StorefrontSavedAddress, 0, len(addressList))
+	for i := range addressList {
+		pbAddresses = append(pbAddresses, dto.EntityStorefrontSavedAddressToPb(&addressList[i]))
+	}
+	pbAcc, err := dto.EntityStorefrontAccountToPb(acc, pbAddresses)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "can't build account")
 	}
@@ -369,23 +377,74 @@ func (s *Server) UpdateAccount(ctx context.Context, req *pb_frontend.UpdateAccou
 	if req.ShoppingPreference != nil {
 		g := *req.ShoppingPreference
 		if g == pb_frontend.ShoppingPreferenceEnum_SHOPPING_PREFERENCE_ENUM_UNKNOWN {
-			shoppingPref = sql.NullString{}
+			return nil, status.Error(codes.InvalidArgument, "shopping preference cannot be set to unknown")
+		}
+		sp, err := dto.ConvertPbShoppingPreferenceEnumToEntity(g)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid shopping preference")
+		}
+		shoppingPref = sp
+	}
+	phone := acc.Phone
+	if req.Phone != nil {
+		phoneVal := strings.TrimSpace(*req.Phone)
+		if phoneVal == "" {
+			phone = sql.NullString{}
 		} else {
-			sp, err := dto.ConvertPbShoppingPreferenceEnumToEntity(g)
-			if err != nil {
-				return nil, status.Error(codes.InvalidArgument, "invalid shopping preference")
-			}
-			shoppingPref = sql.NullString{String: string(sp), Valid: true}
+			phone = sql.NullString{String: phoneVal, Valid: true}
 		}
 	}
-	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email, fn, ln, bd, shoppingPref); err != nil {
+	subscribeNewsletter := acc.SubscribeNewsletter
+	if req.SubscribeNewsletter != nil {
+		subscribeNewsletter = *req.SubscribeNewsletter
+	}
+	subscribeNewArrivals := acc.SubscribeNewArrivals
+	if req.SubscribeNewArrivals != nil {
+		subscribeNewArrivals = *req.SubscribeNewArrivals
+	}
+	subscribeEvents := acc.SubscribeEvents
+	if req.SubscribeEvents != nil {
+		subscribeEvents = *req.SubscribeEvents
+	}
+	defaultCountry := acc.DefaultCountry
+	if req.DefaultCountry != nil {
+		countryVal := strings.TrimSpace(*req.DefaultCountry)
+		if countryVal == "" {
+			defaultCountry = sql.NullString{}
+		} else {
+			defaultCountry = sql.NullString{String: countryVal, Valid: true}
+		}
+	}
+	defaultLanguage := acc.DefaultLanguage
+	if req.DefaultLanguage != nil {
+		langVal := strings.TrimSpace(*req.DefaultLanguage)
+		if langVal == "" {
+			defaultLanguage = sql.NullString{}
+		} else {
+			defaultLanguage = sql.NullString{String: langVal, Valid: true}
+		}
+	}
+	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email, fn, ln, bd, shoppingPref, phone, subscribeNewsletter, subscribeNewArrivals, subscribeEvents, defaultCountry, defaultLanguage); err != nil {
 		return nil, status.Error(codes.Internal, "can't update account")
+	}
+	if req.SubscribeNewsletter != nil {
+		if _, err := s.repo.Subscribers().UpsertSubscription(ctx, email, subscribeNewsletter); err != nil {
+			slog.Default().ErrorContext(ctx, "can't sync newsletter subscription to subscriber table", slog.String("err", err.Error()))
+		}
 	}
 	acc2, err := s.repo.StorefrontAccount().GetAccountByEmail(ctx, email)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "can't load account")
 	}
-	pbAcc, err := dto.EntityStorefrontAccountToPb(acc2)
+	addressList, err := s.repo.StorefrontAccount().ListSavedAddresses(ctx, acc2.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "can't load addresses")
+	}
+	pbAddresses := make([]*pb_frontend.StorefrontSavedAddress, 0, len(addressList))
+	for i := range addressList {
+		pbAddresses = append(pbAddresses, dto.EntityStorefrontSavedAddressToPb(&addressList[i]))
+	}
+	pbAcc, err := dto.EntityStorefrontAccountToPb(acc2, pbAddresses)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "can't build account")
 	}

@@ -144,7 +144,7 @@ type (
 		ConsumeLoginChallengeMagic(ctx context.Context, magicPlain, magicPepper string) (string, error)
 		GetOrCreateAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
 		GetAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
-		UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference sql.NullString) error
+		UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference entity.StorefrontShoppingPreference, phone sql.NullString, subscribeNewsletter, subscribeNewArrivals, subscribeEvents bool, defaultCountry, defaultLanguage sql.NullString) error
 		InsertRefreshToken(ctx context.Context, accountID int, tokenHash, familyID string, expiresAt time.Time) (int64, error)
 		// RotateRefreshToken validates the current refresh token, revokes it, inserts a new one in the same family, and returns the new raw token and account email.
 		RotateRefreshToken(ctx context.Context, rawRefresh, refreshPepper string, refreshTTL time.Duration, now time.Time) (newRaw string, accountEmail string, err error)
