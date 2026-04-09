@@ -138,7 +138,6 @@ The primary data store is MySQL, accessed through [`internal/store/`](internal/s
 - `Archive()` — Lookbook/archive collections
 - `GA4Data()` — GA4 analytics data store
 - `BQCache()` — BigQuery analytics cache store
-- `SyncStatus()` — Analytics sync status tracking
 - `Subscribers()` — Newsletter subscriptions
 - `Metrics()` — Business metrics
 - `Inventory()` — Inventory metrics and health

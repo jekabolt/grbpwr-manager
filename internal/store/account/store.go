@@ -245,12 +245,12 @@ func (s *Store) InsertRefreshToken(ctx context.Context, accountID int, tokenHash
 }
 
 type refreshTokenRow struct {
-	ID        int64          `db:"id"`
-	AccountID int            `db:"account_id"`
-	FamilyID  string         `db:"family_id"`
-	RevokedAt sql.NullTime   `db:"revoked_at"`
-	ExpiresAt time.Time      `db:"expires_at"`
-	Email     string         `db:"email"`
+	ID        int64        `db:"id"`
+	AccountID int          `db:"account_id"`
+	FamilyID  string       `db:"family_id"`
+	RevokedAt sql.NullTime `db:"revoked_at"`
+	ExpiresAt time.Time    `db:"expires_at"`
+	Email     string       `db:"email"`
 }
 
 // RotateRefreshToken validates the refresh token, revokes it, issues a new one (same family).
@@ -386,7 +386,8 @@ func (s *Store) InsertJtiDenylist(ctx context.Context, jti string, accountID int
 // IsJtiDenylisted returns true if the jti is in the denylist and not yet expired.
 func (s *Store) IsJtiDenylisted(ctx context.Context, jti string) (bool, error) {
 	now := time.Now().UTC()
-	q := `SELECT 1 FROM storefront_access_jti_denylist WHERE jti = :jti AND expires_at > :now LIMIT 1`
+	// COUNT(*) always returns one row; SELECT 1 ... with no match yields ErrNoRows from QueryRow.
+	q := `SELECT COUNT(*) FROM storefront_access_jti_denylist WHERE jti = :jti AND expires_at > :now`
 	n, err := storeutil.QueryCountNamed(ctx, s.DB, q, map[string]any{"jti": jti, "now": now})
 	if err != nil {
 		return false, err
