@@ -23,6 +23,7 @@ var storefrontShoppingPbEntityMap = map[pb_frontend.ShoppingPreferenceEnum]entit
 }
 
 var storefrontAccountTierEntityPbMap = map[entity.StorefrontAccountTier]pb_frontend.AccountTierEnum{
+	entity.StorefrontAccountTierMember:   pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_MEMBER,
 	entity.StorefrontAccountTierPlus:     pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_PLUS,
 	entity.StorefrontAccountTierPlusPlus: pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_PLUS_PLUS,
 	entity.StorefrontAccountTierHacker:   pb_frontend.AccountTierEnum_ACCOUNT_TIER_ENUM_HACKER,

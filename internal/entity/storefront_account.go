@@ -30,12 +30,14 @@ func IsValidStorefrontShoppingPreference(s string) bool {
 type StorefrontAccountTier string
 
 const (
+	StorefrontAccountTierMember   StorefrontAccountTier = "member"
 	StorefrontAccountTierPlus     StorefrontAccountTier = "plus"
 	StorefrontAccountTierPlusPlus StorefrontAccountTier = "plus_plus"
 	StorefrontAccountTierHacker   StorefrontAccountTier = "hacker"
 )
 
 var validStorefrontAccountTiers = map[StorefrontAccountTier]struct{}{
+	StorefrontAccountTierMember:   {},
 	StorefrontAccountTierPlus:     {},
 	StorefrontAccountTierPlusPlus: {},
 	StorefrontAccountTierHacker:   {},

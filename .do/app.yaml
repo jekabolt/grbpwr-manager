@@ -133,7 +133,7 @@ envs:
   value: noreply@grbpwr.com
 - key: MAILER_WORKER_INTERVAL
   scope: RUN_TIME
-  value: 1h
+  value: 30s
 - key: MAILER_MAX_SEND_ATTEMPTS
   scope: RUN_TIME
   value: "10"
@@ -152,7 +152,7 @@ envs:
 - key: MAILER_WEBHOOK_SECRET
   scope: RUN_TIME
   type: SECRET
-  value: EV[1:BBBBBBBBBBBBBBBBBBBBBB:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=]
+  value: EV[1:LGACthmLZ9j7dxcDNHm0Qb5TCzq1c2Ry:tOJ+iArxiTSu120LFts+Ndv03UyvjS1JRPUgEElDM/HvzsCzq5om5cbu3K6yxyQasQ3opcxq]
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
@@ -213,7 +213,7 @@ envs:
   value: "true"
 - key: GA4MP_MEASUREMENT_ID
   scope: RUN_TIME
-  value: G-XXXXXXXXXX
+  value: G-YX09JT9HVC
 - key: GA4MP_API_SECRET
   scope: RUN_TIME
   type: SECRET

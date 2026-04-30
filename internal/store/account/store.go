@@ -131,8 +131,10 @@ func (s *Store) ConsumeLoginChallengeMagic(ctx context.Context, magicPlain, magi
 			WHERE magic_token_hash = :h AND consumed_at IS NULL AND expires_at > :now
 			FOR UPDATE`
 		type magicChallengeRow struct {
-			ID    int64  `db:"id"`
-			Email string `db:"email"`
+			ID         int64        `db:"id"`
+			Email      string       `db:"email"`
+			ConsumedAt sql.NullTime `db:"consumed_at"`
+			ExpiresAt  time.Time    `db:"expires_at"`
 		}
 		r, err := storeutil.QueryNamedOne[magicChallengeRow](ctx, db, q, map[string]any{"h": want, "now": now})
 		if err != nil {
