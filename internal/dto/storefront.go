@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -138,6 +139,9 @@ func EntityStorefrontSavedAddressToPb(a *entity.StorefrontSavedAddress) *pb_fron
 	if a.Company.Valid {
 		pb.Company = a.Company.String
 	}
+	if a.Phone.Valid {
+		pb.Phone = a.Phone.String
+	}
 	return pb
 }
 
@@ -162,6 +166,10 @@ func PbStorefrontSavedAddressToInsert(pb *pb_frontend.StorefrontSavedAddress) *e
 	}
 	if pb.GetCompany() != "" {
 		ins.Company = sql.NullString{String: pb.GetCompany(), Valid: true}
+	}
+	phone := strings.TrimSpace(pb.GetPhone())
+	if phone != "" {
+		ins.Phone = sql.NullString{String: phone, Valid: true}
 	}
 	return ins
 }

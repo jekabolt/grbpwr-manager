@@ -452,7 +452,7 @@ func (s *Store) CleanupExpiredRefreshTokens(ctx context.Context) (int64, error) 
 // ListSavedAddresses returns saved addresses for an account.
 func (s *Store) ListSavedAddresses(ctx context.Context, accountID int) ([]entity.StorefrontSavedAddress, error) {
 	q := `
-		SELECT id, account_id, label, country, state, city, address_line_one, address_line_two, company, postal_code, is_default, created_at, updated_at
+		SELECT id, account_id, label, country, state, city, address_line_one, address_line_two, company, postal_code, phone, is_default, created_at, updated_at
 		FROM storefront_saved_address
 		WHERE account_id = :aid
 		ORDER BY is_default DESC, id ASC`
@@ -471,9 +471,9 @@ func (s *Store) AddSavedAddress(ctx context.Context, accountID int, ins *entity.
 		}
 		q := `
 			INSERT INTO storefront_saved_address
-				(account_id, label, country, state, city, address_line_one, address_line_two, company, postal_code, is_default)
+				(account_id, label, country, state, city, address_line_one, address_line_two, company, postal_code, phone, is_default)
 			VALUES
-				(:accountId, :label, :country, :state, :city, :a1, :a2, :company, :postal, :isDefault)`
+				(:accountId, :label, :country, :state, :city, :a1, :a2, :company, :postal, :phone, :isDefault)`
 		idVal, err := storeutil.ExecNamedLastId(ctx, db, q, map[string]any{
 			"accountId": accountID,
 			"label":     ins.Label,
@@ -484,6 +484,7 @@ func (s *Store) AddSavedAddress(ctx context.Context, accountID int, ins *entity.
 			"a2":        ins.AddressLineTwo,
 			"company":   ins.Company,
 			"postal":    ins.PostalCode,
+			"phone":     ins.Phone,
 			"isDefault": ins.IsDefault,
 		})
 		if err != nil {
@@ -519,7 +520,7 @@ func (s *Store) UpdateSavedAddress(ctx context.Context, accountID int, id int, i
 		q := `
 			UPDATE storefront_saved_address
 			SET label = :label, country = :country, state = :state, city = :city,
-			    address_line_one = :a1, address_line_two = :a2, company = :company, postal_code = :postal, is_default = :isDefault,
+			    address_line_one = :a1, address_line_two = :a2, company = :company, postal_code = :postal, phone = :phone, is_default = :isDefault,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = :id AND account_id = :accountId`
 		query, args, err := storeutil.MakeQuery(q, map[string]any{
@@ -533,6 +534,7 @@ func (s *Store) UpdateSavedAddress(ctx context.Context, accountID int, id int, i
 			"a2":        ins.AddressLineTwo,
 			"company":   ins.Company,
 			"postal":    ins.PostalCode,
+			"phone":     ins.Phone,
 			"isDefault": ins.IsDefault,
 		})
 		if err != nil {

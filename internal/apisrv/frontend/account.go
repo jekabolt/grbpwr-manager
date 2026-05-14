@@ -517,6 +517,9 @@ func (s *Server) UpdateSavedAddress(ctx context.Context, req *pb_frontend.Update
 	if ins == nil || req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id and address are required")
 	}
+	if !ins.Phone.Valid || strings.TrimSpace(ins.Phone.String) == "" {
+		return nil, status.Error(codes.InvalidArgument, "phone is required")
+	}
 	if err := s.repo.StorefrontAccount().UpdateSavedAddress(ctx, aid, int(req.GetId()), ins); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "address not found")

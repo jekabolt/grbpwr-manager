@@ -80,6 +80,7 @@ type StorefrontSavedAddress struct {
 	AddressLineTwo sql.NullString `db:"address_line_two"`
 	Company        sql.NullString `db:"company"`
 	PostalCode     string         `db:"postal_code"`
+	Phone          sql.NullString `db:"phone"`
 	IsDefault      bool           `db:"is_default"`
 	CreatedAt      time.Time      `db:"created_at"`
 	UpdatedAt      time.Time      `db:"updated_at"`
@@ -95,5 +96,6 @@ type StorefrontSavedAddressInsert struct {
 	AddressLineTwo sql.NullString `db:"address_line_two"`
 	Company        sql.NullString `db:"company"`
 	PostalCode     string         `db:"postal_code"`
+	Phone          sql.NullString `db:"phone"`
 	IsDefault      bool           `db:"is_default"`
 }

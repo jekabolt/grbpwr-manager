@@ -491,6 +491,7 @@ message StorefrontSavedAddress {
   string company = 8;
   string postal_code = 9;
   bool is_default = 10;
+  string phone = 11;
 }
 
 message ListSavedAddressesRequest {}
