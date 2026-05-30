@@ -487,7 +487,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Order test-123 confirmed", req.Subject)
+		assert.Equal(t, "Order TEST-123 confirmed", req.Subject)
 		assert.Contains(t, *req.Html, "test-123")
 		assert.Contains(t, *req.Html, "ORDER CONFIRMED")
 	})
@@ -525,7 +525,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Order cancel-456 cancelled", req.Subject)
+		assert.Equal(t, "Order CANCEL-456 cancelled", req.Subject)
 		assert.Contains(t, *req.Html, "cancel-456")
 		assert.Contains(t, *req.Html, "HAS BEEN CANCELLED")
 	})
@@ -541,7 +541,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Order refund-789 — refund initiated", req.Subject)
+		assert.Equal(t, "Order REFUND-789 — refund initiated", req.Subject)
 		assert.Contains(t, *req.Html, "refund-789")
 		assert.Contains(t, *req.Html, "REFUND HAS BEEN INITIATED")
 	})

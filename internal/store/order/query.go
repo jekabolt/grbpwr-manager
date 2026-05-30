@@ -59,7 +59,7 @@ func (s *Store) GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, em
 		SELECT co.*
 		FROM customer_order co
 		INNER JOIN buyer b ON co.id = b.order_id
-		WHERE co.uuid = :orderUUID AND LOWER(b.email) = LOWER(:email)
+		WHERE co.uuid = UPPER(:orderUUID) AND LOWER(b.email) = LOWER(:email)
 	`
 
 	order, err := storeutil.QueryNamedOne[entity.Order](ctx, s.DB, query, map[string]interface{}{

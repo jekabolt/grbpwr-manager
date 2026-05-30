@@ -182,6 +182,8 @@ func templateFuncs() template.FuncMap {
 		},
 		// add is a small int helper for 1-based item numbering in templates.
 		"add": func(a, b int) int { return a + b },
+		// upper uppercases display text (e.g. order id shown in the body).
+		"upper": strings.ToUpper,
 		// unixNow stamps the email with its generation time (Lab Report header).
 		"unixNow": func() int64 { return time.Now().Unix() },
 		// season returns the current fashion-calendar season label, e.g. "SS26".
@@ -303,6 +305,7 @@ func orderSubject(tn templateName, data interface{}) string {
 	if id == "" {
 		return ""
 	}
+	id = strings.ToUpper(id)
 	switch tn {
 	case OrderConfirmed:
 		return fmt.Sprintf("Order %s confirmed", id)
