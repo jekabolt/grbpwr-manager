@@ -329,6 +329,14 @@ message CancelOrderByUserResponse {
 
 message SubscribeNewsletterRequest {
   string email = 1;
+  // name is stored as the storefront account first name.
+  string name = 2;
+  // shopping_preference (all/men/women) is the same field used for storefront accounts.
+  ShoppingPreferenceEnum shopping_preference = 3;
+  // per-topic opt-ins, same as the storefront account email preferences.
+  bool subscribe_newsletter = 4;
+  bool subscribe_new_arrivals = 5;
+  bool subscribe_events = 6;
 }
 
 message SubscribeNewsletterResponse {}
