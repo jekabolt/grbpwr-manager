@@ -29,3 +29,9 @@ func DecimalPlacesForCurrency(c string) int32 {
 func RoundForCurrency(amount decimal.Decimal, c string) decimal.Decimal {
 	return currency.Round(amount, c)
 }
+
+// CurrencySymbol returns the display symbol for the currency (e.g. "€", "$"),
+// or the uppercased ISO code when no symbol is known.
+func CurrencySymbol(c string) string {
+	return currency.Symbol(c)
+}

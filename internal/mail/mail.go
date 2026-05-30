@@ -6,10 +6,12 @@ import (
 	"embed"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	netmail "net/mail"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -149,9 +151,47 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 	return m, nil
 }
 
+// currentSeason returns the fashion-calendar season label for t:
+// Jan–Jun => "SS<YY>" (Spring/Summer), Jul–Dec => "FW<YY>" (Fall/Winter).
+func currentSeason(t time.Time) string {
+	yy := t.Year() % 100
+	if int(t.Month()) <= 6 {
+		return fmt.Sprintf("SS%02d", yy)
+	}
+	return fmt.Sprintf("FW%02d", yy)
+}
+
+// templateFuncs returns the FuncMap available to all email templates.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		// dict builds a map from alternating key/value pairs so a partial can
+		// receive multiple named parameters (e.g. the reusable cta_button).
+		"dict": func(values ...interface{}) (map[string]interface{}, error) {
+			if len(values)%2 != 0 {
+				return nil, fmt.Errorf("dict requires an even number of arguments")
+			}
+			m := make(map[string]interface{}, len(values)/2)
+			for i := 0; i < len(values); i += 2 {
+				key, ok := values[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict keys must be strings")
+				}
+				m[key] = values[i+1]
+			}
+			return m, nil
+		},
+		// add is a small int helper for 1-based item numbering in templates.
+		"add": func(a, b int) int { return a + b },
+		// unixNow stamps the email with its generation time (Lab Report header).
+		"unixNow": func() int64 { return time.Now().Unix() },
+		// season returns the current fashion-calendar season label, e.g. "SS26".
+		"season": func() string { return currentSeason(time.Now()) },
+	}
+}
+
 func (m *Mailer) parseTemplates() error {
 	// First, parse all partials into a base template
-	partials, err := template.ParseFS(templatesFS, "templates/partials/*.gohtml")
+	partials, err := template.New("partials").Funcs(templateFuncs()).ParseFS(templatesFS, "templates/partials/*.gohtml")
 	if err != nil {
 		return fmt.Errorf("error parsing partial templates: %w", err)
 	}
@@ -210,6 +250,11 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	if !ok {
 		return nil, fmt.Errorf("subject not found for template: %v", tn)
 	}
+	// Order-related emails get a more scannable subject that includes the
+	// human-readable order id (e.g. "Order ord-ab12 confirmed").
+	if dynamic := orderSubject(tn, data); dynamic != "" {
+		subject = dynamic
+	}
 
 	body := &strings.Builder{}
 	// Execute the template by its filename
@@ -218,6 +263,7 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	}
 
 	html := body.String()
+	text := htmlToText(html)
 
 	replyTo := m.c.FromEmail
 	if m.c.ReplyTo != "" {
@@ -229,12 +275,86 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 		From:    fmt.Sprintf("%s <%s>", m.c.FromName, m.c.FromEmail),
 		To:      []string{normalizedTo},
 		Html:    &html,
+		Text:    &text,
 		Subject: subject,
 		ReplyTo: &replyTo,
 		Headers: headers,
 	}
 
 	return &sr, nil
+}
+
+// orderSubject returns a scannable subject line that embeds the human-readable
+// order id for order-related emails, or "" when the template/data is unrelated.
+func orderSubject(tn templateName, data interface{}) string {
+	id := ""
+	switch d := data.(type) {
+	case *dto.OrderConfirmed:
+		id = d.OrderUUID
+	case *dto.OrderShipment:
+		id = d.OrderUUID
+	case *dto.OrderCancelled:
+		id = d.OrderUUID
+	case *dto.OrderRefundInitiated:
+		id = d.OrderUUID
+	case *dto.OrderPendingReturn:
+		id = d.OrderUUID
+	}
+	if id == "" {
+		return ""
+	}
+	switch tn {
+	case OrderConfirmed:
+		return fmt.Sprintf("Order %s confirmed", id)
+	case OrderShipped:
+		return fmt.Sprintf("Order %s shipped", id)
+	case OrderCancelled:
+		return fmt.Sprintf("Order %s cancelled", id)
+	case OrderRefundInitiated:
+		return fmt.Sprintf("Order %s — refund initiated", id)
+	case OrderPendingReturn:
+		return fmt.Sprintf("Order %s — return requested", id)
+	}
+	return ""
+}
+
+var (
+	reHTMLComment  = regexp.MustCompile(`(?is)<!--.*?-->`)
+	reHTMLHead     = regexp.MustCompile(`(?is)<head[^>]*>.*?</head>`)
+	reHTMLStyle    = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	reHTMLHidden   = regexp.MustCompile(`(?is)<div[^>]*display:none[^>]*>.*?</div>`)
+	reHTMLAnchor   = regexp.MustCompile(`(?is)<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	reHTMLBreak    = regexp.MustCompile(`(?i)<br\s*/?>`)
+	reHTMLBlockEnd = regexp.MustCompile(`(?i)</(p|div|tr|h1|h2|h3|h4|li|table)>`)
+	reHTMLTag      = regexp.MustCompile(`(?is)<[^>]+>`)
+	reHTMLSpaces   = regexp.MustCompile(`[ \t]+`)
+	reHTMLNewlines = regexp.MustCompile(`\n{3,}`)
+)
+
+// htmlToText derives a readable plain-text alternative from a rendered HTML
+// email. A multipart message (html + text) improves deliverability and is the
+// accessible fallback for clients that do not render HTML.
+func htmlToText(h string) string {
+	s := reHTMLComment.ReplaceAllString(h, "")
+	s = reHTMLHead.ReplaceAllString(s, "")
+	s = reHTMLStyle.ReplaceAllString(s, "")
+	s = reHTMLHidden.ReplaceAllString(s, "")
+	// Turn links into "label (url)" before stripping tags.
+	s = reHTMLAnchor.ReplaceAllString(s, "$2 ($1)")
+	s = reHTMLBreak.ReplaceAllString(s, "\n")
+	s = reHTMLBlockEnd.ReplaceAllString(s, "\n")
+	s = reHTMLTag.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		ln = reHTMLSpaces.ReplaceAllString(ln, " ")
+		out = append(out, strings.TrimSpace(ln))
+	}
+	s = strings.Join(out, "\n")
+	s = reHTMLNewlines.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
 }
 
 // listUnsubscribeHeaders returns RFC 8058 List-Unsubscribe headers for the given recipient.

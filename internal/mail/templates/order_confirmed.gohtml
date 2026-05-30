@@ -1,27 +1,17 @@
-{{template "email_header" .}}
+{{template "email_header" (dict "tag" "ORDER" "preheader" .Preheader)}}
 
-            {{template "greeting" .}}
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">ORDER CONFIRMED</div>
+              {{template "spacer_16"}}
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">WE'VE GOT YOUR ORDER AND WE'RE PREPARING IT. YOU'LL HEAR FROM US WHEN IT SHIPS.</div>
+              {{template "spacer_22"}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "CONFIRMED" "buyer" .BuyerName)}}
 
-            <!-- Header copy -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:26px; line-height:38px; text-transform:uppercase; letter-spacing:1px; font-weight:400;">THANK YOU</div>
-                <div style="font-size:16px; line-height:26px; text-transform:uppercase; padding-top:14px; font-weight:400;">
-                  <strong style="font-weight:700;">{{template "order_reference" .}} HAS BEEN PLACED</strong>
-                </div>
-              </td>
-            </tr>
+              {{template "spacer_24"}}
+              {{template "order_items_list" .}}
+              {{template "spacer_16"}}
+              {{template "order_totals" .}}
 
-            {{template "spacer_24"}}
-            {{template "divider"}}
-            {{template "spacer_24"}}
+              {{template "spacer_28"}}
+              {{template "order_track_link" .}}
 
-            {{template "order_items_list" .}}
-
-            {{template "spacer_24"}}
-
-            {{template "order_totals" .}}
-
-            {{template "spacer_48"}}
-
-            {{template "email_footer" .}}
+{{template "email_footer" .}}

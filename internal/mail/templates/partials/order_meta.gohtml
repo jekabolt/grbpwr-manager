@@ -1,0 +1,19 @@
+{{define "order_meta"}}
+              <!-- expects dict "uuid" "email" "status" "buyer" -->
+              <table role="presentation" border="0" cellspacing="0" cellpadding="0" style="font-size:13px; line-height:24px;">
+                <tr>
+                  <td valign="top" style="color:#9a978c; padding-right:24px;">ORDER</td>
+                  <td valign="top"><a href="https://grbpwr.com/order/{{.uuid}}/{{.email}}" style="color:#0E0E0C; text-decoration:underline;">{{.uuid}}</a></td>
+                </tr>
+                <tr>
+                  <td valign="top" style="color:#9a978c; padding-right:24px;">STATUS</td>
+                  <td valign="top">{{.status}}</td>
+                </tr>
+                {{if .buyer}}
+                <tr>
+                  <td valign="top" style="color:#9a978c; padding-right:24px;">BUYER</td>
+                  <td valign="top" style="text-transform:uppercase;">{{.buyer}}</td>
+                </tr>
+                {{end}}
+              </table>
+{{end}}

@@ -487,9 +487,9 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Your order has been confirmed", req.Subject)
+		assert.Equal(t, "Order test-123 confirmed", req.Subject)
 		assert.Contains(t, *req.Html, "test-123")
-		assert.Contains(t, *req.Html, "HAS BEEN PLACED")
+		assert.Contains(t, *req.Html, "ORDER CONFIRMED")
 	})
 
 	t.Run("Account Login Template", func(t *testing.T) {
@@ -525,7 +525,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Your order has been cancelled", req.Subject)
+		assert.Equal(t, "Order cancel-456 cancelled", req.Subject)
 		assert.Contains(t, *req.Html, "cancel-456")
 		assert.Contains(t, *req.Html, "HAS BEEN CANCELLED")
 	})
@@ -541,7 +541,7 @@ func TestBuildSendMailRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotNil(t, req)
-		assert.Equal(t, "Your refund has been initiated", req.Subject)
+		assert.Equal(t, "Order refund-789 — refund initiated", req.Subject)
 		assert.Contains(t, *req.Html, "refund-789")
 		assert.Contains(t, *req.Html, "REFUND HAS BEEN INITIATED")
 	})
@@ -615,9 +615,8 @@ func TestTemplateRendering(t *testing.T) {
 		assert.Contains(t, html, "uuid-123")
 		assert.Contains(t, html, "200.00")
 
-		// Check product item
+		// Check product item (Lab Report item rows are text-only, no thumbnail)
 		assert.Contains(t, html, "Test Product")
-		assert.Contains(t, html, "https://example.com/image.jpg")
 		assert.Contains(t, html, "M")
 
 		// Check promo
@@ -656,7 +655,7 @@ func TestTemplateRendering(t *testing.T) {
 		html := *req.Html
 
 		assert.Contains(t, html, "ship-456")
-		assert.Contains(t, html, "HAS BEEN SHIPPED")
+		assert.Contains(t, html, "SHIPPED")
 		assert.Contains(t, html, "Shipped Product")
 	})
 }

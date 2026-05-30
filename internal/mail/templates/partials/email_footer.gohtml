@@ -1,57 +1,36 @@
 {{define "email_footer"}}
-            <!-- Contact and footer section -->
-            {{template "spacer_32"}}
-            {{template "divider"}}
-            {{template "spacer_18"}}
+              {{template "spacer_36"}}
+              {{template "hairline"}}
+              {{template "spacer_16"}}
 
-            <!-- Contact -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:14px; line-height:22px; text-transform:uppercase; font-weight:400;">FOR HELP, PLEASE CONTACT US:</div>
-                <div style="font-size:16px; line-height:24px; padding-top:6px; font-weight:400;">
-                  <a href="mailto:customer@grbpwr.com" style="color:#000000; text-decoration:none;">customer@grbpwr.com</a>
-                </div>
-              </td>
-            </tr>
+              <!-- Footer -->
+              <div style="font-size:11px; line-height:19px; color:#9a978c; letter-spacing:0.3px;">
+                NEED HELP? <a href="mailto:customer@grbpwr.com" style="color:#0E0E0C; text-decoration:none;">customer@grbpwr.com</a><br>
+                <a href="https://grbpwr.com/faq" style="color:#9a978c; text-decoration:underline;">FAQ</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:#9a978c; text-decoration:underline;">AFTER-SALE SERVICES</a>
+              </div>
 
-            <!-- Social -->
-            {{template "spacer_28"}}
-            <tr>
-              <td align="center">
-                <table role="presentation" border="0" cellspacing="0" cellpadding="0">
-                  <tr>
-                    <td style="padding:0 16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; font-weight:400;">
-                      <a href="https://x.com/grbpwr_" style="color:#000000; text-decoration:none;">[ X ]</a>
-                    </td>
-                    <td style="padding:0 16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; font-weight:400;">
-                      <a href="https://github.com/grbpwr" style="color:#000000; text-decoration:none;">[ GH ]</a>
-                    </td>
-                    <td style="padding:0 16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; font-weight:400;">
-                      <a href="https://instagram.com/grbpwr_" style="color:#000000; text-decoration:none;">[ IG ]</a>
-                    </td>
-                    <td style="padding:0 16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; font-weight:400;">
-                      <a href="https://t.me/grbpwr" style="color:#000000; text-decoration:none;">[ TG ]</a>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
+              {{template "spacer_12"}}
+              <div style="font-size:11px; line-height:18px; color:#0E0E0C; letter-spacing:1px;">
+                <a href="https://substack.com/@grbpwr" style="color:#0E0E0C; text-decoration:none;">SS</a> &middot;
+                <a href="https://github.com/grbpwr/" style="color:#0E0E0C; text-decoration:none;">GH</a> &middot;
+                <a href="https://www.instagram.com/grbpwr_/" style="color:#0E0E0C; text-decoration:none;">IG</a> &middot;
+                <a href="https://t.me/grbpwr/" style="color:#0E0E0C; text-decoration:none;">TG</a>
+              </div>
 
-            <!-- Unsubscribe -->
-            {{if and .EmailB64 (ne .EmailB64 "") (ne .EmailB64 " ")}}
-            {{template "spacer_16"}}
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:10px; line-height:16px; text-transform:lowercase; font-weight:400;">
-                  if you no longer wish to receive email updates, please <a href="https://grbpwr.com/unsubscribe/{{.EmailB64}}" style="color:#000000; text-decoration:underline;">unsubscribe</a>.
-                </div>
-              </td>
-            </tr>
-            {{end}}
+              {{if and .EmailB64 (ne .EmailB64 "") (ne .EmailB64 " ")}}
+              {{template "spacer_12"}}
+              <div style="font-size:10px; line-height:16px; color:#b3aea2;">
+                if you no longer wish to receive email updates, <a href="https://grbpwr.com/unsubscribe/{{.EmailB64}}" style="color:#b3aea2; text-decoration:underline;">unsubscribe</a>.
+              </div>
+              {{end}}
 
-            {{template "spacer_56"}}
+              {{template "spacer_16"}}
+              <div style="font-size:10px; line-height:16px; color:#b3aea2; letter-spacing:0.3px;">
+                GRBPWR LIMITED &middot; 167&ndash;169 GREAT PORTLAND STREET, LONDON W1W 5PF &middot; NO.17015705
+              </div>
+
+            </td></tr>
           </table>
-
         </td>
       </tr>
     </table>

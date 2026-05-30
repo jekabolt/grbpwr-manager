@@ -1,0 +1,16 @@
+{{define "cta_button"}}
+              <!-- CTA; expects dict "url" "label" and optional "variant" ("solid" | default outline).
+                   Table + bgcolor + mso-padding-alt keeps it solid/clickable across clients
+                   (incl. Outlook) without VML/conditional comments (html/template strips those). -->
+              <table role="presentation" border="0" cellspacing="0" cellpadding="0" style="margin:0;"><tr>
+              {{if eq (.variant) "solid"}}
+                <td align="center" bgcolor="#0E0E0C" style="background-color:#0E0E0C; mso-padding-alt:14px 24px;">
+                  <a href="{{.url}}" style="display:inline-block; padding:14px 24px; font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:13px; letter-spacing:1px; text-decoration:none; color:#FAFAF7; background-color:#0E0E0C;">[ {{.label}} &rarr; ]</a>
+                </td>
+              {{else}}
+                <td align="center" style="border:1px solid #0E0E0C; mso-padding-alt:13px 22px;">
+                  <a href="{{.url}}" style="display:inline-block; padding:13px 22px; font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:13px; letter-spacing:1px; text-decoration:none; color:#0E0E0C;">[ {{.label}} &rarr; ]</a>
+                </td>
+              {{end}}
+              </tr></table>
+{{end}}

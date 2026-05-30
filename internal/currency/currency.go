@@ -25,6 +25,26 @@ var minimumAmounts = map[string]decimal.Decimal{
 	"CNY": decimal.NewFromFloat(1.00),
 }
 
+// symbols maps ISO 4217 codes to their display symbol for the currencies the
+// shop supports. Unknown codes fall back to the uppercased code itself.
+var symbols = map[string]string{
+	"EUR": "€",
+	"USD": "$",
+	"GBP": "£",
+	"JPY": "¥",
+	"CNY": "¥",
+	"KRW": "₩",
+}
+
+// Symbol returns the display symbol for the currency, or the uppercased ISO
+// code when no symbol is known.
+func Symbol(c string) string {
+	if s, ok := symbols[strings.ToUpper(c)]; ok {
+		return s
+	}
+	return strings.ToUpper(c)
+}
+
 // IsZeroDecimal returns true for currencies with no decimal places (KRW, JPY, etc.)
 func IsZeroDecimal(c string) bool {
 	return zeroDecimalCurrencies[strings.ToUpper(c)]

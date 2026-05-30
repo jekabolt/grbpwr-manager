@@ -1,35 +1,21 @@
-{{template "email_header" .}}
+{{template "email_header" (dict "tag" "RESTOCK" "preheader" .Preheader)}}
 
-            {{template "greeting" .}}
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">BACK IN STOCK</div>
+              {{template "spacer_8"}}
+              <div style="font-size:12px; color:#9a978c;">STATUS: AVAILABLE → THE PIECE YOU WAITLISTED</div>
 
-            <!-- Header copy -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:26px; line-height:38px; text-transform:uppercase; letter-spacing:1px; font-weight:400;">GOOD NEWS!</div>
-                <div style="font-size:16px; line-height:26px; text-transform:uppercase; padding-top:14px; font-weight:400;">
-                  YOUR WAITLIST ITEM IS BACK IN STOCK
-                </div>
-              </td>
-            </tr>
+              {{template "spacer_24"}}
+              <img src="{{.Thumbnail}}" width="480" alt="{{.Brand}} {{.ProductName}}" style="width:100%; max-width:480px; height:auto; display:block; border:0;">
 
-            {{template "spacer_24"}}
-            {{template "divider"}}
-            {{template "spacer_24"}}
+              {{template "spacer_24"}}
+              <table role="presentation" border="0" cellspacing="0" cellpadding="0" style="font-size:13px; line-height:24px;">
+                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">ITEM</td><td valign="top" style="text-transform:uppercase; word-break:break-word;">{{.Brand}} {{.ProductName}}</td></tr>
+                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">SIZE</td><td valign="top">{{.Size}}</td></tr>
+              </table>
+              {{template "spacer_16"}}
+              <div style="font-size:12px; line-height:19px; color:#9a978c;">STOCK IS LIMITED AND WE DON'T HOLD IT — FIRST COME, FIRST SERVED.</div>
 
-            {{template "product_display" .}}
+              {{template "spacer_24"}}
+              {{template "cta_button" (dict "url" .ProductURL "label" "VIEW PRODUCT" "variant" "solid")}}
 
-            {{template "spacer_24"}}
-
-            <!-- CTA Button -->
-            <tr>
-              <td align="center" style="padding:0 24px;">
-                <a href="{{.ProductURL}}" style="display:inline-block; padding:14px 28px; font-family:Arial, Helvetica, sans-serif; font-size:16px; line-height:24px; text-transform:uppercase; text-decoration:none; color:#FFFFFF; background-color:#000000; border-radius:0;">
-                  VIEW PRODUCT
-                </a>
-              </td>
-            </tr>
-
-            {{template "spacer_48"}}
-
-            {{template "email_footer" .}}
-
+{{template "email_footer" .}}

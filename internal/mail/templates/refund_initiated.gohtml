@@ -1,35 +1,14 @@
-{{template "email_header" .}}
+{{template "email_header" (dict "tag" "REFUND" "preheader" .Preheader)}}
 
-            {{template "greeting" .}}
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">REFUND INITIATED</div>
+              {{template "spacer_18"}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "REFUND INITIATED" "buyer" .BuyerName)}}
 
-            <!-- Header copy -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:26px; line-height:38px; text-transform:uppercase; letter-spacing:1px; font-weight:400;">REFUND INITIATED</div>
-                <div style="font-size:16px; line-height:26px; text-transform:uppercase; padding-top:14px; font-weight:400;">
-                  <strong style="font-weight:700;">{{template "order_reference" .}} REFUND HAS BEEN INITIATED</strong>
-                </div>
-              </td>
-            </tr>
+              {{template "spacer_20"}}
+              {{template "hairline"}}
+              {{template "spacer_18"}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOUR REFUND IS ON ITS WAY. HOW LONG IT TAKES TO LAND DEPENDS ON YOUR BANK.</div>
+              {{template "spacer_18"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">THANK YOU FOR YOUR PATIENCE — GRBPWR</div>
 
-            {{template "spacer_24"}}
-            {{template "divider"}}
-            {{template "spacer_24"}}
-
-            <!-- Message -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:16px; line-height:26px; text-transform:uppercase; font-weight:400;">
-                  THE AMOUNT WILL BE RETURNED ACCORDING TO THE POLICY OF THE BANK YOU USED FOR PAYMENT.
-                </div>
-              </td>
-            </tr>
-
-            {{template "spacer_24"}}
-            {{template "divider"}}
-            {{template "spacer_24"}}
-
-            <!-- Signature -->
-            {{template "signature_thank_you"}}
-
-            {{template "email_footer" .}}
+{{template "email_footer" .}}

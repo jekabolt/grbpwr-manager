@@ -1,39 +1,57 @@
 {{define "email_header"}}
 <!doctype html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
   <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width">
+    <meta name="x-apple-disable-message-reformatting">
+    <meta name="color-scheme" content="light only">
+    <meta name="supported-color-schemes" content="light only">
+    <title>GRBPWR</title>
+    <style>
+      html, body { margin:0 !important; padding:0 !important; width:100% !important; background-color:#EDEAE3; }
+      * { -ms-text-size-adjust:100%; -webkit-text-size-adjust:100%; }
+      table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; border-collapse:collapse; }
+      img { -ms-interpolation-mode:bicubic; border:0; height:auto; line-height:100%; outline:none; text-decoration:none; }
+      a { text-decoration:none; }
+      a[x-apple-data-detectors] { color:inherit !important; text-decoration:none !important; }
+
+      @media only screen and (max-width:600px) {
+        .gp-container { width:100% !important; max-width:100% !important; }
+        .gp-c { padding-left:24px !important; padding-right:24px !important; }
+        .gp-h { font-size:22px !important; line-height:28px !important; }
+        .gp-logo { width:48px !important; height:48px !important; }
+        .gp-img { height:280px !important; }
+      }
+      @media (prefers-color-scheme: dark) {
+        body, .gp-bg { background-color:#EDEAE3 !important; }
+        .gp-container { background-color:#FAFAF7 !important; }
+      }
+    </style>
   </head>
-  <body style="margin:0; padding:0; background-color:#ffffff;">
-    <!-- Hidden preheader (inbox preview, not visible in body) -->
+  <body id="body" class="gp-bg" style="margin:0; padding:0; width:100%; background-color:#EDEAE3; font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
     <div style="display:none !important; visibility:hidden; mso-hide:all; font-size:1px; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
-      {{.Preheader}}
+      {{.preheader}}&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
     </div>
 
-    <!-- Full-width wrapper -->
-    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; background-color:#ffffff;">
+    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; background-color:#EDEAE3;">
       <tr>
-        <td align="center">
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" class="gp-container" align="center" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; max-width:560px; margin:0 auto; background-color:#FAFAF7;">
+            <tr><td class="gp-c" style="padding:34px 40px; color:#0E0E0C; font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
 
-          <!-- 600px container -->
-          <table role="presentation" width="600" border="0" cellspacing="0" cellpadding="0" style="width:600px; max-width:600px; background-color:#ffffff;">
-            <!-- Top black bar with centered logo -->
-            <tr>
-              <td align="center" style="background-color:#000000;">
-                <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
-                  {{template "spacer_44"}}
-                  <tr>
-                    <td align="center">
-                      <img src="https://files.grbpwr.com/logo-invert.png" alt="GRBPWR logo" width="80" style="display:block; width:80px; height:auto; border:0; outline:none; text-decoration:none;">
-                    </td>
-                  </tr>
-                  {{template "spacer_44"}}
-                </table>
-              </td>
-            </tr>
+              <!-- Lab Report header: logo + generation stamp -->
+              <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
+                <td valign="top" style="vertical-align:top;">
+                  <img src="https://files.grbpwr.com/grbpwr-com/mail/mail-logo.png" width="54" height="54" alt="GRBPWR" class="gp-logo" style="display:block; width:54px; height:54px; border:0;">
+                </td>
+                <td valign="top" align="right" style="vertical-align:top; font-size:11px; line-height:17px; color:#9a978c; letter-spacing:0.3px;">
+                  {{unixNow}} // {{.tag}}<br>{{season}} &middot; OPEN PROCESS
+                </td>
+              </tr></table>
 
-            <!-- Main content spacing -->
-            {{template "spacer_28"}}
+              {{template "spacer_18"}}
+              {{template "rule"}}
+              {{template "spacer_26"}}
 {{end}}

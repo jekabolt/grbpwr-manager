@@ -1,26 +1,20 @@
-{{template "email_header" .}}
+{{template "email_header" (dict "tag" "GIFT CARD" "preheader" .Preheader)}}
 
-            {{template "greeting" .}}
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">GIFT CARD</div>
+              {{template "spacer_16"}}
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">THANK YOU FOR YOUR PURCHASE.</div>
 
-            <!-- Intro copy -->
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:14px; line-height:22px; text-transform:uppercase;">YOUR GRBPWR GIFT CARD IS HERE</div>
-                <div style="font-size:14px; line-height:22px; text-transform:uppercase;">THANK YOU FOR YOUR PURCHASE</div>
-              </td>
-            </tr>
+              {{template "spacer_24"}}
+              <div style="border:1px solid #0E0E0C; padding:24px;">
+                <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; font-size:13px; line-height:26px;">
+                  <tr><td style="color:#9a978c;">CARD NUMBER</td><td align="right" style="letter-spacing:1px; font-weight:700;">{{.PromoCode}}</td></tr>
+                  <tr><td style="color:#9a978c;">VALUE</td><td align="right" style="font-weight:700;">{{.DiscountAmount}}%</td></tr>
+                </table>
+              </div>
+              {{template "spacer_18"}}
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">REDEEM IT AT CHECKOUT — ENTER THE CARD NUMBER IN THE PROMO FIELD.</div>
 
-            <!-- Card details -->
-            {{template "spacer_36"}}
-            <tr>
-              <td align="center" style="padding:0 24px; font-family:Arial, Helvetica, sans-serif; color:#000000; text-align:center;">
-                <div style="font-size:24px; line-height:34px; text-transform:uppercase;">CARD NUMBER: {{.PromoCode}}</div>
-                <div style="font-size:24px; line-height:34px; text-transform:uppercase; padding-top:10px;">VALUE: {{.DiscountAmount}}%</div>
-              </td>
-            </tr>
+              {{template "spacer_24"}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com" "label" "SHOP NOW" "variant" "solid")}}
 
-            <!-- Signature -->
-            {{template "spacer_32"}}
-            {{template "signature_sincerely"}}
-
-            {{template "email_footer" .}}
+{{template "email_footer" .}}

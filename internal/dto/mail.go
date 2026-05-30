@@ -39,6 +39,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
+		CurrencySymbol:      CurrencySymbol(of.Order.Currency),
 		SubtotalPrice:       subtotal.String(),
 		TotalPrice:          of.Order.TotalPriceDecimal().String(),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems, of.Order.Currency),
@@ -79,6 +80,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
+		CurrencySymbol:      CurrencySymbol(of.Order.Currency),
 		EmailB64:            base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
 		OrderItems:          EntityOrderItemsToDto(of.OrderItems, of.Order.Currency),
 		SubtotalPrice:       subtotal.String(),
@@ -165,6 +167,7 @@ type OrderConfirmed struct {
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
+	CurrencySymbol      string
 	SubtotalPrice       string
 	TotalPrice          string
 	OrderItems          []OrderItem
@@ -194,6 +197,7 @@ type OrderShipment struct {
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
+	CurrencySymbol      string
 	EmailB64            string
 	OrderItems          []OrderItem
 	SubtotalPrice       string
