@@ -821,6 +821,11 @@ message BusinessMetrics {
   CLVStats clv_distribution = 19;
 
   repeated PromoMetric revenue_by_promo = 20;
+  // orders_by_status is every order PLACED in the period bucketed by its current status
+  // (one order per bucket), so it sums to total_placed_orders, NOT to orders_count.
+  // orders_count counts only net-revenue statuses (confirmed/shipped/delivered/partially_refunded),
+  // so cancelled/refunded/pending_return orders are excluded from it. Use total_placed_orders
+  // as the denominator for status shares such as cancellation% / refund%.
   repeated StatusCount orders_by_status = 21;
 
   repeated TimeSeriesPoint revenue_by_day = 22;
@@ -888,6 +893,11 @@ message BusinessMetrics {
   // Shipping / logistics metrics
   MetricWithComparison avg_shipping_cost = 82;
   MetricWithComparison total_shipping_cost = 83;
+
+  // Total orders PLACED in the period, regardless of status (sum of orders_by_status).
+  // Distinct from orders_count, which counts only net-revenue statuses. Use this as the
+  // denominator when deriving status shares (cancellation rate, refund rate, etc.).
+  MetricWithComparison total_placed_orders = 84;
 }
 
 message PaymentMethodMetric {
@@ -1679,7 +1689,7 @@ message AddToCartRateRow {
   string product_name = 3;
   int64 view_count = 4;
   int64 add_to_cart_count = 5;
-  double cart_rate = 6;
+  double cart_rate = 6; // percentage 0–100 (add_to_cart / view)
 }
 
 // TrendGranularity defines time bucket size for trend analysis
@@ -1695,7 +1705,7 @@ message AddToCartRateAnalysis {
   repeated AddToCartRateProductRow products = 1;
   repeated AddToCartRateGlobalRow global_trend = 2;
   double avg_view_count = 3;
-  double avg_cart_rate = 4;
+  double avg_cart_rate = 4; // percentage 0–100
 }
 
 // AddToCartRateProductRow represents per-product aggregate metrics for scatter plot matrix
@@ -1704,7 +1714,7 @@ message AddToCartRateProductRow {
   string product_name = 2;
   int64 view_count = 3;
   int64 add_to_cart_count = 4;
-  double cart_rate = 5;
+  double cart_rate = 5; // percentage 0–100 (add_to_cart / view)
 }
 
 // AddToCartRateGlobalRow represents store-wide daily/weekly/monthly ATC rate for trend line
@@ -1712,7 +1722,7 @@ message AddToCartRateGlobalRow {
   google.protobuf.Timestamp date = 1;
   int64 total_views = 2;
   int64 total_add_to_carts = 3;
-  double global_cart_rate = 4;
+  double global_cart_rate = 4; // percentage 0–100
 }
 
 // --- Analytics: Browser Breakdown (BQ) ---
@@ -1740,7 +1750,7 @@ message AbandonedCartRow {
   google.protobuf.Timestamp date = 1;
   int32 carts_started = 2;
   int32 checkouts_started = 3;
-  double abandonment_rate = 4;
+  double abandonment_rate = 4; // percentage 0–100
   double avg_minutes_to_checkout = 5;
   double avg_minutes_to_abandon = 6;
 }

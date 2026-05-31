@@ -321,3 +321,33 @@ func TestMetricWithComparisonToPb_Caveat(t *testing.T) {
 		})
 	}
 }
+
+// TestFunnelRatesScaledToPct verifies bug #5 fix: BigQuery funnel rates are produced
+// as 0–1 fractions but the API serves them as 0–100 percentages, matching the
+// business KPI convention (conversionRate, refundRate, bounceRate).
+func TestFunnelRatesScaledToPct(t *testing.T) {
+	assert.InDelta(t, 23.81, fractionToPct(0.2381), 0.001)
+	assert.InDelta(t, 0.0, fractionToPct(0), 0.001)
+	assert.InDelta(t, 100.0, fractionToPct(1.0), 0.001)
+
+	t.Run("AddToCartRateRow", func(t *testing.T) {
+		pb := ConvertAddToCartRateToPb([]entity.AddToCartRateRow{{CartRate: 0.2381}})
+		assert.InDelta(t, 23.81, pb[0].CartRate, 0.001)
+	})
+
+	t.Run("AddToCartRateAnalysis", func(t *testing.T) {
+		pb := ConvertAddToCartRateAnalysisToPb(&entity.AddToCartRateAnalysis{
+			AvgCartRate: 0.5,
+			Products:    []entity.AddToCartRateProductRow{{CartRate: 0.25}},
+			GlobalTrend: []entity.AddToCartRateGlobalRow{{GlobalCartRate: 0.1}},
+		})
+		assert.InDelta(t, 50.0, pb.AvgCartRate, 0.001)
+		assert.InDelta(t, 25.0, pb.Products[0].CartRate, 0.001)
+		assert.InDelta(t, 10.0, pb.GlobalTrend[0].GlobalCartRate, 0.001)
+	})
+
+	t.Run("AbandonedCartRow", func(t *testing.T) {
+		pb := ConvertAbandonedCartToPb([]entity.AbandonedCartRow{{AbandonmentRate: 0.73}})
+		assert.InDelta(t, 73.0, pb[0].AbandonmentRate, 0.001)
+	})
+}

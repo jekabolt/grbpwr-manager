@@ -447,6 +447,25 @@ LIMIT 500
 	return result, nil
 }
 
+// getPlacedOrdersCount counts every order placed in the range regardless of status.
+// This is the sum of getOrdersByStatus counts and is the correct denominator for
+// status shares (cancellation rate, refund rate). It differs from getCoreSalesMetrics'
+// orders count, which is restricted to net-revenue statuses.
+func (s *Store) getPlacedOrdersCount(ctx context.Context, from, to time.Time) (int, error) {
+	query := `
+		SELECT COUNT(*) AS cnt
+		FROM customer_order co
+		WHERE co.placed >= :from AND co.placed < :to
+	`
+	row, err := storeutil.QueryNamedOne[struct {
+		Count int `db:"cnt"`
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to})
+	if err != nil {
+		return 0, err
+	}
+	return row.Count, nil
+}
+
 func (s *Store) getOrdersByStatus(ctx context.Context, from, to time.Time) ([]entity.StatusCount, error) {
 	query := `
 		SELECT os.name, COUNT(*) AS cnt

@@ -117,6 +117,26 @@ func ptr(d decimal.Decimal) *decimal.Decimal {
 	return &d
 }
 
+// dailyConversionRate computes a per-day conversion rate (orders/sessions, %) and
+// clamps it to [0,100]. Orders-by-day and sessions-by-day come from different sources
+// (orders DB vs GA4) and are not guaranteed to align per day, so a day with more
+// attributed orders than recorded sessions would otherwise yield an impossible >100%
+// daily rate. The scalar conversionRate (total orders / total sessions) stays the
+// source of truth; this only keeps the per-day series within sane bounds.
+func dailyConversionRate(orders, sessions int) decimal.Decimal {
+	if sessions <= 0 {
+		return decimal.Zero
+	}
+	rate := decimal.NewFromInt(int64(orders)).Div(decimal.NewFromInt(int64(sessions))).Mul(decimal.NewFromInt(100))
+	if rate.GreaterThan(decimal.NewFromInt(100)) {
+		return decimal.NewFromInt(100)
+	}
+	if rate.IsNegative() {
+		return decimal.Zero
+	}
+	return rate
+}
+
 var ga4APISyncTypes = map[string]bool{
 	"daily_metrics":        true,
 	"product_page_metrics": true,

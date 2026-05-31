@@ -30,6 +30,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	var (
 		rev, cRev                      decimal.Decimal
 		orders, cOrders                int
+		placedOrders, cPlacedOrders    int
 		aov, cAov                      decimal.Decimal
 		itemsPerOrder, cItemsPerOrder  decimal.Decimal
 		revRefund, cRevRefund          decimal.Decimal
@@ -92,6 +93,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		g.Go(func() error {
 			var err error
 			cRev, cOrders, cAov, err = s.getCoreSalesMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cPlacedOrders, err = s.getPlacedOrdersCount(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 		g.Go(func() error {
@@ -295,6 +301,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	g.Go(func() error {
 		var err error
 		m.OrdersByStatus, err = s.getOrdersByStatus(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		placedOrders, err = s.getPlacedOrdersCount(gctx, period.From, period.To)
 		return err
 	})
 
@@ -574,13 +585,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		for _, s := range m.SessionsByDayCompare {
 			dateKey := s.Date.Format("2006-01-02")
 			ordersCount := ordersByDayCompareMap[dateKey]
-			convRate := decimal.Zero
-			if s.Count > 0 {
-				convRate = decimal.NewFromInt(int64(ordersCount)).Div(decimal.NewFromInt(int64(s.Count))).Mul(decimal.NewFromInt(100))
-			}
 			m.ConversionRateByDayCompare = append(m.ConversionRateByDayCompare, entity.TimeSeriesPoint{
 				Date:  s.Date,
-				Value: convRate,
+				Value: dailyConversionRate(ordersCount, s.Count),
 				Count: ordersCount,
 			})
 		}
@@ -590,6 +597,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	totalDiscount := productSaleDiscount.Add(promoCodeDiscount)
 	m.Revenue.Value = rev
 	m.OrdersCount.Value = decimal.NewFromInt(int64(orders))
+	m.TotalPlacedOrders.Value = decimal.NewFromInt(int64(placedOrders))
 	m.AvgOrderValue.Value = aov
 	m.ItemsPerOrder.Value = itemsPerOrder
 	grossRev := grossTotal
@@ -646,13 +654,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	for _, s := range m.SessionsByDay {
 		dateKey := s.Date.Format("2006-01-02")
 		ordersCount := ordersByDayMap[dateKey]
-		convRate := decimal.Zero
-		if s.Count > 0 {
-			convRate = decimal.NewFromInt(int64(ordersCount)).Div(decimal.NewFromInt(int64(s.Count))).Mul(decimal.NewFromInt(100))
-		}
 		m.ConversionRateByDay = append(m.ConversionRateByDay, entity.TimeSeriesPoint{
 			Date:  s.Date,
-			Value: convRate,
+			Value: dailyConversionRate(ordersCount, s.Count),
 			Count: ordersCount,
 		})
 	}
@@ -661,6 +665,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		cTotalDiscount := cProductSaleDiscount.Add(cPromoCodeDiscount)
 		m.Revenue.CompareValue = &cRev
 		m.OrdersCount.CompareValue = ptr(decimal.NewFromInt(int64(cOrders)))
+		m.TotalPlacedOrders.CompareValue = ptr(decimal.NewFromInt(int64(cPlacedOrders)))
+		m.TotalPlacedOrders.ChangePct = changePctInt(placedOrders, cPlacedOrders)
 		m.AvgOrderValue.CompareValue = &cAov
 		m.Revenue.ChangePct = changePct(rev, cRev)
 		m.OrdersCount.ChangePct = changePctInt(orders, cOrders)

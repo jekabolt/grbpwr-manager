@@ -8,6 +8,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// fractionToPct converts a 0–1 ratio into a 0–100 percentage so it matches the
+// convention used by the business KPIs (conversionRate, refundRate, bounceRate).
+// The BigQuery funnel rates (add-to-cart rate, cart abandonment) are produced as
+// 0–1 fractions (SAFE_DIVIDE / SanitizeRate); this is applied at the serialization
+// boundary so the whole API reports rates in 0–100.
+func fractionToPct(v float64) float64 {
+	return v * 100
+}
+
 func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.BusinessMetrics {
 	if m == nil {
 		return nil
@@ -16,6 +25,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		Period:                         timeRangeToPb(m.Period),
 		Revenue:                        metricWithComparisonToPb(m.Revenue),
 		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
+		TotalPlacedOrders:              metricWithComparisonToPb(m.TotalPlacedOrders),
 		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
 		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
 		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true), // lower is better
@@ -1173,7 +1183,7 @@ func ConvertAddToCartRateToPb(list []entity.AddToCartRateRow) []*pb_admin.AddToC
 			ProductName:    r.ProductName,
 			ViewCount:      r.ViewCount,
 			AddToCartCount: r.AddToCartCount,
-			CartRate:       r.CartRate,
+			CartRate:       fractionToPct(r.CartRate),
 		}
 	}
 	return pb
@@ -1187,7 +1197,7 @@ func ConvertAddToCartRateAnalysisToPb(a *entity.AddToCartRateAnalysis) *pb_admin
 		Products:     convertATCProductRowsToPb(a.Products),
 		GlobalTrend:  convertATCGlobalRowsToPb(a.GlobalTrend),
 		AvgViewCount: float64(a.AvgViewCount),
-		AvgCartRate:  a.AvgCartRate,
+		AvgCartRate:  fractionToPct(a.AvgCartRate),
 	}
 }
 
@@ -1202,7 +1212,7 @@ func convertATCProductRowsToPb(list []entity.AddToCartRateProductRow) []*pb_admi
 			ProductName:    r.ProductName,
 			ViewCount:      r.ViewCount,
 			AddToCartCount: r.AddToCartCount,
-			CartRate:       r.CartRate,
+			CartRate:       fractionToPct(r.CartRate),
 		}
 	}
 	return pb
@@ -1218,7 +1228,7 @@ func convertATCGlobalRowsToPb(list []entity.AddToCartRateGlobalRow) []*pb_admin.
 			Date:            timestamppb.New(r.Date),
 			TotalViews:      r.TotalViews,
 			TotalAddToCarts: r.TotalAddToCarts,
-			GlobalCartRate:  r.GlobalCartRate,
+			GlobalCartRate:  fractionToPct(r.GlobalCartRate),
 		}
 	}
 	return pb
@@ -1267,7 +1277,7 @@ func ConvertAbandonedCartToPb(list []entity.AbandonedCartRow) []*pb_admin.Abando
 			Date:                 timestamppb.New(r.Date),
 			CartsStarted:         int32(r.CartsStarted),
 			CheckoutsStarted:     int32(r.CheckoutsStarted),
-			AbandonmentRate:      r.AbandonmentRate,
+			AbandonmentRate:      fractionToPct(r.AbandonmentRate),
 			AvgMinutesToCheckout: r.AvgMinutesToCheckout,
 			AvgMinutesToAbandon:  r.AvgMinutesToAbandon,
 		}

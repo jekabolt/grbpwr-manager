@@ -40,22 +40,46 @@ WHERE
 		return nil, fmt.Errorf("failed to get email metrics summary: %w", err)
 	}
 
+	return reconcileEmailSummary(row), nil
+}
+
+// reconcileEmailSummary derives a self-consistent email summary (counts + rates) from
+// the raw daily counters.
+//
+// The counters are recorded independently and without per-event idempotency: emails_sent
+// is incremented at send time, while delivered/opened/clicked come from Resend webhooks
+// (keyed by the webhook's own date). Over a fixed window the raw sums can therefore be
+// internally inconsistent, producing impossible rates:
+//   - delivered can exceed sent (duplicate/retried webhooks, or a delivery whose send fell
+//     just before `from`) -> deliveryRate > 100%;
+//   - clicks can be recorded with zero opens (open pixel blocked or open tracking off) even
+//     though a click necessarily implies an open -> openRate < clickRate.
+//
+// Reconcile the counts so the summary is self-consistent before deriving rates:
+// delivered <= sent, opened >= clicked (a click implies an open) and opened <= delivered.
+// All rates are therefore in [0,100] with deliveryRate <= 100 and openRate >= clickRate.
+func reconcileEmailSummary(row emailMetricsSumRow) *entity.EmailMetricsSummary {
+	deliveredEff := min(row.TotalDelivered, row.TotalSent)
+	openedEff := min(max(row.TotalOpened, row.TotalClicked), deliveredEff)
+	clickedEff := min(row.TotalClicked, deliveredEff)
+	bouncedEff := min(row.TotalBounced, row.TotalSent)
+
 	summary := &entity.EmailMetricsSummary{
 		TotalSent:      row.TotalSent,
-		TotalDelivered: row.TotalDelivered,
-		TotalBounced:   row.TotalBounced,
-		TotalOpened:    row.TotalOpened,
-		TotalClicked:   row.TotalClicked,
+		TotalDelivered: deliveredEff,
+		TotalBounced:   bouncedEff,
+		TotalOpened:    openedEff,
+		TotalClicked:   clickedEff,
 	}
 
 	if row.TotalSent > 0 {
-		summary.DeliveryRate = float64(row.TotalDelivered) / float64(row.TotalSent) * 100
-		summary.BounceRate = float64(row.TotalBounced) / float64(row.TotalSent) * 100
+		summary.DeliveryRate = float64(deliveredEff) / float64(row.TotalSent) * 100
+		summary.BounceRate = float64(bouncedEff) / float64(row.TotalSent) * 100
 	}
-	if row.TotalDelivered > 0 {
-		summary.OpenRate = float64(row.TotalOpened) / float64(row.TotalDelivered) * 100
-		summary.ClickRate = float64(row.TotalClicked) / float64(row.TotalDelivered) * 100
+	if deliveredEff > 0 {
+		summary.OpenRate = float64(openedEff) / float64(deliveredEff) * 100
+		summary.ClickRate = float64(clickedEff) / float64(deliveredEff) * 100
 	}
 
-	return summary, nil
+	return summary
 }

@@ -34,9 +34,13 @@ type BusinessMetrics struct {
 	Freshness     *DataFreshness
 
 	// Core sales
-	Revenue        MetricWithComparison
-	OrdersCount    MetricWithComparison
-	AvgOrderValue  MetricWithComparison
+	Revenue MetricWithComparison
+	// OrdersCount counts only net-revenue orders (confirmed/shipped/delivered/partially_refunded).
+	OrdersCount MetricWithComparison
+	// TotalPlacedOrders counts every order placed in the period regardless of status
+	// (sum of OrdersByStatus). Use it as the denominator for status shares.
+	TotalPlacedOrders MetricWithComparison
+	AvgOrderValue     MetricWithComparison
 	ItemsPerOrder  MetricWithComparison
 	RefundRate     MetricWithComparison
 	PromoUsageRate MetricWithComparison
