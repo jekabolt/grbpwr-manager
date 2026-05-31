@@ -590,6 +590,9 @@ type productQueryResult struct {
 	Collection         string              `db:"collection"`
 	Fit                sql.NullString      `db:"fit"`
 
+	MinTier               int16 `db:"min_tier"`
+	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
+
 	ThumbnailId                 int            `db:"thumbnail_id"`
 	SecondaryThumbnailId        sql.NullInt32  `db:"secondary_thumbnail_id"`
 	SecondaryThumbnailCreatedAt sql.NullTime   `db:"secondary_thumbnail_created_at"`
@@ -667,10 +670,12 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					CareInstructions:   pqr.CareInstructions,
 					Composition:        pqr.Composition,
 					Version:            pqr.Version,
-					Hidden:             pqr.Hidden,
-					TargetGender:       pqr.TargetGender,
-					Season:             pqr.Season,
-					Fit:                pqr.Fit,
+					Hidden:                pqr.Hidden,
+					TargetGender:          pqr.TargetGender,
+					Season:                pqr.Season,
+					Fit:                   pqr.Fit,
+					MinTier:               pqr.MinTier,
+					HiddenForNonQualified: pqr.HiddenForNonQualified,
 				},
 				Translations: translations,
 			},

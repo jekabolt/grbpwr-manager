@@ -41,9 +41,9 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 		whereClauses = append(whereClauses, "p.hidden = :isHidden")
 		args["isHidden"] = 0
 
-		// Tier gating: show items at/below the viewer's tier; hacker-only items
-		// only to hacker; higher-tier items only when not hidden_for_non_qualified
-		// (those render disabled in the UI). Mirrors the spec's catalog rules.
+		// Tier gating: return ONLY products the viewer is eligible to buy for
+		// their tier (resolved from the auth token; 0 for guests). Hacker-only
+		// items (min_tier=99) are shown exclusively to hacker accounts.
 		viewerTier := int16(0)
 		if filterConditions != nil {
 			viewerTier = filterConditions.ViewerTier
@@ -51,7 +51,6 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 		whereClauses = append(whereClauses, `(
 			(p.min_tier <= :viewerTier AND p.min_tier <> 99)
 			OR (p.min_tier = 99 AND :viewerTier = 99)
-			OR (p.min_tier > :viewerTier AND p.min_tier <> 99 AND p.hidden_for_non_qualified = 0)
 		)`)
 		args["viewerTier"] = viewerTier
 	}
