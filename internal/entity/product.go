@@ -145,6 +145,10 @@ type ProductBodyInsert struct {
 	Version            string              `db:"version" valid:"-"`
 	Collection         string              `db:"collection" valid:"-"`
 	Fit                sql.NullString      `db:"fit" valid:"-"`
+	// MinTier is the minimum loyalty tier code (0/1/2/99) required to purchase.
+	MinTier int16 `db:"min_tier" valid:"-"`
+	// HiddenForNonQualified hides the product entirely from non-qualified tiers.
+	HiddenForNonQualified bool `db:"hidden_for_non_qualified" valid:"-"`
 }
 
 // ProductPrice represents a product price in a specific currency

@@ -1,0 +1,14 @@
+{{template "email_header" (dict "tag" "TIER" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">TIER ADJUSTED</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">FOLLOWING A REFUND, YOUR QUALIFYING SPEND OVER THE PAST 12 MONTHS WAS RECALCULATED TO €{{.SpendEUR}}. YOUR MEMBERSHIP IS NOW <span style="color:#0E0E0C;">{{.TierDisplay}}</span>.</div>
+              {{template "spacer_18"}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">THIS IS AN AUTOMATIC ADJUSTMENT TO KEEP YOUR TIER ACCURATE. REACH OUT ANY TIME IF SOMETHING LOOKS OFF.</div>
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com/account" "label" "VIEW ACCOUNT")}}
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

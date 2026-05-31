@@ -324,6 +324,123 @@ service AdminService {
   rpc GetProductReviewsPaged(GetProductReviewsPagedRequest) returns (GetProductReviewsPagedResponse) {
     option (google.api.http) = {get: "/api/admin/product/{product_id}/reviews"};
   }
+
+  // MEMBERSHIP / LOYALTY TIER MANAGEMENT
+
+  // List members with filters + pagination.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
+    option (google.api.http) = {get: "/api/admin/members"};
+  }
+
+  // Get a single member with membership detail.
+  rpc GetMember(GetMemberRequest) returns (GetMemberResponse) {
+    option (google.api.http) = {get: "/api/admin/members/{user_id}"};
+  }
+
+  // Manually override a member's tier (reason required).
+  rpc OverrideTier(OverrideTierRequest) returns (OverrideTierResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/members/{user_id}/tier"
+      body: "*"
+    };
+  }
+
+  // Toggle a member's status (active <-> frozen).
+  rpc SetMemberStatus(SetMemberStatusRequest) returns (SetMemberStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/members/{user_id}/status"
+      body: "*"
+    };
+  }
+
+  // Soft-delete a member account (status='deleted').
+  rpc SoftDeleteMember(SoftDeleteMemberRequest) returns (SoftDeleteMemberResponse) {
+    option (google.api.http) = {delete: "/api/admin/members/{user_id}"};
+  }
+
+  // Hard-erase a member account (GDPR right-to-erasure).
+  rpc HardEraseMember(HardEraseMemberRequest) returns (HardEraseMemberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/members/{user_id}/erase"
+      body: "*"
+    };
+  }
+
+  // Get tier transition history for a member.
+  rpc GetTierHistory(GetTierHistoryRequest) returns (GetTierHistoryResponse) {
+    option (google.api.http) = {get: "/api/admin/members/{user_id}/tier-history"};
+  }
+
+  // Send a custom / event-invite email to a member.
+  rpc SendMemberEmail(SendMemberEmailRequest) returns (SendMemberEmailResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/members/{user_id}/email"
+      body: "*"
+    };
+  }
+
+  // Tier configuration (thresholds, expiration, display names).
+  rpc GetTierConfig(GetTierConfigRequest) returns (GetTierConfigResponse) {
+    option (google.api.http) = {get: "/api/admin/tier-config"};
+  }
+
+  rpc UpdateTierConfig(UpdateTierConfigRequest) returns (UpdateTierConfigResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tier-config"
+      body: "*"
+    };
+  }
+
+  // Hacker tier management.
+  rpc GenerateHackerInvite(GenerateHackerInviteRequest) returns (GenerateHackerInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/hacker/invite"
+      body: "*"
+    };
+  }
+
+  rpc ListHackerInvites(ListHackerInvitesRequest) returns (ListHackerInvitesResponse) {
+    option (google.api.http) = {get: "/api/admin/hacker/invites"};
+  }
+
+  rpc RevokeHackerInvite(RevokeHackerInviteRequest) returns (RevokeHackerInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/hacker/invite/{invite_id}/revoke"
+      body: "*"
+    };
+  }
+
+  rpc ListHackerAccounts(ListHackerAccountsRequest) returns (ListHackerAccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/hacker/accounts"};
+  }
+
+  rpc RevokeHackerStatus(RevokeHackerStatusRequest) returns (RevokeHackerStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/hacker/accounts/{user_id}/revoke"
+      body: "*"
+    };
+  }
+
+  // Tier transition audit log (all members).
+  rpc GetTierAuditLog(GetTierAuditLogRequest) returns (GetTierAuditLogResponse) {
+    option (google.api.http) = {get: "/api/admin/tier-audit"};
+  }
+
+  // Per-product tier gating.
+  rpc SetProductTierAccess(SetProductTierAccessRequest) returns (SetProductTierAccessResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/{product_id}/access"
+      body: "*"
+    };
+  }
+
+  // One-time legacy backfill (admin-triggered).
+  rpc RunTierBackfill(RunTierBackfillRequest) returns (RunTierBackfillResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tier-backfill"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -1679,4 +1796,228 @@ message GetProductReviewsPagedRequest {
 message GetProductReviewsPagedResponse {
   repeated common.OrderItemReview reviews = 1;
   int32 total = 2;
+}
+
+// ===== MEMBERSHIP / LOYALTY TIER =====
+
+enum TierCode {
+  TIER_CODE_MEMBER = 0; // grbpwr (default registered)
+  TIER_CODE_PLUS = 1; // grbpwr+
+  TIER_CODE_PLUS_PLUS = 2; // grbpwr++
+  TIER_CODE_HACKER = 99; // invite-only
+}
+
+message Member {
+  int64 user_id = 1;
+  string email = 2;
+  string name = 3;
+  TierCode current_tier = 4;
+  string current_tier_display = 5; // e.g. "grbpwr++"
+  double qualifying_spend_eur_12mo = 6;
+  google.protobuf.Timestamp tier_upgrade_date = 7;
+  google.protobuf.Timestamp next_review_date = 8;
+  string status = 9; // active | frozen | deleted | erased
+  bool subscribe_newsletter = 10;
+  bool subscribe_new_arrivals = 11;
+  bool subscribe_events = 12;
+  string phone = 13;
+  google.protobuf.Timestamp birth_date = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp last_order_date = 16;
+}
+
+message ListMembersRequest {
+  string tier = 1; // optional tier key filter
+  string status = 2; // optional status filter
+  double spend_min_eur = 3;
+  double spend_max_eur = 4;
+  google.protobuf.Timestamp registered_from = 5;
+  google.protobuf.Timestamp registered_to = 6;
+  int32 days_until_review_max = 7;
+  string email = 8; // substring match
+  int32 limit = 9;
+  int32 offset = 10;
+}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+  int32 total = 2;
+}
+
+message GetMemberRequest {
+  int64 user_id = 1;
+}
+
+message GetMemberResponse {
+  Member member = 1;
+}
+
+message OverrideTierRequest {
+  int64 user_id = 1;
+  TierCode new_tier = 2;
+  string reason = 3; // required
+}
+
+message OverrideTierResponse {
+  Member member = 1;
+}
+
+message SetMemberStatusRequest {
+  int64 user_id = 1;
+  string status = 2; // active | frozen
+}
+
+message SetMemberStatusResponse {}
+
+message SoftDeleteMemberRequest {
+  int64 user_id = 1;
+}
+
+message SoftDeleteMemberResponse {}
+
+message HardEraseMemberRequest {
+  int64 user_id = 1;
+  bool confirm = 2; // must be true (double-confirm)
+}
+
+message HardEraseMemberResponse {}
+
+message TierHistoryEntry {
+  int64 id = 1;
+  string old_tier = 2;
+  string new_tier = 3;
+  string trigger_type = 4;
+  string reason = 5;
+  string actor = 6;
+  double spend_eur_at_change = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message GetTierHistoryRequest {
+  int64 user_id = 1;
+}
+
+message GetTierHistoryResponse {
+  repeated TierHistoryEntry entries = 1;
+}
+
+message SendMemberEmailRequest {
+  int64 user_id = 1;
+  string heading = 2;
+  string body = 3;
+  string cta_label = 4;
+  string cta_url = 5;
+}
+
+message SendMemberEmailResponse {}
+
+message TierConfigEntry {
+  TierCode tier_code = 1;
+  string tier_key = 2;
+  string display_name = 3;
+  bool has_min_spend = 4;
+  double min_spend_eur = 5;
+  int32 expiration_days = 6;
+  int32 reminder_days_before = 7;
+  bool is_invite_only = 8;
+  bool has_welcome_pack_slots = 9;
+  int32 welcome_pack_slots = 10;
+}
+
+message GetTierConfigRequest {}
+
+message GetTierConfigResponse {
+  repeated TierConfigEntry entries = 1;
+}
+
+message UpdateTierConfigRequest {
+  // Only editable fields are applied; tier_code identifies the row.
+  repeated TierConfigEntry entries = 1;
+}
+
+message UpdateTierConfigResponse {
+  repeated TierConfigEntry entries = 1;
+}
+
+message GenerateHackerInviteRequest {
+  string email = 1; // optional pre-bound email
+  int32 expires_in_days = 2; // default 14
+}
+
+message GenerateHackerInviteResponse {
+  int64 invite_id = 1;
+  string invite_url = 2; // one-time URL (raw token only here)
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message HackerInvite {
+  int64 id = 1;
+  string email = 2;
+  string created_by = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  google.protobuf.Timestamp consumed_at = 5;
+  google.protobuf.Timestamp revoked_at = 6;
+  google.protobuf.Timestamp created_at = 7;
+  bool active = 8;
+}
+
+message ListHackerInvitesRequest {
+  bool active_only = 1;
+}
+
+message ListHackerInvitesResponse {
+  repeated HackerInvite invites = 1;
+}
+
+message RevokeHackerInviteRequest {
+  int64 invite_id = 1;
+}
+
+message RevokeHackerInviteResponse {}
+
+message ListHackerAccountsRequest {}
+
+message ListHackerAccountsResponse {
+  repeated Member members = 1;
+}
+
+message RevokeHackerStatusRequest {
+  int64 user_id = 1;
+}
+
+message RevokeHackerStatusResponse {
+  Member member = 1;
+}
+
+message GetTierAuditLogRequest {
+  int64 user_id = 1; // 0 = all
+  string actor = 2;
+  string trigger_type = 3;
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to = 5;
+  int32 limit = 6;
+  int32 offset = 7;
+}
+
+message GetTierAuditLogResponse {
+  repeated TierHistoryEntry entries = 1;
+  int32 total = 2;
+}
+
+message SetProductTierAccessRequest {
+  int32 product_id = 1;
+  TierCode min_tier = 2;
+  bool hidden_for_non_qualified = 3;
+}
+
+message SetProductTierAccessResponse {}
+
+message RunTierBackfillRequest {
+  bool confirm = 1;
+}
+
+message RunTierBackfillResponse {
+  int64 orders_snapshotted = 1;
+  int32 accounts_processed = 2;
+  int32 accounts_upgraded = 3;
 }

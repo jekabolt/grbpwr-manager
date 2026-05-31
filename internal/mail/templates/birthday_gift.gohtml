@@ -1,0 +1,23 @@
+{{template "email_header" (dict "tag" "GIFT" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">HAPPY BIRTHDAY</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">A SMALL SOMETHING FROM US TO MARK THE DAY.</div>
+              {{if .PromoCode}}
+              {{template "spacer_22"}}
+              {{template "hairline"}}
+              {{template "spacer_16"}}
+              <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
+                <td style="font-size:11px; letter-spacing:0.3px; color:#9a978c;">YOUR CODE</td>
+                <td align="right" style="font-size:15px; letter-spacing:2px; color:#0E0E0C;">{{.PromoCode}}</td>
+              </tr></table>
+              {{template "spacer_16"}}
+              {{template "hairline"}}
+              {{end}}
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com" "label" "SHOP" "variant" "solid")}}
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

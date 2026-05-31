@@ -60,6 +60,9 @@ type Order struct {
 	OrderComment   sql.NullString  `db:"order_comment"`
 	RefundedAmount decimal.Decimal `db:"refunded_amount"`
 	GAClientID     sql.NullString  `db:"ga_client_id"`
+	// TotalPriceEUR is the order total converted to EUR at order time, used for
+	// loyalty qualifying-spend accumulation. NULL when it could not be derived.
+	TotalPriceEUR decimal.NullDecimal `db:"total_price_eur"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {

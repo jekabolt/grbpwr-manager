@@ -20,6 +20,16 @@ const (
 	OrderPendingReturn   templateName = "pending_return.gohtml"
 	PromoCode            templateName = "promo_code.gohtml"
 	BackInStock          templateName = "back_in_stock.gohtml"
+
+	TierUpgrade           templateName = "tier_upgrade.gohtml"
+	TierDowngrade         templateName = "tier_downgrade.gohtml"
+	DowngradeReminder     templateName = "downgrade_reminder.gohtml"
+	TierRollbackAfterRefund templateName = "tier_rollback_after_refund.gohtml"
+	FirstPurchaseThanks   templateName = "first_purchase_thanks.gohtml"
+	UnsubscribeConfirmation templateName = "unsubscribe_confirmation.gohtml"
+	BirthdayGift          templateName = "birthday_gift.gohtml"
+	EventInvite           templateName = "event_invite.gohtml"
+	HackerInvite          templateName = "hacker_invite.gohtml"
 )
 
 // Define a map for template names to subjects
@@ -33,6 +43,16 @@ var templateSubjects = map[templateName]string{
 	OrderPendingReturn:   "Your return has been requested",
 	PromoCode:            "Your promo code",
 	BackInStock:          "Your waitlist item is back in stock",
+
+	TierUpgrade:             "Your GRBPWR tier",
+	TierDowngrade:           "Your GRBPWR tier",
+	DowngradeReminder:       "Keep your GRBPWR tier",
+	TierRollbackAfterRefund: "Your GRBPWR tier was adjusted",
+	FirstPurchaseThanks:     "Thank you from GRBPWR",
+	UnsubscribeConfirmation: "You've been unsubscribed",
+	BirthdayGift:            "A gift from GRBPWR",
+	EventInvite:             "You're invited",
+	HackerInvite:            "Your GRBPWR HACKER invite",
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.

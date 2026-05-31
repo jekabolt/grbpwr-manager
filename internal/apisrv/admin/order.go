@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -251,6 +252,17 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't refund order")
+	}
+
+	// Loyalty: refund may drop qualifying spend below the current tier — roll back
+	// immediately (best effort; never fail the refund on this).
+	if orderFull.Buyer.Email != "" {
+		if err := tiermanagement.NewEngine(s.repo, s.mailer).EvaluateAfterRefund(ctx, orderFull.Buyer.Email); err != nil {
+			slog.Default().ErrorContext(ctx, "can't evaluate tier after refund",
+				slog.String("orderUuid", req.OrderUuid),
+				slog.String("err", err.Error()),
+			)
+		}
 	}
 	return &pb_admin.RefundOrderResponse{}, nil
 }

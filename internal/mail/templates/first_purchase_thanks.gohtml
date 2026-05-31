@@ -1,0 +1,10 @@
+{{template "email_header" (dict "tag" "THANKS" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">THANK YOU</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOUR FIRST ORDER WITH GRBPWR IS IN. WELCOME TO <span style="color:#0E0E0C;">{{.TierDisplay}}</span> — THE START OF AN OPEN, ONGOING PROCESS.</div>
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

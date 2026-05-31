@@ -27,6 +27,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
+	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 )
 
 var commitHash string
@@ -47,6 +48,7 @@ type App struct {
 	ma   dependency.Mailer
 	oc   *ordercleanup.Worker
 	sc   *storefrontcleanup.Worker
+	tm   *tiermanagement.Worker
 	sr   *stripereconcile.Worker
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
@@ -103,6 +105,14 @@ func (a *App) Start(ctx context.Context) error {
 	a.sc = storefrontcleanup.New(&a.c.StorefrontCleanup, a.db)
 	if err = a.sc.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start storefront cleanup worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	a.tm = tiermanagement.New(&a.c.TierManagement, a.db, a.ma)
+	if err = a.tm.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start tier management worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -262,6 +272,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	if a.sc != nil {
 		_ = a.sc.Stop()
+	}
+	if a.tm != nil {
+		_ = a.tm.Stop()
 	}
 	if a.sr != nil {
 		_ = a.sr.Stop()

@@ -1,0 +1,14 @@
+{{template "email_header" (dict "tag" "INVITE" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{if .Heading}}{{.Heading}}{{else}}YOU'RE INVITED{{end}}</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51; white-space:pre-line;">{{.Body}}</div>
+              {{if .CTAURL}}
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" .CTAURL "label" (or .CTALabel "RSVP") "variant" "solid")}}
+              {{end}}
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

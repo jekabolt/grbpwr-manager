@@ -1,0 +1,21 @@
+{{template "email_header" (dict "tag" "TIER" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{if .IsBackfill}}YOUR TIER{{else}}TIER UNLOCKED{{end}}</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{if .IsBackfill}}AS PART OF THE LAUNCH OF OUR MEMBERSHIP PROGRAM, YOUR ACCOUNT HAS BEEN PLACED AT{{else}}YOU'VE REACHED{{end}} <span style="color:#0E0E0C;">{{.TierDisplay}}</span>.</div>
+              {{template "spacer_22"}}
+              {{template "hairline"}}
+              {{template "spacer_16"}}
+              <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+                <tr><td style="font-size:11px; letter-spacing:0.3px; color:#9a978c;">QUALIFYING SPEND (12 MO)</td><td align="right" style="font-size:13px; color:#0E0E0C;">€{{.SpendEUR}}</td></tr>
+                {{if .NextReview}}<tr><td style="font-size:11px; letter-spacing:0.3px; color:#9a978c; padding-top:8px;">MAINTAIN BY</td><td align="right" style="font-size:13px; color:#0E0E0C; padding-top:8px;">{{.NextReview}}</td></tr>{{end}}
+              </table>
+              {{template "spacer_16"}}
+              {{template "hairline"}}
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com/account" "label" "VIEW ACCOUNT" "variant" "solid")}}
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

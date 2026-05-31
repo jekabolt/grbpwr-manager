@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
+	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
 )
@@ -40,6 +41,7 @@ type Config struct {
 	Mailer            mail.Config            `mapstructure:"mailer"`
 	OrderCleanup        ordercleanup.Config        `mapstructure:"order_cleanup"`
 	StorefrontCleanup   storefrontcleanup.Config   `mapstructure:"storefront_cleanup"`
+	TierManagement      tiermanagement.Config      `mapstructure:"tier_management"`
 	StripeReconcile     stripereconcile.Config     `mapstructure:"stripe_reconcile"`
 	Rates             RatesConfig            `mapstructure:"rates"`
 	StripePayment     stripe.Config          `mapstructure:"stripe_payment"`

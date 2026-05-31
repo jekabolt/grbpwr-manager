@@ -40,6 +40,20 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 	if !showHidden {
 		whereClauses = append(whereClauses, "p.hidden = :isHidden")
 		args["isHidden"] = 0
+
+		// Tier gating: show items at/below the viewer's tier; hacker-only items
+		// only to hacker; higher-tier items only when not hidden_for_non_qualified
+		// (those render disabled in the UI). Mirrors the spec's catalog rules.
+		viewerTier := int16(0)
+		if filterConditions != nil {
+			viewerTier = filterConditions.ViewerTier
+		}
+		whereClauses = append(whereClauses, `(
+			(p.min_tier <= :viewerTier AND p.min_tier <> 99)
+			OR (p.min_tier = 99 AND :viewerTier = 99)
+			OR (p.min_tier > :viewerTier AND p.min_tier <> 99 AND p.hidden_for_non_qualified = 0)
+		)`)
+		args["viewerTier"] = viewerTier
 	}
 
 	var priceJoinRequired bool
@@ -189,7 +203,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -254,7 +268,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -323,7 +337,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.season, p.fit,
+		p.version, p.collection, p.season, p.fit, p.min_tier, p.hidden_for_non_qualified,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -439,7 +453,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.season, p.care_instructions, p.composition, p.thumbnail_id,
-		p.secondary_thumbnail_id, p.version, p.collection, p.fit,
+		p.secondary_thumbnail_id, p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,

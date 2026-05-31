@@ -41,6 +41,20 @@ func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequ
 	}, nil
 }
 
+// viewerTier resolves the loyalty tier code of the requesting customer from the
+// optional bearer token, returning 0 (member/guest) when unauthenticated.
+func (s *Server) viewerTier(ctx context.Context) int16 {
+	email, err := s.storefrontEmailFromAccess(ctx)
+	if err != nil || email == "" {
+		return entity.TierCodeMember
+	}
+	acc, err := s.repo.StorefrontAccount().GetAccountByEmail(ctx, email)
+	if err != nil {
+		return entity.TierCodeMember
+	}
+	return entity.TierCode(acc.Tier())
+}
+
 func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProductsPagedRequest) (*pb_frontend.GetProductsPagedResponse, error) {
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
@@ -69,6 +83,13 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 		)
 		return nil, status.Errorf(codes.InvalidArgument, "price sorting requires currency to be specified in filter conditions")
 	}
+
+	// Tier gating: resolve the viewer's tier (0 for guests / unauthenticated)
+	// so the catalog query hides higher-tier-only and hacker-only products.
+	if fc == nil {
+		fc = &entity.FilterConditions{}
+	}
+	fc.ViewerTier = s.viewerTier(ctx)
 
 	prds, count, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, false)
 	if err != nil {

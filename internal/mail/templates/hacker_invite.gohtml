@@ -1,0 +1,15 @@
+{{template "email_header" (dict "tag" "ACCESS" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">GRBPWR HACKER</div>
+              {{template "spacer_18"}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOU'VE BEEN INVITED TO <span style="color:#0E0E0C;">GRBPWR HACKER</span> — INVITE-ONLY ACCESS TO RELEASES AND PIECES THAT DON'T APPEAR IN THE PUBLIC CATALOG.</div>
+              {{template "spacer_18"}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">THIS LINK IS ONE-TIME AND EXPIRES ON <span style="color:#0E0E0C;">{{.ExpiresAt}}</span>.</div>
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" .InviteURL "label" "CLAIM ACCESS" "variant" "solid")}}
+              {{template "spacer_22"}}
+              <div style="font-size:11px; line-height:18px; color:#9a978c;">IF THE BUTTON DOESN'T WORK, OPEN THIS LINK:<br><span style="color:#0E0E0C; word-break:break-all;">{{.InviteURL}}</span></div>
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

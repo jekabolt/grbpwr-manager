@@ -1,0 +1,14 @@
+{{template "email_header" (dict "tag" "REMINDER" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">KEEP YOUR TIER</div>
+              {{template "spacer_18"}}
+              {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOUR <span style="color:#0E0E0C;">{{.TierDisplay}}</span> MEMBERSHIP IS UP FOR REVIEW ON <span style="color:#0E0E0C;">{{.NextReview}}</span>.</div>
+              {{template "spacer_18"}}
+              {{if .ThresholdEUR}}<div style="font-size:13px; line-height:22px; color:#5d5a51;">CURRENT QUALIFYING SPEND IS €{{.SpendEUR}}. KEEP IT AT OR ABOVE €{{.ThresholdEUR}} TO STAY AT THIS TIER.</div>{{else}}<div style="font-size:13px; line-height:22px; color:#5d5a51;">CURRENT QUALIFYING SPEND IS €{{.SpendEUR}}.</div>{{end}}
+              {{template "spacer_26"}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com" "label" "SHOP" "variant" "solid")}}
+              {{template "spacer_22"}}
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
+
+{{template "email_footer" .}}

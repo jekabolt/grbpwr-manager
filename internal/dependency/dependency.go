@@ -41,6 +41,8 @@ type (
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
+		// SetProductTierAccess updates per-product tier gating (min_tier + hidden_for_non_qualified).
+		SetProductTierAccess(ctx context.Context, productID int, minTier int16, hiddenForNonQualified bool) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
@@ -162,6 +164,35 @@ type (
 		UpdateSavedAddress(ctx context.Context, accountID int, id int, ins *entity.StorefrontSavedAddressInsert) error
 		DeleteSavedAddress(ctx context.Context, accountID int, id int) error
 		SetDefaultSavedAddress(ctx context.Context, accountID int, id int) error
+	}
+
+	// Membership handles loyalty tier state, qualifying-spend, tier config,
+	// audit history, account lifecycle (soft-delete / erasure), and hacker invites.
+	Membership interface {
+		ComputeQualifyingSpendEUR(ctx context.Context, email string, windowStart time.Time) (decimal.Decimal, error)
+		BackfillOrderEURSnapshots(ctx context.Context) (int64, error)
+		CountQualifyingOrders(ctx context.Context, email string) (int, error)
+		UpsertSpendCache(ctx context.Context, accountID int, amount decimal.Decimal, windowStart, windowEnd time.Time) error
+		GetSpendCache(ctx context.Context, accountID int) (*entity.QualifyingSpend, error)
+		ListTierConfig(ctx context.Context) ([]entity.TierConfig, error)
+		GetTierConfig(ctx context.Context, code int16) (*entity.TierConfig, error)
+		UpdateTierConfig(ctx context.Context, upd entity.TierConfigUpdate) error
+		ListMembers(ctx context.Context, f entity.MemberListFilter) ([]entity.Member, int, error)
+		GetMember(ctx context.Context, accountID int) (*entity.Member, error)
+		ApplyTierTransition(ctx context.Context, t entity.TierTransition) error
+		ListTierHistory(ctx context.Context, accountID int) ([]entity.TierHistoryEntry, error)
+		ListAuditLog(ctx context.Context, f entity.TierAuditFilter) ([]entity.TierHistoryEntry, int, error)
+		SetAccountStatus(ctx context.Context, accountID int, st entity.StorefrontAccountStatus) error
+		SoftDeleteAccount(ctx context.Context, accountID int) error
+		HardEraseAccount(ctx context.Context, accountID int) error
+		ListAccountsForDowngradeReview(ctx context.Context, now time.Time) ([]entity.StorefrontAccount, error)
+		ListAccountsForDowngradeReminder(ctx context.Context, now time.Time, reminderDays int) ([]entity.StorefrontAccount, error)
+		ListAccountsWithBirthday(ctx context.Context, month, day int) ([]entity.StorefrontAccount, error)
+		CreateHackerInvite(ctx context.Context, tokenHash string, email sql.NullString, createdBy string, expiresAt time.Time) (int64, error)
+		ListHackerInvites(ctx context.Context, activeOnly bool, now time.Time) ([]entity.HackerInvite, error)
+		ConsumeHackerInvite(ctx context.Context, tokenHash string, accountID int, now time.Time) (*entity.HackerInvite, error)
+		RevokeHackerInvite(ctx context.Context, id int64) error
+		ListHackerAccounts(ctx context.Context) ([]entity.Member, error)
 	}
 
 	// TODO: invoice to separate interface
@@ -459,6 +490,7 @@ type (
 		Hero() Hero
 		Order() Order
 		StorefrontAccount() StorefrontAccount
+		Membership() Membership
 		Promo() Promo
 		Admin() Admin
 		Cache() Cache
@@ -532,6 +564,15 @@ type (
 		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error
 		SendBackInStock(ctx context.Context, rep Repository, to string, productDetails *dto.BackInStock) error
 		QueueAccountLogin(ctx context.Context, rep Repository, to string, otpCode string, magicLinkURL string) error
+		QueueTierUpgrade(ctx context.Context, rep Repository, to string, data *dto.TierChangeEmail) error
+		QueueTierDowngrade(ctx context.Context, rep Repository, to string, data *dto.TierChangeEmail) error
+		QueueDowngradeReminder(ctx context.Context, rep Repository, to string, data *dto.TierChangeEmail) error
+		QueueTierRollback(ctx context.Context, rep Repository, to string, data *dto.TierChangeEmail) error
+		QueueFirstPurchaseThanks(ctx context.Context, rep Repository, to string, data *dto.TierChangeEmail) error
+		QueueUnsubscribeConfirmation(ctx context.Context, rep Repository, to string, data *dto.UnsubscribeConfirmationEmail) error
+		QueueBirthdayGift(ctx context.Context, rep Repository, to string, data *dto.BirthdayEmail) error
+		QueueEventInvite(ctx context.Context, rep Repository, to string, data *dto.MemberCustomEmail) error
+		QueueHackerInvite(ctx context.Context, rep Repository, to string, data *dto.HackerInviteEmail) error
 		Start(ctx context.Context) error
 		Stop() error
 	}

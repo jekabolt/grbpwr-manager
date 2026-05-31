@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/shopspring/decimal"
 
@@ -199,6 +200,14 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	if err := p.mailer.QueueOrderConfirmation(ctx, rep, of.Buyer.Email, orderDetails); err != nil {
 		// Log but never fail payment update due to email - worker will retry queued emails
 		slog.Default().ErrorContext(ctx, "can't queue order confirmation email",
+			slog.String("orderUUID", orderUUID),
+			slog.String("err", err.Error()),
+		)
+	}
+
+	// Loyalty: recompute spend and upgrade tier if newly qualified (best effort).
+	if err := tiermanagement.NewEngine(rep, p.mailer).EvaluateAfterOrderPaid(ctx, of.Buyer.Email); err != nil {
+		slog.Default().ErrorContext(ctx, "can't evaluate tier after order paid",
 			slog.String("orderUUID", orderUUID),
 			slog.String("err", err.Error()),
 		)

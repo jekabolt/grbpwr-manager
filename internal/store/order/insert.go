@@ -167,14 +167,19 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, currency, order_status_id, promo_id, ga_client_id)
-	 VALUES (:uuid, :totalPrice, :currency, :orderStatusId, :promoId, :gaClientId)
+	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id)
+	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId)
 	`
 
 	orderRef := generateOrderReference()
+	var totalPriceEur any
+	if order.TotalPriceEUR.Valid {
+		totalPriceEur = order.TotalPriceEUR.Decimal
+	}
 	order.Id, err = storeutil.ExecNamedLastId(ctx, db, query, map[string]interface{}{
 		"uuid":          orderRef,
 		"totalPrice":    order.TotalPriceDecimal(),
+		"totalPriceEur": totalPriceEur,
 		"currency":      order.Currency,
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
@@ -188,6 +193,12 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 
 func (s *Store) insertOrderDetails(ctx context.Context, db dependency.DB, order *entity.Order, validItemsInsert []entity.OrderItemInsert, carrier *entity.ShipmentCarrier, shipmentCost decimal.Decimal, freeShipping bool, orderNew *entity.OrderNew) error {
 	var err error
+	// Snapshot the EUR-equivalent total for loyalty qualifying-spend (best effort).
+	if eur, eerr := computeTotalPriceEUR(ctx, db, order, validItemsInsert, carrier, shipmentCost, freeShipping); eerr != nil {
+		slog.Default().WarnContext(ctx, "can't compute EUR snapshot for order", slog.String("err", eerr.Error()))
+	} else {
+		order.TotalPriceEUR = eur
+	}
 	order.Id, order.UUID, err = insertOrder(ctx, db, order)
 	if err != nil {
 		return fmt.Errorf("error while inserting final order: %w", err)
