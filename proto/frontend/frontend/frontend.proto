@@ -343,6 +343,12 @@ message SubscribeNewsletterResponse {}
 
 message UnsubscribeNewsletterRequest {
   string email = 1;
+  // Per-topic unsubscribe flags (same topics as SubscribeNewsletterRequest):
+  // each flag set to true removes that opt-in. When all three are false the
+  // address is unsubscribed from every channel.
+  bool subscribe_newsletter = 4;
+  bool subscribe_new_arrivals = 5;
+  bool subscribe_events = 6;
 }
 
 message UnsubscribeNewsletterResponse {}

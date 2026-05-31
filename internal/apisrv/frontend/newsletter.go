@@ -2,10 +2,13 @@ package frontend
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -69,13 +72,58 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 	return &pb_frontend.SubscribeNewsletterResponse{}, nil
 }
 
+// UnsubscribeNewsletter removes per-topic email opt-ins on the storefront account
+// (mirroring the SubscribeNewsletter form) and keeps the legacy subscriber list in
+// sync. Each flag set to true unsubscribes from that channel; when all flags are
+// false the address is unsubscribed from every channel (the email-footer link
+// sends no flags, so it opts out completely). A confirmation email is sent when
+// the newsletter opt-in is turned off.
 func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.UnsubscribeNewsletterRequest) (*pb_frontend.UnsubscribeNewsletterResponse, error) {
-	_, err := s.repo.Subscribers().UpsertSubscription(ctx, req.Email, false)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't unsubscribe",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't unsubscribe")
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		return nil, status.Error(codes.InvalidArgument, "email is required")
 	}
+
+	// Which channels to turn off. No flags set => unsubscribe from everything.
+	offNewsletter := req.SubscribeNewsletter
+	offNewArrivals := req.SubscribeNewArrivals
+	offEvents := req.SubscribeEvents
+	if !offNewsletter && !offNewArrivals && !offEvents {
+		offNewsletter, offNewArrivals, offEvents = true, true, true
+	}
+
+	// Update the storefront account preferences if an account exists.
+	acc, err := s.repo.StorefrontAccount().GetAccountByEmail(ctx, email)
+	switch {
+	case err == nil:
+		if uerr := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email,
+			acc.FirstName, acc.LastName, acc.BirthDate, acc.ShoppingPreference, acc.Phone,
+			acc.SubscribeNewsletter && !offNewsletter,
+			acc.SubscribeNewArrivals && !offNewArrivals,
+			acc.SubscribeEvents && !offEvents,
+			acc.DefaultCountry, acc.DefaultLanguage,
+		); uerr != nil {
+			slog.Default().ErrorContext(ctx, "can't update unsubscribe preferences", slog.String("err", uerr.Error()))
+			return nil, status.Error(codes.Internal, "can't unsubscribe")
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		// No account — fall through to the legacy subscriber list only.
+	default:
+		slog.Default().ErrorContext(ctx, "can't load account for unsubscribe", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't unsubscribe")
+	}
+
+	// Keep the legacy subscriber list (promo sends) in sync with the newsletter opt-in.
+	if offNewsletter {
+		if _, err := s.repo.Subscribers().UpsertSubscription(ctx, email, false); err != nil {
+			slog.Default().ErrorContext(ctx, "can't unsubscribe", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't unsubscribe")
+		}
+		// Confirmation email when the newsletter opt-in is removed.
+		if err := tiermanagement.NewEngine(s.repo, s.mailer).OnNewsletterUnsubscribed(ctx, email); err != nil {
+			slog.Default().ErrorContext(ctx, "can't send unsubscribe confirmation", slog.String("err", err.Error()))
+		}
+	}
+
 	return &pb_frontend.UnsubscribeNewsletterResponse{}, nil
 }
