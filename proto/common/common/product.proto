@@ -99,6 +99,8 @@ message ProductBodyInsert {
   string version = 16;
   string collection = 17;
   string fit = 18;
+  // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
+  int32 min_tier = 20;
 }
 
 message ProductInsert {

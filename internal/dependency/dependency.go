@@ -41,8 +41,6 @@ type (
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
-		// SetProductTierAccess updates per-product tier gating (min_tier + hidden_for_non_qualified).
-		SetProductTierAccess(ctx context.Context, productID int, minTier int16, hiddenForNonQualified bool) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error

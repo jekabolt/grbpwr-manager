@@ -367,20 +367,6 @@ func (s *Server) GetTierAuditLog(ctx context.Context, req *pb_admin.GetTierAudit
 	return &pb_admin.GetTierAuditLogResponse{Entries: out, Total: int32(total)}, nil
 }
 
-func (s *Server) SetProductTierAccess(ctx context.Context, req *pb_admin.SetProductTierAccessRequest) (*pb_admin.SetProductTierAccessResponse, error) {
-	minTier := dto.EntityTierCodeFromPb(req.GetMinTier())
-	if err := s.repo.Products().SetProductTierAccess(ctx, int(req.GetProductId()), minTier, req.GetHiddenForNonQualified()); err != nil {
-		slog.Default().ErrorContext(ctx, "can't set product tier access", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't set product tier access")
-	}
-	if s.re != nil {
-		if err := s.re.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil {
-			slog.Default().ErrorContext(ctx, "can't revalidate after tier access change", slog.String("err", err.Error()))
-		}
-	}
-	return &pb_admin.SetProductTierAccessResponse{}, nil
-}
-
 func (s *Server) RunTierBackfill(ctx context.Context, req *pb_admin.RunTierBackfillRequest) (*pb_admin.RunTierBackfillResponse, error) {
 	if !req.GetConfirm() {
 		return nil, status.Error(codes.InvalidArgument, "confirm must be true to run backfill")

@@ -426,14 +426,6 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tier-audit"};
   }
 
-  // Per-product tier gating.
-  rpc SetProductTierAccess(SetProductTierAccessRequest) returns (SetProductTierAccessResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/product/{product_id}/access"
-      body: "*"
-    };
-  }
-
   // One-time legacy backfill (admin-triggered).
   rpc RunTierBackfill(RunTierBackfillRequest) returns (RunTierBackfillResponse) {
     option (google.api.http) = {
@@ -2003,14 +1995,6 @@ message GetTierAuditLogResponse {
   repeated TierHistoryEntry entries = 1;
   int32 total = 2;
 }
-
-message SetProductTierAccessRequest {
-  int32 product_id = 1;
-  TierCode min_tier = 2;
-  bool hidden_for_non_qualified = 3;
-}
-
-message SetProductTierAccessResponse {}
 
 message RunTierBackfillRequest {
   bool confirm = 1;

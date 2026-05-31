@@ -194,8 +194,8 @@ func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.Pro
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, id int, sku string) (int, error) {
 	query := `
 	INSERT INTO product
-	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit)
-	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit)`
+	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier)
+	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier)`
 
 	params := map[string]any{
 		"id":                   id,
@@ -221,6 +221,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 		"version":              product.ProductBodyInsert.Version,
 		"collection":           product.ProductBodyInsert.Collection,
 		"fit":                  product.ProductBodyInsert.Fit,
+		"minTier":              product.ProductBodyInsert.MinTier,
 	}
 
 	id, err := storeutil.ExecNamedLastId(ctx, db, query, params)
@@ -409,7 +410,8 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		composition = :composition,
 		version = :version,
 		collection = :collection,
-		fit = :fit
+		fit = :fit,
+		min_tier = :minTier
 	WHERE id = :id
 	`
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
@@ -434,6 +436,7 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		"version":              prd.ProductBodyInsert.Version,
 		"collection":           prd.ProductBodyInsert.Collection,
 		"fit":                  prd.ProductBodyInsert.Fit,
+		"minTier":              prd.ProductBodyInsert.MinTier,
 		"id":                   id,
 	})
 }

@@ -183,6 +183,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Version:            pbProductBodyInsert.Version,
 			Collection:         pbProductBodyInsert.Collection,
 			Fit:                sql.NullString{String: pbProductBodyInsert.Fit, Valid: pbProductBodyInsert.Fit != ""},
+			MinTier:            int16(pbProductBodyInsert.MinTier),
 		},
 		Translations: []entity.ProductTranslationInsert{},
 	}
@@ -466,6 +467,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 				Version:            productBodyInsert.Version,
 				Collection:         productBodyInsert.Collection,
 				Fit:                productBodyInsert.Fit.String,
+				MinTier:            int32(productBodyInsert.MinTier),
 			},
 			Translations: pbTranslations,
 		},
