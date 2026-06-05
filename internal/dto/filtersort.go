@@ -18,6 +18,11 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 		topCategories[i] = int32(v)
 	}
 
+	excludeTopCategories := make([]int32, len(fc.ExcludeTopCategoryIds))
+	for i, v := range fc.ExcludeTopCategoryIds {
+		excludeTopCategories[i] = int32(v)
+	}
+
 	subCategories := make([]int32, len(fc.SubCategoryIds))
 	for i, v := range fc.SubCategoryIds {
 		subCategories[i] = int32(v)
@@ -38,17 +43,18 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 	return &pb_common.FilterConditions{
 		From:           fc.From.String(),
 		To:             fc.To.String(),
-		Currency:       fc.Currency,
-		OnSale:         fc.OnSale,
-		Color:          fc.Color,
-		TopCategoryIds: topCategories,
-		SubCategoryIds: subCategories,
-		TypeIds:        types,
-		SizesIds:       sizes,
-		Preorder:       fc.Preorder,
-		ByTag:          fc.ByTag,
-		Collections:    fc.Collections,
-		Seasons:        seasons,
+		Currency:              fc.Currency,
+		OnSale:                fc.OnSale,
+		Color:                 fc.Color,
+		TopCategoryIds:        topCategories,
+		ExcludeTopCategoryIds: excludeTopCategories,
+		SubCategoryIds:        subCategories,
+		TypeIds:               types,
+		SizesIds:              sizes,
+		Preorder:              fc.Preorder,
+		ByTag:                 fc.ByTag,
+		Collections:           fc.Collections,
+		Seasons:               seasons,
 	}
 }
 
@@ -96,6 +102,11 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		topCategories[i] = int(v)
 	}
 
+	excludeTopCategories := make([]int, len(fc.ExcludeTopCategoryIds))
+	for i, v := range fc.ExcludeTopCategoryIds {
+		excludeTopCategories[i] = int(v)
+	}
+
 	subCategories := make([]int, len(fc.SubCategoryIds))
 	for i, v := range fc.SubCategoryIds {
 		subCategories[i] = int(v)
@@ -134,15 +145,16 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		To:             to,
 		Currency:       fc.Currency,
 		OnSale:         fc.OnSale,
-		Gender:         genders,
-		Color:          fc.Color,
-		TopCategoryIds: topCategories,
-		SubCategoryIds: subCategories,
-		TypeIds:        types,
-		SizesIds:       sizes,
-		Preorder:       fc.Preorder,
-		ByTag:          fc.ByTag,
-		Collections:    fc.Collections,
-		Seasons:        seasons,
+		Gender:                genders,
+		Color:                 fc.Color,
+		TopCategoryIds:        topCategories,
+		ExcludeTopCategoryIds: excludeTopCategories,
+		SubCategoryIds:        subCategories,
+		TypeIds:               types,
+		SizesIds:              sizes,
+		Preorder:              fc.Preorder,
+		ByTag:                 fc.ByTag,
+		Collections:           fc.Collections,
+		Seasons:               seasons,
 	}
 }

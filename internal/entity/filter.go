@@ -55,7 +55,10 @@ type FilterConditions struct {
 	Gender         []GenderEnum
 	Color          string
 	TopCategoryIds []int
-	SubCategoryIds []int
+	// ExcludeTopCategoryIds lists top category ids to exclude from results
+	// (e.g. hide the "object" category from the men's catalog).
+	ExcludeTopCategoryIds []int
+	SubCategoryIds        []int
 	TypeIds        []int
 	SizesIds       []int
 	Preorder       bool

@@ -116,6 +116,10 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			whereClauses = append(whereClauses, "p.top_category_id IN (:topCategoryIds)")
 			args["topCategoryIds"] = filterConditions.TopCategoryIds
 		}
+		if len(filterConditions.ExcludeTopCategoryIds) != 0 {
+			whereClauses = append(whereClauses, "p.top_category_id NOT IN (:excludeTopCategoryIds)")
+			args["excludeTopCategoryIds"] = filterConditions.ExcludeTopCategoryIds
+		}
 		if len(filterConditions.SubCategoryIds) != 0 {
 			whereClauses = append(whereClauses, "p.sub_category_id IN (:subCategoryIds)")
 			args["subCategoryIds"] = filterConditions.SubCategoryIds

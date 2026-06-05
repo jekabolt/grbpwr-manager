@@ -35,4 +35,5 @@ message FilterConditions {
   string by_tag = 12;
   repeated string collections = 13;
   repeated common.SeasonEnum seasons = 14;
+  repeated int32 exclude_top_category_ids = 15; // top category ids to exclude from results (e.g. hide "object" category in men's catalog)
 }
