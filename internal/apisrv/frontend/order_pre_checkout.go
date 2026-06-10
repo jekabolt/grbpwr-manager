@@ -237,6 +237,12 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 	// First, get the standard validation
 	oiv, err := s.repo.Order().ValidateOrderItemsInsert(ctx, items, currency)
 	if err != nil {
+		// Preserve typed validation errors so the handler can map them to 4xx
+		// instead of masking everything as Internal.
+		var validationErr *entity.ValidationError
+		if errors.As(err, &validationErr) {
+			return nil, err
+		}
 		return nil, status.Errorf(codes.Internal, "failed to validate order items: %v", err)
 	}
 

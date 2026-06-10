@@ -396,15 +396,31 @@ func (s *Store) validateOrderItemsInsert(ctx context.Context, items []entity.Ord
 		}
 		return nil, nil, fmt.Errorf("error while validating order items: %w", err)
 	}
-	if len(validItems) == 0 {
-		return nil, nil, &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
-	}
 
 	allAdjustments := make([]entity.OrderItemAdjustment, 0, len(capAdjustments)+len(stockAdjustments))
 	allAdjustments = append(allAdjustments, capAdjustments...)
 	allAdjustments = append(allAdjustments, stockAdjustments...)
 
+	if len(validItems) == 0 {
+		// Return the adjustments alongside the error so callers that want to
+		// surface what was removed (e.g. pre-checkout validation) still can.
+		return nil, allAdjustments, &entity.ValidationError{Message: "no valid order items: products or sizes not found, or out of stock"}
+	}
+
 	return validItems, allAdjustments, nil
+}
+
+// emptyChangedValidation builds a validation result for a cart that ended up
+// with no valid items during pre-checkout. It signals HasChanged so the
+// frontend refreshes the cart, and carries the adjustments explaining why each
+// item was dropped.
+func emptyChangedValidation(adjustments []entity.OrderItemAdjustment) *entity.OrderItemValidation {
+	return &entity.OrderItemValidation{
+		ValidItems:      []entity.OrderItem{},
+		Subtotal:        decimal.Zero,
+		HasChanged:      true,
+		ItemAdjustments: adjustments,
+	}
 }
 
 func (s *Store) validateOrderItemsInsertWithLock(ctx context.Context, items []entity.OrderItemInsert, currency string, lockStock bool) (*entity.OrderItemValidation, error) {
@@ -430,12 +446,21 @@ func (s *Store) validateOrderItemsInsertWithLock(ctx context.Context, items []en
 	if err != nil {
 		var validationErr *entity.ValidationError
 		if errors.As(err, &validationErr) {
+			// Pre-checkout validation (non-lock): an all-invalid cart is not a hard
+			// failure. Return an empty, changed result so the frontend can refresh
+			// its cart instead of receiving an error.
+			if !lockStock {
+				return emptyChangedValidation(itemAdjustments), nil
+			}
 			return nil, err
 		}
 		return nil, fmt.Errorf("error while validating order items: %w", err)
 	}
 
 	if len(validItems) == 0 {
+		if !lockStock {
+			return emptyChangedValidation(itemAdjustments), nil
+		}
 		return nil, &entity.ValidationError{Message: "zero valid order items to insert"}
 	}
 
