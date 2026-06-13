@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -52,16 +54,30 @@ type Config struct {
 // New creates a new auth server.
 func New(c *Config, ar dependency.Admin) (*Server, error) {
 
+	// An empty HS256 secret would validate any token signed with an empty key,
+	// allowing trivial admin token forgery. Fail closed at startup.
+	if c.JWTSecret == "" {
+		return nil, fmt.Errorf("auth.jwt_secret is required")
+	}
+
+	// Trim surrounding whitespace: secret managers / env injection frequently add
+	// a trailing newline, which would otherwise make the master password never
+	// match what callers send. Also fail closed if it's unset.
+	masterPassword := strings.TrimSpace(c.MasterPassword)
+	if masterPassword == "" {
+		return nil, fmt.Errorf("auth.master_password is required")
+	}
+
 	ph, err := pwhash.New(c.PasswordHasherSaltSize, c.PasswordHasherIterations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create password hasher: %w", err)
 	}
-	hash, err := ph.HashPassword(c.MasterPassword)
+	hash, err := ph.HashPassword(masterPassword)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash master password: %w", err)
 	}
 
-	if err := ph.Validate(c.MasterPassword, hash); err != nil {
+	if err := ph.Validate(masterPassword, hash); err != nil {
 		return nil, fmt.Errorf("failed to validate master password: %w", err)
 	}
 
@@ -99,16 +115,27 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 
 	pwHash, err := s.adminRepository.PasswordHashByUsername(ctx, username)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to get password hash by username",
-			slog.String("err", err.Error()),
-		)
+		// Unknown username is an expected failed login (client 401), not a server
+		// error — log at warn to keep it out of error dashboards. A genuine DB
+		// failure still logs at error so ops can tell the two apart.
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.Default().WarnContext(ctx, "login attempt for unknown username",
+				slog.String("username", username),
+			)
+		} else {
+			slog.Default().ErrorContext(ctx, "failed to get password hash by username",
+				slog.String("username", username),
+				slog.String("err", err.Error()),
+			)
+		}
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
 	err = s.pwhash.Validate(req.Password, pwHash)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to validate password",
-			slog.String("err", err.Error()),
+		// Wrong password is also an expected failed login, not a server error.
+		slog.Default().WarnContext(ctx, "login attempt with invalid password",
+			slog.String("username", username),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
@@ -129,12 +156,16 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 // Create creates a new user requires an admin password.
 func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.CreateResponse, error) {
 
-	err := s.pwhash.Validate(req.MasterPassword, s.masterHash)
+	err := s.pwhash.Validate(strings.TrimSpace(req.MasterPassword), s.masterHash)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to validate master password",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+
+	if req.GetUser() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "user is required")
 	}
 
 	username := strings.ToLower(req.User.Username)
@@ -170,7 +201,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 
 // Delete deletes a user.
 func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.DeleteResponse, error) {
-	err := s.pwhash.Validate(req.MasterPassword, s.masterHash)
+	err := s.pwhash.Validate(strings.TrimSpace(req.MasterPassword), s.masterHash)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to validate master password",
 			slog.String("err", err.Error()),
