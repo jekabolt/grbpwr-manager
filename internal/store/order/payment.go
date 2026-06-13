@@ -8,6 +8,7 @@ import (
 
 	"log/slog"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -161,6 +162,11 @@ func (s *Store) AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID s
 		"orderUUID":       orderUUID,
 	})
 	if err != nil {
+		// UNIQUE violation on payment.client_secret: this PaymentIntent is already
+		// linked to another order (a concurrent SubmitOrder won the race).
+		if me, ok := err.(*mysql.MySQLError); ok && me.Number == 1062 {
+			return ErrPaymentIntentAlreadyAssociated
+		}
 		return fmt.Errorf("can't associate payment intent with order: %w", err)
 	}
 
@@ -190,15 +196,41 @@ func (s *Store) UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string
 	return nil
 }
 
+// UpdateTotalSettledBase records the actual Stripe-settled amount for an order,
+// converted to the base currency (EUR). Captured once at payment confirmation.
+func (s *Store) UpdateTotalSettledBase(ctx context.Context, orderUUID string, settledBase decimal.Decimal) error {
+	query := `
+	UPDATE customer_order
+	SET total_settled_base = :settledBase
+	WHERE uuid = :orderUUID`
+
+	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
+		"settledBase": settledBase,
+		"orderUUID":   orderUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update total settled base: %w", err)
+	}
+	return nil
+}
+
 // GetPaymentByOrderUUID retrieves a payment by the order UUID.
 func (s *Store) GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error) {
+	return getPaymentByOrderUUID(ctx, s.DB, orderUUID)
+}
+
+// getPaymentByOrderUUID runs the lookup on the given DB handle. Inside a
+// transaction it MUST be called with the tx connection (rep.DB()/txDB), not the
+// root pool: the query JOINs customer_order, and under SERIALIZABLE a read on a
+// separate connection would block on the tx's own FOR UPDATE lock (self-deadlock).
+func getPaymentByOrderUUID(ctx context.Context, db dependency.DB, orderUUID string) (*entity.Payment, error) {
 	query := `
     SELECT p.*
     FROM payment p
     JOIN customer_order co ON p.order_id = co.id
     WHERE co.uuid = :orderUUID;`
 
-	payment, err := storeutil.QueryNamedOne[entity.Payment](ctx, s.DB, query, map[string]interface{}{
+	payment, err := storeutil.QueryNamedOne[entity.Payment](ctx, db, query, map[string]interface{}{
 		"orderUUID": orderUUID,
 	})
 	if err != nil {
@@ -232,7 +264,7 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 			return nil
 		}
 
-		payment, err = s.GetPaymentByOrderUUID(ctx, order.UUID)
+		payment, err = getPaymentByOrderUUID(ctx, txDB, order.UUID)
 		if err != nil {
 			return fmt.Errorf("can't get payment by order id: %w", err)
 		}
@@ -290,9 +322,13 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 // OrderPaymentDone marks an order payment as done and transitions to Confirmed.
 func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (bool, error) {
 	wasUpdated := false
+	// Promo code to disable in the in-memory cache, applied only after the tx
+	// commits so a rollback/retry can't desync the cache from the DB.
+	var voucherCodeToDisable string
 
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		txDB := rep.DB()
+		voucherCodeToDisable = ""
 
 		order, err := getOrderByUUIDForUpdate(ctx, txDB, orderUUID)
 		if err != nil {
@@ -309,10 +345,11 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 		}
 
 		if order.PromoId.Int32 != 0 {
-			err := rep.Promo().DisableVoucher(ctx, order.PromoId)
+			code, err := disableVoucherInTx(ctx, txDB, order.PromoId)
 			if err != nil {
 				return fmt.Errorf("can't disable voucher: %w", err)
 			}
+			voucherCodeToDisable = code
 		}
 
 		err = updateOrderStatus(ctx, txDB, order.Id, cache.OrderStatusConfirmed.Status.Id)
@@ -332,6 +369,11 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 	})
 	if err != nil {
 		return false, err
+	}
+
+	// Cache mutation after commit only — see disableVoucherInTx.
+	if voucherCodeToDisable != "" {
+		cache.DisablePromo(voucherCodeToDisable)
 	}
 
 	return wasUpdated, nil

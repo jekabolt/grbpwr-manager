@@ -31,10 +31,19 @@ type Config struct {
 	SecretKey         string        `mapstructure:"secret_key"`
 	PubKey            string        `mapstructure:"pub_key"`
 	InvoiceExpiration time.Duration `mapstructure:"invoice_expiration"`
+	// WebhookSecret is the Stripe webhook signing secret (whsec_...) used to
+	// verify inbound events for this processor. Empty disables this endpoint.
+	WebhookSecret string `mapstructure:"webhook_secret"`
 }
 
 // ErrPaymentAlreadyCompleted is returned when the PaymentIntent was already used for a completed payment.
 var ErrPaymentAlreadyCompleted = errors.New("payment already completed for this session")
+
+// ErrUnderpaid is returned by updateOrderAsPaid when a PaymentIntent succeeded
+// for less than the order total (amount tampering / early confirmation). The
+// order is intentionally left AwaitingPayment for manual review rather than
+// fulfilled; callers treat it as "not paid", not as a hard failure.
+var ErrUnderpaid = errors.New("payment intent succeeded for less than the order total")
 
 type Processor struct {
 	c                *Config
@@ -51,6 +60,11 @@ type Processor struct {
 }
 
 func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
+	if c.SecretKey == "" {
+		// Without this guard an empty key only surfaces at the first live charge
+		// (i.e. in production checkout). Fail closed at startup instead.
+		return nil, fmt.Errorf("stripe secret_key is required for payment method %s", pmn)
+	}
 	if cache.GetBaseCurrency() == "" {
 		return nil, fmt.Errorf("base currency not configured")
 	}
@@ -141,8 +155,14 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 				Valid:  true,
 			}
 		}
-		err = p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment)
+		received := AmountFromSmallestUnit(pi.AmountReceived, string(pi.Currency))
+		err = p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment, received)
 		if err != nil {
+			// Underpaid: leave the order AwaitingPayment (flagged for review) and
+			// do NOT fall through to the cancel/restore-stock branch below.
+			if errors.Is(err, ErrUnderpaid) {
+				return nil
+			}
 			return fmt.Errorf("can't update order as paid: %w", err)
 		}
 		return nil
@@ -161,8 +181,39 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 	return nil
 }
 
-func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) error {
+// ExpireOrderPayment verifies the order's PaymentIntent with Stripe and either
+// marks the order paid (when the PaymentIntent already succeeded) or expires it
+// (cancel + restore stock). Unlike the store-level ExpireOrderPayment, this is
+// safe to call from the cleanup safety-net: it never cancels a payment that
+// actually succeeded on Stripe.
+func (p *Processor) ExpireOrderPayment(ctx context.Context, orderUUID string) error {
+	return p.expireOrderPayment(ctx, orderUUID)
+}
+
+// updateOrderAsPaid marks an order paid after its PaymentIntent succeeded.
+// receivedAmount is the amount Stripe actually collected, in the payment
+// currency, and is validated against the order total before fulfillment: the
+// client holds the client_secret from pre-checkout and can confirm the
+// PaymentIntent before the server finalizes the amount, so a succeeded PI is not
+// by itself proof of full payment. This is the single choke point for all
+// confirmation paths (expiry monitor, lazy check, and the Stripe webhook).
+func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment, receivedAmount decimal.Decimal) error {
 	var err error
+
+	// Amount-tamper / underpayment guard. expected is the order total in payment
+	// currency, persisted at invoice time (see SubmitOrder/GetOrderInvoice). When
+	// Stripe received less, leave the order AwaitingPayment and flag for review
+	// instead of fulfilling it for less than it owes.
+	expected := payment.TransactionAmountPaymentCurrency
+	if expected.IsPositive() && receivedAmount.LessThan(expected) {
+		slog.Default().ErrorContext(ctx, "UNDERPAID order: payment intent succeeded for less than the order total; leaving AwaitingPayment for manual review",
+			slog.String("orderUUID", orderUUID),
+			slog.String("received", receivedAmount.String()),
+			slog.String("expected", expected.String()),
+		)
+		p.flagUnderpaidForReview(ctx, rep, orderUUID, receivedAmount, expected)
+		return ErrUnderpaid
+	}
 
 	payment.IsTransactionDone = true
 	wasUpdated, err := rep.Order().OrderPaymentDone(ctx, orderUUID, &payment)
@@ -181,6 +232,10 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	}
 
 	slog.Default().InfoContext(ctx, "Order marked as paid", slog.String("orderUUID", orderUUID))
+
+	// Capture the actual amount Stripe settled, in base currency, for accurate
+	// revenue analytics. Best effort — never blocks fulfillment.
+	p.captureSettledBase(ctx, rep, orderUUID, payment)
 
 	// RELEASE RESERVATION: Free stock when payment is completed
 	if p.reservationMgr != nil {
@@ -215,6 +270,63 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 
 	return nil
 
+}
+
+// captureSettledBase records the actual amount Stripe settled for the order,
+// converted to the base currency, taken from the charge's balance transaction. The
+// Stripe account settles in the base currency (EUR), so BalanceTransaction.Amount is
+// already in base. Best effort: it never blocks fulfillment — when total_settled_base
+// stays NULL (no charge yet, or a non-base settlement), revenue metrics fall back to
+// the product_price reconstruction.
+func (p *Processor) captureSettledBase(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) {
+	if !payment.ClientSecret.Valid || payment.ClientSecret.String == "" {
+		return
+	}
+	pi, err := p.getPaymentIntentWithExpand(payment.ClientSecret.String, []string{"latest_charge.balance_transaction"})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "settled-base: can't fetch payment intent",
+			slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
+		return
+	}
+	if pi.LatestCharge == nil || pi.LatestCharge.BalanceTransaction == nil {
+		slog.Default().WarnContext(ctx, "settled-base: no balance transaction on charge yet",
+			slog.String("orderUUID", orderUUID))
+		return
+	}
+	bt := pi.LatestCharge.BalanceTransaction
+	baseCurrency := cache.GetBaseCurrency()
+	// The balance transaction settles in the Stripe account's payout currency, which
+	// we require to equal the base currency. If Stripe ever settles in another
+	// currency, skip rather than store a non-base amount as if it were base.
+	if !strings.EqualFold(string(bt.Currency), baseCurrency) {
+		slog.Default().ErrorContext(ctx, "settled-base: Stripe settlement currency != base currency; skipping capture",
+			slog.String("orderUUID", orderUUID),
+			slog.String("settlement_currency", string(bt.Currency)),
+			slog.String("base_currency", baseCurrency))
+		return
+	}
+	settledBase := AmountFromSmallestUnit(bt.Amount, baseCurrency)
+	if err := rep.Order().UpdateTotalSettledBase(ctx, orderUUID, settledBase); err != nil {
+		slog.Default().ErrorContext(ctx, "settled-base: can't persist",
+			slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
+		return
+	}
+	slog.Default().InfoContext(ctx, "settled-base captured",
+		slog.String("orderUUID", orderUUID), slog.String("amount_base", settledBase.String()))
+}
+
+// flagUnderpaidForReview records a persistent, admin-visible marker on the order
+// so an underpaid-but-charged order surfaces in the admin panel for manual
+// reconciliation. Best effort: it never blocks confirmation handling.
+func (p *Processor) flagUnderpaidForReview(ctx context.Context, rep dependency.Repository, orderUUID string, received, expected decimal.Decimal) {
+	comment := fmt.Sprintf("UNDERPAID: Stripe received %s but the order total is %s — manual review required; order kept in AwaitingPayment.",
+		received.String(), expected.String())
+	if err := rep.Order().AddOrderComment(ctx, orderUUID, comment); err != nil {
+		slog.Default().ErrorContext(ctx, "can't flag underpaid order for review",
+			slog.String("orderUUID", orderUUID),
+			slog.String("err", err.Error()),
+		)
+	}
 }
 
 // GetOrderInvoice returns the payment details for the given order and expiration date.
@@ -420,8 +532,14 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 		switch pi.Status {
 		case stripe.PaymentIntentStatusSucceeded:
 			slog.Default().Info("payment intent succeeded", "pi", pi)
-			err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, payment)
+			received := AmountFromSmallestUnit(pi.AmountReceived, string(pi.Currency))
+			err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, payment, received)
 			if err != nil {
+				// Underpaid: order stays AwaitingPayment (flagged for review);
+				// surface the current payment state without a hard error.
+				if errors.Is(err, ErrUnderpaid) {
+					return &payment, nil
+				}
 				return nil, fmt.Errorf("can't update order as paid: %w", err)
 			}
 			return &payment, nil

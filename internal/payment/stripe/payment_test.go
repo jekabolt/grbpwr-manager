@@ -1,10 +1,61 @@
 package stripe
 
 import (
+	"context"
 	"testing"
 
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
+
+// TestUpdateOrderAsPaidRejectsUnderpayment verifies the amount-tamper guard:
+// when Stripe received less than the order total, the order is NOT marked paid
+// (OrderPaymentDone is never called), ErrUnderpaid is returned, and the order is
+// flagged for manual review via an order comment.
+func TestUpdateOrderAsPaidRejectsUnderpayment(t *testing.T) {
+	mockOrders := mocks.NewMockOrder(t)
+	mockRepo := mocks.NewMockRepository(t)
+	mockRepo.EXPECT().Order().Return(mockOrders)
+	mockOrders.EXPECT().
+		AddOrderComment(mock.Anything, "ord-underpaid", mock.AnythingOfType("string")).
+		Return(nil)
+	// OrderPaymentDone must NOT be set: if updateOrderAsPaid called it, the mock
+	// would fail on an unexpected call.
+
+	p := &Processor{rep: mockRepo}
+	payment := entity.Payment{PaymentInsert: entity.PaymentInsert{
+		TransactionAmountPaymentCurrency: decimal.RequireFromString("123.45"),
+	}}
+	received := decimal.RequireFromString("100.00")
+
+	err := p.updateOrderAsPaid(context.Background(), mockRepo, "ord-underpaid", payment, received)
+	assert.ErrorIs(t, err, ErrUnderpaid)
+}
+
+// TestUpdateOrderAsPaidAllowsFullPayment verifies that a payment covering the
+// order total passes the guard and proceeds to OrderPaymentDone (here stubbed to
+// error so the test stays light), i.e. it does not return ErrUnderpaid.
+func TestUpdateOrderAsPaidAllowsFullPayment(t *testing.T) {
+	mockOrders := mocks.NewMockOrder(t)
+	mockRepo := mocks.NewMockRepository(t)
+	mockRepo.EXPECT().Order().Return(mockOrders)
+	mockOrders.EXPECT().
+		OrderPaymentDone(mock.Anything, "ord-paid", mock.Anything).
+		Return(false, assert.AnError)
+
+	p := &Processor{rep: mockRepo}
+	payment := entity.Payment{PaymentInsert: entity.PaymentInsert{
+		TransactionAmountPaymentCurrency: decimal.RequireFromString("123.45"),
+	}}
+	received := decimal.RequireFromString("123.45")
+
+	err := p.updateOrderAsPaid(context.Background(), mockRepo, "ord-paid", payment, received)
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, ErrUnderpaid)
+}
 
 func TestPaymentMethodTypesForCurrency(t *testing.T) {
 	// KRW: card, kr_card, apple_pay

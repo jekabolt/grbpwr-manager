@@ -20,6 +20,13 @@ func IsZeroDecimalCurrency(c string) bool {
 	return curr.IsZeroDecimal(c)
 }
 
+// PaymentIntentSucceeded reports whether a PaymentIntent has already been paid.
+// A succeeded PaymentIntent can no longer have its amount/shipping updated, so
+// callers should skip those mutations instead of failing.
+func PaymentIntentSucceeded(pi *stripe.PaymentIntent) bool {
+	return pi != nil && pi.Status == stripe.PaymentIntentStatusSucceeded
+}
+
 // AmountToSmallestUnit converts an amount to the smallest currency unit for Stripe
 // For zero-decimal currencies (like JPY, KRW), rounds to whole units (no decimals)
 // For other currencies, multiplies by 100 to convert to cents

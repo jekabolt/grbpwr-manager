@@ -171,7 +171,10 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId)
 	`
 
-	orderRef := generateOrderReference()
+	orderRef, err := generateOrderReference()
+	if err != nil {
+		return 0, "", err
+	}
 	var totalPriceEur any
 	if order.TotalPriceEUR.Valid {
 		totalPriceEur = order.TotalPriceEUR.Decimal
