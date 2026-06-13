@@ -28,6 +28,8 @@ config/.config-*.toml
 config/certs/*.pem
 config/certs/*.crt
 config/certs/*.key
+# but keep the public DO managed-DB CA cert so it can be baked into the image
+!config/certs/ca-certificate.crt
 
 # IDE
 .vscode

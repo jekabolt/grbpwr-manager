@@ -80,10 +80,11 @@ COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products
 # Ensure the binary is executable
 RUN chmod +x /usr/local/bin/products-manager
 
-# Create certs directory for backward compatibility (file-based certs)
-# Note: DigitalOcean App Platform provides db.CA_CERT env var automatically,
-# so cert files are optional. Directory is created in case file-based certs are used.
+# Create certs directory and bake in the DigitalOcean managed-DB CA certificate.
+# The CA cert is public (not a private key). Point MYSQL_TLS_CA_PATH at this path
+# to get tls=custom with full server-certificate verification.
 RUN mkdir -p /etc/grbpwr-products-manager/certs
+COPY --from=builder /grbpwr-manager/config/certs/ca-certificate.crt /etc/grbpwr-products-manager/certs/ca-certificate.crt
 
 WORKDIR /
 

@@ -2,6 +2,8 @@
 
 admin-client
 .env
+# beta app spec holds plaintext secrets until DO encrypts them on create
+.do/app-beta.yaml
 *.db
 bin
 .env-local
@@ -9,6 +11,8 @@ bin
 *.pem
 *.crt
 *.key
+# DO managed-DB CA cert is public (not a private key); ship it for tls=custom verification
+!config/certs/ca-certificate.crt
 config/creds/*.json
 
 *.swagger.json
