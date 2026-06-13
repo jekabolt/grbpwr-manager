@@ -8,6 +8,7 @@ import (
 
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
@@ -18,7 +19,47 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// existingOrderResponse builds the idempotent SubmitOrder response for an order
+// that already exists for the request's PaymentIntent (a retry, or the winner of
+// a concurrent-submit race). It syncs the PaymentIntent amount to the order total
+// (in case the order was updated) and returns the order's current status.
+func (s *Server) existingOrderResponse(ctx context.Context, handler dependency.Invoicer, req *pb_frontend.SubmitOrderRequest, existingOrder *entity.OrderFull) (*pb_frontend.SubmitOrderResponse, error) {
+	// Ensure PaymentIntent amount matches order total (order may have been updated on ErrOrderItemsUpdated)
+	if err := s.ensurePaymentIntentAmountMatchesOrder(ctx, handler, req.PaymentIntentId, existingOrder); err != nil {
+		slog.Default().ErrorContext(ctx, "can't sync payment intent amount on idempotent retry", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't sync payment intent amount")
+	}
+
+	eos, ok := cache.GetOrderStatusById(existingOrder.Order.OrderStatusId)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to retrieve order status")
+		return nil, status.Errorf(codes.Internal, "order status not found")
+	}
+
+	os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
+	if !ok {
+		slog.Default().ErrorContext(ctx, "failed to convert order status")
+		return nil, status.Errorf(codes.Internal, "invalid order status")
+	}
+
+	pbPi, err := dto.ConvertEntityToPbPaymentInsert(&existingOrder.Payment.PaymentInsert)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
+	}
+	pbPi.PaymentMethod = req.Order.PaymentMethod
+
+	return &pb_frontend.SubmitOrderResponse{
+		OrderUuid:   existingOrder.Order.UUID,
+		OrderStatus: os,
+		Payment:     pbPi,
+	}, nil
+}
+
 func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRequest) (*pb_frontend.SubmitOrderResponse, error) {
+	if req.GetOrder() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "order is required")
+	}
 	slog.Default().InfoContext(ctx, "SubmitOrder started",
 		slog.String("payment_intent_id", req.PaymentIntentId),
 		slog.String("payment_method", string(dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod))),
@@ -92,37 +133,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 				slog.String("orderUUID", existingOrder.Order.UUID),
 				slog.String("paymentIntentId", req.PaymentIntentId),
 			)
-
-			// Ensure PaymentIntent amount matches order total (order may have been updated on ErrOrderItemsUpdated)
-			if err := s.ensurePaymentIntentAmountMatchesOrder(ctx, handler, req.PaymentIntentId, existingOrder); err != nil {
-				slog.Default().ErrorContext(ctx, "can't sync payment intent amount on idempotent retry", slog.String("err", err.Error()))
-				return nil, status.Errorf(codes.Internal, "can't sync payment intent amount")
-			}
-
-			eos, ok := cache.GetOrderStatusById(existingOrder.Order.OrderStatusId)
-			if !ok {
-				slog.Default().ErrorContext(ctx, "failed to retrieve order status")
-				return nil, status.Errorf(codes.Internal, "order status not found")
-			}
-
-			os, ok := dto.ConvertEntityToPbOrderStatus(eos.Status.Name)
-			if !ok {
-				slog.Default().ErrorContext(ctx, "failed to convert order status")
-				return nil, status.Errorf(codes.Internal, "invalid order status")
-			}
-
-			pbPi, err := dto.ConvertEntityToPbPaymentInsert(&existingOrder.Payment.PaymentInsert)
-			if err != nil {
-				slog.Default().ErrorContext(ctx, "can't convert entity payment insert to pb payment insert", slog.String("err", err.Error()))
-				return nil, status.Errorf(codes.Internal, "can't convert entity payment insert to pb payment insert")
-			}
-			pbPi.PaymentMethod = req.Order.PaymentMethod
-
-			return &pb_frontend.SubmitOrderResponse{
-				OrderUuid:   existingOrder.Order.UUID,
-				OrderStatus: os,
-				Payment:     pbPi,
-			}, nil
+			return s.existingOrderResponse(ctx, handler, req, existingOrder)
 		}
 	}
 
@@ -149,6 +160,32 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	// Associate PaymentIntent with order BEFORE InsertFiatInvoice so retries find the order
 	// when InsertFiatInvoice returns ErrOrderItemsUpdated (prevents duplicate orders)
 	if err = s.repo.Order().AssociatePaymentIntentWithOrder(ctx, order.UUID, req.PaymentIntentId); err != nil {
+		// A concurrent SubmitOrder already claimed this PaymentIntent (UNIQUE on
+		// payment.client_secret). Drop our duplicate order and return the order
+		// that won the race, idempotently.
+		if errors.Is(err, store.ErrPaymentIntentAlreadyAssociated) {
+			slog.Default().InfoContext(ctx, "payment intent already associated with another order, returning winner",
+				slog.String("order_uuid", order.UUID),
+				slog.String("payment_intent_id", req.PaymentIntentId),
+			)
+			if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
+				slog.Default().ErrorContext(ctx, "failed to cancel duplicate order after associate race",
+					slog.String("err", cancelErr.Error()),
+					slog.String("order_uuid", order.UUID),
+				)
+			}
+			s.reservationMgr.Release(ctx, order.UUID)
+
+			existingOrder, lookupErr := s.repo.Order().GetOrderByPaymentIntentId(ctx, req.PaymentIntentId)
+			if lookupErr != nil || existingOrder == nil {
+				slog.Default().ErrorContext(ctx, "can't load winning order after associate race",
+					slog.String("payment_intent_id", req.PaymentIntentId),
+				)
+				return nil, status.Errorf(codes.Aborted, "order is being processed, please retry")
+			}
+			return s.existingOrderResponse(ctx, handler, req, existingOrder)
+		}
+
 		slog.Default().ErrorContext(ctx, "can't associate payment intent with order",
 			slog.String("err", err.Error()),
 			slog.String("order_uuid", order.UUID),
@@ -164,21 +201,33 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't associate payment intent with order")
 	}
 
+	// The client may have already confirmed the card payment before SubmitOrder
+	// finished (the client_secret is handed out by ValidateOrderItemsInsert). A
+	// succeeded PaymentIntent can no longer have its shipping/amount updated, so
+	// skip those Stripe mutations to avoid failing the request (and cancelling a
+	// paid order). The payment is reconciled below via CheckForTransactions.
+	paymentAlreadySucceeded := false
+	if existingPi, piErr := handler.GetPaymentIntentByID(ctx, req.PaymentIntentId); piErr == nil {
+		paymentAlreadySucceeded = stripe.PaymentIntentSucceeded(existingPi)
+	}
+
 	// Update existing PaymentIntent with order details (using data we already have - no DB query!)
-	err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update payment intent with order",
-			slog.String("err", err.Error()),
-			slog.String("order_uuid", order.UUID),
-		)
-		if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
-			slog.Default().ErrorContext(ctx, "failed to cancel order after update failure",
-				slog.String("err", cancelErr.Error()),
+	if !paymentAlreadySucceeded {
+		err = handler.UpdatePaymentIntentWithOrderNew(ctx, req.PaymentIntentId, order.UUID, orderNew)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't update payment intent with order",
+				slog.String("err", err.Error()),
 				slog.String("order_uuid", order.UUID),
 			)
+			if cancelErr := s.repo.Order().CancelOrder(ctx, order.UUID); cancelErr != nil {
+				slog.Default().ErrorContext(ctx, "failed to cancel order after update failure",
+					slog.String("err", cancelErr.Error()),
+					slog.String("order_uuid", order.UUID),
+				)
+			}
+			s.reservationMgr.Release(ctx, order.UUID)
+			return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
 		}
-		s.reservationMgr.Release(ctx, order.UUID)
-		return nil, status.Errorf(codes.Internal, "can't update payment intent with order")
 	}
 
 	var orderFull *entity.OrderFull
@@ -221,35 +270,57 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't get payment intent for validation")
 	}
 
-	// Convert PaymentIntent amount from smallest currency unit to decimal
-	// For zero-decimal currencies (like JPY, KRW), amount is already in decimal
-	// For other currencies, convert from cents
-	piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
-	orderTotal := orderFull.Order.TotalPriceDecimal()
+	// A succeeded PaymentIntent (customer paid during submit) can't have its
+	// amount updated — and must not be touched. Skip the sync and reconcile below.
+	if stripe.PaymentIntentSucceeded(stripePi) {
+		paymentAlreadySucceeded = true
+	} else {
+		// Convert PaymentIntent amount from smallest currency unit to decimal
+		// For zero-decimal currencies (like JPY, KRW), amount is already in decimal
+		// For other currencies, convert from cents
+		piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
+		orderTotal := orderFull.Order.TotalPriceDecimal()
 
-	// Check if amounts match (with small tolerance for rounding)
-	if !piAmount.Equal(orderTotal) {
-		slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch, updating",
-			slog.String("payment_intent_id", req.PaymentIntentId),
-			slog.String("pi_amount", piAmount.String()),
-			slog.String("order_total", orderTotal.String()),
-		)
-
-		// Update PaymentIntent amount to match order total
-		err = handler.UpdatePaymentIntentAmount(ctx, req.PaymentIntentId, orderTotal, orderFull.Order.Currency)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't update payment intent amount",
-				slog.String("err", err.Error()),
+		// Check if amounts match (with small tolerance for rounding)
+		if !piAmount.Equal(orderTotal) {
+			slog.Default().InfoContext(ctx, "PaymentIntent amount mismatch, updating",
 				slog.String("payment_intent_id", req.PaymentIntentId),
-				slog.String("expected_amount", orderTotal.String()),
+				slog.String("pi_amount", piAmount.String()),
+				slog.String("order_total", orderTotal.String()),
 			)
-			return nil, status.Errorf(codes.Internal, "payment amount mismatch")
-		}
 
-		slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
+			// Update PaymentIntent amount to match order total
+			err = handler.UpdatePaymentIntentAmount(ctx, req.PaymentIntentId, orderTotal, orderFull.Order.Currency)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't update payment intent amount",
+					slog.String("err", err.Error()),
+					slog.String("payment_intent_id", req.PaymentIntentId),
+					slog.String("expected_amount", orderTotal.String()),
+				)
+				return nil, status.Errorf(codes.Internal, "payment amount mismatch")
+			}
+
+			slog.Default().InfoContext(ctx, "PaymentIntent amount updated successfully",
+				slog.String("payment_intent_id", req.PaymentIntentId),
+				slog.String("new_amount", orderTotal.String()),
+			)
+		}
+	}
+
+	// If the customer already paid, reconcile immediately so the order is
+	// confirmed (status, email, analytics, reservation release) and the response
+	// reflects it, instead of waiting for the expiration-time monitor.
+	if paymentAlreadySucceeded {
+		slog.Default().InfoContext(ctx, "payment already succeeded during submit, reconciling",
+			slog.String("order_uuid", order.UUID),
 			slog.String("payment_intent_id", req.PaymentIntentId),
-			slog.String("new_amount", orderTotal.String()),
 		)
+		if _, cerr := handler.CheckForTransactions(ctx, order.UUID, orderFull.Payment); cerr != nil {
+			slog.Default().ErrorContext(ctx, "can't reconcile already-succeeded payment",
+				slog.String("err", cerr.Error()),
+				slog.String("order_uuid", order.UUID),
+			)
+		}
 	}
 
 	pi := &orderFull.Payment.PaymentInsert

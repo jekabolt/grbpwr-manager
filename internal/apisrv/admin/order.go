@@ -59,6 +59,10 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUI
 			)
 			return nil, status.Errorf(codes.Internal, "can't check for transactions")
 		}
+		if payment == nil {
+			slog.Default().ErrorContext(ctx, "check for transactions returned no payment")
+			return nil, status.Errorf(codes.Internal, "can't check for transactions")
+		}
 
 		o.Payment = *payment
 	}

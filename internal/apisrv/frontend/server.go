@@ -10,6 +10,21 @@ import (
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 )
 
+// clampPagination bounds a client-supplied limit/offset for public list
+// endpoints so a huge limit can't force MySQL to materialize the whole table.
+func clampPagination(limit, offset, def, max int) (int, int) {
+	if limit <= 0 {
+		limit = def
+	}
+	if limit > max {
+		limit = max
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
 // Server implements handlers for frontend requests.
 type Server struct {
 	pb_frontend.UnimplementedFrontendServiceServer
