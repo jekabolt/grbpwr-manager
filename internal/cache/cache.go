@@ -127,6 +127,15 @@ var (
 	complimentaryShippingPricesMu sync.RWMutex
 	paymentIsProd                = true // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 	paymentIsProdMu              sync.RWMutex
+
+	// cacheMu guards the runtime-mutable dictionary, settings and payment-method
+	// state below that is otherwise unsynchronized: the dictionary slices/maps
+	// (entityCategories, entitySizes, entityCollections, sizeById), the payment
+	// method maps/slice, the hero/announce pointers, and the scalar settings
+	// (maxOrderItems, siteEnabled, defaultCurrency, bigMenu, orderExpirationSeconds).
+	// These are written by admin handlers while read by storefront handlers, so
+	// without this lock the maps can trigger a fatal concurrent map read/write.
+	cacheMu sync.RWMutex
 )
 
 var (
@@ -289,7 +298,9 @@ func OrderStatusIDsForRefund() []int {
 }
 
 func UpdateHero(hf *entity.HeroFullWithTranslations) {
+	cacheMu.Lock()
 	hero = hf
+	cacheMu.Unlock()
 }
 
 // RefreshDictionary updates categories, sizes, and collections (including CountMen/CountWomen) in the in-memory cache.
@@ -298,6 +309,8 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	if dInfo == nil {
 		return
 	}
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
@@ -400,16 +413,28 @@ func UpdateShipmentCarrierCost(carrier string, price decimal.Decimal) {
 }
 
 func GetPaymentMethodById(id int) (PaymentMethod, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	pm, ok := paymentMethodsById[id]
+	if !ok {
+		return PaymentMethod{}, false
+	}
 	return *pm, ok
 }
 
 func GetPaymentMethodByName(n entity.PaymentMethodName) (PaymentMethod, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	pm, ok := paymentMethodsByName[n]
+	if !ok {
+		return PaymentMethod{}, false
+	}
 	return *pm, ok
 }
 
 func UpdatePaymentMethodAllowance(method entity.PaymentMethodName, allowed bool) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
 	pm, ok := paymentMethodsByName[method]
 	if ok {
 		pm.Method.Allowed = allowed
@@ -427,23 +452,33 @@ func UpdatePaymentMethodAllowance(method entity.PaymentMethodName, allowed bool)
 }
 
 func GetSizeById(id int) (entity.Size, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	s, ok := sizeById[id]
 	return s, ok
 }
 
 func GetHero() *entity.HeroFullWithTranslations {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return hero
 }
 func GetMaxOrderItems() int {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return maxOrderItems
 }
 
 func SetMaxOrderItems(n int) {
+	cacheMu.Lock()
 	maxOrderItems = n
+	cacheMu.Unlock()
 }
 
 func SetBigMenu(enabled bool) {
+	cacheMu.Lock()
 	bigMenu = enabled
+	cacheMu.Unlock()
 }
 
 // GetBackgroundHeroColor returns the storefront hero background CSS color (may be empty).
@@ -461,42 +496,60 @@ func SetBackgroundHeroColor(color string) {
 }
 
 func SetAnnounce(link string, translations []entity.AnnounceTranslation) {
+	cacheMu.Lock()
 	announce = &entity.AnnounceWithTranslations{
 		Link:         link,
 		Translations: translations,
 	}
+	cacheMu.Unlock()
 }
 
 func SetDefaultCurrency(c string) {
+	cacheMu.Lock()
 	defaultCurrency = c
+	cacheMu.Unlock()
 }
 
 func SetSiteAvailability(enabled bool) {
+	cacheMu.Lock()
 	siteEnabled = enabled
+	cacheMu.Unlock()
 }
 
 func GetSiteAvailability() bool {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return siteEnabled
 }
 
 func GetBaseCurrency() string {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return defaultCurrency
 }
 
 func GetBigMenu() bool {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return bigMenu
 }
 
 func GetAnnounce() *entity.AnnounceWithTranslations {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return announce
 }
 
 func GetOrderExpirationSeconds() int {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return orderExpirationSeconds
 }
 
 func SetOrderExpirationSeconds(seconds int) {
+	cacheMu.Lock()
 	orderExpirationSeconds = seconds
+	cacheMu.Unlock()
 }
 
 func UpdateComplimentaryShippingPrices(prices map[string]decimal.Decimal) {
@@ -516,6 +569,8 @@ func GetComplimentaryShippingPrices() map[string]decimal.Decimal {
 }
 
 func GetCategories() []entity.Category {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entityCategories
 }
 
@@ -540,6 +595,8 @@ func GetOrderStatuses() []entity.OrderStatus {
 }
 
 func GetPaymentMethods() []entity.PaymentMethod {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entityPaymentMethods
 }
 
@@ -569,6 +626,8 @@ func GetPaymentMethodsFilteredByIsProd() []entity.PaymentMethod {
 		target = entity.CARD_TEST
 	}
 
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	result := make([]entity.PaymentMethod, 0, 1)
 	for _, pm := range entityPaymentMethods {
 		if pm.Name == target && pm.Allowed {
@@ -580,10 +639,14 @@ func GetPaymentMethodsFilteredByIsProd() []entity.PaymentMethod {
 }
 
 func GetSizes() []entity.Size {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entitySizes
 }
 
 func GetCollections() []entity.Collection {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entityCollections
 }
 
@@ -611,8 +674,13 @@ func GetPaymentMethodIdByPbId(pbId pb_common.PaymentMethodNameEnum) int {
 
 // RefreshEntityPaymentMethods updates the exported entityPaymentMethods slice from the current paymentMethodsById map.
 func RefreshEntityPaymentMethods() {
-	entityPaymentMethods = entityPaymentMethods[:0]
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	// Build a fresh slice rather than reusing the backing array, so concurrent
+	// readers holding a previously returned slice never observe in-place mutation.
+	refreshed := make([]entity.PaymentMethod, 0, len(paymentMethodsById))
 	for _, pm := range paymentMethodsById {
-		entityPaymentMethods = append(entityPaymentMethods, pm.Method)
+		refreshed = append(refreshed, pm.Method)
 	}
+	entityPaymentMethods = refreshed
 }
