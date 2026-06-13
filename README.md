@@ -1,3 +1,4 @@
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
 # grbpwr-manager
@@ -6,18 +7,37 @@ Backend service for the [grbpwr.com](https://grbpwr.com) store. It manages produ
 payments, customers and analytics, and serves the public storefront, the admin panel, and customer auth
 from a single Go process.
 
-## Overview
+## Features
 
-One process exposes **gRPC + a JSON/REST gateway + Swagger UI** on port `:8081`, backed by MySQL and a set
-of background workers.
+- **Catalog & media** — products, variants, archive, hero/content; media stored on DigitalOcean Spaces
+- **Orders & checkout** — cart, shipping, stock reservation, order lifecycle
+- **Payments** — Stripe (live + test), pre-order payments, reconciliation
+- **Customers & loyalty** — magic-link customer auth, membership tiers
+- **Email** — transactional mail via Resend (bounce/complaint + unsubscribe webhooks)
+- **Analytics** — GA4 reporting, server-side GA4 Measurement Protocol, BigQuery sync
+
+## Architecture
+
+One process exposes **gRPC + a JSON/REST gateway (grpc-gateway) + Swagger UI** on port `:8081`, backed by
+MySQL and a set of background workers.
+
+```mermaid
+flowchart LR
+    SF[Storefront<br/>grbpwr.com] -->|gRPC / REST| API
+    AD[Admin panel] -->|gRPC / REST| API
+    subgraph proc[products-manager · :8081]
+        API[gRPC + REST gateway<br/>admin · frontend · auth]
+        W[Workers<br/>mail · cleanup · tiers<br/>reconcile · ga4sync]
+    end
+    API --> DB[(MySQL)]
+    W --> DB
+    API --> S3[(DO Spaces)]
+    API --> EXT[Stripe · Resend<br/>Vercel · GA4 / BigQuery]
+```
 
 - **Language:** Go 1.26 · module `github.com/jekabolt/grbpwr-manager`
 - **APIs:** three Protobuf services — `admin`, `frontend` (storefront), `auth` — compiled with [buf](https://buf.build)
 - **Database:** MySQL (`sqlx`), with numbered SQL migrations
-- **Media storage:** DigitalOcean Spaces (S3-compatible)
-- **Payments:** Stripe (live + test card processors)
-- **Email:** Resend (transactional, with bounce/complaint + unsubscribe webhooks)
-- **Analytics:** GA4 (reporting), GA4 Measurement Protocol (server events), BigQuery
 - **Hosting:** DigitalOcean App Platform (Docker)
 
 ## Quickstart
@@ -57,11 +77,25 @@ file overlaid by **environment variables, which take precedence**.
   and are sourced by `make run`.
 - The full set of variables is documented by the production app spec, `.do/app.yaml`.
 
-Key groups: `mysql.*`, `http.*`, `auth.*` (admin JWT), `storefront_auth.*` (customer JWT / magic link),
-`bucket.*` (Spaces), `mailer.*` (Resend), `stripe_payment.*` / `stripe_payment_test.*`, `revalidation.*`
-(Vercel ISR), `ga4.*` / `ga4mp.*` / `bigquery.*`, and worker intervals.
+<details>
+<summary>Config groups</summary>
 
-## Project layout
+`mysql.*`, `http.*`, `auth.*` (admin JWT), `storefront_auth.*` (customer JWT / magic link),
+`bucket.*` (Spaces), `mailer.*` (Resend), `stripe_payment.*` / `stripe_payment_test.*`,
+`revalidation.*` (Vercel ISR), `ga4.*` / `ga4mp.*` / `bigquery.*`, and worker intervals.
+</details>
+
+## Development
+
+- **Protobuf:** edit files under `proto/**`, then `make proto` to regenerate. Never edit `*.pb.go` /
+  `*.gw.go` by hand.
+- **Mocks:** interfaces in `internal/dependency`; run `make generate` (mockery) to refresh mocks.
+- **Migrations:** add the next-numbered file in `internal/store/sql/` (e.g. `0059_xxx.sql`); never edit an
+  already-applied migration. They auto-apply on boot when `MYSQL_AUTOMIGRATE=true`.
+- **Lint / test:** `make lint`, `make cov`.
+
+<details>
+<summary>Project layout</summary>
 
 ```
 cmd/                     entrypoint (cobra: run + version)
@@ -80,15 +114,7 @@ internal/
 .do/                     DigitalOcean App Platform specs (prod: app.yaml)
 Dockerfile , Makefile
 ```
-
-## Development
-
-- **Protobuf:** edit files under `proto/**`, then `make proto` to regenerate. Never edit `*.pb.go` /
-  `*.gw.go` by hand.
-- **Mocks:** interfaces in `internal/dependency`; run `make generate` (mockery) to refresh mocks.
-- **Migrations:** add the next-numbered file in `internal/store/sql/` (e.g. `0059_xxx.sql`); never edit an
-  already-applied migration. They auto-apply on boot when `MYSQL_AUTOMIGRATE=true`.
-- **Lint / test:** `make lint`, `make cov`.
+</details>
 
 ## Deployment
 
