@@ -65,6 +65,10 @@ func (s *Server) ensurePaymentIntentAmountMatchesOrder(ctx context.Context, hand
 	if err != nil {
 		return fmt.Errorf("get payment intent: %w", err)
 	}
+	// A succeeded PaymentIntent can't (and must not) have its amount updated.
+	if stripe.PaymentIntentSucceeded(stripePi) {
+		return nil
+	}
 	piAmount := stripe.AmountFromSmallestUnit(stripePi.Amount, string(stripePi.Currency))
 	orderTotal := orderFull.Order.TotalPriceDecimal()
 	if piAmount.Equal(orderTotal) {

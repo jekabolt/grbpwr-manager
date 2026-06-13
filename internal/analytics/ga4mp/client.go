@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
@@ -19,6 +19,7 @@ const (
 )
 
 type Config struct {
+	Enabled       bool   `mapstructure:"enabled"`
 	MeasurementID string `mapstructure:"measurement_id"` // G-XXXXXXX
 	APISecret     string `mapstructure:"api_secret"`
 }
@@ -43,7 +44,28 @@ func New(cfg *Config) *Client {
 // stitches into the same GA4 session/funnel. Falls back to a deterministic UUID from buyer email.
 // Non-blocking: errors are logged but never propagated to callers.
 func (c *Client) TrackPurchase(ctx context.Context, order entity.OrderFull) {
+	// Honor the GA4MP_ENABLED switch and never POST with blank credentials (e.g. on
+	// beta where analytics is off). GA4's /mp/collect returns 2xx even for garbage, so
+	// a misconfigured send would otherwise silently look successful.
+	if c.cfg == nil || !c.cfg.Enabled || c.cfg.MeasurementID == "" || c.cfg.APISecret == "" {
+		return
+	}
+	// Detach from the caller's context. The payment monitor cancels its context via
+	// defer cancel() the moment it returns, which would abort this in-flight send and
+	// silently drop the purchase event. We keep the context values (trace/log IDs) but
+	// drop cancellation; sendPurchaseEvent applies its own requestTimeout.
+	ctx = context.WithoutCancel(ctx)
 	go func() {
+		// A panic in this best-effort analytics goroutine must never take down the
+		// payment-processing process.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Default().ErrorContext(ctx, "ga4mp: panic while tracking purchase",
+					slog.String("orderUUID", order.Order.UUID),
+					slog.Any("panic", r),
+				)
+			}
+		}()
 		if err := c.sendPurchaseEvent(ctx, order); err != nil {
 			slog.Default().ErrorContext(ctx, "ga4mp: failed to send purchase event",
 				slog.String("orderUUID", order.Order.UUID),
@@ -51,10 +73,7 @@ func (c *Client) TrackPurchase(ctx context.Context, order entity.OrderFull) {
 				slog.String("clientID", order.Order.GAClientID.String),
 			)
 		}
-		slog.Default().InfoContext(ctx, "ga4mp: purchase event sent",
-			slog.String("orderUUID", order.Order.UUID),
-			slog.String("clientID", order.Order.GAClientID.String),
-		)
+		// success is logged inside sendPurchaseEvent
 	}()
 }
 
@@ -64,7 +83,10 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 
 	clientID := order.Order.GAClientID.String
 	if !order.Order.GAClientID.Valid || clientID == "" {
-		clientID = deterministicClientID(order.Buyer.Email)
+		// No GA cookie on the order (e.g. admin/custom order): fall back to the order
+		// UUID. Do NOT derive the client_id from the buyer's email — a hash of an email
+		// is still a PII-derived identifier and must not be sent to GA without consent.
+		clientID = order.Order.UUID
 	}
 	val, _ := order.Order.TotalPrice.Float64()
 
@@ -112,7 +134,8 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	// Drain before close so the keep-alive connection can be reused.
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
@@ -123,10 +146,6 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 		slog.String("clientID", clientID),
 	)
 	return nil
-}
-
-func deterministicClientID(email string) string {
-	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(email)).String()
 }
 
 type mpPayload struct {

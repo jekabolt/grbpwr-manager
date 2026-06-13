@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"text/template"
 	"time"
@@ -18,9 +19,12 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
+	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -80,14 +84,20 @@ type WebhookHandler interface {
 	HandleListUnsubscribe(w http.ResponseWriter, r *http.Request)
 }
 
+// StripeWebhookHandler handles inbound Stripe webhook events (signature-verified).
+type StripeWebhookHandler interface {
+	HandleStripeEvent(w http.ResponseWriter, r *http.Request)
+}
+
 // Server is the http server
 type Server struct {
-	hs             *http.Server
-	gs             *grpc.Server
-	c              *Config
-	done           chan struct{}
-	healthChecker  HealthChecker
-	webhookHandler WebhookHandler
+	hs                   *http.Server
+	gs                   *grpc.Server
+	c                    *Config
+	done                 chan struct{}
+	healthChecker        HealthChecker
+	webhookHandler       WebhookHandler
+	stripeWebhookHandler StripeWebhookHandler
 }
 
 // New creates a new server
@@ -108,9 +118,39 @@ func (s *Server) SetWebhookHandler(h WebhookHandler) {
 	s.webhookHandler = h
 }
 
+// SetStripeWebhookHandler registers the handler for Stripe webhook events.
+func (s *Server) SetStripeWebhookHandler(h StripeWebhookHandler) {
+	s.stripeWebhookHandler = h
+}
+
 // Done returns a channel that is closed when gRPC server exits
 func (s *Server) Done() <-chan struct{} {
 	return s.done
+}
+
+// Shutdown gracefully drains in-flight requests and stops the listener. It must
+// be called before the database is closed so handlers do not race against a
+// closed connection pool. The drain is bounded by ctx.
+//
+// gRPC is served over h2c through the HTTP server (s.gs.ServeHTTP), not via a
+// dedicated gRPC listener, so draining the HTTP server is what finishes in-flight
+// unary RPCs and closes the connections. We therefore drain s.hs first, then hard
+// Stop the gRPC server to release its resources — GracefulStop would block on
+// keep-alive HTTP/2 connections that only close once s.hs has shut down.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	var err error
+	if s.hs != nil {
+		// Returns http.ErrServerClosed from ListenAndServe, which closes s.done.
+		err = s.hs.Shutdown(ctx)
+	}
+	if s.gs != nil {
+		s.gs.Stop()
+	}
+	return err
 }
 
 func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
@@ -245,6 +285,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
 		r.Post("/api/webhooks/list-unsubscribe/{email_b64}", s.webhookHandler.HandleListUnsubscribe)
 	}
+	if s.stripeWebhookHandler != nil {
+		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)
+	}
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
 
@@ -320,6 +363,17 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 	return mux, nil
 }
 
+// panicRecoveryHandler logs a recovered panic with its stack trace and returns a
+// generic Internal error, so a single malformed request cannot crash the process
+// and panic internals are never leaked to the caller.
+func panicRecoveryHandler(ctx context.Context, p any) error {
+	slog.Default().ErrorContext(ctx, "recovered from panic in gRPC handler",
+		slog.Any("panic", p),
+		slog.String("stack", string(debug.Stack())),
+	)
+	return status.Error(codes.Internal, "internal server error")
+}
+
 // Start starts the server
 func (s *Server) Start(ctx context.Context,
 	adminServer *admin.Server,
@@ -332,16 +386,23 @@ func (s *Server) Start(ctx context.Context,
 		// Add any other option (check functions starting with logging.With).
 	}
 
+	// Recovery must be the outermost interceptor so it catches panics from the
+	// logging/auth interceptors and the handlers alike; grpc-go runs each call in
+	// its own goroutine with no recover, so an unhandled panic kills the process.
+	recoveryOpts := []grpcRecovery.Option{
+		grpcRecovery.WithRecoveryHandlerContext(panicRecoveryHandler),
+	}
+
 	s.gs = grpc.NewServer(
 		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB
 		grpc.ChainUnaryInterceptor(
+			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
-			// grpcRecovery.UnaryServerInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
+			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
-			// grpcRecovery.StreamServerInterceptor(),
 		),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)

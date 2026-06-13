@@ -16,6 +16,24 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// ga4FinalizationDays is the trailing window (in days) the GA4 API tier always
+// re-fetches on every run. GA4's Data API keeps restating a day's metrics for ~48h
+// after it first lands, so the last couple of days are re-pulled to correct partial,
+// empty, or late-arriving data. Without this a day fetched while still empty would be
+// marked synced and frozen, leaving a permanent silent gap. Re-fetching is safe
+// because all GA4 saves are UPSERT (idempotent).
+const ga4FinalizationDays = 2
+
+// stopTimeout bounds how long Stop waits for in-flight syncs to drain after the
+// context is cancelled, so shutdown can't hang on a query that's slow to cancel.
+const stopTimeout = 30 * time.Second
+
+// ga4APISyncTypes are the GA4 Data API sub-syncs whose success high-water-marks gate
+// the API tier's fetch window. These are exactly the types that receive a success=1
+// status write (revenue_by_source/product_conversion are saved together with and gated
+// by "ecommerce"; the bq_* cache types sync on a separate cadence and are excluded).
+var ga4APISyncTypes = []string{"daily_metrics", "product_page_metrics", "country_metrics", "ecommerce"}
+
 // Config holds configuration for the GA4 sync worker.
 type Config struct {
 	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
@@ -60,8 +78,10 @@ type Worker struct {
 	c                 *Config
 	ctx               context.Context
 	stop              context.CancelFunc
-	runMu             sync.Mutex // protects ctx, stop for Start/Stop
-	consecutiveErrors atomic.Int32
+	runMu             sync.Mutex     // protects ctx, stop for Start/Stop
+	wg                sync.WaitGroup // tracks the worker loop + in-flight async syncs
+	ga4Errors         atomic.Int32   // consecutive GA4 API tier errors
+	bqErrors          atomic.Int32   // consecutive BQ tier errors
 	ga4SyncMu         sync.Mutex
 	ga4SyncInProgress bool
 	bqSyncMu          sync.Mutex
@@ -119,29 +139,47 @@ func (w *Worker) Start(ctx context.Context) error {
 		return fmt.Errorf("ga4 sync worker already started")
 	}
 	w.ctx, w.stop = context.WithCancel(ctx)
-	go w.worker(w.ctx)
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		w.worker(w.ctx)
+	}()
 	return nil
 }
 
-// Stop stops the worker gracefully.
+// Stop stops the worker gracefully. It cancels the context and waits (bounded by
+// stopTimeout) for the worker loop and any in-flight async syncs to finish, so they
+// don't write to a DB connection the app is about to close.
 func (w *Worker) Stop() error {
 	w.runMu.Lock()
-	defer w.runMu.Unlock()
 	if w.stop == nil {
+		w.runMu.Unlock()
 		return fmt.Errorf("ga4 sync worker already stopped or not started")
 	}
 	w.stop()
 	w.ctx = nil
 	w.stop = nil
+	w.runMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		w.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stopTimeout):
+		slog.Default().Warn("ga4 sync worker: timed out waiting for in-flight syncs to stop")
+	}
 	return nil
 }
 
 func (w *Worker) worker(ctx context.Context) {
-	if err := w.runWithBackoff(ctx, "ga4 api", w.syncGA4API); err != nil {
+	if err := w.runWithBackoff(ctx, "ga4 api", &w.ga4Errors, w.syncGA4API); err != nil {
 		slog.Default().ErrorContext(ctx, "ga4 api sync failed on startup",
 			slog.String("err", err.Error()))
 	}
-	if err := w.runWithBackoff(ctx, "bq", w.syncBQ); err != nil {
+	if err := w.runWithBackoff(ctx, "bq", &w.bqErrors, w.syncBQ); err != nil {
 		slog.Default().ErrorContext(ctx, "bq sync failed on startup",
 			slog.String("err", err.Error()))
 	}
@@ -158,9 +196,9 @@ func (w *Worker) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ga4Ticker.C:
-			w.tryRunAsync(ctx, &w.ga4SyncMu, &w.ga4SyncInProgress, "ga4 api", w.syncGA4API)
+			w.tryRunAsync(ctx, &w.ga4SyncMu, &w.ga4SyncInProgress, "ga4 api", &w.ga4Errors, w.syncGA4API)
 		case <-bqTicker.C:
-			w.tryRunAsync(ctx, &w.bqSyncMu, &w.bqSyncInProgress, "bq", w.syncBQ)
+			w.tryRunAsync(ctx, &w.bqSyncMu, &w.bqSyncInProgress, "bq", &w.bqErrors, w.syncBQ)
 		case <-healthTicker.C:
 			w.logHealthStatus(ctx)
 		case <-ctx.Done():
@@ -170,7 +208,7 @@ func (w *Worker) worker(ctx context.Context) {
 }
 
 // tryRunAsync launches fn in a goroutine if a previous run isn't still in progress.
-func (w *Worker) tryRunAsync(ctx context.Context, mu *sync.Mutex, inProgress *bool, name string, fn func(context.Context) error) {
+func (w *Worker) tryRunAsync(ctx context.Context, mu *sync.Mutex, inProgress *bool, name string, counter *atomic.Int32, fn func(context.Context) error) {
 	mu.Lock()
 	if *inProgress {
 		slog.Default().WarnContext(ctx, name+" sync skipped: previous still in progress")
@@ -180,13 +218,15 @@ func (w *Worker) tryRunAsync(ctx context.Context, mu *sync.Mutex, inProgress *bo
 	*inProgress = true
 	mu.Unlock()
 
+	w.wg.Add(1)
 	go func() {
+		defer w.wg.Done()
 		defer func() {
 			mu.Lock()
 			*inProgress = false
 			mu.Unlock()
 		}()
-		if err := w.runWithBackoff(ctx, name, fn); err != nil {
+		if err := w.runWithBackoff(ctx, name, counter, fn); err != nil {
 			slog.Default().ErrorContext(ctx, name+" sync failed",
 				slog.String("err", err.Error()))
 		}
@@ -196,10 +236,12 @@ func (w *Worker) tryRunAsync(ctx context.Context, mu *sync.Mutex, inProgress *bo
 // logHealthStatus logs circuit breaker health and data staleness for monitoring/alerting.
 func (w *Worker) logHealthStatus(ctx context.Context) {
 	ga4State := w.ga4Client.CircuitBreakerState()
-	consecutiveErrors := w.consecutiveErrors.Load()
+	ga4Errors := w.ga4Errors.Load()
+	bqErrors := w.bqErrors.Load()
 	attrs := []any{
 		slog.String("ga4_circuit", ga4State.String()),
-		slog.Int("consecutive_errors", int(consecutiveErrors)),
+		slog.Int("ga4_consecutive_errors", int(ga4Errors)),
+		slog.Int("bq_consecutive_errors", int(bqErrors)),
 	}
 
 	if w.bqClient != nil {
@@ -260,7 +302,7 @@ func (w *Worker) logHealthStatus(ctx context.Context) {
 
 	if circuitOpen {
 		slog.Default().ErrorContext(ctx, "ga4sync health check: circuit breaker(s) open", attrs...)
-	} else if consecutiveErrors > 0 {
+	} else if ga4Errors > 0 || bqErrors > 0 {
 		slog.Default().WarnContext(ctx, "ga4sync health check: recent errors", attrs...)
 	} else {
 		slog.Default().InfoContext(ctx, "ga4sync health check: ok", attrs...)
@@ -269,30 +311,31 @@ func (w *Worker) logHealthStatus(ctx context.Context) {
 
 // runWithBackoff attempts fn with exponential backoff on transient errors.
 // Circuit breaker errors skip backoff since the circuit handles retry timing.
-func (w *Worker) runWithBackoff(ctx context.Context, name string, fn func(context.Context) error) error {
+func (w *Worker) runWithBackoff(ctx context.Context, name string, counter *atomic.Int32, fn func(context.Context) error) error {
 	backoff := w.c.InitialBackoff
+	var lastErr error
 
 	for attempt := 0; attempt <= w.c.MaxBackoffRetries; attempt++ {
-		err := fn(ctx)
-		if err == nil {
-			w.consecutiveErrors.Store(0)
+		lastErr = fn(ctx)
+		if lastErr == nil {
+			counter.Store(0)
 			return nil
 		}
 
-		if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
+		if errors.Is(lastErr, circuitbreaker.ErrCircuitOpen) {
 			slog.Default().WarnContext(ctx, name+" sync skipped: circuit breaker open",
-				slog.Int("consecutive_errors", int(w.consecutiveErrors.Load())))
-			w.consecutiveErrors.Add(1)
-			return err
+				slog.Int("consecutive_errors", int(counter.Load())))
+			counter.Add(1)
+			return lastErr
 		}
 
-		w.consecutiveErrors.Add(1)
+		counter.Add(1)
 		if attempt < w.c.MaxBackoffRetries {
 			slog.Default().WarnContext(ctx, name+" sync failed, retrying with backoff",
 				slog.Int("attempt", attempt+1),
 				slog.Int("max_retries", w.c.MaxBackoffRetries),
 				slog.Duration("backoff", backoff),
-				slog.String("err", err.Error()))
+				slog.String("err", lastErr.Error()))
 
 			select {
 			case <-time.After(backoff):
@@ -306,24 +349,55 @@ func (w *Worker) runWithBackoff(ctx context.Context, name string, fn func(contex
 		}
 	}
 
-	return fmt.Errorf("%s sync failed after %d retries", name, w.c.MaxBackoffRetries)
+	return fmt.Errorf("%s sync failed after %d retries: %w", name, w.c.MaxBackoffRetries, lastErr)
+}
+
+// recordSyncStatus persists a sync-status row and logs (without propagating) a
+// status-write failure. The data write and the status write are separate statements,
+// so a dropped status error would otherwise silently desync the freshness/health view
+// from what was actually written.
+func (w *Worker) recordSyncStatus(ctx context.Context, syncType string, lastSyncDate time.Time, success bool, recordsSynced int, errMsg string) {
+	if err := w.syncStatus.UpdateGA4SyncStatus(ctx, syncType, lastSyncDate, success, recordsSynced, errMsg); err != nil {
+		slog.Default().ErrorContext(ctx, "ga4sync: failed to record sync status",
+			slog.String("sync_type", syncType),
+			slog.Bool("success", success),
+			slog.String("err", err.Error()))
+	}
 }
 
 // syncGA4API fetches from the GA4 Data API (daily_metrics, product_page, country, ecommerce).
-// Skips when already synced through yesterday — the GA4 Data API has ~24h lag so there's
-// nothing new to fetch until the next daily export lands.
+// The fetch window resumes from the minimum high-water-mark across the sub-syncs and always
+// includes the trailing finalization window, so late-arriving or restated GA4 data and any
+// sub-sync that fell behind are picked up. Re-fetching is idempotent (saves are UPSERT).
 func (w *Worker) syncGA4API(ctx context.Context) error {
 	now := time.Now().UTC()
 	endDate := now.AddDate(0, 0, -1) // yesterday
 
-	startDate := endDate.AddDate(0, 0, -w.c.LookbackDays)
-	if lastSync, err := w.syncStatus.GetGA4LastSyncDate(ctx, "daily_metrics"); err == nil && !lastSync.IsZero() {
-		candidateStart := lastSync.AddDate(0, 0, 1)
-		if candidateStart.After(endDate) {
-			slog.Default().InfoContext(ctx, "ga4 api sync skipped: already synced through yesterday")
-			return nil
+	lookbackStart := endDate.AddDate(0, 0, -w.c.LookbackDays)
+
+	// Window start = the earliest day any GA4 API sub-sync still needs. Each sub-sync can
+	// fail independently, so we take the minimum of their high-water-marks rather than
+	// gating the whole tier on daily_metrics alone — otherwise a sub-sync that fell behind
+	// would never be backfilled (#8). A type whose last attempt failed or never ran reads
+	// as zero and pulls the window back to the lookback floor so it re-syncs.
+	startDate := endDate
+	for _, syncType := range ga4APISyncTypes {
+		typeStart := lookbackStart
+		if ls, err := w.syncStatus.GetGA4LastSyncDate(ctx, syncType); err == nil && !ls.IsZero() {
+			typeStart = ls.AddDate(0, 0, 1)
 		}
-		startDate = candidateStart
+		if typeStart.Before(startDate) {
+			startDate = typeStart
+		}
+	}
+	// Always re-fetch the trailing finalization window (GA4 restates data for ~48h), so a
+	// day fetched while still empty/partial gets corrected instead of frozen (#3).
+	if reFetch := endDate.AddDate(0, 0, -ga4FinalizationDays); reFetch.Before(startDate) {
+		startDate = reFetch
+	}
+	if startDate.After(endDate) {
+		slog.Default().InfoContext(ctx, "ga4 api sync skipped: nothing in range")
+		return nil
 	}
 
 	slog.Default().InfoContext(ctx, "starting ga4 api sync",
@@ -405,16 +479,16 @@ func (w *Worker) purgeOldData(ctx context.Context, now time.Time) {
 func (w *Worker) syncDailyMetrics(ctx context.Context, startDate, endDate time.Time) error {
 	metrics, err := w.ga4Client.GetDailyMetrics(ctx, startDate, endDate)
 	if err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "daily_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "daily_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to fetch daily metrics: %w", err)
 	}
 
 	if err := w.ga4Data.SaveGA4DailyMetrics(ctx, metrics); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "daily_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "daily_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to save daily metrics: %w", err)
 	}
 
-	w.syncStatus.UpdateGA4SyncStatus(ctx, "daily_metrics", endDate, true, len(metrics), "")
+	w.recordSyncStatus(ctx, "daily_metrics", endDate, true, len(metrics), "")
 	slog.Default().InfoContext(ctx, "synced daily metrics",
 		slog.Int("count", len(metrics)))
 	return nil
@@ -423,16 +497,16 @@ func (w *Worker) syncDailyMetrics(ctx context.Context, startDate, endDate time.T
 func (w *Worker) syncProductPageMetrics(ctx context.Context, startDate, endDate time.Time) error {
 	metrics, err := w.ga4Client.GetProductPageMetrics(ctx, startDate, endDate)
 	if err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "product_page_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "product_page_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to fetch product page metrics: %w", err)
 	}
 
 	if err := w.ga4Data.SaveGA4ProductPageMetrics(ctx, metrics); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "product_page_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "product_page_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to save product page metrics: %w", err)
 	}
 
-	w.syncStatus.UpdateGA4SyncStatus(ctx, "product_page_metrics", endDate, true, len(metrics), "")
+	w.recordSyncStatus(ctx, "product_page_metrics", endDate, true, len(metrics), "")
 	slog.Default().InfoContext(ctx, "synced product page metrics",
 		slog.Int("count", len(metrics)))
 	return nil
@@ -441,16 +515,16 @@ func (w *Worker) syncProductPageMetrics(ctx context.Context, startDate, endDate 
 func (w *Worker) syncCountryMetrics(ctx context.Context, startDate, endDate time.Time) error {
 	metrics, err := w.ga4Client.GetCountryMetrics(ctx, startDate, endDate)
 	if err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "country_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "country_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to fetch country metrics: %w", err)
 	}
 
 	if err := w.ga4Data.SaveGA4CountryMetrics(ctx, metrics); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "country_metrics", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "country_metrics", endDate, false, 0, err.Error())
 		return fmt.Errorf("failed to save country metrics: %w", err)
 	}
 
-	w.syncStatus.UpdateGA4SyncStatus(ctx, "country_metrics", endDate, true, len(metrics), "")
+	w.recordSyncStatus(ctx, "country_metrics", endDate, true, len(metrics), "")
 	slog.Default().InfoContext(ctx, "synced country metrics",
 		slog.Int("count", len(metrics)))
 	return nil
@@ -460,25 +534,25 @@ func (w *Worker) syncCountryMetrics(ctx context.Context, startDate, endDate time
 func (w *Worker) syncEcommerce(ctx context.Context, startDate, endDate time.Time) error {
 	ecom, revSrc, prodConv, err := w.ga4Client.GetEcommerceBatch(ctx, startDate, endDate)
 	if err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
 		return fmt.Errorf("fetch ecommerce batch: %w", err)
 	}
 
 	if err := w.ga4Data.SaveGA4EcommerceMetrics(ctx, ecom); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
 		return fmt.Errorf("save ecommerce metrics: %w", err)
 	}
 	if err := w.ga4Data.SaveGA4RevenueBySource(ctx, revSrc); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "revenue_by_source", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "revenue_by_source", endDate, false, 0, err.Error())
 		return fmt.Errorf("save revenue by source: %w", err)
 	}
 	if err := w.ga4Data.SaveGA4ProductConversion(ctx, prodConv); err != nil {
-		w.syncStatus.UpdateGA4SyncStatus(ctx, "product_conversion", endDate, false, 0, err.Error())
+		w.recordSyncStatus(ctx, "product_conversion", endDate, false, 0, err.Error())
 		return fmt.Errorf("save product conversion: %w", err)
 	}
 
 	total := len(ecom) + len(revSrc) + len(prodConv)
-	w.syncStatus.UpdateGA4SyncStatus(ctx, "ecommerce", endDate, true, total, "")
+	w.recordSyncStatus(ctx, "ecommerce", endDate, true, total, "")
 	slog.Default().InfoContext(ctx, "synced ecommerce metrics",
 		slog.Int("ecom", len(ecom)), slog.Int("rev_src", len(revSrc)), slog.Int("prod_conv", len(prodConv)))
 	return nil
@@ -499,19 +573,27 @@ func (w *Worker) runBQPrecompute(ctx context.Context, startDate, endDate time.Ti
 
 	syncs := []syncFn{
 		{"bq_funnel", func() error {
-			if err := w.bqCache.DeleteBQFunnelAnalysisByDateRange(ctx, startDate, endDate); err != nil {
-				return fmt.Errorf("delete funnel: %w", err)
+			// Collect the whole stream, then replace the date range in ONE atomic
+			// transaction via SaveBQFunnelAnalysis (BulkReplaceByDate deletes the
+			// affected dates and re-inserts them together). The previous standalone
+			// range-DELETE followed by per-batch inserts left bq_funnel_analysis empty
+			// for concurrent dashboard reads, and lost the range entirely if the stream
+			// errored or the process died mid-sync. This now matches every other metric.
+			var rows []entity.DailyFunnel
+			if err := w.bqClient.GetFunnelAnalysisStream(ctx, startDate, endDate, 500, func(batch []entity.DailyFunnel) error {
+				rows = append(rows, batch...)
+				return nil
+			}); err != nil {
+				return fmt.Errorf("fetch funnel: %w", err)
 			}
-			var totalRows int
-			err := w.bqClient.GetFunnelAnalysisStream(ctx, startDate, endDate, 500, func(batch []entity.DailyFunnel) error {
-				totalRows += len(batch)
-				return w.bqCache.SaveBQFunnelAnalysis(ctx, batch)
-			})
+			if err := w.bqCache.SaveBQFunnelAnalysis(ctx, rows); err != nil {
+				return fmt.Errorf("save funnel: %w", err)
+			}
 			slog.Default().InfoContext(ctx, "bq_funnel sync completed",
 				slog.String("start_date", startDate.Format("2006-01-02")),
 				slog.String("end_date", endDate.Format("2006-01-02")),
-				slog.Int("rows_synced", totalRows))
-			return err
+				slog.Int("rows_synced", len(rows)))
+			return nil
 		}},
 		{"bq_oos_impact", func() error {
 			rows, err := w.bqClient.GetOOSImpact(ctx, startDate, endDate)
@@ -716,13 +798,13 @@ func (w *Worker) runBQPrecompute(ctx context.Context, startDate, endDate time.Ti
 			if err := s.fn(); err != nil {
 				slog.Default().ErrorContext(ctx, "bq precompute failed",
 					slog.String("sync", s.name), slog.String("err", err.Error()))
-				w.syncStatus.UpdateGA4SyncStatus(ctx, s.name, endDate, false, 0, err.Error())
+				w.recordSyncStatus(ctx, s.name, endDate, false, 0, err.Error())
 				mu.Lock()
 				syncErrs = append(syncErrs, fmt.Errorf("%s: %w", s.name, err))
 				mu.Unlock()
 				return nil
 			}
-			w.syncStatus.UpdateGA4SyncStatus(ctx, s.name, endDate, true, 0, "")
+			w.recordSyncStatus(ctx, s.name, endDate, true, 0, "")
 			slog.Default().InfoContext(ctx, "bq precompute done", slog.String("sync", s.name))
 			return nil
 		})

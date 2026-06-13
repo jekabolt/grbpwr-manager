@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"log/slog"
 
@@ -53,6 +54,7 @@ type App struct {
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
 	re   dependency.RevalidationService
+	rm   *stockreserve.Manager
 	c    *config.Config
 	done chan struct{}
 }
@@ -94,13 +96,9 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	reservationMgr := stockreserve.NewDefaultManager()
-	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservationMgr)
-	if err = a.oc.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
+	a.rm = reservationMgr
+	// NOTE: the order cleanup worker is created later, after the Stripe
+	// processors exist, so its safety-net expiry can verify payment with Stripe.
 
 	a.sc = storefrontcleanup.New(&a.c.StorefrontCleanup, a.db)
 	if err = a.sc.Start(ctx); err != nil {
@@ -168,6 +166,24 @@ func (a *App) Start(ctx context.Context) error {
 			)
 			return err
 		}
+	}
+
+	// Order cleanup safety-net: route expired card orders through the Stripe
+	// processors so a succeeded-but-unrecorded payment is confirmed instead of
+	// cancelled. Wired here so it can verify payment status with Stripe.
+	expirer := &stripeOrderExpirer{repo: a.db}
+	if p, ok := stripeMain.(*stripe.Processor); ok {
+		expirer.main = p
+	}
+	if p, ok := stripeTest.(*stripe.Processor); ok {
+		expirer.test = p
+	}
+	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservationMgr, expirer)
+	if err = a.oc.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
+			slog.String("err", err.Error()),
+		)
+		return err
 	}
 
 	a.re, err = revalidation.New(ctx, &a.c.Revalidation)
@@ -251,6 +267,23 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.hs.SetWebhookHandler(webhookHandler)
 
+	// Stripe webhook: server-to-server payment confirmation (primary path; the
+	// in-process monitor and lazy CheckForTransactions remain fallbacks). Enabled
+	// only when a signing secret is configured for at least one processor.
+	var stripeProcs []*stripe.Processor
+	if p, ok := stripeMain.(*stripe.Processor); ok {
+		stripeProcs = append(stripeProcs, p)
+	}
+	if p, ok := stripeTest.(*stripe.Processor); ok {
+		stripeProcs = append(stripeProcs, p)
+	}
+	if stripeWebhook := stripe.NewWebhookHandler(stripeProcs...); stripeWebhook.Enabled() {
+		a.hs.SetStripeWebhookHandler(stripeWebhook)
+		slog.Default().InfoContext(ctx, "stripe webhook handler enabled")
+	} else {
+		slog.Default().InfoContext(ctx, "stripe webhook handler disabled (no signing secret configured)")
+	}
+
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
 		slog.Default().ErrorContext(ctx, "cannot start http server")
 		return err
@@ -260,8 +293,22 @@ func (a *App) Start(ctx context.Context) error {
 }
 
 // Stop stops the application and waits for all services to exit.
-// Workers are stopped first so they release DB connections before database close.
+// Shutdown order: drain the API server first (so no new request reaches a worker
+// or the DB), then stop the workers, then close the database.
 func (a *App) Stop(ctx context.Context) {
+	// Drain in-flight gRPC/REST requests and stop the listener before tearing
+	// anything down, so handlers don't race against stopped workers or a closed
+	// connection pool.
+	if a.hs != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		if err := a.hs.Shutdown(shutdownCtx); err != nil {
+			slog.Default().ErrorContext(ctx, "error draining http server on shutdown",
+				slog.String("err", err.Error()),
+			)
+		}
+		cancel()
+	}
+
 	// Stop workers before closing DB — avoids panics and error storms from workers
 	// hitting a closed connection. In-flight emails remain in DB and will be retried on next run.
 	if a.ma != nil {
@@ -283,6 +330,11 @@ func (a *App) Stop(ctx context.Context) {
 		_ = a.ga4w.Stop()
 	}
 
+	// Stop the in-memory stock reservation manager's cleanup goroutine.
+	if a.rm != nil {
+		a.rm.Stop()
+	}
+
 	if a.bqc != nil {
 		a.bqc.Close()
 	}
@@ -293,4 +345,42 @@ func (a *App) Stop(ctx context.Context) {
 // Done returns a channel that is closed after the application has exited
 func (a *App) Done() chan struct{} {
 	return a.done
+}
+
+// stripeOrderExpirer routes an order's safety-net expiry to the correct Stripe
+// processor (live vs test) by its payment method, running the provider-checked
+// expiry that confirms a succeeded payment instead of cancelling it. For
+// non-card methods (or when a processor is unavailable) it falls back to the
+// store-level expiry, which only cancels orders whose payment is not done.
+// Implements ordercleanup.PaymentExpirer.
+type stripeOrderExpirer struct {
+	repo dependency.Repository
+	main ordercleanup.PaymentExpirer
+	test ordercleanup.PaymentExpirer
+}
+
+func (e *stripeOrderExpirer) ExpireOrderPayment(ctx context.Context, orderUUID string) error {
+	payment, err := e.repo.Order().GetPaymentByOrderUUID(ctx, orderUUID)
+	if err != nil {
+		return fmt.Errorf("can't get payment for order %s: %w", orderUUID, err)
+	}
+
+	pm, ok := cache.GetPaymentMethodById(payment.PaymentMethodID)
+	if ok {
+		switch pm.Method.Name {
+		case entity.CARD:
+			if e.main != nil {
+				return e.main.ExpireOrderPayment(ctx, orderUUID)
+			}
+		case entity.CARD_TEST:
+			if e.test != nil {
+				return e.test.ExpireOrderPayment(ctx, orderUUID)
+			}
+		}
+	}
+
+	// Non-card method or processor unavailable: the store-level expiry only
+	// cancels orders whose payment is not done, so it is safe as a fallback.
+	_, err = e.repo.Order().ExpireOrderPayment(ctx, orderUUID)
+	return err
 }

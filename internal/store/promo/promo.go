@@ -107,11 +107,10 @@ func (s *Store) DisableVoucher(ctx context.Context, promoID sql.NullInt32) error
 	}
 
 	if promo.Voucher {
-		err := s.DisablePromoCode(ctx, promo.Code)
-		if err != nil {
+		// DisablePromoCode already updates the in-memory cache.
+		if err := s.DisablePromoCode(ctx, promo.Code); err != nil {
 			return fmt.Errorf("failed to disable voucher: %w", err)
 		}
-		cache.DisablePromo(promo.Code)
 	}
 
 	return nil

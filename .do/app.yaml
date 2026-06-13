@@ -25,7 +25,7 @@ envs:
   value: "2"
 - key: LOGGER_LEVEL
   scope: RUN_TIME
-  value: "-4"
+  value: "0"
 - key: LOGGER_ADD_SOURCE
   scope: RUN_TIME
   value: "true"
@@ -193,6 +193,14 @@ envs:
 - key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
   scope: RUN_TIME
   value: 15m
+- key: STRIPE_PAYMENT_WEBHOOK_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+- key: STRIPE_PAYMENT_TEST_WEBHOOK_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
 - key: REVALIDATION_PROJECT_ID
   scope: RUN_TIME
   type: SECRET
@@ -281,7 +289,7 @@ envs:
   value: 10m
 - key: BIGQUERY_USE_LITERAL_DATES
   scope: RUN_TIME
-  value: "true"
+  value: "false"
 - key: BIGQUERY_CIRCUIT_BREAKER_MAX_FAILURES
   scope: RUN_TIME
   value: "5"

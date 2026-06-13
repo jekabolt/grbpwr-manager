@@ -557,23 +557,14 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		if cTotalSessions > 0 {
 			cConvRate := decimal.NewFromInt(int64(cOrders)).Div(decimal.NewFromInt(int64(cTotalSessions))).Mul(decimal.NewFromInt(100))
 			m.ConversionRate.CompareValue = &cConvRate
-			if !m.ConversionRate.Value.IsZero() {
-				changePct := m.ConversionRate.Value.Sub(cConvRate).Div(cConvRate).Mul(decimal.NewFromInt(100))
-				f, ok := changePct.Round(2).Float64()
-				if ok {
-					m.ConversionRate.ChangePct = &f
-				}
-			}
+			// Guard the divisor (compare value), not the current value: guarding the
+			// current value left ChangePct nil when a metric dropped to 0 (should read
+			// -100%) and risked a decimal Div-by-zero panic when the compare period was 0.
+			m.ConversionRate.ChangePct = changePct(m.ConversionRate.Value, cConvRate)
 
 			cRevPerSession := cRev.Div(decimal.NewFromInt(int64(cTotalSessions)))
 			m.RevenuePerSession.CompareValue = &cRevPerSession
-			if !m.RevenuePerSession.Value.IsZero() {
-				changePct := m.RevenuePerSession.Value.Sub(cRevPerSession).Div(cRevPerSession).Mul(decimal.NewFromInt(100))
-				f, ok := changePct.Round(2).Float64()
-				if ok {
-					m.RevenuePerSession.ChangePct = &f
-				}
-			}
+			m.RevenuePerSession.ChangePct = changePct(m.RevenuePerSession.Value, cRevPerSession)
 		}
 
 		// Conversion rate by day compare

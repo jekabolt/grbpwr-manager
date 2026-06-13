@@ -222,18 +222,21 @@ func (c *Client) eventsSourceColumns(startDate, endDate time.Time, columns ...st
 		slog.Bool("use_literal_dates", c.useLiteralDates),
 		slog.String("table_ref", c.tableRef()))
 
-	colList := "*"
-	if len(columns) > 0 {
-		colList = ""
-		for i, col := range columns {
-			if err := validateColumnName(col); err != nil {
-				return "", err
-			}
-			if i > 0 {
-				colList += ", "
-			}
-			colList += col
+	// Require an explicit projection. Falling back to SELECT * over the very wide
+	// events_* export scans every nested column for the range — easily 10–100× the
+	// bytes (and cost) of the columns actually needed.
+	if len(columns) == 0 {
+		return "", fmt.Errorf("eventsSourceColumns: at least one column is required")
+	}
+	colList := ""
+	for i, col := range columns {
+		if err := validateColumnName(col); err != nil {
+			return "", err
 		}
+		if i > 0 {
+			colList += ", "
+		}
+		colList += col
 	}
 
 	var dailyFilter, intradayFilter string
@@ -241,8 +244,13 @@ func (c *Client) eventsSourceColumns(startDate, endDate time.Time, columns ...st
 		dailyFilter = fmt.Sprintf("_TABLE_SUFFIX BETWEEN '%s' AND '%s'", startSuffix, endSuffix)
 		intradayFilter = fmt.Sprintf("_TABLE_SUFFIX BETWEEN 'intraday_%s' AND 'intraday_%s'", startSuffix, endSuffix)
 	} else {
-		dailyFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%%Y%%m%%d', DATE(@start_date)) AND FORMAT_DATE('%%Y%%m%%d', DATE(@end_date))`
-		intradayFilter = `_TABLE_SUFFIX BETWEEN CONCAT('intraday_', FORMAT_DATE('%%Y%%m%%d', DATE(@start_date))) AND CONCAT('intraday_', FORMAT_DATE('%%Y%%m%%d', DATE(@end_date)))`
+		// Single %Y%m%d: this string is interpolated into queries as a fmt.Sprintf
+		// ARGUMENT (%s), never as a format string, so doubled percent signs survived
+		// verbatim into the SQL as %%Y%%m%%d — the suffix then matched no shard and the
+		// query returned 0 rows (the reason use_literal_dates=true was adopted as a
+		// workaround).
+		dailyFilter = `_TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE(@start_date)) AND FORMAT_DATE('%Y%m%d', DATE(@end_date))`
+		intradayFilter = `_TABLE_SUFFIX BETWEEN CONCAT('intraday_', FORMAT_DATE('%Y%m%d', DATE(@start_date))) AND CONCAT('intraday_', FORMAT_DATE('%Y%m%d', DATE(@end_date)))`
 	}
 
 	if !needsIntraday {

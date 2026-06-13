@@ -88,6 +88,12 @@ COPY --from=builder /grbpwr-manager/config/certs/ca-certificate.crt /etc/grbpwr-
 
 WORKDIR /
 
+# Run as an unprivileged user. The app binds :8081 (>1024), writes nothing to the
+# local filesystem (media -> S3, state -> remote MySQL), and only reads the public
+# CA cert, so it does not need root.
+RUN addgroup -S app && adduser -S -u 10001 -G app app
+USER app
+
 EXPOSE 8081
 
 # Use full path to binary to avoid PATH issues

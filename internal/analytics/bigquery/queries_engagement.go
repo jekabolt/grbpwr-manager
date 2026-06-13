@@ -53,21 +53,25 @@ func (c *Client) getWebVitals(
 					(SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'value'),
 					(SELECT CAST(value.int_value AS FLOAT64) FROM UNNEST(event_params) WHERE key = 'value')
 				) AS metric_value,
-				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'metric_rating') AS metric_rating
+				IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'metric_rating'), '') AS metric_rating
 			FROM %s
 			WHERE %s
 				AND (event_name IN ('LCP','INP','CLS','FCP','TTFB') OR event_name = 'purchase')
 		),
 		vitals AS (
+			-- One representative value per (session, metric): a session that fires the
+			-- same vital several times would otherwise weight that many times in the
+			-- AVG below, biasing the metric toward chatty sessions.
 			SELECT
 				event_date,
 				user_pseudo_id,
 				session_id,
 				event_name AS metric_name,
-				metric_value,
-				metric_rating
+				metric_rating,
+				AVG(metric_value) AS metric_value
 			FROM base_events
 			WHERE event_name IN ('LCP','INP','CLS','FCP','TTFB')
+			GROUP BY event_date, user_pseudo_id, session_id, event_name, metric_rating
 		),
 		session_conversions AS (
 			SELECT
@@ -577,7 +581,11 @@ func (c *Client) getCampaignAttribution(
 		),
 		session_campaigns AS (
 			SELECT
-				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+				-- One canonical day per session (its first event day). Grouping by
+				-- event_date too would split a session that spans midnight UTC into two
+				-- rows that then BOTH join the single session_purchases row below,
+				-- double-counting that session's revenue and conversions across days.
+				MIN(DATE(TIMESTAMP_MICROS(event_timestamp))) AS event_date,
 				user_pseudo_id,
 				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
 				COALESCE(
@@ -603,7 +611,7 @@ func (c *Client) getCampaignAttribution(
 				) AS utm_campaign
 			FROM %[1]s
 			WHERE %[2]s
-			GROUP BY event_date, user_pseudo_id, session_id
+			GROUP BY user_pseudo_id, session_id
 		)
 		SELECT
 			sc.event_date,

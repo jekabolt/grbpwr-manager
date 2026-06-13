@@ -75,7 +75,15 @@ func (w *Worker) cancelExpiredAwaitingPaymentOrders(ctx context.Context) error {
 			return err
 		}
 
-		_, err := w.repo.Order().ExpireOrderPayment(ctx, order.UUID)
+		// Prefer the provider-checked expiry so a payment that actually succeeded
+		// (but whose in-process monitor was lost) is confirmed, not cancelled.
+		// Fall back to the store-level path only when no expirer is wired.
+		var err error
+		if w.expirer != nil {
+			err = w.expirer.ExpireOrderPayment(ctx, order.UUID)
+		} else {
+			_, err = w.repo.Order().ExpireOrderPayment(ctx, order.UUID)
+		}
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't expire awaiting payment order",
 				slog.String("err", err.Error()),

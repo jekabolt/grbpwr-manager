@@ -372,6 +372,9 @@ func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 // ErrOrderItemsUpdated is re-exported from the order sub-package for backward compatibility.
 var ErrOrderItemsUpdated = order.ErrOrderItemsUpdated
 
+// ErrPaymentIntentAlreadyAssociated is re-exported from the order sub-package.
+var ErrPaymentIntentAlreadyAssociated = order.ErrPaymentIntentAlreadyAssociated
+
 // ValidStatusTransitions is re-exported from the order sub-package for backward compatibility.
 var ValidStatusTransitions = order.ValidStatusTransitions
 

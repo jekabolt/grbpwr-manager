@@ -245,12 +245,19 @@ func ResendSendEmailRequestToEntity(mr *resend.SendEmailRequest) (*entity.SendEm
 	if len(mr.To) == 0 {
 		return nil, fmt.Errorf("mail req 'to' is empty")
 	}
+	var html, replyTo string
+	if mr.Html != nil {
+		html = *mr.Html
+	}
+	if mr.ReplyTo != nil {
+		replyTo = *mr.ReplyTo
+	}
 	return &entity.SendEmailRequest{
 		From:    mr.From,
 		To:      mr.To[0],
-		Html:    *mr.Html,
+		Html:    html,
 		Subject: mr.Subject,
-		ReplyTo: *mr.ReplyTo,
+		ReplyTo: replyTo,
 	}, nil
 }
 

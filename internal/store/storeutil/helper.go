@@ -9,16 +9,25 @@ import (
 // DefaultBQPageLimit is the default limit when 0 is passed to paginated BQ reads.
 const DefaultBQPageLimit = 500
 
+// MaxBQPageLimit caps a caller-supplied page limit so a huge value (e.g. limit=10_000_000)
+// can't make a paginated read materialize an unbounded result set — OOM / oversized
+// response. Callers that need more must page with offset.
+const MaxBQPageLimit = 5000
+
 // BQPageParams holds limit/offset for paginated BQ cache reads.
 type BQPageParams struct {
 	Limit  int // 0 = DefaultBQPageLimit
 	Offset int // must be >= 0
 }
 
-// EffectiveLimit returns the limit to use, defaulting to DefaultBQPageLimit.
+// EffectiveLimit returns the limit to use, defaulting to DefaultBQPageLimit and capped at
+// MaxBQPageLimit so a caller can't request an unbounded result set.
 func (p BQPageParams) EffectiveLimit() int {
 	if p.Limit <= 0 {
 		return DefaultBQPageLimit
+	}
+	if p.Limit > MaxBQPageLimit {
+		return MaxBQPageLimit
 	}
 	return p.Limit
 }

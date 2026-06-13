@@ -3,6 +3,7 @@ package tiermanagement
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -29,6 +30,7 @@ type Worker struct {
 	c      *Config
 	ctx    context.Context
 	stop   context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // New constructs a tier maintenance worker.
@@ -49,17 +51,21 @@ func (w *Worker) Start(ctx context.Context) error {
 		return fmt.Errorf("tier management worker already started")
 	}
 	w.ctx, w.stop = context.WithCancel(ctx)
-	go w.run(w.ctx)
+	w.wg.Go(func() {
+		w.run(w.ctx)
+	})
 	return nil
 }
 
-// Stop signals the worker to exit.
+// Stop signals the worker to exit and waits for its goroutine to return, so the
+// caller can safely close shared resources (e.g. the DB) afterwards.
 func (w *Worker) Stop() error {
 	if w.stop == nil {
 		return fmt.Errorf("tier management worker already stopped or not started")
 	}
 	w.stop()
 	w.stop = nil
+	w.wg.Wait()
 	return nil
 }
 

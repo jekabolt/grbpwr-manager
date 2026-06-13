@@ -657,18 +657,24 @@ func funnelReconciliation(ctx context.Context, repo dependency.Repository, from,
 //
 // Note: GetMetrics calls computePeriodBounds first, so the special-period branch below
 // is unreachable in normal flows. Kept as a safety net for direct callers.
+// Metric-period parsers, compiled once at package init rather than per call.
+var (
+	metricsPeriodDaysRe    = regexp.MustCompile(`^(\d+)[dD]$`)
+	metricsPeriodISODaysRe = regexp.MustCompile(`^[pP](\d+)[dD]$`)
+)
+
 func parseMetricsPeriod(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	sl := strings.ToLower(s)
-	
+
 	// Special: today or "to date" periods — handled in GetMetrics via computePeriodBounds
 	// This branch is unreachable from GetMetrics but preserved for direct callers.
 	if sl == "today" || sl == "1d" || sl == "wtd" || sl == "mtd" || sl == "qtd" || sl == "ytd" {
 		return 0, nil // signal: use computePeriodBounds
 	}
-	
+
 	// Shorthand: Nd
-	if m := regexp.MustCompile(`^(\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+	if m := metricsPeriodDaysRe.FindStringSubmatch(s); len(m) == 2 {
 		days, err := strconv.Atoi(m[1])
 		if err != nil {
 			return 0, fmt.Errorf("invalid days value: %w", err)
@@ -679,7 +685,7 @@ func parseMetricsPeriod(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	// ISO8601: P{n}D
-	if m := regexp.MustCompile(`^[pP](\d+)[dD]$`).FindStringSubmatch(s); len(m) == 2 {
+	if m := metricsPeriodISODaysRe.FindStringSubmatch(s); len(m) == 2 {
 		days, err := strconv.Atoi(m[1])
 		if err != nil {
 			return 0, fmt.Errorf("invalid days value: %w", err)

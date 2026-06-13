@@ -3,6 +3,7 @@ package storefrontcleanup
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -28,6 +29,7 @@ type Worker struct {
 	c    *Config
 	ctx  context.Context
 	stop context.CancelFunc
+	wg   sync.WaitGroup
 }
 
 // New creates a new storefront cleanup worker.
@@ -51,17 +53,21 @@ func (w *Worker) Start(ctx context.Context) error {
 		return fmt.Errorf("storefront cleanup worker already started")
 	}
 	w.ctx, w.stop = context.WithCancel(ctx)
-	go w.worker(w.ctx)
+	w.wg.Go(func() {
+		w.worker(w.ctx)
+	})
 	return nil
 }
 
-// Stop stops the worker gracefully.
+// Stop signals the worker to stop and waits for its goroutine to exit, so the
+// caller can safely close shared resources (e.g. the DB) afterwards.
 func (w *Worker) Stop() error {
 	if w.stop == nil {
 		return fmt.Errorf("storefront cleanup worker already stopped or not started")
 	}
 	w.stop()
 	w.stop = nil
+	w.wg.Wait()
 	return nil
 }
 
