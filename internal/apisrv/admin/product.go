@@ -79,17 +79,10 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		cache.RefreshDictionary(di)
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Products: []int{id},
 		Hero:     true,
 	})
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate product: %v", err)
-	}
 
 	return &pb_admin.UpsertProductResponse{
 		Id: int32(id),
@@ -117,16 +110,10 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 		cache.RefreshDictionary(di)
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Products: []int{int(req.Id)},
 		Hero:     true,
 	})
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate product")
-	}
 	return &pb_admin.DeleteProductByIDResponse{}, nil
 }
 
@@ -391,16 +378,10 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		go s.notifyWaitlist(ctx, productId, sizeId)
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Products: []int{productId},
 		Hero:     true,
 	})
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate product")
-	}
 	return &pb_admin.UpdateProductSizeStockResponse{}, nil
 }
 

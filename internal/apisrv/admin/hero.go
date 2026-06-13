@@ -22,15 +22,8 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 		return nil, status.Errorf(codes.Internal, "can't add hero")
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Hero: true,
 	})
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
-	}
 	return &pb_admin.AddHeroResponse{}, nil
 }

@@ -15,10 +15,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
-	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
+	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
@@ -32,25 +32,25 @@ type RatesConfig struct {
 
 // Config represents the global configuration for the service.
 type Config struct {
-	DB                store.Config           `mapstructure:"mysql"`
-	Logger            log.Config             `mapstructure:"logger"`
-	HTTP              httpapi.Config         `mapstructure:"http"`
-	Auth              auth.Config            `mapstructure:"auth"`
-	StorefrontAuth    storefront.Config      `mapstructure:"storefront_auth"`
-	Bucket            bucket.Config          `mapstructure:"bucket"`
-	Mailer            mail.Config            `mapstructure:"mailer"`
-	OrderCleanup        ordercleanup.Config        `mapstructure:"order_cleanup"`
-	StorefrontCleanup   storefrontcleanup.Config   `mapstructure:"storefront_cleanup"`
-	TierManagement      tiermanagement.Config      `mapstructure:"tier_management"`
-	StripeReconcile     stripereconcile.Config     `mapstructure:"stripe_reconcile"`
-	Rates             RatesConfig            `mapstructure:"rates"`
-	StripePayment     stripe.Config          `mapstructure:"stripe_payment"`
-	StripePaymentTest stripe.Config          `mapstructure:"stripe_payment_test"`
-	Revalidation      revalidation.Config    `mapstructure:"revalidation"`
-	GA4               ga4.Config             `mapstructure:"ga4"`
-	GA4MP             ga4mp.Config           `mapstructure:"ga4mp"`
-	GA4Sync           ga4sync.Config         `mapstructure:"ga4_sync"`
-	BigQuery          bq.Config              `mapstructure:"bigquery"`
+	DB                store.Config             `mapstructure:"mysql"`
+	Logger            log.Config               `mapstructure:"logger"`
+	HTTP              httpapi.Config           `mapstructure:"http"`
+	Auth              auth.Config              `mapstructure:"auth"`
+	StorefrontAuth    storefront.Config        `mapstructure:"storefront_auth"`
+	Bucket            bucket.Config            `mapstructure:"bucket"`
+	Mailer            mail.Config              `mapstructure:"mailer"`
+	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
+	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
+	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
+	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
+	Rates             RatesConfig              `mapstructure:"rates"`
+	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
+	StripePaymentTest stripe.Config            `mapstructure:"stripe_payment_test"`
+	Revalidation      revalidation.Config      `mapstructure:"revalidation"`
+	GA4               ga4.Config               `mapstructure:"ga4"`
+	GA4MP             ga4mp.Config             `mapstructure:"ga4mp"`
+	GA4Sync           ga4sync.Config           `mapstructure:"ga4_sync"`
+	BigQuery          bq.Config                `mapstructure:"bigquery"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -211,11 +211,13 @@ func bindEnvVars() {
 	viper.BindEnv("stripe_payment.secret_key", "STRIPE_PAYMENT_SECRET_KEY")
 	viper.BindEnv("stripe_payment.pub_key", "STRIPE_PAYMENT_PUB_KEY")
 	viper.BindEnv("stripe_payment.invoice_expiration", "STRIPE_PAYMENT_INVOICE_EXPIRATION")
+	viper.BindEnv("stripe_payment.webhook_secret", "STRIPE_PAYMENT_WEBHOOK_SECRET")
 
 	// Stripe Payment Test
 	viper.BindEnv("stripe_payment_test.secret_key", "STRIPE_PAYMENT_TEST_SECRET_KEY")
 	viper.BindEnv("stripe_payment_test.pub_key", "STRIPE_PAYMENT_TEST_PUB_KEY")
 	viper.BindEnv("stripe_payment_test.invoice_expiration", "STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION")
+	viper.BindEnv("stripe_payment_test.webhook_secret", "STRIPE_PAYMENT_TEST_WEBHOOK_SECRET")
 
 	// Revalidation
 	viper.BindEnv("revalidation.project_id", "REVALIDATION_PROJECT_ID")

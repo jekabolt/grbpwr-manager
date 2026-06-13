@@ -200,72 +200,82 @@ func (c *Client) GetProductPageMetrics(ctx context.Context, startDate, endDate t
 }
 
 func (c *Client) getProductPageMetrics(ctx context.Context, startDate, endDate time.Time) ([]ProductPageMetrics, error) {
-	req := &analyticsdata.RunReportRequest{
-		DateRanges: []*analyticsdata.DateRange{
-			{
-				StartDate: startDate.Format("2006-01-02"),
-				EndDate:   endDate.Format("2006-01-02"),
-			},
-		},
-		Dimensions: []*analyticsdata.Dimension{
-			{Name: "date"},
-			{Name: "pagePath"},
-		},
-		Metrics: []*analyticsdata.Metric{
-			{Name: "screenPageViews"},
-			{Name: "sessions"},
-			{Name: "addToCarts"},
-		},
-		DimensionFilter: &analyticsdata.FilterExpression{
-			Filter: &analyticsdata.Filter{
-				FieldName: "pagePath",
-				StringFilter: &analyticsdata.StringFilter{
-					MatchType: "CONTAINS",
-					Value:     "/product/", // Adjust based on your URL structure
-				},
-			},
-		},
-		OrderBys: []*analyticsdata.OrderBy{
-			{
-				Metric: &analyticsdata.MetricOrderBy{MetricName: "screenPageViews"},
-				Desc:   true,
-			},
-		},
-		Limit: 1000,
-	}
-
-	resp, err := c.service.Properties.RunReport(fmt.Sprintf("properties/%s", c.propertyID), req).Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("failed to run GA4 product report: %w", err)
-	}
+	const pageSize = int64(10000)
+	sd := startDate.Format("2006-01-02")
+	ed := endDate.Format("2006-01-02")
 
 	var metrics []ProductPageMetrics
-	for _, row := range resp.Rows {
-		if len(row.DimensionValues) < 2 || len(row.MetricValues) < 3 {
-			continue
+	// Paginate: a single request returns at most Limit rows, so without an offset loop
+	// the low-traffic tail of products is silently dropped (a 7-day window multiplies
+	// rows by day). Stop once a short page comes back.
+	for offset := int64(0); ; offset += pageSize {
+		req := &analyticsdata.RunReportRequest{
+			DateRanges: []*analyticsdata.DateRange{
+				{StartDate: sd, EndDate: ed},
+			},
+			Dimensions: []*analyticsdata.Dimension{
+				{Name: "date"},
+				{Name: "pagePath"},
+			},
+			Metrics: []*analyticsdata.Metric{
+				{Name: "screenPageViews"},
+				{Name: "sessions"},
+				{Name: "addToCarts"},
+			},
+			DimensionFilter: &analyticsdata.FilterExpression{
+				Filter: &analyticsdata.Filter{
+					FieldName: "pagePath",
+					StringFilter: &analyticsdata.StringFilter{
+						MatchType: "CONTAINS",
+						Value:     "/product/", // Adjust based on your URL structure
+					},
+				},
+			},
+			OrderBys: []*analyticsdata.OrderBy{
+				{
+					Metric: &analyticsdata.MetricOrderBy{MetricName: "screenPageViews"},
+					Desc:   true,
+				},
+			},
+			Limit:  pageSize,
+			Offset: offset,
 		}
 
-		dateStr := row.DimensionValues[0].Value
-		date, err := time.Parse("20060102", dateStr)
+		resp, err := c.service.Properties.RunReport(fmt.Sprintf("properties/%s", c.propertyID), req).Context(ctx).Do()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to run GA4 product report: %w", err)
 		}
 
-		pagePath := row.DimensionValues[1].Value
-		productID := extractProductIDFromPath(pagePath)
-		if productID == 0 {
-			continue
+		for _, row := range resp.Rows {
+			if len(row.DimensionValues) < 2 || len(row.MetricValues) < 3 {
+				continue
+			}
+
+			dateStr := row.DimensionValues[0].Value
+			date, err := time.Parse("20060102", dateStr)
+			if err != nil {
+				continue
+			}
+
+			pagePath := row.DimensionValues[1].Value
+			productID := extractProductIDFromPath(pagePath)
+			if productID == 0 {
+				continue
+			}
+
+			metrics = append(metrics, ProductPageMetrics{
+				Date:       date,
+				ProductID:  strconv.Itoa(productID),
+				PagePath:   pagePath,
+				PageViews:  parseInt(row.MetricValues[0].Value),
+				Sessions:   parseInt(row.MetricValues[1].Value),
+				AddToCarts: parseInt(row.MetricValues[2].Value),
+			})
 		}
 
-		m := ProductPageMetrics{
-			Date:       date,
-			ProductID:  strconv.Itoa(productID),
-			PagePath:   pagePath,
-			PageViews:  parseInt(row.MetricValues[0].Value),
-			Sessions:   parseInt(row.MetricValues[1].Value),
-			AddToCarts: parseInt(row.MetricValues[2].Value),
+		if int64(len(resp.Rows)) < pageSize {
+			break
 		}
-		metrics = append(metrics, m)
 	}
 
 	return metrics, nil
@@ -290,54 +300,62 @@ func (c *Client) GetCountryMetrics(ctx context.Context, startDate, endDate time.
 }
 
 func (c *Client) getCountryMetrics(ctx context.Context, startDate, endDate time.Time) ([]CountryMetrics, error) {
-	req := &analyticsdata.RunReportRequest{
-		DateRanges: []*analyticsdata.DateRange{
-			{
-				StartDate: startDate.Format("2006-01-02"),
-				EndDate:   endDate.Format("2006-01-02"),
-			},
-		},
-		Dimensions: []*analyticsdata.Dimension{
-			{Name: "date"},
-			{Name: "country"},
-		},
-		Metrics: []*analyticsdata.Metric{
-			{Name: "sessions"},
-			{Name: "totalUsers"},
-		},
-		OrderBys: []*analyticsdata.OrderBy{
-			{
-				Metric: &analyticsdata.MetricOrderBy{MetricName: "sessions"},
-				Desc:   true,
-			},
-		},
-		Limit: 500,
-	}
-
-	resp, err := c.service.Properties.RunReport(fmt.Sprintf("properties/%s", c.propertyID), req).Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("failed to run GA4 country report: %w", err)
-	}
+	const pageSize = int64(10000)
+	sd := startDate.Format("2006-01-02")
+	ed := endDate.Format("2006-01-02")
 
 	var metrics []CountryMetrics
-	for _, row := range resp.Rows {
-		if len(row.DimensionValues) < 2 || len(row.MetricValues) < 2 {
-			continue
+	// Paginate so country-days beyond the first page are not silently truncated.
+	for offset := int64(0); ; offset += pageSize {
+		req := &analyticsdata.RunReportRequest{
+			DateRanges: []*analyticsdata.DateRange{
+				{StartDate: sd, EndDate: ed},
+			},
+			Dimensions: []*analyticsdata.Dimension{
+				{Name: "date"},
+				{Name: "country"},
+			},
+			Metrics: []*analyticsdata.Metric{
+				{Name: "sessions"},
+				{Name: "totalUsers"},
+			},
+			OrderBys: []*analyticsdata.OrderBy{
+				{
+					Metric: &analyticsdata.MetricOrderBy{MetricName: "sessions"},
+					Desc:   true,
+				},
+			},
+			Limit:  pageSize,
+			Offset: offset,
 		}
 
-		dateStr := row.DimensionValues[0].Value
-		date, err := time.Parse("20060102", dateStr)
+		resp, err := c.service.Properties.RunReport(fmt.Sprintf("properties/%s", c.propertyID), req).Context(ctx).Do()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to run GA4 country report: %w", err)
 		}
 
-		m := CountryMetrics{
-			Date:     date,
-			Country:  row.DimensionValues[1].Value,
-			Sessions: parseInt(row.MetricValues[0].Value),
-			Users:    parseInt(row.MetricValues[1].Value),
+		for _, row := range resp.Rows {
+			if len(row.DimensionValues) < 2 || len(row.MetricValues) < 2 {
+				continue
+			}
+
+			dateStr := row.DimensionValues[0].Value
+			date, err := time.Parse("20060102", dateStr)
+			if err != nil {
+				continue
+			}
+
+			metrics = append(metrics, CountryMetrics{
+				Date:     date,
+				Country:  row.DimensionValues[1].Value,
+				Sessions: parseInt(row.MetricValues[0].Value),
+				Users:    parseInt(row.MetricValues[1].Value),
+			})
 		}
-		metrics = append(metrics, m)
+
+		if int64(len(resp.Rows)) < pageSize {
+			break
+		}
 	}
 
 	return metrics, nil
@@ -619,6 +637,9 @@ func (c *Client) getEcommerceBatch(
 		if more0 {
 			r := resp.Reports[reqIdx]
 			for _, row := range r.Rows {
+				if len(row.DimensionValues) < 1 || len(row.MetricValues) < 5 {
+					continue
+				}
 				date, err := time.Parse("20060102", row.DimensionValues[0].Value)
 				if err != nil {
 					slog.Default().WarnContext(ctx, "ga4: skipping ecom row with bad date",
@@ -646,6 +667,9 @@ func (c *Client) getEcommerceBatch(
 		if more1 {
 			r := resp.Reports[reqIdx]
 			for _, row := range r.Rows {
+				if len(row.DimensionValues) < 4 || len(row.MetricValues) < 3 {
+					continue
+				}
 				date, err := time.Parse("20060102", row.DimensionValues[0].Value)
 				if err != nil {
 					slog.Default().WarnContext(ctx, "ga4: skipping rev row with bad date",
@@ -678,6 +702,9 @@ func (c *Client) getEcommerceBatch(
 		if more2 {
 			r := resp.Reports[reqIdx]
 			for _, row := range r.Rows {
+				if len(row.DimensionValues) < 3 || len(row.MetricValues) < 4 {
+					continue
+				}
 				date, err := time.Parse("20060102", row.DimensionValues[0].Value)
 				if err != nil {
 					slog.Default().WarnContext(ctx, "ga4: skipping prod row with bad date",

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ func (s *Store) getRevenueByPaymentMethod(ctx context.Context, from, to time.Tim
 	query := `
 		WITH order_base AS (
 			SELECT ob.id,
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id,
 					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
@@ -42,7 +43,7 @@ func (s *Store) getRevenueByPaymentMethod(ctx context.Context, from, to time.Tim
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -83,7 +84,7 @@ func (s *Store) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, ob.currency,
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, co.currency,
 					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
@@ -91,7 +92,7 @@ func (s *Store) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -127,21 +128,20 @@ func (s *Store) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([
 
 func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
-	query := `
+	query := fmt.Sprintf(`
+		WITH %s
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS value,
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
-		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		JOIN customer_order co ON oi.order_id = co.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (:statusIds)
+		JOIN order_factors ofac ON ofac.order_id = oi.order_id
+		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		GROUP BY oi.product_id, p.brand
 		ORDER BY value DESC
 		LIMIT :limit
-	`
+	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductId   int             `db:"product_id"`
 		Brand       string          `db:"brand"`
@@ -165,21 +165,20 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 
 func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
-	query := `
+	query := fmt.Sprintf(`
+		WITH %s
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			SUM(oi.quantity) AS cnt,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS value
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
-		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		JOIN customer_order co ON oi.order_id = co.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (:statusIds)
+		JOIN order_factors ofac ON ofac.order_id = oi.order_id
+		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		GROUP BY oi.product_id, p.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
-	`
+	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductId   int             `db:"product_id"`
 		Brand       string          `db:"brand"`
@@ -203,22 +202,21 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 
 func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([]entity.CategoryMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
-	query := `
+	query := fmt.Sprintf(`
+		WITH %s
 		SELECT p.top_category_id AS category_id, c.name AS category_name,
 			c.name AS category_display_name,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS value,
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
-		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+		JOIN order_factors ofac ON ofac.order_id = oi.order_id
+		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		JOIN category c ON p.top_category_id = c.id
-		JOIN customer_order co ON oi.order_id = co.id
-		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (:statusIds)
 		GROUP BY p.top_category_id, c.name
 		ORDER BY value DESC
 		LIMIT 30
-	`
+	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
 		CategoryId          int             `db:"category_id"`
 		CategoryName        string          `db:"category_name"`

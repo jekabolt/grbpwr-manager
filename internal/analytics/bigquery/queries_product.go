@@ -338,9 +338,9 @@ func (c *Client) getSizeIntent(
 	sql := fmt.Sprintf(`
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id'), '') AS product_id,
 			SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'size_id') AS INT64) AS size_id,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'size_name') AS size_name,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'size_name'), '') AS size_name,
 			COUNT(*) AS size_clicks
 		FROM %s
 		WHERE %s

@@ -57,7 +57,9 @@ func (v *Revalidator) getDeployments(ctx context.Context) ([]*dto.Deployment, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to make GET request to %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	// Drain before close so the keep-alive connection can be reused — the non-200 path
+	// and json.Decoder may otherwise leave the body partially read.
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, url)
@@ -91,23 +93,25 @@ func (v *Revalidator) revalidate(ctx context.Context, deploymentURL string, reva
 		return fmt.Errorf("failed to marshal revalidationData for deployment %s: %w", deploymentURL, err)
 	}
 
+	// NOTE: apiUrl carries ?secret=<RevalidateSecret>; never put it in errors/logs.
+	// Use deploymentURL (host only) for any surfaced message.
 	req, err := http.NewRequestWithContext(ctx, "POST", apiUrl, bytes.NewBuffer(payload))
 	if err != nil {
-		return fmt.Errorf("failed to create POST request to %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to create POST request to %s: %w", deploymentURL, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := v.client.Do(req)
 	if err != nil {
 		slog.Default().Error("HTTP request failed", "deploymentURL", deploymentURL, "error", err)
-		return fmt.Errorf("failed to POST to %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to POST to %s: %w", deploymentURL, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Default().Error("Failed to read response body", "deploymentURL", deploymentURL, "error", err)
-		return fmt.Errorf("failed to read response body from %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to read response body from %s: %w", deploymentURL, err)
 	}
 
 	if resp.StatusCode != 200 {

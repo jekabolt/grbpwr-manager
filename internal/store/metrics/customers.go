@@ -47,17 +47,22 @@ func (s *Store) getRepeatCustomerMetrics(ctx context.Context, from, to time.Time
 	repeatRate = decimal.NewFromInt(int64(repeatCount)).Div(decimal.NewFromInt(int64(totalCustomers))).Mul(decimal.NewFromInt(100))
 	avgOrders = decimal.NewFromInt(int64(totalOrders)).Div(decimal.NewFromInt(int64(totalCustomers)))
 
-	// Avg days between orders for repeat buyers — computed in SQL with LAG, no row materialization
+	// Avg days between orders for repeat buyers — computed in SQL with LAG, no row materialization.
+	// The LAG runs over each buyer's FULL order history (no date filter inside the window), then we
+	// keep only gaps whose later order falls in [from, to]. Filtering inside the window would measure
+	// a buyer's first in-window order against their previous in-window order, dropping the real gap to
+	// an order placed before `from` and systematically understating the average.
 	q2 := `
 		SELECT AVG(gap_days) AS avg_days
 		FROM (
-			SELECT DATEDIFF(co.placed, LAG(co.placed) OVER (PARTITION BY b.email ORDER BY co.placed)) AS gap_days
+			SELECT co.placed AS placed,
+				DATEDIFF(co.placed, LAG(co.placed) OVER (PARTITION BY b.email ORDER BY co.placed)) AS gap_days
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
-			WHERE co.placed >= :from AND co.placed < :to
-			AND co.order_status_id IN (:statusIds)
+			WHERE co.order_status_id IN (:statusIds)
 		) t
 		WHERE gap_days IS NOT NULL
+		AND placed >= :from AND placed < :to
 	`
 	params := map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()}
 	avgDaysRow, err := storeutil.QueryNamedOne[struct {
@@ -77,7 +82,7 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, b.email,
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id,
 					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
@@ -85,7 +90,7 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -173,7 +178,7 @@ WITH order_base AS (
 		COALESCE(MAX(pc.discount), 0) AS discount,
 		COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 		co.total_price,
-		COALESCE(co.refunded_amount, 0) AS refunded_amount
+		co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 	FROM customer_order co
 	LEFT JOIN order_item oi ON co.id = oi.order_id
 	LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -187,7 +192,7 @@ WITH order_base AS (
 order_revenue AS (
 	SELECT 
 		ob.id,
-		(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END)
+		COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END)
 			* (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 	FROM order_base ob
 ),
@@ -259,14 +264,14 @@ func (s *Store) getRevenueByPromo(ctx context.Context, from, to time.Time) ([]en
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, ob.promo_id, ob.code, ob.discount,
-				(ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, pc.id AS promo_id, pc.code, pc.discount,
 					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -372,7 +377,7 @@ WITH order_base AS (
 			COALESCE(MAX(pc.discount), 0) AS discount,
 			COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 			co.total_price,
-			COALESCE(co.refunded_amount, 0) AS refunded_amount
+			co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 		FROM customer_order co
 		LEFT JOIN order_item oi ON co.id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)

@@ -29,16 +29,9 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 		return nil, status.Errorf(codes.Internal, "can't add archive")
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Archive: archiveId,
 	})
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate archive",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
-	}
 
 	return &pb_admin.AddArchiveResponse{
 		Id: int32(archiveId),
@@ -66,16 +59,10 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 		return nil, status.Errorf(codes.Internal, "can't update archive")
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate archive",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
-	}
 
 	return &pb_admin.UpdateArchiveResponse{}, nil
 }
@@ -89,17 +76,10 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 		return nil, status.Errorf(codes.Internal, "failed to delete archive: %v", err)
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate archive",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate archive")
-	}
 
 	return &pb_admin.DeleteArchiveByIdResponse{}, nil
 }

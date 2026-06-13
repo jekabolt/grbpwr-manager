@@ -34,21 +34,22 @@ func (s *Store) analytics() *analyticsStore {
 // Products with zero sales in the period appear first with revenue=0.
 // Includes hidden products with product_hidden flag and GA4 page views.
 func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time, limit int) ([]entity.SlowMoverRow, error) {
-	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 
+	// Revenue is the actual settled base apportioned across line items (order_factors /
+	// itemAdjExpr); all order currencies are included (no co.currency filter) and prices
+	// come from product_price in base currency rather than the order-currency snapshot.
 	query := fmt.Sprintf(`
-		WITH product_sales AS (
+		WITH %s,
+		product_sales AS (
 			SELECT
 				oi.product_id,
-				SUM(oi.product_price * oi.quantity) AS revenue,
-				SUM(oi.quantity)                     AS units_sold,
-				MAX(co.placed)                       AS last_sale_date
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+				SUM(oi.quantity)     AS units_sold,
+				MAX(ofac.placed)     AS last_sale_date
 			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
+			JOIN order_factors ofac ON ofac.order_id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id
 		),
 		ga4_views AS (
@@ -76,10 +77,11 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 		LEFT JOIN ga4_views gv ON gv.product_id = p.id
 		ORDER BY revenue ASC, days_in_stock DESC
 		LIMIT :limit
-	`, statusIDs)
+	`, orderFactorsCTE, itemAdjExpr)
 
 	result, err := storeutil.QueryListNamed[entity.SlowMoverRow](ctx, as.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
+		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
 		"from":         from,
 		"to":           to,
 		"fromDate":     from.Format("2006-01-02"),
@@ -266,22 +268,25 @@ func (as *analyticsStore) GetReturnBySize(ctx context.Context, from, to time.Tim
 // GetSizeAnalytics returns units sold and revenue by product+size with % of product total.
 // Correctly handles partial refunds by subtracting refunded quantities and revenue.
 func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeAnalyticsRow, error) {
-	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 
 	query := fmt.Sprintf(`
-		WITH size_sales AS (
+		WITH %s,
+		refunds AS (
+			SELECT order_item_id, SUM(quantity_refunded) AS quantity_refunded
+			FROM refunded_order_item
+			GROUP BY order_item_id
+		),
+		size_sales AS (
 			SELECT
 				oi.product_id,
 				oi.size_id,
-				SUM(oi.quantity) - COALESCE(SUM(roi.quantity_refunded), 0) AS units_sold,
-				SUM(oi.product_price * oi.quantity) - COALESCE(SUM(oi.product_price * roi.quantity_refunded), 0) AS revenue
+				SUM(oi.quantity) - COALESCE(SUM(r.quantity_refunded), 0) AS units_sold,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * (oi.quantity - COALESCE(r.quantity_refunded, 0)) * %s), 0) AS revenue
 			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			LEFT JOIN refunded_order_item roi ON roi.order_item_id = oi.id
-			WHERE co.order_status_id IN (%s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
+			JOIN order_factors ofac ON ofac.order_id = oi.order_id
+			LEFT JOIN refunds r ON r.order_item_id = oi.id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id, oi.size_id
 			HAVING units_sold > 0
 		),
@@ -312,10 +317,11 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY ss.revenue DESC
 		LIMIT :limit
-	`, statusIDs)
+	`, orderFactorsCTE, itemAdjGrossExpr)
 
 	result, err := storeutil.QueryListNamed[entity.SizeAnalyticsRow](ctx, as.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
+		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
 		"from":         from,
 		"to":           to,
 		"limit":        limit,
@@ -403,7 +409,6 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 // GetProductTrend compares revenue for each product in the current period
 // vs the same-length previous period. Sorted by change_pct ascending (worst decliners first).
 func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductTrendRow, error) {
-	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 
 	dur := to.Sub(from)
@@ -411,28 +416,26 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 	prevTo := from
 
 	query := fmt.Sprintf(`
-		WITH current_period AS (
+		WITH %s,
+		%s,
+		current_period AS (
 			SELECT
 				oi.product_id,
-				SUM(oi.product_price * oi.quantity) AS revenue,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity) AS units
 			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			WHERE co.order_status_id IN (%[1]s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :from AND co.placed < :to
+			JOIN order_factors_cur ofc ON ofc.order_id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id
 		),
 		previous_period AS (
 			SELECT
 				oi.product_id,
-				SUM(oi.product_price * oi.quantity) AS revenue,
+				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity) AS units
 			FROM order_item oi
-			JOIN customer_order co ON oi.order_id = co.id
-			WHERE co.order_status_id IN (%[1]s)
-				AND co.currency = :baseCurrency
-				AND co.placed >= :prevFrom AND co.placed < :prevTo
+			JOIN order_factors_prev ofp ON ofp.order_id = oi.order_id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id
 		)
 		SELECT
@@ -474,10 +477,13 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 			AND (p.hidden IS NULL OR p.hidden = 0)
 		ORDER BY change_pct ASC
 		LIMIT :limit
-	`, statusIDs)
+	`, orderFactorsCTENamed("order_factors_cur", "from", "to"),
+		orderFactorsCTENamed("order_factors_prev", "prevFrom", "prevTo"),
+		itemAdj("ofc"), itemAdj("ofp"))
 
 	result, err := storeutil.QueryListNamed[entity.ProductTrendRow](ctx, as.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
+		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
 		"from":         from,
 		"to":           to,
 		"prevFrom":     prevFrom,
