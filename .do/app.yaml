@@ -216,6 +216,9 @@ envs:
 - key: REVALIDATION_HTTP_TIMEOUT
   scope: RUN_TIME
   value: 10s
+- key: REVALIDATION_DOMAINS
+  scope: RUN_TIME
+  value: grbpwr.com,grbpwr-com-dusky.vercel.app
 - key: GA4MP_ENABLED
   scope: RUN_TIME
   value: "true"

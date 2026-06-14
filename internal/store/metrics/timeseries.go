@@ -315,9 +315,9 @@ func (s *Store) getUnitsSoldByPeriod(ctx context.Context, from, to time.Time, da
 func (s *Store) getNewVsReturningCustomersByPeriod(ctx context.Context, from, to time.Time, dateExpr string) (newCustomers, returningCustomers []entity.TimeSeriesPoint, err error) {
 	query := fmt.Sprintf(`
 		WITH first_order AS (
-			-- A customer's true first order is across ALL statuses: filtering to
+			-- A customer first order is taken across ALL statuses; filtering to
 			-- net-revenue statuses here would treat someone whose first order was
-			-- cancelled/unpaid as "new" on a later order, overcounting new customers.
+			-- cancelled or unpaid as new on a later order, overcounting new customers.
 			SELECT b.email, MIN(co.placed) AS first_placed
 			FROM customer_order co
 			JOIN buyer b ON co.id = b.order_id
