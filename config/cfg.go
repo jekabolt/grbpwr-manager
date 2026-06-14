@@ -224,6 +224,7 @@ func bindEnvVars() {
 	viper.BindEnv("revalidation.vercel_api_token", "REVALIDATION_VERCEL_API_TOKEN")
 	viper.BindEnv("revalidation.revalidate_secret", "REVALIDATION_REVALIDATE_SECRET")
 	viper.BindEnv("revalidation.http_timeout", "REVALIDATION_HTTP_TIMEOUT")
+	viper.BindEnv("revalidation.domains", "REVALIDATION_DOMAINS")
 
 	// GA4 Analytics
 	viper.BindEnv("ga4.enabled", "GA4_ENABLED")
