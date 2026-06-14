@@ -80,8 +80,11 @@ overlaid by **environment variables, which take precedence**. Each setting is bo
 ## Database / migrations
 
 MySQL via `sqlx`. Numbered SQL migrations in `internal/store/sql/` (`0001_…` … latest). Applied on boot when
-`MYSQL_AUTOMIGRATE=true` (true on beta, false on prod — prod migrations are applied deliberately). Add a new
-migration as the next-numbered `NNNN_description.sql` file; do not edit already-applied migrations.
+`MYSQL_AUTOMIGRATE=true` (true on **both** beta and prod — a master merge deploys prod and auto-applies pending
+migrations). Because of this, a migration that fails on prod-specific data halts prod startup: every migration
+must be safe against existing data (e.g. dedupe before adding a UNIQUE index — see `0059`), and it reaches beta
+first via the feature→beta→master flow. Add a new migration as the next-numbered `NNNN_description.sql` file; do
+not edit already-applied migrations.
 
 ## Deployment & environments
 

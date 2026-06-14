@@ -16,7 +16,7 @@ domains:
 envs:
 - key: MYSQL_AUTOMIGRATE
   scope: RUN_TIME
-  value: "false"
+  value: "true"
 - key: MYSQL_MAX_OPEN_CONNECTIONS
   scope: RUN_TIME
   value: "5"
