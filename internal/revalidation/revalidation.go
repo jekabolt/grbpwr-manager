@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,30 @@ type Config struct {
 	VercelApiToken   string        `mapstructure:"vercel_api_token"`
 	RevalidateSecret string        `mapstructure:"revalidate_secret"`
 	HTTPTimeout      time.Duration `mapstructure:"http_timeout"`
+	// Domains is a comma-separated list of storefront hosts to always revalidate
+	// (e.g. "grbpwr.com,grbpwr-com-dusky.vercel.app" on prod, "beta.grbpwr.com" on
+	// beta). Replaces the previously hardcoded prod domains so each environment
+	// targets its own site.
+	Domains string `mapstructure:"domains"`
+}
+
+// targetDomains returns the explicit, environment-specific hosts to revalidate.
+func (c *Config) targetDomains() []string {
+	out := make([]string, 0)
+	for d := range strings.SplitSeq(c.Domains, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// discoveryEnabled reports whether Vercel deployment discovery should run. An
+// empty or "disabled" project id (beta) turns it off, so we don't hit the Vercel
+// API (which 403s) and instead revalidate only the configured Domains.
+func (c *Config) discoveryEnabled() bool {
+	p := strings.TrimSpace(c.ProjectId)
+	return p != "" && p != "disabled" && strings.TrimSpace(c.VercelApiToken) != ""
 }
 
 func New(ctx context.Context, c *Config) (*Revalidator, error) {
@@ -57,7 +82,9 @@ func (v *Revalidator) getDeployments(ctx context.Context) ([]*dto.Deployment, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to make GET request to %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	// Drain before close so the keep-alive connection can be reused — the non-200 path
+	// and json.Decoder may otherwise leave the body partially read.
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, url)
@@ -91,23 +118,25 @@ func (v *Revalidator) revalidate(ctx context.Context, deploymentURL string, reva
 		return fmt.Errorf("failed to marshal revalidationData for deployment %s: %w", deploymentURL, err)
 	}
 
+	// NOTE: apiUrl carries ?secret=<RevalidateSecret>; never put it in errors/logs.
+	// Use deploymentURL (host only) for any surfaced message.
 	req, err := http.NewRequestWithContext(ctx, "POST", apiUrl, bytes.NewBuffer(payload))
 	if err != nil {
-		return fmt.Errorf("failed to create POST request to %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to create POST request to %s: %w", deploymentURL, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := v.client.Do(req)
 	if err != nil {
 		slog.Default().Error("HTTP request failed", "deploymentURL", deploymentURL, "error", err)
-		return fmt.Errorf("failed to POST to %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to POST to %s: %w", deploymentURL, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		slog.Default().Error("Failed to read response body", "deploymentURL", deploymentURL, "error", err)
-		return fmt.Errorf("failed to read response body from %s: %w", apiUrl, err)
+		return fmt.Errorf("failed to read response body from %s: %w", deploymentURL, err)
 	}
 
 	if resp.StatusCode != 200 {
@@ -120,16 +149,30 @@ func (v *Revalidator) revalidate(ctx context.Context, deploymentURL string, reva
 }
 
 func (v *Revalidator) RevalidateAll(ctx context.Context, revalidationData *dto.RevalidationData) error {
-	deployments, err := v.getDeployments(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get deployments: %w", err)
+	var deployments []*dto.Deployment
+
+	// Discover live Vercel preview/prod deployments only when a project is
+	// configured. On beta (project "disabled") this is skipped to avoid the 403.
+	// A discovery failure must NOT abort revalidation of the configured domains.
+	if v.c.discoveryEnabled() {
+		discovered, err := v.getDeployments(ctx)
+		if err != nil {
+			slog.Default().WarnContext(ctx, "revalidation: vercel deployment discovery failed, continuing with configured domains",
+				slog.String("err", err.Error()))
+		} else {
+			deployments = discovered
+		}
 	}
 
-	deployments = append(deployments, &dto.Deployment{
-		URL: "grbpwr-com-dusky.vercel.app",
-	}, &dto.Deployment{
-		URL: "grbpwr.com",
-	})
+	// Explicit, environment-specific hosts (REVALIDATION_DOMAINS).
+	for _, host := range v.c.targetDomains() {
+		deployments = append(deployments, &dto.Deployment{URL: host})
+	}
+
+	if len(deployments) == 0 {
+		slog.Default().InfoContext(ctx, "revalidation: no Vercel project and no REVALIDATION_DOMAINS configured; skipping")
+		return nil
+	}
 
 	const maxRetries = 3
 	const maxConcurrent = 5

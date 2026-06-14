@@ -78,7 +78,7 @@ func (s *ReadStore) GetBQOOSImpact(ctx context.Context, from, to time.Time, limi
 			click_count, estimated_lost_sales, estimated_lost_revenue
 		FROM bq_oos_impact
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY estimated_lost_revenue DESC
+		ORDER BY estimated_lost_revenue DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -187,7 +187,7 @@ func (s *ReadStore) GetBQUserJourneys(ctx context.Context, from, to time.Time, l
 		SELECT date, journey_path, session_count, conversions
 		FROM bq_user_journeys
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY session_count DESC
+		ORDER BY session_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -250,7 +250,7 @@ func (s *ReadStore) GetBQSizeIntent(ctx context.Context, from, to time.Time, lim
 		SELECT date, product_id, size_id, size_name, size_clicks
 		FROM bq_size_intent
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY date ASC, size_clicks DESC
+		ORDER BY date ASC, size_clicks DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -347,7 +347,7 @@ func (s *ReadStore) GetBQProductEngagement(ctx context.Context, from, to time.Ti
 				AND page_path LIKE '%%/product/%%'
 			GROUP BY SUBSTRING_INDEX(page_path, '/', -1)
 		) top ON top.product_id = agg.product_id
-		ORDER BY agg.image_views DESC
+		ORDER BY agg.image_views DESC, agg.product_name
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -386,7 +386,7 @@ func (s *ReadStore) GetBQFormErrors(ctx context.Context, from, to time.Time, lim
 		SELECT date, field_name, error_count
 		FROM bq_form_errors
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY error_count DESC
+		ORDER BY error_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -416,7 +416,7 @@ func (s *ReadStore) GetBQExceptions(ctx context.Context, from, to time.Time, lim
 		SELECT date, page_path, exception_count, description
 		FROM bq_exceptions
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY exception_count DESC
+		ORDER BY exception_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -447,7 +447,7 @@ func (s *ReadStore) GetBQNotFoundPages(ctx context.Context, from, to time.Time, 
 		SELECT date, page_path, hit_count
 		FROM bq_not_found_pages
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY hit_count DESC
+		ORDER BY hit_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -537,7 +537,7 @@ func (s *ReadStore) GetBQSizeConfidence(ctx context.Context, from, to time.Time,
 		SELECT date, product_id, product_name, size_guide_views, size_selections
 		FROM bq_size_confidence
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY size_guide_views DESC
+		ORDER BY size_guide_views DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -641,7 +641,7 @@ func (s *ReadStore) GetBQTimeOnPage(ctx context.Context, from, to time.Time, lim
 		FROM bq_time_on_page
 		WHERE date >= :fromDate AND date <= :toDate
 		GROUP BY page_path
-		ORDER BY page_views DESC
+		ORDER BY page_views DESC, page_path
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -677,7 +677,7 @@ func (s *ReadStore) GetBQProductZoom(ctx context.Context, from, to time.Time, li
 		SELECT date, product_id, product_name, zoom_method, zoom_count
 		FROM bq_product_zoom
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY zoom_count DESC
+		ORDER BY zoom_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -711,7 +711,7 @@ func (s *ReadStore) GetBQImageSwipes(ctx context.Context, from, to time.Time, li
 		SELECT date, product_id, product_name, swipe_direction, swipe_count
 		FROM bq_image_swipes
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY swipe_count DESC
+		ORDER BY swipe_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -745,7 +745,7 @@ func (s *ReadStore) GetBQSizeGuideClicks(ctx context.Context, from, to time.Time
 		SELECT date, product_id, product_name, page_location, click_count
 		FROM bq_size_guide_clicks
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY click_count DESC
+		ORDER BY click_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -779,7 +779,7 @@ func (s *ReadStore) GetBQDetailsExpansion(ctx context.Context, from, to time.Tim
 		SELECT date, product_id, product_name, section_name, expand_count
 		FROM bq_details_expansion
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY expand_count DESC
+		ORDER BY expand_count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -813,7 +813,7 @@ func (s *ReadStore) GetBQNotifyMeIntent(ctx context.Context, from, to time.Time,
 		SELECT date, product_id, product_name, action, count, conversion_rate
 		FROM bq_notify_me_intent
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY count DESC
+		ORDER BY count DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -856,7 +856,7 @@ func (s *ReadStore) GetBQAddToCartRate(ctx context.Context, from, to time.Time, 
 		WHERE date >= :fromDate AND date <= :toDate
 		GROUP BY product_id
 		HAVING SUM(view_count) > 0
-		ORDER BY view_count DESC, cart_rate DESC
+		ORDER BY view_count DESC, cart_rate DESC, product_id
 		LIMIT :limit OFFSET :offset
 	`
 	type productRow struct {
@@ -967,7 +967,7 @@ func (s *ReadStore) GetBQBrowserBreakdown(ctx context.Context, from, to time.Tim
 		SELECT date, browser, sessions, users, conversions, conversion_rate
 		FROM bq_browser_breakdown
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY sessions DESC
+		ORDER BY sessions DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -1065,7 +1065,7 @@ func (s *ReadStore) GetBQCampaignAttribution(ctx context.Context, from, to time.
 		SELECT date, utm_source, utm_medium, utm_campaign, sessions, users, conversions, revenue, conversion_rate
 		FROM bq_campaign_attribution
 		WHERE date >= :fromDate AND date <= :toDate
-		ORDER BY date DESC, sessions DESC
+		ORDER BY date DESC, sessions DESC, id ASC
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {
@@ -1150,7 +1150,7 @@ func (s *ReadStore) GetBQCampaignAttributionAggregated(ctx context.Context, from
 		FROM bq_campaign_attribution
 		WHERE date >= :fromDate AND date <= :toDate
 		GROUP BY utm_source, utm_medium, utm_campaign
-		ORDER BY sessions DESC
+		ORDER BY sessions DESC, utm_source, utm_medium, utm_campaign
 		LIMIT :limit OFFSET :offset
 	`
 	type row struct {

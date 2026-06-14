@@ -16,6 +16,11 @@ var ErrOrderItemsUpdated = errors.New("order items are not valid and were update
 // errPaymentRecordNotFound indicates the payment record for the order was not found (0 rows updated).
 var errPaymentRecordNotFound = errors.New("payment record not found for order")
 
+// ErrPaymentIntentAlreadyAssociated is returned when a PaymentIntent is already
+// linked to another order (UNIQUE violation on payment.client_secret), i.e. a
+// concurrent SubmitOrder won the race for the same PaymentIntent.
+var ErrPaymentIntentAlreadyAssociated = errors.New("payment intent already associated with another order")
+
 // TxFunc executes f within a serializable transaction with deadlock retry.
 type TxFunc func(ctx context.Context, f func(context.Context, dependency.Repository) error) error
 

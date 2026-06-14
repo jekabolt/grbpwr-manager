@@ -63,6 +63,11 @@ type Order struct {
 	// TotalPriceEUR is the order total converted to EUR at order time, used for
 	// loyalty qualifying-spend accumulation. NULL when it could not be derived.
 	TotalPriceEUR decimal.NullDecimal `db:"total_price_eur"`
+	// TotalSettledBase is the actual amount Stripe settled for this order, converted
+	// to the base currency (EUR) at Stripe's FX rate. It is the authoritative
+	// base-currency revenue figure. NULL when not captured (pre-feature, non-Stripe,
+	// or unpaid), in which case metrics fall back to the product_price reconstruction.
+	TotalSettledBase decimal.NullDecimal `db:"total_settled_base"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {

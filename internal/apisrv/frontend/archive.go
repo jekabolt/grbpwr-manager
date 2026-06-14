@@ -15,9 +15,11 @@ import (
 
 func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchivesPagedRequest) (*pb_frontend.GetArchivesPagedResponse, error) {
 
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset), 30, 100)
+
 	afs, count, err := s.repo.Archive().GetArchivesPaged(ctx,
-		int(req.Limit),
-		int(req.Offset),
+		limit,
+		offset,
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {

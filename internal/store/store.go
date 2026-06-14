@@ -168,7 +168,13 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 
 	ctx, c := context.WithCancel(ctx)
 	ss := &MYSQLStore{
-		db:    d,
+		// Unsafe: ignore DB columns that have no matching struct field. Beta applies
+		// every migration via automigrate ahead of prod, so a column added by a
+		// migration whose struct field was not (yet) added would otherwise make every
+		// SELECT * on that table fail (struct scan: missing destination name ...).
+		// This keeps reads resilient to that schema/struct drift; transactions inherit
+		// the flag from the DB in sqlx.
+		db:    d.Unsafe(),
 		close: c,
 	}
 	initSubStores(ss)
@@ -272,7 +278,13 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 
 	ctx, c := context.WithCancel(ctx)
 	ss := &MYSQLStore{
-		db:    d,
+		// Unsafe: ignore DB columns that have no matching struct field. Beta applies
+		// every migration via automigrate ahead of prod, so a column added by a
+		// migration whose struct field was not (yet) added would otherwise make every
+		// SELECT * on that table fail (struct scan: missing destination name ...).
+		// This keeps reads resilient to that schema/struct drift; transactions inherit
+		// the flag from the DB in sqlx.
+		db:    d.Unsafe(),
 		close: c,
 	}
 	initSubStores(ss)
@@ -371,6 +383,9 @@ func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 
 // ErrOrderItemsUpdated is re-exported from the order sub-package for backward compatibility.
 var ErrOrderItemsUpdated = order.ErrOrderItemsUpdated
+
+// ErrPaymentIntentAlreadyAssociated is re-exported from the order sub-package.
+var ErrPaymentIntentAlreadyAssociated = order.ErrPaymentIntentAlreadyAssociated
 
 // ValidStatusTransitions is re-exported from the order sub-package for backward compatibility.
 var ValidStatusTransitions = order.ValidStatusTransitions

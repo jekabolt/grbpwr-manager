@@ -91,7 +91,9 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 	}
 	fc.ViewerTier = s.viewerTier(ctx)
 
-	prds, count, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, false)
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset), 30, 100)
+
+	prds, count, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, false)
 	if err != nil {
 		// Check if it's a validation error (should return 4xx, not 5xx)
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {

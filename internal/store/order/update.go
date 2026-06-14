@@ -164,3 +164,25 @@ func removePromo(ctx context.Context, db dependency.DB, orderId int) error {
 	}
 	return nil
 }
+
+// disableVoucherInTx disables a single-use voucher in the DB on the caller's
+// transaction connection and returns the promo code that was disabled (empty if
+// the promo is not a voucher or is unknown). It intentionally does NOT mutate the
+// in-memory promo cache: the caller must apply cache.DisablePromo only after the
+// transaction commits, otherwise a rollback or serialization retry would leave
+// the cache marking the voucher disabled while the DB still allows it.
+func disableVoucherInTx(ctx context.Context, db dependency.DB, promoID sql.NullInt32) (string, error) {
+	if !promoID.Valid || promoID.Int32 == 0 {
+		return "", nil
+	}
+	promo, ok := cache.GetPromoById(int(promoID.Int32))
+	if !ok || !promo.Voucher {
+		return "", nil
+	}
+	if err := storeutil.ExecNamed(ctx, db, `UPDATE promo_code SET allowed = false WHERE code = :code`, map[string]any{
+		"code": promo.Code,
+	}); err != nil {
+		return "", fmt.Errorf("can't disable voucher: %w", err)
+	}
+	return promo.Code, nil
+}

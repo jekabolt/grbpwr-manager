@@ -119,6 +119,13 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 	adjustments := make([]entity.OrderItemAdjustment, 0)
 
 	for _, item := range items {
+		// Reject non-positive quantities outright: this is malformed/abusive input
+		// (the raw quantity feeds subtotal math, so a negative value would produce a
+		// negative total / store credit), not a soft out-of-stock adjustment.
+		if item.Quantity.LessThanOrEqual(decimal.Zero) {
+			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("invalid quantity for product %d size %d: must be positive", item.ProductId, item.SizeId)}
+		}
+
 		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
 		prdSize, exists := prdSizeMap[sizeKey]
 
@@ -222,6 +229,9 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 	validItems := make([]entity.OrderItem, 0, len(items))
 	adjustments := make([]entity.OrderItemAdjustment, 0)
 	for _, item := range items {
+		if item.Quantity.LessThanOrEqual(decimal.Zero) {
+			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("invalid quantity for product %d size %d: must be positive", item.ProductId, item.SizeId)}
+		}
 		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
 		prdSize, exists := prdSizeMap[sizeKey]
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {

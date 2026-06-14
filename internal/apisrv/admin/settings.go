@@ -150,16 +150,9 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		}
 	}
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Hero: true,
 	})
-
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
-	}
 	return &pb_admin.UpdateSettingsResponse{}, nil
 }
 
@@ -196,15 +189,9 @@ func (s *Server) SetBackgroundHeroColor(ctx context.Context, req *pb_admin.SetBa
 
 	cache.SetBackgroundHeroColor(req.Color)
 
-	err = s.re.RevalidateAll(ctx, &dto.RevalidationData{
+	s.revalidateAsync(&dto.RevalidationData{
 		Hero: true,
 	})
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't revalidate hero after background color change",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't revalidate hero")
-	}
 
 	return &pb_admin.SetBackgroundHeroColorResponse{}, nil
 }

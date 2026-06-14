@@ -16,11 +16,14 @@ func (m *Mailer) Start(ctx context.Context) error {
 	}
 
 	m.ctx, m.cancel = context.WithCancel(ctx)
-	go m.worker(m.ctx)
+	m.wg.Go(func() {
+		m.worker(m.ctx)
+	})
 	return nil
 }
 
-// Stop stops the worker gracefully
+// Stop signals the worker to stop and waits for its goroutine to exit, so the
+// caller can safely close shared resources (e.g. the DB) afterwards.
 func (m *Mailer) Stop() error {
 	if m.cancel == nil {
 		return fmt.Errorf("Mailer already stopped or not started")
@@ -28,6 +31,7 @@ func (m *Mailer) Stop() error {
 
 	m.cancel() // This will cancel the context used by the worker
 	m.cancel = nil
+	m.wg.Wait()
 	return nil
 }
 

@@ -165,6 +165,7 @@ type Shipment struct {
 	TrackingCode         sql.NullString  `db:"tracking_code"`
 	ShippingDate         sql.NullTime    `db:"shipping_date"`
 	EstimatedArrivalDate sql.NullTime    `db:"estimated_arrival_date"`
+	DeliveredAt          sql.NullTime    `db:"delivered_at"`
 }
 
 // CostDecimal returns shipment cost with currency-aware rounding

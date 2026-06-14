@@ -48,7 +48,7 @@ func sanitizePhone(phone string) (string, error) {
 	return sanitized, nil
 }
 
-func generateOrderReference() string {
+func generateOrderReference() (string, error) {
 	const (
 		prefix   = "ORD-"
 		length   = 7
@@ -59,9 +59,9 @@ func generateOrderReference() string {
 	for i := range b {
 		n, err := rand.Int(rand.Reader, big.NewInt(base))
 		if err != nil {
-			panic(err)
+			return "", fmt.Errorf("can't generate order reference: %w", err)
 		}
 		b[i] = alphabet[n.Int64()]
 	}
-	return prefix + string(b)
+	return prefix + string(b), nil
 }

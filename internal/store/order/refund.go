@@ -22,6 +22,29 @@ func refundAmountFromItems(items []entity.OrderItemInsert, currency string) deci
 	return dto.RoundForCurrency(sum, currency)
 }
 
+// stockRestoreMode describes how stock should be handled when cancelling an
+// order in a given status. Stock is only ever reduced on the
+// Placed -> AwaitingPayment transition (InsertFiatInvoice), so restoring it for
+// a status that never reduced it would inflate inventory.
+type stockRestoreMode int
+
+const (
+	stockRestoreNone    stockRestoreMode = iota // status never reduced stock (e.g. Placed)
+	stockRestoreSilent                          // reduced at invoice time; restore without history
+	stockRestoreHistory                         // reduced for a confirmed+ order; restore with history
+)
+
+func stockRestoreModeForCancel(st entity.OrderStatusName) stockRestoreMode {
+	switch st {
+	case entity.Placed:
+		return stockRestoreNone
+	case entity.AwaitingPayment:
+		return stockRestoreSilent
+	default:
+		return stockRestoreHistory
+	}
+}
+
 func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource, refundReason string) error {
 	orderStatus, err := getOrderStatus(order.OrderStatusId)
 	if err != nil {
@@ -38,19 +61,22 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		return fmt.Errorf("order cannot be cancelled: %w", err)
 	}
 
-	if st == entity.AwaitingPayment {
-		err := rep.Products().RestoreStockSilently(ctx, orderItems)
-		if err != nil {
+	// Restore stock only for statuses that actually reduced it; restoring for a
+	// Placed order (which never reduced stock) would inflate inventory.
+	switch stockRestoreModeForCancel(st) {
+	case stockRestoreNone:
+		// Stock was never reduced for this status; nothing to restore.
+	case stockRestoreSilent:
+		if err := rep.Products().RestoreStockSilently(ctx, orderItems); err != nil {
 			return fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
-	} else {
+	case stockRestoreHistory:
 		history := &entity.StockHistoryParams{
 			Source:    source,
 			OrderId:   order.Id,
 			OrderUUID: order.UUID,
 		}
-		err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history)
-		if err != nil {
+		if err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history); err != nil {
 			return fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
 	}

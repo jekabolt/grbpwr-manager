@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -93,6 +94,7 @@ type Mailer struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	templates      map[templateName]*template.Template
+	wg             sync.WaitGroup
 }
 
 // addAuthHeader is a custom RequestEditorFn that adds an authorization header to the request

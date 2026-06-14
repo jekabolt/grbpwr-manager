@@ -24,6 +24,7 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 				co.total_price,
+				co.total_settled_base,
 				COALESCE(co.refunded_amount, 0) AS refunded_amount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -33,11 +34,11 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
 			AND co.order_status_id IN (:statusIds)
-			GROUP BY co.id, co.total_price, co.refunded_amount
+			GROUP BY co.id, co.total_price, co.refunded_amount, co.total_settled_base
 		)
 		SELECT
 			COALESCE(SUM(
-				(items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
+				COALESCE(total_settled_base, items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
 				* (total_price - refunded_amount) / NULLIF(total_price, 0)
 			), 0) AS revenue,
 			COUNT(*) AS orders
@@ -95,6 +96,7 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 				co.total_price,
+				co.total_settled_base,
 				COALESCE(co.refunded_amount, 0) AS refunded_amount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -104,11 +106,11 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
 			AND co.order_status_id IN (:statusIds) AND (co.refunded_amount IS NOT NULL AND co.refunded_amount > 0)
-			GROUP BY co.id, co.total_price, co.refunded_amount
+			GROUP BY co.id, co.total_price, co.refunded_amount, co.total_settled_base
 		)
 		SELECT
 			COALESCE(SUM(
-				refunded_amount * (items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END) / NULLIF(total_price, 0)
+				refunded_amount * COALESCE(total_settled_base, items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END) / NULLIF(total_price, 0)
 			), 0) AS amount,
 			COUNT(*) AS cnt
 		FROM order_base

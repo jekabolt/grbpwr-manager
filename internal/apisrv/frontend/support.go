@@ -13,6 +13,10 @@ import (
 )
 
 func (s *Server) SubmitSupportTicket(ctx context.Context, req *pb_frontend.SubmitSupportTicketRequest) (*pb_frontend.SubmitSupportTicketResponse, error) {
+	if req.GetTicket() == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "ticket is required")
+	}
+
 	clientIP := middleware.GetClientIP(ctx)
 
 	ticket := dto.ConvertPbSupportTicketInsertToEntity(req.Ticket)

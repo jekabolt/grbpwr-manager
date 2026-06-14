@@ -333,8 +333,8 @@ func (c *Client) getPaymentFailures(
 	sql := fmt.Sprintf(`
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'error_code') AS error_code,
-			(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'payment_type') AS payment_type,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'error_code'), '') AS error_code,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'payment_type'), '') AS payment_type,
 			COUNT(*) AS failure_count,
 			COALESCE(SUM((SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'order_value')), 0) AS total_failed_value,
 			COALESCE(AVG((SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'order_value')), 0) AS avg_failed_order_value

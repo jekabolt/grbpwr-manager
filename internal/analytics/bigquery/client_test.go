@@ -118,10 +118,10 @@ func TestClient_EventsSourceColumns(t *testing.T) {
 		assert.Contains(t, src, "OR")
 	})
 
-	t.Run("no columns falls back to SELECT *", func(t *testing.T) {
-		src, err := c.eventsSourceColumns(lastWeek, yesterday)
-		require.NoError(t, err)
-		assert.Contains(t, src, "SELECT * FROM")
+	t.Run("no columns is rejected (no SELECT * fallback)", func(t *testing.T) {
+		_, err := c.eventsSourceColumns(lastWeek, yesterday)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one column")
 	})
 
 	t.Run("nested columns preserved", func(t *testing.T) {
@@ -200,6 +200,17 @@ func TestClient_EventsSourceColumns(t *testing.T) {
 		_, err := c.eventsSourceColumns(lastWeek, yesterday, "event_name -- comment")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid")
+	})
+
+	t.Run("parameterized date filter uses a single-percent FORMAT_DATE", func(t *testing.T) {
+		// useLiteralDates is false here, so the parameterized branch runs. The string is
+		// later interpolated as a %s argument, so it must already contain a literal
+		// '%Y%m%d' — doubled percents (%%Y%%m%%d) would survive into the SQL and match no
+		// table shard, returning 0 rows.
+		src, err := c.eventsSourceColumns(lastWeek, today, "event_name")
+		require.NoError(t, err)
+		assert.Contains(t, src, "FORMAT_DATE('%Y%m%d'", "must emit a valid YYYYMMDD format")
+		assert.NotContains(t, src, "%%", "percent signs must not be doubled in the produced SQL")
 	})
 }
 
@@ -384,6 +395,37 @@ func TestClient_GetWebVitals_Integration(t *testing.T) {
 		t.Logf("Found %d/%d rows with non-zero avg_metric_value", nonZeroCount, len(rows))
 		assert.Greater(t, nonZeroCount, 0, "Expected at least some rows with non-zero avg_metric_value (LCP/FCP/TTFB should always be >0)")
 	}
+}
+
+func TestClient_GetCampaignAttribution_Integration(t *testing.T) {
+	credsPath := findBQCreds(t)
+	if credsPath == "" {
+		t.Skip("BigQuery credentials not found - skipping integration test")
+	}
+	projectID := os.Getenv("BIGQUERY_PROJECT_ID")
+	datasetID := os.Getenv("BIGQUERY_DATASET_ID")
+	if projectID == "" || datasetID == "" {
+		t.Skip("BIGQUERY_PROJECT_ID and BIGQUERY_DATASET_ID required")
+	}
+
+	ctx := context.Background()
+	cfg := &Config{
+		ProjectID:       projectID,
+		DatasetID:       datasetID,
+		CredentialsJSON: credsPath,
+	}
+	client, err := NewClient(ctx, cfg)
+	require.NoError(t, err)
+	defer client.Close()
+
+	end := time.Now().AddDate(0, 0, -1)
+	start := end.AddDate(0, 0, -6)
+
+	// Exercises the cross-midnight fix: session_campaigns groups by (user, session)
+	// with MIN(event_date), so a session spanning midnight no longer double-counts.
+	rows, err := client.GetCampaignAttribution(ctx, start, end)
+	require.NoError(t, err)
+	t.Logf("GetCampaignAttribution returned %d rows", len(rows))
 }
 
 func TestClient_GetUserJourneys_Integration(t *testing.T) {

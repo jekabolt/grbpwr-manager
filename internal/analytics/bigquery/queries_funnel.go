@@ -570,6 +570,10 @@ func (c *Client) getHeroFunnel(
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
 		query.Parameters = []bigquery.QueryParameter{
+			// start_date/end_date bind the events_* _TABLE_SUFFIX filter from
+			// eventsSourceColumns(startDate, scanEnd) — its end is scanEnd, not endDate.
+			{Name: "start_date", Value: startDate},
+			{Name: "end_date", Value: scanEnd},
 			{Name: "scan_start", Value: startDate},
 			{Name: "scan_end", Value: scanEnd},
 			{Name: "out_start", Value: startDate},
@@ -733,6 +737,10 @@ func (c *Client) getHeroFunnelAggregate(
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
 		query.Parameters = []bigquery.QueryParameter{
+			// start_date/end_date bind the events_* _TABLE_SUFFIX filter from
+			// eventsSourceColumns(startDate, scanEnd) — its end is scanEnd, not endDate.
+			{Name: "start_date", Value: startDate},
+			{Name: "end_date", Value: scanEnd},
 			{Name: "scan_start", Value: startDate},
 			{Name: "scan_end", Value: scanEnd},
 			{Name: "out_start", Value: startDate},
