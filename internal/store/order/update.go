@@ -16,6 +16,19 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// redactNullString returns a non-sensitive placeholder for a secret value so it
+// can be logged without leaking the secret itself. It reveals only whether the
+// value is present/valid and its length, never the contents.
+func redactNullString(v sql.NullString) string {
+	if !v.Valid {
+		return "<null>"
+	}
+	if v.String == "" {
+		return "<empty>"
+	}
+	return fmt.Sprintf("[REDACTED len=%d]", len(v.String))
+}
+
 func updateOrderPayment(ctx context.Context, db dependency.DB, orderId int, payment entity.PaymentInsert) error {
 	query := `
 	UPDATE payment 
@@ -41,7 +54,23 @@ func updateOrderPayment(ctx context.Context, db dependency.DB, orderId int, paym
 		"paymentMethodType":                payment.PaymentMethodType,
 	}
 
-	slog.Default().InfoContext(ctx, "update order payment", "params", params, "query", query)
+	// Build a redacted view of params for logging: client_secret and
+	// transaction_id authorize confirming/cancelling a PaymentIntent and must
+	// not be written to application logs. Keep non-sensitive context (order id,
+	// amounts, payment method, status) to remain useful for debugging.
+	logParams := make(map[string]any, len(params))
+	for k, v := range params {
+		switch k {
+		case "clientSecret":
+			logParams[k] = redactNullString(payment.ClientSecret)
+		case "transactionId":
+			logParams[k] = redactNullString(payment.TransactionID)
+		default:
+			logParams[k] = v
+		}
+	}
+
+	slog.Default().InfoContext(ctx, "update order payment", "params", logParams)
 
 	_, err := db.NamedExecContext(ctx, query, params)
 	if err != nil {
@@ -86,7 +115,7 @@ func updateOrderTotalPromo(ctx context.Context, db dependency.DB, orderId int, p
 
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"orderId":    orderId,
-		"promoId":   promoIdNull,
+		"promoId":    promoIdNull,
 		"totalPrice": totalPrice,
 	})
 }
