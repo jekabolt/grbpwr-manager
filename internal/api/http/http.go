@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	goruntime "runtime"
 	"runtime/debug"
 	"strings"
 	"text/template"
@@ -21,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
@@ -29,6 +32,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -75,8 +79,68 @@ type Config struct {
 	Port           string   `mapstructure:"port"`
 	Address        string   `mapstructure:"address"`
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
-	CommitHash     string   `mapstructure:"commit_hash"`
+	// AllowDevOrigins, when true, additionally permits localhost/127.0.0.1 CORS
+	// origins. It must stay false (unset) in prod/beta since CORS allows
+	// credentials; enable it only for local development.
+	AllowDevOrigins bool   `mapstructure:"allow_dev_origins"`
+	CommitHash      string `mapstructure:"commit_hash"`
 }
+
+// HTTP server timeouts used to harden against slow-loris style DoS without
+// breaking long-lived h2c gRPC streams / SSE or large media uploads.
+const (
+	// serverReadHeaderTimeout caps how long a client may take to send the
+	// request headers before the connection is dropped.
+	serverReadHeaderTimeout = 10 * time.Second
+	// serverIdleTimeout reaps idle keep-alive connections.
+	serverIdleTimeout = 120 * time.Second
+	// serverMaxHeaderBytes bounds the size of request headers (1 MiB).
+	serverMaxHeaderBytes = 1 << 20
+)
+
+// gRPC server limits and keepalive parameters.
+//
+// IMPORTANT: the grpc-gateway REST/JSON gateway connects to THIS gRPC server
+// over loopback via grpc.Dial (see *JSONGateway funcs: insecure credentials, no
+// client-side keepalive). The gateway's client connection is therefore long
+// lived and mostly carries short unary RPCs (often with no active streams). The
+// values below are chosen so neither that loopback connection nor long-lived
+// frontend gRPC streams get throttled or force-closed:
+//   - MaxConnectionAge / MaxConnectionAgeGrace are intentionally NOT set: a
+//     bounded age would periodically GOAWAY+tear down the gateway's own loopback
+//     connection (and any in-flight long stream) for no security benefit on a
+//     trusted loopback peer.
+//   - MaxConnectionIdle is generous (15m); when it fires the server sends GOAWAY
+//     and grpc-go transparently reconnects on the next call, so it only reaps
+//     genuinely idle/half-open peers.
+//   - Enforcement uses PermitWithoutStream:true and a modest MinTime so a
+//     well-behaved client that pings without active streams is never dropped.
+const (
+	// grpcMaxRecvMsgSize / grpcMaxSendMsgSize cap inbound/outbound message size.
+	// Send must be set explicitly: the grpc-go default send cap is ~4MiB, which
+	// would silently truncate large responses while recv allows 50MiB.
+	grpcMaxRecvMsgSize = 50 * 1024 * 1024 // 50 MiB
+	grpcMaxSendMsgSize = 50 * 1024 * 1024 // 50 MiB
+
+	// grpcMaxConcurrentStreams bounds per-connection HTTP/2 stream fan-out so a
+	// single client connection cannot exhaust server resources.
+	grpcMaxConcurrentStreams = 1000
+
+	// grpcKeepaliveMaxConnectionIdle reaps connections idle (no outstanding RPCs)
+	// for this long by sending a GOAWAY; clients transparently reconnect.
+	grpcKeepaliveMaxConnectionIdle = 15 * time.Minute
+	// grpcKeepaliveTime is how long the server waits with no activity before
+	// sending a keepalive ping to detect half-open connections.
+	grpcKeepaliveTime = 1 * time.Minute
+	// grpcKeepaliveTimeout is how long the server waits for a ping ack before
+	// closing the connection.
+	grpcKeepaliveTimeout = 20 * time.Second
+
+	// grpcKeepaliveMinTime is the minimum interval a client must wait between
+	// keepalive pings; paired with PermitWithoutStream:true so compliant clients
+	// (including the loopback gateway) are never disconnected for pinging.
+	grpcKeepaliveMinTime = 30 * time.Second
+)
 
 // WebhookHandler handles inbound webhook HTTP requests.
 type WebhookHandler interface {
@@ -98,6 +162,7 @@ type Server struct {
 	healthChecker        HealthChecker
 	webhookHandler       WebhookHandler
 	stripeWebhookHandler StripeWebhookHandler
+	healthRegistry       *health.Registry
 }
 
 // New creates a new server
@@ -121,6 +186,13 @@ func (s *Server) SetWebhookHandler(h WebhookHandler) {
 // SetStripeWebhookHandler registers the handler for Stripe webhook events.
 func (s *Server) SetStripeWebhookHandler(h StripeWebhookHandler) {
 	s.stripeWebhookHandler = h
+}
+
+// SetHealthRegistry registers the operational-state registry surfaced by the
+// admin-gated GET /statusz endpoint (DB pool, per-worker liveness, breakers,
+// runtime). Optional: when unset, /statusz is not mounted.
+func (s *Server) SetHealthRegistry(r *health.Registry) {
+	s.healthRegistry = r
 }
 
 // Done returns a channel that is closed when gRPC server exits
@@ -153,21 +225,32 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
-	// Collect all allowed origins (exact and wildcard patterns)
-	origins := make([]string, 0, len(allowedOrigins)+3)
+// corsDevOrigins are localhost/loopback origins permitted ONLY when dev origins
+// are explicitly enabled (allowDevOrigins). They must never be present in prod,
+// since AllowCredentials is true.
+var corsDevOrigins = []string{
+	"http://localhost*",
+	"http://127.0.0.1*",
+}
 
-	// Add localhost and vercel patterns for development
-	origins = append(origins, "http://localhost*")
-	origins = append(origins, "http://127.0.0.1*")
-	origins = append(origins, "https://*.vercel.app")
-	origins = append(origins, "https://*.github.io")
-	origins = append(origins, "https://admin.grbpwr.com")
+// corsMiddleware builds the CORS handler. Because AllowCredentials is true, the
+// set of allowed origins is an EXPLICIT allowlist of the real prod/beta
+// frontends supplied via HTTP_ALLOWED_ORIGINS (e.g. https://grbpwr.com,
+// https://admin.grbpwr.com and their beta.* counterparts). The previous broad
+// credentialed wildcards (https://*.vercel.app, https://*.github.io) are removed:
+// they let any attacker-controlled *.vercel.app / *.github.io deployment make
+// credentialed cross-origin calls. Localhost dev origins are gated behind
+// allowDevOrigins (env-driven; off in prod) so they never widen the prod surface.
+func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Handler) http.Handler {
+	origins := make([]string, 0, len(allowedOrigins)+len(corsDevOrigins))
 
-	// Add configured origins (they may contain wildcards)
+	// Configured prod/beta frontends (HTTP_ALLOWED_ORIGINS) are the source of truth.
 	origins = append(origins, allowedOrigins...)
 
-	// chi/cors handles wildcard patterns like "https://*.vercel.app"
+	if allowDevOrigins {
+		origins = append(origins, corsDevOrigins...)
+	}
+
 	return cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
@@ -242,6 +325,16 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 	})
 
+	// Operational status endpoint. Unlike /livez and /readyz this exposes internal
+	// state (DB pool, per-worker liveness, circuit-breaker state, runtime), so it
+	// is gated behind the same admin JWT auth the admin REST surface uses
+	// (auth.WithAuth). It is read-only and never affects readiness — a stale
+	// worker shows up here but does NOT make /readyz fail (which would trigger
+	// restart loops). Only mounted when a health registry has been registered.
+	if s.healthRegistry != nil {
+		r.Method(http.MethodGet, "/statusz", auth.WithAuth(http.HandlerFunc(s.handleStatusz)))
+	}
+
 	// handle static swagger at root
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Only serve swagger for root path, not for other paths
@@ -274,7 +367,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
-		r.Use(corsMiddleware(s.c.AllowedOrigins))
+		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
 		r.Mount("/admin", auth.WithAuth(adminHandler))
 		r.Mount("/frontend", frontendHandler)
 		r.Mount("/auth", authHandler)
@@ -363,6 +456,128 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 	return mux, nil
 }
 
+// statuszResponse is the JSON shape of GET /statusz. It carries no secrets —
+// only operational counters and timestamps.
+type statuszResponse struct {
+	Now     string          `json:"now"`
+	Commit  string          `json:"commit,omitempty"`
+	DB      *statuszDB      `json:"db,omitempty"`
+	Workers []statuszWorker `json:"workers"`
+	// Stale lists the names of workers whose last success is older than
+	// staleThreshold (or that have never run); a convenience summary.
+	Stale    []string         `json:"stale,omitempty"`
+	Breakers []statuszBreaker `json:"breakers,omitempty"`
+	Runtime  statuszRuntime   `json:"runtime"`
+}
+
+type statuszDB struct {
+	OpenConnections    int    `json:"open_connections"`
+	InUse              int    `json:"in_use"`
+	Idle               int    `json:"idle"`
+	WaitCount          int64  `json:"wait_count"`
+	WaitDuration       string `json:"wait_duration"`
+	MaxOpenConnections int    `json:"max_open_connections"`
+}
+
+type statuszWorker struct {
+	Name string `json:"name"`
+	// LastSuccess is RFC3339, or "never" if the worker has not had a successful
+	// tick yet.
+	LastSuccess string `json:"last_success"`
+	// SecondsSinceLastSuccess is null when the worker has never succeeded, so a
+	// never-run worker is not reported as infinitely stale.
+	SecondsSinceLastSuccess *int64 `json:"seconds_since_last_success"`
+}
+
+type statuszBreaker struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+type statuszRuntime struct {
+	NumGoroutine int    `json:"num_goroutine"`
+	NumCPU       int    `json:"num_cpu"`
+	HeapAllocMiB uint64 `json:"heap_alloc_mib"`
+	SysMiB       uint64 `json:"sys_mib"`
+	NumGC        uint32 `json:"num_gc"`
+}
+
+// statuszStaleThreshold is the age past which a worker's last success is flagged
+// in the Stale summary. It is generous so a worker with a long interval (e.g.
+// ga4sync / tier management run hourly+) is not flagged between normal ticks.
+const statuszStaleThreshold = 6 * time.Hour
+
+// handleStatusz renders the operational status JSON. It is registered behind
+// admin auth, so it is never world-readable.
+func (s *Server) handleStatusz(w http.ResponseWriter, r *http.Request) {
+	reg := s.healthRegistry
+	now := time.Now()
+
+	resp := statuszResponse{
+		Now:     now.UTC().Format(time.RFC3339),
+		Commit:  s.c.CommitHash,
+		Workers: make([]statuszWorker, 0, len(reg.Workers)),
+	}
+
+	if reg.DB != nil {
+		st := reg.DB.Stats()
+		resp.DB = &statuszDB{
+			OpenConnections:    st.OpenConnections,
+			InUse:              st.InUse,
+			Idle:               st.Idle,
+			WaitCount:          st.WaitCount,
+			WaitDuration:       st.WaitDuration.String(),
+			MaxOpenConnections: st.MaxOpenConnections,
+		}
+	}
+
+	for _, wk := range reg.Workers {
+		ws := statuszWorker{Name: wk.Name()}
+		last := wk.LastSuccess()
+		if last.IsZero() {
+			ws.LastSuccess = "never"
+			resp.Stale = append(resp.Stale, wk.Name())
+		} else {
+			ws.LastSuccess = last.UTC().Format(time.RFC3339)
+			secs := int64(now.Sub(last).Seconds())
+			ws.SecondsSinceLastSuccess = &secs
+			if now.Sub(last) > statuszStaleThreshold {
+				resp.Stale = append(resp.Stale, wk.Name())
+			}
+		}
+		resp.Workers = append(resp.Workers, ws)
+	}
+
+	for _, b := range reg.Breakers {
+		if b.StateFunc == nil {
+			continue
+		}
+		resp.Breakers = append(resp.Breakers, statuszBreaker{
+			Name:  b.BreakerName,
+			State: b.StateFunc().String(),
+		})
+	}
+
+	var ms goruntime.MemStats
+	goruntime.ReadMemStats(&ms)
+	const miB = 1024 * 1024
+	resp.Runtime = statuszRuntime{
+		NumGoroutine: goruntime.NumGoroutine(),
+		NumCPU:       goruntime.NumCPU(),
+		HeapAllocMiB: ms.HeapAlloc / miB,
+		SysMiB:       ms.Sys / miB,
+		NumGC:        ms.NumGC,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Default().ErrorContext(r.Context(), "failed to encode statusz response",
+			slog.String("err", err.Error()),
+		)
+	}
+}
+
 // panicRecoveryHandler logs a recovered panic with its stack trace and returns a
 // generic Internal error, so a single malformed request cannot crash the process
 // and panic internals are never leaked to the caller.
@@ -394,7 +609,26 @@ func (s *Server) Start(ctx context.Context,
 	}
 
 	s.gs = grpc.NewServer(
-		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB
+		grpc.MaxRecvMsgSize(grpcMaxRecvMsgSize),
+		// Send limit matched to recv: the grpc-go default send cap (~4MiB) would
+		// otherwise silently truncate large responses.
+		grpc.MaxSendMsgSize(grpcMaxSendMsgSize),
+		// Bound per-connection stream fan-out.
+		grpc.MaxConcurrentStreams(grpcMaxConcurrentStreams),
+		// Reap idle/half-open HTTP/2 connections. MaxConnectionAge is deliberately
+		// unset so the loopback gateway client and long-lived frontend streams are
+		// never periodically force-closed; see the const block for rationale.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: grpcKeepaliveMaxConnectionIdle,
+			Time:              grpcKeepaliveTime,
+			Timeout:           grpcKeepaliveTimeout,
+		}),
+		// PermitWithoutStream keeps the (mostly stream-less) loopback gateway
+		// connection alive; MinTime stays modest so compliant clients aren't dropped.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             grpcKeepaliveMinTime,
+			PermitWithoutStream: true,
+		}),
 		grpc.ChainUnaryInterceptor(
 			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
@@ -434,6 +668,19 @@ func (s *Server) Start(ctx context.Context,
 	s.hs = &http.Server{
 		Addr:    listenerAddr,
 		Handler: h2c.NewHandler(handler, &http2.Server{}),
+		// Slow-loris hardening. ReadHeaderTimeout caps how long a client may take
+		// to send request headers; IdleTimeout reaps idle keep-alive connections;
+		// MaxHeaderBytes bounds header size.
+		// ReadTimeout and WriteTimeout are intentionally omitted: this server
+		// multiplexes h2c gRPC (long-lived streams / SSE) and large media uploads
+		// to the bucket on the same port. A WriteTimeout would kill long-lived
+		// streaming responses, and a ReadTimeout would abort slow but legitimate
+		// large upload / streaming request bodies. The per-connection slow-loris
+		// risk is instead bounded by ReadHeaderTimeout + IdleTimeout.
+		// TODO: make configurable via httpapi.Config.
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		MaxHeaderBytes:    serverMaxHeaderBytes,
 	}
 
 	go func() {
