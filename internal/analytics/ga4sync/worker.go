@@ -13,6 +13,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -27,6 +29,17 @@ const ga4FinalizationDays = 2
 // stopTimeout bounds how long Stop waits for in-flight syncs to drain after the
 // context is cancelled, so shutdown can't hang on a query that's slow to cancel.
 const stopTimeout = 30 * time.Second
+
+// syncRunTimeout bounds a single sync attempt (one fn(ctx) invocation inside
+// runWithBackoff). GA4/BQ analytics syncs fan out many API + DB calls, so the
+// budget is generous, but it still keeps one stuck call from blocking a run
+// forever or stalling graceful shutdown. Each backoff attempt gets a fresh
+// budget; the inter-attempt backoff sleep is deliberately left outside it.
+const syncRunTimeout = 60 * time.Second
+
+// healthTickTimeout bounds the per-tick health-status work, so a stuck status
+// query can't block the worker loop or stall shutdown.
+const healthTickTimeout = 30 * time.Second
 
 // ga4APISyncTypes are the GA4 Data API sub-syncs whose success high-water-marks gate
 // the API tier's fetch window. These are exactly the types that receive a success=1
@@ -86,7 +99,15 @@ type Worker struct {
 	ga4SyncInProgress bool
 	bqSyncMu          sync.Mutex
 	bqSyncInProgress  bool
+	tracker           health.Tracker
 }
+
+// Name implements health.Reporter.
+func (w *Worker) Name() string { return "ga4sync" }
+
+// LastSuccess implements health.Reporter. It reflects the most recent successful
+// sync of EITHER tier (GA4 API or BQ); zero time until the first one succeeds.
+func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
 // New creates a new GA4 sync worker. bqClient may be nil if BQ is disabled.
 func New(ga4Client *ga4.Client, bqClient dependency.BQClient, ga4Data dependency.GA4DataStore, bqCache dependency.BQCacheStore, syncStatus dependency.SyncStatusStore, c *Config) *Worker {
@@ -175,14 +196,7 @@ func (w *Worker) Stop() error {
 }
 
 func (w *Worker) worker(ctx context.Context) {
-	if err := w.runWithBackoff(ctx, "ga4 api", &w.ga4Errors, w.syncGA4API); err != nil {
-		slog.Default().ErrorContext(ctx, "ga4 api sync failed on startup",
-			slog.String("err", err.Error()))
-	}
-	if err := w.runWithBackoff(ctx, "bq", &w.bqErrors, w.syncBQ); err != nil {
-		slog.Default().ErrorContext(ctx, "bq sync failed on startup",
-			slog.String("err", err.Error()))
-	}
+	w.runStartupSyncs(ctx)
 
 	ga4Ticker := time.NewTicker(w.c.WorkerInterval)
 	defer ga4Ticker.Stop()
@@ -200,11 +214,38 @@ func (w *Worker) worker(ctx context.Context) {
 		case <-bqTicker.C:
 			w.tryRunAsync(ctx, &w.bqSyncMu, &w.bqSyncInProgress, "bq", &w.bqErrors, w.syncBQ)
 		case <-healthTicker.C:
-			w.logHealthStatus(ctx)
+			w.runHealthCheck(ctx)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// runStartupSyncs performs the initial syncs on worker startup. The deferred
+// saferun.Recover keeps a panic here from killing the worker before its loop
+// starts (which would also bring down the whole process).
+func (w *Worker) runStartupSyncs(ctx context.Context) {
+	defer saferun.Recover(ctx, "ga4sync-startup")
+
+	if err := w.runWithBackoff(ctx, "ga4 api", &w.ga4Errors, w.syncGA4API); err != nil {
+		slog.Default().ErrorContext(ctx, "ga4 api sync failed on startup",
+			slog.String("err", err.Error()))
+	}
+	if err := w.runWithBackoff(ctx, "bq", &w.bqErrors, w.syncBQ); err != nil {
+		slog.Default().ErrorContext(ctx, "bq sync failed on startup",
+			slog.String("err", err.Error()))
+	}
+}
+
+// runHealthCheck wraps the periodic health log with panic recovery so a panic
+// in one health tick doesn't kill the worker loop.
+func (w *Worker) runHealthCheck(ctx context.Context) {
+	defer saferun.Recover(ctx, "ga4sync-health")
+
+	ctx, cancel := context.WithTimeout(ctx, healthTickTimeout)
+	defer cancel()
+
+	w.logHealthStatus(ctx)
 }
 
 // tryRunAsync launches fn in a goroutine if a previous run isn't still in progress.
@@ -226,6 +267,9 @@ func (w *Worker) tryRunAsync(ctx context.Context, mu *sync.Mutex, inProgress *bo
 			*inProgress = false
 			mu.Unlock()
 		}()
+		// Recover a panic in this async sync so it can't crash the process; the
+		// in-progress flag is still cleared by the defer above.
+		defer saferun.Recover(ctx, "ga4sync-"+name)
 		if err := w.runWithBackoff(ctx, name, counter, fn); err != nil {
 			slog.Default().ErrorContext(ctx, name+" sync failed",
 				slog.String("err", err.Error()))
@@ -316,9 +360,18 @@ func (w *Worker) runWithBackoff(ctx context.Context, name string, counter *atomi
 	var lastErr error
 
 	for attempt := 0; attempt <= w.c.MaxBackoffRetries; attempt++ {
-		lastErr = fn(ctx)
+		// Bound each attempt with a fresh per-run timeout so one stuck API/DB
+		// call can't block the run forever or stall shutdown. cancel() runs as
+		// soon as the attempt returns (not at function scope) so the contexts
+		// don't accumulate across retries, and so the inter-attempt backoff
+		// sleep below stays outside the budget.
+		runCtx, cancel := context.WithTimeout(ctx, syncRunTimeout)
+		lastErr = fn(runCtx)
+		cancel()
 		if lastErr == nil {
 			counter.Store(0)
+			// Record liveness: a tier (GA4 API or BQ) synced cleanly this run.
+			w.tracker.MarkSuccess()
 			return nil
 		}
 
@@ -349,7 +402,9 @@ func (w *Worker) runWithBackoff(ctx context.Context, name string, counter *atomi
 		}
 	}
 
-	return fmt.Errorf("%s sync failed after %d retries: %w", name, w.c.MaxBackoffRetries, lastErr)
+	err := fmt.Errorf("%s sync failed after %d retries: %w", name, w.c.MaxBackoffRetries, lastErr)
+	w.tracker.MarkError(err)
+	return err
 }
 
 // recordSyncStatus persists a sync-status row and logs (without propagating) a

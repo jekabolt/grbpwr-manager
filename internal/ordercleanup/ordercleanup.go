@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 )
 
 // Config holds configuration for the order cleanup worker.
 type Config struct {
-	WorkerInterval   time.Duration `mapstructure:"worker_interval"`
-	PlacedThreshold  time.Duration `mapstructure:"placed_threshold"` // e.g. 24h - cancel orders in Placed older than this
+	WorkerInterval  time.Duration `mapstructure:"worker_interval"`
+	PlacedThreshold time.Duration `mapstructure:"placed_threshold"` // e.g. 24h - cancel orders in Placed older than this
 }
 
 // DefaultConfig returns default configuration values.
@@ -41,7 +42,14 @@ type Worker struct {
 	ctx            context.Context
 	stop           context.CancelFunc
 	wg             sync.WaitGroup
+	tracker        health.Tracker
 }
+
+// Name implements health.Reporter.
+func (w *Worker) Name() string { return "ordercleanup" }
+
+// LastSuccess implements health.Reporter (zero time until the first clean tick).
+func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
 // New creates a new order cleanup worker. expirer may be nil, in which case
 // expiry falls back to the store-level path (which does not verify the provider).

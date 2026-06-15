@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 )
 
 // PreOrderPICleaner cleans up orphaned pre-order PaymentIntents from Stripe.
@@ -14,7 +16,7 @@ type PreOrderPICleaner interface {
 
 // Config holds configuration for the Stripe pre-order PI reconciliation worker.
 type Config struct {
-	WorkerInterval   time.Duration `mapstructure:"worker_interval"`
+	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
 	PreOrderThreshold time.Duration `mapstructure:"pre_order_threshold"` // e.g. 24h - cancel pre_order PIs older than this
 }
 
@@ -33,7 +35,14 @@ type Worker struct {
 	ctx      context.Context
 	stop     context.CancelFunc
 	wg       sync.WaitGroup
+	tracker  health.Tracker
 }
+
+// Name implements health.Reporter.
+func (w *Worker) Name() string { return "stripereconcile" }
+
+// LastSuccess implements health.Reporter (zero time until the first clean tick).
+func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
 // New creates a new Stripe reconciliation worker.
 func New(c *Config, cleaners ...PreOrderPICleaner) *Worker {

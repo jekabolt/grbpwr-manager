@@ -7,7 +7,14 @@ import (
 	"time"
 
 	"log/slog"
+
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 )
+
+// tickTimeout bounds the DB + provider work done in a single send tick, so one
+// stuck query or hung HTTP send can't block the loop forever or stall graceful
+// shutdown.
+const tickTimeout = 20 * time.Second
 
 // Start starts the worker
 func (m *Mailer) Start(ctx context.Context) error {
@@ -42,15 +49,31 @@ func (m *Mailer) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := m.handleUnsent(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't handle unsent mails",
-					slog.String("err", err.Error()),
-				)
-			}
+			m.runOnce(ctx)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// runOnce performs a single send tick. The deferred saferun.Recover keeps a
+// panic in this iteration from killing the worker loop.
+func (m *Mailer) runOnce(ctx context.Context) {
+	defer saferun.Recover(ctx, "mail")
+
+	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+	defer cancel()
+
+	if err := m.handleUnsent(ctx); err != nil {
+		m.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't handle unsent mails",
+			slog.String("err", err.Error()),
+		)
+		return
+	}
+
+	// Record success only when the send tick drained without a fatal error.
+	m.tracker.MarkSuccess()
 }
 
 func (m *Mailer) handleUnsent(ctx context.Context) error {

@@ -9,7 +9,13 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 )
+
+// tickTimeout bounds the DB work done in a single maintenance tick, so one stuck
+// query can't block the loop forever or stall graceful shutdown.
+const tickTimeout = 30 * time.Second
 
 // Config configures the tier maintenance worker.
 type Config struct {
@@ -25,13 +31,20 @@ func DefaultConfig() Config {
 
 // Worker runs the periodic tier review, downgrade reminders, and birthday gifts.
 type Worker struct {
-	repo   dependency.Repository
-	mailer dependency.Mailer
-	c      *Config
-	ctx    context.Context
-	stop   context.CancelFunc
-	wg     sync.WaitGroup
+	repo    dependency.Repository
+	mailer  dependency.Mailer
+	c       *Config
+	ctx     context.Context
+	stop    context.CancelFunc
+	wg      sync.WaitGroup
+	tracker health.Tracker
 }
+
+// Name implements health.Reporter.
+func (w *Worker) Name() string { return "tiermanagement" }
+
+// LastSuccess implements health.Reporter (zero time until the first clean tick).
+func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
 // New constructs a tier maintenance worker.
 func New(c *Config, repo dependency.Repository, mailer dependency.Mailer) *Worker {
@@ -83,20 +96,37 @@ func (w *Worker) run(ctx context.Context) {
 }
 
 func (w *Worker) runOnce(ctx context.Context) {
+	defer saferun.Recover(ctx, "tiermanagement")
+
+	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+	defer cancel()
+
+	ok := true
 	e := NewEngine(w.repo, w.mailer)
 	if n, err := e.RunDailyTierReview(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "tier review failed", slog.String("err", err.Error()))
 	} else if n > 0 {
 		slog.Default().InfoContext(ctx, "tier review downgraded members", slog.Int("count", n))
 	}
 	if n, err := e.RunDowngradeReminders(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "downgrade reminders failed", slog.String("err", err.Error()))
 	} else if n > 0 {
 		slog.Default().InfoContext(ctx, "downgrade reminders queued", slog.Int("count", n))
 	}
 	if n, err := e.RunBirthdayGifts(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "birthday gifts failed", slog.String("err", err.Error()))
 	} else if n > 0 {
 		slog.Default().InfoContext(ctx, "birthday gifts queued", slog.Int("count", n))
+	}
+
+	// Record success only when every daily job completed without error.
+	if ok {
+		w.tracker.MarkSuccess()
 	}
 }

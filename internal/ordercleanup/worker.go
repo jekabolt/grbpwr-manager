@@ -6,7 +6,13 @@ import (
 	"time"
 
 	"log/slog"
+
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 )
+
+// tickTimeout bounds the DB work done in a single cleanup tick, so one stuck
+// query can't block the loop forever or stall graceful shutdown.
+const tickTimeout = 30 * time.Second
 
 func (w *Worker) worker(ctx context.Context) {
 	ticker := time.NewTicker(w.c.WorkerInterval)
@@ -15,19 +21,41 @@ func (w *Worker) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := w.cancelStuckPlacedOrders(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't cancel stuck placed orders",
-					slog.String("err", err.Error()),
-				)
-			}
-			if err := w.cancelExpiredAwaitingPaymentOrders(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't cancel expired awaiting payment orders",
-					slog.String("err", err.Error()),
-				)
-			}
+			w.runOnce(ctx)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// runOnce performs a single cleanup tick. The deferred saferun.Recover keeps a
+// panic in this iteration from killing the worker loop (and the whole process).
+func (w *Worker) runOnce(ctx context.Context) {
+	defer saferun.Recover(ctx, "ordercleanup")
+
+	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+	defer cancel()
+
+	ok := true
+	if err := w.cancelStuckPlacedOrders(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't cancel stuck placed orders",
+			slog.String("err", err.Error()),
+		)
+	}
+	if err := w.cancelExpiredAwaitingPaymentOrders(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't cancel expired awaiting payment orders",
+			slog.String("err", err.Error()),
+		)
+	}
+
+	// Record success only when the whole tick completed without error, so
+	// staleness reflects real failures.
+	if ok {
+		w.tracker.MarkSuccess()
 	}
 }
 
