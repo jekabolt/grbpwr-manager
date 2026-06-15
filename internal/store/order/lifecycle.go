@@ -272,13 +272,21 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 
 		refundedAmount := refundAmountFromItems(itemsForStock, order.Currency)
 
-		if refundShipping {
+		// Shipping is refunded at most once. order was read FOR UPDATE above, so
+		// order.ShippingRefunded reflects the locked row: a second partial refund
+		// with refundShipping=true skips the shipping portion (without erroring the
+		// whole refund) instead of adding the shipping cost twice. Free-shipping
+		// orders never add cost and so never set the marker.
+		if refundShipping && !order.ShippingRefunded {
 			shipment, err := getOrderShipment(ctx, rep.DB(), order.Id)
 			if err != nil {
 				return fmt.Errorf("get order shipment: %w", err)
 			}
 			if !shipment.FreeShipping {
 				refundedAmount = refundedAmount.Add(shipment.CostDecimal(order.Currency))
+				if err := markShippingRefunded(ctx, rep.DB(), order.Id); err != nil {
+					return fmt.Errorf("mark shipping refunded: %w", err)
+				}
 			}
 		}
 
