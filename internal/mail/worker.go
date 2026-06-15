@@ -130,6 +130,13 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 		return fmt.Errorf("can't get unsent mails: %w", err)
 	}
 
+	// batchErr records the first per-email bookkeeping/send error so the tick can
+	// still report failure (driving backoff and keeping last-success un-advanced)
+	// after attempting every queued email. A single transient row error must not
+	// abandon the rest of the batch — these ops are idempotent on the next tick,
+	// so we log with the offending email's id and continue.
+	var batchErr error
+
 	for _, email := range unsentEmails {
 		// Check for a stop signal before processing each email
 		if err := ctx.Err(); err != nil {
@@ -144,7 +151,7 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 			)
 
 			if errors.Is(err, mailApiLimitReached) {
-				return nil // Stop sending mails if API limit is reached
+				return batchErr // Stop sending mails if API limit is reached
 			}
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -156,7 +163,14 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 			exhausted := newAttemptCount >= m.c.MaxSendAttempts
 			if !transient || exhausted {
 				if err := m.mailRepository.MarkSendDead(ctx, email.Id, errMsg, m.c.MaxSendAttempts); err != nil {
-					return fmt.Errorf("can't mark send dead for email %v: %w", email.Id, err)
+					wrapped := fmt.Errorf("can't mark send dead for email %v: %w", email.Id, err)
+					slog.Default().ErrorContext(ctx, "can't mark send dead",
+						slog.String("err", err.Error()),
+						slog.Int("mailId", email.Id),
+					)
+					if batchErr == nil {
+						batchErr = wrapped
+					}
 				}
 				continue
 			}
@@ -164,15 +178,31 @@ func (m *Mailer) handleUnsent(ctx context.Context) error {
 			delay := RetryDelayAfterAttempt(m.c.RetryBaseInterval, m.c.RetryMaxInterval, newAttemptCount)
 			next := time.Now().UTC().Add(delay)
 			if err := m.mailRepository.ScheduleSendRetry(ctx, email.Id, errMsg, next); err != nil {
-				return fmt.Errorf("can't schedule retry for email %v: %w", email.Id, err)
+				wrapped := fmt.Errorf("can't schedule retry for email %v: %w", email.Id, err)
+				slog.Default().ErrorContext(ctx, "can't schedule retry",
+					slog.String("err", err.Error()),
+					slog.Int("mailId", email.Id),
+				)
+				if batchErr == nil {
+					batchErr = wrapped
+				}
+				continue
 			}
 		} else {
 			// Update the database to mark the email as sent
 			if err := m.mailRepository.UpdateSent(ctx, email.Id); err != nil {
-				return fmt.Errorf("can't update sent status for email %v: %w", email.Id, err)
+				wrapped := fmt.Errorf("can't update sent status for email %v: %w", email.Id, err)
+				slog.Default().ErrorContext(ctx, "can't update sent status",
+					slog.String("err", err.Error()),
+					slog.Int("mailId", email.Id),
+				)
+				if batchErr == nil {
+					batchErr = wrapped
+				}
+				continue
 			}
 		}
 	}
 
-	return nil
+	return batchErr
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -38,15 +39,31 @@ func (ms *MYSQLStore) DB() dependency.DB {
 	return ms.db
 }
 
+const (
+	// maxTxRetries caps how many times Tx re-runs the callback when it hits a
+	// retryable transient error (deadlock / lock-wait timeout). After this many
+	// retries the last error is returned instead of spinning forever.
+	maxTxRetries = 5
+	// txRetryBaseDelay is the base backoff before the first retry. Delays grow
+	// exponentially and are jittered, capped at txRetryMaxDelay. Kept small
+	// since these are local tx-contention retries, not external calls.
+	txRetryBaseDelay = 10 * time.Millisecond
+	// txRetryMaxDelay caps the per-retry backoff.
+	txRetryMaxDelay = 300 * time.Millisecond
+)
+
 // Tx starts transaction and executes the function passing to it Handler
 // using this transaction. It automatically rolls the transaction back if
-// function returns an error. If the error has been caused by serialization
-// error, it calls the function again. In order for serialization errors
-// handling to work, the function should return Handler errors
+// function returns an error. If the error has been caused by a retryable
+// transient error (MySQL deadlock 1213 or lock-wait timeout 1205), it calls
+// the function again with exponential backoff, up to maxTxRetries times. In
+// order for retry handling to work, the function should return Handler errors
 // unchanged, or wrap them using %w.
 func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
-	for {
-		pst, err := ms.TxBegin(ctx)
+	var err error
+	for attempt := 0; ; attempt++ {
+		var pst dependency.Repository
+		pst, err = ms.TxBegin(ctx)
 		if err != nil {
 			return err
 		}
@@ -62,11 +79,50 @@ func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency
 				slog.String("original_err", err.Error()),
 			)
 		}
-		if ms.IsErrorRepeat(err) {
-			continue
+		// Non-retryable error: return immediately, no wasted retries.
+		if !ms.IsErrorRepeat(err) {
+			return err
 		}
-		return err
+		// Retryable, but the cap is reached: stop and surface the last error.
+		if attempt >= maxTxRetries {
+			return fmt.Errorf("transaction failed after %d retries: %w", maxTxRetries, err)
+		}
+		var code uint16
+		var me *mysql.MySQLError
+		if errors.As(err, &me) {
+			code = me.Number
+		}
+		delay := txRetryBackoff(attempt)
+		slog.Default().WarnContext(ctx, "retrying transaction after transient error",
+			slog.Int("attempt", attempt+1),
+			slog.Int("max_retries", maxTxRetries),
+			slog.Int("mysql_code", int(code)),
+			slog.Duration("backoff", delay),
+		)
+		// Respect context cancellation while waiting.
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return fmt.Errorf("transaction retry aborted: %w", ctx.Err())
+		case <-t.C:
+		}
 	}
+}
+
+// txRetryBackoff returns the backoff before retrying attempt-number `attempt`
+// (0-based). It grows exponentially from txRetryBaseDelay, is capped at
+// txRetryMaxDelay, and has up to 50% added jitter to avoid thundering herds.
+func txRetryBackoff(attempt int) time.Duration {
+	d := txRetryBaseDelay << attempt
+	if d > txRetryMaxDelay || d <= 0 {
+		d = txRetryMaxDelay
+	}
+	// Add jitter in [0, d/2).
+	if half := int64(d) / 2; half > 0 {
+		d += time.Duration(rand.Int63n(half))
+	}
+	return d
 }
 
 // InTx returns true if the object is in transaction
@@ -126,7 +182,9 @@ func (ms *MYSQLStore) TxRollback(ctx context.Context) error {
 func (ms *MYSQLStore) IsErrorRepeat(err error) bool {
 	var e *mysql.MySQLError
 	if errors.As(err, &e) {
-		if e.Number == 1213 { // ER_LOCK_DEADLOCK
+		switch e.Number {
+		case 1213, // ER_LOCK_DEADLOCK
+			1205: // ER_LOCK_WAIT_TIMEOUT
 			return true
 		}
 	}

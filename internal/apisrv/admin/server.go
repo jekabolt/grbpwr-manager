@@ -13,6 +13,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// maxConcurrentRevalidations bounds how many async storefront revalidations may run
+// at once. Admin writes call revalidateAsync, which previously spawned an unbounded
+// goroutine per request; a burst during a Vercel slowdown could spawn unbounded
+// goroutines. The counting semaphore caps concurrency and queues the excess instead.
+const maxConcurrentRevalidations = 4
+
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
@@ -24,6 +30,9 @@ type Server struct {
 	re                dependency.RevalidationService
 	reservationMgr    dependency.StockReservationManager
 	ga4mp             *ga4mp.Client
+	// revalidateSem is a counting semaphore bounding concurrent async revalidations
+	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
+	revalidateSem chan struct{}
 }
 
 // New creates a new server with admin handlers.
@@ -46,6 +55,7 @@ func New(
 		re:                re,
 		reservationMgr:    reservationMgr,
 		ga4mp:             ga4mpClient,
+		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
 	}
 }
 
@@ -53,11 +63,24 @@ func New(
 // is a cache-freshness side effect, not part of the admin operation's success: blocking
 // the RPC on it — and returning codes.Internal when Vercel is briefly unreachable — made
 // successful admin writes look failed and could hang the admin UI for many seconds while
-// RevalidateAll retried each deployment. Uses context.Background() so the in-flight
-// revalidation survives the request returning. Mirrors the frontend order-submit path.
+// RevalidateAll retried each deployment. Mirrors the frontend order-submit path.
+//
+// Concurrency is bounded by revalidateSem (capacity maxConcurrentRevalidations): the
+// goroutine acquires a slot before running and releases it when done, so a burst of
+// admin writes during a Vercel slowdown queues on the semaphore rather than spawning
+// unbounded goroutines.
+//
+// TODO: the goroutine uses context.Background() so the in-flight revalidation survives
+// the request returning, but it also means these goroutines outlive process shutdown.
+// The admin Server has no cancellable lifecycle context to derive from; wiring one would
+// require changes in app/app.go (out of scope for this fix).
 func (s *Server) revalidateAsync(data *dto.RevalidationData) {
 	go func() {
 		ctx := context.Background()
+		// Acquire a semaphore slot, queuing if maxConcurrentRevalidations are already
+		// in flight, so concurrency stays bounded.
+		s.revalidateSem <- struct{}{}
+		defer func() { <-s.revalidateSem }()
 		if err := s.re.RevalidateAll(ctx, data); err != nil {
 			slog.Default().ErrorContext(ctx, "async storefront revalidation failed",
 				slog.String("err", err.Error()),
