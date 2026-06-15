@@ -128,8 +128,27 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		}
 	}
 
+	// Apply safe connection-pool defaults when unset. The managed MySQL cluster
+	// has a shared max_connections=76 across prod, beta and admin, so the prod
+	// ceiling stays well under that (15 + beta + admin < 76). SERIALIZABLE
+	// transactions plus background workers each hold connections, so too low a
+	// ceiling (was 5) risks pool starvation.
+	if config.DB.MaxOpenConnections <= 0 {
+		config.DB.MaxOpenConnections = defaultMaxOpenConnections
+	}
+	if config.DB.MaxIdleConnections <= 0 {
+		config.DB.MaxIdleConnections = defaultMaxIdleConnections
+	}
+
 	return &config, nil
 }
+
+// Connection-pool defaults applied when the corresponding config value is unset.
+// Kept under the shared managed-MySQL cap of 76 connections (prod + beta + admin).
+const (
+	defaultMaxOpenConnections = 15
+	defaultMaxIdleConnections = 5
+)
 
 // bindEnvVars binds environment variables to config keys
 // This allows using both nested keys (MYSQL__DSN) and flat keys (MYSQL_DSN)
@@ -139,6 +158,8 @@ func bindEnvVars() {
 	viper.BindEnv("mysql.automigrate", "MYSQL_AUTOMIGRATE")
 	viper.BindEnv("mysql.max_open_connections", "MYSQL_MAX_OPEN_CONNECTIONS")
 	viper.BindEnv("mysql.max_idle_connections", "MYSQL_MAX_IDLE_CONNECTIONS")
+	viper.BindEnv("mysql.conn_max_lifetime", "MYSQL_CONN_MAX_LIFETIME")
+	viper.BindEnv("mysql.conn_max_idle_time", "MYSQL_CONN_MAX_IDLE_TIME")
 	viper.BindEnv("mysql.tls_ca_path", "MYSQL_TLS_CA_PATH")
 
 	// Logger
@@ -149,6 +170,7 @@ func bindEnvVars() {
 	viper.BindEnv("http.port", "HTTP_PORT")
 	viper.BindEnv("http.address", "HTTP_ADDRESS")
 	viper.BindEnv("http.allowed_origins", "HTTP_ALLOWED_ORIGINS")
+	viper.BindEnv("http.allow_dev_origins", "HTTP_ALLOW_DEV_ORIGINS")
 
 	// Auth
 	viper.BindEnv("auth.jwt_secret", "AUTH_JWT_SECRET")

@@ -17,12 +17,22 @@ envs:
 - key: MYSQL_AUTOMIGRATE
   scope: RUN_TIME
   value: "true"
+# NOTE: managed MySQL cluster max_connections=76, SHARED across prod (grbpwr),
+# beta (grbpwr_beta) and admin. Keep prod MYSQL_MAX_OPEN_CONNECTIONS well under
+# that ceiling (15 + beta + admin must stay < 76); beta is set lower in
+# .do/app-beta.yaml.
 - key: MYSQL_MAX_OPEN_CONNECTIONS
   scope: RUN_TIME
-  value: "5"
+  value: "15"
 - key: MYSQL_MAX_IDLE_CONNECTIONS
   scope: RUN_TIME
-  value: "2"
+  value: "5"
+- key: MYSQL_CONN_MAX_LIFETIME
+  scope: RUN_TIME
+  value: "5m"
+- key: MYSQL_CONN_MAX_IDLE_TIME
+  scope: RUN_TIME
+  value: "1m"
 - key: LOGGER_LEVEL
   scope: RUN_TIME
   value: "0"
