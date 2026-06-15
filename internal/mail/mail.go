@@ -9,8 +9,8 @@ import (
 	"html"
 	"html/template"
 	"io"
-	netmail "net/mail"
 	"net/http"
+	netmail "net/mail"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 	"google.golang.org/grpc/codes"
@@ -32,6 +33,9 @@ var templatesFS embed.FS
 
 const (
 	resendAPIBaseURL = "https://api.resend.com/"
+	// resendHTTPTimeout bounds each Resend API request so a stalled TCP connection
+	// cannot hang the caller indefinitely (e.g. an inline order-confirmation send).
+	resendHTTPTimeout = 15 * time.Second
 )
 
 const maxEmailAddressLength = 254 // RFC 5321
@@ -95,7 +99,14 @@ type Mailer struct {
 	cancel         context.CancelFunc
 	templates      map[templateName]*template.Template
 	wg             sync.WaitGroup
+	tracker        health.Tracker
 }
+
+// Name implements health.Reporter.
+func (m *Mailer) Name() string { return "mail" }
+
+// LastSuccess implements health.Reporter (zero time until the first clean send tick).
+func (m *Mailer) LastSuccess() time.Time { return m.tracker.LastSuccess() }
 
 // addAuthHeader is a custom RequestEditorFn that adds an authorization header to the request
 func addAuthHeader(token string) resend.RequestEditorFn {
@@ -127,11 +138,14 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 
 	applyMailerRetryDefaults(c)
 
-	// Initialize the resend client
-	cli, err := resend.NewClient(resendAPIBaseURL, resend.ClientOption(func(rc *resend.Client) error {
-		rc.RequestEditors = append(rc.RequestEditors, addAuthHeader(c.APIKey))
-		return nil
-	}))
+	// Initialize the resend client with a bounded HTTP timeout so a stalled
+	// Resend connection cannot hang the caller indefinitely.
+	cli, err := resend.NewClient(resendAPIBaseURL,
+		resend.WithHTTPClient(&http.Client{Timeout: resendHTTPTimeout}),
+		resend.ClientOption(func(rc *resend.Client) error {
+			rc.RequestEditors = append(rc.RequestEditors, addAuthHeader(c.APIKey))
+			return nil
+		}))
 	if err != nil {
 		return nil, fmt.Errorf("error creating resend client: %w", err)
 	}
@@ -380,6 +394,14 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 
 	resp, err := m.cli.PostEmails(ctx, *ser)
+	if resp != nil {
+		// Drain and close the body so the underlying connection can be reused
+		// rather than leaked (one leak per inline-sent email otherwise).
+		defer func() {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}()
+	}
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
 			return mailApiLimitReached

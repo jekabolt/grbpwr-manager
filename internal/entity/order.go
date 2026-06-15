@@ -59,7 +59,13 @@ type Order struct {
 	RefundReason   sql.NullString  `db:"refund_reason"`
 	OrderComment   sql.NullString  `db:"order_comment"`
 	RefundedAmount decimal.Decimal `db:"refunded_amount"`
-	GAClientID     sql.NullString  `db:"ga_client_id"`
+	// ShippingRefunded records whether the shipping cost has already been
+	// refunded for this order. Shipping must be refunded at most once even though
+	// a PartiallyRefunded order can be refunded again; without this marker two
+	// partial refunds with refundShipping=true would add the shipping cost to
+	// refunded_amount (and the Stripe charge) twice.
+	ShippingRefunded bool           `db:"shipping_refunded"`
+	GAClientID       sql.NullString `db:"ga_client_id"`
 	// TotalPriceEUR is the order total converted to EUR at order time, used for
 	// loyalty qualifying-spend accumulation. NULL when it could not be derived.
 	TotalPriceEUR decimal.NullDecimal `db:"total_price_eur"`
@@ -380,8 +386,8 @@ type OrderReview struct {
 type OrderReviewInsert struct {
 	DeliveryRating       DeliverySpeed      // optional
 	PackagingRating      PackagingCondition // optional
-	ReviewText           string            // optional
-	SophisticationRating ProductRating     // optional
+	ReviewText           string             // optional
+	SophisticationRating ProductRating      // optional
 }
 
 // OrderItemReview represents the order_item_review table (item-level)

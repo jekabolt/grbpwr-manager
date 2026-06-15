@@ -22,6 +22,17 @@ func refundAmountFromItems(items []entity.OrderItemInsert, currency string) deci
 	return dto.RoundForCurrency(sum, currency)
 }
 
+// markShippingRefunded flags that the shipping cost has been refunded for this
+// order so a subsequent partial refund cannot refund it again. Must be called
+// within the RefundOrder transaction that holds the customer_order row FOR UPDATE.
+func markShippingRefunded(ctx context.Context, db dependency.DB, orderId int) error {
+	query := `UPDATE customer_order SET shipping_refunded = TRUE WHERE id = :orderId`
+	if err := storeutil.ExecNamed(ctx, db, query, map[string]any{"orderId": orderId}); err != nil {
+		return fmt.Errorf("update shipping_refunded: %w", err)
+	}
+	return nil
+}
+
 // stockRestoreMode describes how stock should be handled when cancelling an
 // order in a given status. Stock is only ever reduced on the
 // Placed -> AwaitingPayment transition (InsertFiatInvoice), so restoring it for

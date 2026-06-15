@@ -254,8 +254,14 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}
 
 	// start monitoring immediately after InsertFiatInvoice succeeds
-	// to prevent orphaned orders if subsequent operations fail
-	handler.StartMonitoringPayment(ctx, order.UUID, orderFull.Payment)
+	// to prevent orphaned orders if subsequent operations fail.
+	//
+	// Detach the request context: the gRPC request ctx is cancelled the moment
+	// SubmitOrder returns, which would kill the monitor goroutine instantly.
+	// context.WithoutCancel preserves request values/trace while stopping
+	// cancellation from propagating. The monitor's own lifecycle (and shutdown)
+	// is governed by the processor's parent context, not this ctx.
+	handler.StartMonitoringPayment(context.WithoutCancel(ctx), order.UUID, orderFull.Payment)
 
 	err = s.repo.Order().UpdateTotalPaymentCurrency(ctx, order.UUID, orderFull.Order.TotalPriceDecimal())
 	if err != nil {

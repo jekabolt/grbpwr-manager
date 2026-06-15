@@ -17,6 +17,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/store/account"
 	"github.com/jekabolt/grbpwr-manager/internal/store/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
@@ -38,13 +39,41 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/mysql"
 )
 
+// Default connection-pool lifetimes used when the corresponding config field
+// is unset (zero). A 5m lifetime avoids frequent TLS re-handshakes to managed
+// MySQL under steady load while still cycling connections regularly.
+const (
+	defaultConnMaxLifetime = 5 * time.Minute
+	defaultConnMaxIdleTime = 1 * time.Minute
+)
+
 // Config defines configurations to connect database
 type Config struct {
-	DSN                string `mapstructure:"dsn"`
-	Automigrate        bool   `mapstructure:"automigrate"`
-	MaxOpenConnections int    `mapstructure:"max_open_connections"`
-	MaxIdleConnections int    `mapstructure:"max_idle_connections"`
-	TLSCAPath          string `mapstructure:"tls_ca_path"`
+	DSN                string        `mapstructure:"dsn"`
+	Automigrate        bool          `mapstructure:"automigrate"`
+	MaxOpenConnections int           `mapstructure:"max_open_connections"`
+	MaxIdleConnections int           `mapstructure:"max_idle_connections"`
+	ConnMaxLifetime    time.Duration `mapstructure:"conn_max_lifetime"`
+	ConnMaxIdleTime    time.Duration `mapstructure:"conn_max_idle_time"`
+	TLSCAPath          string        `mapstructure:"tls_ca_path"`
+}
+
+// connMaxLifetime returns the configured connection max lifetime or the default
+// when unset.
+func (c Config) connMaxLifetime() time.Duration {
+	if c.ConnMaxLifetime > 0 {
+		return c.ConnMaxLifetime
+	}
+	return defaultConnMaxLifetime
+}
+
+// connMaxIdleTime returns the configured connection max idle time or the default
+// when unset.
+func (c Config) connMaxIdleTime() time.Duration {
+	if c.ConnMaxIdleTime > 0 {
+		return c.ConnMaxIdleTime
+	}
+	return defaultConnMaxIdleTime
 }
 
 // MYSQLStore implements methods to access MYSQL database
@@ -146,8 +175,8 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if cfg.MaxIdleConnections > 0 {
 		d.SetMaxIdleConns(cfg.MaxIdleConnections)
 	}
-	d.SetConnMaxLifetime(2 * time.Minute)
-	d.SetConnMaxIdleTime(30 * time.Second)
+	d.SetConnMaxLifetime(cfg.connMaxLifetime())
+	d.SetConnMaxIdleTime(cfg.connMaxIdleTime())
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer pingCancel()
@@ -256,8 +285,8 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if cfg.MaxIdleConnections > 0 {
 		d.SetMaxIdleConns(cfg.MaxIdleConnections)
 	}
-	d.SetConnMaxLifetime(2 * time.Minute)
-	d.SetConnMaxIdleTime(30 * time.Second)
+	d.SetConnMaxLifetime(cfg.connMaxLifetime())
+	d.SetConnMaxIdleTime(cfg.connMaxIdleTime())
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer pingCancel()
@@ -339,6 +368,29 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 
 func (ms *MYSQLStore) Close() {
 	ms.close()
+}
+
+// Stats returns connection-pool statistics for the underlying *sql.DB, mapped
+// into health.DBStats so the http/health packages don't import database/sql or
+// the store. ms.db is a *sqlx.DB (see store.New: d.Unsafe()), which embeds the
+// *sql.DB whose Stats() this reports. Returns a zero value if the handle does
+// not expose Stats (e.g. inside a transaction), so the status endpoint degrades
+// gracefully instead of panicking.
+func (ms *MYSQLStore) Stats() health.DBStats {
+	type statser interface{ Stats() sql.DBStats }
+	s, ok := ms.db.(statser)
+	if !ok {
+		return health.DBStats{}
+	}
+	st := s.Stats()
+	return health.DBStats{
+		OpenConnections:    st.OpenConnections,
+		InUse:              st.InUse,
+		Idle:               st.Idle,
+		WaitCount:          st.WaitCount,
+		WaitDuration:       st.WaitDuration,
+		MaxOpenConnections: st.MaxOpenConnections,
+	}
 }
 
 // Ping checks database connectivity by executing a simple query

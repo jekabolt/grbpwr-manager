@@ -243,7 +243,8 @@ func formatEUR(d decimal.Decimal) string {
 		}
 	}
 	for i := pre; i < n; i += 3 {
-		b.WriteString(s[i : i+3])
+		end := min(i+3, n)
+		b.WriteString(s[i:end])
 		if i+3 < n {
 			b.WriteString(",")
 		}

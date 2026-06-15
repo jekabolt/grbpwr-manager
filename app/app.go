@@ -18,8 +18,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
@@ -55,8 +57,12 @@ type App struct {
 	bqc  dependency.BQClient
 	re   dependency.RevalidationService
 	rm   *stockreserve.Manager
-	c    *config.Config
-	done chan struct{}
+	// Stripe processors (live + test). Held so their in-process payment monitors
+	// can be stopped on shutdown before the DB is closed.
+	stripeMain *stripe.Processor
+	stripeTest *stripe.Processor
+	c          *config.Config
+	done       chan struct{}
 }
 
 // New returns a new instance of App
@@ -150,6 +156,15 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Hold the concrete processors so App.Stop can stop their in-process payment
+	// monitors before the DB is closed.
+	if p, ok := stripeMain.(*stripe.Processor); ok {
+		a.stripeMain = p
+	}
+	if p, ok := stripeTest.(*stripe.Processor); ok {
+		a.stripeTest = p
+	}
+
 	// Stripe reconciliation: clean orphaned pre-order PaymentIntents (main + test)
 	var stripeCleaners []stripereconcile.PreOrderPICleaner
 	if p, ok := stripeMain.(*stripe.Processor); ok {
@@ -186,12 +201,17 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.re, err = revalidation.New(ctx, &a.c.Revalidation)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new revalidation service",
-			slog.String("err", err.Error()),
+	// Revalidation (Vercel ISR) is a non-critical, best-effort cache-freshness
+	// side effect. If its client can't be constructed, log and continue with a
+	// no-op revalidator instead of crash-looping the whole process — the
+	// storefront/admin must still boot and serve.
+	if rev, revErr := revalidation.New(ctx, &a.c.Revalidation); revErr != nil {
+		slog.Default().WarnContext(ctx, "failed to create revalidation service; continuing with revalidation disabled",
+			slog.String("err", revErr.Error()),
 		)
-		return err
+		a.re = revalidation.NewDisabled()
+	} else {
+		a.re = rev
 	}
 
 	// GA4 Analytics integration
@@ -284,6 +304,13 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Default().InfoContext(ctx, "stripe webhook handler disabled (no signing secret configured)")
 	}
 
+	// Operational status registry for the admin-gated GET /statusz endpoint.
+	// Each worker implements health.Reporter (records last-success at the end of a
+	// clean tick); the store provides DB pool stats; the GA4/BQ clients expose
+	// their circuit-breaker state. nil entries (e.g. ga4 worker when GA4 is off)
+	// are skipped so the endpoint reflects what is actually running.
+	a.hs.SetHealthRegistry(a.buildHealthRegistry(ga4Client))
+
 	if err = a.hs.Start(ctx, adminS, frontendS, authS); err != nil {
 		slog.Default().ErrorContext(ctx, "cannot start http server")
 		return err
@@ -335,6 +362,19 @@ func (a *App) Stop(ctx context.Context) {
 		a.rm.Stop()
 	}
 
+	// Stop the in-process Stripe payment monitors AFTER the workers but BEFORE the
+	// DB is closed: monitors derive from a processor-wide parent context and may be
+	// mid-write (mark-paid / expire), so they must drain against a live connection
+	// pool rather than race a closed one.
+	monStopCtx, monStopCancel := context.WithTimeout(ctx, 15*time.Second)
+	if a.stripeMain != nil {
+		a.stripeMain.StopAllMonitors(monStopCtx)
+	}
+	if a.stripeTest != nil {
+		a.stripeTest.StopAllMonitors(monStopCtx)
+	}
+	monStopCancel()
+
 	if a.bqc != nil {
 		a.bqc.Close()
 	}
@@ -345,6 +385,73 @@ func (a *App) Stop(ctx context.Context) {
 // Done returns a channel that is closed after the application has exited
 func (a *App) Done() chan struct{} {
 	return a.done
+}
+
+// buildHealthRegistry collects the constructed workers (those that implement
+// health.Reporter), the DB pool-stats provider, and the analytics circuit
+// breakers into the registry consumed by GET /statusz. Workers that were not
+// started (nil) are skipped. ga4Client is passed explicitly because it is a
+// local in Start, not a field on App.
+func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
+	reg := &health.Registry{}
+
+	// Workers. Each appended only if non-nil and actually implements Reporter.
+	// a.ma is a dependency.Mailer interface; the concrete *mail.Mailer is a
+	// Reporter, so it is type-asserted.
+	addWorker := func(r health.Reporter) {
+		if r != nil {
+			reg.Workers = append(reg.Workers, r)
+		}
+	}
+	if a.ma != nil {
+		if r, ok := a.ma.(health.Reporter); ok {
+			addWorker(r)
+		}
+	}
+	if a.oc != nil {
+		addWorker(a.oc)
+	}
+	if a.sc != nil {
+		addWorker(a.sc)
+	}
+	if a.tm != nil {
+		addWorker(a.tm)
+	}
+	if a.sr != nil {
+		addWorker(a.sr)
+	}
+	if a.ga4w != nil {
+		addWorker(a.ga4w)
+	}
+	if a.rm != nil {
+		addWorker(a.rm)
+	}
+
+	// DB pool stats (only the MySQL store exposes them).
+	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
+		reg.DB = mysqlStore
+	}
+
+	// Circuit breakers (cheap getters on the analytics clients).
+	if ga4Client != nil {
+		reg.Breakers = append(reg.Breakers, health.BreakerReporter{
+			BreakerName: "ga4",
+			StateFunc: func() circuitbreaker.State {
+				return ga4Client.CircuitBreakerState()
+			},
+		})
+	}
+	if a.bqc != nil {
+		bqc := a.bqc
+		reg.Breakers = append(reg.Breakers, health.BreakerReporter{
+			BreakerName: "bigquery",
+			StateFunc: func() circuitbreaker.State {
+				return bqc.CircuitBreakerState()
+			},
+		})
+	}
+
+	return reg
 }
 
 // stripeOrderExpirer routes an order's safety-net expiry to the correct Stripe

@@ -7,8 +7,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	"github.com/shopspring/decimal"
 )
+
+// cleanupTickTimeout bounds a single cleanup tick. The work is in-memory and
+// holds rm.mu, so this guards against a pathological tick wedging the loop (and
+// indirectly any caller waiting on the lock); it also bounds the ctx passed to
+// logging.
+const cleanupTickTimeout = 15 * time.Second
 
 // Limits configures abuse prevention thresholds
 type Limits struct {
@@ -56,18 +64,25 @@ type sessionRateEntry struct {
 
 // Manager handles stock reservations with TTL and abuse prevention
 type Manager struct {
-	mu           sync.RWMutex
-	reservations map[string]*Reservation        // key: "productID-sizeID-sessionID"
-	bySession    map[string][]string             // sessionID -> reservation keys
-	byOrder      map[string][]string             // orderUUID -> reservation keys
-	byProductSize map[productSizeKey][]string    // (productID, sizeID) -> reservation keys (O(1) lookup)
-	sessionRates map[string]*sessionRateEntry    // per-session call rate
-	cartTTL      time.Duration
-	orderTTL     time.Duration
-	limits       Limits
-	stopCh       chan struct{}
-	stopOnce     sync.Once
+	mu            sync.RWMutex
+	reservations  map[string]*Reservation      // key: "productID-sizeID-sessionID"
+	bySession     map[string][]string          // sessionID -> reservation keys
+	byOrder       map[string][]string          // orderUUID -> reservation keys
+	byProductSize map[productSizeKey][]string  // (productID, sizeID) -> reservation keys (O(1) lookup)
+	sessionRates  map[string]*sessionRateEntry // per-session call rate
+	cartTTL       time.Duration
+	orderTTL      time.Duration
+	limits        Limits
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	tracker       health.Tracker
 }
+
+// Name implements health.Reporter.
+func (rm *Manager) Name() string { return "stockreserve" }
+
+// LastSuccess implements health.Reporter (zero time until the first clean cleanup tick).
+func (rm *Manager) LastSuccess() time.Time { return rm.tracker.LastSuccess() }
 
 // NewManager creates a new reservation manager with abuse prevention
 func NewManager(cartTTL, orderTTL time.Duration, limits Limits) *Manager {
@@ -307,45 +322,59 @@ func (rm *Manager) cleanup() {
 		case <-rm.stopCh:
 			return
 		case <-ticker.C:
-			rm.mu.Lock()
-			now := time.Now().UTC()
-			expiredCount := 0
-
-			for key, res := range rm.reservations {
-				if now.After(res.ExpiresAt) {
-					rm.removeReservation(key, res)
-
-					// Clean up byOrder
-					if res.OrderUUID != "" {
-						if orderKeys, ok := rm.byOrder[res.OrderUUID]; ok {
-							rm.byOrder[res.OrderUUID] = removeKey(orderKeys, key)
-							if len(rm.byOrder[res.OrderUUID]) == 0 {
-								delete(rm.byOrder, res.OrderUUID)
-							}
-						}
-					}
-
-					expiredCount++
-				}
-			}
-
-			// Clean up expired session rate entries
-			for sid, entry := range rm.sessionRates {
-				if now.After(entry.expiresAt) {
-					delete(rm.sessionRates, sid)
-				}
-			}
-
-			if expiredCount > 0 {
-				slog.Default().Debug("cleaned up expired reservations",
-					slog.Int("count", expiredCount),
-					slog.Int("remaining", len(rm.reservations)),
-				)
-			}
-
-			rm.mu.Unlock()
+			rm.runCleanupOnce()
 		}
 	}
+}
+
+// runCleanupOnce removes expired reservations for a single tick. The deferred
+// saferun.Recover keeps a panic in this iteration from killing the cleanup loop
+// (and the whole process). It also guarantees the mutex is released on panic.
+func (rm *Manager) runCleanupOnce() {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTickTimeout)
+	defer cancel()
+	defer saferun.Recover(ctx, "stockreserve-cleanup")
+
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	now := time.Now().UTC()
+	expiredCount := 0
+
+	for key, res := range rm.reservations {
+		if now.After(res.ExpiresAt) {
+			rm.removeReservation(key, res)
+
+			// Clean up byOrder
+			if res.OrderUUID != "" {
+				if orderKeys, ok := rm.byOrder[res.OrderUUID]; ok {
+					rm.byOrder[res.OrderUUID] = removeKey(orderKeys, key)
+					if len(rm.byOrder[res.OrderUUID]) == 0 {
+						delete(rm.byOrder, res.OrderUUID)
+					}
+				}
+			}
+
+			expiredCount++
+		}
+	}
+
+	// Clean up expired session rate entries
+	for sid, entry := range rm.sessionRates {
+		if now.After(entry.expiresAt) {
+			delete(rm.sessionRates, sid)
+		}
+	}
+
+	if expiredCount > 0 {
+		slog.Default().Debug("cleaned up expired reservations",
+			slog.Int("count", expiredCount),
+			slog.Int("remaining", len(rm.reservations)),
+		)
+	}
+
+	// The cleanup tick is in-memory and cannot fail; reaching here is a success.
+	rm.tracker.MarkSuccess()
 }
 
 // removeReservation removes a reservation and cleans up all indexes.
@@ -410,12 +439,12 @@ func (rm *Manager) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_reservations":  len(rm.reservations),
-		"cart_reservations":   cartReservations,
-		"order_reservations":  orderReservations,
-		"active_sessions":     len(rm.bySession),
-		"active_orders":       len(rm.byOrder),
-		"capacity_pct":        float64(len(rm.reservations)) / float64(rm.limits.MaxTotalReservations) * 100,
+		"total_reservations": len(rm.reservations),
+		"cart_reservations":  cartReservations,
+		"order_reservations": orderReservations,
+		"active_sessions":    len(rm.bySession),
+		"active_orders":      len(rm.byOrder),
+		"capacity_pct":       float64(len(rm.reservations)) / float64(rm.limits.MaxTotalReservations) * 100,
 	}
 }
 

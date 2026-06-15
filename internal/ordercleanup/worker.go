@@ -6,29 +6,104 @@ import (
 	"time"
 
 	"log/slog"
+
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+)
+
+// tickTimeout bounds the DB work done in a single cleanup tick, so one stuck
+// query can't block the loop forever or stall graceful shutdown.
+const tickTimeout = 30 * time.Second
+
+// Backoff bounds for consecutive-failure backoff. On a failed tick an extra
+// delay (base * 2^(n-1), capped at backoffMax) is waited before the next
+// iteration so a persistently failing dependency (e.g. the DB) isn't hammered
+// every WorkerInterval. A successful tick resets the backoff. See ga4sync for
+// the established pattern in this codebase.
+const (
+	backoffBase = 30 * time.Second
+	backoffMax  = 5 * time.Minute
 )
 
 func (w *Worker) worker(ctx context.Context) {
 	ticker := time.NewTicker(w.c.WorkerInterval)
 	defer ticker.Stop()
 
+	// consecutiveFailures drives the extra backoff delay applied after a failed
+	// tick. Reset to 0 on the first successful tick.
+	var consecutiveFailures int
+
 	for {
 		select {
 		case <-ticker.C:
-			if err := w.cancelStuckPlacedOrders(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't cancel stuck placed orders",
-					slog.String("err", err.Error()),
-				)
+			if w.runOnce(ctx) {
+				consecutiveFailures = 0
+				continue
 			}
-			if err := w.cancelExpiredAwaitingPaymentOrders(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't cancel expired awaiting payment orders",
-					slog.String("err", err.Error()),
-				)
+			consecutiveFailures++
+			delay := backoffDelay(consecutiveFailures)
+			slog.Default().WarnContext(ctx, "ordercleanup: backing off after failed tick",
+				slog.Int("consecutive_failures", consecutiveFailures),
+				slog.Duration("delay", delay),
+			)
+			// Wait the extra backoff on top of the ticker interval, but stay
+			// responsive to shutdown — never time.Sleep blindly.
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// backoffDelay returns the extra inter-iteration delay for the given number of
+// consecutive failures: base * 2^(n-1), capped at backoffMax.
+func backoffDelay(consecutiveFailures int) time.Duration {
+	delay := backoffBase
+	for i := 1; i < consecutiveFailures; i++ {
+		delay *= 2
+		if delay >= backoffMax {
+			return backoffMax
+		}
+	}
+	return delay
+}
+
+// runOnce performs a single cleanup tick and reports whether it fully succeeded.
+// The deferred saferun.Recover keeps a panic in this iteration from killing the
+// worker loop (and the whole process).
+func (w *Worker) runOnce(ctx context.Context) bool {
+	defer saferun.Recover(ctx, "ordercleanup")
+
+	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+	defer cancel()
+
+	ok := true
+	if err := w.cancelStuckPlacedOrders(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't cancel stuck placed orders",
+			slog.String("err", err.Error()),
+		)
+	}
+	if err := w.cancelExpiredAwaitingPaymentOrders(ctx); err != nil {
+		ok = false
+		w.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't cancel expired awaiting payment orders",
+			slog.String("err", err.Error()),
+		)
+	}
+
+	// Record success only when the whole tick completed without error, so
+	// staleness reflects real failures.
+	if ok {
+		w.tracker.MarkSuccess()
+	}
+	return ok
 }
 
 func (w *Worker) cancelStuckPlacedOrders(ctx context.Context) error {

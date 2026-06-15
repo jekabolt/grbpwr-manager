@@ -7,6 +7,23 @@ import (
 	"time"
 
 	"log/slog"
+
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+)
+
+// tickTimeout bounds the DB + provider work done in a single send tick, so one
+// stuck query or hung HTTP send can't block the loop forever or stall graceful
+// shutdown.
+const tickTimeout = 20 * time.Second
+
+// Backoff bounds for consecutive-failure backoff. On a failed tick an extra
+// delay (base * 2^(n-1), capped at backoffMax) is waited before the next
+// iteration so a persistently failing dependency (DB / Resend) isn't hammered
+// every WorkerInterval. A successful tick resets the backoff. See ga4sync for
+// the established pattern in this codebase.
+const (
+	backoffBase = 30 * time.Second
+	backoffMax  = 5 * time.Minute
 )
 
 // Start starts the worker
@@ -39,18 +56,71 @@ func (m *Mailer) worker(ctx context.Context) {
 	ticker := time.NewTicker(m.c.WorkerInterval)
 	defer ticker.Stop()
 
+	// consecutiveFailures drives the extra backoff delay applied after a failed
+	// tick. Reset to 0 on the first successful tick.
+	var consecutiveFailures int
+
 	for {
 		select {
 		case <-ticker.C:
-			if err := m.handleUnsent(ctx); err != nil {
-				slog.Default().ErrorContext(ctx, "can't handle unsent mails",
-					slog.String("err", err.Error()),
-				)
+			if m.runOnce(ctx) {
+				consecutiveFailures = 0
+				continue
+			}
+			consecutiveFailures++
+			delay := backoffDelay(consecutiveFailures)
+			slog.Default().WarnContext(ctx, "mail: backing off after failed tick",
+				slog.Int("consecutive_failures", consecutiveFailures),
+				slog.Duration("delay", delay),
+			)
+			// Wait the extra backoff on top of the ticker interval, but stay
+			// responsive to shutdown — never time.Sleep blindly.
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// backoffDelay returns the extra inter-iteration delay for the given number of
+// consecutive failures: base * 2^(n-1), capped at backoffMax.
+func backoffDelay(consecutiveFailures int) time.Duration {
+	delay := backoffBase
+	for i := 1; i < consecutiveFailures; i++ {
+		delay *= 2
+		if delay >= backoffMax {
+			return backoffMax
+		}
+	}
+	return delay
+}
+
+// runOnce performs a single send tick and reports whether it drained without a
+// fatal error. The deferred saferun.Recover keeps a panic in this iteration from
+// killing the worker loop.
+func (m *Mailer) runOnce(ctx context.Context) bool {
+	defer saferun.Recover(ctx, "mail")
+
+	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+	defer cancel()
+
+	if err := m.handleUnsent(ctx); err != nil {
+		m.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "can't handle unsent mails",
+			slog.String("err", err.Error()),
+		)
+		return false
+	}
+
+	// Record success only when the send tick drained without a fatal error.
+	m.tracker.MarkSuccess()
+	return true
 }
 
 func (m *Mailer) handleUnsent(ctx context.Context) error {

@@ -14,11 +14,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
-	"github.com/jekabolt/grbpwr-manager/internal/preorderpayment"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/preorderpayment"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/shopspring/decimal"
@@ -39,6 +39,13 @@ type Config struct {
 // ErrPaymentAlreadyCompleted is returned when the PaymentIntent was already used for a completed payment.
 var ErrPaymentAlreadyCompleted = errors.New("payment already completed for this session")
 
+// monEntry is a single tracked payment monitor: its cancel func plus a unique
+// token used to identify map ownership (CancelFunc values are not comparable).
+type monEntry struct {
+	cancel context.CancelFunc
+	token  *int
+}
+
 // ErrUnderpaid is returned by updateOrderAsPaid when a PaymentIntent succeeded
 // for less than the order total (amount tampering / early confirmation). The
 // order is intentionally left AwaitingPayment for manual review rather than
@@ -46,17 +53,27 @@ var ErrPaymentAlreadyCompleted = errors.New("payment already completed for this 
 var ErrUnderpaid = errors.New("payment intent succeeded for less than the order total")
 
 type Processor struct {
-	c                *Config
-	mailer           dependency.Mailer
-	rep              dependency.Repository
-	stripeClient     *client.API
-	pm               entity.PaymentMethod
-	reservationMgr   dependency.StockReservationManager
-	preOrderStore    *preorderpayment.Store
-	ga4mp            *ga4mp.Client
+	c              *Config
+	mailer         dependency.Mailer
+	rep            dependency.Repository
+	stripeClient   *client.API
+	pm             entity.PaymentMethod
+	reservationMgr dependency.StockReservationManager
+	preOrderStore  *preorderpayment.Store
+	ga4mp          *ga4mp.Client
 
-	monCtxt map[string]context.CancelFunc // tracks monitoring contexts by order uuid
+	monCtxt map[string]monEntry // tracks monitoring contexts by order uuid
 	ctxMu   sync.Mutex
+
+	// monParentCtx is the parent context for ALL in-process payment monitors.
+	// Every monitor derives its context from this one, so cancelling monParent
+	// (via StopAllMonitors) stops every monitor at shutdown — before the DB is
+	// closed — instead of leaving detached goroutines racing against teardown.
+	monParentCtx    context.Context
+	monParentCancel context.CancelFunc
+	// monWg tracks in-flight monitor goroutines so StopAllMonitors can wait for
+	// them to finish before the app closes the DB.
+	monWg sync.WaitGroup
 }
 
 func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency.Mailer, pmn entity.PaymentMethodName) (dependency.Invoicer, error) {
@@ -83,15 +100,22 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
+	// Parent context for all in-process payment monitors. Derived from
+	// context.Background() (NOT the boot ctx) so monitors live for the lifetime
+	// of the process and are stopped explicitly via StopAllMonitors at shutdown.
+	monParentCtx, monParentCancel := context.WithCancel(context.Background())
+
 	p := Processor{
-		c:              c,
-		mailer:         m,
-		stripeClient:   client.New(c.SecretKey, nil),
-		rep:            rep,
-		pm:             pm.Method,
-		monCtxt:        make(map[string]context.CancelFunc),
-		reservationMgr: nil, // Will be set via SetReservationManager if needed
-		preOrderStore:  preorderpayment.NewStore(ttl),
+		c:               c,
+		mailer:          m,
+		stripeClient:    client.New(c.SecretKey, nil),
+		rep:             rep,
+		pm:              pm.Method,
+		monCtxt:         make(map[string]monEntry),
+		reservationMgr:  nil, // Will be set via SetReservationManager if needed
+		preOrderStore:   preorderpayment.NewStore(ttl),
+		monParentCtx:    monParentCtx,
+		monParentCancel: monParentCancel,
 	}
 
 	err := p.initAddressesFromUnpaidOrders(ctx)
@@ -434,21 +458,47 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		Valid: true,
 	}
 
+	// The monitor's lifecycle is governed by the processor's parent context
+	// (monParentCtx), not the passed ctx — see monitorPayment.
 	go p.monitorPayment(context.Background(), orderUUID, payment)
 
 	return &payment.PaymentInsert, nil
 }
 
-func (p *Processor) monitorPayment(ctx context.Context, orderUUID string, payment *entity.Payment) {
-	ctx, cancel := context.WithCancel(ctx)
+// monitorPayment watches a single order's PaymentIntent until it expires (or is
+// cancelled). It derives its context from the processor-wide parent (monParentCtx)
+// so StopAllMonitors can stop every monitor at shutdown; the caller-supplied ctx
+// is intentionally ignored for cancellation (e.g. a per-request ctx would die the
+// moment the RPC returns). Monitors are tracked in monWg so shutdown can wait for
+// them to finish before the DB is closed.
+func (p *Processor) monitorPayment(_ context.Context, orderUUID string, payment *entity.Payment) {
+	p.monWg.Add(1)
+	defer p.monWg.Done()
+
+	ctx, cancel := context.WithCancel(p.monParentCtx)
+	// token identifies this monitor's entry in monCtxt so a later monitor that
+	// replaces us can be distinguished on cleanup (CancelFunc values are not
+	// comparable, so we key map ownership by this unique pointer instead).
+	token := new(int)
+
 	p.ctxMu.Lock()
-	p.monCtxt[orderUUID] = cancel
+	// Cancel any monitor already registered for this order before overwriting it,
+	// otherwise the previous goroutine leaks and CancelMonitorPayment /
+	// confirmPaymentFromWebhook would only ever cancel the latest one.
+	if prev, exists := p.monCtxt[orderUUID]; exists {
+		prev.cancel()
+	}
+	p.monCtxt[orderUUID] = monEntry{cancel: cancel, token: token}
 	p.ctxMu.Unlock()
 
 	defer cancel() // Ensure the context is cancelled when the monitoring stops.
 	defer func() {
 		p.ctxMu.Lock()
-		delete(p.monCtxt, orderUUID) // Clean up the map when monitoring ends.
+		// Only delete our own entry: a newer monitor may have replaced us in the
+		// map (it cancelled us above), and removing it would orphan that monitor.
+		if cur, ok := p.monCtxt[orderUUID]; ok && cur.token == token {
+			delete(p.monCtxt, orderUUID) // Clean up the map when monitoring ends.
+		}
 		p.ctxMu.Unlock()
 	}()
 
@@ -488,12 +538,46 @@ func (p *Processor) CancelMonitorPayment(orderUUID string) error {
 	p.ctxMu.Lock()
 	defer p.ctxMu.Unlock()
 
-	if cancel, exists := p.monCtxt[orderUUID]; exists {
-		cancel()                     // Cancel the monitoring context.
+	if entry, exists := p.monCtxt[orderUUID]; exists {
+		entry.cancel()               // Cancel the monitoring context.
 		delete(p.monCtxt, orderUUID) // Clean up the map.
 		return nil
 	}
 	return fmt.Errorf("no monitoring process found for order ID: %s", orderUUID)
+}
+
+// StopAllMonitors cancels the processor-wide monitor parent context (stopping
+// every in-process payment monitor) and waits for the in-flight monitor
+// goroutines to return, or until ctx is done. It is called from App.Stop after
+// the workers are stopped but BEFORE the DB is closed, so monitors never write to
+// a closed connection pool. Safe to call more than once.
+func (p *Processor) StopAllMonitors(ctx context.Context) {
+	if p.monParentCancel != nil {
+		p.monParentCancel()
+	}
+
+	// Also cancel any per-order entries explicitly (belt-and-suspenders: they all
+	// derive from monParentCtx, but this releases their cancel funcs promptly).
+	p.ctxMu.Lock()
+	for uuid, entry := range p.monCtxt {
+		entry.cancel()
+		delete(p.monCtxt, uuid)
+	}
+	p.ctxMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		p.monWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Default().InfoContext(ctx, "all stripe payment monitors stopped")
+	case <-ctx.Done():
+		slog.Default().WarnContext(ctx, "timed out waiting for stripe payment monitors to stop",
+			slog.String("err", ctx.Err().Error()))
+	}
 }
 
 func (p *Processor) ExpirationDuration() time.Duration {
@@ -650,7 +734,7 @@ func (p *Processor) GetOrCreatePreOrderPaymentIntent(ctx context.Context, idempo
 
 	// Valid session - return existing PI (reconstruct for response; ClientSecret is in sess)
 	return &stripe.PaymentIntent{
-		ID:          sess.PaymentIntentID,
+		ID:           sess.PaymentIntentID,
 		ClientSecret: sess.ClientSecret,
 	}, "", nil
 }
@@ -742,7 +826,10 @@ func (p *Processor) UpdatePaymentIntentWithOrderNew(ctx context.Context, payment
 	return nil
 }
 
-// StartMonitoringPayment starts monitoring an existing payment
+// StartMonitoringPayment starts monitoring an existing payment in a background
+// goroutine. The monitor's cancellation is tied to the processor's parent
+// context (monParentCtx), not the supplied ctx, so it survives the caller's
+// request returning and is stopped centrally via StopAllMonitors at shutdown.
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
 	go p.monitorPayment(ctx, orderUUID, &payment)
 }

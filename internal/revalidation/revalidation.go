@@ -69,6 +69,24 @@ func New(ctx context.Context, c *Config) (*Revalidator, error) {
 	return v, nil
 }
 
+// disabledRevalidator is a no-op implementation of dependency.RevalidationService.
+// It is used as a safe fallback when the real revalidator cannot be constructed,
+// so the storefront/admin can still boot and serve while ISR revalidation is
+// simply skipped (storefront caches go stale until the next successful write
+// against a working revalidator, rather than crash-looping the whole process).
+type disabledRevalidator struct{}
+
+// NewDisabled returns a no-op RevalidationService. RevalidateAll always succeeds
+// without contacting Vercel.
+func NewDisabled() *disabledRevalidator {
+	return &disabledRevalidator{}
+}
+
+func (*disabledRevalidator) RevalidateAll(ctx context.Context, _ *dto.RevalidationData) error {
+	slog.Default().DebugContext(ctx, "revalidation disabled; skipping RevalidateAll")
+	return nil
+}
+
 func (v *Revalidator) getDeployments(ctx context.Context) ([]*dto.Deployment, error) {
 	url := fmt.Sprintf("%s?projectId=%s&state=READY&limit=3", vercelApiUrl, v.c.ProjectId)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
