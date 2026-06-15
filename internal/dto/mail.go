@@ -3,6 +3,8 @@ package dto
 import (
 	"encoding/base64"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -136,6 +138,23 @@ func OrderFullToOrderPendingReturn(of *entity.OrderFull) *OrderPendingReturn {
 	}
 }
 
+// tailoredSizeNameRe matches internal compound size codes of the form
+// label_measurement{ta|bo}_{m|f}, e.g. "xs_44ta_m" (tailored, chest 44) or
+// "xxs_23bo_f" (bottoms, 23" waist). See migrations 0018/0019.
+var tailoredSizeNameRe = regexp.MustCompile(`^([a-z]+)_(\d+(?:\.\d+)?)(?:ta|bo)_[mf]$`)
+
+// FormatSizeName turns an internal size code into a human-readable label for
+// customer-facing emails. Compound tailored/bottoms codes become
+// "<LABEL> · <measurement>" (e.g. "xs_44ta_m" → "XS · 44"); plain letter sizes
+// ("m"), shoe sizes ("42") and anything unrecognised pass through unchanged.
+func FormatSizeName(name string) string {
+	m := tailoredSizeNameRe.FindStringSubmatch(name)
+	if m == nil {
+		return name
+	}
+	return strings.ToUpper(m[1]) + " · " + m[2]
+}
+
 func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderItem {
 	oi := make([]OrderItem, len(items))
 	for i, item := range items {
@@ -154,7 +173,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderIte
 		oi[i] = OrderItem{
 			Name:      fmt.Sprintf("%s %s", item.ProductBrand, productName),
 			Thumbnail: item.Thumbnail,
-			Size:      size.Name,
+			Size:      FormatSizeName(size.Name),
 			Quantity:  int(item.Quantity.IntPart()),
 			Price:     RoundForCurrency(item.OrderItemInsert.ProductPriceWithSale, currency).String(),
 		}
