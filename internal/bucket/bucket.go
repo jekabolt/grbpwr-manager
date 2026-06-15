@@ -1,9 +1,11 @@
 package bucket
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -35,6 +37,23 @@ func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
 	}
+
+	// Validate credentials/endpoint connectivity at boot so the app fails fast
+	// instead of appearing healthy and failing on the first upload at runtime.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	exists, err := cli.BucketExists(ctx, c.S3BucketName)
+	if err != nil {
+		return nil, fmt.Errorf("bucket connectivity check failed: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("bucket connectivity check failed: configured bucket %q does not exist", c.S3BucketName)
+	}
+	slog.Default().InfoContext(ctx, "bucket connectivity verified",
+		slog.String("bucket", c.S3BucketName),
+		slog.String("endpoint", c.S3Endpoint),
+	)
+
 	return &Bucket{
 		Client: cli,
 		Config: c,
