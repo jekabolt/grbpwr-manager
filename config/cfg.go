@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
@@ -30,6 +31,21 @@ type RatesConfig struct {
 	BaseCurrency string `mapstructure:"base_currency"`
 }
 
+// SecurityConfig holds request-handling security settings.
+type SecurityConfig struct {
+	// TrustProxyHops is the number of trusted reverse-proxy hops in front of the
+	// service. Client-IP extraction (used for rate limiting and login
+	// throttling) takes the X-Forwarded-For entry this many hops from the right,
+	// i.e. the first IP a trusted proxy did not let the client forge. A
+	// non-positive value falls back to the secure default of one hop, which
+	// matches DigitalOcean App Platform's single edge proxy.
+	TrustProxyHops int `mapstructure:"trust_proxy_hops"`
+}
+
+// defaultTrustProxyHops is the secure default applied when trust_proxy_hops is
+// unset: one trusted edge proxy, as on DigitalOcean App Platform.
+const defaultTrustProxyHops = 1
+
 // Config represents the global configuration for the service.
 type Config struct {
 	DB                store.Config             `mapstructure:"mysql"`
@@ -44,6 +60,7 @@ type Config struct {
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
 	Rates             RatesConfig              `mapstructure:"rates"`
+	Security          SecurityConfig           `mapstructure:"security"`
 	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
 	StripePaymentTest stripe.Config            `mapstructure:"stripe_payment_test"`
 	Revalidation      revalidation.Config      `mapstructure:"revalidation"`
@@ -140,6 +157,14 @@ func LoadConfig(cfgFile string) (*Config, error) {
 		config.DB.MaxIdleConnections = defaultMaxIdleConnections
 	}
 
+	// Apply a secure default for trusted proxy hops when unset, then configure
+	// the client-IP middleware. This keeps X-Forwarded-For spoofing protection
+	// on by default (left-most/attacker-controlled entries are not trusted).
+	if config.Security.TrustProxyHops <= 0 {
+		config.Security.TrustProxyHops = defaultTrustProxyHops
+	}
+	middleware.SetTrustedProxyHops(config.Security.TrustProxyHops)
+
 	return &config, nil
 }
 
@@ -228,6 +253,9 @@ func bindEnvVars() {
 
 	// Rates (base currency only; no exchange rates)
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")
+
+	// Security (trusted reverse-proxy hops for client-IP extraction)
+	viper.BindEnv("security.trust_proxy_hops", "TRUST_PROXY_HOPS")
 
 	// Stripe Payment
 	viper.BindEnv("stripe_payment.secret_key", "STRIPE_PAYMENT_SECRET_KEY")

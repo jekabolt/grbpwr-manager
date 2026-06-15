@@ -8,12 +8,35 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderInvoiceRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
+	// RATE LIMIT CHECK: this endpoint operates on req.OrderUuid alone and returns
+	// the payment client_secret, so without a limit the ORD-+7-char reference is
+	// brute-forceable over time. Key on client IP and on the order UUID itself.
+	//
+	// TODO(security): close the IDOR. This endpoint has no ownership binding: the
+	// caller only proves knowledge of order_uuid, not that the order is theirs
+	// (unlike GetOrderByUUIDAndEmail, which matches a buyer email). The guest
+	// checkout flow reaches this endpoint without a storefront session, so we
+	// cannot make the storefront access token (s.storefrontEmailFromAccess) a hard
+	// requirement here without breaking guest payments. Fully fixing this needs a
+	// proto change (add an email/token field to GetOrderInvoiceRequest, matched
+	// against the order's buyer email) plus coordinated frontend changes to pass
+	// it. Until then, rate limiting is the mitigation.
+	clientIP := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckSupportTicket(clientIP, req.OrderUuid); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for get order invoice",
+			slog.String("ip", clientIP),
+			slog.String("order_uuid", req.OrderUuid),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded")
+	}
+
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
 	pme, ok := cache.GetPaymentMethodByName(pm)
@@ -53,6 +76,29 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 }
 
 func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.CancelOrderInvoiceRequest) (*pb_frontend.CancelOrderInvoiceResponse, error) {
+	// RATE LIMIT CHECK: this endpoint operates on req.OrderUuid alone and cancels
+	// payment monitoring / releases reserved stock, so without a limit the
+	// ORD-+7-char reference is brute-forceable into a denial-of-service against
+	// other buyers' pending orders. Key on client IP and on the order UUID itself.
+	//
+	// TODO(security): close the IDOR. Like GetOrderInvoice, this endpoint has no
+	// ownership binding — the caller only proves knowledge of order_uuid, not that
+	// the order is theirs (unlike CancelOrderByUser, which matches a buyer email).
+	// The guest checkout flow reaches this endpoint without a storefront session,
+	// so the storefront access token (s.storefrontEmailFromAccess) cannot be made
+	// a hard requirement here without breaking guest payments. Fully fixing this
+	// needs a proto change (add an email/token field to CancelOrderInvoiceRequest,
+	// matched against the order's buyer email) plus coordinated frontend changes.
+	// Until then, rate limiting is the mitigation.
+	clientIP := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckSupportTicket(clientIP, req.OrderUuid); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for cancel order invoice",
+			slog.String("ip", clientIP),
+			slog.String("order_uuid", req.OrderUuid),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded")
+	}
+
 	payment, err := s.repo.Order().ExpireOrderPayment(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't expire order payment",
