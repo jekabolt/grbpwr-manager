@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -241,7 +242,13 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 			refundAmount = &amount
 		}
 
-		if err := handler.Refund(ctx, orderFull.Payment, req.OrderUuid, refundAmount, orderFull.Order.Currency); err != nil {
+		// Deterministic idempotency key over the refund scope: a retry after a partial
+		// failure (e.g. Stripe succeeded but the DB step failed) and two concurrent
+		// identical refund calls reuse the same key, so Stripe dedupes server-side and
+		// the money is refunded at most once.
+		idemKey := stripe.RefundIdempotencyKey(req.OrderUuid, req.OrderItemIds, refundShipping, refundAmount, orderFull.Order.Currency)
+
+		if err := handler.Refund(ctx, orderFull.Payment, req.OrderUuid, refundAmount, orderFull.Order.Currency, idemKey); err != nil {
 			slog.Default().ErrorContext(ctx, "stripe refund failed",
 				slog.String("err", err.Error()),
 				slog.String("orderUuid", req.OrderUuid),

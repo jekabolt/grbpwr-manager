@@ -218,7 +218,9 @@ type (
 		StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment)
 		// Refund performs a Stripe refund for an order. No-op for non-Stripe payment methods.
 		// If amount is nil, performs full refund. Otherwise refunds the specified amount in order currency.
-		Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error
+		// idempotencyKey must be derived deterministically from the refund scope so retries and
+		// concurrent identical refunds dedupe at Stripe (see stripe.RefundIdempotencyKey).
+		Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string, idempotencyKey string) error
 	}
 
 	StripePayment interface {

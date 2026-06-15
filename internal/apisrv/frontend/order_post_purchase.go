@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -193,7 +194,12 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 				return nil, status.Error(codes.Internal, "can't get payment handler")
 			}
 
-			if err := pHandler.Refund(ctx, orderFull.Payment, req.OrderUuid, nil, orderFull.Order.Currency); err != nil {
+			// Deterministic idempotency key so a retry of this user-initiated full
+			// refund (or a concurrent admin refund of the same scope) dedupes at Stripe
+			// instead of refunding twice. Scope here: full refund, including shipping.
+			idemKey := stripe.RefundIdempotencyKey(req.OrderUuid, nil, true, nil, orderFull.Order.Currency)
+
+			if err := pHandler.Refund(ctx, orderFull.Payment, req.OrderUuid, nil, orderFull.Order.Currency, idemKey); err != nil {
 				slog.Default().ErrorContext(ctx, "stripe refund failed",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),

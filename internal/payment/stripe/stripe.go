@@ -2,9 +2,11 @@ package stripe
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	curr "github.com/jekabolt/grbpwr-manager/internal/currency"
@@ -178,15 +180,57 @@ func trimSecret(s string) string {
 	return s[:index]
 }
 
+// RefundIdempotencyKey derives a DETERMINISTIC Stripe idempotency key for a refund
+// from its scope, so that a retry of the same refund AND two concurrent identical
+// refund calls reuse the same key — Stripe then dedupes the operation server-side and
+// only moves money once. The key changes when the scope changes (different items,
+// quantities, shipping flag, full-vs-partial, or amount), so distinct partial refunds
+// of the same order still get distinct keys.
+//
+// orderItemIDs may contain repeated IDs (each occurrence = 1 unit); empty = full refund.
+func RefundIdempotencyKey(orderUUID string, orderItemIDs []int32, refundShipping bool, amount *decimal.Decimal, currency string) string {
+	// Canonicalize the item scope: count units per id, then emit in sorted id order so
+	// input ordering does not affect the key.
+	counts := make(map[int32]int, len(orderItemIDs))
+	for _, id := range orderItemIDs {
+		counts[id]++
+	}
+	ids := make([]int32, 0, len(counts))
+	for id := range counts {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	full := len(orderItemIDs) == 0
+	var b strings.Builder
+	fmt.Fprintf(&b, "scope=%t;shipping=%t;currency=%s;items=", full, refundShipping, currency)
+	for _, id := range ids {
+		fmt.Fprintf(&b, "%d:%d,", id, counts[id])
+	}
+	b.WriteString(";amount=")
+	if amount != nil {
+		b.WriteString(dto.RoundForCurrency(*amount, currency).String())
+	} else {
+		b.WriteString("full")
+	}
+
+	sum := sha256.Sum256([]byte(b.String()))
+	return "refund:" + orderUUID + ":" + hex.EncodeToString(sum[:])
+}
+
 // Refund creates a refund for the order via Stripe API.
 // If amount is nil, performs full refund. Otherwise refunds the specified amount in the given currency.
 // Requires payment with valid ClientSecret (PaymentIntent) and IsTransactionDone.
-// Each refund call generates a unique idempotency key based on orderUUID + timestamp to support
-// multiple partial refunds for the same order.
-func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string) error {
+// idempotencyKey MUST be derived deterministically from the refund scope (see
+// RefundIdempotencyKey) so that retries and concurrent identical refunds dedupe at
+// Stripe instead of issuing a second refund.
+func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string, idempotencyKey string) error {
 	ok := payment.ClientSecret.Valid
 	if !ok {
 		return fmt.Errorf("payment has no client secret (PaymentIntent)")
+	}
+	if idempotencyKey == "" {
+		return fmt.Errorf("refund idempotency key is empty")
 	}
 
 	paymentIntentID := trimSecret(payment.ClientSecret.String)
@@ -211,9 +255,8 @@ func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUI
 		params.Amount = stripe.Int64(amountCents)
 	}
 
-	// Use unique idempotency key per refund operation to support multiple partial refunds.
-	// Format: orderUUID_refund_<timestamp> ensures each refund call is unique.
-	idempotencyKey := fmt.Sprintf("%s_refund_%d", orderUUID, time.Now().UTC().UnixNano())
+	// Deterministic idempotency key: retries and concurrent identical refunds reuse the
+	// same key, so Stripe refunds the money at most once for this scope.
 	params.SetIdempotencyKey(idempotencyKey)
 
 	_, err := p.stripeClient.Refunds.New(params)

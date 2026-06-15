@@ -96,9 +96,13 @@ func refundCoversFullOrder(orderItems []entity.OrderItem, orderItemIDs []int32, 
 
 // determineRefundScope determines which items to refund and the target status based on
 // the current order status and requested item IDs.
+//
+// alreadyRefunded (read from the refunded_order_item ledger under FOR UPDATE) makes this
+// idempotent: full-refund paths expand only the REMAINING (not-yet-refunded) units, so a
+// re-run of an already-completed refund restores zero stock.
 func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []entity.OrderItem, orderItemIDs []int32, alreadyRefunded map[int]int64) ([]refundItem, *cache.Status, error) {
 	if currentStatus == entity.Confirmed {
-		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems, alreadyRefunded), &cache.OrderStatusRefunded, nil
 	}
 
 	partialItems, err := validateAndMapOrderItems(orderItems, orderItemIDs, alreadyRefunded)
@@ -107,20 +111,28 @@ func determineRefundScope(currentStatus entity.OrderStatusName, orderItems []ent
 	}
 
 	if partialItems == nil {
-		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems, alreadyRefunded), &cache.OrderStatusRefunded, nil
 	}
 
 	if refundCoversFullOrder(orderItems, orderItemIDs, alreadyRefunded) {
-		return orderItemsToRefundItems(orderItems), &cache.OrderStatusRefunded, nil
+		return orderItemsToRefundItems(orderItems, alreadyRefunded), &cache.OrderStatusRefunded, nil
 	}
 
 	return partialItems, &cache.OrderStatusPartiallyRefunded, nil
 }
 
-func orderItemsToRefundItems(orderItems []entity.OrderItem) []refundItem {
-	out := make([]refundItem, len(orderItems))
-	for i, item := range orderItems {
-		out[i] = refundItem{OrderItemId: item.Id, OrderItemInsert: item.OrderItemInsert}
+// orderItemsToRefundItems expands each order item into one refundItem per remaining
+// (not-yet-refunded) unit. Units already recorded in the refunded_order_item ledger are
+// skipped so stock is restored only once even if the refund is retried.
+func orderItemsToRefundItems(orderItems []entity.OrderItem, alreadyRefunded map[int]int64) []refundItem {
+	out := make([]refundItem, 0, len(orderItems))
+	for _, item := range orderItems {
+		remaining := item.Quantity.IntPart() - alreadyRefunded[item.Id]
+		for i := int64(0); i < remaining; i++ {
+			insert := item.OrderItemInsert
+			insert.Quantity = decimal.NewFromInt(1)
+			out = append(out, refundItem{OrderItemId: item.Id, OrderItemInsert: insert})
+		}
 	}
 	return out
 }
@@ -277,7 +289,7 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 // DeliveredOrder updates order status to Delivered.
 func (s *Store) DeliveredOrder(ctx context.Context, orderUUID string) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderByUUID(ctx, rep.DB(), orderUUID)
+		order, err := getOrderByUUIDForUpdate(ctx, rep.DB(), orderUUID)
 		if err != nil {
 			return fmt.Errorf("can't get order by id: %w", err)
 		}

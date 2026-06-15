@@ -225,9 +225,19 @@ func (s *Store) insertOrderDetails(ctx context.Context, db dependency.DB, order 
 	return nil
 }
 
+// insertRefundedOrderItems records newly refunded units in the refunded_order_item ledger.
+// The ledger has a UNIQUE (order_id, order_item_id); ON DUPLICATE KEY UPDATE accumulates
+// the quantity so repeated partial refunds of distinct units sum into one row, and a
+// retried full refund (where qty is 0 because no new units remain) is a no-op. This keeps
+// the whole RefundOrder transaction idempotent against a re-run.
 func insertRefundedOrderItems(ctx context.Context, db dependency.DB, orderId int, refundedByItem map[int]int64) error {
 	for orderItemId, qty := range refundedByItem {
-		query := `INSERT INTO refunded_order_item (order_id, order_item_id, quantity_refunded) VALUES (:orderId, :orderItemId, :quantityRefunded)`
+		if qty <= 0 {
+			continue
+		}
+		query := `INSERT INTO refunded_order_item (order_id, order_item_id, quantity_refunded)
+			VALUES (:orderId, :orderItemId, :quantityRefunded)
+			ON DUPLICATE KEY UPDATE quantity_refunded = quantity_refunded + VALUES(quantity_refunded)`
 		if err := storeutil.ExecNamed(ctx, db, query, map[string]any{
 			"orderId":          orderId,
 			"orderItemId":      orderItemId,
