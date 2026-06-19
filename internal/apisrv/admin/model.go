@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -33,9 +34,20 @@ func (s *Server) AddModel(ctx context.Context, req *pb_admin.AddModelRequest) (*
 	return &pb_admin.AddModelResponse{Id: int32(id)}, nil
 }
 
-// ListModels returns a paged list of fit-model profiles.
+// ListModels returns a paged list of fit-model profiles, optionally filtered by
+// gender and a substring search on name.
 func (s *Server) ListModels(ctx context.Context, req *pb_admin.ListModelsRequest) (*pb_admin.ListModelsResponse, error) {
-	models, total, err := s.repo.Models().ListModels(ctx, int(req.Limit), int(req.Offset), dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor))
+	gender := ""
+	if req.Gender != pb_common.GenderEnum_GENDER_ENUM_UNKNOWN {
+		g, err := dto.ConvertPbGenderEnumToEntityGenderEnum(req.Gender)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid gender filter: %v", err)
+		}
+		gender = string(g)
+	}
+
+	models, total, err := s.repo.Models().ListModels(ctx, int(req.Limit), int(req.Offset),
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor), gender, strings.TrimSpace(req.Name))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list models",
 			slog.String("err", err.Error()),

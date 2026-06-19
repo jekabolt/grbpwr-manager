@@ -66,13 +66,13 @@ type ModelMeasurement struct {
 // ModelInsert is the writable payload for a fit-model profile. Measurements are
 // sparse: only the filled-in ones are present.
 type ModelInsert struct {
-	Name                string             `db:"name"`
-	Comment             sql.NullString     `db:"comment"`
-	Gender              sql.NullString     `db:"gender"`
-	DefaultSampleSizeId sql.NullInt32      `db:"default_sample_size_id"`
-	ThumbnailId         sql.NullInt32      `db:"thumbnail_id"`
-	Measurements        []ModelMeasurement `db:"-"`
-	MediaIds            []int              `db:"-"`
+	Name           string             `db:"name"`
+	Comment        sql.NullString     `db:"comment"`
+	Gender         sql.NullString     `db:"gender"`
+	ThumbnailId    sql.NullInt32      `db:"thumbnail_id"`
+	Measurements   []ModelMeasurement `db:"-"`
+	MediaIds       []int              `db:"-"`
+	DefaultSizeIds []int              `db:"-"`
 }
 
 // Model is a stored fit-model profile (model table row + measurements + media).

@@ -1212,6 +1212,8 @@ message ListModelsRequest {
   int32 limit = 1;
   int32 offset = 2;
   common.OrderFactor order_factor = 3;
+  common.GenderEnum gender = 4; // optional filter; UNKNOWN = no filter
+  string name = 5; // optional case-insensitive name search (substring)
 }
 
 message ListModelsResponse {

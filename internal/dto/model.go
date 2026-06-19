@@ -62,9 +62,6 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 		return nil, fmt.Errorf("model name must be at most %d characters", maxVarchar255)
 	}
 
-	if pb.DefaultSampleSizeId < 0 {
-		return nil, fmt.Errorf("default_sample_size_id must not be negative")
-	}
 	if pb.ThumbnailId < 0 {
 		return nil, fmt.Errorf("thumbnail_id must not be negative")
 	}
@@ -99,14 +96,27 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 		mediaIds = append(mediaIds, int(mid))
 	}
 
+	defaultSizeIds := make([]int, 0, len(pb.DefaultSizeIds))
+	seenSizes := make(map[int]bool, len(pb.DefaultSizeIds))
+	for _, sid := range pb.DefaultSizeIds {
+		if sid <= 0 {
+			return nil, fmt.Errorf("default_size_ids must be positive")
+		}
+		if seenSizes[int(sid)] {
+			return nil, fmt.Errorf("duplicate default size id: %d", sid)
+		}
+		seenSizes[int(sid)] = true
+		defaultSizeIds = append(defaultSizeIds, int(sid))
+	}
+
 	return &entity.ModelInsert{
-		Name:                pb.Name,
-		Comment:             nullStringFromPb(pb.Comment),
-		Gender:              gender,
-		DefaultSampleSizeId: nullInt32FromPb(pb.DefaultSampleSizeId),
-		ThumbnailId:         nullInt32FromPb(pb.ThumbnailId),
-		Measurements:        measurements,
-		MediaIds:            mediaIds,
+		Name:           pb.Name,
+		Comment:        nullStringFromPb(pb.Comment),
+		Gender:         gender,
+		ThumbnailId:    nullInt32FromPb(pb.ThumbnailId),
+		Measurements:   measurements,
+		MediaIds:       mediaIds,
+		DefaultSizeIds: defaultSizeIds,
 	}, nil
 }
 
@@ -144,16 +154,21 @@ func ConvertEntityModelToPb(m *entity.Model) *pb_common.Model {
 		thumbnail = ConvertEntityToCommonMedia(m.Thumbnail)
 	}
 
+	defaultSizeIds := make([]int32, 0, len(m.DefaultSizeIds))
+	for _, sid := range m.DefaultSizeIds {
+		defaultSizeIds = append(defaultSizeIds, int32(sid))
+	}
+
 	return &pb_common.Model{
 		Id: int32(m.Id),
 		Model: &pb_common.ModelInsert{
-			Name:                m.Name,
-			Comment:             pbStringFromNull(m.Comment),
-			Gender:              pbGenderFromNull(m.Gender),
-			DefaultSampleSizeId: pbInt32FromNull(m.DefaultSampleSizeId),
-			ThumbnailId:         pbInt32FromNull(m.ThumbnailId),
-			Measurements:        measurements,
-			MediaIds:            mediaIds,
+			Name:           m.Name,
+			Comment:        pbStringFromNull(m.Comment),
+			Gender:         pbGenderFromNull(m.Gender),
+			ThumbnailId:    pbInt32FromNull(m.ThumbnailId),
+			Measurements:   measurements,
+			MediaIds:       mediaIds,
+			DefaultSizeIds: defaultSizeIds,
 		},
 		Thumbnail: thumbnail,
 		Media:     media,

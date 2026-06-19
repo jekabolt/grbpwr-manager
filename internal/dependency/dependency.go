@@ -310,7 +310,7 @@ type (
 		UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) error
 		DeleteModel(ctx context.Context, id int) error
 		GetModelById(ctx context.Context, id int) (*entity.Model, error)
-		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Model, int, error)
+		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, gender, nameSearch string) ([]entity.Model, int, error)
 	}
 
 	// Fittings manages garment try-on sessions with their sizes and media.

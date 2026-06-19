@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -38,14 +39,13 @@ func (s *Store) AddModel(ctx context.Context, m *entity.ModelInsert) (int, error
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO model (name, comment, gender, default_sample_size_id, thumbnail_id)
-			VALUES (:name, :comment, :gender, :defaultSampleSizeId, :thumbnailId)`,
+			INSERT INTO model (name, comment, gender, thumbnail_id)
+			VALUES (:name, :comment, :gender, :thumbnailId)`,
 			map[string]any{
-				"name":                m.Name,
-				"comment":             m.Comment,
-				"gender":              m.Gender,
-				"defaultSampleSizeId": m.DefaultSampleSizeId,
-				"thumbnailId":         m.ThumbnailId,
+				"name":        m.Name,
+				"comment":     m.Comment,
+				"gender":      m.Gender,
+				"thumbnailId": m.ThumbnailId,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert model: %w", err)
@@ -53,7 +53,10 @@ func (s *Store) AddModel(ctx context.Context, m *entity.ModelInsert) (int, error
 		if err := insertModelMeasurements(ctx, rep.DB(), id, m.Measurements); err != nil {
 			return err
 		}
-		return insertModelMedia(ctx, rep.DB(), id, m.MediaIds)
+		if err := insertModelMedia(ctx, rep.DB(), id, m.MediaIds); err != nil {
+			return err
+		}
+		return insertModelDefaultSizes(ctx, rep.DB(), id, m.DefaultSizeIds)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add model: %w", err)
@@ -80,16 +83,14 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 				name = :name,
 				comment = :comment,
 				gender = :gender,
-				default_sample_size_id = :defaultSampleSizeId,
 				thumbnail_id = :thumbnailId
 			WHERE id = :id`,
 			map[string]any{
-				"id":                  id,
-				"name":                m.Name,
-				"comment":             m.Comment,
-				"gender":              m.Gender,
-				"defaultSampleSizeId": m.DefaultSampleSizeId,
-				"thumbnailId":         m.ThumbnailId,
+				"id":          id,
+				"name":        m.Name,
+				"comment":     m.Comment,
+				"gender":      m.Gender,
+				"thumbnailId": m.ThumbnailId,
 			}); err != nil {
 			return fmt.Errorf("failed to update model: %w", err)
 		}
@@ -106,7 +107,15 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 			map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear model media: %w", err)
 		}
-		return insertModelMedia(ctx, rep.DB(), id, m.MediaIds)
+		if err := insertModelMedia(ctx, rep.DB(), id, m.MediaIds); err != nil {
+			return err
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM model_default_size WHERE model_id = :id`,
+			map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear model default sizes: %w", err)
+		}
+		return insertModelDefaultSizes(ctx, rep.DB(), id, m.DefaultSizeIds)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update model: %w", err)
@@ -139,20 +148,38 @@ func (s *Store) GetModelById(ctx context.Context, id int) (*entity.Model, error)
 }
 
 // ListModels returns a paged list of model profiles with their measurements,
-// plus the total number of models (ignoring pagination).
-func (s *Store) ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Model, int, error) {
+// optionally filtered by gender (empty = no filter) and a case-insensitive
+// substring match on name (empty = no filter), plus the total number of
+// matching models (ignoring pagination).
+func (s *Store) ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, gender, nameSearch string) ([]entity.Model, int, error) {
 	limit, offset = clampPagination(limit, offset)
 
-	total, err := storeutil.QueryCountNamed(ctx, s.DB, `SELECT COUNT(*) FROM model`, nil)
+	// Shared filter for both the count and the page query.
+	filterParams := map[string]any{}
+	where := ""
+	if gender != "" {
+		where += " AND gender = :gender"
+		filterParams["gender"] = gender
+	}
+	if nameSearch != "" {
+		where += " AND name LIKE :nameSearch"
+		filterParams["nameSearch"] = "%" + escapeLike(nameSearch) + "%"
+	}
+
+	total, err := storeutil.QueryCountNamed(ctx, s.DB,
+		fmt.Sprintf(`SELECT COUNT(*) FROM model WHERE 1=1%s`, where), filterParams)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't count models: %w", err)
 	}
 
+	filterParams["limit"] = limit
+	filterParams["offset"] = offset
 	models, err := storeutil.QueryListNamed[entity.Model](ctx, s.DB, fmt.Sprintf(`
 		SELECT * FROM model
+		WHERE 1=1%s
 		ORDER BY id %s
-		LIMIT :limit OFFSET :offset`, orderFactor.String()),
-		map[string]any{"limit": limit, "offset": offset})
+		LIMIT :limit OFFSET :offset`, where, orderFactor.String()),
+		filterParams)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list models: %w", err)
 	}
@@ -265,10 +292,15 @@ func (s *Store) enrich(ctx context.Context, models []entity.Model) error {
 	if err != nil {
 		return err
 	}
+	defaultSizes, err := s.defaultSizesByModelIds(ctx, ids)
+	if err != nil {
+		return err
+	}
 
 	for i := range models {
 		models[i].Measurements = measurements[models[i].Id]
 		models[i].Media = gallery[models[i].Id]
+		models[i].DefaultSizeIds = defaultSizes[models[i].Id]
 		if models[i].ThumbnailId.Valid {
 			if mf, ok := thumbs[int(models[i].ThumbnailId.Int32)]; ok {
 				t := mf
@@ -277,6 +309,54 @@ func (s *Store) enrich(ctx context.Context, models []entity.Model) error {
 		}
 	}
 	return nil
+}
+
+func insertModelDefaultSizes(ctx context.Context, db dependency.DB, modelID int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(sizeIDs))
+	for _, sid := range sizeIDs {
+		rows = append(rows, map[string]any{
+			"model_id": modelID,
+			"size_id":  sid,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "model_default_size", rows); err != nil {
+		return fmt.Errorf("failed to insert model default sizes: %w", err)
+	}
+	return nil
+}
+
+type modelDefaultSizeRow struct {
+	ModelID int `db:"model_id"`
+	SizeID  int `db:"size_id"`
+}
+
+func (s *Store) defaultSizesByModelIds(ctx context.Context, ids []int) (map[int][]int, error) {
+	if len(ids) == 0 {
+		return map[int][]int{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[modelDefaultSizeRow](ctx, s.DB, `
+		SELECT model_id, size_id
+		FROM model_default_size
+		WHERE model_id IN (:ids)
+		ORDER BY id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load model default sizes: %w", err)
+	}
+	out := make(map[int][]int, len(ids))
+	for _, r := range rows {
+		out[r.ModelID] = append(out[r.ModelID], r.SizeID)
+	}
+	return out, nil
+}
+
+// escapeLike escapes LIKE wildcards in a user-supplied search term so they are
+// matched literally (the surrounding %…% is added by the caller).
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 type modelMediaRow struct {

@@ -48,13 +48,15 @@ message ModelMeasurement {
 // ModelInsert is the writable payload for a fit-model profile. Measurements are
 // sparse: include only the ones that are filled in.
 message ModelInsert {
+  reserved 4; // was default_sample_size_id (single); replaced by default_size_ids
+  reserved "default_sample_size_id";
   string name = 1;
   string comment = 2;
   GenderEnum gender = 3;
-  int32 default_sample_size_id = 4; // FK size(id); 0 = unset
   repeated ModelMeasurement measurements = 5;
   int32 thumbnail_id = 6; // FK media(id); 0 = unset (optional)
   repeated int32 media_ids = 7; // optional photo gallery
+  repeated int32 default_size_ids = 8; // FK size(id); default sample sizes (multi, optional)
 }
 
 // Model is a stored fit-model profile.

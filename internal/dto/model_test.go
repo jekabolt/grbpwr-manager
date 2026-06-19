@@ -9,12 +9,12 @@ import (
 
 func TestConvertPbModelInsertToEntity(t *testing.T) {
 	valid := &pb_common.ModelInsert{
-		Name:                "Anna",
-		Comment:             "lookbook",
-		Gender:              pb_common.GenderEnum_GENDER_ENUM_FEMALE,
-		DefaultSampleSizeId: 4,
-		ThumbnailId:         9,
-		MediaIds:            []int32{3, 4},
+		Name:           "Anna",
+		Comment:        "lookbook",
+		Gender:         pb_common.GenderEnum_GENDER_ENUM_FEMALE,
+		DefaultSizeIds: []int32{4, 5},
+		ThumbnailId:    9,
+		MediaIds:       []int32{3, 4},
 		Measurements: []*pb_common.ModelMeasurement{
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 880},
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_WAIST, ValueMm: 640},
@@ -31,8 +31,8 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 	if !got.Gender.Valid || got.Gender.String != string(entity.Female) {
 		t.Errorf("gender mismatch: %+v", got.Gender)
 	}
-	if !got.DefaultSampleSizeId.Valid || got.DefaultSampleSizeId.Int32 != 4 {
-		t.Errorf("default size mismatch: %+v", got.DefaultSampleSizeId)
+	if len(got.DefaultSizeIds) != 2 || got.DefaultSizeIds[0] != 4 {
+		t.Errorf("default sizes mismatch: %+v", got.DefaultSizeIds)
 	}
 	if len(got.Measurements) != 2 || got.Measurements[0].Name != entity.BodyChest || got.Measurements[0].ValueMM != 880 {
 		t.Errorf("measurements mismatch: %+v", got.Measurements)
@@ -46,14 +46,15 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 
 	// invalid cases
 	bad := map[string]*pb_common.ModelInsert{
-		"nil":           nil,
-		"empty name":    {Name: ""},
-		"unknown name":  {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName(999), ValueMm: 100}}},
-		"negative size":      {Name: "x", DefaultSampleSizeId: -1},
+		"nil":                nil,
+		"empty name":         {Name: ""},
+		"unknown name":       {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName(999), ValueMm: 100}}},
+		"non-positive size":  {Name: "x", DefaultSizeIds: []int32{0}},
+		"duplicate def size": {Name: "x", DefaultSizeIds: []int32{4, 4}},
 		"negative thumbnail": {Name: "x", ThumbnailId: -1},
 		"name too long":      {Name: string(make([]byte, 256))},
-		"value zero":    {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 0}}},
-		"value too big": {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 99999}}},
+		"value zero":         {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 0}}},
+		"value too big":      {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 99999}}},
 		"duplicate name": {Name: "x", Measurements: []*pb_common.ModelMeasurement{
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 100},
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 200},
@@ -68,9 +69,9 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 
 func TestConvertEntityModelToPbRoundTrip(t *testing.T) {
 	in := &pb_common.ModelInsert{
-		Name:                "Max",
-		Gender:              pb_common.GenderEnum_GENDER_ENUM_MALE,
-		DefaultSampleSizeId: 0, // unset
+		Name:           "Max",
+		Gender:         pb_common.GenderEnum_GENDER_ENUM_MALE,
+		DefaultSizeIds: []int32{3, 4},
 		Measurements: []*pb_common.ModelMeasurement{
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_INSEAM, ValueMm: 820},
 		},
@@ -97,8 +98,8 @@ func TestConvertEntityModelToPbRoundTrip(t *testing.T) {
 	if pb.Model.Gender != pb_common.GenderEnum_GENDER_ENUM_MALE {
 		t.Errorf("round-trip gender mismatch: %v", pb.Model.Gender)
 	}
-	if pb.Model.DefaultSampleSizeId != 0 {
-		t.Errorf("unset size should be 0, got %d", pb.Model.DefaultSampleSizeId)
+	if len(pb.Model.DefaultSizeIds) != 2 || pb.Model.DefaultSizeIds[1] != 4 {
+		t.Errorf("default sizes round-trip mismatch: %+v", pb.Model.DefaultSizeIds)
 	}
 	if len(pb.Model.Measurements) != 1 ||
 		pb.Model.Measurements[0].Name != pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_INSEAM ||
