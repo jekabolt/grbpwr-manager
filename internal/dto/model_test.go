@@ -13,6 +13,8 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 		Comment:             "lookbook",
 		Gender:              pb_common.GenderEnum_GENDER_ENUM_FEMALE,
 		DefaultSampleSizeId: 4,
+		ThumbnailId:         9,
+		MediaIds:            []int32{3, 4},
 		Measurements: []*pb_common.ModelMeasurement{
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 880},
 			{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_WAIST, ValueMm: 640},
@@ -35,14 +37,21 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 	if len(got.Measurements) != 2 || got.Measurements[0].Name != entity.BodyChest || got.Measurements[0].ValueMM != 880 {
 		t.Errorf("measurements mismatch: %+v", got.Measurements)
 	}
+	if !got.ThumbnailId.Valid || got.ThumbnailId.Int32 != 9 {
+		t.Errorf("thumbnail mismatch: %+v", got.ThumbnailId)
+	}
+	if len(got.MediaIds) != 2 || got.MediaIds[0] != 3 {
+		t.Errorf("media ids mismatch: %+v", got.MediaIds)
+	}
 
 	// invalid cases
 	bad := map[string]*pb_common.ModelInsert{
 		"nil":           nil,
 		"empty name":    {Name: ""},
 		"unknown name":  {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName(999), ValueMm: 100}}},
-		"negative size": {Name: "x", DefaultSampleSizeId: -1},
-		"name too long":  {Name: string(make([]byte, 256))},
+		"negative size":      {Name: "x", DefaultSampleSizeId: -1},
+		"negative thumbnail": {Name: "x", ThumbnailId: -1},
+		"name too long":      {Name: string(make([]byte, 256))},
 		"value zero":    {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 0}}},
 		"value too big": {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 99999}}},
 		"duplicate name": {Name: "x", Measurements: []*pb_common.ModelMeasurement{
@@ -70,9 +79,20 @@ func TestConvertEntityModelToPbRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("to entity: %v", err)
 	}
-	pb := ConvertEntityModelToPb(&entity.Model{Id: 7, ModelInsert: *ent})
+	pb := ConvertEntityModelToPb(&entity.Model{
+		Id:          7,
+		ModelInsert: *ent,
+		Thumbnail:   &entity.MediaFull{Id: 11},
+		Media:       []entity.MediaFull{{Id: 12}, {Id: 13}},
+	})
 	if pb.Id != 7 || pb.Model.Name != "Max" {
 		t.Errorf("round-trip id/name mismatch: %+v", pb)
+	}
+	if pb.Thumbnail == nil || pb.Thumbnail.Id != 11 {
+		t.Errorf("thumbnail mismatch: %+v", pb.Thumbnail)
+	}
+	if len(pb.Media) != 2 || len(pb.Model.MediaIds) != 2 || pb.Model.MediaIds[1] != 13 {
+		t.Errorf("media mismatch: media=%d ids=%+v", len(pb.Media), pb.Model.MediaIds)
 	}
 	if pb.Model.Gender != pb_common.GenderEnum_GENDER_ENUM_MALE {
 		t.Errorf("round-trip gender mismatch: %v", pb.Model.Gender)

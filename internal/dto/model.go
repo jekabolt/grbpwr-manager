@@ -65,6 +65,9 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 	if pb.DefaultSampleSizeId < 0 {
 		return nil, fmt.Errorf("default_sample_size_id must not be negative")
 	}
+	if pb.ThumbnailId < 0 {
+		return nil, fmt.Errorf("thumbnail_id must not be negative")
+	}
 
 	gender, err := nullGenderFromPb(pb.Gender)
 	if err != nil {
@@ -91,12 +94,19 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 		})
 	}
 
+	mediaIds := make([]int, 0, len(pb.MediaIds))
+	for _, mid := range pb.MediaIds {
+		mediaIds = append(mediaIds, int(mid))
+	}
+
 	return &entity.ModelInsert{
 		Name:                pb.Name,
 		Comment:             nullStringFromPb(pb.Comment),
 		Gender:              gender,
 		DefaultSampleSizeId: nullInt32FromPb(pb.DefaultSampleSizeId),
+		ThumbnailId:         nullInt32FromPb(pb.ThumbnailId),
 		Measurements:        measurements,
+		MediaIds:            mediaIds,
 	}, nil
 }
 
@@ -122,6 +132,18 @@ func ConvertEntityModelToPb(m *entity.Model) *pb_common.Model {
 			ValueMm: int32(em.ValueMM),
 		})
 	}
+	media := make([]*pb_common.MediaFull, 0, len(m.Media))
+	mediaIds := make([]int32, 0, len(m.Media))
+	for i := range m.Media {
+		media = append(media, ConvertEntityToCommonMedia(&m.Media[i]))
+		mediaIds = append(mediaIds, int32(m.Media[i].Id))
+	}
+
+	var thumbnail *pb_common.MediaFull
+	if m.Thumbnail != nil {
+		thumbnail = ConvertEntityToCommonMedia(m.Thumbnail)
+	}
+
 	return &pb_common.Model{
 		Id: int32(m.Id),
 		Model: &pb_common.ModelInsert{
@@ -129,8 +151,12 @@ func ConvertEntityModelToPb(m *entity.Model) *pb_common.Model {
 			Comment:             pbStringFromNull(m.Comment),
 			Gender:              pbGenderFromNull(m.Gender),
 			DefaultSampleSizeId: pbInt32FromNull(m.DefaultSampleSizeId),
+			ThumbnailId:         pbInt32FromNull(m.ThumbnailId),
 			Measurements:        measurements,
+			MediaIds:            mediaIds,
 		},
+		Thumbnail: thumbnail,
+		Media:     media,
 		CreatedAt: timestamppb.New(m.CreatedAt),
 		UpdatedAt: timestamppb.New(m.UpdatedAt),
 	}

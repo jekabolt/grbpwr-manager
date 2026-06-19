@@ -70,13 +70,17 @@ type ModelInsert struct {
 	Comment             sql.NullString     `db:"comment"`
 	Gender              sql.NullString     `db:"gender"`
 	DefaultSampleSizeId sql.NullInt32      `db:"default_sample_size_id"`
+	ThumbnailId         sql.NullInt32      `db:"thumbnail_id"`
 	Measurements        []ModelMeasurement `db:"-"`
+	MediaIds            []int              `db:"-"`
 }
 
-// Model is a stored fit-model profile (model table row + measurements).
+// Model is a stored fit-model profile (model table row + measurements + media).
 type Model struct {
 	Id int `db:"id"`
 	ModelInsert
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	CreatedAt time.Time   `db:"created_at"`
+	UpdatedAt time.Time   `db:"updated_at"`
+	Thumbnail *MediaFull  `db:"-"`
+	Media     []MediaFull `db:"-"`
 }

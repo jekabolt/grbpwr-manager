@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "common/media.proto";
 import "common/product.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -52,6 +53,8 @@ message ModelInsert {
   GenderEnum gender = 3;
   int32 default_sample_size_id = 4; // FK size(id); 0 = unset
   repeated ModelMeasurement measurements = 5;
+  int32 thumbnail_id = 6; // FK media(id); 0 = unset (optional)
+  repeated int32 media_ids = 7; // optional photo gallery
 }
 
 // Model is a stored fit-model profile.
@@ -60,4 +63,6 @@ message Model {
   ModelInsert model = 2;
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
+  MediaFull thumbnail = 5; // resolved thumbnail; null if unset
+  repeated MediaFull media = 6; // resolved photo gallery
 }

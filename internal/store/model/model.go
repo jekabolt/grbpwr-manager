@@ -38,18 +38,22 @@ func (s *Store) AddModel(ctx context.Context, m *entity.ModelInsert) (int, error
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO model (name, comment, gender, default_sample_size_id)
-			VALUES (:name, :comment, :gender, :defaultSampleSizeId)`,
+			INSERT INTO model (name, comment, gender, default_sample_size_id, thumbnail_id)
+			VALUES (:name, :comment, :gender, :defaultSampleSizeId, :thumbnailId)`,
 			map[string]any{
 				"name":                m.Name,
 				"comment":             m.Comment,
 				"gender":              m.Gender,
 				"defaultSampleSizeId": m.DefaultSampleSizeId,
+				"thumbnailId":         m.ThumbnailId,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert model: %w", err)
 		}
-		return insertModelMeasurements(ctx, rep.DB(), id, m.Measurements)
+		if err := insertModelMeasurements(ctx, rep.DB(), id, m.Measurements); err != nil {
+			return err
+		}
+		return insertModelMedia(ctx, rep.DB(), id, m.MediaIds)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add model: %w", err)
@@ -76,7 +80,8 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 				name = :name,
 				comment = :comment,
 				gender = :gender,
-				default_sample_size_id = :defaultSampleSizeId
+				default_sample_size_id = :defaultSampleSizeId,
+				thumbnail_id = :thumbnailId
 			WHERE id = :id`,
 			map[string]any{
 				"id":                  id,
@@ -84,6 +89,7 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 				"comment":             m.Comment,
 				"gender":              m.Gender,
 				"defaultSampleSizeId": m.DefaultSampleSizeId,
+				"thumbnailId":         m.ThumbnailId,
 			}); err != nil {
 			return fmt.Errorf("failed to update model: %w", err)
 		}
@@ -92,7 +98,15 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 			map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear model measurements: %w", err)
 		}
-		return insertModelMeasurements(ctx, rep.DB(), id, m.Measurements)
+		if err := insertModelMeasurements(ctx, rep.DB(), id, m.Measurements); err != nil {
+			return err
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM model_media WHERE model_id = :id`,
+			map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear model media: %w", err)
+		}
+		return insertModelMedia(ctx, rep.DB(), id, m.MediaIds)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update model: %w", err)
@@ -117,12 +131,11 @@ func (s *Store) GetModelById(ctx context.Context, id int) (*entity.Model, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get model: %w", err)
 	}
-	byModel, err := s.measurementsByModelIds(ctx, []int{id})
-	if err != nil {
+	models := []entity.Model{m}
+	if err := s.enrich(ctx, models); err != nil {
 		return nil, err
 	}
-	m.Measurements = byModel[id]
-	return &m, nil
+	return &models[0], nil
 }
 
 // ListModels returns a paged list of model profiles with their measurements,
@@ -143,19 +156,8 @@ func (s *Store) ListModels(ctx context.Context, limit, offset int, orderFactor e
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list models: %w", err)
 	}
-	if len(models) == 0 {
-		return models, total, nil
-	}
-	ids := make([]int, 0, len(models))
-	for _, m := range models {
-		ids = append(ids, m.Id)
-	}
-	byModel, err := s.measurementsByModelIds(ctx, ids)
-	if err != nil {
+	if err := s.enrich(ctx, models); err != nil {
 		return nil, 0, err
-	}
-	for i := range models {
-		models[i].Measurements = byModel[models[i].Id]
 	}
 	return models, total, nil
 }
@@ -214,6 +216,107 @@ func (s *Store) measurementsByModelIds(ctx context.Context, ids []int) (map[int]
 	out := make(map[int][]entity.ModelMeasurement, len(ids))
 	for _, r := range rows {
 		out[r.ModelID] = append(out[r.ModelID], r.ModelMeasurement)
+	}
+	return out, nil
+}
+
+func insertModelMedia(ctx context.Context, db dependency.DB, modelID int, mediaIDs []int) error {
+	if len(mediaIDs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(mediaIDs))
+	for i, mid := range mediaIDs {
+		rows = append(rows, map[string]any{
+			"model_id":      modelID,
+			"media_id":      mid,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "model_media", rows); err != nil {
+		return fmt.Errorf("failed to insert model media: %w", err)
+	}
+	return nil
+}
+
+// enrich loads and attaches measurements, the photo gallery, and the resolved
+// thumbnail for each model in the slice (mutates in place).
+func (s *Store) enrich(ctx context.Context, models []entity.Model) error {
+	if len(models) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(models))
+	thumbIDs := make([]int, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.Id)
+		if m.ThumbnailId.Valid {
+			thumbIDs = append(thumbIDs, int(m.ThumbnailId.Int32))
+		}
+	}
+
+	measurements, err := s.measurementsByModelIds(ctx, ids)
+	if err != nil {
+		return err
+	}
+	gallery, err := s.mediaByModelIds(ctx, ids)
+	if err != nil {
+		return err
+	}
+	thumbs, err := s.mediaByIds(ctx, thumbIDs)
+	if err != nil {
+		return err
+	}
+
+	for i := range models {
+		models[i].Measurements = measurements[models[i].Id]
+		models[i].Media = gallery[models[i].Id]
+		if models[i].ThumbnailId.Valid {
+			if mf, ok := thumbs[int(models[i].ThumbnailId.Int32)]; ok {
+				t := mf
+				models[i].Thumbnail = &t
+			}
+		}
+	}
+	return nil
+}
+
+type modelMediaRow struct {
+	ModelID int `db:"model_id"`
+	entity.MediaFull
+}
+
+func (s *Store) mediaByModelIds(ctx context.Context, ids []int) (map[int][]entity.MediaFull, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.MediaFull{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[modelMediaRow](ctx, s.DB, `
+		SELECT mm.model_id, m.*
+		FROM model_media mm
+		JOIN media m ON m.id = mm.media_id
+		WHERE mm.model_id IN (:ids)
+		ORDER BY mm.model_id, mm.display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load model media: %w", err)
+	}
+	out := make(map[int][]entity.MediaFull, len(ids))
+	for _, r := range rows {
+		out[r.ModelID] = append(out[r.ModelID], r.MediaFull)
+	}
+	return out, nil
+}
+
+// mediaByIds loads media rows by id (used to resolve thumbnails).
+func (s *Store) mediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error) {
+	out := make(map[int]entity.MediaFull, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load media: %w", err)
+	}
+	for i := range rows {
+		out[rows[i].Id] = rows[i]
 	}
 	return out, nil
 }
