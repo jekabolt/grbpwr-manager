@@ -6,9 +6,11 @@ import "common/archive.proto";
 import "common/buyer.proto";
 import "common/dict.proto";
 import "common/filter.proto";
+import "common/fitting.proto";
 import "common/hero.proto";
 import "common/language.proto";
 import "common/media.proto";
+import "common/model.proto";
 import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
@@ -235,6 +237,79 @@ service AdminService {
 
   rpc GetArchiveByID(GetArchiveByIDRequest) returns (GetArchiveByIDResponse) {
     option (google.api.http) = {get: "/api/admin/archive/{id}"};
+  }
+
+  // MODEL MANAGER
+  // NOTE on ordering: grpc-gateway's mux prepends handlers, so the LAST-declared
+  // route for a given method is matched FIRST. The literal `…/list` GET route is
+  // therefore declared AFTER the `…/{id}` GET route; otherwise GET /model/list
+  // would be matched by GET /model/{id} and "list" parsed as an id.
+
+  // AddModel creates a new fit-model profile.
+  rpc AddModel(AddModelRequest) returns (AddModelResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/model/add"
+      body: "*"
+    };
+  }
+
+  // GetModel returns a fit-model profile by id.
+  rpc GetModel(GetModelRequest) returns (GetModelResponse) {
+    option (google.api.http) = {get: "/api/admin/model/{id}"};
+  }
+
+  // UpdateModel updates a fit-model profile.
+  rpc UpdateModel(UpdateModelRequest) returns (UpdateModelResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/model/update"
+      body: "*"
+    };
+  }
+
+  // DeleteModel deletes a fit-model profile by id.
+  rpc DeleteModel(DeleteModelRequest) returns (DeleteModelResponse) {
+    option (google.api.http) = {delete: "/api/admin/model/{id}"};
+  }
+
+  // ListModels lists fit-model profiles (paged). Declared last on purpose (see
+  // ordering note above) so GET /model/list is not shadowed by GET /model/{id}.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
+    option (google.api.http) = {get: "/api/admin/model/list"};
+  }
+
+  // FITTING MANAGER
+
+  // AddFitting creates a new fitting session.
+  rpc AddFitting(AddFittingRequest) returns (AddFittingResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/add"
+      body: "*"
+    };
+  }
+
+  // GetFitting returns a fitting session by id.
+  rpc GetFitting(GetFittingRequest) returns (GetFittingResponse) {
+    option (google.api.http) = {get: "/api/admin/fitting/{id}"};
+  }
+
+  // UpdateFitting updates a fitting session.
+  rpc UpdateFitting(UpdateFittingRequest) returns (UpdateFittingResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/update"
+      body: "*"
+    };
+  }
+
+  // DeleteFitting deletes a fitting session by id.
+  rpc DeleteFitting(DeleteFittingRequest) returns (DeleteFittingResponse) {
+    option (google.api.http) = {delete: "/api/admin/fitting/{id}"};
+  }
+
+  // ListFittings lists fitting sessions (paged, optional product/model filter).
+  // Declared last on purpose (see ListModels ordering note) so GET /fitting/list
+  // is not shadowed by GET /fitting/{id}.
+  rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
+    option (google.api.http) = {get: "/api/admin/fitting/list"};
   }
 
   // SETTINGS
@@ -1122,6 +1197,94 @@ message DeleteArchiveByIdRequest {
 }
 
 message DeleteArchiveByIdResponse {}
+
+// MODEL MANAGER
+
+message AddModelRequest {
+  common.ModelInsert model = 1;
+}
+
+message AddModelResponse {
+  int32 id = 1;
+}
+
+message ListModelsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+  common.GenderEnum gender = 4; // optional filter; UNKNOWN = no filter
+  string name = 5; // optional case-insensitive name search (substring)
+}
+
+message ListModelsResponse {
+  repeated common.Model models = 1;
+  int32 total = 2; // total number of models, ignoring pagination
+}
+
+message GetModelRequest {
+  int32 id = 1;
+}
+
+message GetModelResponse {
+  common.Model model = 1;
+}
+
+message UpdateModelRequest {
+  int32 id = 1;
+  common.ModelInsert model = 2;
+}
+
+message UpdateModelResponse {}
+
+message DeleteModelRequest {
+  int32 id = 1;
+}
+
+message DeleteModelResponse {}
+
+// FITTING MANAGER
+
+message AddFittingRequest {
+  common.FittingInsert fitting = 1;
+}
+
+message AddFittingResponse {
+  int32 id = 1;
+}
+
+message ListFittingsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+  int32 product_id = 4; // optional filter; 0 = no filter
+  int32 model_id = 5; // optional filter; 0 = no filter
+}
+
+message ListFittingsResponse {
+  repeated common.Fitting fittings = 1;
+  int32 total = 2; // total number of matching fittings, ignoring pagination
+}
+
+message GetFittingRequest {
+  int32 id = 1;
+}
+
+message GetFittingResponse {
+  common.Fitting fitting = 1;
+}
+
+message UpdateFittingRequest {
+  int32 id = 1;
+  common.FittingInsert fitting = 2;
+}
+
+message UpdateFittingResponse {}
+
+message DeleteFittingRequest {
+  int32 id = 1;
+}
+
+message DeleteFittingResponse {}
 
 // SETTINGS
 

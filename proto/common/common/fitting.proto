@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// FittingStatus is the lifecycle state of a fitting session.
+enum FittingStatus {
+  FITTING_STATUS_UNKNOWN = 0;
+  FITTING_STATUS_PLANNED = 1;
+  FITTING_STATUS_DONE = 2;
+  FITTING_STATUS_CANCELLED = 3;
+}
+
+// FittingVerdict is the outcome of a fitting session.
+enum FittingVerdict {
+  FITTING_VERDICT_UNKNOWN = 0;
+  FITTING_VERDICT_PENDING = 1;
+  FITTING_VERDICT_APPROVED = 2;
+  FITTING_VERDICT_NEEDS_REWORK = 3;
+  FITTING_VERDICT_REJECTED = 4;
+}
+
+// FittingSizeInsert is one size tried in a fitting, with an optional per-size note.
+message FittingSizeInsert {
+  int32 size_id = 1;
+  string fit_note = 2;
+}
+
+// FittingInsert is the writable payload for a fitting session.
+message FittingInsert {
+  int32 product_id = 1;
+  int32 model_id = 2; // FK model(id); 0 = unspecified
+  google.protobuf.Timestamp fitting_date = 3;
+  string comment = 4;
+  FittingStatus status = 5;
+  FittingVerdict verdict = 6;
+  string recorded_by = 7;
+  repeated FittingSizeInsert sizes = 8;
+  repeated int32 media_ids = 9;
+}
+
+// Fitting is a stored try-on session with resolved media for display.
+message Fitting {
+  int32 id = 1;
+  FittingInsert fitting = 2;
+  repeated MediaFull media = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}

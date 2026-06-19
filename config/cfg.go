@@ -1,6 +1,7 @@
 package config
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -165,7 +166,53 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 	middleware.SetTrustedProxyHops(config.Security.TrustProxyHops)
 
+	// Fail fast on missing must-have settings so misconfiguration surfaces here
+	// with an actionable message, instead of as an opaque DB ping error or a
+	// later startup failure deep in a dependency constructor. Skipped under
+	// `go test` (detected via the testing framework's registered -test.v flag),
+	// where tests intentionally construct minimal env-only configs (no MySQL
+	// DSN) to exercise the viper bind/unmarshal path in isolation.
+	if !runningUnderTest() {
+		if err := config.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
+		}
+	}
+
 	return &config, nil
+}
+
+// runningUnderTest reports whether the process is a `go test` binary. The test
+// framework registers a "test.v" flag in such binaries; ordinary builds do not.
+// Used to relax required-config validation for minimal env-only test configs.
+func runningUnderTest() bool {
+	return flag.Lookup("test.v") != nil
+}
+
+// Validate checks that genuinely-required configuration is present. It only
+// fails on settings the app needs in every environment; optional, env-gated
+// features (analytics GA4/BigQuery behind enabled flags, mail, bucket, stripe,
+// revalidation) are intentionally not enforced here and are validated by their
+// own constructors when actually used.
+func (c *Config) Validate() error {
+	// MySQL DSN is required in every environment. By this point the DSN has
+	// already been constructed from MYSQL_* / db.* parts when possible, so an
+	// empty value means neither MYSQL_DSN nor a complete set of parts was given.
+	// An empty DSN would otherwise let sqlx.Open succeed lazily and fail much
+	// later as a generic ping error.
+	if c.DB.DSN == "" {
+		return fmt.Errorf("mysql.dsn is required: set MYSQL_DSN, or provide the parts " +
+			"(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, optional MYSQL_PORT; " +
+			"or the DigitalOcean db.HOSTNAME/db.USERNAME/db.PASSWORD/db.DATABASE bindings)")
+	}
+
+	// Auth JWT secret is required: auth.New fails closed on an empty HS256 secret
+	// because it would validate any token signed with an empty key (admin token
+	// forgery). Validate it here too for a clearer, earlier message.
+	if c.Auth.JWTSecret == "" {
+		return fmt.Errorf("auth.jwt_secret is required: set AUTH_JWT_SECRET")
+	}
+
+	return nil
 }
 
 // Connection-pool defaults applied when the corresponding config value is unset.
