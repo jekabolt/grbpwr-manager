@@ -78,6 +78,9 @@ func (s *Server) UpdateModel(ctx context.Context, req *pb_admin.UpdateModelReque
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	if err := s.repo.Models().UpdateModel(ctx, int(req.Id), mi); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "model not found")
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "default_sample_size_id does not reference an existing size")
 		}

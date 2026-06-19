@@ -240,6 +240,10 @@ service AdminService {
   }
 
   // MODEL MANAGER
+  // NOTE on ordering: grpc-gateway's mux prepends handlers, so the LAST-declared
+  // route for a given method is matched FIRST. The literal `…/list` GET route is
+  // therefore declared AFTER the `…/{id}` GET route; otherwise GET /model/list
+  // would be matched by GET /model/{id} and "list" parsed as an id.
 
   // AddModel creates a new fit-model profile.
   rpc AddModel(AddModelRequest) returns (AddModelResponse) {
@@ -247,11 +251,6 @@ service AdminService {
       post: "/api/admin/model/add"
       body: "*"
     };
-  }
-
-  // ListModels lists fit-model profiles (paged).
-  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
-    option (google.api.http) = {get: "/api/admin/model/list"};
   }
 
   // GetModel returns a fit-model profile by id.
@@ -272,6 +271,12 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/model/{id}"};
   }
 
+  // ListModels lists fit-model profiles (paged). Declared last on purpose (see
+  // ordering note above) so GET /model/list is not shadowed by GET /model/{id}.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse) {
+    option (google.api.http) = {get: "/api/admin/model/list"};
+  }
+
   // FITTING MANAGER
 
   // AddFitting creates a new fitting session.
@@ -280,11 +285,6 @@ service AdminService {
       post: "/api/admin/fitting/add"
       body: "*"
     };
-  }
-
-  // ListFittings lists fitting sessions (paged, optional product/model filter).
-  rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
-    option (google.api.http) = {get: "/api/admin/fitting/list"};
   }
 
   // GetFitting returns a fitting session by id.
@@ -303,6 +303,13 @@ service AdminService {
   // DeleteFitting deletes a fitting session by id.
   rpc DeleteFitting(DeleteFittingRequest) returns (DeleteFittingResponse) {
     option (google.api.http) = {delete: "/api/admin/fitting/{id}"};
+  }
+
+  // ListFittings lists fitting sessions (paged, optional product/model filter).
+  // Declared last on purpose (see ListModels ordering note) so GET /fitting/list
+  // is not shadowed by GET /fitting/{id}.
+  rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
+    option (google.api.http) = {get: "/api/admin/fitting/list"};
   }
 
   // SETTINGS

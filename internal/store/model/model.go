@@ -3,6 +3,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -56,9 +57,20 @@ func (s *Store) AddModel(ctx context.Context, m *entity.ModelInsert) (int, error
 	return id, nil
 }
 
-// UpdateModel updates a model profile and replaces its measurements.
+// UpdateModel updates a model profile and replaces its measurements. Returns
+// sql.ErrNoRows when no model with the given id exists.
 func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Existence check up front: a bare UPDATE reports 0 rows affected both
+		// for a missing id and for a no-op update, so we can't rely on it.
+		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM model WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to check model existence: %w", err)
+		}
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE model SET
 				name = :name,

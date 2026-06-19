@@ -13,6 +13,11 @@ import (
 // maxBodyMeasurementMM bounds an accepted body measurement (5 metres in mm).
 const maxBodyMeasurementMM = 5000
 
+// maxVarchar255 bounds inputs stored in VARCHAR(255) columns (model name,
+// fitting recorded_by) so over-length input fails as InvalidArgument rather
+// than a MySQL 1406 (data too long) Internal error.
+const maxVarchar255 = 255
+
 var bodyMeasurementPbToEntity = map[pb_common.BodyMeasurementName]entity.BodyMeasurementName{
 	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST:              entity.BodyChest,
 	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_UNDER_BUST:         entity.BodyUnderBust,
@@ -52,6 +57,9 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 	}
 	if pb.Name == "" {
 		return nil, fmt.Errorf("model name is required")
+	}
+	if len(pb.Name) > maxVarchar255 {
+		return nil, fmt.Errorf("model name must be at most %d characters", maxVarchar255)
 	}
 
 	if pb.DefaultSampleSizeId < 0 {

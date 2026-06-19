@@ -80,6 +80,9 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	if err := s.repo.Fittings().UpdateFitting(ctx, int(req.Id), fi); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "fitting not found")
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "product_id, model_id, size_id, or media_id does not reference an existing record")
 		}

@@ -42,6 +42,7 @@ func TestConvertPbModelInsertToEntity(t *testing.T) {
 		"empty name":    {Name: ""},
 		"unknown name":  {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName(999), ValueMm: 100}}},
 		"negative size": {Name: "x", DefaultSampleSizeId: -1},
+		"name too long":  {Name: string(make([]byte, 256))},
 		"value zero":    {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 0}}},
 		"value too big": {Name: "x", Measurements: []*pb_common.ModelMeasurement{{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_CHEST, ValueMm: 99999}}},
 		"duplicate name": {Name: "x", Measurements: []*pb_common.ModelMeasurement{

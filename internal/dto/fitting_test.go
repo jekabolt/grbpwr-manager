@@ -74,6 +74,7 @@ func TestConvertPbFittingInsertToEntity(t *testing.T) {
 		"duplicate size": {ProductId: 1, FittingDate: date, Sizes: []*pb_common.FittingSizeInsert{{SizeId: 4}, {SizeId: 4}}},
 		"bad status":     {ProductId: 1, FittingDate: date, Status: pb_common.FittingStatus(99)},
 		"bad verdict":    {ProductId: 1, FittingDate: date, Verdict: pb_common.FittingVerdict(99)},
+		"recorded_by too long": {ProductId: 1, FittingDate: date, RecordedBy: string(make([]byte, 256))},
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbFittingInsertToEntity(in); err == nil {

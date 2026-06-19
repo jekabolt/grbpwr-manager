@@ -48,6 +48,9 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	if pb.FittingDate == nil {
 		return nil, fmt.Errorf("fitting_date is required")
 	}
+	if len(pb.RecordedBy) > maxVarchar255 {
+		return nil, fmt.Errorf("recorded_by must be at most %d characters", maxVarchar255)
+	}
 
 	// Default only when explicitly unset; reject any other unmapped value
 	// instead of silently coercing it to the default.

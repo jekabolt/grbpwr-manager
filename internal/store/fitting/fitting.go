@@ -3,6 +3,7 @@ package fitting
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -54,9 +55,20 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 	return id, nil
 }
 
-// UpdateFitting updates a fitting and replaces its sizes and media.
+// UpdateFitting updates a fitting and replaces its sizes and media. Returns
+// sql.ErrNoRows when no fitting with the given id exists.
 func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Existence check up front: a bare UPDATE reports 0 rows affected both
+		// for a missing id and for a no-op update, so we can't rely on it.
+		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM fitting WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to check fitting existence: %w", err)
+		}
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
 		params := fittingParams(f)
 		params["id"] = id
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
