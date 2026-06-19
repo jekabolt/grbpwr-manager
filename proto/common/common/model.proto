@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package common;
+
+import "common/product.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// BodyMeasurementName enumerates the body-measurement types captured for a fit
+// model. It is intentionally separate from the garment MeasurementName dictionary.
+enum BodyMeasurementName {
+  BODY_MEASUREMENT_NAME_UNKNOWN = 0;
+  // Torso
+  BODY_MEASUREMENT_NAME_CHEST = 1;
+  BODY_MEASUREMENT_NAME_UNDER_BUST = 2;
+  BODY_MEASUREMENT_NAME_WAIST = 3;
+  BODY_MEASUREMENT_NAME_HIGH_HIP = 4;
+  BODY_MEASUREMENT_NAME_HIP = 5;
+  BODY_MEASUREMENT_NAME_NECK_BASE = 6;
+  // Arms
+  BODY_MEASUREMENT_NAME_ACROSS_SHOULDER = 7;
+  BODY_MEASUREMENT_NAME_SLEEVE_LENGTH = 8;
+  BODY_MEASUREMENT_NAME_BICEP = 9;
+  BODY_MEASUREMENT_NAME_WRIST = 10;
+  // Legs
+  BODY_MEASUREMENT_NAME_INSEAM = 11;
+  BODY_MEASUREMENT_NAME_THIGH = 12;
+  BODY_MEASUREMENT_NAME_KNEE = 13;
+  BODY_MEASUREMENT_NAME_CALF = 14;
+  BODY_MEASUREMENT_NAME_ANKLE = 15;
+  // Vertical / lengths
+  BODY_MEASUREMENT_NAME_HEIGHT = 16;
+  BODY_MEASUREMENT_NAME_HPS_TO_WAIST_FRONT = 17;
+  BODY_MEASUREMENT_NAME_CB_NECK_TO_WAIST = 18;
+  // Widths (front / back)
+  BODY_MEASUREMENT_NAME_ACROSS_FRONT = 19;
+  BODY_MEASUREMENT_NAME_ACROSS_BACK = 20;
+}
+
+// ModelMeasurement is a single body measurement value, in millimetres.
+message ModelMeasurement {
+  BodyMeasurementName name = 1;
+  int32 value_mm = 2;
+}
+
+// ModelInsert is the writable payload for a fit-model profile. Measurements are
+// sparse: include only the ones that are filled in.
+message ModelInsert {
+  string name = 1;
+  string comment = 2;
+  GenderEnum gender = 3;
+  int32 default_sample_size_id = 4; // FK size(id); 0 = unset
+  repeated ModelMeasurement measurements = 5;
+}
+
+// Model is a stored fit-model profile.
+message Model {
+  int32 id = 1;
+  ModelInsert model = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}

@@ -304,6 +304,24 @@ type (
 		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
 	}
 
+	// Models manages fit/fashion model profiles and their body measurements.
+	Models interface {
+		AddModel(ctx context.Context, m *entity.ModelInsert) (int, error)
+		UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) error
+		DeleteModel(ctx context.Context, id int) error
+		GetModelById(ctx context.Context, id int) (*entity.Model, error)
+		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.Model, int, error)
+	}
+
+	// Fittings manages garment try-on sessions with their sizes and media.
+	Fittings interface {
+		AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error)
+		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert) error
+		DeleteFitting(ctx context.Context, id int) error
+		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
+		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID int) ([]entity.Fitting, int, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -493,6 +511,8 @@ type (
 		StorefrontAccount() StorefrontAccount
 		Membership() Membership
 		Promo() Promo
+		Models() Models
+		Fittings() Fittings
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail
@@ -517,6 +537,7 @@ type (
 		InTx() bool
 		Close()
 		IsErrUniqueViolation(err error) bool
+		IsErrForeignKeyViolation(err error) bool
 		IsErrorRepeat(err error) bool
 		DB() DB
 	}

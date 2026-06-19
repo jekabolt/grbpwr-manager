@@ -201,6 +201,22 @@ func (ms *MYSQLStore) IsErrUniqueViolation(err error) bool {
 	return false
 }
 
+// IsErrForeignKeyViolation reports whether err is a MySQL foreign-key constraint
+// failure: 1452 (child row references a missing parent on INSERT/UPDATE) or 1451
+// (parent row still referenced on DELETE/UPDATE). Used to map bad client-supplied
+// ids to InvalidArgument instead of Internal.
+func (ms *MYSQLStore) IsErrForeignKeyViolation(err error) bool {
+	var e *mysql.MySQLError
+	if errors.As(err, &e) {
+		switch e.Number {
+		case 1452, // ER_NO_REFERENCED_ROW_2
+			1451: // ER_ROW_IS_REFERENCED_2
+			return true
+		}
+	}
+	return false
+}
+
 // MakeQuery delegates to storeutil.MakeQuery for backward compatibility.
 func MakeQuery(query string, params map[string]any) (string, []any, error) {
 	return storeutil.MakeQuery(query, params)

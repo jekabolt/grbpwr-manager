@@ -23,10 +23,12 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
+	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
 	"github.com/jekabolt/grbpwr-manager/internal/store/language"
 	"github.com/jekabolt/grbpwr-manager/internal/store/membership"
 	"github.com/jekabolt/grbpwr-manager/internal/store/metrics"
+	"github.com/jekabolt/grbpwr-manager/internal/store/model"
 	"github.com/jekabolt/grbpwr-manager/internal/store/order"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/promo"
@@ -99,6 +101,8 @@ type MYSQLStore struct {
 	langStore       *language.Store
 	accountStore    *account.Store
 	membershipStore *membership.Store
+	modelStore      *model.Store
+	fittingStore    *fitting.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -344,6 +348,8 @@ func initSubStores(ms *MYSQLStore) {
 	ms.orderStore = order.New(base, ms.Tx, func() dependency.Repository { return ms })
 	ms.accountStore = account.New(base, ms.Tx)
 	ms.membershipStore = membership.New(base, ms.Tx)
+	ms.modelStore = model.New(base, ms.Tx)
+	ms.fittingStore = fitting.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -364,6 +370,8 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.orderStore = order.New(base, outerTx, func() dependency.Repository { return txStore })
 	txStore.accountStore = account.New(base, outerTx)
 	txStore.membershipStore = membership.New(base, outerTx)
+	txStore.modelStore = model.New(base, outerTx)
+	txStore.fittingStore = fitting.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -429,6 +437,8 @@ func (ms *MYSQLStore) Admin() dependency.Admin                { return ms.adminS
 func (ms *MYSQLStore) Promo() dependency.Promo                { return ms.promoStore }
 func (ms *MYSQLStore) Language() dependency.Language          { return ms.langStore }
 func (ms *MYSQLStore) Membership() dependency.Membership      { return ms.membershipStore }
+func (ms *MYSQLStore) Models() dependency.Models              { return ms.modelStore }
+func (ms *MYSQLStore) Fittings() dependency.Fittings          { return ms.fittingStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }
