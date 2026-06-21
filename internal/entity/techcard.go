@@ -2,10 +2,19 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// ErrTechCardConflict is returned by UpdateTechCard when the caller's
+// expected_lock_version no longer matches the stored one (a concurrent edit).
+var ErrTechCardConflict = errors.New("tech card was modified concurrently")
+
+// ErrTechCardReleased is returned when content of a RELEASED tech card is edited
+// without first re-opening it to DRAFT (a released card is frozen for the factory).
+var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
@@ -257,9 +266,11 @@ type TechCardPomGrade struct {
 	Value  decimal.Decimal `db:"value"`
 }
 
-// TechCardPomActual is an actual measured value, optionally from a fitting.
+// TechCardPomActual is an actual measured value, optionally from a fitting and at
+// a specific size (so it can be compared to that size's grade ± tolerance).
 type TechCardPomActual struct {
 	FittingId sql.NullInt32   `db:"fitting_id"`
+	SizeId    sql.NullInt32   `db:"size_id"`
 	Label     sql.NullString  `db:"label"`
 	Value     decimal.Decimal `db:"value"`
 }
@@ -387,6 +398,7 @@ type TechCardInsert struct {
 	Status            sql.NullString          `db:"status"`
 	ApprovalState     TechCardApprovalState   `db:"approval_state"`
 	ApprovedBy        sql.NullString          `db:"approved_by"`
+	ApprovedAt        sql.NullTime            `db:"approved_at"`
 	ReleasedAt        sql.NullTime            `db:"released_at"`
 	Version           sql.NullString          `db:"version"`
 	RevisionDate      sql.NullTime            `db:"revision_date"`
@@ -401,6 +413,7 @@ type TechCardInsert struct {
 	MeasurementUnit   TechCardMeasurementUnit `db:"measurement_unit"`
 	// construction description
 	Description  sql.NullString `db:"description"`
+	Concept      sql.NullString `db:"concept"`
 	Silhouette   sql.NullString `db:"silhouette"`
 	Collar       sql.NullString `db:"collar"`
 	Fastening    sql.NullString `db:"fastening"`
@@ -441,7 +454,8 @@ type TechCardListFilter struct {
 
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
 type TechCard struct {
-	Id int `db:"id"`
+	Id          int `db:"id"`
+	LockVersion int `db:"lock_version"`
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`

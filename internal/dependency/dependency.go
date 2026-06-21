@@ -326,7 +326,7 @@ type (
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
-		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert) error
+		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)

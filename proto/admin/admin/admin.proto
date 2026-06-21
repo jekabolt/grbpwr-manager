@@ -2241,6 +2241,7 @@ message GetTechCardResponse {
 message UpdateTechCardRequest {
   int32 id = 1;
   common.TechCardInsert tech_card = 2;
+  int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
 }
 
 message UpdateTechCardResponse {}

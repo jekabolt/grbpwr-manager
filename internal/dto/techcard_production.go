@@ -364,6 +364,21 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		total = total.Mul(decimal.NewFromInt(1).Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100))))
 	}
 	out.TotalCost = pbDecimalFromDecimal(total.Round(costMaxFrac))
+
+	// Flag when a BOM line is priced in a currency other than the costing currency:
+	// such lines are surfaced in materials_total but excluded from total_cost (no
+	// auto-conversion), so the total is not the full landed cost.
+	costingCcy := ""
+	if c.Currency.Valid {
+		costingCcy = c.Currency.String
+	}
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && b.LineTotal().Valid {
+			out.HasUnconvertedCurrencies = true
+			break
+		}
+	}
 	return out
 }
 

@@ -72,9 +72,15 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc); err != nil {
+	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
+		}
+		if errors.Is(err, entity.ErrTechCardConflict) {
+			return nil, status.Error(codes.Aborted, "tech card was modified concurrently; reload and retry")
+		}
+		if errors.Is(err, entity.ErrTechCardReleased) {
+			return nil, status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)

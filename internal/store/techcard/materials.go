@@ -137,6 +137,7 @@ func insertTechCardPom(ctx context.Context, db dependency.DB, tcID int, points [
 				rows = append(rows, map[string]any{
 					"pom_point_id":  pomID,
 					"fitting_id":    a.FittingId,
+					"size_id":       a.SizeId,
 					"label":         a.Label,
 					"value":         a.Value,
 					"display_order": j,
@@ -303,7 +304,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			}
 		}
 		actualRows, err := storeutil.QueryListNamed[techCardPomActualRow](ctx, s.DB, `
-			SELECT pom_point_id, fitting_id, label, value
+			SELECT pom_point_id, fitting_id, size_id, label, value
 			FROM tech_card_pom_actual
 			WHERE pom_point_id IN (:ids)
 			ORDER BY pom_point_id, display_order`, map[string]any{"ids": pomPointIDs})

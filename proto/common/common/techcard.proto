@@ -154,11 +154,25 @@ message TechCardPomGrade {
   google.type.Decimal value = 2;
 }
 
-// TechCardPomActual is an actual measured value, optionally taken in a fitting.
+// TechCardPomVerdict is the computed in/out-of-tolerance result of an actual.
+enum TechCardPomVerdict {
+  TECH_CARD_POM_VERDICT_UNKNOWN = 0; // no target (no grade for the size and no base value)
+  TECH_CARD_POM_VERDICT_IN_TOLERANCE = 1;
+  TECH_CARD_POM_VERDICT_OVER = 2; // above target + tolerance_plus
+  TECH_CARD_POM_VERDICT_UNDER = 3; // below target - tolerance_minus
+}
+
+// TechCardPomActual is an actual measured value, optionally taken in a fitting and
+// at a specific size (so QC can compare it to that size's grade ± tolerance).
 message TechCardPomActual {
   int32 fitting_id = 1; // FK fitting(id); 0 = none
   string label = 2; // free label when no fitting linked (e.g. примерка 1)
   google.type.Decimal value = 3;
+  int32 size_id = 4; // FK size(id); 0 = unset. Must be one of size_ids when set.
+  // OUTPUT-ONLY: deviation = value - target (grade at size_id, else base_value);
+  // verdict compares the deviation against tolerance_plus / tolerance_minus.
+  google.type.Decimal deviation = 5;
+  TechCardPomVerdict verdict = 6;
 }
 
 // TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
@@ -261,6 +275,7 @@ message TechCardCosting {
   repeated TechCardCostLine materials_total = 12; // Σ BOM line_total grouped by BOM currency
   google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
   google.type.Decimal total_cost = 14; // (materials_cost + cmt+hardware+packaging+logistics+overhead) × (1 + defect/100)
+  bool has_unconverted_currencies = 15; // OUTPUT-ONLY: a BOM line is priced in a currency other than `currency`, so it is excluded from total_cost
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
@@ -322,8 +337,12 @@ message TechCardInsert {
   TechCardPackaging packaging = 46; // 1:1; null = unset
   TechCardCosting costing = 47; // 1:1; null = unset
 
+  // hardening (Phase 3.5a)
+  google.protobuf.Timestamp approved_at = 48; // auto-set on approve/release if unset
+  string concept = 49; // design concept / intent (designer)
+
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 48 to 99;
+  reserved 39, 50 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.
@@ -333,6 +352,7 @@ message TechCard {
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
   repeated TechCardMediaFull resolved_media = 5; // sketch media with resolved MediaFull
+  int32 lock_version = 6; // optimistic-lock token; echo into UpdateTechCardRequest.expected_lock_version
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.

@@ -388,6 +388,10 @@ func TestConvertTechCardProductionAndCosting(t *testing.T) {
 	if byCcy["EUR"] != "25" || byCcy["USD"] != "3" {
 		t.Errorf("materials_total mismatch: %+v", byCcy)
 	}
+	// USD line against EUR costing → excluded from total_cost, flag must be set.
+	if !cost.HasUnconvertedCurrencies {
+		t.Errorf("expected has_unconverted_currencies (USD BOM line vs EUR costing)")
+	}
 
 	// invalid cases.
 	bad := map[string]*pb_common.TechCardInsert{
@@ -402,6 +406,50 @@ func TestConvertTechCardProductionAndCosting(t *testing.T) {
 		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
 			t.Errorf("case %q: expected error, got nil", name)
 		}
+	}
+}
+
+func TestConvertTechCardPomActualVerdict(t *testing.T) {
+	dec := func(s string) decimal.Decimal { return decimal.RequireFromString(s) }
+	nd := func(s string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: dec(s), Valid: true} }
+	pt := entity.TechCardPomPoint{
+		Name:           "Chest",
+		BaseValue:      nd("50"),
+		TolerancePlus:  nd("1"),
+		ToleranceMinus: nd("1"),
+		Grades: []entity.TechCardPomGrade{
+			{SizeId: 4, Value: dec("54")},
+			{SizeId: 5, Value: dec("56")},
+		},
+		Actuals: []entity.TechCardPomActual{
+			{SizeId: nullInt32FromPb(4), Value: dec("54.5")}, // in tolerance (54 ± 1)
+			{SizeId: nullInt32FromPb(4), Value: dec("55.5")}, // over (> 55)
+			{SizeId: nullInt32FromPb(4), Value: dec("52.5")}, // under (< 53)
+			{Value: dec("50")}, // no size → base 50, in tolerance
+			{SizeId: nullInt32FromPb(99), Value: dec("70")}, // size w/o grade → base 50 → over
+		},
+	}
+	tc := &entity.TechCard{
+		Id:             1,
+		TechCardInsert: entity.TechCardInsert{StyleNumber: "x", Name: "y", PomPoints: []entity.TechCardPomPoint{pt}},
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	acts := ConvertEntityTechCardToPb(tc).TechCard.PomPoints[0].Actuals
+	want := []pb_common.TechCardPomVerdict{
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE,
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER,
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNDER,
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE,
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER,
+	}
+	for i, w := range want {
+		if acts[i].Verdict != w {
+			t.Errorf("actual %d verdict = %v, want %v", i, acts[i].Verdict, w)
+		}
+	}
+	if acts[0].Deviation == nil || acts[0].Deviation.Value != "0.5" {
+		t.Errorf("actual 0 deviation = %+v, want 0.5", acts[0].Deviation)
 	}
 }
 

@@ -35,17 +35,17 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard).
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
-	target_gender, stage, status, approval_state, approved_by, released_at, version, revision_date,
+	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
 	target_cost, target_retail_price, currency, measurement_unit,
-	description, silhouette, collar, fastening, pockets, sleeve_cuff, extra_details,
+	description, concept, silhouette, fastening, pockets, sleeve_cuff, extra_details, collar,
 	topstitching, aux_materials, notes`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
-	:target_gender, :stage, :status, :approval_state, :approved_by, :released_at, :version, :revision_date,
+	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
 	:target_cost, :target_retail_price, :currency, :measurement_unit,
-	:description, :silhouette, :collar, :fastening, :pockets, :sleeve_cuff, :extra_details,
+	:description, :concept, :silhouette, :fastening, :pockets, :sleeve_cuff, :extra_details, :collar,
 	:topstitching, :aux_materials, :notes`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
@@ -61,6 +61,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"status":              tc.Status,
 		"approval_state":      string(tc.ApprovalState),
 		"approved_by":         tc.ApprovedBy,
+		"approved_at":         tc.ApprovedAt,
 		"released_at":         tc.ReleasedAt,
 		"version":             tc.Version,
 		"revision_date":       tc.RevisionDate,
@@ -83,11 +84,26 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"topstitching":        tc.Topstitching,
 		"aux_materials":       tc.AuxMaterials,
 		"notes":               tc.Notes,
+		"concept":             tc.Concept,
+	}
+}
+
+// stampApprovalTimes auto-sets approved_at/released_at when the card enters the
+// corresponding state without the timestamp already provided.
+func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert) {
+	approvedOrReleased := tc.ApprovalState == entity.TechCardApprovalApproved ||
+		tc.ApprovalState == entity.TechCardApprovalReleased
+	if approvedOrReleased && !tc.ApprovedAt.Valid {
+		tc.ApprovedAt = sql.NullTime{Time: s.Now(), Valid: true}
+	}
+	if tc.ApprovalState == entity.TechCardApprovalReleased && !tc.ReleasedAt.Valid {
+		tc.ReleasedAt = sql.NullTime{Time: s.Now(), Valid: true}
 	}
 }
 
 // AddTechCard inserts a tech card and its child sections, returning the new id.
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
+	s.stampApprovalTimes(tc)
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
@@ -105,36 +121,53 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 	return id, nil
 }
 
-// UpdateTechCard updates a tech card and replaces its child sections. Returns
-// sql.ErrNoRows when no tech card with the given id exists.
-func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert) error {
+// UpdateTechCard updates a tech card and replaces its child sections. It is
+// optimistically locked on expectedLockVersion (entity.ErrTechCardConflict on a
+// mismatch), refuses to mutate a RELEASED card unless it is re-opened to DRAFT
+// (entity.ErrTechCardReleased), and returns sql.ErrNoRows when no card exists.
+func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
+	s.stampApprovalTimes(tc)
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+		cur, err := storeutil.QueryNamedOne[struct {
+			LockVersion   int    `db:"lock_version"`
+			ApprovalState string `db:"approval_state"`
+		}](ctx, rep.DB(),
+			`SELECT lock_version, approval_state FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
-			return fmt.Errorf("failed to check tech card existence: %w", err)
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("failed to load tech card for update: %w", err)
 		}
-		if exists == 0 {
-			return sql.ErrNoRows
+		if cur.LockVersion != expectedLockVersion {
+			return entity.ErrTechCardConflict
+		}
+		// A released card is frozen for the factory: only a re-open to draft is
+		// allowed; any other edit while still released is rejected.
+		if cur.ApprovalState == string(entity.TechCardApprovalReleased) &&
+			tc.ApprovalState != entity.TechCardApprovalDraft {
+			return entity.ErrTechCardReleased
 		}
 
 		params := techCardHeaderParams(tc)
 		params["id"] = id
+		params["expected_lock_version"] = expectedLockVersion
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE tech_card SET
+				lock_version = lock_version + 1,
 				style_number = :style_number, name = :name, brand = :brand, season = :season,
 				collection = :collection, category_id = :category_id, target_gender = :target_gender,
 				stage = :stage, status = :status, approval_state = :approval_state,
-				approved_by = :approved_by, released_at = :released_at,
+				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
 				version = :version, revision_date = :revision_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
 				target_cost = :target_cost, target_retail_price = :target_retail_price, currency = :currency,
 				measurement_unit = :measurement_unit,
-				description = :description, silhouette = :silhouette, collar = :collar, fastening = :fastening,
-				pockets = :pockets, sleeve_cuff = :sleeve_cuff, extra_details = :extra_details,
+				description = :description, concept = :concept, silhouette = :silhouette, collar = :collar,
+				fastening = :fastening, pockets = :pockets, sleeve_cuff = :sleeve_cuff, extra_details = :extra_details,
 				topstitching = :topstitching, aux_materials = :aux_materials, notes = :notes
-			WHERE id = :id`, params); err != nil {
+			WHERE id = :id AND lock_version = :expected_lock_version`, params); err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
 		}
 
@@ -157,7 +190,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		return insertTechCardChildren(ctx, rep.DB(), id, tc)
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		switch err {
+		case sql.ErrNoRows, entity.ErrTechCardConflict, entity.ErrTechCardReleased:
 			return err
 		}
 		return fmt.Errorf("can't update tech card: %w", err)

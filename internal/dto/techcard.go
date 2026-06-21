@@ -339,6 +339,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Status:            nullStringFromPb(pb.Status),
 		ApprovalState:     approvalState,
 		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
+		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
 		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
 		Version:           nullStringFromPb(pb.Version),
 		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
@@ -352,6 +353,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Currency:          nullStringFromPb(pb.Currency),
 		MeasurementUnit:   unit,
 		Description:       nullStringFromPb(pb.Description),
+		Concept:           nullStringFromPb(pb.Concept),
 		Silhouette:        nullStringFromPb(pb.Silhouette),
 		Collar:            nullStringFromPb(pb.Collar),
 		Fastening:         nullStringFromPb(pb.Fastening),
@@ -425,9 +427,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 	productIds := intsToInt32(tc.ProductIds)
 
 	return &pb_common.TechCard{
-		Id:        int32(tc.Id),
-		CreatedAt: timestamppb.New(tc.CreatedAt),
-		UpdatedAt: timestamppb.New(tc.UpdatedAt),
+		Id:          int32(tc.Id),
+		LockVersion: int32(tc.LockVersion),
+		CreatedAt:   timestamppb.New(tc.CreatedAt),
+		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber,
 			Name:              tc.Name,
@@ -440,6 +443,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Status:            pbStringFromNull(tc.Status),
 			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
 			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
+			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
 			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
 			Version:           pbStringFromNull(tc.Version),
 			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
@@ -453,6 +457,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Currency:          pbStringFromNull(tc.Currency),
 			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
 			Description:       pbStringFromNull(tc.Description),
+			Concept:           pbStringFromNull(tc.Concept),
 			Silhouette:        pbStringFromNull(tc.Silhouette),
 			Collar:            pbStringFromNull(tc.Collar),
 			Fastening:         pbStringFromNull(tc.Fastening),
@@ -696,6 +701,9 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		sizeSet[s] = true
 	}
 	out := make([]entity.TechCardPomPoint, 0, len(pbs))
+	// Non-empty POM codes must be unique within the card (DB enforces
+	// uniq_tech_card_pom_code); dedupe here for a precise InvalidArgument.
+	seenCode := make(map[string]bool, len(pbs))
 	for _, p := range pbs {
 		if p.Name == "" {
 			return nil, fmt.Errorf("pom point name is required")
@@ -705,6 +713,12 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		}
 		if len(p.Code) > maxVarchar32 {
 			return nil, fmt.Errorf("pom code must be at most %d characters", maxVarchar32)
+		}
+		if p.Code != "" {
+			if seenCode[p.Code] {
+				return nil, fmt.Errorf("pom points contain a duplicate code: %q", p.Code)
+			}
+			seenCode[p.Code] = true
 		}
 		baseValue, err := nullDecimalFromPb(p.BaseValue)
 		if err != nil {
@@ -757,6 +771,12 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 			if a.FittingId < 0 {
 				return nil, fmt.Errorf("pom actual fitting_id must not be negative")
 			}
+			if a.SizeId < 0 {
+				return nil, fmt.Errorf("pom actual size_id must not be negative")
+			}
+			if a.SizeId > 0 && !sizeSet[int(a.SizeId)] {
+				return nil, fmt.Errorf("pom actual size_id %d must be one of size_ids", a.SizeId)
+			}
 			if len(a.Label) > maxVarchar64 {
 				return nil, fmt.Errorf("pom actual label must be at most %d characters", maxVarchar64)
 			}
@@ -766,6 +786,7 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 			}
 			actuals = append(actuals, entity.TechCardPomActual{
 				FittingId: nullInt32FromPb(a.FittingId),
+				SizeId:    nullInt32FromPb(a.SizeId),
 				Label:     nullStringFromPb(a.Label),
 				Value:     val,
 			})
@@ -841,7 +862,9 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 	for i := range points {
 		p := &points[i]
 		grades := make([]*pb_common.TechCardPomGrade, 0, len(p.Grades))
+		gradeBySize := make(map[int]decimal.Decimal, len(p.Grades))
 		for _, g := range p.Grades {
+			gradeBySize[g.SizeId] = g.Value
 			grades = append(grades, &pb_common.TechCardPomGrade{
 				SizeId: int32(g.SizeId),
 				Value:  pbDecimalFromDecimal(g.Value),
@@ -849,11 +872,14 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 		}
 		actuals := make([]*pb_common.TechCardPomActual, 0, len(p.Actuals))
 		for _, a := range p.Actuals {
-			actuals = append(actuals, &pb_common.TechCardPomActual{
+			pa := &pb_common.TechCardPomActual{
 				FittingId: pbInt32FromNull(a.FittingId),
+				SizeId:    pbInt32FromNull(a.SizeId),
 				Label:     pbStringFromNull(a.Label),
 				Value:     pbDecimalFromDecimal(a.Value),
-			})
+			}
+			pa.Deviation, pa.Verdict = pomActualVerdict(p, a, gradeBySize)
+			actuals = append(actuals, pa)
 		}
 		out = append(out, &pb_common.TechCardPomPoint{
 			Section:        pbStringFromNull(p.Section),
@@ -868,6 +894,41 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 		})
 	}
 	return out
+}
+
+// pomActualVerdict computes an actual's deviation from its target (the graded value
+// at the measured size, else the point's base value) and the in/out-of-tolerance
+// verdict. Returns (nil, UNKNOWN) when there is no target to compare against.
+func pomActualVerdict(p *entity.TechCardPomPoint, a entity.TechCardPomActual, gradeBySize map[int]decimal.Decimal) (*pb_decimal.Decimal, pb_common.TechCardPomVerdict) {
+	var target decimal.Decimal
+	hasTarget := false
+	if a.SizeId.Valid {
+		if gv, ok := gradeBySize[int(a.SizeId.Int32)]; ok {
+			target, hasTarget = gv, true
+		}
+	}
+	if !hasTarget && p.BaseValue.Valid {
+		target, hasTarget = p.BaseValue.Decimal, true
+	}
+	if !hasTarget {
+		return nil, pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNKNOWN
+	}
+	tolPlus := decimal.Zero
+	if p.TolerancePlus.Valid {
+		tolPlus = p.TolerancePlus.Decimal
+	}
+	tolMinus := decimal.Zero
+	if p.ToleranceMinus.Valid {
+		tolMinus = p.ToleranceMinus.Decimal
+	}
+	verdict := pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE
+	switch {
+	case a.Value.GreaterThan(target.Add(tolPlus)):
+		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER
+	case a.Value.LessThan(target.Sub(tolMinus)):
+		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNDER
+	}
+	return pbDecimalFromDecimal(a.Value.Sub(target)), verdict
 }
 
 func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
