@@ -42,8 +42,12 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	if pb == nil {
 		return nil, fmt.Errorf("fitting insert is nil")
 	}
-	if pb.ProductId <= 0 {
-		return nil, fmt.Errorf("fitting product_id is required")
+	if pb.ProductId < 0 || pb.TechCardId < 0 {
+		return nil, fmt.Errorf("fitting product_id and tech_card_id must not be negative")
+	}
+	// A fitting must anchor to the style and/or the specific colour sample.
+	if pb.ProductId <= 0 && pb.TechCardId <= 0 {
+		return nil, fmt.Errorf("fitting requires product_id or tech_card_id")
 	}
 	if pb.FittingDate == nil {
 		return nil, fmt.Errorf("fitting_date is required")
@@ -99,7 +103,8 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	fittingDate := time.Date(ft.Year(), ft.Month(), ft.Day(), 0, 0, 0, 0, time.UTC)
 
 	return &entity.FittingInsert{
-		ProductId:   int(pb.ProductId),
+		TechCardId:  nullInt32FromPb(pb.TechCardId),
+		ProductId:   nullInt32FromPb(pb.ProductId),
 		ModelId:     nullInt32FromPb(pb.ModelId),
 		FittingDate: fittingDate,
 		Comment:     nullStringFromPb(pb.Comment),
@@ -136,7 +141,8 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 	return &pb_common.Fitting{
 		Id: int32(f.Id),
 		Fitting: &pb_common.FittingInsert{
-			ProductId:   int32(f.ProductId),
+			TechCardId:  pbInt32FromNull(f.TechCardId),
+			ProductId:   pbInt32FromNull(f.ProductId),
 			ModelId:     pbInt32FromNull(f.ModelId),
 			FittingDate: timestamppb.New(f.FittingDate),
 			Comment:     pbStringFromNull(f.Comment),

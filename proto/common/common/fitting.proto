@@ -30,9 +30,11 @@ message FittingSizeInsert {
   string fit_note = 2;
 }
 
-// FittingInsert is the writable payload for a fitting session.
+// FittingInsert is the writable payload for a fitting session. A fitting anchors
+// to a tech card (the style) and/or a specific product (the colour/SKU sample);
+// at least one of tech_card_id / product_id must be set.
 message FittingInsert {
-  int32 product_id = 1;
+  int32 product_id = 1; // FK product(id); 0 = unset (the specific colour/SKU sample)
   int32 model_id = 2; // FK model(id); 0 = unspecified
   google.protobuf.Timestamp fitting_date = 3;
   string comment = 4;
@@ -41,6 +43,7 @@ message FittingInsert {
   string recorded_by = 7;
   repeated FittingSizeInsert sizes = 8;
   repeated int32 media_ids = 9;
+  int32 tech_card_id = 10; // FK tech_card(id); 0 = unset (the style being fitted)
 }
 
 // Fitting is a stored try-on session with resolved media for display.

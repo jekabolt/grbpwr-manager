@@ -1,0 +1,347 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+import "common/product.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// TechCardStage is the development stage of a tech pack: prototype, fit sample,
+// salesman sample, pre-production, production.
+enum TechCardStage {
+  TECH_CARD_STAGE_UNKNOWN = 0;
+  TECH_CARD_STAGE_PROTO = 1;
+  TECH_CARD_STAGE_FIT = 2;
+  TECH_CARD_STAGE_SMS = 3;
+  TECH_CARD_STAGE_PP = 4;
+  TECH_CARD_STAGE_PROD = 5;
+}
+
+// TechCardApprovalState is the gating release state of a tech card, orthogonal to
+// TechCardStage (which tracks development progress). A factory must only receive a
+// card in the RELEASED state.
+enum TechCardApprovalState {
+  TECH_CARD_APPROVAL_STATE_UNKNOWN = 0; // defaults to DRAFT on write
+  TECH_CARD_APPROVAL_STATE_DRAFT = 1;
+  TECH_CARD_APPROVAL_STATE_IN_REVIEW = 2;
+  TECH_CARD_APPROVAL_STATE_APPROVED = 3;
+  TECH_CARD_APPROVAL_STATE_RELEASED = 4;
+  TECH_CARD_APPROVAL_STATE_OBSOLETE = 5;
+}
+
+// TechCardMeasurementUnit is the unit for the card's geometry (callout dimensions
+// and the POM chart). Metric only — the brand works in cm and mm, never inches.
+enum TechCardMeasurementUnit {
+  TECH_CARD_MEASUREMENT_UNIT_UNKNOWN = 0; // defaults to CM on write
+  TECH_CARD_MEASUREMENT_UNIT_CM = 1;
+  TECH_CARD_MEASUREMENT_UNIT_MM = 2;
+}
+
+// TechCardMediaKind classifies a tech-card sketch image.
+enum TechCardMediaKind {
+  TECH_CARD_MEDIA_KIND_UNKNOWN = 0;
+  TECH_CARD_MEDIA_KIND_FRONT = 1; // front flat sketch
+  TECH_CARD_MEDIA_KIND_BACK = 2; // back flat sketch
+  TECH_CARD_MEDIA_KIND_DETAIL = 3; // detail / construction node
+  TECH_CARD_MEDIA_KIND_LINING = 4; // internal structure / lining
+  TECH_CARD_MEDIA_KIND_PREVIEW = 5; // cover preview
+}
+
+// TechCardMediaItem is a writable sketch-media reference (id + kind).
+message TechCardMediaItem {
+  int32 media_id = 1; // FK media(id)
+  TechCardMediaKind kind = 2;
+}
+
+// TechCardMediaFull is a resolved sketch-media reference for display.
+message TechCardMediaFull {
+  MediaFull media = 1;
+  TechCardMediaKind kind = 2;
+}
+
+// TechCardCallout is a numbered detail note pointing at the technical sketch.
+message TechCardCallout {
+  int32 number = 1; // callout number on the sketch
+  string part = 2; // деталь / узел
+  string description = 3; // описание, уточнение
+  string dimensions = 4; // размеры / привязка
+  int32 media_id = 5; // FK media(id); sketch this callout is pinned to (0 = unanchored)
+}
+
+// TechCardRevision is one entry in the spec-document changelog (what changed in
+// which section, by whom). This is NOT fit history — fitting verdicts and
+// measurements live in the separate fitting feature.
+message TechCardRevision {
+  string version = 1;
+  google.protobuf.Timestamp revision_date = 2;
+  string author = 3;
+  string section = 4; // раздел
+  string change_note = 5; // что изменено
+}
+
+// TechCardBomSection groups a BOM line by material family (Sheet «Спецификация»).
+enum TechCardBomSection {
+  TECH_CARD_BOM_SECTION_UNKNOWN = 0;
+  TECH_CARD_BOM_SECTION_FABRIC = 1; // основные ткани
+  TECH_CARD_BOM_SECTION_LINING = 2; // подклад
+  TECH_CARD_BOM_SECTION_INTERLINING = 3; // приклад / дублерин
+  TECH_CARD_BOM_SECTION_INSULATION = 4; // утеплитель / объём
+  TECH_CARD_BOM_SECTION_HARDWARE = 5; // фурнитура
+  TECH_CARD_BOM_SECTION_THREAD = 6; // нитки
+  TECH_CARD_BOM_SECTION_LABEL = 7; // этикетки и маркировка
+  TECH_CARD_BOM_SECTION_PACKAGING = 8; // упаковка
+}
+
+// TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.
+enum TechCardLabDipStatus {
+  TECH_CARD_LAB_DIP_STATUS_UNKNOWN = 0; // defaults to PENDING on write
+  TECH_CARD_LAB_DIP_STATUS_PENDING = 1;
+  TECH_CARD_LAB_DIP_STATUS_SUBMITTED = 2;
+  TECH_CARD_LAB_DIP_STATUS_APPROVED = 3;
+  TECH_CARD_LAB_DIP_STATUS_REJECTED = 4;
+}
+
+// TechCardColorway is a development colourway (Sheet «Колористика» columns). It is
+// distinct from tech_card_product (published catalog SKUs); product_id optionally
+// links the published SKU that realises this colourway.
+message TechCardColorway {
+  string code = 1; // short colourway code, e.g. BLK
+  string name = 2; // colourway name (required)
+  TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
+  int32 product_id = 4; // FK product(id); 0 = not yet published
+  string comment = 5;
+}
+
+// TechCardBomColorwayColor is one «Колористика» matrix cell: the colour of a BOM
+// material in a colourway. colorway_index points into TechCardInsert.colorways — a
+// full-replace upsert has no stable colourway ids to reference on write.
+message TechCardBomColorwayColor {
+  int32 colorway_index = 1; // 0-based index into TechCardInsert.colorways
+  string color = 2; // colour name / code
+  string pantone = 3; // Pantone / code
+}
+
+// TechCardBomItem is one bill-of-materials line (Sheet «Спецификация»).
+message TechCardBomItem {
+  TechCardBomSection section = 1; // required
+  string name = 2; // required
+  string placement = 3; // размещение / назначение
+  string supplier = 4;
+  string supplier_ref = 5; // артикул поставщика
+  string color = 6; // base/default colour
+  string composition = 7; // состав
+  string spec = 8; // ширина / плотность
+  google.type.Decimal consumption = 9; // норма расхода
+  string unit = 10; // ед.
+  google.type.Decimal quantity = 11; // кол-во
+  google.type.Decimal unit_price = 12; // цена/ед.
+  string currency = 13; // ISO 4217 for unit_price
+  string comment = 14;
+  repeated TechCardBomColorwayColor colorway_colors = 15; // per-colourway colours
+  google.type.Decimal line_total = 16; // OUTPUT-ONLY: quantity*unit_price (else consumption*unit_price)
+}
+
+// TechCardPomGrade is the graded value of a POM point for one size.
+message TechCardPomGrade {
+  int32 size_id = 1; // FK size(id); must be one of TechCardInsert.size_ids
+  google.type.Decimal value = 2;
+}
+
+// TechCardPomActual is an actual measured value, optionally taken in a fitting.
+message TechCardPomActual {
+  int32 fitting_id = 1; // FK fitting(id); 0 = none
+  string label = 2; // free label when no fitting linked (e.g. примерка 1)
+  google.type.Decimal value = 3;
+}
+
+// TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
+// Values are in TechCardInsert.measurement_unit.
+message TechCardPomPoint {
+  string section = 1; // group label, e.g. ВЕРХ / КОРПУС
+  string code = 2; // код
+  string name = 3; // required
+  string how_to_measure = 4; // HTM
+  google.type.Decimal base_value = 5; // базовый образец
+  google.type.Decimal tolerance_plus = 6; // допуск + (Допуск +); mirrored to minus if minus unset
+  google.type.Decimal tolerance_minus = 9; // допуск - (Допуск -); mirrored to plus if plus unset
+  repeated TechCardPomGrade grades = 7;
+  repeated TechCardPomActual actuals = 8;
+}
+
+// TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
+enum TechCardLabelType {
+  TECH_CARD_LABEL_TYPE_UNKNOWN = 0;
+  TECH_CARD_LABEL_TYPE_MAIN = 1; // основная (бренд)
+  TECH_CARD_LABEL_TYPE_SIZE = 2; // размерная
+  TECH_CARD_LABEL_TYPE_CARE = 3; // состав / уход
+  TECH_CARD_LABEL_TYPE_ORIGIN = 4; // страна производства
+  TECH_CARD_LABEL_TYPE_FLAG = 5; // флаговая
+  TECH_CARD_LABEL_TYPE_HANGTAG = 6; // навесной ярлык (хэнгтег)
+  TECH_CARD_LABEL_TYPE_BARCODE = 7; // штрихкод / RFID
+  TECH_CARD_LABEL_TYPE_SPECIAL = 8; // спецэтикетка
+}
+
+// TechCardConstruction holds general workmanship parameters (Sheet «Обработка»).
+message TechCardConstruction {
+  string main_stitch_type = 1; // тип основной машинной строчки
+  string stitch_density = 2; // плотность строчки по умолчанию (стеж/см)
+  string overlock_threads = 3; // оверлок, кол-во ниток
+  string seam_allowances = 4; // припуски на швы (общие)
+  string hem_finish = 5; // обработка низа / подгибка
+  string pressing = 6; // ВТО / финишная отделка
+  string machine_class = 7; // класс / группа машин
+  string notes = 8;
+}
+
+// TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
+message TechCardOperation {
+  string node = 1; // узел / операция (required)
+  string description = 2; // описание обработки
+  string seam_type = 3; // тип шва / строчки
+  google.type.Decimal stitches_per_cm = 4; // стежков/см
+  string topstitch_width = 5; // ширина отстрочки
+  string thread = 6; // нитки (арт.)
+  string note = 7;
+}
+
+// TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
+message TechCardLabel {
+  TechCardLabelType label_type = 1; // required
+  string content = 2; // содержание / артикул
+  string placement = 3; // размещение
+  string attachment = 4; // крепление
+  string size = 5; // размер
+  string note = 6;
+}
+
+// TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).
+message TechCardPackaging {
+  string folding_method = 1; // способ складывания
+  string polybag = 2; // полибэг (тип / размер)
+  string bag_sticker = 3; // стикер на пакет
+  string inserts = 4; // доп. вложения
+  int32 units_per_box = 5; // кол-во в коробе; 0 = unset
+  string box_marking = 6; // маркировка короба
+  string box_dimensions = 7; // размеры короба (Д×Ш×В)
+  google.type.Decimal weight_net = 8; // вес нетто
+  google.type.Decimal weight_gross = 9; // вес брутто
+  string notes = 10;
+}
+
+// TechCardCostLine is one currency bucket of the materials rollup.
+message TechCardCostLine {
+  string currency = 1; // empty = BOM lines without a currency
+  google.type.Decimal amount = 2;
+}
+
+// TechCardCosting holds the manually-entered cost articles (Sheet «Калькуляция»).
+// The materials rollup and total are COMPUTED on read from the BOM; they are
+// output-only (ignored on write) and never converted across currencies.
+message TechCardCosting {
+  google.type.Decimal cmt_cost = 1; // пошив / работа (CMT)
+  google.type.Decimal hardware_cost = 2; // фурнитура (если вне BOM)
+  google.type.Decimal packaging_cost = 3; // упаковка и маркировка
+  google.type.Decimal logistics_cost = 4; // логистика / доставка
+  google.type.Decimal overhead_cost = 5; // накладные расходы
+  google.type.Decimal defect_percent = 6; // брак / запас (%), 0..100
+  google.type.Decimal markup_multiplier = 7; // наценка (×)
+  google.type.Decimal wholesale_price = 8; // оптовая цена
+  google.type.Decimal retail_price = 9; // розничная цена
+  string currency = 10; // ISO 4217 for the articles above
+  string notes = 11;
+
+  // OUTPUT-ONLY computed rollup (ignored on write; no currency conversion).
+  repeated TechCardCostLine materials_total = 12; // Σ BOM line_total grouped by BOM currency
+  google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
+  google.type.Decimal total_cost = 14; // (materials_cost + cmt+hardware+packaging+logistics+overhead) × (1 + defect/100)
+}
+
+// TechCardInsert is the writable payload for a tech card. Nested lists are full
+// replacements on update (like ProductNew).
+message TechCardInsert {
+  // identification (Sheet «Титул»)
+  string style_number = 1; // Артикул (required)
+  string name = 2; // Название изделия (required)
+  string brand = 3;
+  string season = 4;
+  string collection = 5;
+  int32 category_id = 6; // FK category(id); 0 = unset
+  GenderEnum target_gender = 7; // UNKNOWN = unset
+  TechCardStage stage = 8; // UNKNOWN defaults to PROTO
+  string status = 9; // freeform workflow notes (soft, non-gating)
+  TechCardApprovalState approval_state = 35; // UNKNOWN defaults to DRAFT
+  string approved_by = 36; // who approved the current revision
+  google.protobuf.Timestamp released_at = 37; // when released to manufacture
+  TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to CM
+  string version = 10;
+  google.protobuf.Timestamp revision_date = 11;
+  int32 base_model_id = 12; // FK model(id); 0 = unset
+  int32 base_sample_size_id = 13; // FK size(id); 0 = unset
+  string designer = 14;
+  string constructor = 15;
+  string technologist = 16;
+  google.type.Decimal target_cost = 17;
+  google.type.Decimal target_retail_price = 18;
+  string currency = 19; // ISO 4217 for target cost/price
+
+  // construction description (lower block of Sheet «Титул»)
+  string description = 20;
+  string silhouette = 21;
+  string collar = 22;
+  string fastening = 23;
+  string pockets = 24;
+  string sleeve_cuff = 25;
+  string extra_details = 26;
+  string topstitching = 27;
+  string aux_materials = 28;
+  string notes = 29;
+
+  // children (full-replace on update)
+  repeated int32 size_ids = 30; // size range / grade (FK size(id))
+  repeated int32 product_ids = 31; // linked catalog products (FK product(id))
+  repeated TechCardMediaItem media = 32; // sketch / preview media
+  repeated TechCardCallout callouts = 33; // sketch callouts
+  repeated TechCardRevision revisions = 34; // revision log
+
+  // materials (Phase 2): bill of materials, colourways, points of measure.
+  repeated TechCardBomItem bom_items = 40;
+  repeated TechCardColorway colorways = 41;
+  repeated TechCardPomPoint pom_points = 42;
+
+  // production (Phase 3): construction, operations, labels, packaging, costing.
+  TechCardConstruction construction = 43; // 1:1; null = unset
+  repeated TechCardOperation operations = 44;
+  repeated TechCardLabel labels = 45;
+  TechCardPackaging packaging = 46; // 1:1; null = unset
+  TechCardCosting costing = 47; // 1:1; null = unset
+
+  // Reserved so a future field can never collide with a removed one.
+  reserved 39, 48 to 99;
+}
+
+// TechCard is a stored tech card with resolved sketch media.
+message TechCard {
+  int32 id = 1;
+  TechCardInsert tech_card = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  repeated TechCardMediaFull resolved_media = 5; // sketch media with resolved MediaFull
+}
+
+// TechCardListItem is a lightweight tech-card header for list views.
+message TechCardListItem {
+  int32 id = 1;
+  string style_number = 2;
+  string name = 3;
+  string brand = 4;
+  TechCardStage stage = 5;
+  string status = 6;
+  GenderEnum target_gender = 7;
+  string season = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  TechCardApprovalState approval_state = 11;
+}

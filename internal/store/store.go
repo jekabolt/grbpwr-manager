@@ -35,6 +35,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/settings"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
+	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
 
@@ -103,6 +104,7 @@ type MYSQLStore struct {
 	membershipStore *membership.Store
 	modelStore      *model.Store
 	fittingStore    *fitting.Store
+	techCardStore   *techcard.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -350,6 +352,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.membershipStore = membership.New(base, ms.Tx)
 	ms.modelStore = model.New(base, ms.Tx)
 	ms.fittingStore = fitting.New(base, ms.Tx)
+	ms.techCardStore = techcard.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -372,6 +375,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.membershipStore = membership.New(base, outerTx)
 	txStore.modelStore = model.New(base, outerTx)
 	txStore.fittingStore = fitting.New(base, outerTx)
+	txStore.techCardStore = techcard.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -439,6 +443,7 @@ func (ms *MYSQLStore) Language() dependency.Language          { return ms.langSt
 func (ms *MYSQLStore) Membership() dependency.Membership      { return ms.membershipStore }
 func (ms *MYSQLStore) Models() dependency.Models              { return ms.modelStore }
 func (ms *MYSQLStore) Fittings() dependency.Fittings          { return ms.fittingStore }
+func (ms *MYSQLStore) TechCards() dependency.TechCards        { return ms.techCardStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }
