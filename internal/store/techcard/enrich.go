@@ -2,11 +2,38 @@ package techcard
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
+
+type techCardSizeQtyRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardSizeQuantity
+}
+
+// sizeQuantitiesByTechCardIds loads per-size order quantities (only sizes that
+// have one) grouped by tech card.
+func (s *Store) sizeQuantitiesByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardSizeQuantity, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.TechCardSizeQuantity{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[techCardSizeQtyRow](ctx, s.DB, `
+		SELECT tech_card_id, size_id, order_qty
+		FROM tech_card_size
+		WHERE tech_card_id IN (:ids) AND order_qty IS NOT NULL
+		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card size quantities: %w", err)
+	}
+	out := make(map[int][]entity.TechCardSizeQuantity, len(ids))
+	for _, r := range rows {
+		out[r.TechCardID] = append(out[r.TechCardID], r.TechCardSizeQuantity)
+	}
+	return out, nil
+}
 
 // enrich loads and attaches the size range, linked products, sketch media
 // (writable items + resolved MediaFull), callouts and revisions for each card.
@@ -20,6 +47,10 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	}
 
 	sizes, err := s.idListByTechCardIds(ctx, "tech_card_size", "size_id", ids)
+	if err != nil {
+		return err
+	}
+	sizeQty, err := s.sizeQuantitiesByTechCardIds(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -43,6 +74,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].SizeIds = sizes[id]
+		cards[i].SizeQuantities = sizeQty[id]
 		cards[i].ProductIds = products[id]
 		cards[i].Media = mediaItems[id]
 		cards[i].ResolvedMedia = mediaFull[id]
@@ -108,6 +140,7 @@ func (s *Store) productIdsByTechCardIds(ctx context.Context, ids []int) (map[int
 type techCardMediaRow struct {
 	TechCardID int                      `db:"tech_card_id"`
 	Kind       entity.TechCardMediaKind `db:"kind"`
+	Caption    sql.NullString           `db:"caption"`
 	entity.MediaFull
 }
 
@@ -118,7 +151,7 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 		return items, full, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardMediaRow](ctx, s.DB, `
-		SELECT tcm.tech_card_id, tcm.kind, m.*
+		SELECT tcm.tech_card_id, tcm.kind, tcm.caption, m.*
 		FROM tech_card_media tcm
 		JOIN media m ON m.id = tcm.media_id
 		WHERE tcm.tech_card_id IN (:ids)
@@ -128,7 +161,7 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 	}
 	for i := range rows {
 		tcID := rows[i].TechCardID
-		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Kind: rows[i].Kind})
+		items[tcID] = append(items[tcID], entity.TechCardMediaItem{MediaId: rows[i].Id, Kind: rows[i].Kind, Caption: rows[i].Caption})
 		full[tcID] = append(full[tcID], entity.TechCardMediaFull{Media: rows[i].MediaFull, Kind: rows[i].Kind})
 	}
 	return items, full, nil
@@ -144,7 +177,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		return map[int][]entity.TechCardCallout{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
-		SELECT tech_card_id, callout_number, part, description, dimensions, media_id
+		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

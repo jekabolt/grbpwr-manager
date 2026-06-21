@@ -96,20 +96,26 @@ func IsValidTechCardMeasurementUnit(u TechCardMeasurementUnit) bool {
 type TechCardMediaKind string
 
 const (
-	TechCardMediaFront   TechCardMediaKind = "front"
-	TechCardMediaBack    TechCardMediaKind = "back"
-	TechCardMediaDetail  TechCardMediaKind = "detail"
-	TechCardMediaLining  TechCardMediaKind = "lining"
-	TechCardMediaPreview TechCardMediaKind = "preview"
+	TechCardMediaFront     TechCardMediaKind = "front"
+	TechCardMediaBack      TechCardMediaKind = "back"
+	TechCardMediaDetail    TechCardMediaKind = "detail"
+	TechCardMediaLining    TechCardMediaKind = "lining"
+	TechCardMediaPreview   TechCardMediaKind = "preview"
+	TechCardMediaMoodboard TechCardMediaKind = "moodboard"
+	TechCardMediaReference TechCardMediaKind = "reference"
+	TechCardMediaSwatch    TechCardMediaKind = "swatch"
 )
 
 // ValidTechCardMediaKinds is the set of accepted sketch-media kinds.
 var ValidTechCardMediaKinds = map[TechCardMediaKind]bool{
-	TechCardMediaFront:   true,
-	TechCardMediaBack:    true,
-	TechCardMediaDetail:  true,
-	TechCardMediaLining:  true,
-	TechCardMediaPreview: true,
+	TechCardMediaFront:     true,
+	TechCardMediaBack:      true,
+	TechCardMediaDetail:    true,
+	TechCardMediaLining:    true,
+	TechCardMediaPreview:   true,
+	TechCardMediaMoodboard: true,
+	TechCardMediaReference: true,
+	TechCardMediaSwatch:    true,
 }
 
 // IsValidTechCardMediaKind reports whether k is an accepted media kind.
@@ -121,6 +127,7 @@ func IsValidTechCardMediaKind(k TechCardMediaKind) bool {
 type TechCardMediaItem struct {
 	MediaId int               `db:"media_id"`
 	Kind    TechCardMediaKind `db:"kind"`
+	Caption sql.NullString    `db:"caption"`
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -131,11 +138,13 @@ type TechCardMediaFull struct {
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
 type TechCardCallout struct {
-	Number      int            `db:"callout_number"`
-	Part        sql.NullString `db:"part"`
-	Description sql.NullString `db:"description"`
-	Dimensions  sql.NullString `db:"dimensions"`
-	MediaId     sql.NullInt32  `db:"media_id"` // sketch this callout is pinned to
+	Number      int                 `db:"callout_number"`
+	Part        sql.NullString      `db:"part"`
+	Description sql.NullString      `db:"description"`
+	Dimensions  sql.NullString      `db:"dimensions"`
+	MediaId     sql.NullInt32       `db:"media_id"` // sketch this callout is pinned to
+	PosX        decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
+	PosY        decimal.NullDecimal `db:"pos_y"`
 }
 
 // TechCardRevision is one entry in the revision log.
@@ -205,12 +214,21 @@ func IsValidTechCardLabDipStatus(s TechCardLabDipStatus) bool {
 
 // TechCardColorway is a development colourway (Sheet «Колористика»).
 type TechCardColorway struct {
-	Id           int                  `db:"id"`
-	Code         sql.NullString       `db:"code"`
-	Name         string               `db:"name"`
-	LabDipStatus TechCardLabDipStatus `db:"lab_dip_status"`
-	ProductId    sql.NullInt32        `db:"product_id"`
-	Comment      sql.NullString       `db:"comment"`
+	Id                 int                  `db:"id"`
+	Code               sql.NullString       `db:"code"`
+	Name               string               `db:"name"`
+	LabDipStatus       TechCardLabDipStatus `db:"lab_dip_status"`
+	ProductId          sql.NullInt32        `db:"product_id"`
+	Comment            sql.NullString       `db:"comment"`
+	Pantone            sql.NullString       `db:"pantone"`
+	PantoneSystem      sql.NullString       `db:"pantone_system"`
+	Hex                sql.NullString       `db:"hex"`
+	SwatchMediaId      sql.NullInt32        `db:"swatch_media_id"`
+	LabDipRound        sql.NullInt32        `db:"lab_dip_round"`
+	LabDipSubmittedAt  sql.NullTime         `db:"lab_dip_submitted_at"`
+	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
+	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
+	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
 }
 
 // TechCardBomColorwayColor is the colour of a BOM material in a colourway. On
@@ -239,13 +257,32 @@ type TechCardBomItem struct {
 	UnitPrice   decimal.NullDecimal `db:"unit_price"`
 	Currency    sql.NullString      `db:"currency"`
 	Comment     sql.NullString      `db:"comment"`
+	// fabric data for the cutter / marker (Phase 3.5c)
+	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
+	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
+	FabricDirection sql.NullString      `db:"fabric_direction"`
+	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
 	// ColorwayColors are the per-colourway colours (in-memory; persisted to
 	// tech_card_bom_colorway).
 	ColorwayColors []TechCardBomColorwayColor `db:"-"`
 }
 
-// LineTotal returns quantity*unit_price, falling back to consumption*unit_price
-// when quantity is unset. Invalid (no price) yields an invalid NullDecimal.
+// TechCardFabricDirection enumerates the cutting layout a fabric requires.
+type TechCardFabricDirection string
+
+const (
+	FabricDirectionAny    TechCardFabricDirection = "any"
+	FabricDirectionOneWay TechCardFabricDirection = "one_way"
+	FabricDirectionTwoWay TechCardFabricDirection = "two_way"
+)
+
+var ValidTechCardFabricDirections = map[TechCardFabricDirection]bool{
+	FabricDirectionAny: true, FabricDirectionOneWay: true, FabricDirectionTwoWay: true,
+}
+
+// LineTotal returns quantity*unit_price (falling back to consumption*unit_price
+// when quantity is unset), grossed up by wastage_percent when set. Invalid (no
+// price) yields an invalid NullDecimal.
 func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
 	if !b.UnitPrice.Valid {
 		return decimal.NullDecimal{}
@@ -257,7 +294,17 @@ func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
 	if !qty.Valid {
 		return decimal.NullDecimal{}
 	}
-	return decimal.NullDecimal{Decimal: qty.Decimal.Mul(b.UnitPrice.Decimal), Valid: true}
+	total := qty.Decimal.Mul(b.UnitPrice.Decimal)
+	if b.WastagePercent.Valid {
+		total = total.Mul(decimal.NewFromInt(1).Add(b.WastagePercent.Decimal.Div(decimal.NewFromInt(100))))
+	}
+	return decimal.NullDecimal{Decimal: total, Valid: true}
+}
+
+// TechCardSizeQuantity is the production order quantity for a size (size run).
+type TechCardSizeQuantity struct {
+	SizeId   int `db:"size_id"`
+	OrderQty int `db:"order_qty"`
 }
 
 // TechCardPomGrade is the graded value of a POM point for a size.
@@ -478,12 +525,13 @@ type TechCardInsert struct {
 	Colorways []TechCardColorway `db:"-"`
 	PomPoints []TechCardPomPoint `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
-	Construction *TechCardConstruction `db:"-"`
-	Operations   []TechCardOperation   `db:"-"`
-	Labels       []TechCardLabel       `db:"-"`
-	Packaging    *TechCardPackaging    `db:"-"`
-	Costing      *TechCardCosting      `db:"-"`
-	Issues       []TechCardIssue       `db:"-"`
+	Construction   *TechCardConstruction  `db:"-"`
+	Operations     []TechCardOperation    `db:"-"`
+	Labels         []TechCardLabel        `db:"-"`
+	Packaging      *TechCardPackaging     `db:"-"`
+	Costing        *TechCardCosting       `db:"-"`
+	Issues         []TechCardIssue        `db:"-"`
+	SizeQuantities []TechCardSizeQuantity `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

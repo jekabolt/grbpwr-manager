@@ -276,7 +276,7 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 // insertTechCardChildren inserts the size range, product links, sketch media,
 // callouts and revisions for a tech card (used by both Add and Update).
 func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert) error {
-	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds); err != nil {
+	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
 	if err := insertTechCardProducts(ctx, db, id, tc.ProductIds); err != nil {
@@ -322,13 +322,21 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	return insertTechCardIssues(ctx, db, id, tc.Issues)
 }
 
-func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int, quantities []entity.TechCardSizeQuantity) error {
 	if len(sizeIDs) == 0 {
 		return nil
 	}
+	qtyBySize := make(map[int]int, len(quantities))
+	for _, q := range quantities {
+		qtyBySize[q.SizeId] = q.OrderQty
+	}
 	rows := make([]map[string]any, 0, len(sizeIDs))
 	for i, sid := range sizeIDs {
-		rows = append(rows, map[string]any{"tech_card_id": id, "size_id": sid, "display_order": i})
+		var orderQty any
+		if q, ok := qtyBySize[sid]; ok {
+			orderQty = q
+		}
+		rows = append(rows, map[string]any{"tech_card_id": id, "size_id": sid, "order_qty": orderQty, "display_order": i})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_size", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card sizes: %w", err)
@@ -360,6 +368,7 @@ func insertTechCardMedia(ctx context.Context, db dependency.DB, id int, media []
 			"tech_card_id":  id,
 			"media_id":      m.MediaId,
 			"kind":          string(m.Kind),
+			"caption":       m.Caption,
 			"display_order": i,
 		})
 	}
@@ -382,6 +391,8 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"description":    c.Description,
 			"dimensions":     c.Dimensions,
 			"media_id":       c.MediaId,
+			"pos_x":          c.PosX,
+			"pos_y":          c.PosY,
 			"display_order":  i,
 		})
 	}

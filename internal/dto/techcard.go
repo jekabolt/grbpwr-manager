@@ -76,12 +76,29 @@ var techCardUnitEntityToPb = func() map[entity.TechCardMeasurementUnit]pb_common
 }()
 
 var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCardMediaKind{
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT:   entity.TechCardMediaFront,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_BACK:    entity.TechCardMediaBack,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_DETAIL:  entity.TechCardMediaDetail,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_LINING:  entity.TechCardMediaLining,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_PREVIEW: entity.TechCardMediaPreview,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT:     entity.TechCardMediaFront,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_BACK:      entity.TechCardMediaBack,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_DETAIL:    entity.TechCardMediaDetail,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_LINING:    entity.TechCardMediaLining,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_PREVIEW:   entity.TechCardMediaPreview,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_MOODBOARD: entity.TechCardMediaMoodboard,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_REFERENCE: entity.TechCardMediaReference,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_SWATCH:    entity.TechCardMediaSwatch,
 }
+
+var techCardFabricDirectionPbToEntity = map[pb_common.TechCardFabricDirection]entity.TechCardFabricDirection{
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY:     entity.FabricDirectionAny,
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ONE_WAY: entity.FabricDirectionOneWay,
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_TWO_WAY: entity.FabricDirectionTwoWay,
+}
+
+var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirection]pb_common.TechCardFabricDirection {
+	m := make(map[entity.TechCardFabricDirection]pb_common.TechCardFabricDirection, len(techCardFabricDirectionPbToEntity))
+	for k, v := range techCardFabricDirectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
 
 var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.TechCardMediaKind {
 	m := make(map[entity.TechCardMediaKind]pb_common.TechCardMediaKind, len(techCardMediaKindPbToEntity))
@@ -243,7 +260,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			}
 			kind = k
 		}
-		media = append(media, entity.TechCardMediaItem{MediaId: int(m.MediaId), Kind: kind})
+		if len(m.Caption) > maxVarchar255 {
+			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
+		}
+		media = append(media, entity.TechCardMediaItem{MediaId: int(m.MediaId), Kind: kind, Caption: nullStringFromPb(m.Caption)})
 	}
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
@@ -254,12 +274,28 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("callout media_id must not be negative")
 		}
+		posX, err := nullDecimalFromPb(c.PosX)
+		if err != nil {
+			return nil, fmt.Errorf("callout pos_x: %w", err)
+		}
+		posY, err := nullDecimalFromPb(c.PosY)
+		if err != nil {
+			return nil, fmt.Errorf("callout pos_y: %w", err)
+		}
+		if err := validateUnitInterval(posX, "callout pos_x"); err != nil {
+			return nil, err
+		}
+		if err := validateUnitInterval(posY, "callout pos_y"); err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(c.Part),
 			Description: nullStringFromPb(c.Description),
 			Dimensions:  nullStringFromPb(c.Dimensions),
 			MediaId:     nullInt32FromPb(c.MediaId),
+			PosX:        posX,
+			PosY:        posY,
 		})
 	}
 
@@ -330,6 +366,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	sizeQuantities, err := parseTechCardSizeQuantities(pb.SizeQuantities, sizeIds)
+	if err != nil {
+		return nil, err
+	}
 
 	return &entity.TechCardInsert{
 		StyleNumber:       pb.StyleNumber,
@@ -381,6 +421,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Packaging:         packaging,
 		Costing:           costing,
 		Issues:            issues,
+		SizeQuantities:    sizeQuantities,
 	}, nil
 }
 
@@ -395,6 +436,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 		media = append(media, &pb_common.TechCardMediaItem{
 			MediaId: int32(m.MediaId),
 			Kind:    pbTechCardMediaKind(m.Kind),
+			Caption: pbStringFromNull(m.Caption),
 		})
 	}
 
@@ -414,6 +456,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Description: pbStringFromNull(c.Description),
 			Dimensions:  pbStringFromNull(c.Dimensions),
 			MediaId:     pbInt32FromNull(c.MediaId),
+			PosX:        pbDecimalFromNull(c.PosX),
+			PosY:        pbDecimalFromNull(c.PosY),
 		})
 	}
 
@@ -486,6 +530,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Packaging:         techCardPackagingToPb(tc.Packaging),
 			Costing:           techCardCostingToPb(tc),
 			Issues:            techCardIssuesToPb(tc.Issues),
+			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
 		},
 		ResolvedMedia: resolved,
 	}
@@ -595,12 +640,28 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 			}
 			status = s
 		}
+		if len(c.Pantone) > maxVarchar64 || len(c.PantoneSystem) > maxVarchar32 ||
+			len(c.Hex) > 7 || len(c.LabDipDecidedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("colorway pantone/pantone_system/hex/lab_dip_decided_by too long")
+		}
+		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
+			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
+		}
 		out = append(out, entity.TechCardColorway{
-			Code:         nullStringFromPb(c.Code),
-			Name:         c.Name,
-			LabDipStatus: status,
-			ProductId:    nullInt32FromPb(c.ProductId),
-			Comment:      nullStringFromPb(c.Comment),
+			Code:               nullStringFromPb(c.Code),
+			Name:               c.Name,
+			LabDipStatus:       status,
+			ProductId:          nullInt32FromPb(c.ProductId),
+			Comment:            nullStringFromPb(c.Comment),
+			Pantone:            nullStringFromPb(c.Pantone),
+			PantoneSystem:      nullStringFromPb(c.PantoneSystem),
+			Hex:                nullStringFromPb(c.Hex),
+			SwatchMediaId:      nullInt32FromPb(c.SwatchMediaId),
+			LabDipRound:        nullInt32FromPb(c.LabDipRound),
+			LabDipSubmittedAt:  nullDateFromPbTimestamp(c.LabDipSubmittedAt),
+			LabDipDecidedAt:    nullDateFromPbTimestamp(c.LabDipDecidedAt),
+			LabDipDecidedBy:    nullStringFromPb(c.LabDipDecidedBy),
+			LabDipRejectReason: nullStringFromPb(c.LabDipRejectReason),
 		})
 	}
 	return out, nil
@@ -680,22 +741,61 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 			})
 		}
 
+		fabricWidth, err := nullDecimalFromPb(b.FabricWidth)
+		if err != nil {
+			return nil, fmt.Errorf("bom fabric_width: %w", err)
+		}
+		fabricGsm, err := nullDecimalFromPb(b.FabricWeightGsm)
+		if err != nil {
+			return nil, fmt.Errorf("bom fabric_weight_gsm: %w", err)
+		}
+		wastage, err := nullDecimalFromPb(b.WastagePercent)
+		if err != nil {
+			return nil, fmt.Errorf("bom wastage_percent: %w", err)
+		}
+		for _, v := range []struct {
+			nd    decimal.NullDecimal
+			field string
+		}{{fabricWidth, "bom fabric_width"}, {fabricGsm, "bom fabric_weight_gsm"}} {
+			if err := validateDecimalScale(v.nd, v.field, 2, 100_000); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateDecimalScale(wastage, "bom wastage_percent", 2, 1_000); err != nil {
+			return nil, err
+		}
+		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
+			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
+		}
+		direction := sql.NullString{}
+		if b.FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
+			d, ok := techCardFabricDirectionPbToEntity[b.FabricDirection]
+			if !ok {
+				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.FabricDirection)
+			}
+			direction = sql.NullString{String: string(d), Valid: true}
+		}
+
 		out = append(out, entity.TechCardBomItem{
-			Section:        section,
-			Name:           b.Name,
-			Placement:      nullStringFromPb(b.Placement),
-			Supplier:       nullStringFromPb(b.Supplier),
-			SupplierRef:    nullStringFromPb(b.SupplierRef),
-			Color:          nullStringFromPb(b.Color),
-			Composition:    nullStringFromPb(b.Composition),
-			Spec:           nullStringFromPb(b.Spec),
-			Consumption:    consumption,
-			Unit:           nullStringFromPb(b.Unit),
-			Quantity:       quantity,
-			UnitPrice:      unitPrice,
-			Currency:       nullStringFromPb(b.Currency),
-			Comment:        nullStringFromPb(b.Comment),
-			ColorwayColors: colors,
+			Section:         section,
+			Name:            b.Name,
+			Placement:       nullStringFromPb(b.Placement),
+			Supplier:        nullStringFromPb(b.Supplier),
+			SupplierRef:     nullStringFromPb(b.SupplierRef),
+			Color:           nullStringFromPb(b.Color),
+			Composition:     nullStringFromPb(b.Composition),
+			Spec:            nullStringFromPb(b.Spec),
+			Consumption:     consumption,
+			Unit:            nullStringFromPb(b.Unit),
+			Quantity:        quantity,
+			UnitPrice:       unitPrice,
+			Currency:        nullStringFromPb(b.Currency),
+			Comment:         nullStringFromPb(b.Comment),
+			FabricWidth:     fabricWidth,
+			FabricWeightGsm: fabricGsm,
+			FabricDirection: direction,
+			WastagePercent:  wastage,
+			ColorwayColors:  colors,
 		})
 	}
 	return out, nil
@@ -819,11 +919,20 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardC
 	out := make([]*pb_common.TechCardColorway, 0, len(cws))
 	for _, c := range cws {
 		out = append(out, &pb_common.TechCardColorway{
-			Code:         pbStringFromNull(c.Code),
-			Name:         c.Name,
-			LabDipStatus: pbLabDipStatus(c.LabDipStatus),
-			ProductId:    pbInt32FromNull(c.ProductId),
-			Comment:      pbStringFromNull(c.Comment),
+			Code:               pbStringFromNull(c.Code),
+			Name:               c.Name,
+			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
+			ProductId:          pbInt32FromNull(c.ProductId),
+			Comment:            pbStringFromNull(c.Comment),
+			Pantone:            pbStringFromNull(c.Pantone),
+			PantoneSystem:      pbStringFromNull(c.PantoneSystem),
+			Hex:                pbStringFromNull(c.Hex),
+			SwatchMediaId:      pbInt32FromNull(c.SwatchMediaId),
+			LabDipRound:        pbInt32FromNull(c.LabDipRound),
+			LabDipSubmittedAt:  pbTimestampFromNullTime(c.LabDipSubmittedAt),
+			LabDipDecidedAt:    pbTimestampFromNullTime(c.LabDipDecidedAt),
+			LabDipDecidedBy:    pbStringFromNull(c.LabDipDecidedBy),
+			LabDipRejectReason: pbStringFromNull(c.LabDipRejectReason),
 		})
 	}
 	return out
@@ -842,23 +951,76 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			})
 		}
 		out = append(out, &pb_common.TechCardBomItem{
-			Section:        pbBomSection(b.Section),
-			Name:           b.Name,
-			Placement:      pbStringFromNull(b.Placement),
-			Supplier:       pbStringFromNull(b.Supplier),
-			SupplierRef:    pbStringFromNull(b.SupplierRef),
-			Color:          pbStringFromNull(b.Color),
-			Composition:    pbStringFromNull(b.Composition),
-			Spec:           pbStringFromNull(b.Spec),
-			Consumption:    pbDecimalFromNull(b.Consumption),
-			Unit:           pbStringFromNull(b.Unit),
-			Quantity:       pbDecimalFromNull(b.Quantity),
-			UnitPrice:      pbDecimalFromNull(b.UnitPrice),
-			Currency:       pbStringFromNull(b.Currency),
-			Comment:        pbStringFromNull(b.Comment),
-			ColorwayColors: colors,
-			LineTotal:      pbDecimalFromNull(b.LineTotal()),
+			Section:         pbBomSection(b.Section),
+			Name:            b.Name,
+			Placement:       pbStringFromNull(b.Placement),
+			Supplier:        pbStringFromNull(b.Supplier),
+			SupplierRef:     pbStringFromNull(b.SupplierRef),
+			Color:           pbStringFromNull(b.Color),
+			Composition:     pbStringFromNull(b.Composition),
+			Spec:            pbStringFromNull(b.Spec),
+			Consumption:     pbDecimalFromNull(b.Consumption),
+			Unit:            pbStringFromNull(b.Unit),
+			Quantity:        pbDecimalFromNull(b.Quantity),
+			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
+			Currency:        pbStringFromNull(b.Currency),
+			Comment:         pbStringFromNull(b.Comment),
+			ColorwayColors:  colors,
+			LineTotal:       pbDecimalFromNull(b.LineTotal()),
+			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
+			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
+			FabricDirection: pbFabricDirection(b.FabricDirection),
+			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 		})
+	}
+	return out
+}
+
+func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
+	if !s.Valid {
+		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+	}
+	if v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+}
+
+// validateUnitInterval rejects a non-null decimal outside [0,1] (callout pos_x/y).
+func validateUnitInterval(nd decimal.NullDecimal, field string) error {
+	if !nd.Valid {
+		return nil
+	}
+	if nd.Decimal.IsNegative() || nd.Decimal.GreaterThan(decimal.NewFromInt(1)) {
+		return fmt.Errorf("%s must be between 0 and 1", field)
+	}
+	return nil
+}
+
+func parseTechCardSizeQuantities(pbs []*pb_common.TechCardSizeQuantity, sizeIds []int) ([]entity.TechCardSizeQuantity, error) {
+	out := make([]entity.TechCardSizeQuantity, 0, len(pbs))
+	seen := make(map[int]bool, len(pbs))
+	for _, q := range pbs {
+		sid := int(q.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("size_quantity size_id %d must be one of size_ids", q.SizeId)
+		}
+		if seen[sid] {
+			return nil, fmt.Errorf("duplicate size_quantity for size_id %d", q.SizeId)
+		}
+		seen[sid] = true
+		if q.OrderQty < 0 {
+			return nil, fmt.Errorf("size_quantity order_qty must not be negative")
+		}
+		out = append(out, entity.TechCardSizeQuantity{SizeId: sid, OrderQty: int(q.OrderQty)})
+	}
+	return out, nil
+}
+
+func techCardSizeQuantitiesToPb(qs []entity.TechCardSizeQuantity) []*pb_common.TechCardSizeQuantity {
+	out := make([]*pb_common.TechCardSizeQuantity, 0, len(qs))
+	for _, q := range qs {
+		out = append(out, &pb_common.TechCardSizeQuantity{SizeId: int32(q.SizeId), OrderQty: int32(q.OrderQty)})
 	}
 	return out
 }

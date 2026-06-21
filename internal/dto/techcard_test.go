@@ -502,6 +502,74 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 	}
 }
 
+func TestConvertTechCardMaterialsDepth(t *testing.T) {
+	dec := func(s string) *pb_decimal.Decimal { return &pb_decimal.Decimal{Value: s} }
+	ts := timestamppb.New(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-040",
+		Name:        "Parka",
+		SizeIds:     []int32{4, 5},
+		SizeQuantities: []*pb_common.TechCardSizeQuantity{
+			{SizeId: 4, OrderQty: 120}, {SizeId: 5, OrderQty: 80},
+		},
+		Media: []*pb_common.TechCardMediaItem{
+			{MediaId: 11, Kind: pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_MOODBOARD, Caption: "AW vibe"},
+		},
+		Callouts: []*pb_common.TechCardCallout{{Number: 1, PosX: dec("0.5"), PosY: dec("0.25")}},
+		Colorways: []*pb_common.TechCardColorway{
+			{Name: "Black", Pantone: "19-4005", PantoneSystem: "TCX", Hex: "#101010", LabDipRound: 2, SwatchMediaId: 11, LabDipDecidedBy: "colorist", LabDipDecidedAt: ts},
+		},
+		BomItems: []*pb_common.TechCardBomItem{
+			{
+				Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell",
+				Quantity: dec("2"), UnitPrice: dec("10"), Currency: "EUR", WastagePercent: dec("10"),
+				FabricWidth: dec("150"), FabricDirection: pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ONE_WAY,
+			},
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.SizeQuantities) != 2 || got.SizeQuantities[0].OrderQty != 120 {
+		t.Errorf("size_quantities mismatch: %+v", got.SizeQuantities)
+	}
+	if got.Media[0].Caption.String != "AW vibe" || got.Media[0].Kind != entity.TechCardMediaMoodboard {
+		t.Errorf("media caption/kind mismatch: %+v", got.Media[0])
+	}
+	if !got.Callouts[0].PosX.Valid || got.BomItems[0].FabricDirection.String != string(entity.FabricDirectionOneWay) {
+		t.Errorf("callout/fabric mismatch: %+v %+v", got.Callouts[0], got.BomItems[0])
+	}
+	if got.Colorways[0].Pantone.String != "19-4005" || got.Colorways[0].LabDipRound.Int32 != 2 {
+		t.Errorf("colorway lab-dip mismatch: %+v", got.Colorways[0])
+	}
+	// line_total grossed up by 10% wastage: 2 * 10 * 1.1 = 22.
+	if lt := got.BomItems[0].LineTotal(); !lt.Valid || !lt.Decimal.Equal(decimal.RequireFromString("22")) {
+		t.Errorf("line_total with wastage mismatch: %+v", lt)
+	}
+
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	if pb.TechCard.BomItems[0].LineTotal.Value != "22" ||
+		pb.TechCard.BomItems[0].FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ONE_WAY {
+		t.Errorf("pb bom mismatch: %+v", pb.TechCard.BomItems[0])
+	}
+	if len(pb.TechCard.SizeQuantities) != 2 || pb.TechCard.Colorways[0].Pantone != "19-4005" || pb.TechCard.Media[0].Caption != "AW vibe" {
+		t.Errorf("pb depth fields mismatch")
+	}
+
+	bad := map[string]*pb_common.TechCardInsert{
+		"wastage over 100": {StyleNumber: "x", Name: "y", BomItems: []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "m", WastagePercent: dec("150")}}},
+		"size qty not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 9, OrderQty: 1}}},
+		"callout pos out of range": {StyleNumber: "x", Name: "y", Callouts: []*pb_common.TechCardCallout{{Number: 1, PosX: dec("2")}}},
+	}
+	for name, bi := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
+	}
+}
+
 // ListItem conversion produces a lightweight header.
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{

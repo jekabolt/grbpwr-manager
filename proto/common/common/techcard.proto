@@ -48,12 +48,16 @@ enum TechCardMediaKind {
   TECH_CARD_MEDIA_KIND_DETAIL = 3; // detail / construction node
   TECH_CARD_MEDIA_KIND_LINING = 4; // internal structure / lining
   TECH_CARD_MEDIA_KIND_PREVIEW = 5; // cover preview
+  TECH_CARD_MEDIA_KIND_MOODBOARD = 6; // mood / inspiration board
+  TECH_CARD_MEDIA_KIND_REFERENCE = 7; // reference / fabric photo
+  TECH_CARD_MEDIA_KIND_SWATCH = 8; // colour / fabric swatch
 }
 
 // TechCardMediaItem is a writable sketch-media reference (id + kind).
 message TechCardMediaItem {
   int32 media_id = 1; // FK media(id)
   TechCardMediaKind kind = 2;
+  string caption = 3; // image caption / view name
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -69,6 +73,8 @@ message TechCardCallout {
   string description = 3; // описание, уточнение
   string dimensions = 4; // размеры / привязка
   int32 media_id = 5; // FK media(id); sketch this callout is pinned to (0 = unanchored)
+  google.type.Decimal pos_x = 6; // normalised x (0..1) of the marker on its sketch
+  google.type.Decimal pos_y = 7; // normalised y (0..1) of the marker on its sketch
 }
 
 // TechCardRevision is one entry in the spec-document changelog (what changed in
@@ -113,6 +119,15 @@ message TechCardColorway {
   TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
   int32 product_id = 4; // FK product(id); 0 = not yet published
   string comment = 5;
+  string pantone = 6; // headline Pantone code
+  string pantone_system = 7; // TCX|TPX|TPG|C|U (Pantone book)
+  string hex = 8; // screen approximation #RRGGBB
+  int32 swatch_media_id = 9; // FK media(id); approved physical swatch; 0 = none
+  int32 lab_dip_round = 10; // submission round (1, 2, …); 0 = unset
+  google.protobuf.Timestamp lab_dip_submitted_at = 11;
+  google.protobuf.Timestamp lab_dip_decided_at = 12;
+  string lab_dip_decided_by = 13;
+  string lab_dip_reject_reason = 14;
 }
 
 // TechCardBomColorwayColor is one «Колористика» matrix cell: the colour of a BOM
@@ -145,7 +160,26 @@ message TechCardBomItem {
   string currency = 13; // ISO 4217 for unit_price
   string comment = 14;
   repeated TechCardBomColorwayColor colorway_colors = 15; // per-colourway colours
-  google.type.Decimal line_total = 16; // OUTPUT-ONLY: quantity*unit_price (else consumption*unit_price)
+  google.type.Decimal line_total = 16; // OUTPUT-ONLY: gross of wastage_percent; quantity*unit_price else consumption*unit_price
+  // fabric data for the cutter / marker (Phase 3.5c)
+  google.type.Decimal fabric_width = 17; // usable width, cm
+  google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
+  TechCardFabricDirection fabric_direction = 19; // nap / layout
+  google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into line_total
+}
+
+// TechCardFabricDirection is the cutting layout a fabric requires.
+enum TechCardFabricDirection {
+  TECH_CARD_FABRIC_DIRECTION_UNKNOWN = 0;
+  TECH_CARD_FABRIC_DIRECTION_ANY = 1; // all-way (no nap)
+  TECH_CARD_FABRIC_DIRECTION_ONE_WAY = 2; // napped / directional, one-way marker
+  TECH_CARD_FABRIC_DIRECTION_TWO_WAY = 3; // two-way
+}
+
+// TechCardSizeQuantity is the production order quantity for a size (size run).
+message TechCardSizeQuantity {
+  int32 size_id = 1; // FK size(id); must be one of size_ids
+  int32 order_qty = 2;
 }
 
 // TechCardPomGrade is the graded value of a POM point for one size.
@@ -378,9 +412,10 @@ message TechCardInsert {
   google.protobuf.Timestamp approved_at = 48; // auto-set on approve/release if unset
   string concept = 49; // design concept / intent (designer)
   repeated TechCardIssue issues = 50; // maker-flagged construction issues
+  repeated TechCardSizeQuantity size_quantities = 51; // per-size order quantity (size run)
 
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 51 to 99;
+  reserved 39, 52 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

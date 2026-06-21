@@ -21,16 +21,29 @@ func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cw
 		c := &cws[i]
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_colorway
-				(tech_card_id, code, name, lab_dip_status, product_id, comment, display_order)
-			VALUES (:tech_card_id, :code, :name, :lab_dip_status, :product_id, :comment, :display_order)`,
+				(tech_card_id, code, name, lab_dip_status, product_id, comment, display_order,
+				 pantone, pantone_system, hex, swatch_media_id, lab_dip_round,
+				 lab_dip_submitted_at, lab_dip_decided_at, lab_dip_decided_by, lab_dip_reject_reason)
+			VALUES (:tech_card_id, :code, :name, :lab_dip_status, :product_id, :comment, :display_order,
+				 :pantone, :pantone_system, :hex, :swatch_media_id, :lab_dip_round,
+				 :lab_dip_submitted_at, :lab_dip_decided_at, :lab_dip_decided_by, :lab_dip_reject_reason)`,
 			map[string]any{
-				"tech_card_id":   tcID,
-				"code":           c.Code,
-				"name":           c.Name,
-				"lab_dip_status": string(c.LabDipStatus),
-				"product_id":     c.ProductId,
-				"comment":        c.Comment,
-				"display_order":  i,
+				"tech_card_id":          tcID,
+				"code":                  c.Code,
+				"name":                  c.Name,
+				"lab_dip_status":        string(c.LabDipStatus),
+				"product_id":            c.ProductId,
+				"comment":               c.Comment,
+				"display_order":         i,
+				"pantone":               c.Pantone,
+				"pantone_system":        c.PantoneSystem,
+				"hex":                   c.Hex,
+				"swatch_media_id":       c.SwatchMediaId,
+				"lab_dip_round":         c.LabDipRound,
+				"lab_dip_submitted_at":  c.LabDipSubmittedAt,
+				"lab_dip_decided_at":    c.LabDipDecidedAt,
+				"lab_dip_decided_by":    c.LabDipDecidedBy,
+				"lab_dip_reject_reason": c.LabDipRejectReason,
 			})
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert tech card colorway: %w", err)
@@ -48,26 +61,32 @@ func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		bomID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_bom_item
 				(tech_card_id, section, name, placement, supplier, supplier_ref, color, composition, spec,
-				 consumption, unit, quantity, unit_price, currency, comment, display_order)
+				 consumption, unit, quantity, unit_price, currency, comment, display_order,
+				 fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent)
 			VALUES (:tech_card_id, :section, :name, :placement, :supplier, :supplier_ref, :color, :composition, :spec,
-				 :consumption, :unit, :quantity, :unit_price, :currency, :comment, :display_order)`,
+				 :consumption, :unit, :quantity, :unit_price, :currency, :comment, :display_order,
+				 :fabric_width, :fabric_weight_gsm, :fabric_direction, :wastage_percent)`,
 			map[string]any{
-				"tech_card_id":  tcID,
-				"section":       string(b.Section),
-				"name":          b.Name,
-				"placement":     b.Placement,
-				"supplier":      b.Supplier,
-				"supplier_ref":  b.SupplierRef,
-				"color":         b.Color,
-				"composition":   b.Composition,
-				"spec":          b.Spec,
-				"consumption":   b.Consumption,
-				"unit":          b.Unit,
-				"quantity":      b.Quantity,
-				"unit_price":    b.UnitPrice,
-				"currency":      b.Currency,
-				"comment":       b.Comment,
-				"display_order": i,
+				"tech_card_id":      tcID,
+				"section":           string(b.Section),
+				"name":              b.Name,
+				"placement":         b.Placement,
+				"supplier":          b.Supplier,
+				"supplier_ref":      b.SupplierRef,
+				"color":             b.Color,
+				"composition":       b.Composition,
+				"spec":              b.Spec,
+				"consumption":       b.Consumption,
+				"unit":              b.Unit,
+				"quantity":          b.Quantity,
+				"unit_price":        b.UnitPrice,
+				"currency":          b.Currency,
+				"comment":           b.Comment,
+				"display_order":     i,
+				"fabric_width":      b.FabricWidth,
+				"fabric_weight_gsm": b.FabricWeightGsm,
+				"fabric_direction":  b.FabricDirection,
+				"wastage_percent":   b.WastagePercent,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card bom item: %w", err)
@@ -202,7 +221,9 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// (products are soft-deleted, so the ON DELETE SET NULL never fires) — a dead
 	// SKU surfaces as NULL instead of a dangling id, mirroring productIdsByTechCardIds.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
-		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment
+		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment,
+		       c.pantone, c.pantone_system, c.hex, c.swatch_media_id, c.lab_dip_round,
+		       c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
 		FROM tech_card_colorway c
 		LEFT JOIN product p ON p.id = c.product_id AND p.deleted_at IS NULL
 		WHERE c.tech_card_id IN (:ids)
@@ -220,7 +241,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// BOM lines per card.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT id, tech_card_id, section, name, placement, supplier, supplier_ref, color, composition, spec,
-		       consumption, unit, quantity, unit_price, currency, comment
+		       consumption, unit, quantity, unit_price, currency, comment,
+		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent
 		FROM tech_card_bom_item
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
