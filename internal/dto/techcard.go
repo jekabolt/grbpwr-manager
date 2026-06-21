@@ -566,6 +566,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		Season:        pbStringFromNull(tc.Season),
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
+		LockVersion:   int32(tc.LockVersion),
 	}
 }
 
@@ -652,9 +653,16 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 			}
 			status = s
 		}
-		if len(c.Pantone) > maxVarchar64 || len(c.PantoneSystem) > maxVarchar32 ||
-			len(c.Hex) > 7 || len(c.LabDipDecidedBy) > maxVarchar255 {
-			return nil, fmt.Errorf("colorway pantone/pantone_system/hex/lab_dip_decided_by too long")
+		if len(c.Pantone) > maxVarchar64 || len(c.Hex) > 7 || len(c.LabDipDecidedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("colorway pantone/hex/lab_dip_decided_by too long")
+		}
+		// Validate format/membership in the DTO (not just lengths) so a bad value
+		// fails as InvalidArgument instead of tripping the DB CHECK as Internal-500.
+		if c.Hex != "" && !isHexColor(c.Hex) {
+			return nil, fmt.Errorf("colorway hex must be #RRGGBB")
+		}
+		if c.PantoneSystem != "" && !validPantoneSystems[c.PantoneSystem] {
+			return nil, fmt.Errorf("colorway pantone_system must be one of TCX, TPX, TPG, C, U")
 		}
 		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
 			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
@@ -996,6 +1004,22 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 		return v
 	}
 	return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+}
+
+// validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
+var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// isHexColor reports whether s is a #RRGGBB colour (mirrors the colorway.hex CHECK).
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateUnitInterval rejects a non-null decimal outside [0,1] (callout pos_x/y).

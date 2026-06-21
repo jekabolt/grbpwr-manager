@@ -264,6 +264,7 @@ message TechCardOperation {
   string seam_allowance = 10; // seam allowance for this узел
   string needle = 11; // needle size / type
   google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
+  string attachment = 13; // folder / binder / guide / hemmer / presser-foot (приспособление)
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -473,4 +474,5 @@ message TechCardListItem {
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
+  int32 lock_version = 12; // optimistic-lock token, so a list→edit needs no extra GET
 }

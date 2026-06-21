@@ -132,6 +132,8 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"cost overflow":     {StyleNumber: "x", Name: "y", TargetCost: &pb_decimal.Decimal{Value: "100000000"}},
 		"cost decimals":     {StyleNumber: "x", Name: "y", TargetRetailPrice: &pb_decimal.Decimal{Value: "1.999"}},
 		"dup colorway code": {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK"}, {Name: "b", Code: "BLK"}}},
+		"bad hex":           {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Hex: "red"}}},
+		"bad pantone sys":   {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", PantoneSystem: "XXX"}}},
 		"release unapproved": {StyleNumber: "x", Name: "y",
 			ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
 			Colorways:     []*pb_common.TechCardColorway{{Name: "Black"}}}, // lab dip defaults to pending
@@ -460,7 +462,7 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 		Name:         "Jacket",
 		Construction: &pb_common.TechCardConstruction{LabourRate: dec("0.5"), LabourRateCurrency: "EUR"},
 		Operations: []*pb_common.TechCardOperation{
-			{Node: "collar", OperationNumber: 10, Machine: "lockstitch", SeamAllowance: "1.0", Needle: "90/14", TimeNorm: dec("2")},
+			{Node: "collar", OperationNumber: 10, Machine: "lockstitch", SeamAllowance: "1.0", Needle: "90/14", Attachment: "binder", TimeNorm: dec("2")},
 			{Node: "side", OperationNumber: 20, TimeNorm: dec("3")},
 		},
 		Costing: &pb_common.TechCardCosting{Currency: "EUR"},
@@ -473,7 +475,7 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got.Operations) != 2 || !got.Operations[0].OperationNumber.Valid || got.Operations[0].OperationNumber.Int32 != 10 ||
-		got.Operations[0].Machine.String != "lockstitch" || !got.Operations[0].TimeNorm.Valid {
+		got.Operations[0].Machine.String != "lockstitch" || got.Operations[0].Attachment.String != "binder" || !got.Operations[0].TimeNorm.Valid {
 		t.Errorf("operations mismatch: %+v", got.Operations)
 	}
 	if len(got.Issues) != 1 || got.Issues[0].Severity != entity.IssueSeverityHigh || got.Issues[0].Status != entity.IssueStatusOpen {

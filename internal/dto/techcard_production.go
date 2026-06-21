@@ -73,7 +73,8 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 	if err != nil {
 		return nil, fmt.Errorf("construction labour_rate: %w", err)
 	}
-	if err := validateDecimalScale(labourRate, "construction labour_rate", bomPriceMaxFrac, bomPriceLimit); err != nil {
+	// DECIMAL(10,4): 6 integer digits, so the magnitude limit is 1e6, not bomPriceLimit.
+	if err := validateDecimalScale(labourRate, "construction labour_rate", 4, 1_000_000); err != nil {
 		return nil, err
 	}
 	return &entity.TechCardConstruction{
@@ -100,8 +101,8 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			return nil, fmt.Errorf("operation node/seam_type/thread must be at most %d characters", maxVarchar255)
 		}
 		if len(o.TopstitchWidth) > maxVarchar64 || len(o.Machine) > maxVarchar64 ||
-			len(o.SeamAllowance) > maxVarchar64 || len(o.Needle) > maxVarchar64 {
-			return nil, fmt.Errorf("operation topstitch_width/machine/seam_allowance/needle must be at most %d characters", maxVarchar64)
+			len(o.SeamAllowance) > maxVarchar64 || len(o.Needle) > maxVarchar64 || len(o.Attachment) > maxVarchar64 {
+			return nil, fmt.Errorf("operation topstitch_width/machine/seam_allowance/needle/attachment must be at most %d characters", maxVarchar64)
 		}
 		if o.OperationNumber < 0 {
 			return nil, fmt.Errorf("operation operation_number must not be negative")
@@ -131,6 +132,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			SeamAllowance:   nullStringFromPb(o.SeamAllowance),
 			Thread:          nullStringFromPb(o.Thread),
 			Needle:          nullStringFromPb(o.Needle),
+			Attachment:      nullStringFromPb(o.Attachment),
 			TimeNorm:        timeNorm,
 			Note:            nullStringFromPb(o.Note),
 		})
@@ -322,6 +324,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			SeamAllowance:   pbStringFromNull(o.SeamAllowance),
 			Thread:          pbStringFromNull(o.Thread),
 			Needle:          pbStringFromNull(o.Needle),
+			Attachment:      pbStringFromNull(o.Attachment),
 			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
 			Note:            pbStringFromNull(o.Note),
 		})

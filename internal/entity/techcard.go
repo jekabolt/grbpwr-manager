@@ -395,6 +395,7 @@ type TechCardOperation struct {
 	SeamAllowance   sql.NullString      `db:"seam_allowance"`
 	Thread          sql.NullString      `db:"thread"`
 	Needle          sql.NullString      `db:"needle"`
+	Attachment      sql.NullString      `db:"attachment"`
 	TimeNorm        decimal.NullDecimal `db:"time_norm"`
 	Note            sql.NullString      `db:"note"`
 }

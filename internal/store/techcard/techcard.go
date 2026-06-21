@@ -171,7 +171,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		params := techCardHeaderParams(tc)
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
-		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
 				style_number = :style_number, name = :name, brand = :brand, season = :season,
@@ -186,8 +186,14 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				description = :description, concept = :concept, silhouette = :silhouette, collar = :collar,
 				fastening = :fastening, pockets = :pockets, sleeve_cuff = :sleeve_cuff, extra_details = :extra_details,
 				topstitching = :topstitching, aux_materials = :aux_materials, notes = :notes
-			WHERE id = :id AND lock_version = :expected_lock_version`, params); err != nil {
+			WHERE id = :id AND lock_version = :expected_lock_version`, params)
+		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
+		}
+		// The row provably exists (loaded above), so 0 rows means lock_version moved
+		// under us — make the WHERE guard load-bearing, not just the in-Go check.
+		if rows == 0 {
+			return entity.ErrTechCardConflict
 		}
 
 		// Delete tech_card_bom_item before tech_card_colorway so the bom-colourway
