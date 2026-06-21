@@ -49,7 +49,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 		cards[i].Callouts = callouts[id]
 		cards[i].Revisions = revisions[id]
 	}
-	return nil
+	return s.enrichMaterials(ctx, cards)
 }
 
 type techCardIDRow struct {

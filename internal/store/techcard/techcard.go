@@ -138,9 +138,13 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return fmt.Errorf("failed to update tech card: %w", err)
 		}
 
+		// Delete tech_card_bom_item before tech_card_colorway so the bom-colourway
+		// matrix cascades out via the BOM line; pom grades/actuals and bom-colourway
+		// cells cascade from their parents.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_revision",
+			"tech_card_bom_item", "tech_card_colorway", "tech_card_pom_point",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -248,7 +252,19 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardCallouts(ctx, db, id, tc.Callouts); err != nil {
 		return err
 	}
-	return insertTechCardRevisions(ctx, db, id, tc.Revisions)
+	if err := insertTechCardRevisions(ctx, db, id, tc.Revisions); err != nil {
+		return err
+	}
+	// Materials (Phase 2): colourways first so the BOM colour matrix can resolve
+	// each colorway_index to a freshly-inserted colourway id.
+	colorwayIds, err := insertTechCardColorways(ctx, db, id, tc.Colorways)
+	if err != nil {
+		return err
+	}
+	if err := insertTechCardBom(ctx, db, id, tc.BomItems, colorwayIds); err != nil {
+		return err
+	}
+	return insertTechCardPom(ctx, db, id, tc.PomPoints)
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {

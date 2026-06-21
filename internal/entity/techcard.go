@@ -138,6 +138,145 @@ type TechCardRevision struct {
 	ChangeNote   sql.NullString `db:"change_note"`
 }
 
+// TechCardBomSection groups a BOM line by material family. Mirrors the
+// common.TechCardBomSection proto enum; stored as a string in tech_card_bom_item.section.
+type TechCardBomSection string
+
+const (
+	BomSectionFabric      TechCardBomSection = "fabric"
+	BomSectionLining      TechCardBomSection = "lining"
+	BomSectionInterlining TechCardBomSection = "interlining"
+	BomSectionInsulation  TechCardBomSection = "insulation"
+	BomSectionHardware    TechCardBomSection = "hardware"
+	BomSectionThread      TechCardBomSection = "thread"
+	BomSectionLabel       TechCardBomSection = "label"
+	BomSectionPackaging   TechCardBomSection = "packaging"
+)
+
+// ValidTechCardBomSections is the set of accepted BOM sections.
+var ValidTechCardBomSections = map[TechCardBomSection]bool{
+	BomSectionFabric:      true,
+	BomSectionLining:      true,
+	BomSectionInterlining: true,
+	BomSectionInsulation:  true,
+	BomSectionHardware:    true,
+	BomSectionThread:      true,
+	BomSectionLabel:       true,
+	BomSectionPackaging:   true,
+}
+
+// IsValidTechCardBomSection reports whether s is an accepted BOM section.
+func IsValidTechCardBomSection(s TechCardBomSection) bool {
+	return ValidTechCardBomSections[s]
+}
+
+// TechCardLabDipStatus is the lab-dip lifecycle of a colourway. Mirrors the
+// common.TechCardLabDipStatus proto enum; stored in tech_card_colorway.lab_dip_status.
+type TechCardLabDipStatus string
+
+const (
+	LabDipPending   TechCardLabDipStatus = "pending"
+	LabDipSubmitted TechCardLabDipStatus = "submitted"
+	LabDipApproved  TechCardLabDipStatus = "approved"
+	LabDipRejected  TechCardLabDipStatus = "rejected"
+)
+
+// ValidTechCardLabDipStatuses is the set of accepted lab-dip statuses.
+var ValidTechCardLabDipStatuses = map[TechCardLabDipStatus]bool{
+	LabDipPending:   true,
+	LabDipSubmitted: true,
+	LabDipApproved:  true,
+	LabDipRejected:  true,
+}
+
+// IsValidTechCardLabDipStatus reports whether s is an accepted lab-dip status.
+func IsValidTechCardLabDipStatus(s TechCardLabDipStatus) bool {
+	return ValidTechCardLabDipStatuses[s]
+}
+
+// TechCardColorway is a development colourway (Sheet «Колористика»).
+type TechCardColorway struct {
+	Id           int                  `db:"id"`
+	Code         sql.NullString       `db:"code"`
+	Name         string               `db:"name"`
+	LabDipStatus TechCardLabDipStatus `db:"lab_dip_status"`
+	ProductId    sql.NullInt32        `db:"product_id"`
+	Comment      sql.NullString       `db:"comment"`
+}
+
+// TechCardBomColorwayColor is the colour of a BOM material in a colourway. On
+// write, ColorwayIndex points into TechCardInsert.Colorways (full-replace has no
+// stable colourway ids yet); on read it is resolved from the stored colorway id.
+type TechCardBomColorwayColor struct {
+	ColorwayIndex int            `db:"-"`
+	Color         sql.NullString `db:"color"`
+	Pantone       sql.NullString `db:"pantone"`
+}
+
+// TechCardBomItem is one bill-of-materials line (Sheet «Спецификация»).
+type TechCardBomItem struct {
+	Id          int                 `db:"id"`
+	Section     TechCardBomSection  `db:"section"`
+	Name        string              `db:"name"`
+	Placement   sql.NullString      `db:"placement"`
+	Supplier    sql.NullString      `db:"supplier"`
+	SupplierRef sql.NullString      `db:"supplier_ref"`
+	Color       sql.NullString      `db:"color"`
+	Composition sql.NullString      `db:"composition"`
+	Spec        sql.NullString      `db:"spec"`
+	Consumption decimal.NullDecimal `db:"consumption"`
+	Unit        sql.NullString      `db:"unit"`
+	Quantity    decimal.NullDecimal `db:"quantity"`
+	UnitPrice   decimal.NullDecimal `db:"unit_price"`
+	Currency    sql.NullString      `db:"currency"`
+	Comment     sql.NullString      `db:"comment"`
+	// ColorwayColors are the per-colourway colours (in-memory; persisted to
+	// tech_card_bom_colorway).
+	ColorwayColors []TechCardBomColorwayColor `db:"-"`
+}
+
+// LineTotal returns quantity*unit_price, falling back to consumption*unit_price
+// when quantity is unset. Invalid (no price) yields an invalid NullDecimal.
+func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
+	if !b.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	qty := b.Quantity
+	if !qty.Valid {
+		qty = b.Consumption
+	}
+	if !qty.Valid {
+		return decimal.NullDecimal{}
+	}
+	return decimal.NullDecimal{Decimal: qty.Decimal.Mul(b.UnitPrice.Decimal), Valid: true}
+}
+
+// TechCardPomGrade is the graded value of a POM point for a size.
+type TechCardPomGrade struct {
+	SizeId int             `db:"size_id"`
+	Value  decimal.Decimal `db:"value"`
+}
+
+// TechCardPomActual is an actual measured value, optionally from a fitting.
+type TechCardPomActual struct {
+	FittingId sql.NullInt32   `db:"fitting_id"`
+	Label     sql.NullString  `db:"label"`
+	Value     decimal.Decimal `db:"value"`
+}
+
+// TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
+type TechCardPomPoint struct {
+	Id           int                 `db:"id"`
+	Section      sql.NullString      `db:"section"`
+	Code         sql.NullString      `db:"code"`
+	Name         string              `db:"name"`
+	HowToMeasure sql.NullString      `db:"how_to_measure"`
+	BaseValue    decimal.NullDecimal `db:"base_value"`
+	Tolerance    decimal.NullDecimal `db:"tolerance"`
+	Grades       []TechCardPomGrade  `db:"-"`
+	Actuals      []TechCardPomActual `db:"-"`
+}
+
 // TechCardInsert is the writable payload for a tech card (header + construction
 // description + child sections). Child slices are full replacements on update.
 type TechCardInsert struct {
@@ -181,6 +320,10 @@ type TechCardInsert struct {
 	Media      []TechCardMediaItem `db:"-"`
 	Callouts   []TechCardCallout   `db:"-"`
 	Revisions  []TechCardRevision  `db:"-"`
+	// materials (Phase 2)
+	BomItems  []TechCardBomItem  `db:"-"`
+	Colorways []TechCardColorway `db:"-"`
+	PomPoints []TechCardPomPoint `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

@@ -194,6 +194,106 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	}
 }
 
+func TestConvertTechCardMaterials(t *testing.T) {
+	valid := &pb_common.TechCardInsert{
+		StyleNumber: "ST-010",
+		Name:        "Parka",
+		SizeIds:     []int32{4, 5},
+		Colorways: []*pb_common.TechCardColorway{
+			{Code: "BLK", Name: "Black", LabDipStatus: pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED},
+			{Name: "White"}, // unset lab dip -> pending
+		},
+		BomItems: []*pb_common.TechCardBomItem{
+			{
+				Section:   pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
+				Name:      "Main shell",
+				Quantity:  &pb_decimal.Decimal{Value: "2"},
+				UnitPrice: &pb_decimal.Decimal{Value: "10.5"},
+				Currency:  "EUR",
+				ColorwayColors: []*pb_common.TechCardBomColorwayColor{
+					{ColorwayIndex: 0, Color: "black", Pantone: "Black C"},
+					{ColorwayIndex: 1, Color: "white"},
+				},
+			},
+		},
+		PomPoints: []*pb_common.TechCardPomPoint{
+			{
+				Name:      "Chest width",
+				Code:      "A",
+				Section:   "BODY",
+				BaseValue: &pb_decimal.Decimal{Value: "56"},
+				Tolerance: &pb_decimal.Decimal{Value: "1"},
+				Grades: []*pb_common.TechCardPomGrade{
+					{SizeId: 4, Value: &pb_decimal.Decimal{Value: "54"}},
+					{SizeId: 5, Value: &pb_decimal.Decimal{Value: "56"}},
+				},
+				Actuals: []*pb_common.TechCardPomActual{
+					{FittingId: 3, Label: "fit1", Value: &pb_decimal.Decimal{Value: "55.5"}},
+				},
+			},
+		},
+	}
+
+	got, err := ConvertPbTechCardInsertToEntity(valid)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Colorways) != 2 || got.Colorways[0].LabDipStatus != entity.LabDipApproved || got.Colorways[1].LabDipStatus != entity.LabDipPending {
+		t.Errorf("colorways mismatch: %+v", got.Colorways)
+	}
+	if len(got.BomItems) != 1 || got.BomItems[0].Section != entity.BomSectionFabric || len(got.BomItems[0].ColorwayColors) != 2 {
+		t.Fatalf("bom mismatch: %+v", got.BomItems)
+	}
+	if lt := got.BomItems[0].LineTotal(); !lt.Valid || !lt.Decimal.Equal(decimal.RequireFromString("21")) {
+		t.Errorf("line_total mismatch: %+v", lt)
+	}
+	if got.BomItems[0].ColorwayColors[1].ColorwayIndex != 1 {
+		t.Errorf("colorway_index mismatch: %+v", got.BomItems[0].ColorwayColors)
+	}
+	if len(got.PomPoints) != 1 || len(got.PomPoints[0].Grades) != 2 || got.PomPoints[0].Grades[0].SizeId != 4 {
+		t.Fatalf("pom grades mismatch: %+v", got.PomPoints)
+	}
+	if len(got.PomPoints[0].Actuals) != 1 || !got.PomPoints[0].Actuals[0].FittingId.Valid || got.PomPoints[0].Actuals[0].FittingId.Int32 != 3 {
+		t.Errorf("pom actuals mismatch: %+v", got.PomPoints[0].Actuals)
+	}
+
+	// round-trip back to pb: computed line_total + matrix + grades survive.
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	if len(pb.TechCard.Colorways) != 2 || pb.TechCard.Colorways[0].LabDipStatus != pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED {
+		t.Errorf("pb colorways mismatch: %+v", pb.TechCard.Colorways)
+	}
+	if len(pb.TechCard.BomItems) != 1 || pb.TechCard.BomItems[0].LineTotal == nil || pb.TechCard.BomItems[0].LineTotal.Value != "21" {
+		t.Errorf("pb line_total mismatch: %+v", pb.TechCard.BomItems[0].GetLineTotal())
+	}
+	if pb.TechCard.BomItems[0].Section != pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC || len(pb.TechCard.BomItems[0].ColorwayColors) != 2 {
+		t.Errorf("pb bom mismatch: %+v", pb.TechCard.BomItems[0])
+	}
+	if len(pb.TechCard.PomPoints) != 1 || len(pb.TechCard.PomPoints[0].Grades) != 2 || pb.TechCard.PomPoints[0].Grades[0].Value.Value != "54" {
+		t.Errorf("pb pom mismatch: %+v", pb.TechCard.PomPoints)
+	}
+
+	// invalid cases.
+	bad := map[string]*pb_common.TechCardInsert{
+		"bom section unknown": {StyleNumber: "x", Name: "y", BomItems: []*pb_common.TechCardBomItem{{Name: "m"}}},
+		"bom no name":         {StyleNumber: "x", Name: "y", BomItems: []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC}}},
+		"colorway no name":    {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Code: "X"}}},
+		"colorway idx range": {StyleNumber: "x", Name: "y",
+			Colorways: []*pb_common.TechCardColorway{{Name: "a"}},
+			BomItems:  []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "m", ColorwayColors: []*pb_common.TechCardBomColorwayColor{{ColorwayIndex: 5}}}}},
+		"pom grade not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			PomPoints: []*pb_common.TechCardPomPoint{{Name: "p", Grades: []*pb_common.TechCardPomGrade{{SizeId: 9, Value: &pb_decimal.Decimal{Value: "1"}}}}}},
+		"pom grade value missing": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			PomPoints: []*pb_common.TechCardPomPoint{{Name: "p", Grades: []*pb_common.TechCardPomGrade{{SizeId: 4}}}}},
+		"bom price too many decimals": {StyleNumber: "x", Name: "y",
+			BomItems: []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "m", UnitPrice: &pb_decimal.Decimal{Value: "1.23456"}}}},
+	}
+	for name, in := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
+	}
+}
+
 // ListItem conversion produces a lightweight header.
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{

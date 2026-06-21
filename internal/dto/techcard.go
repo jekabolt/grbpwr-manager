@@ -16,8 +16,18 @@ import (
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
 // over-length input fails as InvalidArgument rather than a MySQL 1406 Internal error.
 const (
+	maxVarchar32 = 32
 	maxVarchar64 = 64
 	maxCurrency  = 3
+
+	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
+	// as InvalidArgument, not a MySQL out-of-range Internal error.
+	bomQtyMaxFrac   = 3 // consumption/quantity DECIMAL(10,3)
+	bomQtyLimit     = 10_000_000
+	bomPriceMaxFrac = 4 // unit_price DECIMAL(12,4)
+	bomPriceLimit   = 100_000_000
+	pomMaxFrac      = 2 // POM values DECIMAL(8,2)
+	pomLimit        = 1_000_000
 )
 
 var techCardStagePbToEntity = map[pb_common.TechCardStage]entity.TechCardStage{
@@ -76,6 +86,40 @@ var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCar
 var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.TechCardMediaKind {
 	m := make(map[entity.TechCardMediaKind]pb_common.TechCardMediaKind, len(techCardMediaKindPbToEntity))
 	for k, v := range techCardMediaKindPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardBomSectionPbToEntity = map[pb_common.TechCardBomSection]entity.TechCardBomSection{
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC:      entity.BomSectionFabric,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LINING:      entity.BomSectionLining,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_INTERLINING: entity.BomSectionInterlining,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_INSULATION:  entity.BomSectionInsulation,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE:    entity.BomSectionHardware,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD:      entity.BomSectionThread,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL:       entity.BomSectionLabel,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING:   entity.BomSectionPackaging,
+}
+
+var techCardBomSectionEntityToPb = func() map[entity.TechCardBomSection]pb_common.TechCardBomSection {
+	m := make(map[entity.TechCardBomSection]pb_common.TechCardBomSection, len(techCardBomSectionPbToEntity))
+	for k, v := range techCardBomSectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardLabDipPbToEntity = map[pb_common.TechCardLabDipStatus]entity.TechCardLabDipStatus{
+	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_PENDING:   entity.LabDipPending,
+	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_SUBMITTED: entity.LabDipSubmitted,
+	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED:  entity.LabDipApproved,
+	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_REJECTED:  entity.LabDipRejected,
+}
+
+var techCardLabDipEntityToPb = func() map[entity.TechCardLabDipStatus]pb_common.TechCardLabDipStatus {
+	m := make(map[entity.TechCardLabDipStatus]pb_common.TechCardLabDipStatus, len(techCardLabDipPbToEntity))
+	for k, v := range techCardLabDipPbToEntity {
 		m[v] = k
 	}
 	return m
@@ -236,6 +280,21 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		})
 	}
 
+	// materials (Phase 2). Colorways are parsed first so BOM colorway_index can be
+	// range-checked against them.
+	colorways, err := parseTechCardColorways(pb.Colorways)
+	if err != nil {
+		return nil, err
+	}
+	bomItems, err := parseTechCardBomItems(pb.BomItems, len(colorways))
+	if err != nil {
+		return nil, err
+	}
+	pomPoints, err := parseTechCardPomPoints(pb.PomPoints, sizeIds)
+	if err != nil {
+		return nil, err
+	}
+
 	return &entity.TechCardInsert{
 		StyleNumber:       pb.StyleNumber,
 		Name:              pb.Name,
@@ -275,6 +334,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Media:             media,
 		Callouts:          callouts,
 		Revisions:         revisions,
+		BomItems:          bomItems,
+		Colorways:         colorways,
+		PomPoints:         pomPoints,
 	}, nil
 }
 
@@ -368,6 +430,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Media:             media,
 			Callouts:          callouts,
 			Revisions:         revisions,
+			BomItems:          techCardBomItemsToPb(tc.BomItems),
+			Colorways:         techCardColorwaysToPb(tc.Colorways),
+			PomPoints:         techCardPomPointsToPb(tc.PomPoints),
 		},
 		ResolvedMedia: resolved,
 	}
@@ -435,6 +500,316 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 	return pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_PREVIEW
 }
 
+// --- materials (Phase 2): parse pb -> entity ---
+
+func parseTechCardColorways(pbs []*pb_common.TechCardColorway) ([]entity.TechCardColorway, error) {
+	out := make([]entity.TechCardColorway, 0, len(pbs))
+	for _, c := range pbs {
+		if c.Name == "" {
+			return nil, fmt.Errorf("colorway name is required")
+		}
+		if len(c.Name) > maxVarchar255 {
+			return nil, fmt.Errorf("colorway name must be at most %d characters", maxVarchar255)
+		}
+		if len(c.Code) > maxVarchar64 {
+			return nil, fmt.Errorf("colorway code must be at most %d characters", maxVarchar64)
+		}
+		if c.ProductId < 0 {
+			return nil, fmt.Errorf("colorway product_id must not be negative")
+		}
+		status := entity.LabDipPending
+		if c.LabDipStatus != pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_UNKNOWN {
+			s, ok := techCardLabDipPbToEntity[c.LabDipStatus]
+			if !ok {
+				return nil, fmt.Errorf("unknown lab dip status: %v", c.LabDipStatus)
+			}
+			status = s
+		}
+		out = append(out, entity.TechCardColorway{
+			Code:         nullStringFromPb(c.Code),
+			Name:         c.Name,
+			LabDipStatus: status,
+			ProductId:    nullInt32FromPb(c.ProductId),
+			Comment:      nullStringFromPb(c.Comment),
+		})
+	}
+	return out, nil
+}
+
+func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) ([]entity.TechCardBomItem, error) {
+	out := make([]entity.TechCardBomItem, 0, len(pbs))
+	for _, b := range pbs {
+		section, ok := techCardBomSectionPbToEntity[b.Section]
+		if !ok {
+			return nil, fmt.Errorf("bom item section is required and must be valid")
+		}
+		if b.Name == "" {
+			return nil, fmt.Errorf("bom item name is required")
+		}
+		for _, c := range []struct {
+			field string
+			val   string
+			max   int
+		}{
+			{"bom name", b.Name, maxVarchar255},
+			{"bom placement", b.Placement, maxVarchar255},
+			{"bom supplier", b.Supplier, maxVarchar255},
+			{"bom supplier_ref", b.SupplierRef, maxVarchar255},
+			{"bom color", b.Color, maxVarchar255},
+			{"bom composition", b.Composition, maxVarchar255},
+			{"bom spec", b.Spec, maxVarchar255},
+			{"bom unit", b.Unit, maxVarchar32},
+		} {
+			if len(c.val) > c.max {
+				return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
+			}
+		}
+		if b.Currency != "" && len(b.Currency) != maxCurrency {
+			return nil, fmt.Errorf("bom currency must be a 3-letter ISO 4217 code")
+		}
+		consumption, err := nullDecimalFromPb(b.Consumption)
+		if err != nil {
+			return nil, fmt.Errorf("bom consumption: %w", err)
+		}
+		if err := validateDecimalScale(consumption, "bom consumption", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		quantity, err := nullDecimalFromPb(b.Quantity)
+		if err != nil {
+			return nil, fmt.Errorf("bom quantity: %w", err)
+		}
+		if err := validateDecimalScale(quantity, "bom quantity", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		unitPrice, err := nullDecimalFromPb(b.UnitPrice)
+		if err != nil {
+			return nil, fmt.Errorf("bom unit_price: %w", err)
+		}
+		if err := validateDecimalScale(unitPrice, "bom unit_price", bomPriceMaxFrac, bomPriceLimit); err != nil {
+			return nil, err
+		}
+
+		colors := make([]entity.TechCardBomColorwayColor, 0, len(b.ColorwayColors))
+		seen := make(map[int]bool, len(b.ColorwayColors))
+		for _, cc := range b.ColorwayColors {
+			idx := int(cc.ColorwayIndex)
+			if idx < 0 || idx >= colorwayCount {
+				return nil, fmt.Errorf("bom colorway_index %d out of range (have %d colorways)", idx, colorwayCount)
+			}
+			if seen[idx] {
+				return nil, fmt.Errorf("bom item has duplicate colorway_index %d", idx)
+			}
+			seen[idx] = true
+			if len(cc.Color) > maxVarchar255 || len(cc.Pantone) > maxVarchar64 {
+				return nil, fmt.Errorf("bom colorway color/pantone too long")
+			}
+			colors = append(colors, entity.TechCardBomColorwayColor{
+				ColorwayIndex: idx,
+				Color:         nullStringFromPb(cc.Color),
+				Pantone:       nullStringFromPb(cc.Pantone),
+			})
+		}
+
+		out = append(out, entity.TechCardBomItem{
+			Section:        section,
+			Name:           b.Name,
+			Placement:      nullStringFromPb(b.Placement),
+			Supplier:       nullStringFromPb(b.Supplier),
+			SupplierRef:    nullStringFromPb(b.SupplierRef),
+			Color:          nullStringFromPb(b.Color),
+			Composition:    nullStringFromPb(b.Composition),
+			Spec:           nullStringFromPb(b.Spec),
+			Consumption:    consumption,
+			Unit:           nullStringFromPb(b.Unit),
+			Quantity:       quantity,
+			UnitPrice:      unitPrice,
+			Currency:       nullStringFromPb(b.Currency),
+			Comment:        nullStringFromPb(b.Comment),
+			ColorwayColors: colors,
+		})
+	}
+	return out, nil
+}
+
+func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([]entity.TechCardPomPoint, error) {
+	sizeSet := make(map[int]bool, len(sizeIds))
+	for _, s := range sizeIds {
+		sizeSet[s] = true
+	}
+	out := make([]entity.TechCardPomPoint, 0, len(pbs))
+	for _, p := range pbs {
+		if p.Name == "" {
+			return nil, fmt.Errorf("pom point name is required")
+		}
+		if len(p.Name) > maxVarchar255 || len(p.Section) > maxVarchar255 {
+			return nil, fmt.Errorf("pom point name/section must be at most %d characters", maxVarchar255)
+		}
+		if len(p.Code) > maxVarchar32 {
+			return nil, fmt.Errorf("pom code must be at most %d characters", maxVarchar32)
+		}
+		baseValue, err := nullDecimalFromPb(p.BaseValue)
+		if err != nil {
+			return nil, fmt.Errorf("pom base_value: %w", err)
+		}
+		if err := validateDecimalScale(baseValue, "pom base_value", pomMaxFrac, pomLimit); err != nil {
+			return nil, err
+		}
+		tolerance, err := nullDecimalFromPb(p.Tolerance)
+		if err != nil {
+			return nil, fmt.Errorf("pom tolerance: %w", err)
+		}
+		if err := validateDecimalScale(tolerance, "pom tolerance", pomMaxFrac, pomLimit); err != nil {
+			return nil, err
+		}
+
+		grades := make([]entity.TechCardPomGrade, 0, len(p.Grades))
+		seenSize := make(map[int]bool, len(p.Grades))
+		for _, g := range p.Grades {
+			sid := int(g.SizeId)
+			if !sizeSet[sid] {
+				return nil, fmt.Errorf("pom grade size_id %d must be one of size_ids", sid)
+			}
+			if seenSize[sid] {
+				return nil, fmt.Errorf("pom point has duplicate grade for size_id %d", sid)
+			}
+			seenSize[sid] = true
+			val, err := requiredDecimalFromPb(g.Value, "pom grade value", pomMaxFrac, pomLimit)
+			if err != nil {
+				return nil, err
+			}
+			grades = append(grades, entity.TechCardPomGrade{SizeId: sid, Value: val})
+		}
+
+		actuals := make([]entity.TechCardPomActual, 0, len(p.Actuals))
+		for _, a := range p.Actuals {
+			if a.FittingId < 0 {
+				return nil, fmt.Errorf("pom actual fitting_id must not be negative")
+			}
+			if len(a.Label) > maxVarchar64 {
+				return nil, fmt.Errorf("pom actual label must be at most %d characters", maxVarchar64)
+			}
+			val, err := requiredDecimalFromPb(a.Value, "pom actual value", pomMaxFrac, pomLimit)
+			if err != nil {
+				return nil, err
+			}
+			actuals = append(actuals, entity.TechCardPomActual{
+				FittingId: nullInt32FromPb(a.FittingId),
+				Label:     nullStringFromPb(a.Label),
+				Value:     val,
+			})
+		}
+
+		out = append(out, entity.TechCardPomPoint{
+			Section:      nullStringFromPb(p.Section),
+			Code:         nullStringFromPb(p.Code),
+			Name:         p.Name,
+			HowToMeasure: nullStringFromPb(p.HowToMeasure),
+			BaseValue:    baseValue,
+			Tolerance:    tolerance,
+			Grades:       grades,
+			Actuals:      actuals,
+		})
+	}
+	return out, nil
+}
+
+// --- materials (Phase 2): emit entity -> pb ---
+
+func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardColorway {
+	out := make([]*pb_common.TechCardColorway, 0, len(cws))
+	for _, c := range cws {
+		out = append(out, &pb_common.TechCardColorway{
+			Code:         pbStringFromNull(c.Code),
+			Name:         c.Name,
+			LabDipStatus: pbLabDipStatus(c.LabDipStatus),
+			ProductId:    pbInt32FromNull(c.ProductId),
+			Comment:      pbStringFromNull(c.Comment),
+		})
+	}
+	return out
+}
+
+func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardBomItem {
+	out := make([]*pb_common.TechCardBomItem, 0, len(items))
+	for i := range items {
+		b := &items[i]
+		colors := make([]*pb_common.TechCardBomColorwayColor, 0, len(b.ColorwayColors))
+		for _, cc := range b.ColorwayColors {
+			colors = append(colors, &pb_common.TechCardBomColorwayColor{
+				ColorwayIndex: int32(cc.ColorwayIndex),
+				Color:         pbStringFromNull(cc.Color),
+				Pantone:       pbStringFromNull(cc.Pantone),
+			})
+		}
+		out = append(out, &pb_common.TechCardBomItem{
+			Section:        pbBomSection(b.Section),
+			Name:           b.Name,
+			Placement:      pbStringFromNull(b.Placement),
+			Supplier:       pbStringFromNull(b.Supplier),
+			SupplierRef:    pbStringFromNull(b.SupplierRef),
+			Color:          pbStringFromNull(b.Color),
+			Composition:    pbStringFromNull(b.Composition),
+			Spec:           pbStringFromNull(b.Spec),
+			Consumption:    pbDecimalFromNull(b.Consumption),
+			Unit:           pbStringFromNull(b.Unit),
+			Quantity:       pbDecimalFromNull(b.Quantity),
+			UnitPrice:      pbDecimalFromNull(b.UnitPrice),
+			Currency:       pbStringFromNull(b.Currency),
+			Comment:        pbStringFromNull(b.Comment),
+			ColorwayColors: colors,
+			LineTotal:      pbDecimalFromNull(b.LineTotal()),
+		})
+	}
+	return out
+}
+
+func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCardPomPoint {
+	out := make([]*pb_common.TechCardPomPoint, 0, len(points))
+	for i := range points {
+		p := &points[i]
+		grades := make([]*pb_common.TechCardPomGrade, 0, len(p.Grades))
+		for _, g := range p.Grades {
+			grades = append(grades, &pb_common.TechCardPomGrade{
+				SizeId: int32(g.SizeId),
+				Value:  pbDecimalFromDecimal(g.Value),
+			})
+		}
+		actuals := make([]*pb_common.TechCardPomActual, 0, len(p.Actuals))
+		for _, a := range p.Actuals {
+			actuals = append(actuals, &pb_common.TechCardPomActual{
+				FittingId: pbInt32FromNull(a.FittingId),
+				Label:     pbStringFromNull(a.Label),
+				Value:     pbDecimalFromDecimal(a.Value),
+			})
+		}
+		out = append(out, &pb_common.TechCardPomPoint{
+			Section:      pbStringFromNull(p.Section),
+			Code:         pbStringFromNull(p.Code),
+			Name:         p.Name,
+			HowToMeasure: pbStringFromNull(p.HowToMeasure),
+			BaseValue:    pbDecimalFromNull(p.BaseValue),
+			Tolerance:    pbDecimalFromNull(p.Tolerance),
+			Grades:       grades,
+			Actuals:      actuals,
+		})
+	}
+	return out
+}
+
+func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
+	if v, ok := techCardBomSectionEntityToPb[s]; ok {
+		return v
+	}
+	return pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN
+}
+
+func pbLabDipStatus(s entity.TechCardLabDipStatus) pb_common.TechCardLabDipStatus {
+	if v, ok := techCardLabDipEntityToPb[s]; ok {
+		return v
+	}
+	return pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_PENDING
+}
+
 // --- shared helpers ---
 
 func intsToInt32(in []int) []int32 {
@@ -497,6 +872,45 @@ func pbDecimalFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 		return nil
 	}
 	return &pb_decimal.Decimal{Value: nd.Decimal.String()}
+}
+
+func pbDecimalFromDecimal(d decimal.Decimal) *pb_decimal.Decimal {
+	return &pb_decimal.Decimal{Value: d.String()}
+}
+
+// validateDecimalScale rejects a non-null value that won't fit its column:
+// negative, more than maxFrac fraction digits, or >= limit (mirrors validateMoney
+// but parameterised for the Phase 2 decimal columns).
+func validateDecimalScale(nd decimal.NullDecimal, field string, maxFrac int, limit int64) error {
+	if !nd.Valid {
+		return nil
+	}
+	if nd.Decimal.IsNegative() {
+		return fmt.Errorf("%s must not be negative", field)
+	}
+	if nd.Decimal.Exponent() < int32(-maxFrac) {
+		return fmt.Errorf("%s must have at most %d decimal places", field, maxFrac)
+	}
+	if nd.Decimal.Abs().GreaterThanOrEqual(decimal.NewFromInt(limit)) {
+		return fmt.Errorf("%s must be less than %d", field, limit)
+	}
+	return nil
+}
+
+// requiredDecimalFromPb parses a required decimal column (NOT NULL), erroring when
+// absent or out of range.
+func requiredDecimalFromPb(d *pb_decimal.Decimal, field string, maxFrac int, limit int64) (decimal.Decimal, error) {
+	nd, err := nullDecimalFromPb(d)
+	if err != nil {
+		return decimal.Decimal{}, fmt.Errorf("%s: %w", field, err)
+	}
+	if !nd.Valid {
+		return decimal.Decimal{}, fmt.Errorf("%s is required", field)
+	}
+	if err := validateDecimalScale(nd, field, maxFrac, limit); err != nil {
+		return decimal.Decimal{}, err
+	}
+	return nd.Decimal, nil
 }
 
 // nullTimeFromPbTimestamp maps an optional timestamp to a nullable instant,
