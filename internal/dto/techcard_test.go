@@ -286,11 +286,25 @@ func TestConvertTechCardMaterials(t *testing.T) {
 			PomPoints: []*pb_common.TechCardPomPoint{{Name: "p", Grades: []*pb_common.TechCardPomGrade{{SizeId: 4}}}}},
 		"bom price too many decimals": {StyleNumber: "x", Name: "y",
 			BomItems: []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "m", UnitPrice: &pb_decimal.Decimal{Value: "1.23456"}}}},
+		"colorway product not in card": {StyleNumber: "x", Name: "y",
+			Colorways: []*pb_common.TechCardColorway{{Name: "a", ProductId: 999}}},
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 			t.Errorf("case %q: expected error, got nil", name)
 		}
+	}
+
+	// a colourway whose product is one of the card's linked products is valid.
+	okCw, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		StyleNumber: "ST-011", Name: "Coat", ProductIds: []int32{100},
+		Colorways: []*pb_common.TechCardColorway{{Name: "Black", ProductId: 100}},
+	})
+	if err != nil {
+		t.Fatalf("colorway linked to a card product should be valid: %v", err)
+	}
+	if !okCw.Colorways[0].ProductId.Valid || okCw.Colorways[0].ProductId.Int32 != 100 {
+		t.Errorf("colorway product_id mismatch: %+v", okCw.Colorways[0].ProductId)
 	}
 }
 

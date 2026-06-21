@@ -282,7 +282,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	// materials (Phase 2). Colorways are parsed first so BOM colorway_index can be
 	// range-checked against them.
-	colorways, err := parseTechCardColorways(pb.Colorways)
+	colorways, err := parseTechCardColorways(pb.Colorways, productIds)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +502,7 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 
 // --- materials (Phase 2): parse pb -> entity ---
 
-func parseTechCardColorways(pbs []*pb_common.TechCardColorway) ([]entity.TechCardColorway, error) {
+func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
 	for _, c := range pbs {
 		if c.Name == "" {
@@ -516,6 +516,13 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway) ([]entity.TechCar
 		}
 		if c.ProductId < 0 {
 			return nil, fmt.Errorf("colorway product_id must not be negative")
+		}
+		// Soft consistency: a colourway's published product must be one of the tech
+		// card's linked products (tech_card_product), so a colourway cannot point at
+		// a product outside the card. tech_card_product stays the catalog-SKU list;
+		// this only keeps the two in sync at write time.
+		if c.ProductId > 0 && !slices.Contains(productIds, int(c.ProductId)) {
+			return nil, fmt.Errorf("colorway product_id %d must be one of the tech card's product_ids", c.ProductId)
 		}
 		status := entity.LabDipPending
 		if c.LabDipStatus != pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_UNKNOWN {
