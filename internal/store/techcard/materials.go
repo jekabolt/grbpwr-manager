@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -196,11 +197,15 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// Colourways: grouped per card (in display order), plus a colourway id -> index
 	// map so the BOM colour matrix can be emitted by index.
+	// product_id resolves through a LEFT JOIN that excludes soft-deleted products
+	// (products are soft-deleted, so the ON DELETE SET NULL never fires) — a dead
+	// SKU surfaces as NULL instead of a dangling id, mirroring productIdsByTechCardIds.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
-		SELECT id, tech_card_id, code, name, lab_dip_status, product_id, comment
-		FROM tech_card_colorway
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment
+		FROM tech_card_colorway c
+		LEFT JOIN product p ON p.id = c.product_id AND p.deleted_at IS NULL
+		WHERE c.tech_card_id IN (:ids)
+		ORDER BY c.tech_card_id, c.display_order`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card colorways: %w", err)
 	}
@@ -316,7 +321,33 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		id := cards[i].Id
 		cards[i].Colorways = colorwaysByCard[id]
 		cards[i].BomItems = bomByCard[id]
-		cards[i].PomPoints = pomByCard[id]
+		points := pomByCard[id]
+		sortPomGradesBySizeOrder(points, cards[i].SizeIds)
+		cards[i].PomPoints = points
 	}
 	return nil
+}
+
+// sortPomGradesBySizeOrder orders each point's grades by the card's declared size
+// range (tech_card_size order), so the graded chart renders its size columns in a
+// stable, meaningful order instead of insertion order. cards[i].SizeIds is already
+// populated by enrich before enrichMaterials runs.
+func sortPomGradesBySizeOrder(points []entity.TechCardPomPoint, sizeIds []int) {
+	if len(sizeIds) == 0 {
+		return
+	}
+	rank := make(map[int]int, len(sizeIds))
+	for i, sid := range sizeIds {
+		rank[sid] = i
+	}
+	order := func(sid int) int {
+		if r, ok := rank[sid]; ok {
+			return r
+		}
+		return len(sizeIds) // sizes outside the range (shouldn't happen) sort last
+	}
+	for i := range points {
+		g := points[i].Grades
+		sort.SliceStable(g, func(a, b int) bool { return order(g[a].SizeId) < order(g[b].SizeId) })
+	}
 }

@@ -134,9 +134,13 @@ message TechCardBomItem {
   string color = 6; // base/default colour
   string composition = 7; // состав
   string spec = 8; // ширина / плотность
-  google.type.Decimal consumption = 9; // норма расхода
-  string unit = 10; // ед.
-  google.type.Decimal quantity = 11; // кол-во
+  // consumption vs quantity: fill ONE per line. consumption = per-garment rate of
+  // a measured material (fabric/lining/interlining/insulation/thread) in `unit`
+  // (м/см/г); quantity = discrete count of a countable trim (hardware/label/
+  // packaging), `unit` then = pcs. line_total uses quantity when set, else consumption.
+  google.type.Decimal consumption = 9; // норма расхода (measured materials)
+  string unit = 10; // ед. (м/см/г for consumption; pcs for quantity)
+  google.type.Decimal quantity = 11; // кол-во (countable trims)
   google.type.Decimal unit_price = 12; // цена/ед.
   string currency = 13; // ISO 4217 for unit_price
   string comment = 14;

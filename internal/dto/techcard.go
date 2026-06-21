@@ -295,6 +295,16 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
+	// Release gate: a card cannot be RELEASED to a factory while any colourway's
+	// lab dip is still unapproved — bulk colour must be signed off first.
+	if approvalState == entity.TechCardApprovalReleased {
+		for _, c := range colorways {
+			if c.LabDipStatus != entity.LabDipApproved {
+				return nil, fmt.Errorf("cannot release: colorway %q lab dip is %q, must be approved", c.Name, c.LabDipStatus)
+			}
+		}
+	}
+
 	// production (Phase 3)
 	construction, err := parseTechCardConstruction(pb.Construction)
 	if err != nil {

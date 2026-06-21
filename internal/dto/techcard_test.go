@@ -131,6 +131,10 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"neg cost":          {StyleNumber: "x", Name: "y", TargetCost: &pb_decimal.Decimal{Value: "-1"}},
 		"cost overflow":     {StyleNumber: "x", Name: "y", TargetCost: &pb_decimal.Decimal{Value: "100000000"}},
 		"cost decimals":     {StyleNumber: "x", Name: "y", TargetRetailPrice: &pb_decimal.Decimal{Value: "1.999"}},
+		"dup colorway code": {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK"}, {Name: "b", Code: "BLK"}}},
+		"release unapproved": {StyleNumber: "x", Name: "y",
+			ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
+			Colorways:     []*pb_common.TechCardColorway{{Name: "Black"}}}, // lab dip defaults to pending
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
