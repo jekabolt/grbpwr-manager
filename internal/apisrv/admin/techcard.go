@@ -17,7 +17,7 @@ import (
 
 // techCardFKMsg is returned when a tech card references a missing category, base
 // model, base sample size, size, product or media row.
-const techCardFKMsg = "tech card references a non-existent category, model, size, product or media"
+const techCardFKMsg = "tech card references a non-existent category, model, size, product, media or fitting"
 
 // techCardDupMsg is returned when style_number collides within the same season.
 const techCardDupMsg = "a tech card with this style_number and season already exists"

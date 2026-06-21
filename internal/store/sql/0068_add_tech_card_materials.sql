@@ -88,8 +88,10 @@ CREATE TABLE tech_card_pom_point (
   how_to_measure TEXT NULL COMMENT 'HTM (как измерять)',
   base_value DECIMAL(8, 2) NULL COMMENT 'base-sample value (Базовый образец)'
     CHECK (base_value IS NULL OR base_value >= 0),
-  tolerance DECIMAL(8, 2) NULL COMMENT 'tolerance ± (Допуск)'
-    CHECK (tolerance IS NULL OR tolerance >= 0),
+  tolerance_plus DECIMAL(8, 2) NULL COMMENT 'tolerance + (Допуск +)'
+    CHECK (tolerance_plus IS NULL OR tolerance_plus >= 0),
+  tolerance_minus DECIMAL(8, 2) NULL COMMENT 'tolerance - (Допуск -)'
+    CHECK (tolerance_minus IS NULL OR tolerance_minus >= 0),
   display_order INT NOT NULL DEFAULT 0,
   INDEX idx_tech_card_pom_card (tech_card_id),
   FOREIGN KEY (tech_card_id) REFERENCES tech_card(id) ON DELETE CASCADE

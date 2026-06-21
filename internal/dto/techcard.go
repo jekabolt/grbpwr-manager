@@ -64,7 +64,7 @@ var techCardApprovalStateEntityToPb = func() map[entity.TechCardApprovalState]pb
 
 var techCardUnitPbToEntity = map[pb_common.TechCardMeasurementUnit]entity.TechCardMeasurementUnit{
 	pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_CM: entity.TechCardUnitCm,
-	pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN: entity.TechCardUnitIn,
+	pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM: entity.TechCardUnitMm,
 }
 
 var techCardUnitEntityToPb = func() map[entity.TechCardMeasurementUnit]pb_common.TechCardMeasurementUnit {
@@ -504,6 +504,10 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 
 func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
+	// Non-empty codes must be unique within the card (DB enforces
+	// uniq_tech_card_colorway_code); dedupe here so a collision fails as a precise
+	// InvalidArgument, not a misleading style_number/season unique-violation.
+	seenCode := make(map[string]bool, len(pbs))
 	for _, c := range pbs {
 		if c.Name == "" {
 			return nil, fmt.Errorf("colorway name is required")
@@ -513,6 +517,12 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 		}
 		if len(c.Code) > maxVarchar64 {
 			return nil, fmt.Errorf("colorway code must be at most %d characters", maxVarchar64)
+		}
+		if c.Code != "" {
+			if seenCode[c.Code] {
+				return nil, fmt.Errorf("colorways contain a duplicate code: %q", c.Code)
+			}
+			seenCode[c.Code] = true
 		}
 		if c.ProductId < 0 {
 			return nil, fmt.Errorf("colorway product_id must not be negative")
@@ -661,12 +671,25 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		if err := validateDecimalScale(baseValue, "pom base_value", pomMaxFrac, pomLimit); err != nil {
 			return nil, err
 		}
-		tolerance, err := nullDecimalFromPb(p.Tolerance)
+		tolPlus, err := nullDecimalFromPb(p.TolerancePlus)
 		if err != nil {
-			return nil, fmt.Errorf("pom tolerance: %w", err)
+			return nil, fmt.Errorf("pom tolerance_plus: %w", err)
 		}
-		if err := validateDecimalScale(tolerance, "pom tolerance", pomMaxFrac, pomLimit); err != nil {
+		if err := validateDecimalScale(tolPlus, "pom tolerance_plus", pomMaxFrac, pomLimit); err != nil {
 			return nil, err
+		}
+		tolMinus, err := nullDecimalFromPb(p.ToleranceMinus)
+		if err != nil {
+			return nil, fmt.Errorf("pom tolerance_minus: %w", err)
+		}
+		if err := validateDecimalScale(tolMinus, "pom tolerance_minus", pomMaxFrac, pomLimit); err != nil {
+			return nil, err
+		}
+		// Symmetric-tolerance ergonomic: if only one side is given, mirror it.
+		if tolPlus.Valid && !tolMinus.Valid {
+			tolMinus = tolPlus
+		} else if tolMinus.Valid && !tolPlus.Valid {
+			tolPlus = tolMinus
 		}
 
 		grades := make([]entity.TechCardPomGrade, 0, len(p.Grades))
@@ -707,14 +730,15 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		}
 
 		out = append(out, entity.TechCardPomPoint{
-			Section:      nullStringFromPb(p.Section),
-			Code:         nullStringFromPb(p.Code),
-			Name:         p.Name,
-			HowToMeasure: nullStringFromPb(p.HowToMeasure),
-			BaseValue:    baseValue,
-			Tolerance:    tolerance,
-			Grades:       grades,
-			Actuals:      actuals,
+			Section:        nullStringFromPb(p.Section),
+			Code:           nullStringFromPb(p.Code),
+			Name:           p.Name,
+			HowToMeasure:   nullStringFromPb(p.HowToMeasure),
+			BaseValue:      baseValue,
+			TolerancePlus:  tolPlus,
+			ToleranceMinus: tolMinus,
+			Grades:         grades,
+			Actuals:        actuals,
 		})
 	}
 	return out, nil
@@ -790,14 +814,15 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 			})
 		}
 		out = append(out, &pb_common.TechCardPomPoint{
-			Section:      pbStringFromNull(p.Section),
-			Code:         pbStringFromNull(p.Code),
-			Name:         p.Name,
-			HowToMeasure: pbStringFromNull(p.HowToMeasure),
-			BaseValue:    pbDecimalFromNull(p.BaseValue),
-			Tolerance:    pbDecimalFromNull(p.Tolerance),
-			Grades:       grades,
-			Actuals:      actuals,
+			Section:        pbStringFromNull(p.Section),
+			Code:           pbStringFromNull(p.Code),
+			Name:           p.Name,
+			HowToMeasure:   pbStringFromNull(p.HowToMeasure),
+			BaseValue:      pbDecimalFromNull(p.BaseValue),
+			TolerancePlus:  pbDecimalFromNull(p.TolerancePlus),
+			ToleranceMinus: pbDecimalFromNull(p.ToleranceMinus),
+			Grades:         grades,
+			Actuals:        actuals,
 		})
 	}
 	return out

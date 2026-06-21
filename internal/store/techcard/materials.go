@@ -101,17 +101,18 @@ func insertTechCardPom(ctx context.Context, db dependency.DB, tcID int, points [
 		p := &points[i]
 		pomID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_pom_point
-				(tech_card_id, section, code, name, how_to_measure, base_value, tolerance, display_order)
-			VALUES (:tech_card_id, :section, :code, :name, :how_to_measure, :base_value, :tolerance, :display_order)`,
+				(tech_card_id, section, code, name, how_to_measure, base_value, tolerance_plus, tolerance_minus, display_order)
+			VALUES (:tech_card_id, :section, :code, :name, :how_to_measure, :base_value, :tolerance_plus, :tolerance_minus, :display_order)`,
 			map[string]any{
-				"tech_card_id":   tcID,
-				"section":        p.Section,
-				"code":           p.Code,
-				"name":           p.Name,
-				"how_to_measure": p.HowToMeasure,
-				"base_value":     p.BaseValue,
-				"tolerance":      p.Tolerance,
-				"display_order":  i,
+				"tech_card_id":    tcID,
+				"section":         p.Section,
+				"code":            p.Code,
+				"name":            p.Name,
+				"how_to_measure":  p.HowToMeasure,
+				"base_value":      p.BaseValue,
+				"tolerance_plus":  p.TolerancePlus,
+				"tolerance_minus": p.ToleranceMinus,
+				"display_order":   i,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card pom point: %w", err)
@@ -262,7 +263,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// POM points per card, then grades and actuals per point.
 	pomRows, err := storeutil.QueryListNamed[techCardPomPointRow](ctx, s.DB, `
-		SELECT id, tech_card_id, section, code, name, how_to_measure, base_value, tolerance
+		SELECT id, tech_card_id, section, code, name, how_to_measure, base_value, tolerance_plus, tolerance_minus
 		FROM tech_card_pom_point
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

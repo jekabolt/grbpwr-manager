@@ -40,8 +40,8 @@ CREATE TABLE tech_card (
     CHECK (target_retail_price IS NULL OR target_retail_price >= 0),
   currency VARCHAR(3) NULL COMMENT 'ISO 4217 for target cost/price and costing',
   measurement_unit VARCHAR(8) NOT NULL DEFAULT 'cm'
-    COMMENT 'cm|in for callout dimensions and the future POM chart'
-    CHECK (measurement_unit REGEXP '^(cm|in)$'),
+    COMMENT 'cm|mm for callout dimensions and the POM chart (metric only)'
+    CHECK (measurement_unit REGEXP '^(cm|mm)$'),
   -- construction description (lower block of Sheet «Титул»)
   description TEXT NULL COMMENT 'short product description',
   silhouette TEXT NULL COMMENT 'silhouette / length',

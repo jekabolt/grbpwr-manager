@@ -22,7 +22,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		ApprovalState:     pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED,
 		ApprovedBy:        "lead",
 		ReleasedAt:        revDate,
-		MeasurementUnit:   pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN,
+		MeasurementUnit:   pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
 		TargetGender:      pb_common.GenderEnum_GENDER_ENUM_MALE,
 		CategoryId:        3,
 		BaseModelId:       7,
@@ -86,7 +86,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if got.Callouts[0].MediaId.Int32 != 11 {
 		t.Errorf("callout media_id mismatch: %+v", got.Callouts[0].MediaId)
 	}
-	if got.MeasurementUnit != entity.TechCardUnitIn {
+	if got.MeasurementUnit != entity.TechCardUnitMm {
 		t.Errorf("measurement_unit mismatch: %v", got.MeasurementUnit)
 	}
 
@@ -147,7 +147,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 			Name:            "Field Jacket",
 			Stage:           entity.TechCardStageProd,
 			ApprovalState:   entity.TechCardApprovalReleased,
-			MeasurementUnit: entity.TechCardUnitIn,
+			MeasurementUnit: entity.TechCardUnitMm,
 			TargetGender:    nullStringFromPb(string(entity.Female)),
 			TargetCost:      decimal.NullDecimal{Decimal: decimal.RequireFromString("42.50"), Valid: true},
 			SizeIds:         []int{4, 5},
@@ -174,7 +174,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	if pb.TechCard.Callouts[0].MediaId != 11 {
 		t.Errorf("callout media_id round-trip mismatch: %v", pb.TechCard.Callouts[0].MediaId)
 	}
-	if pb.TechCard.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN {
+	if pb.TechCard.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM {
 		t.Errorf("measurement_unit round-trip mismatch: %v", pb.TechCard.MeasurementUnit)
 	}
 	if pb.TechCard.TargetGender != pb_common.GenderEnum_GENDER_ENUM_FEMALE {
@@ -218,11 +218,11 @@ func TestConvertTechCardMaterials(t *testing.T) {
 		},
 		PomPoints: []*pb_common.TechCardPomPoint{
 			{
-				Name:      "Chest width",
-				Code:      "A",
-				Section:   "BODY",
-				BaseValue: &pb_decimal.Decimal{Value: "56"},
-				Tolerance: &pb_decimal.Decimal{Value: "1"},
+				Name:          "Chest width",
+				Code:          "A",
+				Section:       "BODY",
+				BaseValue:     &pb_decimal.Decimal{Value: "56"},
+				TolerancePlus: &pb_decimal.Decimal{Value: "1"}, // minus unset -> mirrors to 1
 				Grades: []*pb_common.TechCardPomGrade{
 					{SizeId: 4, Value: &pb_decimal.Decimal{Value: "54"}},
 					{SizeId: 5, Value: &pb_decimal.Decimal{Value: "56"}},
@@ -255,6 +255,13 @@ func TestConvertTechCardMaterials(t *testing.T) {
 	}
 	if len(got.PomPoints[0].Actuals) != 1 || !got.PomPoints[0].Actuals[0].FittingId.Valid || got.PomPoints[0].Actuals[0].FittingId.Int32 != 3 {
 		t.Errorf("pom actuals mismatch: %+v", got.PomPoints[0].Actuals)
+	}
+	// tolerance_minus was unset, so it mirrors tolerance_plus.
+	if tp := got.PomPoints[0].TolerancePlus; !tp.Valid || tp.Decimal.String() != "1" {
+		t.Errorf("tolerance_plus mismatch: %+v", tp)
+	}
+	if tm := got.PomPoints[0].ToleranceMinus; !tm.Valid || tm.Decimal.String() != "1" {
+		t.Errorf("tolerance_minus should mirror plus: %+v", tm)
 	}
 
 	// round-trip back to pb: computed line_total + matrix + grades survive.

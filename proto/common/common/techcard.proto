@@ -33,11 +33,11 @@ enum TechCardApprovalState {
 }
 
 // TechCardMeasurementUnit is the unit for the card's geometry (callout dimensions
-// and the future POM chart).
+// and the POM chart). Metric only — the brand works in cm and mm, never inches.
 enum TechCardMeasurementUnit {
   TECH_CARD_MEASUREMENT_UNIT_UNKNOWN = 0; // defaults to CM on write
   TECH_CARD_MEASUREMENT_UNIT_CM = 1;
-  TECH_CARD_MEASUREMENT_UNIT_IN = 2;
+  TECH_CARD_MEASUREMENT_UNIT_MM = 2;
 }
 
 // TechCardMediaKind classifies a tech-card sketch image.
@@ -165,7 +165,8 @@ message TechCardPomPoint {
   string name = 3; // required
   string how_to_measure = 4; // HTM
   google.type.Decimal base_value = 5; // базовый образец
-  google.type.Decimal tolerance = 6; // допуск ±
+  google.type.Decimal tolerance_plus = 6; // допуск + (Допуск +); mirrored to minus if minus unset
+  google.type.Decimal tolerance_minus = 9; // допуск - (Допуск -); mirrored to plus if plus unset
   repeated TechCardPomGrade grades = 7;
   repeated TechCardPomActual actuals = 8;
 }

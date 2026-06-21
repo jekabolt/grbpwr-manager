@@ -67,13 +67,13 @@ type TechCardMeasurementUnit string
 
 const (
 	TechCardUnitCm TechCardMeasurementUnit = "cm"
-	TechCardUnitIn TechCardMeasurementUnit = "in"
+	TechCardUnitMm TechCardMeasurementUnit = "mm"
 )
 
 // ValidTechCardMeasurementUnits is the set of accepted measurement units.
 var ValidTechCardMeasurementUnits = map[TechCardMeasurementUnit]bool{
 	TechCardUnitCm: true,
-	TechCardUnitIn: true,
+	TechCardUnitMm: true,
 }
 
 // IsValidTechCardMeasurementUnit reports whether u is an accepted unit.
@@ -266,15 +266,16 @@ type TechCardPomActual struct {
 
 // TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
 type TechCardPomPoint struct {
-	Id           int                 `db:"id"`
-	Section      sql.NullString      `db:"section"`
-	Code         sql.NullString      `db:"code"`
-	Name         string              `db:"name"`
-	HowToMeasure sql.NullString      `db:"how_to_measure"`
-	BaseValue    decimal.NullDecimal `db:"base_value"`
-	Tolerance    decimal.NullDecimal `db:"tolerance"`
-	Grades       []TechCardPomGrade  `db:"-"`
-	Actuals      []TechCardPomActual `db:"-"`
+	Id             int                 `db:"id"`
+	Section        sql.NullString      `db:"section"`
+	Code           sql.NullString      `db:"code"`
+	Name           string              `db:"name"`
+	HowToMeasure   sql.NullString      `db:"how_to_measure"`
+	BaseValue      decimal.NullDecimal `db:"base_value"`
+	TolerancePlus  decimal.NullDecimal `db:"tolerance_plus"`
+	ToleranceMinus decimal.NullDecimal `db:"tolerance_minus"`
+	Grades         []TechCardPomGrade  `db:"-"`
+	Actuals        []TechCardPomActual `db:"-"`
 }
 
 // TechCardInsert is the writable payload for a tech card (header + construction
