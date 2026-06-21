@@ -1298,6 +1298,7 @@ message ListFittingsRequest {
   common.OrderFactor order_factor = 3;
   int32 product_id = 4; // optional filter; 0 = no filter
   int32 model_id = 5; // optional filter; 0 = no filter
+  int32 tech_card_id = 6; // optional filter; 0 = no filter
 }
 
 message ListFittingsResponse {

@@ -319,7 +319,7 @@ type (
 		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert) error
 		DeleteFitting(ctx context.Context, id int) error
 		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
-		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID int) ([]entity.Fitting, int, error)
+		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
 	}
 
 	// TechCards manages garment tech packs (техкарта): the header, size range,
