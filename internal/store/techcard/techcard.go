@@ -35,14 +35,16 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard).
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
-	target_gender, stage, status, version, revision_date, base_model_id, base_sample_size_id,
-	designer, constructor, technologist, target_cost, target_retail_price, currency,
+	target_gender, stage, status, approval_state, approved_by, released_at, version, revision_date,
+	base_model_id, base_sample_size_id, designer, constructor, technologist,
+	target_cost, target_retail_price, currency,
 	description, silhouette, collar, fastening, pockets, sleeve_cuff, extra_details,
 	topstitching, aux_materials, notes`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
-	:target_gender, :stage, :status, :version, :revision_date, :base_model_id, :base_sample_size_id,
-	:designer, :constructor, :technologist, :target_cost, :target_retail_price, :currency,
+	:target_gender, :stage, :status, :approval_state, :approved_by, :released_at, :version, :revision_date,
+	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
+	:target_cost, :target_retail_price, :currency,
 	:description, :silhouette, :collar, :fastening, :pockets, :sleeve_cuff, :extra_details,
 	:topstitching, :aux_materials, :notes`
 
@@ -57,6 +59,9 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"target_gender":       tc.TargetGender,
 		"stage":               string(tc.Stage),
 		"status":              tc.Status,
+		"approval_state":      string(tc.ApprovalState),
+		"approved_by":         tc.ApprovedBy,
+		"released_at":         tc.ReleasedAt,
 		"version":             tc.Version,
 		"revision_date":       tc.RevisionDate,
 		"base_model_id":       tc.BaseModelId,
@@ -118,7 +123,9 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			UPDATE tech_card SET
 				style_number = :style_number, name = :name, brand = :brand, season = :season,
 				collection = :collection, category_id = :category_id, target_gender = :target_gender,
-				stage = :stage, status = :status, version = :version, revision_date = :revision_date,
+				stage = :stage, status = :status, approval_state = :approval_state,
+				approved_by = :approved_by, released_at = :released_at,
+				version = :version, revision_date = :revision_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
 				target_cost = :target_cost, target_retail_price = :target_retail_price, currency = :currency,
@@ -301,6 +308,7 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"part":           c.Part,
 			"description":    c.Description,
 			"dimensions":     c.Dimensions,
+			"media_id":       c.MediaId,
 			"display_order":  i,
 		})
 	}

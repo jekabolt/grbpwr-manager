@@ -21,7 +21,12 @@ CREATE TABLE tech_card (
     CHECK (target_gender IS NULL OR target_gender REGEXP '^(male|female|unisex)$'),
   stage VARCHAR(16) NOT NULL DEFAULT 'proto' COMMENT 'proto|fit|sms|pp|prod'
     CHECK (stage REGEXP '^(proto|fit|sms|pp|prod)$'),
-  status VARCHAR(255) NULL COMMENT 'freeform workflow status',
+  status VARCHAR(255) NULL COMMENT 'freeform workflow notes (soft, non-gating)',
+  approval_state VARCHAR(16) NOT NULL DEFAULT 'draft'
+    COMMENT 'gating release state, orthogonal to stage: draft|in_review|approved|released|obsolete'
+    CHECK (approval_state REGEXP '^(draft|in_review|approved|released|obsolete)$'),
+  approved_by VARCHAR(255) NULL COMMENT 'who approved the current revision',
+  released_at TIMESTAMP NULL COMMENT 'when the card was released to manufacture',
   version VARCHAR(64) NULL COMMENT 'revision label (Версия / ревизия)',
   revision_date DATE NULL COMMENT 'date of the current revision (Дата ревизии)',
   base_model_id INT NULL COMMENT 'FK model(id); base fit model (Модель за основу)',
@@ -45,9 +50,14 @@ CREATE TABLE tech_card (
   notes TEXT NULL COMMENT 'additional notes',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_tech_card_style_number (style_number),
+  -- style/article numbers are reused across seasons (carryover / re-spec), so the
+  -- article is unique per season, not globally. NOTE: season is NULLable and MySQL
+  -- treats NULLs as distinct, so two cards with the same style_number and NULL season
+  -- are both allowed (uniqueness only bites once a season is set).
+  UNIQUE KEY uniq_tech_card_style_number_season (style_number, season),
   INDEX idx_tech_card_created (created_at),
   INDEX idx_tech_card_stage (stage),
+  INDEX idx_tech_card_approval_state (approval_state),
   FOREIGN KEY (category_id) REFERENCES category(id),
   FOREIGN KEY (base_model_id) REFERENCES model(id) ON DELETE SET NULL,
   FOREIGN KEY (base_sample_size_id) REFERENCES size(id)
@@ -96,8 +106,10 @@ CREATE TABLE tech_card_callout (
   part VARCHAR(255) NULL COMMENT 'деталь / узел',
   description TEXT NULL COMMENT 'описание, уточнение',
   dimensions VARCHAR(255) NULL COMMENT 'размеры / привязка',
+  media_id INT NULL COMMENT 'FK media(id); the sketch this callout is pinned to (0/NULL = unanchored)',
   display_order INT NOT NULL DEFAULT 0,
-  FOREIGN KEY (tech_card_id) REFERENCES tech_card(id) ON DELETE CASCADE
+  FOREIGN KEY (tech_card_id) REFERENCES tech_card(id) ON DELETE CASCADE,
+  FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE SET NULL
 ) COMMENT 'Sketch callouts (выноски) for a tech card';
 
 -- tech_card_revision: revision log (Sheet «История примерок» — журнал ревизий).

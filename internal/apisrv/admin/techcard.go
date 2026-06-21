@@ -19,6 +19,9 @@ import (
 // model, base sample size, size, product or media row.
 const techCardFKMsg = "tech card references a non-existent category, model, size, product or media"
 
+// techCardDupMsg is returned when style_number collides within the same season.
+const techCardDupMsg = "a tech card with this style_number and season already exists"
+
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
@@ -28,6 +31,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
+		if s.repo.IsErrUniqueViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
 		}
@@ -69,6 +75,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
+		}
+		if s.repo.IsErrUniqueViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)

@@ -19,6 +19,9 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		Brand:             "grbpwr",
 		Season:            "FW25",
 		Stage:             pb_common.TechCardStage_TECH_CARD_STAGE_FIT,
+		ApprovalState:     pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED,
+		ApprovedBy:        "lead",
+		ReleasedAt:        revDate,
 		TargetGender:      pb_common.GenderEnum_GENDER_ENUM_MALE,
 		CategoryId:        3,
 		BaseModelId:       7,
@@ -35,7 +38,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 			{MediaId: 12}, // unset kind -> defaults to preview
 		},
 		Callouts: []*pb_common.TechCardCallout{
-			{Number: 1, Part: "collar", Description: "two-piece", Dimensions: "h=4cm"},
+			{Number: 1, Part: "collar", Description: "two-piece", Dimensions: "h=4cm", MediaId: 11},
 		},
 		Revisions: []*pb_common.TechCardRevision{
 			{Version: "v2", RevisionDate: revDate, Author: "tech", Section: "POM", ChangeNote: "graded"},
@@ -76,6 +79,12 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if len(got.Revisions) != 1 || got.Revisions[0].Section.String != "POM" {
 		t.Errorf("revisions mismatch: %+v", got.Revisions)
 	}
+	if got.ApprovalState != entity.TechCardApprovalApproved || got.ApprovedBy.String != "lead" || !got.ReleasedAt.Valid {
+		t.Errorf("approval mismatch: state=%v by=%+v released=%+v", got.ApprovalState, got.ApprovedBy, got.ReleasedAt)
+	}
+	if got.Callouts[0].MediaId.Int32 != 11 {
+		t.Errorf("callout media_id mismatch: %+v", got.Callouts[0].MediaId)
+	}
 
 	// defaults: unset stage becomes proto; zero fk ids become NULL.
 	def, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "ST-002", Name: "Tee"})
@@ -85,22 +94,33 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if def.Stage != entity.TechCardStageProto {
 		t.Errorf("stage default mismatch: %v", def.Stage)
 	}
+	if def.ApprovalState != entity.TechCardApprovalDraft {
+		t.Errorf("approval_state default mismatch: %v", def.ApprovalState)
+	}
 	if def.BaseModelId.Valid || def.CategoryId.Valid || def.TargetCost.Valid {
 		t.Errorf("zero fields should be NULL: %+v", def)
 	}
 
+	// base_sample_size_id is allowed when the size range is still empty (early proto).
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		StyleNumber: "ST-004", Name: "Coat", BaseSampleSizeId: 9,
+	}); err != nil {
+		t.Errorf("base size with empty size range should be allowed: %v", err)
+	}
+
 	// invalid cases.
 	bad := map[string]*pb_common.TechCardInsert{
-		"nil":              nil,
-		"no style":         {Name: "x"},
-		"no name":          {StyleNumber: "x"},
-		"neg category":     {StyleNumber: "x", Name: "y", CategoryId: -1},
-		"bad currency":     {StyleNumber: "x", Name: "y", Currency: "EURO"},
-		"dup size":         {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 4}},
-		"dup product":      {StyleNumber: "x", Name: "y", ProductIds: []int32{1, 1}},
-		"size id zero":     {StyleNumber: "x", Name: "y", SizeIds: []int32{0}},
-		"media id zero":    {StyleNumber: "x", Name: "y", Media: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
-		"version too long": {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
+		"nil":               nil,
+		"no style":          {Name: "x"},
+		"no name":           {StyleNumber: "x"},
+		"neg category":      {StyleNumber: "x", Name: "y", CategoryId: -1},
+		"bad currency":      {StyleNumber: "x", Name: "y", Currency: "EURO"},
+		"dup size":          {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 4}},
+		"dup product":       {StyleNumber: "x", Name: "y", ProductIds: []int32{1, 1}},
+		"size id zero":      {StyleNumber: "x", Name: "y", SizeIds: []int32{0}},
+		"base not in range": {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
+		"media id zero":     {StyleNumber: "x", Name: "y", Media: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
+		"version too long":  {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
@@ -113,16 +133,17 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id: 9,
 		TechCardInsert: entity.TechCardInsert{
-			StyleNumber:  "ST-001",
-			Name:         "Field Jacket",
-			Stage:        entity.TechCardStageProd,
-			TargetGender: nullStringFromPb(string(entity.Female)),
-			TargetCost:   decimal.NullDecimal{Decimal: decimal.RequireFromString("42.50"), Valid: true},
-			SizeIds:      []int{4, 5},
-			ProductIds:   []int{100},
-			Media:        []entity.TechCardMediaItem{{MediaId: 11, Kind: entity.TechCardMediaFront}},
-			Callouts:     []entity.TechCardCallout{{Number: 1}},
-			Revisions:    []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
+			StyleNumber:   "ST-001",
+			Name:          "Field Jacket",
+			Stage:         entity.TechCardStageProd,
+			ApprovalState: entity.TechCardApprovalReleased,
+			TargetGender:  nullStringFromPb(string(entity.Female)),
+			TargetCost:    decimal.NullDecimal{Decimal: decimal.RequireFromString("42.50"), Valid: true},
+			SizeIds:       []int{4, 5},
+			ProductIds:    []int{100},
+			Media:         []entity.TechCardMediaItem{{MediaId: 11, Kind: entity.TechCardMediaFront}},
+			Callouts:      []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
+			Revisions:     []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
 		},
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
@@ -135,6 +156,12 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	}
 	if pb.TechCard.Stage != pb_common.TechCardStage_TECH_CARD_STAGE_PROD {
 		t.Errorf("stage mismatch: %v", pb.TechCard.Stage)
+	}
+	if pb.TechCard.ApprovalState != pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED {
+		t.Errorf("approval_state mismatch: %v", pb.TechCard.ApprovalState)
+	}
+	if pb.TechCard.Callouts[0].MediaId != 11 {
+		t.Errorf("callout media_id round-trip mismatch: %v", pb.TechCard.Callouts[0].MediaId)
 	}
 	if pb.TechCard.TargetGender != pb_common.GenderEnum_GENDER_ENUM_FEMALE {
 		t.Errorf("gender mismatch: %v", pb.TechCard.TargetGender)

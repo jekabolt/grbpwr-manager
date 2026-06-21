@@ -117,7 +117,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		return map[int][]entity.TechCardCallout{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
-		SELECT tech_card_id, callout_number, part, description, dimensions
+		SELECT tech_card_id, callout_number, part, description, dimensions, media_id
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

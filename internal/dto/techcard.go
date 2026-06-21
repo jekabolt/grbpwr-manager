@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -30,6 +31,22 @@ var techCardStagePbToEntity = map[pb_common.TechCardStage]entity.TechCardStage{
 var techCardStageEntityToPb = func() map[entity.TechCardStage]pb_common.TechCardStage {
 	m := make(map[entity.TechCardStage]pb_common.TechCardStage, len(techCardStagePbToEntity))
 	for k, v := range techCardStagePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardApprovalStatePbToEntity = map[pb_common.TechCardApprovalState]entity.TechCardApprovalState{
+	pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT:     entity.TechCardApprovalDraft,
+	pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_IN_REVIEW: entity.TechCardApprovalInReview,
+	pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED:  entity.TechCardApprovalApproved,
+	pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED:  entity.TechCardApprovalReleased,
+	pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_OBSOLETE:  entity.TechCardApprovalObsolete,
+}
+
+var techCardApprovalStateEntityToPb = func() map[entity.TechCardApprovalState]pb_common.TechCardApprovalState {
+	m := make(map[entity.TechCardApprovalState]pb_common.TechCardApprovalState, len(techCardApprovalStatePbToEntity))
+	for k, v := range techCardApprovalStatePbToEntity {
 		m[v] = k
 	}
 	return m
@@ -78,6 +95,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		{"designer", pb.Designer, maxVarchar255},
 		{"constructor", pb.Constructor, maxVarchar255},
 		{"technologist", pb.Technologist, maxVarchar255},
+		{"approved_by", pb.ApprovedBy, maxVarchar255},
 	} {
 		if len(c.val) > c.max {
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
@@ -94,6 +112,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, fmt.Errorf("unknown tech card stage: %v", pb.Stage)
 		}
 		stage = s
+	}
+
+	approvalState := entity.TechCardApprovalDraft
+	if pb.ApprovalState != pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_UNKNOWN {
+		a, ok := techCardApprovalStatePbToEntity[pb.ApprovalState]
+		if !ok {
+			return nil, fmt.Errorf("unknown tech card approval state: %v", pb.ApprovalState)
+		}
+		approvalState = a
 	}
 
 	gender, err := nullGenderFromPb(pb.TargetGender)
@@ -123,6 +150,14 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
+	// base_sample_size_id, when set, must be part of the declared size range: the
+	// POM grade radiates from the base size, so a base outside the graded columns
+	// would leave the future measurement chart without an origin. An empty size
+	// range is allowed (the grade may not be defined yet at the proto stage).
+	if pb.BaseSampleSizeId > 0 && len(sizeIds) > 0 && !slices.Contains(sizeIds, int(pb.BaseSampleSizeId)) {
+		return nil, fmt.Errorf("base_sample_size_id %d must be one of size_ids", pb.BaseSampleSizeId)
+	}
+
 	media := make([]entity.TechCardMediaItem, 0, len(pb.Media))
 	for _, m := range pb.Media {
 		if m.MediaId <= 0 {
@@ -144,11 +179,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if len(c.Part) > maxVarchar255 || len(c.Dimensions) > maxVarchar255 {
 			return nil, fmt.Errorf("callout part and dimensions must be at most %d characters", maxVarchar255)
 		}
+		if c.MediaId < 0 {
+			return nil, fmt.Errorf("callout media_id must not be negative")
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(c.Part),
 			Description: nullStringFromPb(c.Description),
 			Dimensions:  nullStringFromPb(c.Dimensions),
+			MediaId:     nullInt32FromPb(c.MediaId),
 		})
 	}
 
@@ -179,6 +218,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		TargetGender:      gender,
 		Stage:             stage,
 		Status:            nullStringFromPb(pb.Status),
+		ApprovalState:     approvalState,
+		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
+		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
 		Version:           nullStringFromPb(pb.Version),
 		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
 		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
@@ -236,6 +278,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Part:        pbStringFromNull(c.Part),
 			Description: pbStringFromNull(c.Description),
 			Dimensions:  pbStringFromNull(c.Dimensions),
+			MediaId:     pbInt32FromNull(c.MediaId),
 		})
 	}
 
@@ -267,6 +310,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			TargetGender:      pbGenderFromNull(tc.TargetGender),
 			Stage:             pbTechCardStage(tc.Stage),
 			Status:            pbStringFromNull(tc.Status),
+			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
+			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
+			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
 			Version:           pbStringFromNull(tc.Version),
 			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
 			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
@@ -304,16 +350,17 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		return nil
 	}
 	return &pb_common.TechCardListItem{
-		Id:           int32(tc.Id),
-		StyleNumber:  tc.StyleNumber,
-		Name:         tc.Name,
-		Brand:        pbStringFromNull(tc.Brand),
-		Stage:        pbTechCardStage(tc.Stage),
-		Status:       pbStringFromNull(tc.Status),
-		TargetGender: pbGenderFromNull(tc.TargetGender),
-		Season:       pbStringFromNull(tc.Season),
-		CreatedAt:    timestamppb.New(tc.CreatedAt),
-		UpdatedAt:    timestamppb.New(tc.UpdatedAt),
+		Id:            int32(tc.Id),
+		StyleNumber:   tc.StyleNumber,
+		Name:          tc.Name,
+		Brand:         pbStringFromNull(tc.Brand),
+		Stage:         pbTechCardStage(tc.Stage),
+		Status:        pbStringFromNull(tc.Status),
+		ApprovalState: pbTechCardApprovalState(tc.ApprovalState),
+		TargetGender:  pbGenderFromNull(tc.TargetGender),
+		Season:        pbStringFromNull(tc.Season),
+		CreatedAt:     timestamppb.New(tc.CreatedAt),
+		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 	}
 }
 
@@ -335,6 +382,13 @@ func pbTechCardStage(s entity.TechCardStage) pb_common.TechCardStage {
 		return v
 	}
 	return pb_common.TechCardStage_TECH_CARD_STAGE_UNKNOWN
+}
+
+func pbTechCardApprovalState(s entity.TechCardApprovalState) pb_common.TechCardApprovalState {
+	if v, ok := techCardApprovalStateEntityToPb[s]; ok {
+		return v
+	}
+	return pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_UNKNOWN
 }
 
 func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {
@@ -386,6 +440,15 @@ func pbDecimalFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 		return nil
 	}
 	return &pb_decimal.Decimal{Value: nd.Decimal.String()}
+}
+
+// nullTimeFromPbTimestamp maps an optional timestamp to a nullable instant,
+// preserving the full time (the column is a TIMESTAMP, e.g. released_at).
+func nullTimeFromPbTimestamp(ts *timestamppb.Timestamp) sql.NullTime {
+	if ts == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: ts.AsTime().UTC(), Valid: true}
 }
 
 // nullDateFromPbTimestamp maps an optional timestamp to a nullable DATE value,
