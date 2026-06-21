@@ -60,6 +60,27 @@ func IsValidTechCardApprovalState(s TechCardApprovalState) bool {
 	return ValidTechCardApprovalStates[s]
 }
 
+// TechCardMeasurementUnit is the unit for the card's geometry (callout dimensions
+// and the future POM). It mirrors the common.TechCardMeasurementUnit proto enum
+// and is stored as a string in tech_card.measurement_unit.
+type TechCardMeasurementUnit string
+
+const (
+	TechCardUnitCm TechCardMeasurementUnit = "cm"
+	TechCardUnitIn TechCardMeasurementUnit = "in"
+)
+
+// ValidTechCardMeasurementUnits is the set of accepted measurement units.
+var ValidTechCardMeasurementUnits = map[TechCardMeasurementUnit]bool{
+	TechCardUnitCm: true,
+	TechCardUnitIn: true,
+}
+
+// IsValidTechCardMeasurementUnit reports whether u is an accepted unit.
+func IsValidTechCardMeasurementUnit(u TechCardMeasurementUnit) bool {
+	return ValidTechCardMeasurementUnits[u]
+}
+
 // TechCardMediaKind classifies a tech-card sketch image. It mirrors the
 // common.TechCardMediaKind proto enum and is stored as a string in
 // tech_card_media.kind.
@@ -120,28 +141,29 @@ type TechCardRevision struct {
 // TechCardInsert is the writable payload for a tech card (header + construction
 // description + child sections). Child slices are full replacements on update.
 type TechCardInsert struct {
-	StyleNumber       string                `db:"style_number"`
-	Name              string                `db:"name"`
-	Brand             sql.NullString        `db:"brand"`
-	Season            sql.NullString        `db:"season"`
-	Collection        sql.NullString        `db:"collection"`
-	CategoryId        sql.NullInt32         `db:"category_id"`
-	TargetGender      sql.NullString        `db:"target_gender"`
-	Stage             TechCardStage         `db:"stage"`
-	Status            sql.NullString        `db:"status"`
-	ApprovalState     TechCardApprovalState `db:"approval_state"`
-	ApprovedBy        sql.NullString        `db:"approved_by"`
-	ReleasedAt        sql.NullTime          `db:"released_at"`
-	Version           sql.NullString        `db:"version"`
-	RevisionDate      sql.NullTime          `db:"revision_date"`
-	BaseModelId       sql.NullInt32         `db:"base_model_id"`
-	BaseSampleSizeId  sql.NullInt32         `db:"base_sample_size_id"`
-	Designer          sql.NullString        `db:"designer"`
-	Constructor       sql.NullString        `db:"constructor"`
-	Technologist      sql.NullString        `db:"technologist"`
-	TargetCost        decimal.NullDecimal   `db:"target_cost"`
-	TargetRetailPrice decimal.NullDecimal   `db:"target_retail_price"`
-	Currency          sql.NullString        `db:"currency"`
+	StyleNumber       string                  `db:"style_number"`
+	Name              string                  `db:"name"`
+	Brand             sql.NullString          `db:"brand"`
+	Season            sql.NullString          `db:"season"`
+	Collection        sql.NullString          `db:"collection"`
+	CategoryId        sql.NullInt32           `db:"category_id"`
+	TargetGender      sql.NullString          `db:"target_gender"`
+	Stage             TechCardStage           `db:"stage"`
+	Status            sql.NullString          `db:"status"`
+	ApprovalState     TechCardApprovalState   `db:"approval_state"`
+	ApprovedBy        sql.NullString          `db:"approved_by"`
+	ReleasedAt        sql.NullTime            `db:"released_at"`
+	Version           sql.NullString          `db:"version"`
+	RevisionDate      sql.NullTime            `db:"revision_date"`
+	BaseModelId       sql.NullInt32           `db:"base_model_id"`
+	BaseSampleSizeId  sql.NullInt32           `db:"base_sample_size_id"`
+	Designer          sql.NullString          `db:"designer"`
+	Constructor       sql.NullString          `db:"constructor"`
+	Technologist      sql.NullString          `db:"technologist"`
+	TargetCost        decimal.NullDecimal     `db:"target_cost"`
+	TargetRetailPrice decimal.NullDecimal     `db:"target_retail_price"`
+	Currency          sql.NullString          `db:"currency"`
+	MeasurementUnit   TechCardMeasurementUnit `db:"measurement_unit"`
 	// construction description
 	Description  sql.NullString `db:"description"`
 	Silhouette   sql.NullString `db:"silhouette"`

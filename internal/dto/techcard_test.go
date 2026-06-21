@@ -22,6 +22,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		ApprovalState:     pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED,
 		ApprovedBy:        "lead",
 		ReleasedAt:        revDate,
+		MeasurementUnit:   pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN,
 		TargetGender:      pb_common.GenderEnum_GENDER_ENUM_MALE,
 		CategoryId:        3,
 		BaseModelId:       7,
@@ -85,6 +86,9 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if got.Callouts[0].MediaId.Int32 != 11 {
 		t.Errorf("callout media_id mismatch: %+v", got.Callouts[0].MediaId)
 	}
+	if got.MeasurementUnit != entity.TechCardUnitIn {
+		t.Errorf("measurement_unit mismatch: %v", got.MeasurementUnit)
+	}
 
 	// defaults: unset stage becomes proto; zero fk ids become NULL.
 	def, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "ST-002", Name: "Tee"})
@@ -96,6 +100,9 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	}
 	if def.ApprovalState != entity.TechCardApprovalDraft {
 		t.Errorf("approval_state default mismatch: %v", def.ApprovalState)
+	}
+	if def.MeasurementUnit != entity.TechCardUnitCm {
+		t.Errorf("measurement_unit default mismatch: %v", def.MeasurementUnit)
 	}
 	if def.BaseModelId.Valid || def.CategoryId.Valid || def.TargetCost.Valid {
 		t.Errorf("zero fields should be NULL: %+v", def)
@@ -121,6 +128,9 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"base not in range": {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
 		"media id zero":     {StyleNumber: "x", Name: "y", Media: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
 		"version too long":  {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
+		"neg cost":          {StyleNumber: "x", Name: "y", TargetCost: &pb_decimal.Decimal{Value: "-1"}},
+		"cost overflow":     {StyleNumber: "x", Name: "y", TargetCost: &pb_decimal.Decimal{Value: "100000000"}},
+		"cost decimals":     {StyleNumber: "x", Name: "y", TargetRetailPrice: &pb_decimal.Decimal{Value: "1.999"}},
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
@@ -133,17 +143,18 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id: 9,
 		TechCardInsert: entity.TechCardInsert{
-			StyleNumber:   "ST-001",
-			Name:          "Field Jacket",
-			Stage:         entity.TechCardStageProd,
-			ApprovalState: entity.TechCardApprovalReleased,
-			TargetGender:  nullStringFromPb(string(entity.Female)),
-			TargetCost:    decimal.NullDecimal{Decimal: decimal.RequireFromString("42.50"), Valid: true},
-			SizeIds:       []int{4, 5},
-			ProductIds:    []int{100},
-			Media:         []entity.TechCardMediaItem{{MediaId: 11, Kind: entity.TechCardMediaFront}},
-			Callouts:      []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
-			Revisions:     []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
+			StyleNumber:     "ST-001",
+			Name:            "Field Jacket",
+			Stage:           entity.TechCardStageProd,
+			ApprovalState:   entity.TechCardApprovalReleased,
+			MeasurementUnit: entity.TechCardUnitIn,
+			TargetGender:    nullStringFromPb(string(entity.Female)),
+			TargetCost:      decimal.NullDecimal{Decimal: decimal.RequireFromString("42.50"), Valid: true},
+			SizeIds:         []int{4, 5},
+			ProductIds:      []int{100},
+			Media:           []entity.TechCardMediaItem{{MediaId: 11, Kind: entity.TechCardMediaFront}},
+			Callouts:        []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
+			Revisions:       []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
 		},
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
@@ -162,6 +173,9 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	}
 	if pb.TechCard.Callouts[0].MediaId != 11 {
 		t.Errorf("callout media_id round-trip mismatch: %v", pb.TechCard.Callouts[0].MediaId)
+	}
+	if pb.TechCard.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN {
+		t.Errorf("measurement_unit round-trip mismatch: %v", pb.TechCard.MeasurementUnit)
 	}
 	if pb.TechCard.TargetGender != pb_common.GenderEnum_GENDER_ENUM_FEMALE {
 		t.Errorf("gender mismatch: %v", pb.TechCard.TargetGender)

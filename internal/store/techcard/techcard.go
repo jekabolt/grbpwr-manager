@@ -37,14 +37,14 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	target_cost, target_retail_price, currency,
+	target_cost, target_retail_price, currency, measurement_unit,
 	description, silhouette, collar, fastening, pockets, sleeve_cuff, extra_details,
 	topstitching, aux_materials, notes`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:target_cost, :target_retail_price, :currency,
+	:target_cost, :target_retail_price, :currency, :measurement_unit,
 	:description, :silhouette, :collar, :fastening, :pockets, :sleeve_cuff, :extra_details,
 	:topstitching, :aux_materials, :notes`
 
@@ -72,6 +72,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"target_cost":         tc.TargetCost,
 		"target_retail_price": tc.TargetRetailPrice,
 		"currency":            tc.Currency,
+		"measurement_unit":    string(tc.MeasurementUnit),
 		"description":         tc.Description,
 		"silhouette":          tc.Silhouette,
 		"collar":              tc.Collar,
@@ -129,6 +130,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
 				target_cost = :target_cost, target_retail_price = :target_retail_price, currency = :currency,
+				measurement_unit = :measurement_unit,
 				description = :description, silhouette = :silhouette, collar = :collar, fastening = :fastening,
 				pockets = :pockets, sleeve_cuff = :sleeve_cuff, extra_details = :extra_details,
 				topstitching = :topstitching, aux_materials = :aux_materials, notes = :notes

@@ -52,6 +52,19 @@ var techCardApprovalStateEntityToPb = func() map[entity.TechCardApprovalState]pb
 	return m
 }()
 
+var techCardUnitPbToEntity = map[pb_common.TechCardMeasurementUnit]entity.TechCardMeasurementUnit{
+	pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_CM: entity.TechCardUnitCm,
+	pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_IN: entity.TechCardUnitIn,
+}
+
+var techCardUnitEntityToPb = func() map[entity.TechCardMeasurementUnit]pb_common.TechCardMeasurementUnit {
+	m := make(map[entity.TechCardMeasurementUnit]pb_common.TechCardMeasurementUnit, len(techCardUnitPbToEntity))
+	for k, v := range techCardUnitPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
 var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCardMediaKind{
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT:   entity.TechCardMediaFront,
 	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_BACK:    entity.TechCardMediaBack,
@@ -123,6 +136,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		approvalState = a
 	}
 
+	unit := entity.TechCardUnitCm
+	if pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
+		u, ok := techCardUnitPbToEntity[pb.MeasurementUnit]
+		if !ok {
+			return nil, fmt.Errorf("unknown tech card measurement unit: %v", pb.MeasurementUnit)
+		}
+		unit = u
+	}
+
 	gender, err := nullGenderFromPb(pb.TargetGender)
 	if err != nil {
 		return nil, err
@@ -136,9 +158,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, fmt.Errorf("target_cost: %w", err)
 	}
+	if err := validateMoney(targetCost, "target_cost"); err != nil {
+		return nil, err
+	}
 	targetRetail, err := nullDecimalFromPb(pb.TargetRetailPrice)
 	if err != nil {
 		return nil, fmt.Errorf("target_retail_price: %w", err)
+	}
+	if err := validateMoney(targetRetail, "target_retail_price"); err != nil {
+		return nil, err
 	}
 
 	sizeIds, err := dedupePositiveIDs(pb.SizeIds, "size_ids")
@@ -231,6 +259,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		TargetCost:        targetCost,
 		TargetRetailPrice: targetRetail,
 		Currency:          nullStringFromPb(pb.Currency),
+		MeasurementUnit:   unit,
 		Description:       nullStringFromPb(pb.Description),
 		Silhouette:        nullStringFromPb(pb.Silhouette),
 		Collar:            nullStringFromPb(pb.Collar),
@@ -323,6 +352,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			TargetCost:        pbDecimalFromNull(tc.TargetCost),
 			TargetRetailPrice: pbDecimalFromNull(tc.TargetRetailPrice),
 			Currency:          pbStringFromNull(tc.Currency),
+			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
 			Description:       pbStringFromNull(tc.Description),
 			Silhouette:        pbStringFromNull(tc.Silhouette),
 			Collar:            pbStringFromNull(tc.Collar),
@@ -391,6 +421,13 @@ func pbTechCardApprovalState(s entity.TechCardApprovalState) pb_common.TechCardA
 	return pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_UNKNOWN
 }
 
+func pbTechCardMeasurementUnit(u entity.TechCardMeasurementUnit) pb_common.TechCardMeasurementUnit {
+	if v, ok := techCardUnitEntityToPb[u]; ok {
+		return v
+	}
+	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_CM
+}
+
 func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {
 	if v, ok := techCardMediaKindEntityToPb[k]; ok {
 		return v
@@ -422,6 +459,26 @@ func dedupePositiveIDs(ids []int32, field string) ([]int, error) {
 		out = append(out, int(v))
 	}
 	return out, nil
+}
+
+// validateMoney rejects values that won't fit DECIMAL(10,2): negative, more than
+// 2 fraction digits, or 100000000 and up — so they fail as InvalidArgument
+// instead of a MySQL out-of-range Internal error (mirroring the varchar length
+// checks above).
+func validateMoney(nd decimal.NullDecimal, field string) error {
+	if !nd.Valid {
+		return nil
+	}
+	if nd.Decimal.IsNegative() {
+		return fmt.Errorf("%s must not be negative", field)
+	}
+	if nd.Decimal.Exponent() < -2 {
+		return fmt.Errorf("%s must have at most 2 decimal places", field)
+	}
+	if nd.Decimal.Abs().GreaterThanOrEqual(decimal.NewFromInt(100_000_000)) {
+		return fmt.Errorf("%s must be less than 100000000", field)
+	}
+	return nil
 }
 
 func nullDecimalFromPb(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {

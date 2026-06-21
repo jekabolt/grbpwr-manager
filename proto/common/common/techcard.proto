@@ -32,6 +32,14 @@ enum TechCardApprovalState {
   TECH_CARD_APPROVAL_STATE_OBSOLETE = 5;
 }
 
+// TechCardMeasurementUnit is the unit for the card's geometry (callout dimensions
+// and the future POM chart).
+enum TechCardMeasurementUnit {
+  TECH_CARD_MEASUREMENT_UNIT_UNKNOWN = 0; // defaults to CM on write
+  TECH_CARD_MEASUREMENT_UNIT_CM = 1;
+  TECH_CARD_MEASUREMENT_UNIT_IN = 2;
+}
+
 // TechCardMediaKind classifies a tech-card sketch image.
 enum TechCardMediaKind {
   TECH_CARD_MEDIA_KIND_UNKNOWN = 0;
@@ -63,7 +71,9 @@ message TechCardCallout {
   int32 media_id = 5; // FK media(id); sketch this callout is pinned to (0 = unanchored)
 }
 
-// TechCardRevision is one entry in the revision log.
+// TechCardRevision is one entry in the spec-document changelog (what changed in
+// which section, by whom). This is NOT fit history — fitting verdicts and
+// measurements live in the separate fitting feature.
 message TechCardRevision {
   string version = 1;
   google.protobuf.Timestamp revision_date = 2;
@@ -89,6 +99,7 @@ message TechCardInsert {
   TechCardApprovalState approval_state = 35; // UNKNOWN defaults to DRAFT
   string approved_by = 36; // who approved the current revision
   google.protobuf.Timestamp released_at = 37; // when released to manufacture
+  TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to CM
   string version = 10;
   google.protobuf.Timestamp revision_date = 11;
   int32 base_model_id = 12; // FK model(id); 0 = unset
@@ -121,7 +132,7 @@ message TechCardInsert {
 
   // Materials (BOM, colorways, POM) and production sections land here in later
   // phases. Reserved so a future field can never collide with a removed one.
-  reserved 38 to 99;
+  reserved 39 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

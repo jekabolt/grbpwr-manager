@@ -34,9 +34,14 @@ CREATE TABLE tech_card (
   designer VARCHAR(255) NULL,
   constructor VARCHAR(255) NULL,
   technologist VARCHAR(255) NULL,
-  target_cost DECIMAL(10, 2) NULL COMMENT 'target cost (Целевая себестоимость)',
-  target_retail_price DECIMAL(10, 2) NULL COMMENT 'target retail price (Целевая розн. цена)',
+  target_cost DECIMAL(10, 2) NULL COMMENT 'target cost (Целевая себестоимость)'
+    CHECK (target_cost IS NULL OR target_cost >= 0),
+  target_retail_price DECIMAL(10, 2) NULL COMMENT 'target retail price (Целевая розн. цена)'
+    CHECK (target_retail_price IS NULL OR target_retail_price >= 0),
   currency VARCHAR(3) NULL COMMENT 'ISO 4217 for target cost/price and costing',
+  measurement_unit VARCHAR(8) NOT NULL DEFAULT 'cm'
+    COMMENT 'cm|in for callout dimensions and the future POM chart'
+    CHECK (measurement_unit REGEXP '^(cm|in)$'),
   -- construction description (lower block of Sheet «Титул»)
   description TEXT NULL COMMENT 'short product description',
   silhouette TEXT NULL COMMENT 'silhouette / length',
@@ -83,6 +88,9 @@ CREATE TABLE tech_card_product (
   UNIQUE KEY uniq_tech_card_product (tech_card_id, product_id),
   INDEX idx_tech_card_product_product (product_id),
   FOREIGN KEY (tech_card_id) REFERENCES tech_card(id) ON DELETE CASCADE,
+  -- products are soft-deleted (product.deleted_at), so this CASCADE only fires on
+  -- a hard delete and is effectively a safety net; the read path filters out
+  -- soft-deleted products (see productIdsByTechCardIds).
   FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
 ) COMMENT 'Catalog products linked to a tech card';
 
@@ -112,7 +120,9 @@ CREATE TABLE tech_card_callout (
   FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE SET NULL
 ) COMMENT 'Sketch callouts (выноски) for a tech card';
 
--- tech_card_revision: revision log (Sheet «История примерок» — журнал ревизий).
+-- tech_card_revision: changelog of the SPEC DOCUMENT itself (журнал ревизий —
+-- what changed in which section, by whom). This is NOT fit history: fitting
+-- verdicts/measurements live in the separate fitting feature (migration 0064).
 CREATE TABLE tech_card_revision (
   id INT PRIMARY KEY AUTO_INCREMENT,
   tech_card_id INT NOT NULL,

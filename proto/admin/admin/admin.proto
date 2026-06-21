@@ -344,8 +344,10 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/tech-card/{id}"};
   }
 
-  // ListTechCards lists tech cards (paged, optional filters). Declared last on
-  // purpose so GET /tech-card/list is not shadowed by GET /tech-card/{id}.
+  // ListTechCards lists tech cards (paged, optional filters). Declared AFTER
+  // GetTechCard so the mux (which prepends handlers, first-match wins) checks
+  // /tech-card/list before /tech-card/{id}. Guarded by
+  // TestTechCardListRouteNotShadowed.
   rpc ListTechCards(ListTechCardsRequest) returns (ListTechCardsResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/list"};
   }
