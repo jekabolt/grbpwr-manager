@@ -212,6 +212,8 @@ message TechCardConstruction {
   string pressing = 6; // ВТО / финишная отделка
   string machine_class = 7; // класс / группа машин
   string notes = 8;
+  google.type.Decimal labour_rate = 9; // cost per minute; × Σ(operation SAM) = labour cost
+  string labour_rate_currency = 10; // ISO 4217 for labour_rate
 }
 
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
@@ -223,6 +225,39 @@ message TechCardOperation {
   string topstitch_width = 5; // ширина отстрочки
   string thread = 6; // нитки (арт.)
   string note = 7;
+  int32 operation_number = 8; // human operation number (оп. 10, 20, …); 0 = unset
+  string machine = 9; // machine / equipment
+  string seam_allowance = 10; // seam allowance for this узел
+  string needle = 11; // needle size / type
+  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
+}
+
+// TechCardIssueSeverity ranks a flagged construction issue.
+enum TechCardIssueSeverity {
+  TECH_CARD_ISSUE_SEVERITY_UNKNOWN = 0; // defaults to MEDIUM on write
+  TECH_CARD_ISSUE_SEVERITY_LOW = 1;
+  TECH_CARD_ISSUE_SEVERITY_MEDIUM = 2;
+  TECH_CARD_ISSUE_SEVERITY_HIGH = 3;
+}
+
+// TechCardIssueStatus is the resolution state of a flagged issue.
+enum TechCardIssueStatus {
+  TECH_CARD_ISSUE_STATUS_UNKNOWN = 0; // defaults to OPEN on write
+  TECH_CARD_ISSUE_STATUS_OPEN = 1;
+  TECH_CARD_ISSUE_STATUS_RESOLVED = 2;
+  TECH_CARD_ISSUE_STATUS_WONTFIX = 3;
+}
+
+// TechCardIssue is a maker-flagged problem ("this seam is impossible") against an
+// operation or callout (Sheet «Обработка» / «Тех. эскиз»).
+message TechCardIssue {
+  int32 operation_number = 1; // the operation it concerns; 0 = none
+  int32 callout_number = 2; // the sketch callout it concerns; 0 = none
+  string raised_by = 3; // who flagged it (e.g. seamstress)
+  TechCardIssueSeverity severity = 4; // UNKNOWN defaults to MEDIUM
+  TechCardIssueStatus status = 5; // UNKNOWN defaults to OPEN
+  string description = 6; // what is hard / impossible (required)
+  string resolution_note = 7;
 }
 
 // TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
@@ -276,6 +311,8 @@ message TechCardCosting {
   google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
   google.type.Decimal total_cost = 14; // (materials_cost + cmt+hardware+packaging+logistics+overhead) × (1 + defect/100)
   bool has_unconverted_currencies = 15; // OUTPUT-ONLY: a BOM line is priced in a currency other than `currency`, so it is excluded from total_cost
+  google.type.Decimal total_sam = 16; // OUTPUT-ONLY: Σ of operation time_norm (minutes)
+  google.type.Decimal labour_cost = 17; // OUTPUT-ONLY: total_sam × construction.labour_rate (in labour_rate_currency)
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
@@ -340,9 +377,10 @@ message TechCardInsert {
   // hardening (Phase 3.5a)
   google.protobuf.Timestamp approved_at = 48; // auto-set on approve/release if unset
   string concept = 49; // design concept / intent (designer)
+  repeated TechCardIssue issues = 50; // maker-flagged construction issues
 
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 50 to 99;
+  reserved 39, 51 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

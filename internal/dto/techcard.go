@@ -326,6 +326,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	issues, err := parseTechCardIssues(pb.Issues)
+	if err != nil {
+		return nil, err
+	}
 
 	return &entity.TechCardInsert{
 		StyleNumber:       pb.StyleNumber,
@@ -376,6 +380,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Labels:            labels,
 		Packaging:         packaging,
 		Costing:           costing,
+		Issues:            issues,
 	}, nil
 }
 
@@ -480,6 +485,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Labels:            techCardLabelsToPb(tc.Labels),
 			Packaging:         techCardPackagingToPb(tc.Packaging),
 			Costing:           techCardCostingToPb(tc),
+			Issues:            techCardIssuesToPb(tc.Issues),
 		},
 		ResolvedMedia: resolved,
 	}

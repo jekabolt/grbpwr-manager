@@ -453,6 +453,55 @@ func TestConvertTechCardPomActualVerdict(t *testing.T) {
 	}
 }
 
+func TestConvertTechCardOperationsAndIssues(t *testing.T) {
+	dec := func(s string) *pb_decimal.Decimal { return &pb_decimal.Decimal{Value: s} }
+	in := &pb_common.TechCardInsert{
+		StyleNumber:  "ST-030",
+		Name:         "Jacket",
+		Construction: &pb_common.TechCardConstruction{LabourRate: dec("0.5"), LabourRateCurrency: "EUR"},
+		Operations: []*pb_common.TechCardOperation{
+			{Node: "collar", OperationNumber: 10, Machine: "lockstitch", SeamAllowance: "1.0", Needle: "90/14", TimeNorm: dec("2")},
+			{Node: "side", OperationNumber: 20, TimeNorm: dec("3")},
+		},
+		Costing: &pb_common.TechCardCosting{Currency: "EUR"},
+		Issues: []*pb_common.TechCardIssue{
+			{OperationNumber: 10, Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH, Description: "collar too tight to turn"},
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Operations) != 2 || !got.Operations[0].OperationNumber.Valid || got.Operations[0].OperationNumber.Int32 != 10 ||
+		got.Operations[0].Machine.String != "lockstitch" || !got.Operations[0].TimeNorm.Valid {
+		t.Errorf("operations mismatch: %+v", got.Operations)
+	}
+	if len(got.Issues) != 1 || got.Issues[0].Severity != entity.IssueSeverityHigh || got.Issues[0].Status != entity.IssueStatusOpen {
+		t.Errorf("issues mismatch: %+v", got.Issues)
+	}
+
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	cost := pb.TechCard.Costing
+	if cost == nil || cost.TotalSam == nil || cost.TotalSam.Value != "5" {
+		t.Errorf("total_sam mismatch: %+v", cost.GetTotalSam())
+	}
+	if cost.LabourCost == nil || cost.LabourCost.Value != "2.5" {
+		t.Errorf("labour_cost mismatch: %+v", cost.GetLabourCost())
+	}
+	if len(pb.TechCard.Operations) != 2 || pb.TechCard.Operations[0].OperationNumber != 10 {
+		t.Errorf("pb operations mismatch: %+v", pb.TechCard.Operations)
+	}
+	if len(pb.TechCard.Issues) != 1 || pb.TechCard.Issues[0].Severity != pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH {
+		t.Errorf("pb issues mismatch: %+v", pb.TechCard.Issues)
+	}
+
+	// issue without a description is rejected.
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
+		Issues: []*pb_common.TechCardIssue{{Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_LOW}}}); err == nil {
+		t.Errorf("expected error for issue without description")
+	}
+}
+
 // ListItem conversion produces a lightweight header.
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{

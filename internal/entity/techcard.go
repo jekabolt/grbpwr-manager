@@ -331,17 +331,61 @@ type TechCardConstruction struct {
 	Pressing        sql.NullString `db:"pressing"`
 	MachineClass    sql.NullString `db:"machine_class"`
 	Notes           sql.NullString `db:"notes"`
+	// labour rate (Phase 3.5b): per-minute cost; × Σ(operation SAM) = labour cost.
+	LabourRate         decimal.NullDecimal `db:"labour_rate"`
+	LabourRateCurrency sql.NullString      `db:"labour_rate_currency"`
 }
 
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
 type TechCardOperation struct {
-	Node           string              `db:"node"`
-	Description    sql.NullString      `db:"description"`
-	SeamType       sql.NullString      `db:"seam_type"`
-	StitchesPerCm  decimal.NullDecimal `db:"stitches_per_cm"`
-	TopstitchWidth sql.NullString      `db:"topstitch_width"`
-	Thread         sql.NullString      `db:"thread"`
-	Note           sql.NullString      `db:"note"`
+	OperationNumber sql.NullInt32       `db:"operation_number"`
+	Node            string              `db:"node"`
+	Description     sql.NullString      `db:"description"`
+	SeamType        sql.NullString      `db:"seam_type"`
+	Machine         sql.NullString      `db:"machine"`
+	StitchesPerCm   decimal.NullDecimal `db:"stitches_per_cm"`
+	TopstitchWidth  sql.NullString      `db:"topstitch_width"`
+	SeamAllowance   sql.NullString      `db:"seam_allowance"`
+	Thread          sql.NullString      `db:"thread"`
+	Needle          sql.NullString      `db:"needle"`
+	TimeNorm        decimal.NullDecimal `db:"time_norm"`
+	Note            sql.NullString      `db:"note"`
+}
+
+// TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
+type TechCardIssueSeverity string
+
+const (
+	IssueSeverityLow    TechCardIssueSeverity = "low"
+	IssueSeverityMedium TechCardIssueSeverity = "medium"
+	IssueSeverityHigh   TechCardIssueSeverity = "high"
+)
+
+var ValidTechCardIssueSeverities = map[TechCardIssueSeverity]bool{
+	IssueSeverityLow: true, IssueSeverityMedium: true, IssueSeverityHigh: true,
+}
+
+type TechCardIssueStatus string
+
+const (
+	IssueStatusOpen     TechCardIssueStatus = "open"
+	IssueStatusResolved TechCardIssueStatus = "resolved"
+	IssueStatusWontfix  TechCardIssueStatus = "wontfix"
+)
+
+var ValidTechCardIssueStatuses = map[TechCardIssueStatus]bool{
+	IssueStatusOpen: true, IssueStatusResolved: true, IssueStatusWontfix: true,
+}
+
+// TechCardIssue is a maker-flagged construction problem (Sheet «Обработка»).
+type TechCardIssue struct {
+	OperationNumber sql.NullInt32         `db:"operation_number"`
+	CalloutNumber   sql.NullInt32         `db:"callout_number"`
+	RaisedBy        sql.NullString        `db:"raised_by"`
+	Severity        TechCardIssueSeverity `db:"severity"`
+	Status          TechCardIssueStatus   `db:"status"`
+	Description     string                `db:"description"`
+	ResolutionNote  sql.NullString        `db:"resolution_note"`
 }
 
 // TechCardLabel is one label/tag spec (Sheet «Этикетки и упаковка»).
@@ -439,6 +483,7 @@ type TechCardInsert struct {
 	Labels       []TechCardLabel       `db:"-"`
 	Packaging    *TechCardPackaging    `db:"-"`
 	Costing      *TechCardCosting      `db:"-"`
+	Issues       []TechCardIssue       `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
