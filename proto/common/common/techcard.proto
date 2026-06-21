@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+import "common/product.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// TechCardStage is the development stage of a tech pack: prototype, fit sample,
+// salesman sample, pre-production, production.
+enum TechCardStage {
+  TECH_CARD_STAGE_UNKNOWN = 0;
+  TECH_CARD_STAGE_PROTO = 1;
+  TECH_CARD_STAGE_FIT = 2;
+  TECH_CARD_STAGE_SMS = 3;
+  TECH_CARD_STAGE_PP = 4;
+  TECH_CARD_STAGE_PROD = 5;
+}
+
+// TechCardMediaKind classifies a tech-card sketch image.
+enum TechCardMediaKind {
+  TECH_CARD_MEDIA_KIND_UNKNOWN = 0;
+  TECH_CARD_MEDIA_KIND_FRONT = 1; // front flat sketch
+  TECH_CARD_MEDIA_KIND_BACK = 2; // back flat sketch
+  TECH_CARD_MEDIA_KIND_DETAIL = 3; // detail / construction node
+  TECH_CARD_MEDIA_KIND_LINING = 4; // internal structure / lining
+  TECH_CARD_MEDIA_KIND_PREVIEW = 5; // cover preview
+}
+
+// TechCardMediaItem is a writable sketch-media reference (id + kind).
+message TechCardMediaItem {
+  int32 media_id = 1; // FK media(id)
+  TechCardMediaKind kind = 2;
+}
+
+// TechCardMediaFull is a resolved sketch-media reference for display.
+message TechCardMediaFull {
+  MediaFull media = 1;
+  TechCardMediaKind kind = 2;
+}
+
+// TechCardCallout is a numbered detail note pointing at the technical sketch.
+message TechCardCallout {
+  int32 number = 1; // callout number on the sketch
+  string part = 2; // деталь / узел
+  string description = 3; // описание, уточнение
+  string dimensions = 4; // размеры / привязка
+}
+
+// TechCardRevision is one entry in the revision log.
+message TechCardRevision {
+  string version = 1;
+  google.protobuf.Timestamp revision_date = 2;
+  string author = 3;
+  string section = 4; // раздел
+  string change_note = 5; // что изменено
+}
+
+// TechCardInsert is the writable payload for a tech card. Nested lists are full
+// replacements on update (like ProductNew). Materials, POM and production sections
+// are added in later iterations using field numbers >= 40.
+message TechCardInsert {
+  // identification (Sheet «Титул»)
+  string style_number = 1; // Артикул (required)
+  string name = 2; // Название изделия (required)
+  string brand = 3;
+  string season = 4;
+  string collection = 5;
+  int32 category_id = 6; // FK category(id); 0 = unset
+  GenderEnum target_gender = 7; // UNKNOWN = unset
+  TechCardStage stage = 8; // UNKNOWN defaults to PROTO
+  string status = 9;
+  string version = 10;
+  google.protobuf.Timestamp revision_date = 11;
+  int32 base_model_id = 12; // FK model(id); 0 = unset
+  int32 base_sample_size_id = 13; // FK size(id); 0 = unset
+  string designer = 14;
+  string constructor = 15;
+  string technologist = 16;
+  google.type.Decimal target_cost = 17;
+  google.type.Decimal target_retail_price = 18;
+  string currency = 19; // ISO 4217 for target cost/price
+
+  // construction description (lower block of Sheet «Титул»)
+  string description = 20;
+  string silhouette = 21;
+  string collar = 22;
+  string fastening = 23;
+  string pockets = 24;
+  string sleeve_cuff = 25;
+  string extra_details = 26;
+  string topstitching = 27;
+  string aux_materials = 28;
+  string notes = 29;
+
+  // children (full-replace on update)
+  repeated int32 size_ids = 30; // size range / grade (FK size(id))
+  repeated int32 product_ids = 31; // linked catalog products (FK product(id))
+  repeated TechCardMediaItem media = 32; // sketch / preview media
+  repeated TechCardCallout callouts = 33; // sketch callouts
+  repeated TechCardRevision revisions = 34; // revision log
+
+  // 40+ reserved for materials (BOM, colorways, POM) and production sections.
+}
+
+// TechCard is a stored tech card with resolved sketch media.
+message TechCard {
+  int32 id = 1;
+  TechCardInsert tech_card = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  repeated TechCardMediaFull resolved_media = 5; // sketch media with resolved MediaFull
+}
+
+// TechCardListItem is a lightweight tech-card header for list views.
+message TechCardListItem {
+  int32 id = 1;
+  string style_number = 2;
+  string name = 3;
+  string brand = 4;
+  TechCardStage stage = 5;
+  string status = 6;
+  GenderEnum target_gender = 7;
+  string season = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}

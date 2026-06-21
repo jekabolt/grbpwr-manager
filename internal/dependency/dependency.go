@@ -322,6 +322,16 @@ type (
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID int) ([]entity.Fitting, int, error)
 	}
 
+	// TechCards manages garment tech packs (техкарта): the header, size range,
+	// linked products, sketch media, callouts and revision log.
+	TechCards interface {
+		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
+		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert) error
+		DeleteTechCard(ctx context.Context, id int) error
+		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
+		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -513,6 +523,7 @@ type (
 		Promo() Promo
 		Models() Models
 		Fittings() Fittings
+		TechCards() TechCards
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail
