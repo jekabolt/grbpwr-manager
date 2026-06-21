@@ -414,6 +414,87 @@ func techCardIssuesToPb(issues []entity.TechCardIssue) []*pb_common.TechCardIssu
 	return out
 }
 
+// --- sign-off (Phase 3.5a-2) ---
+
+var techCardSignoffSectionPbToEntity = map[pb_common.TechCardSignoffSection]entity.TechCardSignoffSection{
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_DESIGN:       entity.SignoffDesign,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION: entity.SignoffConstruction,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_POM:          entity.SignoffPom,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_MATERIALS:    entity.SignoffMaterials,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COLOUR:       entity.SignoffColour,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_LABELS:       entity.SignoffLabels,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_PACKAGING:    entity.SignoffPackaging,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING:      entity.SignoffCosting,
+}
+var techCardSignoffSectionEntityToPb = func() map[entity.TechCardSignoffSection]pb_common.TechCardSignoffSection {
+	m := make(map[entity.TechCardSignoffSection]pb_common.TechCardSignoffSection, len(techCardSignoffSectionPbToEntity))
+	for k, v := range techCardSignoffSectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardSignoffStatePbToEntity = map[pb_common.TechCardSignoffState]entity.TechCardSignoffState{
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_PENDING:  entity.SignoffStatePending,
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED: entity.SignoffStateApproved,
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_REJECTED: entity.SignoffStateRejected,
+}
+var techCardSignoffStateEntityToPb = func() map[entity.TechCardSignoffState]pb_common.TechCardSignoffState {
+	m := make(map[entity.TechCardSignoffState]pb_common.TechCardSignoffState, len(techCardSignoffStatePbToEntity))
+	for k, v := range techCardSignoffStatePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardSignoff, error) {
+	out := make([]entity.TechCardSignoff, 0, len(pbs))
+	seen := make(map[entity.TechCardSignoffSection]bool, len(pbs))
+	for _, s := range pbs {
+		section, ok := techCardSignoffSectionPbToEntity[s.Section]
+		if !ok {
+			return nil, fmt.Errorf("signoff section is required and must be valid")
+		}
+		if seen[section] {
+			return nil, fmt.Errorf("duplicate signoff for section %q", section)
+		}
+		seen[section] = true
+		if len(s.SignedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("signoff signed_by must be at most %d characters", maxVarchar255)
+		}
+		state := entity.SignoffStatePending
+		if s.State != pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_UNKNOWN {
+			v, ok := techCardSignoffStatePbToEntity[s.State]
+			if !ok {
+				return nil, fmt.Errorf("unknown signoff state: %v", s.State)
+			}
+			state = v
+		}
+		out = append(out, entity.TechCardSignoff{
+			Section:  section,
+			State:    state,
+			SignedBy: nullStringFromPb(s.SignedBy),
+			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
+			Note:     nullStringFromPb(s.Note),
+		})
+	}
+	return out, nil
+}
+
+func techCardSignoffsToPb(signoffs []entity.TechCardSignoff) []*pb_common.TechCardSignoff {
+	out := make([]*pb_common.TechCardSignoff, 0, len(signoffs))
+	for _, s := range signoffs {
+		out = append(out, &pb_common.TechCardSignoff{
+			Section:  techCardSignoffSectionEntityToPb[s.Section],
+			State:    techCardSignoffStateEntityToPb[s.State],
+			SignedBy: pbStringFromNull(s.SignedBy),
+			SignedAt: pbTimestampFromNullTime(s.SignedAt),
+			Note:     pbStringFromNull(s.Note),
+		})
+	}
+	return out
+}
+
 func techCardLabelsToPb(labels []entity.TechCardLabel) []*pb_common.TechCardLabel {
 	out := make([]*pb_common.TechCardLabel, 0, len(labels))
 	for _, l := range labels {

@@ -172,6 +172,28 @@ func insertTechCardIssues(ctx context.Context, db dependency.DB, tcID int, issue
 	return nil
 }
 
+func insertTechCardSignoffs(ctx context.Context, db dependency.DB, tcID int, signoffs []entity.TechCardSignoff) error {
+	if len(signoffs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(signoffs))
+	for i, s := range signoffs {
+		rows = append(rows, map[string]any{
+			"tech_card_id":  tcID,
+			"section":       string(s.Section),
+			"state":         string(s.State),
+			"signed_by":     s.SignedBy,
+			"signed_at":     s.SignedAt,
+			"note":          s.Note,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_signoff", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card signoffs: %w", err)
+	}
+	return nil
+}
+
 // --- enrich (load production sections for read paths) ---
 
 type techCardConstructionRow struct {
@@ -182,6 +204,11 @@ type techCardConstructionRow struct {
 type techCardIssueRow struct {
 	TechCardID int `db:"tech_card_id"`
 	entity.TechCardIssue
+}
+
+type techCardSignoffRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardSignoff
 }
 
 type techCardOperationRow struct {
@@ -288,6 +315,19 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		issuesByCard[r.TechCardID] = append(issuesByCard[r.TechCardID], r.TechCardIssue)
 	}
 
+	signoffRows, err := storeutil.QueryListNamed[techCardSignoffRow](ctx, s.DB, `
+		SELECT tech_card_id, section, state, signed_by, signed_at, note
+		FROM tech_card_signoff
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card signoffs: %w", err)
+	}
+	signoffsByCard := make(map[int][]entity.TechCardSignoff, len(ids))
+	for _, r := range signoffRows {
+		signoffsByCard[r.TechCardID] = append(signoffsByCard[r.TechCardID], r.TechCardSignoff)
+	}
+
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].Construction = consByCard[id]
@@ -296,6 +336,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		cards[i].Packaging = pkgByCard[id]
 		cards[i].Costing = costByCard[id]
 		cards[i].Issues = issuesByCard[id]
+		cards[i].Signoffs = signoffsByCard[id]
 	}
 	return nil
 }

@@ -570,6 +570,42 @@ func TestConvertTechCardMaterialsDepth(t *testing.T) {
 	}
 }
 
+func TestConvertTechCardSignoffs(t *testing.T) {
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-050", Name: "Tee",
+		Signoffs: []*pb_common.TechCardSignoff{
+			{Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING, State: pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED, SignedBy: "finance"},
+			{Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COLOUR},
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Signoffs) != 2 || got.Signoffs[0].Section != entity.SignoffCosting || got.Signoffs[0].State != entity.SignoffStateApproved {
+		t.Errorf("signoffs mismatch: %+v", got.Signoffs)
+	}
+	if got.Signoffs[1].State != entity.SignoffStatePending {
+		t.Errorf("signoff default state mismatch: %+v", got.Signoffs[1])
+	}
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	if len(pb.TechCard.Signoffs) != 2 || pb.TechCard.Signoffs[0].Section != pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING {
+		t.Errorf("pb signoffs mismatch: %+v", pb.TechCard.Signoffs)
+	}
+
+	bad := map[string]*pb_common.TechCardInsert{
+		"signoff no section": {StyleNumber: "x", Name: "y", Signoffs: []*pb_common.TechCardSignoff{{SignedBy: "x"}}},
+		"signoff dup section": {StyleNumber: "x", Name: "y", Signoffs: []*pb_common.TechCardSignoff{
+			{Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_POM},
+			{Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_POM}}},
+	}
+	for name, bi := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
+	}
+}
+
 // ListItem conversion produces a lightweight header.
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{

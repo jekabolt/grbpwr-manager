@@ -179,7 +179,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_callout", "tech_card_revision",
 			"tech_card_bom_item", "tech_card_colorway", "tech_card_pom_point",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
-			"tech_card_packaging", "tech_card_costing", "tech_card_issue",
+			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -319,7 +319,10 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardCosting(ctx, db, id, tc.Costing); err != nil {
 		return err
 	}
-	return insertTechCardIssues(ctx, db, id, tc.Issues)
+	if err := insertTechCardIssues(ctx, db, id, tc.Issues); err != nil {
+		return err
+	}
+	return insertTechCardSignoffs(ctx, db, id, tc.Signoffs)
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int, quantities []entity.TechCardSizeQuantity) error {

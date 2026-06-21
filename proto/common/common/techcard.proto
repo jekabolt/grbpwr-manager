@@ -351,6 +351,37 @@ message TechCardCosting {
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
 // replacements on update (like ProductNew).
+// TechCardSignoffSection is the sheet a sign-off covers.
+enum TechCardSignoffSection {
+  TECH_CARD_SIGNOFF_SECTION_UNKNOWN = 0;
+  TECH_CARD_SIGNOFF_SECTION_DESIGN = 1;
+  TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION = 2;
+  TECH_CARD_SIGNOFF_SECTION_POM = 3;
+  TECH_CARD_SIGNOFF_SECTION_MATERIALS = 4;
+  TECH_CARD_SIGNOFF_SECTION_COLOUR = 5;
+  TECH_CARD_SIGNOFF_SECTION_LABELS = 6;
+  TECH_CARD_SIGNOFF_SECTION_PACKAGING = 7;
+  TECH_CARD_SIGNOFF_SECTION_COSTING = 8;
+}
+
+// TechCardSignoffState is the sign-off decision for a section.
+enum TechCardSignoffState {
+  TECH_CARD_SIGNOFF_STATE_UNKNOWN = 0; // defaults to PENDING on write
+  TECH_CARD_SIGNOFF_STATE_PENDING = 1;
+  TECH_CARD_SIGNOFF_STATE_APPROVED = 2;
+  TECH_CARD_SIGNOFF_STATE_REJECTED = 3;
+}
+
+// TechCardSignoff records one responsible role's sign-off of a sheet, so the
+// header approval_state isn't the only gate (Sheet «Титул» coordination).
+message TechCardSignoff {
+  TechCardSignoffSection section = 1; // required; unique per card
+  TechCardSignoffState state = 2; // UNKNOWN defaults to PENDING
+  string signed_by = 3; // who signed (free text / role name)
+  google.protobuf.Timestamp signed_at = 4;
+  string note = 5;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   string style_number = 1; // Артикул (required)
@@ -413,9 +444,10 @@ message TechCardInsert {
   string concept = 49; // design concept / intent (designer)
   repeated TechCardIssue issues = 50; // maker-flagged construction issues
   repeated TechCardSizeQuantity size_quantities = 51; // per-size order quantity (size run)
+  repeated TechCardSignoff signoffs = 52; // per-section sign-off
 
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 52 to 99;
+  reserved 39, 53 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

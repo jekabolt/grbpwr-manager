@@ -435,6 +435,46 @@ type TechCardIssue struct {
 	ResolutionNote  sql.NullString        `db:"resolution_note"`
 }
 
+// TechCardSignoffSection / TechCardSignoffState classify a per-section sign-off.
+type TechCardSignoffSection string
+
+const (
+	SignoffDesign       TechCardSignoffSection = "design"
+	SignoffConstruction TechCardSignoffSection = "construction"
+	SignoffPom          TechCardSignoffSection = "pom"
+	SignoffMaterials    TechCardSignoffSection = "materials"
+	SignoffColour       TechCardSignoffSection = "colour"
+	SignoffLabels       TechCardSignoffSection = "labels"
+	SignoffPackaging    TechCardSignoffSection = "packaging"
+	SignoffCosting      TechCardSignoffSection = "costing"
+)
+
+var ValidTechCardSignoffSections = map[TechCardSignoffSection]bool{
+	SignoffDesign: true, SignoffConstruction: true, SignoffPom: true, SignoffMaterials: true,
+	SignoffColour: true, SignoffLabels: true, SignoffPackaging: true, SignoffCosting: true,
+}
+
+type TechCardSignoffState string
+
+const (
+	SignoffStatePending  TechCardSignoffState = "pending"
+	SignoffStateApproved TechCardSignoffState = "approved"
+	SignoffStateRejected TechCardSignoffState = "rejected"
+)
+
+var ValidTechCardSignoffStates = map[TechCardSignoffState]bool{
+	SignoffStatePending: true, SignoffStateApproved: true, SignoffStateRejected: true,
+}
+
+// TechCardSignoff records one responsible role's sign-off of a sheet.
+type TechCardSignoff struct {
+	Section  TechCardSignoffSection `db:"section"`
+	State    TechCardSignoffState   `db:"state"`
+	SignedBy sql.NullString         `db:"signed_by"`
+	SignedAt sql.NullTime           `db:"signed_at"`
+	Note     sql.NullString         `db:"note"`
+}
+
 // TechCardLabel is one label/tag spec (Sheet «Этикетки и упаковка»).
 type TechCardLabel struct {
 	LabelType  TechCardLabelType `db:"label_type"`
@@ -532,6 +572,7 @@ type TechCardInsert struct {
 	Costing        *TechCardCosting       `db:"-"`
 	Issues         []TechCardIssue        `db:"-"`
 	SizeQuantities []TechCardSizeQuantity `db:"-"`
+	Signoffs       []TechCardSignoff      `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
