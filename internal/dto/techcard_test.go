@@ -426,7 +426,7 @@ func TestConvertTechCardPomActualVerdict(t *testing.T) {
 			{SizeId: nullInt32FromPb(4), Value: dec("55.5")}, // over (> 55)
 			{SizeId: nullInt32FromPb(4), Value: dec("52.5")}, // under (< 53)
 			{Value: dec("50")}, // no size → base 50, in tolerance
-			{SizeId: nullInt32FromPb(99), Value: dec("70")}, // size w/o grade → base 50 → over
+			{SizeId: nullInt32FromPb(99), Value: dec("70")}, // size set but ungraded → UNKNOWN (no cross-size fallback)
 		},
 	}
 	tc := &entity.TechCard{
@@ -441,7 +441,7 @@ func TestConvertTechCardPomActualVerdict(t *testing.T) {
 		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER,
 		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNDER,
 		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE,
-		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER,
+		pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNKNOWN,
 	}
 	for i, w := range want {
 		if acts[i].Verdict != w {
@@ -488,6 +488,10 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 	if cost.LabourCost == nil || cost.LabourCost.Value != "2.5" {
 		t.Errorf("labour_cost mismatch: %+v", cost.GetLabourCost())
 	}
+	// no cmt_cost + same currency → computed labour folds into total_cost as the make cost.
+	if cost.TotalCost == nil || cost.TotalCost.Value != "2.5" {
+		t.Errorf("total_cost should include folded labour: %+v", cost.GetTotalCost())
+	}
 	if len(pb.TechCard.Operations) != 2 || pb.TechCard.Operations[0].OperationNumber != 10 {
 		t.Errorf("pb operations mismatch: %+v", pb.TechCard.Operations)
 	}
@@ -499,6 +503,12 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
 		Issues: []*pb_common.TechCardIssue{{Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_LOW}}}); err == nil {
 		t.Errorf("expected error for issue without description")
+	}
+
+	// releasing while a high-severity issue is still open is blocked.
+	in.ApprovalState = pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED
+	if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+		t.Errorf("expected release to be blocked by an open high-severity issue")
 	}
 }
 

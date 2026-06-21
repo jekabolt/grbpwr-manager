@@ -552,11 +552,41 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		MaterialsCost:    pbDecimalFromDecimal(materialsCost.Round(costMaxFrac)),
 	}
 
-	// total_cost = (materials in costing currency + cmt+hardware+packaging+
+	costingCcy := ""
+	if c.Currency.Valid {
+		costingCcy = c.Currency.String
+	}
+
+	// Computed labour: total_sam = Σ(operation time_norm); labour_cost = SAM × rate
+	// (denominated in construction.labour_rate_currency).
+	totalSam := decimal.Zero
+	for i := range tc.Operations {
+		if tc.Operations[i].TimeNorm.Valid {
+			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
+		}
+	}
+	labourCcy := ""
+	var labourCost decimal.NullDecimal
+	if tc.Construction != nil {
+		labourCcy = tc.Construction.LabourRateCurrency.String
+		if totalSam.IsPositive() && tc.Construction.LabourRate.Valid {
+			labourCost = decimal.NullDecimal{Decimal: totalSam.Mul(tc.Construction.LabourRate.Decimal), Valid: true}
+		}
+	}
+
+	// Make (sewing) cost folded into total_cost: a manual cmt_cost is authoritative;
+	// otherwise the computed labour stands in as the make cost — but only when its
+	// currency matches the costing currency, so labour is never silently FX-folded.
+	makeCost := c.CmtCost
+	if !c.CmtCost.Valid && labourCost.Valid && labourCcy == costingCcy {
+		makeCost = labourCost
+	}
+
+	// total_cost = (materials in costing currency + make + hardware+packaging+
 	// logistics+overhead) grossed up by the defect/reserve %. Single-currency,
 	// best-effort: cross-currency materials are surfaced in materials_total.
 	total := materialsCost
-	for _, d := range []decimal.NullDecimal{c.CmtCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
+	for _, d := range []decimal.NullDecimal{makeCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
 		if d.Valid {
 			total = total.Add(d.Decimal)
 		}
@@ -566,13 +596,16 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	}
 	out.TotalCost = pbDecimalFromDecimal(total.Round(costMaxFrac))
 
-	// Flag when a BOM line is priced in a currency other than the costing currency:
-	// such lines are surfaced in materials_total but excluded from total_cost (no
-	// auto-conversion), so the total is not the full landed cost.
-	costingCcy := ""
-	if c.Currency.Valid {
-		costingCcy = c.Currency.String
+	if totalSam.IsPositive() {
+		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
 	}
+	if labourCost.Valid {
+		out.LabourCost = pbDecimalFromDecimal(labourCost.Decimal.Round(costMaxFrac))
+	}
+
+	// Flag when part of the cost is excluded from total_cost for want of an FX
+	// conversion: a BOM line in another currency, or computed labour that would be
+	// the make cost but is in a different currency than the costing one.
 	for i := range tc.BomItems {
 		b := &tc.BomItems[i]
 		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && b.LineTotal().Valid {
@@ -580,19 +613,8 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 			break
 		}
 	}
-
-	// total_sam = Σ(operation time_norm); labour_cost = total_sam × labour_rate.
-	totalSam := decimal.Zero
-	for i := range tc.Operations {
-		if tc.Operations[i].TimeNorm.Valid {
-			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
-		}
-	}
-	if totalSam.IsPositive() {
-		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
-		if tc.Construction != nil && tc.Construction.LabourRate.Valid {
-			out.LabourCost = pbDecimalFromDecimal(totalSam.Mul(tc.Construction.LabourRate.Decimal).Round(costMaxFrac))
-		}
+	if labourCost.Valid && !c.CmtCost.Valid && labourCcy != costingCcy {
+		out.HasUnconvertedCurrencies = true
 	}
 	return out
 }

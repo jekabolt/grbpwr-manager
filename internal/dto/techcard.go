@@ -331,16 +331,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
-	// Release gate: a card cannot be RELEASED to a factory while any colourway's
-	// lab dip is still unapproved — bulk colour must be signed off first.
-	if approvalState == entity.TechCardApprovalReleased {
-		for _, c := range colorways {
-			if c.LabDipStatus != entity.LabDipApproved {
-				return nil, fmt.Errorf("cannot release: colorway %q lab dip is %q, must be approved", c.Name, c.LabDipStatus)
-			}
-		}
-	}
-
 	// production (Phase 3)
 	construction, err := parseTechCardConstruction(pb.Construction)
 	if err != nil {
@@ -373,6 +363,22 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	signoffs, err := parseTechCardSignoffs(pb.Signoffs)
 	if err != nil {
 		return nil, err
+	}
+
+	// Release gate: a card cannot be RELEASED to a factory while any colourway's
+	// lab dip is unapproved (bulk colour unsigned) or any high-severity maker issue
+	// is still open (a known un-buildable operation).
+	if approvalState == entity.TechCardApprovalReleased {
+		for _, c := range colorways {
+			if c.LabDipStatus != entity.LabDipApproved {
+				return nil, fmt.Errorf("cannot release: colorway %q lab dip is %q, must be approved", c.Name, c.LabDipStatus)
+			}
+		}
+		for _, is := range issues {
+			if is.Severity == entity.IssueSeverityHigh && is.Status == entity.IssueStatusOpen {
+				return nil, fmt.Errorf("cannot release: a high-severity issue is still open: %q", is.Description)
+			}
+		}
 	}
 
 	return &entity.TechCardInsert{
@@ -1077,11 +1083,14 @@ func pomActualVerdict(p *entity.TechCardPomPoint, a entity.TechCardPomActual, gr
 	var target decimal.Decimal
 	hasTarget := false
 	if a.SizeId.Valid {
+		// An actual measured at a specific size can only be judged against THAT
+		// size's grade. Do not fall back to base_value (a different size) — that
+		// would emit a confident but cross-size verdict. Ungraded size -> UNKNOWN.
 		if gv, ok := gradeBySize[int(a.SizeId.Int32)]; ok {
 			target, hasTarget = gv, true
 		}
-	}
-	if !hasTarget && p.BaseValue.Valid {
+	} else if p.BaseValue.Valid {
+		// No size given: judge the generic actual against the base-sample value.
 		target, hasTarget = p.BaseValue.Decimal, true
 	}
 	if !hasTarget {

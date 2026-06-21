@@ -88,22 +88,38 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	}
 }
 
-// stampApprovalTimes auto-sets approved_at/released_at when the card enters the
-// corresponding state without the timestamp already provided.
-func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert) {
-	approvedOrReleased := tc.ApprovalState == entity.TechCardApprovalApproved ||
-		tc.ApprovalState == entity.TechCardApprovalReleased
-	if approvedOrReleased && !tc.ApprovedAt.Valid {
-		tc.ApprovedAt = sql.NullTime{Time: s.Now(), Valid: true}
-	}
-	if tc.ApprovalState == entity.TechCardApprovalReleased && !tc.ReleasedAt.Valid {
-		tc.ReleasedAt = sql.NullTime{Time: s.Now(), Valid: true}
+// stampApprovalTimes makes the server authoritative for approved_at/released_at,
+// ignoring any client-sent value: the stamp is set on the transition INTO
+// approved/released, preserved across edits and re-release, and CLEARED when the
+// card leaves those states (e.g. re-opened to draft) so a stale stamp can never lie.
+func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert, prevState entity.TechCardApprovalState, prevApprovedAt, prevReleasedAt sql.NullTime) {
+	now := sql.NullTime{Time: s.Now(), Valid: true}
+	prevApprovedish := prevState == entity.TechCardApprovalApproved || prevState == entity.TechCardApprovalReleased
+	switch tc.ApprovalState {
+	case entity.TechCardApprovalApproved, entity.TechCardApprovalReleased:
+		if prevApprovedish && prevApprovedAt.Valid {
+			tc.ApprovedAt = prevApprovedAt // keep the original approval time across edits
+		} else {
+			tc.ApprovedAt = now
+		}
+		if tc.ApprovalState == entity.TechCardApprovalReleased {
+			if prevState == entity.TechCardApprovalReleased && prevReleasedAt.Valid {
+				tc.ReleasedAt = prevReleasedAt
+			} else {
+				tc.ReleasedAt = now
+			}
+		} else {
+			tc.ReleasedAt = sql.NullTime{} // approved but not (yet) released
+		}
+	default: // draft, in_review, obsolete — clear both so re-open can't carry a stale stamp
+		tc.ApprovedAt = sql.NullTime{}
+		tc.ReleasedAt = sql.NullTime{}
 	}
 }
 
 // AddTechCard inserts a tech card and its child sections, returning the new id.
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
-	s.stampApprovalTimes(tc)
+	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
@@ -126,13 +142,14 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 // mismatch), refuses to mutate a RELEASED card unless it is re-opened to DRAFT
 // (entity.ErrTechCardReleased), and returns sql.ErrNoRows when no card exists.
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
-	s.stampApprovalTimes(tc)
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
-			LockVersion   int    `db:"lock_version"`
-			ApprovalState string `db:"approval_state"`
+			LockVersion   int          `db:"lock_version"`
+			ApprovalState string       `db:"approval_state"`
+			ApprovedAt    sql.NullTime `db:"approved_at"`
+			ReleasedAt    sql.NullTime `db:"released_at"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return sql.ErrNoRows
@@ -148,6 +165,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			tc.ApprovalState != entity.TechCardApprovalDraft {
 			return entity.ErrTechCardReleased
 		}
+		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
+		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
 		params := techCardHeaderParams(tc)
 		params["id"] = id
