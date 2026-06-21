@@ -145,6 +145,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_revision",
 			"tech_card_bom_item", "tech_card_colorway", "tech_card_pom_point",
+			"tech_card_construction", "tech_card_operation", "tech_card_label",
+			"tech_card_packaging", "tech_card_costing",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -264,7 +266,23 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardBom(ctx, db, id, tc.BomItems, colorwayIds); err != nil {
 		return err
 	}
-	return insertTechCardPom(ctx, db, id, tc.PomPoints)
+	if err := insertTechCardPom(ctx, db, id, tc.PomPoints); err != nil {
+		return err
+	}
+	// production (Phase 3)
+	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
+		return err
+	}
+	if err := insertTechCardOperations(ctx, db, id, tc.Operations); err != nil {
+		return err
+	}
+	if err := insertTechCardLabels(ctx, db, id, tc.Labels); err != nil {
+		return err
+	}
+	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
+		return err
+	}
+	return insertTechCardCosting(ctx, db, id, tc.Costing)
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {

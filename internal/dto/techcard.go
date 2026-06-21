@@ -295,6 +295,28 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
+	// production (Phase 3)
+	construction, err := parseTechCardConstruction(pb.Construction)
+	if err != nil {
+		return nil, err
+	}
+	operations, err := parseTechCardOperations(pb.Operations)
+	if err != nil {
+		return nil, err
+	}
+	labels, err := parseTechCardLabels(pb.Labels)
+	if err != nil {
+		return nil, err
+	}
+	packaging, err := parseTechCardPackaging(pb.Packaging)
+	if err != nil {
+		return nil, err
+	}
+	costing, err := parseTechCardCosting(pb.Costing)
+	if err != nil {
+		return nil, err
+	}
+
 	return &entity.TechCardInsert{
 		StyleNumber:       pb.StyleNumber,
 		Name:              pb.Name,
@@ -337,6 +359,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		BomItems:          bomItems,
 		Colorways:         colorways,
 		PomPoints:         pomPoints,
+		Construction:      construction,
+		Operations:        operations,
+		Labels:            labels,
+		Packaging:         packaging,
+		Costing:           costing,
 	}, nil
 }
 
@@ -433,6 +460,11 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			BomItems:          techCardBomItemsToPb(tc.BomItems),
 			Colorways:         techCardColorwaysToPb(tc.Colorways),
 			PomPoints:         techCardPomPointsToPb(tc.PomPoints),
+			Construction:      techCardConstructionToPb(tc.Construction),
+			Operations:        techCardOperationsToPb(tc.Operations),
+			Labels:            techCardLabelsToPb(tc.Labels),
+			Packaging:         techCardPackagingToPb(tc.Packaging),
+			Costing:           techCardCostingToPb(tc),
 		},
 		ResolvedMedia: resolved,
 	}

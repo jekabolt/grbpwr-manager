@@ -171,9 +171,96 @@ message TechCardPomPoint {
   repeated TechCardPomActual actuals = 8;
 }
 
+// TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
+enum TechCardLabelType {
+  TECH_CARD_LABEL_TYPE_UNKNOWN = 0;
+  TECH_CARD_LABEL_TYPE_MAIN = 1; // основная (бренд)
+  TECH_CARD_LABEL_TYPE_SIZE = 2; // размерная
+  TECH_CARD_LABEL_TYPE_CARE = 3; // состав / уход
+  TECH_CARD_LABEL_TYPE_ORIGIN = 4; // страна производства
+  TECH_CARD_LABEL_TYPE_FLAG = 5; // флаговая
+  TECH_CARD_LABEL_TYPE_HANGTAG = 6; // навесной ярлык (хэнгтег)
+  TECH_CARD_LABEL_TYPE_BARCODE = 7; // штрихкод / RFID
+  TECH_CARD_LABEL_TYPE_SPECIAL = 8; // спецэтикетка
+}
+
+// TechCardConstruction holds general workmanship parameters (Sheet «Обработка»).
+message TechCardConstruction {
+  string main_stitch_type = 1; // тип основной машинной строчки
+  string stitch_density = 2; // плотность строчки по умолчанию (стеж/см)
+  string overlock_threads = 3; // оверлок, кол-во ниток
+  string seam_allowances = 4; // припуски на швы (общие)
+  string hem_finish = 5; // обработка низа / подгибка
+  string pressing = 6; // ВТО / финишная отделка
+  string machine_class = 7; // класс / группа машин
+  string notes = 8;
+}
+
+// TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
+message TechCardOperation {
+  string node = 1; // узел / операция (required)
+  string description = 2; // описание обработки
+  string seam_type = 3; // тип шва / строчки
+  google.type.Decimal stitches_per_cm = 4; // стежков/см
+  string topstitch_width = 5; // ширина отстрочки
+  string thread = 6; // нитки (арт.)
+  string note = 7;
+}
+
+// TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
+message TechCardLabel {
+  TechCardLabelType label_type = 1; // required
+  string content = 2; // содержание / артикул
+  string placement = 3; // размещение
+  string attachment = 4; // крепление
+  string size = 5; // размер
+  string note = 6;
+}
+
+// TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).
+message TechCardPackaging {
+  string folding_method = 1; // способ складывания
+  string polybag = 2; // полибэг (тип / размер)
+  string bag_sticker = 3; // стикер на пакет
+  string inserts = 4; // доп. вложения
+  int32 units_per_box = 5; // кол-во в коробе; 0 = unset
+  string box_marking = 6; // маркировка короба
+  string box_dimensions = 7; // размеры короба (Д×Ш×В)
+  google.type.Decimal weight_net = 8; // вес нетто
+  google.type.Decimal weight_gross = 9; // вес брутто
+  string notes = 10;
+}
+
+// TechCardCostLine is one currency bucket of the materials rollup.
+message TechCardCostLine {
+  string currency = 1; // empty = BOM lines without a currency
+  google.type.Decimal amount = 2;
+}
+
+// TechCardCosting holds the manually-entered cost articles (Sheet «Калькуляция»).
+// The materials rollup and total are COMPUTED on read from the BOM; they are
+// output-only (ignored on write) and never converted across currencies.
+message TechCardCosting {
+  google.type.Decimal cmt_cost = 1; // пошив / работа (CMT)
+  google.type.Decimal hardware_cost = 2; // фурнитура (если вне BOM)
+  google.type.Decimal packaging_cost = 3; // упаковка и маркировка
+  google.type.Decimal logistics_cost = 4; // логистика / доставка
+  google.type.Decimal overhead_cost = 5; // накладные расходы
+  google.type.Decimal defect_percent = 6; // брак / запас (%), 0..100
+  google.type.Decimal markup_multiplier = 7; // наценка (×)
+  google.type.Decimal wholesale_price = 8; // оптовая цена
+  google.type.Decimal retail_price = 9; // розничная цена
+  string currency = 10; // ISO 4217 for the articles above
+  string notes = 11;
+
+  // OUTPUT-ONLY computed rollup (ignored on write; no currency conversion).
+  repeated TechCardCostLine materials_total = 12; // Σ BOM line_total grouped by BOM currency
+  google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
+  google.type.Decimal total_cost = 14; // (materials_cost + cmt+hardware+packaging+logistics+overhead) × (1 + defect/100)
+}
+
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
-// replacements on update (like ProductNew). Production sections (operations,
-// labels, packaging, costing) are added later using field numbers >= 43.
+// replacements on update (like ProductNew).
 message TechCardInsert {
   // identification (Sheet «Титул»)
   string style_number = 1; // Артикул (required)
@@ -224,9 +311,15 @@ message TechCardInsert {
   repeated TechCardColorway colorways = 41;
   repeated TechCardPomPoint pom_points = 42;
 
-  // Production sections (operations, labels, packaging, costing) land at >= 43.
+  // production (Phase 3): construction, operations, labels, packaging, costing.
+  TechCardConstruction construction = 43; // 1:1; null = unset
+  repeated TechCardOperation operations = 44;
+  repeated TechCardLabel labels = 45;
+  TechCardPackaging packaging = 46; // 1:1; null = unset
+  TechCardCosting costing = 47; // 1:1; null = unset
+
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 43 to 99;
+  reserved 39, 48 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

@@ -315,6 +315,92 @@ func TestConvertTechCardMaterials(t *testing.T) {
 	}
 }
 
+func TestConvertTechCardProductionAndCosting(t *testing.T) {
+	dec := func(s string) *pb_decimal.Decimal { return &pb_decimal.Decimal{Value: s} }
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-020",
+		Name:        "Coat",
+		BomItems: []*pb_common.TechCardBomItem{
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", Quantity: dec("2"), UnitPrice: dec("10"), Currency: "EUR"},
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LINING, Name: "lining", Quantity: dec("1"), UnitPrice: dec("5"), Currency: "EUR"},
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", Quantity: dec("1"), UnitPrice: dec("3"), Currency: "USD"},
+		},
+		Construction: &pb_common.TechCardConstruction{MainStitchType: "lockstitch", StitchDensity: "3-4"},
+		Operations: []*pb_common.TechCardOperation{
+			{Node: "collar", SeamType: "lockstitch", StitchesPerCm: dec("3.5")},
+		},
+		Labels: []*pb_common.TechCardLabel{
+			{LabelType: pb_common.TechCardLabelType_TECH_CARD_LABEL_TYPE_MAIN, Content: "grbpwr", Placement: "neck"},
+		},
+		Packaging: &pb_common.TechCardPackaging{FoldingMethod: "flat", UnitsPerBox: 10, WeightNet: dec("0.8")},
+		Costing:   &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
+	}
+
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Construction == nil || got.Construction.MainStitchType.String != "lockstitch" {
+		t.Errorf("construction mismatch: %+v", got.Construction)
+	}
+	if len(got.Operations) != 1 || got.Operations[0].Node != "collar" {
+		t.Errorf("operations mismatch: %+v", got.Operations)
+	}
+	if len(got.Labels) != 1 || got.Labels[0].LabelType != entity.LabelTypeMain {
+		t.Errorf("labels mismatch: %+v", got.Labels)
+	}
+	if got.Packaging == nil || !got.Packaging.UnitsPerBox.Valid || got.Packaging.UnitsPerBox.Int32 != 10 {
+		t.Errorf("packaging mismatch: %+v", got.Packaging)
+	}
+	if got.Costing == nil || !got.Costing.CmtCost.Valid {
+		t.Fatalf("costing mismatch: %+v", got.Costing)
+	}
+
+	// round-trip to pb: production sections + computed costing rollup.
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	if pb.TechCard.Construction.MainStitchType != "lockstitch" || len(pb.TechCard.Operations) != 1 {
+		t.Errorf("pb construction/operations mismatch: %+v", pb.TechCard)
+	}
+	if pb.TechCard.Labels[0].LabelType != pb_common.TechCardLabelType_TECH_CARD_LABEL_TYPE_MAIN || pb.TechCard.Packaging.UnitsPerBox != 10 {
+		t.Errorf("pb labels/packaging mismatch: %+v", pb.TechCard)
+	}
+	cost := pb.TechCard.Costing
+	if cost == nil {
+		t.Fatalf("costing not emitted")
+	}
+	// materials_cost = EUR lines only (20+5); USD line stays out of the single-currency subtotal.
+	if cost.MaterialsCost == nil || cost.MaterialsCost.Value != "25" {
+		t.Errorf("materials_cost mismatch: %+v", cost.MaterialsCost)
+	}
+	// total_cost = (25 materials + 10 cmt) * (1 + 10/100) = 38.5
+	if cost.TotalCost == nil || cost.TotalCost.Value != "38.5" {
+		t.Errorf("total_cost mismatch: %+v", cost.TotalCost)
+	}
+	// materials_total surfaces both currencies (no conversion).
+	byCcy := map[string]string{}
+	for _, l := range cost.MaterialsTotal {
+		byCcy[l.Currency] = l.Amount.Value
+	}
+	if byCcy["EUR"] != "25" || byCcy["USD"] != "3" {
+		t.Errorf("materials_total mismatch: %+v", byCcy)
+	}
+
+	// invalid cases.
+	bad := map[string]*pb_common.TechCardInsert{
+		"label type unknown":  {StyleNumber: "x", Name: "y", Labels: []*pb_common.TechCardLabel{{Content: "x"}}},
+		"operation no node":   {StyleNumber: "x", Name: "y", Operations: []*pb_common.TechCardOperation{{SeamType: "x"}}},
+		"defect over 100":     {StyleNumber: "x", Name: "y", Costing: &pb_common.TechCardCosting{DefectPercent: dec("150")}},
+		"costing bad ccy":     {StyleNumber: "x", Name: "y", Costing: &pb_common.TechCardCosting{Currency: "EURO"}},
+		"neg cmt":             {StyleNumber: "x", Name: "y", Costing: &pb_common.TechCardCosting{CmtCost: dec("-1")}},
+		"stitches too scaled": {StyleNumber: "x", Name: "y", Operations: []*pb_common.TechCardOperation{{Node: "n", StitchesPerCm: dec("1.234")}}},
+	}
+	for name, bi := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
+	}
+}
+
 // ListItem conversion produces a lightweight header.
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{

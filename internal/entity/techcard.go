@@ -278,6 +278,101 @@ type TechCardPomPoint struct {
 	Actuals        []TechCardPomActual `db:"-"`
 }
 
+// TechCardLabelType classifies a label/tag. Mirrors the common.TechCardLabelType
+// proto enum; stored as a string in tech_card_label.label_type.
+type TechCardLabelType string
+
+const (
+	LabelTypeMain    TechCardLabelType = "main"
+	LabelTypeSize    TechCardLabelType = "size"
+	LabelTypeCare    TechCardLabelType = "care"
+	LabelTypeOrigin  TechCardLabelType = "origin"
+	LabelTypeFlag    TechCardLabelType = "flag"
+	LabelTypeHangtag TechCardLabelType = "hangtag"
+	LabelTypeBarcode TechCardLabelType = "barcode"
+	LabelTypeSpecial TechCardLabelType = "special"
+)
+
+// ValidTechCardLabelTypes is the set of accepted label types.
+var ValidTechCardLabelTypes = map[TechCardLabelType]bool{
+	LabelTypeMain:    true,
+	LabelTypeSize:    true,
+	LabelTypeCare:    true,
+	LabelTypeOrigin:  true,
+	LabelTypeFlag:    true,
+	LabelTypeHangtag: true,
+	LabelTypeBarcode: true,
+	LabelTypeSpecial: true,
+}
+
+// IsValidTechCardLabelType reports whether t is an accepted label type.
+func IsValidTechCardLabelType(t TechCardLabelType) bool {
+	return ValidTechCardLabelTypes[t]
+}
+
+// TechCardConstruction holds general workmanship parameters (Sheet «Обработка», 1:1).
+type TechCardConstruction struct {
+	MainStitchType  sql.NullString `db:"main_stitch_type"`
+	StitchDensity   sql.NullString `db:"stitch_density"`
+	OverlockThreads sql.NullString `db:"overlock_threads"`
+	SeamAllowances  sql.NullString `db:"seam_allowances"`
+	HemFinish       sql.NullString `db:"hem_finish"`
+	Pressing        sql.NullString `db:"pressing"`
+	MachineClass    sql.NullString `db:"machine_class"`
+	Notes           sql.NullString `db:"notes"`
+}
+
+// TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
+type TechCardOperation struct {
+	Node           string              `db:"node"`
+	Description    sql.NullString      `db:"description"`
+	SeamType       sql.NullString      `db:"seam_type"`
+	StitchesPerCm  decimal.NullDecimal `db:"stitches_per_cm"`
+	TopstitchWidth sql.NullString      `db:"topstitch_width"`
+	Thread         sql.NullString      `db:"thread"`
+	Note           sql.NullString      `db:"note"`
+}
+
+// TechCardLabel is one label/tag spec (Sheet «Этикетки и упаковка»).
+type TechCardLabel struct {
+	LabelType  TechCardLabelType `db:"label_type"`
+	Content    sql.NullString    `db:"content"`
+	Placement  sql.NullString    `db:"placement"`
+	Attachment sql.NullString    `db:"attachment"`
+	Size       sql.NullString    `db:"size"`
+	Note       sql.NullString    `db:"note"`
+}
+
+// TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка», 1:1).
+type TechCardPackaging struct {
+	FoldingMethod sql.NullString      `db:"folding_method"`
+	Polybag       sql.NullString      `db:"polybag"`
+	BagSticker    sql.NullString      `db:"bag_sticker"`
+	Inserts       sql.NullString      `db:"inserts"`
+	UnitsPerBox   sql.NullInt32       `db:"units_per_box"`
+	BoxMarking    sql.NullString      `db:"box_marking"`
+	BoxDimensions sql.NullString      `db:"box_dimensions"`
+	WeightNet     decimal.NullDecimal `db:"weight_net"`
+	WeightGross   decimal.NullDecimal `db:"weight_gross"`
+	Notes         sql.NullString      `db:"notes"`
+}
+
+// TechCardCosting holds the manually-entered cost articles (Sheet «Калькуляция», 1:1).
+// The materials rollup and total are computed on read (see dto), not stored.
+type TechCardCosting struct {
+	CmtCost          decimal.NullDecimal `db:"cmt_cost"`
+	HardwareCost     decimal.NullDecimal `db:"hardware_cost"`
+	PackagingCost    decimal.NullDecimal `db:"packaging_cost"`
+	LogisticsCost    decimal.NullDecimal `db:"logistics_cost"`
+	OverheadCost     decimal.NullDecimal `db:"overhead_cost"`
+	DefectPercent    decimal.NullDecimal `db:"defect_percent"`
+	MarkupMultiplier decimal.NullDecimal `db:"markup_multiplier"`
+	WholesalePrice   decimal.NullDecimal `db:"wholesale_price"`
+	RetailPrice      decimal.NullDecimal `db:"retail_price"`
+	Currency         sql.NullString      `db:"currency"`
+	Notes            sql.NullString      `db:"notes"`
+}
+
 // TechCardInsert is the writable payload for a tech card (header + construction
 // description + child sections). Child slices are full replacements on update.
 type TechCardInsert struct {
@@ -325,6 +420,12 @@ type TechCardInsert struct {
 	BomItems  []TechCardBomItem  `db:"-"`
 	Colorways []TechCardColorway `db:"-"`
 	PomPoints []TechCardPomPoint `db:"-"`
+	// production (Phase 3); 1:1 sections are nil when unset
+	Construction *TechCardConstruction `db:"-"`
+	Operations   []TechCardOperation   `db:"-"`
+	Labels       []TechCardLabel       `db:"-"`
+	Packaging    *TechCardPackaging    `db:"-"`
+	Costing      *TechCardCosting      `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
