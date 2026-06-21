@@ -48,12 +48,16 @@ enum TechCardMediaKind {
   TECH_CARD_MEDIA_KIND_DETAIL = 3; // detail / construction node
   TECH_CARD_MEDIA_KIND_LINING = 4; // internal structure / lining
   TECH_CARD_MEDIA_KIND_PREVIEW = 5; // cover preview
+  TECH_CARD_MEDIA_KIND_MOODBOARD = 6; // mood / inspiration board
+  TECH_CARD_MEDIA_KIND_REFERENCE = 7; // reference / fabric photo
+  TECH_CARD_MEDIA_KIND_SWATCH = 8; // colour / fabric swatch
 }
 
 // TechCardMediaItem is a writable sketch-media reference (id + kind).
 message TechCardMediaItem {
   int32 media_id = 1; // FK media(id)
   TechCardMediaKind kind = 2;
+  string caption = 3; // image caption / view name
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -69,6 +73,8 @@ message TechCardCallout {
   string description = 3; // описание, уточнение
   string dimensions = 4; // размеры / привязка
   int32 media_id = 5; // FK media(id); sketch this callout is pinned to (0 = unanchored)
+  google.type.Decimal pos_x = 6; // normalised x (0..1) of the marker on its sketch
+  google.type.Decimal pos_y = 7; // normalised y (0..1) of the marker on its sketch
 }
 
 // TechCardRevision is one entry in the spec-document changelog (what changed in
@@ -113,6 +119,15 @@ message TechCardColorway {
   TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
   int32 product_id = 4; // FK product(id); 0 = not yet published
   string comment = 5;
+  string pantone = 6; // headline Pantone code
+  string pantone_system = 7; // TCX|TPX|TPG|C|U (Pantone book)
+  string hex = 8; // screen approximation #RRGGBB
+  int32 swatch_media_id = 9; // FK media(id); approved physical swatch; 0 = none
+  int32 lab_dip_round = 10; // submission round (1, 2, …); 0 = unset
+  google.protobuf.Timestamp lab_dip_submitted_at = 11;
+  google.protobuf.Timestamp lab_dip_decided_at = 12;
+  string lab_dip_decided_by = 13;
+  string lab_dip_reject_reason = 14;
 }
 
 // TechCardBomColorwayColor is one «Колористика» matrix cell: the colour of a BOM
@@ -134,14 +149,37 @@ message TechCardBomItem {
   string color = 6; // base/default colour
   string composition = 7; // состав
   string spec = 8; // ширина / плотность
-  google.type.Decimal consumption = 9; // норма расхода
-  string unit = 10; // ед.
-  google.type.Decimal quantity = 11; // кол-во
+  // consumption vs quantity: fill ONE per line. consumption = per-garment rate of
+  // a measured material (fabric/lining/interlining/insulation/thread) in `unit`
+  // (м/см/г); quantity = discrete count of a countable trim (hardware/label/
+  // packaging), `unit` then = pcs. line_total uses quantity when set, else consumption.
+  google.type.Decimal consumption = 9; // норма расхода (measured materials)
+  string unit = 10; // ед. (м/см/г for consumption; pcs for quantity)
+  google.type.Decimal quantity = 11; // кол-во (countable trims)
   google.type.Decimal unit_price = 12; // цена/ед.
   string currency = 13; // ISO 4217 for unit_price
   string comment = 14;
   repeated TechCardBomColorwayColor colorway_colors = 15; // per-colourway colours
-  google.type.Decimal line_total = 16; // OUTPUT-ONLY: quantity*unit_price (else consumption*unit_price)
+  google.type.Decimal line_total = 16; // OUTPUT-ONLY: gross of wastage_percent; quantity*unit_price else consumption*unit_price
+  // fabric data for the cutter / marker (Phase 3.5c)
+  google.type.Decimal fabric_width = 17; // usable width, cm
+  google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
+  TechCardFabricDirection fabric_direction = 19; // nap / layout
+  google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into line_total
+}
+
+// TechCardFabricDirection is the cutting layout a fabric requires.
+enum TechCardFabricDirection {
+  TECH_CARD_FABRIC_DIRECTION_UNKNOWN = 0;
+  TECH_CARD_FABRIC_DIRECTION_ANY = 1; // all-way (no nap)
+  TECH_CARD_FABRIC_DIRECTION_ONE_WAY = 2; // napped / directional, one-way marker
+  TECH_CARD_FABRIC_DIRECTION_TWO_WAY = 3; // two-way
+}
+
+// TechCardSizeQuantity is the production order quantity for a size (size run).
+message TechCardSizeQuantity {
+  int32 size_id = 1; // FK size(id); must be one of size_ids
+  int32 order_qty = 2;
 }
 
 // TechCardPomGrade is the graded value of a POM point for one size.
@@ -150,11 +188,25 @@ message TechCardPomGrade {
   google.type.Decimal value = 2;
 }
 
-// TechCardPomActual is an actual measured value, optionally taken in a fitting.
+// TechCardPomVerdict is the computed in/out-of-tolerance result of an actual.
+enum TechCardPomVerdict {
+  TECH_CARD_POM_VERDICT_UNKNOWN = 0; // no target (no grade for the size and no base value)
+  TECH_CARD_POM_VERDICT_IN_TOLERANCE = 1;
+  TECH_CARD_POM_VERDICT_OVER = 2; // above target + tolerance_plus
+  TECH_CARD_POM_VERDICT_UNDER = 3; // below target - tolerance_minus
+}
+
+// TechCardPomActual is an actual measured value, optionally taken in a fitting and
+// at a specific size (so QC can compare it to that size's grade ± tolerance).
 message TechCardPomActual {
   int32 fitting_id = 1; // FK fitting(id); 0 = none
   string label = 2; // free label when no fitting linked (e.g. примерка 1)
   google.type.Decimal value = 3;
+  int32 size_id = 4; // FK size(id); 0 = unset. Must be one of size_ids when set.
+  // OUTPUT-ONLY: deviation = value - target (grade at size_id, else base_value);
+  // verdict compares the deviation against tolerance_plus / tolerance_minus.
+  google.type.Decimal deviation = 5;
+  TechCardPomVerdict verdict = 6;
 }
 
 // TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
@@ -194,6 +246,8 @@ message TechCardConstruction {
   string pressing = 6; // ВТО / финишная отделка
   string machine_class = 7; // класс / группа машин
   string notes = 8;
+  google.type.Decimal labour_rate = 9; // cost per minute; × Σ(operation SAM) = labour cost
+  string labour_rate_currency = 10; // ISO 4217 for labour_rate
 }
 
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
@@ -205,6 +259,40 @@ message TechCardOperation {
   string topstitch_width = 5; // ширина отстрочки
   string thread = 6; // нитки (арт.)
   string note = 7;
+  int32 operation_number = 8; // human operation number (оп. 10, 20, …); 0 = unset
+  string machine = 9; // machine / equipment
+  string seam_allowance = 10; // seam allowance for this узел
+  string needle = 11; // needle size / type
+  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
+  string attachment = 13; // folder / binder / guide / hemmer / presser-foot (приспособление)
+}
+
+// TechCardIssueSeverity ranks a flagged construction issue.
+enum TechCardIssueSeverity {
+  TECH_CARD_ISSUE_SEVERITY_UNKNOWN = 0; // defaults to MEDIUM on write
+  TECH_CARD_ISSUE_SEVERITY_LOW = 1;
+  TECH_CARD_ISSUE_SEVERITY_MEDIUM = 2;
+  TECH_CARD_ISSUE_SEVERITY_HIGH = 3;
+}
+
+// TechCardIssueStatus is the resolution state of a flagged issue.
+enum TechCardIssueStatus {
+  TECH_CARD_ISSUE_STATUS_UNKNOWN = 0; // defaults to OPEN on write
+  TECH_CARD_ISSUE_STATUS_OPEN = 1;
+  TECH_CARD_ISSUE_STATUS_RESOLVED = 2;
+  TECH_CARD_ISSUE_STATUS_WONTFIX = 3;
+}
+
+// TechCardIssue is a maker-flagged problem ("this seam is impossible") against an
+// operation or callout (Sheet «Обработка» / «Тех. эскиз»).
+message TechCardIssue {
+  int32 operation_number = 1; // the operation it concerns; 0 = none
+  int32 callout_number = 2; // the sketch callout it concerns; 0 = none
+  string raised_by = 3; // who flagged it (e.g. seamstress)
+  TechCardIssueSeverity severity = 4; // UNKNOWN defaults to MEDIUM
+  TechCardIssueStatus status = 5; // UNKNOWN defaults to OPEN
+  string description = 6; // what is hard / impossible (required)
+  string resolution_note = 7;
 }
 
 // TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
@@ -256,11 +344,45 @@ message TechCardCosting {
   // OUTPUT-ONLY computed rollup (ignored on write; no currency conversion).
   repeated TechCardCostLine materials_total = 12; // Σ BOM line_total grouped by BOM currency
   google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
-  google.type.Decimal total_cost = 14; // (materials_cost + cmt+hardware+packaging+logistics+overhead) × (1 + defect/100)
+  google.type.Decimal total_cost = 14; // (materials_cost + make + hardware+packaging+logistics+overhead) × (1 + defect/100); make = cmt_cost, or computed labour_cost when cmt_cost is unset and same currency
+  bool has_unconverted_currencies = 15; // OUTPUT-ONLY: a BOM line (or computed labour) is in a currency other than `currency`, so it is excluded from total_cost
+  google.type.Decimal total_sam = 16; // OUTPUT-ONLY: Σ of operation time_norm (minutes)
+  google.type.Decimal labour_cost = 17; // OUTPUT-ONLY: total_sam × construction.labour_rate (in labour_rate_currency); folded into total_cost as the make cost when cmt_cost is unset and currencies match
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
 // replacements on update (like ProductNew).
+// TechCardSignoffSection is the sheet a sign-off covers.
+enum TechCardSignoffSection {
+  TECH_CARD_SIGNOFF_SECTION_UNKNOWN = 0;
+  TECH_CARD_SIGNOFF_SECTION_DESIGN = 1;
+  TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION = 2;
+  TECH_CARD_SIGNOFF_SECTION_POM = 3;
+  TECH_CARD_SIGNOFF_SECTION_MATERIALS = 4;
+  TECH_CARD_SIGNOFF_SECTION_COLOUR = 5;
+  TECH_CARD_SIGNOFF_SECTION_LABELS = 6;
+  TECH_CARD_SIGNOFF_SECTION_PACKAGING = 7;
+  TECH_CARD_SIGNOFF_SECTION_COSTING = 8;
+}
+
+// TechCardSignoffState is the sign-off decision for a section.
+enum TechCardSignoffState {
+  TECH_CARD_SIGNOFF_STATE_UNKNOWN = 0; // defaults to PENDING on write
+  TECH_CARD_SIGNOFF_STATE_PENDING = 1;
+  TECH_CARD_SIGNOFF_STATE_APPROVED = 2;
+  TECH_CARD_SIGNOFF_STATE_REJECTED = 3;
+}
+
+// TechCardSignoff records one responsible role's sign-off of a sheet, so the
+// header approval_state isn't the only gate (Sheet «Титул» coordination).
+message TechCardSignoff {
+  TechCardSignoffSection section = 1; // required; unique per card
+  TechCardSignoffState state = 2; // UNKNOWN defaults to PENDING
+  string signed_by = 3; // who signed (free text / role name)
+  google.protobuf.Timestamp signed_at = 4;
+  string note = 5;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   string style_number = 1; // Артикул (required)
@@ -318,8 +440,15 @@ message TechCardInsert {
   TechCardPackaging packaging = 46; // 1:1; null = unset
   TechCardCosting costing = 47; // 1:1; null = unset
 
+  // hardening (Phase 3.5a)
+  google.protobuf.Timestamp approved_at = 48; // auto-set on approve/release if unset
+  string concept = 49; // design concept / intent (designer)
+  repeated TechCardIssue issues = 50; // maker-flagged construction issues
+  repeated TechCardSizeQuantity size_quantities = 51; // per-size order quantity (size run)
+  repeated TechCardSignoff signoffs = 52; // per-section sign-off
+
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 48 to 99;
+  reserved 39, 53 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.
@@ -329,6 +458,7 @@ message TechCard {
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
   repeated TechCardMediaFull resolved_media = 5; // sketch media with resolved MediaFull
+  int32 lock_version = 6; // optimistic-lock token; echo into UpdateTechCardRequest.expected_lock_version
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.
@@ -344,4 +474,5 @@ message TechCardListItem {
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
+  int32 lock_version = 12; // optimistic-lock token, so a list→edit needs no extra GET
 }

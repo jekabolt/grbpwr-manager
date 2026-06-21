@@ -18,19 +18,21 @@ func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int,
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_construction
 			(tech_card_id, main_stitch_type, stitch_density, overlock_threads, seam_allowances,
-			 hem_finish, pressing, machine_class, notes)
+			 hem_finish, pressing, machine_class, notes, labour_rate, labour_rate_currency)
 		VALUES (:tech_card_id, :main_stitch_type, :stitch_density, :overlock_threads, :seam_allowances,
-			 :hem_finish, :pressing, :machine_class, :notes)`,
+			 :hem_finish, :pressing, :machine_class, :notes, :labour_rate, :labour_rate_currency)`,
 		map[string]any{
-			"tech_card_id":     tcID,
-			"main_stitch_type": c.MainStitchType,
-			"stitch_density":   c.StitchDensity,
-			"overlock_threads": c.OverlockThreads,
-			"seam_allowances":  c.SeamAllowances,
-			"hem_finish":       c.HemFinish,
-			"pressing":         c.Pressing,
-			"machine_class":    c.MachineClass,
-			"notes":            c.Notes,
+			"tech_card_id":         tcID,
+			"main_stitch_type":     c.MainStitchType,
+			"stitch_density":       c.StitchDensity,
+			"overlock_threads":     c.OverlockThreads,
+			"seam_allowances":      c.SeamAllowances,
+			"hem_finish":           c.HemFinish,
+			"pressing":             c.Pressing,
+			"machine_class":        c.MachineClass,
+			"notes":                c.Notes,
+			"labour_rate":          c.LabourRate,
+			"labour_rate_currency": c.LabourRateCurrency,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card construction: %w", err)
 	}
@@ -44,15 +46,21 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	rows := make([]map[string]any, 0, len(ops))
 	for i, o := range ops {
 		rows = append(rows, map[string]any{
-			"tech_card_id":    tcID,
-			"node":            o.Node,
-			"description":     o.Description,
-			"seam_type":       o.SeamType,
-			"stitches_per_cm": o.StitchesPerCm,
-			"topstitch_width": o.TopstitchWidth,
-			"thread":          o.Thread,
-			"note":            o.Note,
-			"display_order":   i,
+			"tech_card_id":     tcID,
+			"operation_number": o.OperationNumber,
+			"node":             o.Node,
+			"description":      o.Description,
+			"seam_type":        o.SeamType,
+			"machine":          o.Machine,
+			"stitches_per_cm":  o.StitchesPerCm,
+			"topstitch_width":  o.TopstitchWidth,
+			"seam_allowance":   o.SeamAllowance,
+			"thread":           o.Thread,
+			"needle":           o.Needle,
+			"attachment":       o.Attachment,
+			"time_norm":        o.TimeNorm,
+			"note":             o.Note,
+			"display_order":    i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -141,11 +149,67 @@ func insertTechCardCosting(ctx context.Context, db dependency.DB, tcID int, c *e
 	return nil
 }
 
+func insertTechCardIssues(ctx context.Context, db dependency.DB, tcID int, issues []entity.TechCardIssue) error {
+	if len(issues) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(issues))
+	for i, is := range issues {
+		rows = append(rows, map[string]any{
+			"tech_card_id":     tcID,
+			"operation_number": is.OperationNumber,
+			"callout_number":   is.CalloutNumber,
+			"raised_by":        is.RaisedBy,
+			"severity":         string(is.Severity),
+			"status":           string(is.Status),
+			"description":      is.Description,
+			"resolution_note":  is.ResolutionNote,
+			"display_order":    i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_issue", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card issues: %w", err)
+	}
+	return nil
+}
+
+func insertTechCardSignoffs(ctx context.Context, db dependency.DB, tcID int, signoffs []entity.TechCardSignoff) error {
+	if len(signoffs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(signoffs))
+	for i, s := range signoffs {
+		rows = append(rows, map[string]any{
+			"tech_card_id":  tcID,
+			"section":       string(s.Section),
+			"state":         string(s.State),
+			"signed_by":     s.SignedBy,
+			"signed_at":     s.SignedAt,
+			"note":          s.Note,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_signoff", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card signoffs: %w", err)
+	}
+	return nil
+}
+
 // --- enrich (load production sections for read paths) ---
 
 type techCardConstructionRow struct {
 	TechCardID int `db:"tech_card_id"`
 	entity.TechCardConstruction
+}
+
+type techCardIssueRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardIssue
+}
+
+type techCardSignoffRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardSignoff
 }
 
 type techCardOperationRow struct {
@@ -191,7 +255,8 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
-		SELECT tech_card_id, node, description, seam_type, stitches_per_cm, topstitch_width, thread, note
+		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
+		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note
 		FROM tech_card_operation
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -238,6 +303,32 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		costByCard[costRows[i].TechCardID] = &c
 	}
 
+	issueRows, err := storeutil.QueryListNamed[techCardIssueRow](ctx, s.DB, `
+		SELECT tech_card_id, operation_number, callout_number, raised_by, severity, status, description, resolution_note
+		FROM tech_card_issue
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card issues: %w", err)
+	}
+	issuesByCard := make(map[int][]entity.TechCardIssue, len(ids))
+	for _, r := range issueRows {
+		issuesByCard[r.TechCardID] = append(issuesByCard[r.TechCardID], r.TechCardIssue)
+	}
+
+	signoffRows, err := storeutil.QueryListNamed[techCardSignoffRow](ctx, s.DB, `
+		SELECT tech_card_id, section, state, signed_by, signed_at, note
+		FROM tech_card_signoff
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card signoffs: %w", err)
+	}
+	signoffsByCard := make(map[int][]entity.TechCardSignoff, len(ids))
+	for _, r := range signoffRows {
+		signoffsByCard[r.TechCardID] = append(signoffsByCard[r.TechCardID], r.TechCardSignoff)
+	}
+
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].Construction = consByCard[id]
@@ -245,6 +336,8 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		cards[i].Labels = labelsByCard[id]
 		cards[i].Packaging = pkgByCard[id]
 		cards[i].Costing = costByCard[id]
+		cards[i].Issues = issuesByCard[id]
+		cards[i].Signoffs = signoffsByCard[id]
 	}
 	return nil
 }

@@ -117,6 +117,25 @@ func ExecNamed(
 	return nil
 }
 
+// ExecNamedRows executes a named-parameter UPDATE/DELETE and returns the number of
+// affected rows (for optimistic-lock / existence checks).
+func ExecNamedRows(
+	ctx context.Context,
+	conn dependency.DB,
+	query string,
+	params map[string]any,
+) (int64, error) {
+	query, args, err := makeQuery(query, params)
+	if err != nil {
+		return 0, err
+	}
+	res, err := conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("ExecContext: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // ExecNamedLastId executes a named-parameter INSERT and returns the last insert ID.
 func ExecNamedLastId(
 	ctx context.Context,

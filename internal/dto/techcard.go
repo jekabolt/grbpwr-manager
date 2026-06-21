@@ -76,12 +76,29 @@ var techCardUnitEntityToPb = func() map[entity.TechCardMeasurementUnit]pb_common
 }()
 
 var techCardMediaKindPbToEntity = map[pb_common.TechCardMediaKind]entity.TechCardMediaKind{
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT:   entity.TechCardMediaFront,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_BACK:    entity.TechCardMediaBack,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_DETAIL:  entity.TechCardMediaDetail,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_LINING:  entity.TechCardMediaLining,
-	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_PREVIEW: entity.TechCardMediaPreview,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT:     entity.TechCardMediaFront,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_BACK:      entity.TechCardMediaBack,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_DETAIL:    entity.TechCardMediaDetail,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_LINING:    entity.TechCardMediaLining,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_PREVIEW:   entity.TechCardMediaPreview,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_MOODBOARD: entity.TechCardMediaMoodboard,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_REFERENCE: entity.TechCardMediaReference,
+	pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_SWATCH:    entity.TechCardMediaSwatch,
 }
+
+var techCardFabricDirectionPbToEntity = map[pb_common.TechCardFabricDirection]entity.TechCardFabricDirection{
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY:     entity.FabricDirectionAny,
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ONE_WAY: entity.FabricDirectionOneWay,
+	pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_TWO_WAY: entity.FabricDirectionTwoWay,
+}
+
+var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirection]pb_common.TechCardFabricDirection {
+	m := make(map[entity.TechCardFabricDirection]pb_common.TechCardFabricDirection, len(techCardFabricDirectionPbToEntity))
+	for k, v := range techCardFabricDirectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
 
 var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.TechCardMediaKind {
 	m := make(map[entity.TechCardMediaKind]pb_common.TechCardMediaKind, len(techCardMediaKindPbToEntity))
@@ -243,7 +260,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			}
 			kind = k
 		}
-		media = append(media, entity.TechCardMediaItem{MediaId: int(m.MediaId), Kind: kind})
+		if len(m.Caption) > maxVarchar255 {
+			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
+		}
+		media = append(media, entity.TechCardMediaItem{MediaId: int(m.MediaId), Kind: kind, Caption: nullStringFromPb(m.Caption)})
 	}
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
@@ -254,12 +274,28 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("callout media_id must not be negative")
 		}
+		posX, err := nullDecimalFromPb(c.PosX)
+		if err != nil {
+			return nil, fmt.Errorf("callout pos_x: %w", err)
+		}
+		posY, err := nullDecimalFromPb(c.PosY)
+		if err != nil {
+			return nil, fmt.Errorf("callout pos_y: %w", err)
+		}
+		if err := validateUnitInterval(posX, "callout pos_x"); err != nil {
+			return nil, err
+		}
+		if err := validateUnitInterval(posY, "callout pos_y"); err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(c.Part),
 			Description: nullStringFromPb(c.Description),
 			Dimensions:  nullStringFromPb(c.Dimensions),
 			MediaId:     nullInt32FromPb(c.MediaId),
+			PosX:        posX,
+			PosY:        posY,
 		})
 	}
 
@@ -316,6 +352,34 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	issues, err := parseTechCardIssues(pb.Issues)
+	if err != nil {
+		return nil, err
+	}
+	sizeQuantities, err := parseTechCardSizeQuantities(pb.SizeQuantities, sizeIds)
+	if err != nil {
+		return nil, err
+	}
+	signoffs, err := parseTechCardSignoffs(pb.Signoffs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Release gate: a card cannot be RELEASED to a factory while any colourway's
+	// lab dip is unapproved (bulk colour unsigned) or any high-severity maker issue
+	// is still open (a known un-buildable operation).
+	if approvalState == entity.TechCardApprovalReleased {
+		for _, c := range colorways {
+			if c.LabDipStatus != entity.LabDipApproved {
+				return nil, fmt.Errorf("cannot release: colorway %q lab dip is %q, must be approved", c.Name, c.LabDipStatus)
+			}
+		}
+		for _, is := range issues {
+			if is.Severity == entity.IssueSeverityHigh && is.Status == entity.IssueStatusOpen {
+				return nil, fmt.Errorf("cannot release: a high-severity issue is still open: %q", is.Description)
+			}
+		}
+	}
 
 	return &entity.TechCardInsert{
 		StyleNumber:       pb.StyleNumber,
@@ -329,6 +393,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Status:            nullStringFromPb(pb.Status),
 		ApprovalState:     approvalState,
 		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
+		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
 		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
 		Version:           nullStringFromPb(pb.Version),
 		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
@@ -342,6 +407,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Currency:          nullStringFromPb(pb.Currency),
 		MeasurementUnit:   unit,
 		Description:       nullStringFromPb(pb.Description),
+		Concept:           nullStringFromPb(pb.Concept),
 		Silhouette:        nullStringFromPb(pb.Silhouette),
 		Collar:            nullStringFromPb(pb.Collar),
 		Fastening:         nullStringFromPb(pb.Fastening),
@@ -364,6 +430,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Labels:            labels,
 		Packaging:         packaging,
 		Costing:           costing,
+		Issues:            issues,
+		SizeQuantities:    sizeQuantities,
+		Signoffs:          signoffs,
 	}, nil
 }
 
@@ -378,6 +447,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 		media = append(media, &pb_common.TechCardMediaItem{
 			MediaId: int32(m.MediaId),
 			Kind:    pbTechCardMediaKind(m.Kind),
+			Caption: pbStringFromNull(m.Caption),
 		})
 	}
 
@@ -397,6 +467,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Description: pbStringFromNull(c.Description),
 			Dimensions:  pbStringFromNull(c.Dimensions),
 			MediaId:     pbInt32FromNull(c.MediaId),
+			PosX:        pbDecimalFromNull(c.PosX),
+			PosY:        pbDecimalFromNull(c.PosY),
 		})
 	}
 
@@ -415,9 +487,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 	productIds := intsToInt32(tc.ProductIds)
 
 	return &pb_common.TechCard{
-		Id:        int32(tc.Id),
-		CreatedAt: timestamppb.New(tc.CreatedAt),
-		UpdatedAt: timestamppb.New(tc.UpdatedAt),
+		Id:          int32(tc.Id),
+		LockVersion: int32(tc.LockVersion),
+		CreatedAt:   timestamppb.New(tc.CreatedAt),
+		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber,
 			Name:              tc.Name,
@@ -430,6 +503,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Status:            pbStringFromNull(tc.Status),
 			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
 			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
+			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
 			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
 			Version:           pbStringFromNull(tc.Version),
 			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
@@ -443,6 +517,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Currency:          pbStringFromNull(tc.Currency),
 			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
 			Description:       pbStringFromNull(tc.Description),
+			Concept:           pbStringFromNull(tc.Concept),
 			Silhouette:        pbStringFromNull(tc.Silhouette),
 			Collar:            pbStringFromNull(tc.Collar),
 			Fastening:         pbStringFromNull(tc.Fastening),
@@ -465,6 +540,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Labels:            techCardLabelsToPb(tc.Labels),
 			Packaging:         techCardPackagingToPb(tc.Packaging),
 			Costing:           techCardCostingToPb(tc),
+			Issues:            techCardIssuesToPb(tc.Issues),
+			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
 		},
 		ResolvedMedia: resolved,
 	}
@@ -488,6 +566,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		Season:        pbStringFromNull(tc.Season),
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
+		LockVersion:   int32(tc.LockVersion),
 	}
 }
 
@@ -574,12 +653,35 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 			}
 			status = s
 		}
+		if len(c.Pantone) > maxVarchar64 || len(c.Hex) > 7 || len(c.LabDipDecidedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("colorway pantone/hex/lab_dip_decided_by too long")
+		}
+		// Validate format/membership in the DTO (not just lengths) so a bad value
+		// fails as InvalidArgument instead of tripping the DB CHECK as Internal-500.
+		if c.Hex != "" && !isHexColor(c.Hex) {
+			return nil, fmt.Errorf("colorway hex must be #RRGGBB")
+		}
+		if c.PantoneSystem != "" && !validPantoneSystems[c.PantoneSystem] {
+			return nil, fmt.Errorf("colorway pantone_system must be one of TCX, TPX, TPG, C, U")
+		}
+		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
+			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
+		}
 		out = append(out, entity.TechCardColorway{
-			Code:         nullStringFromPb(c.Code),
-			Name:         c.Name,
-			LabDipStatus: status,
-			ProductId:    nullInt32FromPb(c.ProductId),
-			Comment:      nullStringFromPb(c.Comment),
+			Code:               nullStringFromPb(c.Code),
+			Name:               c.Name,
+			LabDipStatus:       status,
+			ProductId:          nullInt32FromPb(c.ProductId),
+			Comment:            nullStringFromPb(c.Comment),
+			Pantone:            nullStringFromPb(c.Pantone),
+			PantoneSystem:      nullStringFromPb(c.PantoneSystem),
+			Hex:                nullStringFromPb(c.Hex),
+			SwatchMediaId:      nullInt32FromPb(c.SwatchMediaId),
+			LabDipRound:        nullInt32FromPb(c.LabDipRound),
+			LabDipSubmittedAt:  nullDateFromPbTimestamp(c.LabDipSubmittedAt),
+			LabDipDecidedAt:    nullDateFromPbTimestamp(c.LabDipDecidedAt),
+			LabDipDecidedBy:    nullStringFromPb(c.LabDipDecidedBy),
+			LabDipRejectReason: nullStringFromPb(c.LabDipRejectReason),
 		})
 	}
 	return out, nil
@@ -659,22 +761,61 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 			})
 		}
 
+		fabricWidth, err := nullDecimalFromPb(b.FabricWidth)
+		if err != nil {
+			return nil, fmt.Errorf("bom fabric_width: %w", err)
+		}
+		fabricGsm, err := nullDecimalFromPb(b.FabricWeightGsm)
+		if err != nil {
+			return nil, fmt.Errorf("bom fabric_weight_gsm: %w", err)
+		}
+		wastage, err := nullDecimalFromPb(b.WastagePercent)
+		if err != nil {
+			return nil, fmt.Errorf("bom wastage_percent: %w", err)
+		}
+		for _, v := range []struct {
+			nd    decimal.NullDecimal
+			field string
+		}{{fabricWidth, "bom fabric_width"}, {fabricGsm, "bom fabric_weight_gsm"}} {
+			if err := validateDecimalScale(v.nd, v.field, 2, 100_000); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateDecimalScale(wastage, "bom wastage_percent", 2, 1_000); err != nil {
+			return nil, err
+		}
+		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
+			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
+		}
+		direction := sql.NullString{}
+		if b.FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
+			d, ok := techCardFabricDirectionPbToEntity[b.FabricDirection]
+			if !ok {
+				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.FabricDirection)
+			}
+			direction = sql.NullString{String: string(d), Valid: true}
+		}
+
 		out = append(out, entity.TechCardBomItem{
-			Section:        section,
-			Name:           b.Name,
-			Placement:      nullStringFromPb(b.Placement),
-			Supplier:       nullStringFromPb(b.Supplier),
-			SupplierRef:    nullStringFromPb(b.SupplierRef),
-			Color:          nullStringFromPb(b.Color),
-			Composition:    nullStringFromPb(b.Composition),
-			Spec:           nullStringFromPb(b.Spec),
-			Consumption:    consumption,
-			Unit:           nullStringFromPb(b.Unit),
-			Quantity:       quantity,
-			UnitPrice:      unitPrice,
-			Currency:       nullStringFromPb(b.Currency),
-			Comment:        nullStringFromPb(b.Comment),
-			ColorwayColors: colors,
+			Section:         section,
+			Name:            b.Name,
+			Placement:       nullStringFromPb(b.Placement),
+			Supplier:        nullStringFromPb(b.Supplier),
+			SupplierRef:     nullStringFromPb(b.SupplierRef),
+			Color:           nullStringFromPb(b.Color),
+			Composition:     nullStringFromPb(b.Composition),
+			Spec:            nullStringFromPb(b.Spec),
+			Consumption:     consumption,
+			Unit:            nullStringFromPb(b.Unit),
+			Quantity:        quantity,
+			UnitPrice:       unitPrice,
+			Currency:        nullStringFromPb(b.Currency),
+			Comment:         nullStringFromPb(b.Comment),
+			FabricWidth:     fabricWidth,
+			FabricWeightGsm: fabricGsm,
+			FabricDirection: direction,
+			WastagePercent:  wastage,
+			ColorwayColors:  colors,
 		})
 	}
 	return out, nil
@@ -686,6 +827,9 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		sizeSet[s] = true
 	}
 	out := make([]entity.TechCardPomPoint, 0, len(pbs))
+	// Non-empty POM codes must be unique within the card (DB enforces
+	// uniq_tech_card_pom_code); dedupe here for a precise InvalidArgument.
+	seenCode := make(map[string]bool, len(pbs))
 	for _, p := range pbs {
 		if p.Name == "" {
 			return nil, fmt.Errorf("pom point name is required")
@@ -695,6 +839,12 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 		}
 		if len(p.Code) > maxVarchar32 {
 			return nil, fmt.Errorf("pom code must be at most %d characters", maxVarchar32)
+		}
+		if p.Code != "" {
+			if seenCode[p.Code] {
+				return nil, fmt.Errorf("pom points contain a duplicate code: %q", p.Code)
+			}
+			seenCode[p.Code] = true
 		}
 		baseValue, err := nullDecimalFromPb(p.BaseValue)
 		if err != nil {
@@ -747,6 +897,12 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 			if a.FittingId < 0 {
 				return nil, fmt.Errorf("pom actual fitting_id must not be negative")
 			}
+			if a.SizeId < 0 {
+				return nil, fmt.Errorf("pom actual size_id must not be negative")
+			}
+			if a.SizeId > 0 && !sizeSet[int(a.SizeId)] {
+				return nil, fmt.Errorf("pom actual size_id %d must be one of size_ids", a.SizeId)
+			}
 			if len(a.Label) > maxVarchar64 {
 				return nil, fmt.Errorf("pom actual label must be at most %d characters", maxVarchar64)
 			}
@@ -756,6 +912,7 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 			}
 			actuals = append(actuals, entity.TechCardPomActual{
 				FittingId: nullInt32FromPb(a.FittingId),
+				SizeId:    nullInt32FromPb(a.SizeId),
 				Label:     nullStringFromPb(a.Label),
 				Value:     val,
 			})
@@ -782,11 +939,20 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardC
 	out := make([]*pb_common.TechCardColorway, 0, len(cws))
 	for _, c := range cws {
 		out = append(out, &pb_common.TechCardColorway{
-			Code:         pbStringFromNull(c.Code),
-			Name:         c.Name,
-			LabDipStatus: pbLabDipStatus(c.LabDipStatus),
-			ProductId:    pbInt32FromNull(c.ProductId),
-			Comment:      pbStringFromNull(c.Comment),
+			Code:               pbStringFromNull(c.Code),
+			Name:               c.Name,
+			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
+			ProductId:          pbInt32FromNull(c.ProductId),
+			Comment:            pbStringFromNull(c.Comment),
+			Pantone:            pbStringFromNull(c.Pantone),
+			PantoneSystem:      pbStringFromNull(c.PantoneSystem),
+			Hex:                pbStringFromNull(c.Hex),
+			SwatchMediaId:      pbInt32FromNull(c.SwatchMediaId),
+			LabDipRound:        pbInt32FromNull(c.LabDipRound),
+			LabDipSubmittedAt:  pbTimestampFromNullTime(c.LabDipSubmittedAt),
+			LabDipDecidedAt:    pbTimestampFromNullTime(c.LabDipDecidedAt),
+			LabDipDecidedBy:    pbStringFromNull(c.LabDipDecidedBy),
+			LabDipRejectReason: pbStringFromNull(c.LabDipRejectReason),
 		})
 	}
 	return out
@@ -805,23 +971,92 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			})
 		}
 		out = append(out, &pb_common.TechCardBomItem{
-			Section:        pbBomSection(b.Section),
-			Name:           b.Name,
-			Placement:      pbStringFromNull(b.Placement),
-			Supplier:       pbStringFromNull(b.Supplier),
-			SupplierRef:    pbStringFromNull(b.SupplierRef),
-			Color:          pbStringFromNull(b.Color),
-			Composition:    pbStringFromNull(b.Composition),
-			Spec:           pbStringFromNull(b.Spec),
-			Consumption:    pbDecimalFromNull(b.Consumption),
-			Unit:           pbStringFromNull(b.Unit),
-			Quantity:       pbDecimalFromNull(b.Quantity),
-			UnitPrice:      pbDecimalFromNull(b.UnitPrice),
-			Currency:       pbStringFromNull(b.Currency),
-			Comment:        pbStringFromNull(b.Comment),
-			ColorwayColors: colors,
-			LineTotal:      pbDecimalFromNull(b.LineTotal()),
+			Section:         pbBomSection(b.Section),
+			Name:            b.Name,
+			Placement:       pbStringFromNull(b.Placement),
+			Supplier:        pbStringFromNull(b.Supplier),
+			SupplierRef:     pbStringFromNull(b.SupplierRef),
+			Color:           pbStringFromNull(b.Color),
+			Composition:     pbStringFromNull(b.Composition),
+			Spec:            pbStringFromNull(b.Spec),
+			Consumption:     pbDecimalFromNull(b.Consumption),
+			Unit:            pbStringFromNull(b.Unit),
+			Quantity:        pbDecimalFromNull(b.Quantity),
+			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
+			Currency:        pbStringFromNull(b.Currency),
+			Comment:         pbStringFromNull(b.Comment),
+			ColorwayColors:  colors,
+			LineTotal:       pbDecimalFromNull(b.LineTotal()),
+			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
+			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
+			FabricDirection: pbFabricDirection(b.FabricDirection),
+			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 		})
+	}
+	return out
+}
+
+func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
+	if !s.Valid {
+		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+	}
+	if v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+}
+
+// validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
+var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// isHexColor reports whether s is a #RRGGBB colour (mirrors the colorway.hex CHECK).
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateUnitInterval rejects a non-null decimal outside [0,1] (callout pos_x/y).
+func validateUnitInterval(nd decimal.NullDecimal, field string) error {
+	if !nd.Valid {
+		return nil
+	}
+	if nd.Decimal.IsNegative() || nd.Decimal.GreaterThan(decimal.NewFromInt(1)) {
+		return fmt.Errorf("%s must be between 0 and 1", field)
+	}
+	return nil
+}
+
+func parseTechCardSizeQuantities(pbs []*pb_common.TechCardSizeQuantity, sizeIds []int) ([]entity.TechCardSizeQuantity, error) {
+	out := make([]entity.TechCardSizeQuantity, 0, len(pbs))
+	seen := make(map[int]bool, len(pbs))
+	for _, q := range pbs {
+		sid := int(q.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("size_quantity size_id %d must be one of size_ids", q.SizeId)
+		}
+		if seen[sid] {
+			return nil, fmt.Errorf("duplicate size_quantity for size_id %d", q.SizeId)
+		}
+		seen[sid] = true
+		if q.OrderQty < 0 {
+			return nil, fmt.Errorf("size_quantity order_qty must not be negative")
+		}
+		out = append(out, entity.TechCardSizeQuantity{SizeId: sid, OrderQty: int(q.OrderQty)})
+	}
+	return out, nil
+}
+
+func techCardSizeQuantitiesToPb(qs []entity.TechCardSizeQuantity) []*pb_common.TechCardSizeQuantity {
+	out := make([]*pb_common.TechCardSizeQuantity, 0, len(qs))
+	for _, q := range qs {
+		out = append(out, &pb_common.TechCardSizeQuantity{SizeId: int32(q.SizeId), OrderQty: int32(q.OrderQty)})
 	}
 	return out
 }
@@ -831,7 +1066,9 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 	for i := range points {
 		p := &points[i]
 		grades := make([]*pb_common.TechCardPomGrade, 0, len(p.Grades))
+		gradeBySize := make(map[int]decimal.Decimal, len(p.Grades))
 		for _, g := range p.Grades {
+			gradeBySize[g.SizeId] = g.Value
 			grades = append(grades, &pb_common.TechCardPomGrade{
 				SizeId: int32(g.SizeId),
 				Value:  pbDecimalFromDecimal(g.Value),
@@ -839,11 +1076,14 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 		}
 		actuals := make([]*pb_common.TechCardPomActual, 0, len(p.Actuals))
 		for _, a := range p.Actuals {
-			actuals = append(actuals, &pb_common.TechCardPomActual{
+			pa := &pb_common.TechCardPomActual{
 				FittingId: pbInt32FromNull(a.FittingId),
+				SizeId:    pbInt32FromNull(a.SizeId),
 				Label:     pbStringFromNull(a.Label),
 				Value:     pbDecimalFromDecimal(a.Value),
-			})
+			}
+			pa.Deviation, pa.Verdict = pomActualVerdict(p, a, gradeBySize)
+			actuals = append(actuals, pa)
 		}
 		out = append(out, &pb_common.TechCardPomPoint{
 			Section:        pbStringFromNull(p.Section),
@@ -858,6 +1098,44 @@ func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCa
 		})
 	}
 	return out
+}
+
+// pomActualVerdict computes an actual's deviation from its target (the graded value
+// at the measured size, else the point's base value) and the in/out-of-tolerance
+// verdict. Returns (nil, UNKNOWN) when there is no target to compare against.
+func pomActualVerdict(p *entity.TechCardPomPoint, a entity.TechCardPomActual, gradeBySize map[int]decimal.Decimal) (*pb_decimal.Decimal, pb_common.TechCardPomVerdict) {
+	var target decimal.Decimal
+	hasTarget := false
+	if a.SizeId.Valid {
+		// An actual measured at a specific size can only be judged against THAT
+		// size's grade. Do not fall back to base_value (a different size) — that
+		// would emit a confident but cross-size verdict. Ungraded size -> UNKNOWN.
+		if gv, ok := gradeBySize[int(a.SizeId.Int32)]; ok {
+			target, hasTarget = gv, true
+		}
+	} else if p.BaseValue.Valid {
+		// No size given: judge the generic actual against the base-sample value.
+		target, hasTarget = p.BaseValue.Decimal, true
+	}
+	if !hasTarget {
+		return nil, pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNKNOWN
+	}
+	tolPlus := decimal.Zero
+	if p.TolerancePlus.Valid {
+		tolPlus = p.TolerancePlus.Decimal
+	}
+	tolMinus := decimal.Zero
+	if p.ToleranceMinus.Valid {
+		tolMinus = p.ToleranceMinus.Decimal
+	}
+	verdict := pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE
+	switch {
+	case a.Value.GreaterThan(target.Add(tolPlus)):
+		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER
+	case a.Value.LessThan(target.Sub(tolMinus)):
+		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNDER
+	}
+	return pbDecimalFromDecimal(a.Value.Sub(target)), verdict
 }
 
 func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {

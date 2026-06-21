@@ -2,10 +2,19 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// ErrTechCardConflict is returned by UpdateTechCard when the caller's
+// expected_lock_version no longer matches the stored one (a concurrent edit).
+var ErrTechCardConflict = errors.New("tech card was modified concurrently")
+
+// ErrTechCardReleased is returned when content of a RELEASED tech card is edited
+// without first re-opening it to DRAFT (a released card is frozen for the factory).
+var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
@@ -87,20 +96,26 @@ func IsValidTechCardMeasurementUnit(u TechCardMeasurementUnit) bool {
 type TechCardMediaKind string
 
 const (
-	TechCardMediaFront   TechCardMediaKind = "front"
-	TechCardMediaBack    TechCardMediaKind = "back"
-	TechCardMediaDetail  TechCardMediaKind = "detail"
-	TechCardMediaLining  TechCardMediaKind = "lining"
-	TechCardMediaPreview TechCardMediaKind = "preview"
+	TechCardMediaFront     TechCardMediaKind = "front"
+	TechCardMediaBack      TechCardMediaKind = "back"
+	TechCardMediaDetail    TechCardMediaKind = "detail"
+	TechCardMediaLining    TechCardMediaKind = "lining"
+	TechCardMediaPreview   TechCardMediaKind = "preview"
+	TechCardMediaMoodboard TechCardMediaKind = "moodboard"
+	TechCardMediaReference TechCardMediaKind = "reference"
+	TechCardMediaSwatch    TechCardMediaKind = "swatch"
 )
 
 // ValidTechCardMediaKinds is the set of accepted sketch-media kinds.
 var ValidTechCardMediaKinds = map[TechCardMediaKind]bool{
-	TechCardMediaFront:   true,
-	TechCardMediaBack:    true,
-	TechCardMediaDetail:  true,
-	TechCardMediaLining:  true,
-	TechCardMediaPreview: true,
+	TechCardMediaFront:     true,
+	TechCardMediaBack:      true,
+	TechCardMediaDetail:    true,
+	TechCardMediaLining:    true,
+	TechCardMediaPreview:   true,
+	TechCardMediaMoodboard: true,
+	TechCardMediaReference: true,
+	TechCardMediaSwatch:    true,
 }
 
 // IsValidTechCardMediaKind reports whether k is an accepted media kind.
@@ -112,6 +127,7 @@ func IsValidTechCardMediaKind(k TechCardMediaKind) bool {
 type TechCardMediaItem struct {
 	MediaId int               `db:"media_id"`
 	Kind    TechCardMediaKind `db:"kind"`
+	Caption sql.NullString    `db:"caption"`
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
@@ -122,11 +138,13 @@ type TechCardMediaFull struct {
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
 type TechCardCallout struct {
-	Number      int            `db:"callout_number"`
-	Part        sql.NullString `db:"part"`
-	Description sql.NullString `db:"description"`
-	Dimensions  sql.NullString `db:"dimensions"`
-	MediaId     sql.NullInt32  `db:"media_id"` // sketch this callout is pinned to
+	Number      int                 `db:"callout_number"`
+	Part        sql.NullString      `db:"part"`
+	Description sql.NullString      `db:"description"`
+	Dimensions  sql.NullString      `db:"dimensions"`
+	MediaId     sql.NullInt32       `db:"media_id"` // sketch this callout is pinned to
+	PosX        decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
+	PosY        decimal.NullDecimal `db:"pos_y"`
 }
 
 // TechCardRevision is one entry in the revision log.
@@ -196,12 +214,21 @@ func IsValidTechCardLabDipStatus(s TechCardLabDipStatus) bool {
 
 // TechCardColorway is a development colourway (Sheet «Колористика»).
 type TechCardColorway struct {
-	Id           int                  `db:"id"`
-	Code         sql.NullString       `db:"code"`
-	Name         string               `db:"name"`
-	LabDipStatus TechCardLabDipStatus `db:"lab_dip_status"`
-	ProductId    sql.NullInt32        `db:"product_id"`
-	Comment      sql.NullString       `db:"comment"`
+	Id                 int                  `db:"id"`
+	Code               sql.NullString       `db:"code"`
+	Name               string               `db:"name"`
+	LabDipStatus       TechCardLabDipStatus `db:"lab_dip_status"`
+	ProductId          sql.NullInt32        `db:"product_id"`
+	Comment            sql.NullString       `db:"comment"`
+	Pantone            sql.NullString       `db:"pantone"`
+	PantoneSystem      sql.NullString       `db:"pantone_system"`
+	Hex                sql.NullString       `db:"hex"`
+	SwatchMediaId      sql.NullInt32        `db:"swatch_media_id"`
+	LabDipRound        sql.NullInt32        `db:"lab_dip_round"`
+	LabDipSubmittedAt  sql.NullTime         `db:"lab_dip_submitted_at"`
+	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
+	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
+	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
 }
 
 // TechCardBomColorwayColor is the colour of a BOM material in a colourway. On
@@ -230,13 +257,32 @@ type TechCardBomItem struct {
 	UnitPrice   decimal.NullDecimal `db:"unit_price"`
 	Currency    sql.NullString      `db:"currency"`
 	Comment     sql.NullString      `db:"comment"`
+	// fabric data for the cutter / marker (Phase 3.5c)
+	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
+	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
+	FabricDirection sql.NullString      `db:"fabric_direction"`
+	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
 	// ColorwayColors are the per-colourway colours (in-memory; persisted to
 	// tech_card_bom_colorway).
 	ColorwayColors []TechCardBomColorwayColor `db:"-"`
 }
 
-// LineTotal returns quantity*unit_price, falling back to consumption*unit_price
-// when quantity is unset. Invalid (no price) yields an invalid NullDecimal.
+// TechCardFabricDirection enumerates the cutting layout a fabric requires.
+type TechCardFabricDirection string
+
+const (
+	FabricDirectionAny    TechCardFabricDirection = "any"
+	FabricDirectionOneWay TechCardFabricDirection = "one_way"
+	FabricDirectionTwoWay TechCardFabricDirection = "two_way"
+)
+
+var ValidTechCardFabricDirections = map[TechCardFabricDirection]bool{
+	FabricDirectionAny: true, FabricDirectionOneWay: true, FabricDirectionTwoWay: true,
+}
+
+// LineTotal returns quantity*unit_price (falling back to consumption*unit_price
+// when quantity is unset), grossed up by wastage_percent when set. Invalid (no
+// price) yields an invalid NullDecimal.
 func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
 	if !b.UnitPrice.Valid {
 		return decimal.NullDecimal{}
@@ -248,7 +294,17 @@ func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
 	if !qty.Valid {
 		return decimal.NullDecimal{}
 	}
-	return decimal.NullDecimal{Decimal: qty.Decimal.Mul(b.UnitPrice.Decimal), Valid: true}
+	total := qty.Decimal.Mul(b.UnitPrice.Decimal)
+	if b.WastagePercent.Valid {
+		total = total.Mul(decimal.NewFromInt(1).Add(b.WastagePercent.Decimal.Div(decimal.NewFromInt(100))))
+	}
+	return decimal.NullDecimal{Decimal: total, Valid: true}
+}
+
+// TechCardSizeQuantity is the production order quantity for a size (size run).
+type TechCardSizeQuantity struct {
+	SizeId   int `db:"size_id"`
+	OrderQty int `db:"order_qty"`
 }
 
 // TechCardPomGrade is the graded value of a POM point for a size.
@@ -257,9 +313,11 @@ type TechCardPomGrade struct {
 	Value  decimal.Decimal `db:"value"`
 }
 
-// TechCardPomActual is an actual measured value, optionally from a fitting.
+// TechCardPomActual is an actual measured value, optionally from a fitting and at
+// a specific size (so it can be compared to that size's grade ± tolerance).
 type TechCardPomActual struct {
 	FittingId sql.NullInt32   `db:"fitting_id"`
+	SizeId    sql.NullInt32   `db:"size_id"`
 	Label     sql.NullString  `db:"label"`
 	Value     decimal.Decimal `db:"value"`
 }
@@ -320,17 +378,102 @@ type TechCardConstruction struct {
 	Pressing        sql.NullString `db:"pressing"`
 	MachineClass    sql.NullString `db:"machine_class"`
 	Notes           sql.NullString `db:"notes"`
+	// labour rate (Phase 3.5b): per-minute cost; × Σ(operation SAM) = labour cost.
+	LabourRate         decimal.NullDecimal `db:"labour_rate"`
+	LabourRateCurrency sql.NullString      `db:"labour_rate_currency"`
 }
 
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
 type TechCardOperation struct {
-	Node           string              `db:"node"`
-	Description    sql.NullString      `db:"description"`
-	SeamType       sql.NullString      `db:"seam_type"`
-	StitchesPerCm  decimal.NullDecimal `db:"stitches_per_cm"`
-	TopstitchWidth sql.NullString      `db:"topstitch_width"`
-	Thread         sql.NullString      `db:"thread"`
-	Note           sql.NullString      `db:"note"`
+	OperationNumber sql.NullInt32       `db:"operation_number"`
+	Node            string              `db:"node"`
+	Description     sql.NullString      `db:"description"`
+	SeamType        sql.NullString      `db:"seam_type"`
+	Machine         sql.NullString      `db:"machine"`
+	StitchesPerCm   decimal.NullDecimal `db:"stitches_per_cm"`
+	TopstitchWidth  sql.NullString      `db:"topstitch_width"`
+	SeamAllowance   sql.NullString      `db:"seam_allowance"`
+	Thread          sql.NullString      `db:"thread"`
+	Needle          sql.NullString      `db:"needle"`
+	Attachment      sql.NullString      `db:"attachment"`
+	TimeNorm        decimal.NullDecimal `db:"time_norm"`
+	Note            sql.NullString      `db:"note"`
+}
+
+// TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
+type TechCardIssueSeverity string
+
+const (
+	IssueSeverityLow    TechCardIssueSeverity = "low"
+	IssueSeverityMedium TechCardIssueSeverity = "medium"
+	IssueSeverityHigh   TechCardIssueSeverity = "high"
+)
+
+var ValidTechCardIssueSeverities = map[TechCardIssueSeverity]bool{
+	IssueSeverityLow: true, IssueSeverityMedium: true, IssueSeverityHigh: true,
+}
+
+type TechCardIssueStatus string
+
+const (
+	IssueStatusOpen     TechCardIssueStatus = "open"
+	IssueStatusResolved TechCardIssueStatus = "resolved"
+	IssueStatusWontfix  TechCardIssueStatus = "wontfix"
+)
+
+var ValidTechCardIssueStatuses = map[TechCardIssueStatus]bool{
+	IssueStatusOpen: true, IssueStatusResolved: true, IssueStatusWontfix: true,
+}
+
+// TechCardIssue is a maker-flagged construction problem (Sheet «Обработка»).
+type TechCardIssue struct {
+	OperationNumber sql.NullInt32         `db:"operation_number"`
+	CalloutNumber   sql.NullInt32         `db:"callout_number"`
+	RaisedBy        sql.NullString        `db:"raised_by"`
+	Severity        TechCardIssueSeverity `db:"severity"`
+	Status          TechCardIssueStatus   `db:"status"`
+	Description     string                `db:"description"`
+	ResolutionNote  sql.NullString        `db:"resolution_note"`
+}
+
+// TechCardSignoffSection / TechCardSignoffState classify a per-section sign-off.
+type TechCardSignoffSection string
+
+const (
+	SignoffDesign       TechCardSignoffSection = "design"
+	SignoffConstruction TechCardSignoffSection = "construction"
+	SignoffPom          TechCardSignoffSection = "pom"
+	SignoffMaterials    TechCardSignoffSection = "materials"
+	SignoffColour       TechCardSignoffSection = "colour"
+	SignoffLabels       TechCardSignoffSection = "labels"
+	SignoffPackaging    TechCardSignoffSection = "packaging"
+	SignoffCosting      TechCardSignoffSection = "costing"
+)
+
+var ValidTechCardSignoffSections = map[TechCardSignoffSection]bool{
+	SignoffDesign: true, SignoffConstruction: true, SignoffPom: true, SignoffMaterials: true,
+	SignoffColour: true, SignoffLabels: true, SignoffPackaging: true, SignoffCosting: true,
+}
+
+type TechCardSignoffState string
+
+const (
+	SignoffStatePending  TechCardSignoffState = "pending"
+	SignoffStateApproved TechCardSignoffState = "approved"
+	SignoffStateRejected TechCardSignoffState = "rejected"
+)
+
+var ValidTechCardSignoffStates = map[TechCardSignoffState]bool{
+	SignoffStatePending: true, SignoffStateApproved: true, SignoffStateRejected: true,
+}
+
+// TechCardSignoff records one responsible role's sign-off of a sheet.
+type TechCardSignoff struct {
+	Section  TechCardSignoffSection `db:"section"`
+	State    TechCardSignoffState   `db:"state"`
+	SignedBy sql.NullString         `db:"signed_by"`
+	SignedAt sql.NullTime           `db:"signed_at"`
+	Note     sql.NullString         `db:"note"`
 }
 
 // TechCardLabel is one label/tag spec (Sheet «Этикетки и упаковка»).
@@ -387,6 +530,7 @@ type TechCardInsert struct {
 	Status            sql.NullString          `db:"status"`
 	ApprovalState     TechCardApprovalState   `db:"approval_state"`
 	ApprovedBy        sql.NullString          `db:"approved_by"`
+	ApprovedAt        sql.NullTime            `db:"approved_at"`
 	ReleasedAt        sql.NullTime            `db:"released_at"`
 	Version           sql.NullString          `db:"version"`
 	RevisionDate      sql.NullTime            `db:"revision_date"`
@@ -401,6 +545,7 @@ type TechCardInsert struct {
 	MeasurementUnit   TechCardMeasurementUnit `db:"measurement_unit"`
 	// construction description
 	Description  sql.NullString `db:"description"`
+	Concept      sql.NullString `db:"concept"`
 	Silhouette   sql.NullString `db:"silhouette"`
 	Collar       sql.NullString `db:"collar"`
 	Fastening    sql.NullString `db:"fastening"`
@@ -421,11 +566,14 @@ type TechCardInsert struct {
 	Colorways []TechCardColorway `db:"-"`
 	PomPoints []TechCardPomPoint `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
-	Construction *TechCardConstruction `db:"-"`
-	Operations   []TechCardOperation   `db:"-"`
-	Labels       []TechCardLabel       `db:"-"`
-	Packaging    *TechCardPackaging    `db:"-"`
-	Costing      *TechCardCosting      `db:"-"`
+	Construction   *TechCardConstruction  `db:"-"`
+	Operations     []TechCardOperation    `db:"-"`
+	Labels         []TechCardLabel        `db:"-"`
+	Packaging      *TechCardPackaging     `db:"-"`
+	Costing        *TechCardCosting       `db:"-"`
+	Issues         []TechCardIssue        `db:"-"`
+	SizeQuantities []TechCardSizeQuantity `db:"-"`
+	Signoffs       []TechCardSignoff      `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
@@ -441,7 +589,8 @@ type TechCardListFilter struct {
 
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
 type TechCard struct {
-	Id int `db:"id"`
+	Id          int `db:"id"`
+	LockVersion int `db:"lock_version"`
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`

@@ -66,15 +66,28 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
 		}
 	}
+	if pb.LabourRateCurrency != "" && len(pb.LabourRateCurrency) != maxCurrency {
+		return nil, fmt.Errorf("construction labour_rate_currency must be a 3-letter ISO 4217 code")
+	}
+	labourRate, err := nullDecimalFromPb(pb.LabourRate)
+	if err != nil {
+		return nil, fmt.Errorf("construction labour_rate: %w", err)
+	}
+	// DECIMAL(10,4): 6 integer digits, so the magnitude limit is 1e6, not bomPriceLimit.
+	if err := validateDecimalScale(labourRate, "construction labour_rate", 4, 1_000_000); err != nil {
+		return nil, err
+	}
 	return &entity.TechCardConstruction{
-		MainStitchType:  nullStringFromPb(pb.MainStitchType),
-		StitchDensity:   nullStringFromPb(pb.StitchDensity),
-		OverlockThreads: nullStringFromPb(pb.OverlockThreads),
-		SeamAllowances:  nullStringFromPb(pb.SeamAllowances),
-		HemFinish:       nullStringFromPb(pb.HemFinish),
-		Pressing:        nullStringFromPb(pb.Pressing),
-		MachineClass:    nullStringFromPb(pb.MachineClass),
-		Notes:           nullStringFromPb(pb.Notes),
+		MainStitchType:     nullStringFromPb(pb.MainStitchType),
+		StitchDensity:      nullStringFromPb(pb.StitchDensity),
+		OverlockThreads:    nullStringFromPb(pb.OverlockThreads),
+		SeamAllowances:     nullStringFromPb(pb.SeamAllowances),
+		HemFinish:          nullStringFromPb(pb.HemFinish),
+		Pressing:           nullStringFromPb(pb.Pressing),
+		MachineClass:       nullStringFromPb(pb.MachineClass),
+		Notes:              nullStringFromPb(pb.Notes),
+		LabourRate:         labourRate,
+		LabourRateCurrency: nullStringFromPb(pb.LabourRateCurrency),
 	}, nil
 }
 
@@ -87,8 +100,12 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 		if len(o.Node) > maxVarchar255 || len(o.SeamType) > maxVarchar255 || len(o.Thread) > maxVarchar255 {
 			return nil, fmt.Errorf("operation node/seam_type/thread must be at most %d characters", maxVarchar255)
 		}
-		if len(o.TopstitchWidth) > maxVarchar64 {
-			return nil, fmt.Errorf("operation topstitch_width must be at most %d characters", maxVarchar64)
+		if len(o.TopstitchWidth) > maxVarchar64 || len(o.Machine) > maxVarchar64 ||
+			len(o.SeamAllowance) > maxVarchar64 || len(o.Needle) > maxVarchar64 || len(o.Attachment) > maxVarchar64 {
+			return nil, fmt.Errorf("operation topstitch_width/machine/seam_allowance/needle/attachment must be at most %d characters", maxVarchar64)
+		}
+		if o.OperationNumber < 0 {
+			return nil, fmt.Errorf("operation operation_number must not be negative")
 		}
 		stitches, err := nullDecimalFromPb(o.StitchesPerCm)
 		if err != nil {
@@ -97,14 +114,27 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 		if err := validateDecimalScale(stitches, "operation stitches_per_cm", stitchFrac, stitchLimit); err != nil {
 			return nil, err
 		}
+		timeNorm, err := nullDecimalFromPb(o.TimeNorm)
+		if err != nil {
+			return nil, fmt.Errorf("operation time_norm: %w", err)
+		}
+		if err := validateDecimalScale(timeNorm, "operation time_norm", 3, 10_000); err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardOperation{
-			Node:           o.Node,
-			Description:    nullStringFromPb(o.Description),
-			SeamType:       nullStringFromPb(o.SeamType),
-			StitchesPerCm:  stitches,
-			TopstitchWidth: nullStringFromPb(o.TopstitchWidth),
-			Thread:         nullStringFromPb(o.Thread),
-			Note:           nullStringFromPb(o.Note),
+			OperationNumber: nullInt32FromPb(o.OperationNumber),
+			Node:            o.Node,
+			Description:     nullStringFromPb(o.Description),
+			SeamType:        nullStringFromPb(o.SeamType),
+			Machine:         nullStringFromPb(o.Machine),
+			StitchesPerCm:   stitches,
+			TopstitchWidth:  nullStringFromPb(o.TopstitchWidth),
+			SeamAllowance:   nullStringFromPb(o.SeamAllowance),
+			Thread:          nullStringFromPb(o.Thread),
+			Needle:          nullStringFromPb(o.Needle),
+			Attachment:      nullStringFromPb(o.Attachment),
+			TimeNorm:        timeNorm,
+			Note:            nullStringFromPb(o.Note),
 		})
 	}
 	return out, nil
@@ -267,14 +297,16 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 		return nil
 	}
 	return &pb_common.TechCardConstruction{
-		MainStitchType:  pbStringFromNull(c.MainStitchType),
-		StitchDensity:   pbStringFromNull(c.StitchDensity),
-		OverlockThreads: pbStringFromNull(c.OverlockThreads),
-		SeamAllowances:  pbStringFromNull(c.SeamAllowances),
-		HemFinish:       pbStringFromNull(c.HemFinish),
-		Pressing:        pbStringFromNull(c.Pressing),
-		MachineClass:    pbStringFromNull(c.MachineClass),
-		Notes:           pbStringFromNull(c.Notes),
+		MainStitchType:     pbStringFromNull(c.MainStitchType),
+		StitchDensity:      pbStringFromNull(c.StitchDensity),
+		OverlockThreads:    pbStringFromNull(c.OverlockThreads),
+		SeamAllowances:     pbStringFromNull(c.SeamAllowances),
+		HemFinish:          pbStringFromNull(c.HemFinish),
+		Pressing:           pbStringFromNull(c.Pressing),
+		MachineClass:       pbStringFromNull(c.MachineClass),
+		Notes:              pbStringFromNull(c.Notes),
+		LabourRate:         pbDecimalFromNull(c.LabourRate),
+		LabourRateCurrency: pbStringFromNull(c.LabourRateCurrency),
 	}
 }
 
@@ -282,13 +314,185 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 	out := make([]*pb_common.TechCardOperation, 0, len(ops))
 	for _, o := range ops {
 		out = append(out, &pb_common.TechCardOperation{
-			Node:           o.Node,
-			Description:    pbStringFromNull(o.Description),
-			SeamType:       pbStringFromNull(o.SeamType),
-			StitchesPerCm:  pbDecimalFromNull(o.StitchesPerCm),
-			TopstitchWidth: pbStringFromNull(o.TopstitchWidth),
-			Thread:         pbStringFromNull(o.Thread),
-			Note:           pbStringFromNull(o.Note),
+			OperationNumber: pbInt32FromNull(o.OperationNumber),
+			Node:            o.Node,
+			Description:     pbStringFromNull(o.Description),
+			SeamType:        pbStringFromNull(o.SeamType),
+			Machine:         pbStringFromNull(o.Machine),
+			StitchesPerCm:   pbDecimalFromNull(o.StitchesPerCm),
+			TopstitchWidth:  pbStringFromNull(o.TopstitchWidth),
+			SeamAllowance:   pbStringFromNull(o.SeamAllowance),
+			Thread:          pbStringFromNull(o.Thread),
+			Needle:          pbStringFromNull(o.Needle),
+			Attachment:      pbStringFromNull(o.Attachment),
+			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
+			Note:            pbStringFromNull(o.Note),
+		})
+	}
+	return out
+}
+
+// --- issues (Phase 3.5b) ---
+
+var techCardIssueSeverityPbToEntity = map[pb_common.TechCardIssueSeverity]entity.TechCardIssueSeverity{
+	pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_LOW:    entity.IssueSeverityLow,
+	pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_MEDIUM: entity.IssueSeverityMedium,
+	pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH:   entity.IssueSeverityHigh,
+}
+var techCardIssueSeverityEntityToPb = func() map[entity.TechCardIssueSeverity]pb_common.TechCardIssueSeverity {
+	m := make(map[entity.TechCardIssueSeverity]pb_common.TechCardIssueSeverity, len(techCardIssueSeverityPbToEntity))
+	for k, v := range techCardIssueSeverityPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardIssueStatusPbToEntity = map[pb_common.TechCardIssueStatus]entity.TechCardIssueStatus{
+	pb_common.TechCardIssueStatus_TECH_CARD_ISSUE_STATUS_OPEN:     entity.IssueStatusOpen,
+	pb_common.TechCardIssueStatus_TECH_CARD_ISSUE_STATUS_RESOLVED: entity.IssueStatusResolved,
+	pb_common.TechCardIssueStatus_TECH_CARD_ISSUE_STATUS_WONTFIX:  entity.IssueStatusWontfix,
+}
+var techCardIssueStatusEntityToPb = func() map[entity.TechCardIssueStatus]pb_common.TechCardIssueStatus {
+	m := make(map[entity.TechCardIssueStatus]pb_common.TechCardIssueStatus, len(techCardIssueStatusPbToEntity))
+	for k, v := range techCardIssueStatusPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+func parseTechCardIssues(pbs []*pb_common.TechCardIssue) ([]entity.TechCardIssue, error) {
+	out := make([]entity.TechCardIssue, 0, len(pbs))
+	for _, i := range pbs {
+		if i.Description == "" {
+			return nil, fmt.Errorf("issue description is required")
+		}
+		if i.OperationNumber < 0 || i.CalloutNumber < 0 {
+			return nil, fmt.Errorf("issue operation_number/callout_number must not be negative")
+		}
+		if len(i.RaisedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("issue raised_by must be at most %d characters", maxVarchar255)
+		}
+		severity := entity.IssueSeverityMedium
+		if i.Severity != pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_UNKNOWN {
+			s, ok := techCardIssueSeverityPbToEntity[i.Severity]
+			if !ok {
+				return nil, fmt.Errorf("unknown issue severity: %v", i.Severity)
+			}
+			severity = s
+		}
+		st := entity.IssueStatusOpen
+		if i.Status != pb_common.TechCardIssueStatus_TECH_CARD_ISSUE_STATUS_UNKNOWN {
+			v, ok := techCardIssueStatusPbToEntity[i.Status]
+			if !ok {
+				return nil, fmt.Errorf("unknown issue status: %v", i.Status)
+			}
+			st = v
+		}
+		out = append(out, entity.TechCardIssue{
+			OperationNumber: nullInt32FromPb(i.OperationNumber),
+			CalloutNumber:   nullInt32FromPb(i.CalloutNumber),
+			RaisedBy:        nullStringFromPb(i.RaisedBy),
+			Severity:        severity,
+			Status:          st,
+			Description:     i.Description,
+			ResolutionNote:  nullStringFromPb(i.ResolutionNote),
+		})
+	}
+	return out, nil
+}
+
+func techCardIssuesToPb(issues []entity.TechCardIssue) []*pb_common.TechCardIssue {
+	out := make([]*pb_common.TechCardIssue, 0, len(issues))
+	for _, i := range issues {
+		out = append(out, &pb_common.TechCardIssue{
+			OperationNumber: pbInt32FromNull(i.OperationNumber),
+			CalloutNumber:   pbInt32FromNull(i.CalloutNumber),
+			RaisedBy:        pbStringFromNull(i.RaisedBy),
+			Severity:        techCardIssueSeverityEntityToPb[i.Severity],
+			Status:          techCardIssueStatusEntityToPb[i.Status],
+			Description:     i.Description,
+			ResolutionNote:  pbStringFromNull(i.ResolutionNote),
+		})
+	}
+	return out
+}
+
+// --- sign-off (Phase 3.5a-2) ---
+
+var techCardSignoffSectionPbToEntity = map[pb_common.TechCardSignoffSection]entity.TechCardSignoffSection{
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_DESIGN:       entity.SignoffDesign,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION: entity.SignoffConstruction,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_POM:          entity.SignoffPom,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_MATERIALS:    entity.SignoffMaterials,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COLOUR:       entity.SignoffColour,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_LABELS:       entity.SignoffLabels,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_PACKAGING:    entity.SignoffPackaging,
+	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING:      entity.SignoffCosting,
+}
+var techCardSignoffSectionEntityToPb = func() map[entity.TechCardSignoffSection]pb_common.TechCardSignoffSection {
+	m := make(map[entity.TechCardSignoffSection]pb_common.TechCardSignoffSection, len(techCardSignoffSectionPbToEntity))
+	for k, v := range techCardSignoffSectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardSignoffStatePbToEntity = map[pb_common.TechCardSignoffState]entity.TechCardSignoffState{
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_PENDING:  entity.SignoffStatePending,
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED: entity.SignoffStateApproved,
+	pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_REJECTED: entity.SignoffStateRejected,
+}
+var techCardSignoffStateEntityToPb = func() map[entity.TechCardSignoffState]pb_common.TechCardSignoffState {
+	m := make(map[entity.TechCardSignoffState]pb_common.TechCardSignoffState, len(techCardSignoffStatePbToEntity))
+	for k, v := range techCardSignoffStatePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardSignoff, error) {
+	out := make([]entity.TechCardSignoff, 0, len(pbs))
+	seen := make(map[entity.TechCardSignoffSection]bool, len(pbs))
+	for _, s := range pbs {
+		section, ok := techCardSignoffSectionPbToEntity[s.Section]
+		if !ok {
+			return nil, fmt.Errorf("signoff section is required and must be valid")
+		}
+		if seen[section] {
+			return nil, fmt.Errorf("duplicate signoff for section %q", section)
+		}
+		seen[section] = true
+		if len(s.SignedBy) > maxVarchar255 {
+			return nil, fmt.Errorf("signoff signed_by must be at most %d characters", maxVarchar255)
+		}
+		state := entity.SignoffStatePending
+		if s.State != pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_UNKNOWN {
+			v, ok := techCardSignoffStatePbToEntity[s.State]
+			if !ok {
+				return nil, fmt.Errorf("unknown signoff state: %v", s.State)
+			}
+			state = v
+		}
+		out = append(out, entity.TechCardSignoff{
+			Section:  section,
+			State:    state,
+			SignedBy: nullStringFromPb(s.SignedBy),
+			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
+			Note:     nullStringFromPb(s.Note),
+		})
+	}
+	return out, nil
+}
+
+func techCardSignoffsToPb(signoffs []entity.TechCardSignoff) []*pb_common.TechCardSignoff {
+	out := make([]*pb_common.TechCardSignoff, 0, len(signoffs))
+	for _, s := range signoffs {
+		out = append(out, &pb_common.TechCardSignoff{
+			Section:  techCardSignoffSectionEntityToPb[s.Section],
+			State:    techCardSignoffStateEntityToPb[s.State],
+			SignedBy: pbStringFromNull(s.SignedBy),
+			SignedAt: pbTimestampFromNullTime(s.SignedAt),
+			Note:     pbStringFromNull(s.Note),
 		})
 	}
 	return out
@@ -351,11 +555,41 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		MaterialsCost:    pbDecimalFromDecimal(materialsCost.Round(costMaxFrac)),
 	}
 
-	// total_cost = (materials in costing currency + cmt+hardware+packaging+
+	costingCcy := ""
+	if c.Currency.Valid {
+		costingCcy = c.Currency.String
+	}
+
+	// Computed labour: total_sam = Σ(operation time_norm); labour_cost = SAM × rate
+	// (denominated in construction.labour_rate_currency).
+	totalSam := decimal.Zero
+	for i := range tc.Operations {
+		if tc.Operations[i].TimeNorm.Valid {
+			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
+		}
+	}
+	labourCcy := ""
+	var labourCost decimal.NullDecimal
+	if tc.Construction != nil {
+		labourCcy = tc.Construction.LabourRateCurrency.String
+		if totalSam.IsPositive() && tc.Construction.LabourRate.Valid {
+			labourCost = decimal.NullDecimal{Decimal: totalSam.Mul(tc.Construction.LabourRate.Decimal), Valid: true}
+		}
+	}
+
+	// Make (sewing) cost folded into total_cost: a manual cmt_cost is authoritative;
+	// otherwise the computed labour stands in as the make cost — but only when its
+	// currency matches the costing currency, so labour is never silently FX-folded.
+	makeCost := c.CmtCost
+	if !c.CmtCost.Valid && labourCost.Valid && labourCcy == costingCcy {
+		makeCost = labourCost
+	}
+
+	// total_cost = (materials in costing currency + make + hardware+packaging+
 	// logistics+overhead) grossed up by the defect/reserve %. Single-currency,
 	// best-effort: cross-currency materials are surfaced in materials_total.
 	total := materialsCost
-	for _, d := range []decimal.NullDecimal{c.CmtCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
+	for _, d := range []decimal.NullDecimal{makeCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
 		if d.Valid {
 			total = total.Add(d.Decimal)
 		}
@@ -364,6 +598,27 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		total = total.Mul(decimal.NewFromInt(1).Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100))))
 	}
 	out.TotalCost = pbDecimalFromDecimal(total.Round(costMaxFrac))
+
+	if totalSam.IsPositive() {
+		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
+	}
+	if labourCost.Valid {
+		out.LabourCost = pbDecimalFromDecimal(labourCost.Decimal.Round(costMaxFrac))
+	}
+
+	// Flag when part of the cost is excluded from total_cost for want of an FX
+	// conversion: a BOM line in another currency, or computed labour that would be
+	// the make cost but is in a different currency than the costing one.
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && b.LineTotal().Valid {
+			out.HasUnconvertedCurrencies = true
+			break
+		}
+	}
+	if labourCost.Valid && !c.CmtCost.Valid && labourCcy != costingCcy {
+		out.HasUnconvertedCurrencies = true
+	}
 	return out
 }
 
