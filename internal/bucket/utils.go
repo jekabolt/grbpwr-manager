@@ -20,6 +20,13 @@ const (
 	contentTypeJSON ContentType = "application/json"
 	contentTypeMP4  ContentType = "video/mp4"
 	contentTypeWEBM ContentType = "video/webm"
+
+	// Image formats identified by content sniffing. Only JPEG/PNG/WebP/HEIC are
+	// decodable; AVIF/HEIF/GIF are recognized solely to emit a precise error.
+	contentTypeHEIC ContentType = "image/heic"
+	contentTypeHEIF ContentType = "image/heif"
+	contentTypeAVIF ContentType = "image/avif"
+	contentTypeGIF  ContentType = "image/gif"
 )
 
 var mimeTypeToFileExtension = map[ContentType]string{
