@@ -45,9 +45,12 @@ type FittingSize struct {
 	FitNote sql.NullString `db:"fit_note"`
 }
 
-// FittingInsert is the writable payload for a fitting session.
+// FittingInsert is the writable payload for a fitting session. A fitting anchors
+// to a tech card (the style) and/or a specific product (the colour/SKU sample);
+// at least one of TechCardId / ProductId is set (enforced in the API layer).
 type FittingInsert struct {
-	ProductId   int            `db:"product_id"`
+	TechCardId  sql.NullInt32  `db:"tech_card_id"`
+	ProductId   sql.NullInt32  `db:"product_id"`
 	ModelId     sql.NullInt32  `db:"model_id"`
 	FittingDate time.Time      `db:"fitting_date"`
 	Comment     sql.NullString `db:"comment"`

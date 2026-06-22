@@ -17,6 +17,7 @@ import "common/product.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
 import "common/support.proto";
+import "common/techcard.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
@@ -310,6 +311,45 @@ service AdminService {
   // is not shadowed by GET /fitting/{id}.
   rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
     option (google.api.http) = {get: "/api/admin/fitting/list"};
+  }
+
+  // TECH CARD MANAGER
+  // Same list-after-{id} route ordering as ListModels (see note above): the
+  // literal `…/list` GET route is declared AFTER the `…/{id}` GET route so that
+  // GET /tech-card/list is not shadowed by GET /tech-card/{id}.
+
+  // CreateTechCard creates a new tech card (техкарта) with its nested sections.
+  rpc CreateTechCard(CreateTechCardRequest) returns (CreateTechCardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/add"
+      body: "*"
+    };
+  }
+
+  // GetTechCard returns a tech card by id with its nested sections resolved.
+  rpc GetTechCard(GetTechCardRequest) returns (GetTechCardResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{id}"};
+  }
+
+  // UpdateTechCard updates a tech card, replacing its nested sections.
+  rpc UpdateTechCard(UpdateTechCardRequest) returns (UpdateTechCardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/update"
+      body: "*"
+    };
+  }
+
+  // DeleteTechCard deletes a tech card by id (nested sections cascade).
+  rpc DeleteTechCard(DeleteTechCardRequest) returns (DeleteTechCardResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/{id}"};
+  }
+
+  // ListTechCards lists tech cards (paged, optional filters). Declared AFTER
+  // GetTechCard so the mux (which prepends handlers, first-match wins) checks
+  // /tech-card/list before /tech-card/{id}. Guarded by
+  // TestTechCardListRouteNotShadowed.
+  rpc ListTechCards(ListTechCardsRequest) returns (ListTechCardsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/list"};
   }
 
   // SETTINGS
@@ -1258,6 +1298,7 @@ message ListFittingsRequest {
   common.OrderFactor order_factor = 3;
   int32 product_id = 4; // optional filter; 0 = no filter
   int32 model_id = 5; // optional filter; 0 = no filter
+  int32 tech_card_id = 6; // optional filter; 0 = no filter
 }
 
 message ListFittingsResponse {
@@ -2177,4 +2218,53 @@ message RunTierBackfillResponse {
   int64 orders_snapshotted = 1;
   int32 accounts_processed = 2;
   int32 accounts_upgraded = 3;
+}
+
+// TECH CARD MANAGER messages
+
+message CreateTechCardRequest {
+  common.TechCardInsert tech_card = 1;
+}
+
+message CreateTechCardResponse {
+  int32 id = 1;
+}
+
+message GetTechCardRequest {
+  int32 id = 1;
+}
+
+message GetTechCardResponse {
+  common.TechCard tech_card = 1;
+}
+
+message UpdateTechCardRequest {
+  int32 id = 1;
+  common.TechCardInsert tech_card = 2;
+  int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
+}
+
+message UpdateTechCardResponse {}
+
+message DeleteTechCardRequest {
+  int32 id = 1;
+}
+
+message DeleteTechCardResponse {}
+
+message ListTechCardsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+  common.TechCardStage stage = 4; // UNKNOWN = no filter
+  common.GenderEnum gender = 5; // UNKNOWN = no filter
+  string brand = 6; // optional case-insensitive substring
+  string season = 7; // optional case-insensitive substring
+  string name = 8; // optional case-insensitive substring on name or style_number
+  int32 product_id = 9; // optional: only cards linked to this product (0 = no filter)
+}
+
+message ListTechCardsResponse {
+  repeated common.TechCardListItem tech_cards = 1;
+  int32 total = 2;
 }

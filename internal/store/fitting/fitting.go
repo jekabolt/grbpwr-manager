@@ -38,8 +38,8 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO fitting (product_id, model_id, fitting_date, comment, status, verdict, recorded_by)
-			VALUES (:productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy)`,
+			INSERT INTO fitting (tech_card_id, product_id, model_id, fitting_date, comment, status, verdict, recorded_by)
+			VALUES (:techCardId, :productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy)`,
 			fittingParams(f))
 		if err != nil {
 			return fmt.Errorf("failed to insert fitting: %w", err)
@@ -73,6 +73,7 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		params["id"] = id
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE fitting SET
+				tech_card_id = :techCardId,
 				product_id = :productId,
 				model_id = :modelId,
 				fitting_date = :fittingDate,
@@ -131,15 +132,19 @@ func (s *Store) GetFittingById(ctx context.Context, id int) (*entity.Fitting, er
 	return &f, nil
 }
 
-// ListFittings returns a paged list of fittings, optionally filtered by product
-// and/or model (pass 0 to ignore a filter), with sizes and resolved media, plus
-// the total number of matching fittings (ignoring pagination).
-func (s *Store) ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID int) ([]entity.Fitting, int, error) {
+// ListFittings returns a paged list of fittings, optionally filtered by tech card,
+// product and/or model (pass 0 to ignore a filter), with sizes and resolved media,
+// plus the total number of matching fittings (ignoring pagination).
+func (s *Store) ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error) {
 	limit, offset = clampPagination(limit, offset)
 
 	// Shared filter for both the count and the page query.
 	filterParams := map[string]any{}
 	where := ""
+	if techCardID != 0 {
+		where += " AND tech_card_id = :techCardId"
+		filterParams["techCardId"] = techCardID
+	}
 	if productID != 0 {
 		where += " AND product_id = :productId"
 		filterParams["productId"] = productID
@@ -208,6 +213,7 @@ func clampPagination(limit, offset int) (int, int) {
 
 func fittingParams(f *entity.FittingInsert) map[string]any {
 	return map[string]any{
+		"techCardId":  f.TechCardId,
 		"productId":   f.ProductId,
 		"modelId":     f.ModelId,
 		"fittingDate": f.FittingDate,

@@ -23,7 +23,7 @@ func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest
 	id, err := s.repo.Fittings().AddFitting(ctx, fi)
 	if err != nil {
 		if s.repo.IsErrForeignKeyViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, "product_id, model_id, size_id, or media_id does not reference an existing record")
+			return nil, status.Error(codes.InvalidArgument, "tech_card_id, product_id, model_id, size_id, or media_id does not reference an existing record")
 		}
 		slog.Default().ErrorContext(ctx, "can't add fitting",
 			slog.String("err", err.Error()),
@@ -37,7 +37,7 @@ func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest
 // product and/or model.
 func (s *Server) ListFittings(ctx context.Context, req *pb_admin.ListFittingsRequest) (*pb_admin.ListFittingsResponse, error) {
 	fittings, total, err := s.repo.Fittings().ListFittings(ctx, int(req.Limit), int(req.Offset),
-		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor), int(req.ProductId), int(req.ModelId))
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor), int(req.ProductId), int(req.ModelId), int(req.TechCardId))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list fittings",
 			slog.String("err", err.Error()),
@@ -84,7 +84,7 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 			return nil, status.Errorf(codes.NotFound, "fitting not found")
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, "product_id, model_id, size_id, or media_id does not reference an existing record")
+			return nil, status.Error(codes.InvalidArgument, "tech_card_id, product_id, model_id, size_id, or media_id does not reference an existing record")
 		}
 		slog.Default().ErrorContext(ctx, "can't update fitting",
 			slog.String("err", err.Error()),

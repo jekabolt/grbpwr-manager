@@ -45,6 +45,10 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 	resp := &pb_admin.DeleteFromBucketResponse{}
 	err := s.repo.Media().DeleteMediaById(ctx, int(req.Id))
 	if err != nil {
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.FailedPrecondition,
+				"media is still referenced (product, archive, model, fitting or tech card) and cannot be deleted")
+		}
 		slog.Default().ErrorContext(ctx, "can't delete object from bucket",
 			slog.String("err", err.Error()),
 		)
