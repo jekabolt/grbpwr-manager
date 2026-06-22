@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"io"
@@ -82,7 +83,12 @@ func imageFromString(rawB64Image string) (image.Image, error) {
 		return nil, err
 	}
 
-	return decodeImageFromB64(b64Img.content, b64Img.contentType)
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b64Img.content)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64 payload: %w", err)
+	}
+
+	return decodeImage(raw, b64Img.contentType)
 }
 
 // upload single image with defined quality and prefix to bucket
@@ -115,9 +121,9 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	thumbImg := resizeImage(img, 1080)
 
 	var (
-		mu                     sync.Mutex
-		fullSize, compressed   *pb_common.MediaInfo
-		thumbnail              *pb_common.MediaInfo
+		mu                   sync.Mutex
+		fullSize, compressed *pb_common.MediaInfo
+		thumbnail            *pb_common.MediaInfo
 	)
 
 	g, gctx := errgroup.WithContext(ctx)

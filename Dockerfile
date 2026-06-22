@@ -72,8 +72,13 @@ RUN COMMIT_HASH_VALUE="$COMMIT_HASH"; \
 
 FROM alpine:latest
 
-# Install runtime dependencies including libwebp
-RUN apk add --no-cache libstdc++ libwebp ca-certificates
+# Install runtime dependencies: libwebp (go-webp) and libheif (HEIC decode).
+# gen2brain/heic loads libheif at runtime via dlopen by the unversioned name
+# "libheif.so", but the runtime apk package ships only the versioned soname
+# (libheif.so.1), so symlink it. Without libheif present, HEIC uploads return a
+# clear error (the broken pure-Go WASM fallback is refused in code).
+RUN apk add --no-cache libstdc++ libwebp libheif ca-certificates && \
+    ln -sf "$(find /usr/lib -name 'libheif.so.*' | sort | head -n1)" /usr/lib/libheif.so
 
 COPY --from=builder /grbpwr-manager/bin/products-manager /usr/local/bin/products-manager
 

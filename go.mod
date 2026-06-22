@@ -7,6 +7,7 @@ require (
 	cloud.google.com/go/bigquery v1.74.0
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2
 	github.com/bbrks/go-blurhash v1.1.1
+	github.com/gen2brain/heic v0.5.0
 	github.com/go-chi/chi/v5 v5.0.4
 	github.com/go-chi/cors v1.2.2
 	github.com/go-chi/jwtauth/v5 v5.0.2
@@ -53,6 +54,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/frankban/quicktest v1.14.4 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
