@@ -1256,21 +1256,32 @@ func requiredDecimalFromPb(d *pb_decimal.Decimal, field string, maxFrac int, lim
 }
 
 // nullTimeFromPbTimestamp maps an optional timestamp to a nullable instant,
-// preserving the full time (the column is a TIMESTAMP, e.g. released_at).
+// preserving the full time (the column is a TIMESTAMP, e.g. released_at). The
+// grpc-gateway serialises an unset Go time.Time as "0001-01-01T00:00:00Z" — a
+// non-nil timestamp holding the zero instant — so that is treated as NULL too,
+// otherwise MySQL rejects it ("Incorrect date value: '0000-00-00'", err 1292).
 func nullTimeFromPbTimestamp(ts *timestamppb.Timestamp) sql.NullTime {
 	if ts == nil {
 		return sql.NullTime{}
 	}
-	return sql.NullTime{Time: ts.AsTime().UTC(), Valid: true}
+	t := ts.AsTime().UTC()
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
 }
 
 // nullDateFromPbTimestamp maps an optional timestamp to a nullable DATE value,
-// normalised to UTC midnight (the column is a DATE).
+// normalised to UTC midnight (the column is a DATE). Like nullTimeFromPbTimestamp,
+// the zero instant ("0001-01-01T00:00:00Z") is treated as NULL.
 func nullDateFromPbTimestamp(ts *timestamppb.Timestamp) sql.NullTime {
 	if ts == nil {
 		return sql.NullTime{}
 	}
 	t := ts.AsTime().UTC()
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
 	return sql.NullTime{Time: time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), Valid: true}
 }
 
