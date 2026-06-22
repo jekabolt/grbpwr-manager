@@ -582,6 +582,37 @@ func TestConvertTechCardMaterialsDepth(t *testing.T) {
 	}
 }
 
+// TestConvertTechCardZeroTimestampsAreNull guards the grpc-gateway behaviour
+// where an unset Go time.Time is serialised as "0001-01-01T00:00:00Z" — a
+// non-nil timestamp at the zero instant. These must map to NULL, not be passed
+// through, or MySQL rejects the DATE/TIMESTAMP ("Incorrect date value:
+// '0000-00-00'", err 1292) and the whole tech card insert fails.
+func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
+	zero := timestamppb.New(time.Time{})
+	in := &pb_common.TechCardInsert{
+		StyleNumber:  "ST-060",
+		Name:         "Hoodie",
+		RevisionDate: zero,
+		ReleasedAt:   zero,
+		ApprovedAt:   zero,
+		Revisions:    []*pb_common.TechCardRevision{{Version: "1", RevisionDate: zero}},
+		Colorways:    []*pb_common.TechCardColorway{{Name: "Ecru", LabDipSubmittedAt: zero, LabDipDecidedAt: zero}},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RevisionDate.Valid || got.ReleasedAt.Valid || got.ApprovedAt.Valid {
+		t.Errorf("header zero timestamps should be NULL: rev=%+v rel=%+v app=%+v", got.RevisionDate, got.ReleasedAt, got.ApprovedAt)
+	}
+	if got.Revisions[0].RevisionDate.Valid {
+		t.Errorf("revision zero date should be NULL: %+v", got.Revisions[0].RevisionDate)
+	}
+	if got.Colorways[0].LabDipSubmittedAt.Valid || got.Colorways[0].LabDipDecidedAt.Valid {
+		t.Errorf("colorway zero lab-dip dates should be NULL: %+v", got.Colorways[0])
+	}
+}
+
 func TestConvertTechCardSignoffs(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-050", Name: "Tee",
