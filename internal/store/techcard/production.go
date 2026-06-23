@@ -60,6 +60,10 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"attachment":       o.Attachment,
 			"time_norm":        o.TimeNorm,
 			"note":             o.Note,
+			"operation_type":   string(o.OperationType),
+			"zone":             string(o.Zone),
+			"bom_item_index":   o.BomItemIndex,
+			"callout_number":   o.CalloutNumber,
 			"display_order":    i,
 		})
 	}
@@ -254,12 +258,16 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		consByCard[consRows[i].TechCardID] = &c
 	}
 
+	// Operations are returned sorted ascending by operation_number (the addressable
+	// «оп. 10, 20, …»); unnumbered operations sort last, with display_order as a
+	// stable tiebreaker within each group.
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
 		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
-		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note
+		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note,
+		       operation_type, zone, bom_item_index, callout_number
 		FROM tech_card_operation
 		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+		ORDER BY tech_card_id, operation_number IS NULL, operation_number, display_order`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card operations: %w", err)
 	}

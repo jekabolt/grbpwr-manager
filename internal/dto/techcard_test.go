@@ -101,7 +101,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if def.ApprovalState != entity.TechCardApprovalDraft {
 		t.Errorf("approval_state default mismatch: %v", def.ApprovalState)
 	}
-	if def.MeasurementUnit != entity.TechCardUnitCm {
+	if def.MeasurementUnit != entity.TechCardUnitMm {
 		t.Errorf("measurement_unit default mismatch: %v", def.MeasurementUnit)
 	}
 	if def.BaseModelId.Valid || def.CategoryId.Valid || def.TargetCost.Valid {
@@ -511,6 +511,89 @@ func TestConvertTechCardOperationsAndIssues(t *testing.T) {
 	in.ApprovalState = pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED
 	if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 		t.Errorf("expected release to be blocked by an open high-severity issue")
+	}
+}
+
+func TestConvertTechCardOperationClassification(t *testing.T) {
+	i32 := func(v int32) *int32 { return &v }
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-031",
+		Name:        "Jacket",
+		Callouts: []*pb_common.TechCardCallout{
+			{Number: 1, Part: "hem"},
+			{Number: 2, Part: "side seam"},
+		},
+		BomItems: []*pb_common.TechCardBomItem{
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "thread"},
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM, Name: "binding"},
+		},
+		Operations: []*pb_common.TechCardOperation{
+			{
+				Node:          "bind hem",
+				OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH,
+				Zone:          pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER,
+				BomItemIndex:  i32(1),
+				CalloutNumber: 2,
+			},
+			// bom_item_index 0 must survive as a real reference (not be read as "unset").
+			{Node: "lay thread", OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH, BomItemIndex: i32(0)},
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.BomItems[1].Section != entity.BomSectionTrim {
+		t.Errorf("trim section mismatch: %v", got.BomItems[1].Section)
+	}
+	op0 := got.Operations[0]
+	if op0.OperationType != entity.OpTypeCoverstitch || op0.Zone != entity.ZoneOuter {
+		t.Errorf("operation type/zone mismatch: %+v", op0)
+	}
+	if !op0.BomItemIndex.Valid || op0.BomItemIndex.Int32 != 1 {
+		t.Errorf("bom_item_index mismatch: %+v", op0.BomItemIndex)
+	}
+	if !op0.CalloutNumber.Valid || op0.CalloutNumber.Int32 != 2 {
+		t.Errorf("callout_number mismatch: %+v", op0.CalloutNumber)
+	}
+	op1 := got.Operations[1]
+	if !op1.BomItemIndex.Valid || op1.BomItemIndex.Int32 != 0 {
+		t.Errorf("bom_item_index 0 should be present, got: %+v", op1.BomItemIndex)
+	}
+	if op1.Zone != entity.ZoneUnknown || op1.OperationType != entity.OpTypeLockstitch {
+		t.Errorf("op1 type/zone defaults mismatch: %+v", op1)
+	}
+
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{Id: 1, TechCardInsert: *got, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	pop0 := pb.TechCard.Operations[0]
+	if pop0.OperationType != pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH ||
+		pop0.Zone != pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER {
+		t.Errorf("pb op type/zone mismatch: %+v", pop0)
+	}
+	if pop0.BomItemIndex == nil || *pop0.BomItemIndex != 1 || pop0.CalloutNumber != 2 {
+		t.Errorf("pb op refs mismatch: %+v", pop0)
+	}
+	if pop1 := pb.TechCard.Operations[1]; pop1.BomItemIndex == nil || *pop1.BomItemIndex != 0 {
+		t.Errorf("pb op1 bom_item_index 0 should round-trip as present: %+v", pop1.BomItemIndex)
+	}
+	if pb.TechCard.BomItems[1].Section != pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM {
+		t.Errorf("pb trim section mismatch: %v", pb.TechCard.BomItems[1].Section)
+	}
+
+	// bom_item_index out of range is rejected.
+	bad := &pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
+		BomItems:   []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "t"}},
+		Operations: []*pb_common.TechCardOperation{{Node: "n", BomItemIndex: i32(3)}}}
+	if _, err := ConvertPbTechCardInsertToEntity(bad); err == nil {
+		t.Errorf("expected error for out-of-range bom_item_index")
+	}
+
+	// callout_number with no matching callout is rejected.
+	bad2 := &pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
+		Callouts:   []*pb_common.TechCardCallout{{Number: 1}},
+		Operations: []*pb_common.TechCardOperation{{Node: "n", CalloutNumber: 9}}}
+	if _, err := ConvertPbTechCardInsertToEntity(bad2); err == nil {
+		t.Errorf("expected error for callout_number with no matching callout")
 	}
 }
 

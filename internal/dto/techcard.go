@@ -117,6 +117,7 @@ var techCardBomSectionPbToEntity = map[pb_common.TechCardBomSection]entity.TechC
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD:      entity.BomSectionThread,
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL:       entity.BomSectionLabel,
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING:   entity.BomSectionPackaging,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM:        entity.BomSectionTrim,
 }
 
 var techCardBomSectionEntityToPb = func() map[entity.TechCardBomSection]pb_common.TechCardBomSection {
@@ -197,7 +198,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		approvalState = a
 	}
 
-	unit := entity.TechCardUnitCm
+	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
+	// stopped sending cm, though the enum keeps cm for back-compat reads).
+	unit := entity.TechCardUnitMm
 	if pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
 		u, ok := techCardUnitPbToEntity[pb.MeasurementUnit]
 		if !ok {
@@ -336,7 +339,14 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	operations, err := parseTechCardOperations(pb.Operations)
+	// Operations may reference a BOM material by index and a sketch callout by
+	// number; both are validated against the same submitted payload (full-replace
+	// has no stable ids to FK against on write).
+	calloutNumbers := make(map[int]bool, len(callouts))
+	for _, c := range callouts {
+		calloutNumbers[c.Number] = true
+	}
+	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems))
 	if err != nil {
 		return nil, err
 	}
@@ -601,7 +611,7 @@ func pbTechCardMeasurementUnit(u entity.TechCardMeasurementUnit) pb_common.TechC
 	if v, ok := techCardUnitEntityToPb[u]; ok {
 		return v
 	}
-	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_CM
+	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM
 }
 
 func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {

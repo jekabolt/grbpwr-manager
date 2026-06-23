@@ -169,6 +169,7 @@ const (
 	BomSectionThread      TechCardBomSection = "thread"
 	BomSectionLabel       TechCardBomSection = "label"
 	BomSectionPackaging   TechCardBomSection = "packaging"
+	BomSectionTrim        TechCardBomSection = "trim" // soft trims (бейка / тесьма / резинка / кант / шнур / лента)
 )
 
 // ValidTechCardBomSections is the set of accepted BOM sections.
@@ -181,6 +182,7 @@ var ValidTechCardBomSections = map[TechCardBomSection]bool{
 	BomSectionThread:      true,
 	BomSectionLabel:       true,
 	BomSectionPackaging:   true,
+	BomSectionTrim:        true,
 }
 
 // IsValidTechCardBomSection reports whether s is an accepted BOM section.
@@ -383,6 +385,55 @@ type TechCardConstruction struct {
 	LabourRateCurrency sql.NullString      `db:"labour_rate_currency"`
 }
 
+// TechCardOperationType is the machine / stitch class of an operation. Mirrors the
+// common.TechCardOperationType proto enum; stored as a string in
+// tech_card_operation.operation_type ("unknown" when unset).
+type TechCardOperationType string
+
+const (
+	OpTypeUnknown      TechCardOperationType = "unknown"
+	OpTypeLockstitch   TechCardOperationType = "lockstitch"
+	OpTypeDoubleNeedle TechCardOperationType = "double_needle"
+	OpTypeOverlock     TechCardOperationType = "overlock"
+	OpTypeCoverstitch  TechCardOperationType = "coverstitch"
+	OpTypeChainstitch  TechCardOperationType = "chainstitch"
+	OpTypeBlindhem     TechCardOperationType = "blindhem"
+	OpTypeBartack      TechCardOperationType = "bartack"
+	OpTypeButtonhole   TechCardOperationType = "buttonhole"
+	OpTypeButtonAttach TechCardOperationType = "button_attach"
+	OpTypeFusing       TechCardOperationType = "fusing"
+	OpTypeHandwork     TechCardOperationType = "handwork"
+	OpTypeOther        TechCardOperationType = "other"
+)
+
+// ValidTechCardOperationTypes is the set of accepted operation types (excluding the
+// "unknown" default, which is applied implicitly when unset).
+var ValidTechCardOperationTypes = map[TechCardOperationType]bool{
+	OpTypeLockstitch: true, OpTypeDoubleNeedle: true, OpTypeOverlock: true,
+	OpTypeCoverstitch: true, OpTypeChainstitch: true, OpTypeBlindhem: true,
+	OpTypeBartack: true, OpTypeButtonhole: true, OpTypeButtonAttach: true,
+	OpTypeFusing: true, OpTypeHandwork: true, OpTypeOther: true,
+}
+
+// TechCardConstructionZone is the display-grouping band of an operation. Mirrors the
+// common.TechCardConstructionZone proto enum; stored as a string in
+// tech_card_operation.zone ("unknown" when unset).
+type TechCardConstructionZone string
+
+const (
+	ZoneUnknown     TechCardConstructionZone = "unknown"
+	ZoneOuter       TechCardConstructionZone = "outer"
+	ZoneLining      TechCardConstructionZone = "lining"
+	ZoneInterlining TechCardConstructionZone = "interlining"
+	ZoneOther       TechCardConstructionZone = "other"
+)
+
+// ValidTechCardConstructionZones is the set of accepted zones (excluding the
+// "unknown" default, which is applied implicitly when unset).
+var ValidTechCardConstructionZones = map[TechCardConstructionZone]bool{
+	ZoneOuter: true, ZoneLining: true, ZoneInterlining: true, ZoneOther: true,
+}
+
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
 type TechCardOperation struct {
 	OperationNumber sql.NullInt32       `db:"operation_number"`
@@ -398,6 +449,14 @@ type TechCardOperation struct {
 	Attachment      sql.NullString      `db:"attachment"`
 	TimeNorm        decimal.NullDecimal `db:"time_norm"`
 	Note            sql.NullString      `db:"note"`
+	// classification + links (Phase 3.5d)
+	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset
+	Zone          TechCardConstructionZone `db:"zone"`           // display-grouping band; "unknown" = unset
+	// BomItemIndex is the 0-based index into the submitted bom_items of the material
+	// this operation applies; NULL = no reference (index 0 is a valid reference).
+	BomItemIndex sql.NullInt32 `db:"bom_item_index"`
+	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
+	CalloutNumber sql.NullInt32 `db:"callout_number"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.

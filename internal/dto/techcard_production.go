@@ -91,7 +91,47 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 	}, nil
 }
 
-func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechCardOperation, error) {
+var techCardOperationTypePbToEntity = map[pb_common.TechCardOperationType]entity.TechCardOperationType{
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH:    entity.OpTypeLockstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE: entity.OpTypeDoubleNeedle,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OVERLOCK:      entity.OpTypeOverlock,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH:   entity.OpTypeCoverstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_CHAINSTITCH:   entity.OpTypeChainstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BLINDHEM:      entity.OpTypeBlindhem,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BARTACK:       entity.OpTypeBartack,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTONHOLE:    entity.OpTypeButtonhole,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH: entity.OpTypeButtonAttach,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING:        entity.OpTypeFusing,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_HANDWORK:      entity.OpTypeHandwork,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OTHER:         entity.OpTypeOther,
+}
+var techCardOperationTypeEntityToPb = func() map[entity.TechCardOperationType]pb_common.TechCardOperationType {
+	m := make(map[entity.TechCardOperationType]pb_common.TechCardOperationType, len(techCardOperationTypePbToEntity))
+	for k, v := range techCardOperationTypePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardConstructionZonePbToEntity = map[pb_common.TechCardConstructionZone]entity.TechCardConstructionZone{
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER:       entity.ZoneOuter,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_LINING:      entity.ZoneLining,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_INTERLINING: entity.ZoneInterlining,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OTHER:       entity.ZoneOther,
+}
+var techCardConstructionZoneEntityToPb = func() map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone {
+	m := make(map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone, len(techCardConstructionZonePbToEntity))
+	for k, v := range techCardConstructionZonePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// parseTechCardOperations validates and converts operations. calloutNumbers is the
+// set of TechCardCallout.number values in the same payload (so an operation's
+// callout_number can be range-checked) and bomItemCount is the number of submitted
+// bom_items (so an operation's bom_item_index can be range-checked).
+func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int) ([]entity.TechCardOperation, error) {
 	out := make([]entity.TechCardOperation, 0, len(pbs))
 	for _, o := range pbs {
 		if o.Node == "" {
@@ -106,6 +146,38 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 		}
 		if o.OperationNumber < 0 {
 			return nil, fmt.Errorf("operation operation_number must not be negative")
+		}
+		opType := entity.OpTypeUnknown
+		if o.OperationType != pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN {
+			t, ok := techCardOperationTypePbToEntity[o.OperationType]
+			if !ok {
+				return nil, fmt.Errorf("unknown operation operation_type: %v", o.OperationType)
+			}
+			opType = t
+		}
+		zone := entity.ZoneUnknown
+		if o.Zone != pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_UNKNOWN {
+			z, ok := techCardConstructionZonePbToEntity[o.Zone]
+			if !ok {
+				return nil, fmt.Errorf("unknown operation zone: %v", o.Zone)
+			}
+			zone = z
+		}
+		// bom_item_index uses proto3 explicit presence: a nil pointer means "no
+		// material" (so index 0 stays a valid reference), a set value must be in range.
+		var bomItemIndex sql.NullInt32
+		if o.BomItemIndex != nil {
+			idx := *o.BomItemIndex
+			if idx < 0 || int(idx) >= bomItemCount {
+				return nil, fmt.Errorf("operation bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
+			}
+			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		}
+		if o.CalloutNumber < 0 {
+			return nil, fmt.Errorf("operation callout_number must not be negative")
+		}
+		if o.CalloutNumber > 0 && !calloutNumbers[int(o.CalloutNumber)] {
+			return nil, fmt.Errorf("operation callout_number %d does not match any callout", o.CalloutNumber)
 		}
 		stitches, err := nullDecimalFromPb(o.StitchesPerCm)
 		if err != nil {
@@ -135,6 +207,10 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			Attachment:      nullStringFromPb(o.Attachment),
 			TimeNorm:        timeNorm,
 			Note:            nullStringFromPb(o.Note),
+			OperationType:   opType,
+			Zone:            zone,
+			BomItemIndex:    bomItemIndex,
+			CalloutNumber:   nullInt32FromPb(o.CalloutNumber),
 		})
 	}
 	return out, nil
@@ -312,7 +388,13 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 
 func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCardOperation {
 	out := make([]*pb_common.TechCardOperation, 0, len(ops))
-	for _, o := range ops {
+	for i := range ops {
+		o := ops[i]
+		var bomItemIndex *int32
+		if o.BomItemIndex.Valid {
+			v := o.BomItemIndex.Int32
+			bomItemIndex = &v
+		}
 		out = append(out, &pb_common.TechCardOperation{
 			OperationNumber: pbInt32FromNull(o.OperationNumber),
 			Node:            o.Node,
@@ -327,6 +409,10 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Attachment:      pbStringFromNull(o.Attachment),
 			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
 			Note:            pbStringFromNull(o.Note),
+			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
+			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
+			BomItemIndex:    bomItemIndex,
+			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
 		})
 	}
 	return out

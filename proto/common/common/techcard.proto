@@ -35,8 +35,8 @@ enum TechCardApprovalState {
 // TechCardMeasurementUnit is the unit for the card's geometry (callout dimensions
 // and the POM chart). Metric only — the brand works in cm and mm, never inches.
 enum TechCardMeasurementUnit {
-  TECH_CARD_MEASUREMENT_UNIT_UNKNOWN = 0; // defaults to CM on write
-  TECH_CARD_MEASUREMENT_UNIT_CM = 1;
+  TECH_CARD_MEASUREMENT_UNIT_UNKNOWN = 0; // defaults to MM on write (the brand works in mm)
+  TECH_CARD_MEASUREMENT_UNIT_CM = 1; // back-compat; clients should stop sending CM
   TECH_CARD_MEASUREMENT_UNIT_MM = 2;
 }
 
@@ -99,6 +99,7 @@ enum TechCardBomSection {
   TECH_CARD_BOM_SECTION_THREAD = 6; // нитки
   TECH_CARD_BOM_SECTION_LABEL = 7; // этикетки и маркировка
   TECH_CARD_BOM_SECTION_PACKAGING = 8; // упаковка
+  TECH_CARD_BOM_SECTION_TRIM = 9; // soft trims: бейка / тесьма / резинка / кант / шнур / лента (not hardware fittings)
 }
 
 // TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.
@@ -250,6 +251,35 @@ message TechCardConstruction {
   string labour_rate_currency = 10; // ISO 4217 for labour_rate
 }
 
+// TechCardOperationType classifies an operation by its machine / stitch class
+// (replaces the coarse seaming/overlock/decorative split with the real sewing
+// taxonomy the factory works in).
+enum TechCardOperationType {
+  TECH_CARD_OPERATION_TYPE_UNKNOWN = 0;
+  TECH_CARD_OPERATION_TYPE_LOCKSTITCH = 1; // челночный (301)
+  TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE = 2; // двухигольная
+  TECH_CARD_OPERATION_TYPE_OVERLOCK = 3; // оверлок (504/516)
+  TECH_CARD_OPERATION_TYPE_COVERSTITCH = 4; // плоскошовная (распошивалка)
+  TECH_CARD_OPERATION_TYPE_CHAINSTITCH = 5; // цепной стежок (401)
+  TECH_CARD_OPERATION_TYPE_BLINDHEM = 6; // потайная подшивка
+  TECH_CARD_OPERATION_TYPE_BARTACK = 7; // закрепка
+  TECH_CARD_OPERATION_TYPE_BUTTONHOLE = 8; // петля
+  TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH = 9; // пришивание пуговиц
+  TECH_CARD_OPERATION_TYPE_FUSING = 10; // дублирование / фиксация прокладки
+  TECH_CARD_OPERATION_TYPE_HANDWORK = 11; // ручная операция
+  TECH_CARD_OPERATION_TYPE_OTHER = 12;
+}
+
+// TechCardConstructionZone groups an operation for display only. Construction stays
+// a single ordered list; the zone is just a visual band (outer shell, lining, …).
+enum TechCardConstructionZone {
+  TECH_CARD_CONSTRUCTION_ZONE_UNKNOWN = 0;
+  TECH_CARD_CONSTRUCTION_ZONE_OUTER = 1; // верх / основная ткань
+  TECH_CARD_CONSTRUCTION_ZONE_LINING = 2; // подклад
+  TECH_CARD_CONSTRUCTION_ZONE_INTERLINING = 3; // приклад / дублерин
+  TECH_CARD_CONSTRUCTION_ZONE_OTHER = 4;
+}
+
 // TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
 message TechCardOperation {
   string node = 1; // узел / операция (required)
@@ -265,6 +295,15 @@ message TechCardOperation {
   string needle = 11; // needle size / type
   google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
   string attachment = 13; // folder / binder / guide / hemmer / presser-foot (приспособление)
+  TechCardOperationType operation_type = 14; // machine / stitch class; UNKNOWN = unset
+  // 0-based index into TechCardInsert.bom_items of the material this operation
+  // applies (thread / binding (бейка) / interlining / zipper). Uses proto3 explicit
+  // presence so index 0 (the first BOM line) is distinguishable from "no material":
+  // unset = no reference. Mirrors TechCardBomColorwayColor.colorway_index, which —
+  // being always present — needs no presence flag.
+  optional int32 bom_item_index = 15;
+  int32 callout_number = 16; // links to a TechCardCallout.number (assembly point on the sketch); 0 = none
+  TechCardConstructionZone zone = 17; // display-grouping band; UNKNOWN = unset
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -397,7 +436,7 @@ message TechCardInsert {
   TechCardApprovalState approval_state = 35; // UNKNOWN defaults to DRAFT
   string approved_by = 36; // who approved the current revision
   google.protobuf.Timestamp released_at = 37; // when released to manufacture
-  TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to CM
+  TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to MM
   string version = 10;
   google.protobuf.Timestamp revision_date = 11;
   int32 base_model_id = 12; // FK model(id); 0 = unset
