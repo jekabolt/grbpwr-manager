@@ -2,6 +2,7 @@ package dto
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -96,6 +97,35 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		mediaIds = append(mediaIds, int(mid))
 	}
 
+	patterns := make([]entity.FittingPattern, 0, len(pb.Patterns))
+	for _, p := range pb.Patterns {
+		if p.SizeId < 0 {
+			return nil, fmt.Errorf("fitting pattern size_id must not be negative")
+		}
+		url := strings.TrimSpace(p.Url)
+		if url == "" {
+			return nil, fmt.Errorf("fitting pattern url is required")
+		}
+		if len(url) > maxVarchar1024 {
+			return nil, fmt.Errorf("fitting pattern url must be at most %d characters", maxVarchar1024)
+		}
+		if !isHTTPURL(url) {
+			return nil, fmt.Errorf("fitting pattern url must be an http(s) URL")
+		}
+		if len(p.Filename) > maxVarchar255 {
+			return nil, fmt.Errorf("fitting pattern filename must be at most %d characters", maxVarchar255)
+		}
+		if p.SizeBytes < 0 {
+			return nil, fmt.Errorf("fitting pattern size_bytes must not be negative")
+		}
+		patterns = append(patterns, entity.FittingPattern{
+			SizeId:    nullInt32FromPb(p.SizeId),
+			URL:       url,
+			Filename:  nullStringFromPb(p.Filename),
+			SizeBytes: nullInt64FromPb(p.SizeBytes),
+		})
+	}
+
 	// Normalize to a UTC calendar date so storage into the DATE column is
 	// deterministic regardless of the incoming timestamp's time-of-day.
 	// (Clients should send the fitting date at UTC midnight.)
@@ -113,6 +143,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		RecordedBy:  nullStringFromPb(pb.RecordedBy),
 		Sizes:       sizes,
 		MediaIds:    mediaIds,
+		Patterns:    patterns,
 	}, nil
 }
 
@@ -151,9 +182,24 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 			RecordedBy:  pbStringFromNull(f.RecordedBy),
 			Sizes:       sizes,
 			MediaIds:    mediaIds,
+			Patterns:    fittingPatternsToPb(f.Patterns),
 		},
 		Media:     media,
 		CreatedAt: timestamppb.New(f.CreatedAt),
 		UpdatedAt: timestamppb.New(f.UpdatedAt),
 	}
+}
+
+// fittingPatternsToPb emits a fitting's PDF выкройка iterations for display.
+func fittingPatternsToPb(ps []entity.FittingPattern) []*pb_common.FittingPattern {
+	out := make([]*pb_common.FittingPattern, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, &pb_common.FittingPattern{
+			SizeId:    pbInt32FromNull(p.SizeId),
+			Url:       p.URL,
+			Filename:  pbStringFromNull(p.Filename),
+			SizeBytes: p.SizeBytes.Int64,
+		})
+	}
+	return out
 }

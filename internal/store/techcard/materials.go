@@ -91,24 +91,37 @@ func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card bom item: %w", err)
 		}
-		if len(b.ColorwayColors) == 0 {
-			continue
-		}
-		rows := make([]map[string]any, 0, len(b.ColorwayColors))
-		for j, cc := range b.ColorwayColors {
-			if cc.ColorwayIndex < 0 || cc.ColorwayIndex >= len(colorwayIds) {
-				return fmt.Errorf("bom colorway_index %d out of range", cc.ColorwayIndex)
+		if len(b.ColorwayColors) > 0 {
+			rows := make([]map[string]any, 0, len(b.ColorwayColors))
+			for j, cc := range b.ColorwayColors {
+				if cc.ColorwayIndex < 0 || cc.ColorwayIndex >= len(colorwayIds) {
+					return fmt.Errorf("bom colorway_index %d out of range", cc.ColorwayIndex)
+				}
+				rows = append(rows, map[string]any{
+					"bom_item_id":   bomID,
+					"colorway_id":   colorwayIds[cc.ColorwayIndex],
+					"color":         cc.Color,
+					"pantone":       cc.Pantone,
+					"display_order": j,
+				})
 			}
-			rows = append(rows, map[string]any{
-				"bom_item_id":   bomID,
-				"colorway_id":   colorwayIds[cc.ColorwayIndex],
-				"color":         cc.Color,
-				"pantone":       cc.Pantone,
-				"display_order": j,
-			})
+			if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_colorway", rows); err != nil {
+				return fmt.Errorf("failed to insert tech card bom colorway: %w", err)
+			}
 		}
-		if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_colorway", rows); err != nil {
-			return fmt.Errorf("failed to insert tech card bom colorway: %w", err)
+		if len(b.SizeConsumptions) > 0 {
+			scRows := make([]map[string]any, 0, len(b.SizeConsumptions))
+			for j, sc := range b.SizeConsumptions {
+				scRows = append(scRows, map[string]any{
+					"bom_item_id":   bomID,
+					"size_id":       sc.SizeId,
+					"consumption":   sc.Consumption,
+					"display_order": j,
+				})
+			}
+			if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_consumption", scRows); err != nil {
+				return fmt.Errorf("failed to insert tech card bom consumption: %w", err)
+			}
 		}
 	}
 	return nil
@@ -187,6 +200,11 @@ type techCardBomColorwayRow struct {
 	ColorwayID int            `db:"colorway_id"`
 	Color      sql.NullString `db:"color"`
 	Pantone    sql.NullString `db:"pantone"`
+}
+
+type techCardBomConsumptionRow struct {
+	BomItemID int `db:"bom_item_id"`
+	entity.TechCardBomSizeConsumption
 }
 
 type techCardPomPointRow struct {
@@ -286,6 +304,21 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 				Color:         c.Color,
 				Pantone:       c.Pantone,
 			})
+		}
+
+		// Per-size consumption matrix, attached to each BOM line by id.
+		consRows, err := storeutil.QueryListNamed[techCardBomConsumptionRow](ctx, s.DB, `
+			SELECT bom_item_id, size_id, consumption
+			FROM tech_card_bom_consumption
+			WHERE bom_item_id IN (:ids)
+			ORDER BY bom_item_id, display_order`, map[string]any{"ids": bomItemIDs})
+		if err != nil {
+			return fmt.Errorf("can't load tech card bom consumptions: %w", err)
+		}
+		for _, c := range consRows {
+			if item, ok := bomItemByID[c.BomItemID]; ok {
+				item.SizeConsumptions = append(item.SizeConsumptions, c.TechCardBomSizeConsumption)
+			}
 		}
 	}
 
