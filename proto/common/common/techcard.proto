@@ -129,6 +129,21 @@ message TechCardColorway {
   google.protobuf.Timestamp lab_dip_decided_at = 12;
   string lab_dip_decided_by = 13;
   string lab_dip_reject_reason = 14;
+  // OUTPUT-ONLY (read paths only): the BOM materials used in this colourway, with the
+  // colour each takes here. Built by inverting the BOM colour matrix
+  // (tech_card_bom_colorway) so the frontend can show «which fabrics in which colourway»
+  // without re-joining. Ignored on write — the source of truth is bom_items[].colorway_colors.
+  repeated TechCardColorwayMaterial materials = 15;
+}
+
+// TechCardColorwayMaterial is one entry of a colourway's resolved material list: a BOM
+// material used in the colourway and the colour it takes there. OUTPUT-ONLY (derived).
+message TechCardColorwayMaterial {
+  int32 bom_item_index = 1; // 0-based index into TechCardInsert.bom_items
+  string material_name = 2; // BOM line name
+  TechCardBomSection section = 3; // material family
+  string color = 4; // colour of this material in this colourway
+  string pantone = 5; // Pantone / code for this colourway
 }
 
 // TechCardBomColorwayColor is one «Колористика» matrix cell: the colour of a BOM
@@ -167,6 +182,23 @@ message TechCardBomItem {
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
   TechCardFabricDirection fabric_direction = 19; // nap / layout
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into line_total
+  // per-size consumption (Sheet «Спецификация» grading): the measured material rate for
+  // each size, since different sizes consume different amounts of fabric. When set, the
+  // size-run cost folds per-size consumption against the per-size order quantities
+  // (TechCardInsert.size_quantities); `consumption` above is the fallback single rate used
+  // only when this is empty. Each size_id must be one of TechCardInsert.size_ids.
+  repeated TechCardBomSizeConsumption size_consumptions = 21;
+  // OUTPUT-ONLY: total material cost over the whole size run when size_consumptions is set —
+  // Σ(consumption_size × order_qty_size) × unit_price, gross of wastage_percent. Empty when
+  // no per-size consumption is given (line_total then carries the cost).
+  google.type.Decimal size_run_total = 22;
+}
+
+// TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM
+// material — different sizes consume different amounts of fabric.
+message TechCardBomSizeConsumption {
+  int32 size_id = 1; // FK size(id); must be one of TechCardInsert.size_ids
+  google.type.Decimal consumption = 2; // per-garment rate at this size, in the line's `unit`
 }
 
 // TechCardFabricDirection is the cutting layout a fabric requires.
@@ -181,6 +213,17 @@ enum TechCardFabricDirection {
 message TechCardSizeQuantity {
   int32 size_id = 1; // FK size(id); must be one of size_ids
   int32 order_qty = 2;
+}
+
+// TechCardSizePattern is a downloadable PDF выкройка (cut pattern) for one size of a
+// tech card — the FINAL pattern for that size. A size can carry many patterns (pieces
+// split across sheets). The PDF is uploaded via Admin.UploadPattern, which returns the
+// url stored here; the binary lives in object storage, not the media library.
+message TechCardSizePattern {
+  int32 size_id = 1; // FK size(id); must be one of TechCardInsert.size_ids
+  string url = 2; // CDN url of the uploaded PDF (required)
+  string filename = 3; // original filename, for display / download
+  int64 size_bytes = 4; // file size in bytes (0 = unknown)
 }
 
 // TechCardPomGrade is the graded value of a POM point for one size.
@@ -381,8 +424,12 @@ message TechCardCosting {
   string notes = 11;
 
   // OUTPUT-ONLY computed rollup (ignored on write; no currency conversion).
-  repeated TechCardCostLine materials_total = 12; // Σ BOM line_total grouped by BOM currency
-  google.type.Decimal materials_cost = 13; // Σ BOM line_total in `currency` (and currency-less lines)
+  // OUTPUT-ONLY. A BOM line with per-size consumption (size_consumptions) contributes its
+  // whole-run size_run_total (order-scale); a line without contributes its per-garment
+  // line_total. A card that mixes both mixes scales — so when size_consumptions is used,
+  // read materials_total/materials_cost as the size-run material spend, not per-garment.
+  repeated TechCardCostLine materials_total = 12; // Σ BOM line cost grouped by BOM currency
+  google.type.Decimal materials_cost = 13; // Σ BOM line cost in `currency` (and currency-less lines)
   google.type.Decimal total_cost = 14; // (materials_cost + make + hardware+packaging+logistics+overhead) × (1 + defect/100); make = cmt_cost, or computed labour_cost when cmt_cost is unset and same currency
   bool has_unconverted_currencies = 15; // OUTPUT-ONLY: a BOM line (or computed labour) is in a currency other than `currency`, so it is excluded from total_cost
   google.type.Decimal total_sam = 16; // OUTPUT-ONLY: Σ of operation time_norm (minutes)
@@ -485,9 +532,10 @@ message TechCardInsert {
   repeated TechCardIssue issues = 50; // maker-flagged construction issues
   repeated TechCardSizeQuantity size_quantities = 51; // per-size order quantity (size run)
   repeated TechCardSignoff signoffs = 52; // per-section sign-off
+  repeated TechCardSizePattern patterns = 53; // per-size PDF выкройки (cut patterns)
 
   // Reserved so a future field can never collide with a removed one.
-  reserved 39, 53 to 99;
+  reserved 39, 54 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.

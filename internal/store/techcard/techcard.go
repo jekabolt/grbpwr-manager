@@ -205,6 +205,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_bom_item", "tech_card_colorway", "tech_card_pom_point",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
+			"tech_card_size_pattern",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -347,7 +348,31 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardIssues(ctx, db, id, tc.Issues); err != nil {
 		return err
 	}
-	return insertTechCardSignoffs(ctx, db, id, tc.Signoffs)
+	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
+		return err
+	}
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns)
+}
+
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(patterns))
+	for i, p := range patterns {
+		rows = append(rows, map[string]any{
+			"tech_card_id":  id,
+			"size_id":       p.SizeId,
+			"url":           p.URL,
+			"filename":      p.Filename,
+			"size_bytes":    p.SizeBytes,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_size_pattern", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card patterns: %w", err)
+	}
+	return nil
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int, quantities []entity.TechCardSizeQuantity) error {

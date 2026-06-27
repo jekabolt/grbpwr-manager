@@ -267,6 +267,16 @@ type TechCardBomItem struct {
 	// ColorwayColors are the per-colourway colours (in-memory; persisted to
 	// tech_card_bom_colorway).
 	ColorwayColors []TechCardBomColorwayColor `db:"-"`
+	// SizeConsumptions is the per-size material rate (in-memory; persisted to
+	// tech_card_bom_consumption). When non-empty it grades fabric usage per size.
+	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
+}
+
+// TechCardBomSizeConsumption is the per-size consumption (норма расхода) of a BOM
+// material — different sizes consume different amounts of fabric.
+type TechCardBomSizeConsumption struct {
+	SizeId      int             `db:"size_id"`
+	Consumption decimal.Decimal `db:"consumption"`
 }
 
 // TechCardFabricDirection enumerates the cutting layout a fabric requires.
@@ -303,10 +313,49 @@ func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
 	return decimal.NullDecimal{Decimal: total, Valid: true}
 }
 
+// SizeRunTotal returns the total material cost over the whole size run when this line has
+// per-size consumption: Σ(consumption_size × order_qty_size) × unit_price, grossed up by
+// wastage_percent. orderQtyBySize maps size_id → order quantity (a size with no order
+// quantity contributes nothing). It returns an INVALID NullDecimal when there is no
+// per-size consumption, no unit_price, or no order quantities at all — so the costing
+// rollup can fall back to the per-garment LineTotal (the user's "if per-size empty → old
+// formula" rule, extended to "no quantities yet → old formula"). NOTE: a per-size line's
+// run total is order-scale, whereas LineTotal is per-garment; a costing that mixes both
+// (some lines per-size, some not) mixes scales — kept per-line by explicit choice.
+func (b *TechCardBomItem) SizeRunTotal(orderQtyBySize map[int]int) decimal.NullDecimal {
+	if len(b.SizeConsumptions) == 0 || !b.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	totalQty := decimal.Zero
+	for _, sc := range b.SizeConsumptions {
+		qty, ok := orderQtyBySize[sc.SizeId]
+		if !ok || qty <= 0 {
+			continue
+		}
+		totalQty = totalQty.Add(sc.Consumption.Mul(decimal.NewFromInt(int64(qty))))
+	}
+	if totalQty.IsZero() {
+		return decimal.NullDecimal{}
+	}
+	total := totalQty.Mul(b.UnitPrice.Decimal)
+	if b.WastagePercent.Valid {
+		total = total.Mul(decimal.NewFromInt(1).Add(b.WastagePercent.Decimal.Div(decimal.NewFromInt(100))))
+	}
+	return decimal.NullDecimal{Decimal: total, Valid: true}
+}
+
 // TechCardSizeQuantity is the production order quantity for a size (size run).
 type TechCardSizeQuantity struct {
 	SizeId   int `db:"size_id"`
 	OrderQty int `db:"order_qty"`
+}
+
+// TechCardSizePattern is a final PDF cut pattern (выкройка) for one size of a tech card.
+type TechCardSizePattern struct {
+	SizeId    int            `db:"size_id"`
+	URL       string         `db:"url"`
+	Filename  sql.NullString `db:"filename"`
+	SizeBytes sql.NullInt64  `db:"size_bytes"`
 }
 
 // TechCardPomGrade is the graded value of a POM point for a size.
@@ -633,6 +682,7 @@ type TechCardInsert struct {
 	Issues         []TechCardIssue        `db:"-"`
 	SizeQuantities []TechCardSizeQuantity `db:"-"`
 	Signoffs       []TechCardSignoff      `db:"-"`
+	Patterns       []TechCardSizePattern  `db:"-"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

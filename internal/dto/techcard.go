@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -16,9 +17,10 @@ import (
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
 // over-length input fails as InvalidArgument rather than a MySQL 1406 Internal error.
 const (
-	maxVarchar32 = 32
-	maxVarchar64 = 64
-	maxCurrency  = 3
+	maxVarchar32   = 32
+	maxVarchar64   = 64
+	maxVarchar1024 = 1024
+	maxCurrency    = 3
 
 	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
 	// as InvalidArgument, not a MySQL out-of-range Internal error.
@@ -325,7 +327,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	bomItems, err := parseTechCardBomItems(pb.BomItems, len(colorways))
+	bomItems, err := parseTechCardBomItems(pb.BomItems, len(colorways), sizeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -371,6 +373,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 	signoffs, err := parseTechCardSignoffs(pb.Signoffs)
+	if err != nil {
+		return nil, err
+	}
+	patterns, err := parseTechCardPatterns(pb.Patterns, sizeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +449,43 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Issues:            issues,
 		SizeQuantities:    sizeQuantities,
 		Signoffs:          signoffs,
+		Patterns:          patterns,
 	}, nil
+}
+
+// parseTechCardPatterns parses the per-size PDF выкройки, validating each size is in the
+// card's size range, the url is present, and the filename is not over-long.
+func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) ([]entity.TechCardSizePattern, error) {
+	out := make([]entity.TechCardSizePattern, 0, len(pbs))
+	for _, p := range pbs {
+		sid := int(p.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids", p.SizeId)
+		}
+		url := strings.TrimSpace(p.Url)
+		if url == "" {
+			return nil, fmt.Errorf("pattern url is required")
+		}
+		if len(url) > maxVarchar1024 {
+			return nil, fmt.Errorf("pattern url must be at most %d characters", maxVarchar1024)
+		}
+		if !isHTTPURL(url) {
+			return nil, fmt.Errorf("pattern url must be an http(s) URL")
+		}
+		if len(p.Filename) > maxVarchar255 {
+			return nil, fmt.Errorf("pattern filename must be at most %d characters", maxVarchar255)
+		}
+		if p.SizeBytes < 0 {
+			return nil, fmt.Errorf("pattern size_bytes must not be negative")
+		}
+		out = append(out, entity.TechCardSizePattern{
+			SizeId:    sid,
+			URL:       url,
+			Filename:  nullStringFromPb(p.Filename),
+			SizeBytes: nullInt64FromPb(p.SizeBytes),
+		})
+	}
+	return out, nil
 }
 
 // ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard.
@@ -496,6 +538,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 	sizeIds := intsToInt32(tc.SizeIds)
 	productIds := intsToInt32(tc.ProductIds)
 
+	// order quantity per size, used to compute each BOM line's size-run material cost.
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+	}
+
 	return &pb_common.TechCard{
 		Id:          int32(tc.Id),
 		LockVersion: int32(tc.LockVersion),
@@ -542,8 +590,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Media:             media,
 			Callouts:          callouts,
 			Revisions:         revisions,
-			BomItems:          techCardBomItemsToPb(tc.BomItems),
-			Colorways:         techCardColorwaysToPb(tc.Colorways),
+			BomItems:          techCardBomItemsToPb(tc.BomItems, orderQtyBySize),
+			Colorways:         techCardColorwaysToPb(tc.Colorways, tc.BomItems),
 			PomPoints:         techCardPomPointsToPb(tc.PomPoints),
 			Construction:      techCardConstructionToPb(tc.Construction),
 			Operations:        techCardOperationsToPb(tc.Operations),
@@ -553,9 +601,24 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Issues:            techCardIssuesToPb(tc.Issues),
 			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
 			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
+			Patterns:          techCardPatternsToPb(tc.Patterns),
 		},
 		ResolvedMedia: resolved,
 	}
+}
+
+// techCardPatternsToPb emits the per-size PDF выкройки for display.
+func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCardSizePattern {
+	out := make([]*pb_common.TechCardSizePattern, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, &pb_common.TechCardSizePattern{
+			SizeId:    int32(p.SizeId),
+			Url:       p.URL,
+			Filename:  pbStringFromNull(p.Filename),
+			SizeBytes: p.SizeBytes.Int64,
+		})
+	}
+	return out
 }
 
 // ConvertEntityTechCardToListItemPb converts a header-only entity.TechCard to a
@@ -697,7 +760,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 	return out, nil
 }
 
-func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) ([]entity.TechCardBomItem, error) {
+func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int, sizeIds []int) ([]entity.TechCardBomItem, error) {
 	out := make([]entity.TechCardBomItem, 0, len(pbs))
 	for _, b := range pbs {
 		section, ok := techCardBomSectionPbToEntity[b.Section]
@@ -771,6 +834,11 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 			})
 		}
 
+		sizeConsumptions, err := parseTechCardBomSizeConsumptions(b.SizeConsumptions, sizeIds)
+		if err != nil {
+			return nil, err
+		}
+
 		fabricWidth, err := nullDecimalFromPb(b.FabricWidth)
 		if err != nil {
 			return nil, fmt.Errorf("bom fabric_width: %w", err)
@@ -807,26 +875,54 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 		}
 
 		out = append(out, entity.TechCardBomItem{
-			Section:         section,
-			Name:            b.Name,
-			Placement:       nullStringFromPb(b.Placement),
-			Supplier:        nullStringFromPb(b.Supplier),
-			SupplierRef:     nullStringFromPb(b.SupplierRef),
-			Color:           nullStringFromPb(b.Color),
-			Composition:     nullStringFromPb(b.Composition),
-			Spec:            nullStringFromPb(b.Spec),
-			Consumption:     consumption,
-			Unit:            nullStringFromPb(b.Unit),
-			Quantity:        quantity,
-			UnitPrice:       unitPrice,
-			Currency:        nullStringFromPb(b.Currency),
-			Comment:         nullStringFromPb(b.Comment),
-			FabricWidth:     fabricWidth,
-			FabricWeightGsm: fabricGsm,
-			FabricDirection: direction,
-			WastagePercent:  wastage,
-			ColorwayColors:  colors,
+			Section:          section,
+			Name:             b.Name,
+			Placement:        nullStringFromPb(b.Placement),
+			Supplier:         nullStringFromPb(b.Supplier),
+			SupplierRef:      nullStringFromPb(b.SupplierRef),
+			Color:            nullStringFromPb(b.Color),
+			Composition:      nullStringFromPb(b.Composition),
+			Spec:             nullStringFromPb(b.Spec),
+			Consumption:      consumption,
+			Unit:             nullStringFromPb(b.Unit),
+			Quantity:         quantity,
+			UnitPrice:        unitPrice,
+			Currency:         nullStringFromPb(b.Currency),
+			Comment:          nullStringFromPb(b.Comment),
+			FabricWidth:      fabricWidth,
+			FabricWeightGsm:  fabricGsm,
+			FabricDirection:  direction,
+			WastagePercent:   wastage,
+			ColorwayColors:   colors,
+			SizeConsumptions: sizeConsumptions,
 		})
+	}
+	return out, nil
+}
+
+// parseTechCardBomSizeConsumptions parses the per-size consumption of a BOM material,
+// validating each size is in the card's size range, consumption is present and
+// non-negative, and no size repeats.
+func parseTechCardBomSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, sizeIds []int) ([]entity.TechCardBomSizeConsumption, error) {
+	out := make([]entity.TechCardBomSizeConsumption, 0, len(pbs))
+	seen := make(map[int]bool, len(pbs))
+	for _, sc := range pbs {
+		sid := int(sc.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("bom size_consumption size_id %d must be one of size_ids", sc.SizeId)
+		}
+		if seen[sid] {
+			return nil, fmt.Errorf("duplicate bom size_consumption for size_id %d", sc.SizeId)
+		}
+		seen[sid] = true
+		consumption, err := requiredDecimalFromPb(sc.Consumption, "bom size_consumption", bomQtyMaxFrac, bomQtyLimit)
+		if err != nil {
+			return nil, err
+		}
+		if consumption.IsNegative() {
+			return nil, fmt.Errorf("bom size_consumption must not be negative")
+		}
+		out = append(out, entity.TechCardBomSizeConsumption{SizeId: sid, Consumption: consumption})
 	}
 	return out, nil
 }
@@ -945,9 +1041,27 @@ func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([
 
 // --- materials (Phase 2): emit entity -> pb ---
 
-func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardColorway {
+// techCardColorwaysToPb emits colourways, attaching to each an OUTPUT-ONLY list of the BOM
+// materials used in it (inverted from bom_items[].colorway_colors — a colour cell means
+// the material is used in that colourway). This answers «which fabrics in which colourway»
+// without the frontend re-joining. The source of truth stays the BOM colour matrix.
+func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem) []*pb_common.TechCardColorway {
+	materialsByColorway := make(map[int][]*pb_common.TechCardColorwayMaterial, len(cws))
+	for i := range bomItems {
+		b := &bomItems[i]
+		for _, cc := range b.ColorwayColors {
+			materialsByColorway[cc.ColorwayIndex] = append(materialsByColorway[cc.ColorwayIndex],
+				&pb_common.TechCardColorwayMaterial{
+					BomItemIndex: int32(i),
+					MaterialName: b.Name,
+					Section:      pbBomSection(b.Section),
+					Color:        pbStringFromNull(cc.Color),
+					Pantone:      pbStringFromNull(cc.Pantone),
+				})
+		}
+	}
 	out := make([]*pb_common.TechCardColorway, 0, len(cws))
-	for _, c := range cws {
+	for idx, c := range cws {
 		out = append(out, &pb_common.TechCardColorway{
 			Code:               pbStringFromNull(c.Code),
 			Name:               c.Name,
@@ -963,12 +1077,13 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardC
 			LabDipDecidedAt:    pbTimestampFromNullTime(c.LabDipDecidedAt),
 			LabDipDecidedBy:    pbStringFromNull(c.LabDipDecidedBy),
 			LabDipRejectReason: pbStringFromNull(c.LabDipRejectReason),
+			Materials:          materialsByColorway[idx],
 		})
 	}
 	return out
 }
 
-func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardBomItem {
+func techCardBomItemsToPb(items []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardBomItem {
 	out := make([]*pb_common.TechCardBomItem, 0, len(items))
 	for i := range items {
 		b := &items[i]
@@ -980,27 +1095,36 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 				Pantone:       pbStringFromNull(cc.Pantone),
 			})
 		}
+		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(b.SizeConsumptions))
+		for _, sc := range b.SizeConsumptions {
+			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
+				SizeId:      int32(sc.SizeId),
+				Consumption: pbDecimalFromDecimal(sc.Consumption),
+			})
+		}
 		out = append(out, &pb_common.TechCardBomItem{
-			Section:         pbBomSection(b.Section),
-			Name:            b.Name,
-			Placement:       pbStringFromNull(b.Placement),
-			Supplier:        pbStringFromNull(b.Supplier),
-			SupplierRef:     pbStringFromNull(b.SupplierRef),
-			Color:           pbStringFromNull(b.Color),
-			Composition:     pbStringFromNull(b.Composition),
-			Spec:            pbStringFromNull(b.Spec),
-			Consumption:     pbDecimalFromNull(b.Consumption),
-			Unit:            pbStringFromNull(b.Unit),
-			Quantity:        pbDecimalFromNull(b.Quantity),
-			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
-			Currency:        pbStringFromNull(b.Currency),
-			Comment:         pbStringFromNull(b.Comment),
-			ColorwayColors:  colors,
-			LineTotal:       pbDecimalFromNull(b.LineTotal()),
-			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
-			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection: pbFabricDirection(b.FabricDirection),
-			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
+			Section:          pbBomSection(b.Section),
+			Name:             b.Name,
+			Placement:        pbStringFromNull(b.Placement),
+			Supplier:         pbStringFromNull(b.Supplier),
+			SupplierRef:      pbStringFromNull(b.SupplierRef),
+			Color:            pbStringFromNull(b.Color),
+			Composition:      pbStringFromNull(b.Composition),
+			Spec:             pbStringFromNull(b.Spec),
+			Consumption:      pbDecimalFromNull(b.Consumption),
+			Unit:             pbStringFromNull(b.Unit),
+			Quantity:         pbDecimalFromNull(b.Quantity),
+			UnitPrice:        pbDecimalFromNull(b.UnitPrice),
+			Currency:         pbStringFromNull(b.Currency),
+			Comment:          pbStringFromNull(b.Comment),
+			ColorwayColors:   colors,
+			LineTotal:        pbDecimalFromNull(b.LineTotal()),
+			FabricWidth:      pbDecimalFromNull(b.FabricWidth),
+			FabricWeightGsm:  pbDecimalFromNull(b.FabricWeightGsm),
+			FabricDirection:  pbFabricDirection(b.FabricDirection),
+			WastagePercent:   pbDecimalFromNull(b.WastagePercent),
+			SizeConsumptions: sizeCons,
+			SizeRunTotal:     pbDecimalFromNull(b.SizeRunTotal(orderQtyBySize)),
 		})
 	}
 	return out
@@ -1018,6 +1142,12 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
 var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// isHTTPURL reports whether s is an http(s) URL — pattern PDFs are served over the CDN,
+// so a non-http scheme (e.g. javascript:/data:) is rejected at the write boundary.
+func isHTTPURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
 
 // isHexColor reports whether s is a #RRGGBB colour (mirrors the colorway.hex CHECK).
 func isHexColor(s string) bool {

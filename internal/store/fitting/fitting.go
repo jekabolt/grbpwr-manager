@@ -47,7 +47,10 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		if err := insertFittingSizes(ctx, rep.DB(), id, f.Sizes); err != nil {
 			return err
 		}
-		return insertFittingMedia(ctx, rep.DB(), id, f.MediaIds)
+		if err := insertFittingMedia(ctx, rep.DB(), id, f.MediaIds); err != nil {
+			return err
+		}
+		return insertFittingPatterns(ctx, rep.DB(), id, f.Patterns)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add fitting: %w", err)
@@ -92,10 +95,17 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 			`DELETE FROM fitting_media WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear fitting media: %w", err)
 		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM fitting_pattern WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear fitting patterns: %w", err)
+		}
 		if err := insertFittingSizes(ctx, rep.DB(), id, f.Sizes); err != nil {
 			return err
 		}
-		return insertFittingMedia(ctx, rep.DB(), id, f.MediaIds)
+		if err := insertFittingMedia(ctx, rep.DB(), id, f.MediaIds); err != nil {
+			return err
+		}
+		return insertFittingPatterns(ctx, rep.DB(), id, f.Patterns)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update fitting: %w", err)
@@ -127,8 +137,13 @@ func (s *Store) GetFittingById(ctx context.Context, id int) (*entity.Fitting, er
 	if err != nil {
 		return nil, err
 	}
+	patterns, err := s.patternsByFittingIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	f.Sizes = sizes[id]
 	f.Media = media[id]
+	f.Patterns = patterns[id]
 	return &f, nil
 }
 
@@ -188,9 +203,14 @@ func (s *Store) ListFittings(ctx context.Context, limit, offset int, orderFactor
 	if err != nil {
 		return nil, 0, err
 	}
+	patterns, err := s.patternsByFittingIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range fittings {
 		fittings[i].Sizes = sizes[fittings[i].Id]
 		fittings[i].Media = media[fittings[i].Id]
+		fittings[i].Patterns = patterns[fittings[i].Id]
 	}
 	return fittings, total, nil
 }
@@ -242,6 +262,27 @@ func insertFittingSizes(ctx context.Context, db dependency.DB, fittingID int, si
 	return nil
 }
 
+func insertFittingPatterns(ctx context.Context, db dependency.DB, fittingID int, patterns []entity.FittingPattern) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(patterns))
+	for i, p := range patterns {
+		rows = append(rows, map[string]any{
+			"fitting_id":    fittingID,
+			"size_id":       p.SizeId,
+			"url":           p.URL,
+			"filename":      p.Filename,
+			"size_bytes":    p.SizeBytes,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "fitting_pattern", rows); err != nil {
+		return fmt.Errorf("failed to insert fitting patterns: %w", err)
+	}
+	return nil
+}
+
 func insertFittingMedia(ctx context.Context, db dependency.DB, fittingID int, mediaIDs []int) error {
 	if len(mediaIDs) == 0 {
 		return nil
@@ -287,6 +328,30 @@ func (s *Store) sizesByFittingIds(ctx context.Context, ids []int) (map[int][]ent
 type fittingMediaRow struct {
 	FittingID int `db:"fitting_id"`
 	entity.MediaFull
+}
+
+type fittingPatternRow struct {
+	FittingID int `db:"fitting_id"`
+	entity.FittingPattern
+}
+
+func (s *Store) patternsByFittingIds(ctx context.Context, ids []int) (map[int][]entity.FittingPattern, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.FittingPattern{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[fittingPatternRow](ctx, s.DB, `
+		SELECT fitting_id, size_id, url, filename, size_bytes
+		FROM fitting_pattern
+		WHERE fitting_id IN (:ids)
+		ORDER BY fitting_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load fitting patterns: %w", err)
+	}
+	out := make(map[int][]entity.FittingPattern, len(ids))
+	for _, r := range rows {
+		out[r.FittingID] = append(out[r.FittingID], r.FittingPattern)
+	}
+	return out, nil
 }
 
 func (s *Store) mediaByFittingIds(ctx context.Context, ids []int) (map[int][]entity.MediaFull, error) {

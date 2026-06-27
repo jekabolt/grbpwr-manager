@@ -624,7 +624,11 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		return nil
 	}
 	c := tc.Costing
-	materialsTotal, materialsCost := bomMaterialsRollup(tc.BomItems, c.Currency)
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+	}
+	materialsTotal, materialsCost := bomMaterialsRollup(tc.BomItems, c.Currency, orderQtyBySize)
 	out := &pb_common.TechCardCosting{
 		CmtCost:          pbDecimalFromNull(c.CmtCost),
 		HardwareCost:     pbDecimalFromNull(c.HardwareCost),
@@ -697,7 +701,7 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	// the make cost but is in a different currency than the costing one.
 	for i := range tc.BomItems {
 		b := &tc.BomItems[i]
-		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && b.LineTotal().Valid {
+		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && effectiveBomLineTotal(b, orderQtyBySize).Valid {
 			out.HasUnconvertedCurrencies = true
 			break
 		}
@@ -708,14 +712,26 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	return out
 }
 
+// effectiveBomLineTotal is a BOM line's contribution to the materials rollup: the size-run
+// total (Σ consumption_size × order_qty_size × price, gross of wastage) when the line has
+// per-size consumption and order quantities, otherwise the per-garment LineTotal. This is
+// the user's «per-size if present, else the old formula» rule applied per line.
+func effectiveBomLineTotal(b *entity.TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+	if rt := b.SizeRunTotal(orderQtyBySize); rt.Valid {
+		return rt
+	}
+	return b.LineTotal()
+}
+
 // bomMaterialsRollup sums BOM line totals grouped by the line's currency (first-
 // seen order preserved), and returns the subtotal foldable into costingCurrency
-// (matching-currency lines plus currency-less lines).
-func bomMaterialsRollup(items []entity.TechCardBomItem, costingCurrency sql.NullString) ([]*pb_common.TechCardCostLine, decimal.Decimal) {
+// (matching-currency lines plus currency-less lines). A line with per-size consumption
+// contributes its full size-run cost (see effectiveBomLineTotal).
+func bomMaterialsRollup(items []entity.TechCardBomItem, costingCurrency sql.NullString, orderQtyBySize map[int]int) ([]*pb_common.TechCardCostLine, decimal.Decimal) {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	for i := range items {
-		lt := items[i].LineTotal()
+		lt := effectiveBomLineTotal(&items[i], orderQtyBySize)
 		if !lt.Valid {
 			continue
 		}

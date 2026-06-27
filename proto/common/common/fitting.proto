@@ -44,6 +44,21 @@ message FittingInsert {
   repeated FittingSizeInsert sizes = 8;
   repeated int32 media_ids = 9;
   int32 tech_card_id = 10; // FK tech_card(id); 0 = unset (the style being fitted)
+  // PDF выкройки measured in this fitting. The tech card holds the FINAL pattern per
+  // size; a fitting captures the ITERATION that was actually tried on (so you know which
+  // pattern you measured). A fitting may carry several (it can span sizes). Each PDF is
+  // uploaded via Admin.UploadPattern; the url is stored as a snapshot (immune to later
+  // tech-card edits).
+  repeated FittingPattern patterns = 11;
+}
+
+// FittingPattern is one PDF выкройка iteration tried in a fitting (snapshot of the
+// uploaded file, not a live reference to a tech-card pattern).
+message FittingPattern {
+  int32 size_id = 1; // FK size(id); 0 = unset (which size this pattern is for)
+  string url = 2; // CDN url of the uploaded PDF (required)
+  string filename = 3; // original filename, for display / download
+  int64 size_bytes = 4; // file size in bytes (0 = unknown)
 }
 
 // Fitting is a stored try-on session with resolved media for display.
