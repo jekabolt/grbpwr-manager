@@ -2,9 +2,7 @@ package techcard
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -13,13 +11,13 @@ import (
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
 
-// insertTechCardColorways inserts the colourways and returns their new ids in the
-// same order, so BOM colorway_index can be resolved to a colourway id.
-func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cws []entity.TechCardColorway) ([]int, error) {
-	ids := make([]int, len(cws))
+// insertTechCardColorways inserts the colourways and, for each, its material recipe
+// (usages + per-size usage consumption). Colourways are the "recipe"; the BOM is a pure
+// article catalog the usage's bom_item_index points into.
+func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cws []entity.TechCardColorway) error {
 	for i := range cws {
 		c := &cws[i]
-		id, err := storeutil.ExecNamedLastId(ctx, db, `
+		cwID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_colorway
 				(tech_card_id, code, name, lab_dip_status, product_id, comment, display_order,
 				 pantone, pantone_system, hex, swatch_media_id, lab_dip_round,
@@ -46,137 +44,118 @@ func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cw
 				"lab_dip_reject_reason": c.LabDipRejectReason,
 			})
 		if err != nil {
-			return nil, fmt.Errorf("failed to insert tech card colorway: %w", err)
+			return fmt.Errorf("failed to insert tech card colorway: %w", err)
 		}
-		ids[i] = id
+		if err := insertTechCardColorwayUsages(ctx, db, cwID, c.Usages); err != nil {
+			return err
+		}
 	}
-	return ids, nil
+	return nil
 }
 
-// insertTechCardBom inserts the BOM lines and, for each, the per-colourway colour
-// cells (resolving ColorwayIndex against colorwayIds).
-func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []entity.TechCardBomItem, colorwayIds []int) error {
-	for i := range items {
-		b := &items[i]
-		bomID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_bom_item
-				(tech_card_id, section, name, placement, supplier, supplier_ref, color, composition, spec,
-				 consumption, unit, quantity, unit_price, currency, comment, display_order,
-				 fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent)
-			VALUES (:tech_card_id, :section, :name, :placement, :supplier, :supplier_ref, :color, :composition, :spec,
-				 :consumption, :unit, :quantity, :unit_price, :currency, :comment, :display_order,
-				 :fabric_width, :fabric_weight_gsm, :fabric_direction, :wastage_percent)`,
+// insertTechCardColorwayUsages inserts one colourway's usages and, for each, its per-size
+// consumption rows.
+func insertTechCardColorwayUsages(ctx context.Context, db dependency.DB, cwID int, usages []entity.TechCardColorwayUsage) error {
+	for j := range usages {
+		u := &usages[j]
+		usageID, err := storeutil.ExecNamedLastId(ctx, db, `
+			INSERT INTO tech_card_colorway_usage
+				(colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, display_order)
+			VALUES (:colorway_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :display_order)`,
 			map[string]any{
-				"tech_card_id":      tcID,
-				"section":           string(b.Section),
-				"name":              b.Name,
-				"placement":         b.Placement,
-				"supplier":          b.Supplier,
-				"supplier_ref":      b.SupplierRef,
-				"color":             b.Color,
-				"composition":       b.Composition,
-				"spec":              b.Spec,
-				"consumption":       b.Consumption,
-				"unit":              b.Unit,
-				"quantity":          b.Quantity,
-				"unit_price":        b.UnitPrice,
-				"currency":          b.Currency,
-				"comment":           b.Comment,
-				"display_order":     i,
-				"fabric_width":      b.FabricWidth,
-				"fabric_weight_gsm": b.FabricWeightGsm,
-				"fabric_direction":  b.FabricDirection,
-				"wastage_percent":   b.WastagePercent,
+				"colorway_id":    cwID,
+				"bom_item_index": u.BomItemIndex,
+				"placement":      u.Placement,
+				"color":          u.Color,
+				"pantone":        u.Pantone,
+				"consumption":    u.Consumption,
+				"quantity":       u.Quantity,
+				"display_order":  j,
 			})
 		if err != nil {
-			return fmt.Errorf("failed to insert tech card bom item: %w", err)
+			return fmt.Errorf("failed to insert tech card colorway usage: %w", err)
 		}
-		if len(b.ColorwayColors) > 0 {
-			rows := make([]map[string]any, 0, len(b.ColorwayColors))
-			for j, cc := range b.ColorwayColors {
-				if cc.ColorwayIndex < 0 || cc.ColorwayIndex >= len(colorwayIds) {
-					return fmt.Errorf("bom colorway_index %d out of range", cc.ColorwayIndex)
-				}
+		if len(u.SizeConsumptions) > 0 {
+			rows := make([]map[string]any, 0, len(u.SizeConsumptions))
+			for k, sc := range u.SizeConsumptions {
 				rows = append(rows, map[string]any{
-					"bom_item_id":   bomID,
-					"colorway_id":   colorwayIds[cc.ColorwayIndex],
-					"color":         cc.Color,
-					"pantone":       cc.Pantone,
-					"display_order": j,
-				})
-			}
-			if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_colorway", rows); err != nil {
-				return fmt.Errorf("failed to insert tech card bom colorway: %w", err)
-			}
-		}
-		if len(b.SizeConsumptions) > 0 {
-			scRows := make([]map[string]any, 0, len(b.SizeConsumptions))
-			for j, sc := range b.SizeConsumptions {
-				scRows = append(scRows, map[string]any{
-					"bom_item_id":   bomID,
+					"usage_id":      usageID,
 					"size_id":       sc.SizeId,
 					"consumption":   sc.Consumption,
-					"display_order": j,
+					"display_order": k,
 				})
 			}
-			if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_consumption", scRows); err != nil {
-				return fmt.Errorf("failed to insert tech card bom consumption: %w", err)
+			if err := storeutil.BulkInsert(ctx, db, "tech_card_colorway_usage_consumption", rows); err != nil {
+				return fmt.Errorf("failed to insert tech card colorway usage consumption: %w", err)
 			}
 		}
 	}
 	return nil
 }
 
-// insertTechCardPom inserts the POM points and, for each, its graded values and
-// actual measurements.
-func insertTechCardPom(ctx context.Context, db dependency.DB, tcID int, points []entity.TechCardPomPoint) error {
-	for i := range points {
-		p := &points[i]
-		pomID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_pom_point
-				(tech_card_id, section, code, name, how_to_measure, base_value, tolerance_plus, tolerance_minus, display_order)
-			VALUES (:tech_card_id, :section, :code, :name, :how_to_measure, :base_value, :tolerance_plus, :tolerance_minus, :display_order)`,
+// insertTechCardBom inserts the BOM lines (material-article catalog). Per-colourway colour,
+// placement and consumption now live on the colourway usages, not here.
+func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []entity.TechCardBomItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(items))
+	for i := range items {
+		b := &items[i]
+		rows = append(rows, map[string]any{
+			"tech_card_id":      tcID,
+			"section":           string(b.Section),
+			"name":              b.Name,
+			"supplier":          b.Supplier,
+			"supplier_ref":      b.SupplierRef,
+			"color":             b.Color,
+			"composition":       b.Composition,
+			"spec":              b.Spec,
+			"unit":              b.Unit,
+			"unit_price":        b.UnitPrice,
+			"currency":          b.Currency,
+			"comment":           b.Comment,
+			"display_order":     i,
+			"fabric_width":      b.FabricWidth,
+			"fabric_weight_gsm": b.FabricWeightGsm,
+			"fabric_direction":  b.FabricDirection,
+			"wastage_percent":   b.WastagePercent,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_item", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card bom item: %w", err)
+	}
+	return nil
+}
+
+// insertTechCardDetails inserts the construction-description aspects and, for each, its
+// reference media.
+func insertTechCardDetails(ctx context.Context, db dependency.DB, tcID int, details []entity.TechCardDetail) error {
+	for i := range details {
+		d := &details[i]
+		detailID, err := storeutil.ExecNamedLastId(ctx, db, `
+			INSERT INTO tech_card_detail (tech_card_id, detail_key, detail_text, display_order)
+			VALUES (:tech_card_id, :detail_key, :detail_text, :display_order)`,
 			map[string]any{
-				"tech_card_id":    tcID,
-				"section":         p.Section,
-				"code":            p.Code,
-				"name":            p.Name,
-				"how_to_measure":  p.HowToMeasure,
-				"base_value":      p.BaseValue,
-				"tolerance_plus":  p.TolerancePlus,
-				"tolerance_minus": p.ToleranceMinus,
-				"display_order":   i,
+				"tech_card_id":  tcID,
+				"detail_key":    d.Key,
+				"detail_text":   d.Text,
+				"display_order": i,
 			})
 		if err != nil {
-			return fmt.Errorf("failed to insert tech card pom point: %w", err)
+			return fmt.Errorf("failed to insert tech card detail: %w", err)
 		}
-		if len(p.Grades) > 0 {
-			rows := make([]map[string]any, 0, len(p.Grades))
-			for _, g := range p.Grades {
+		if len(d.MediaIds) > 0 {
+			rows := make([]map[string]any, 0, len(d.MediaIds))
+			for j, mid := range d.MediaIds {
 				rows = append(rows, map[string]any{
-					"pom_point_id": pomID,
-					"size_id":      g.SizeId,
-					"value":        g.Value,
-				})
-			}
-			if err := storeutil.BulkInsert(ctx, db, "tech_card_pom_grade", rows); err != nil {
-				return fmt.Errorf("failed to insert tech card pom grades: %w", err)
-			}
-		}
-		if len(p.Actuals) > 0 {
-			rows := make([]map[string]any, 0, len(p.Actuals))
-			for j, a := range p.Actuals {
-				rows = append(rows, map[string]any{
-					"pom_point_id":  pomID,
-					"fitting_id":    a.FittingId,
-					"size_id":       a.SizeId,
-					"label":         a.Label,
-					"value":         a.Value,
+					"detail_id":     detailID,
+					"media_id":      mid,
 					"display_order": j,
 				})
 			}
-			if err := storeutil.BulkInsert(ctx, db, "tech_card_pom_actual", rows); err != nil {
-				return fmt.Errorf("failed to insert tech card pom actuals: %w", err)
+			if err := storeutil.BulkInsert(ctx, db, "tech_card_detail_media", rows); err != nil {
+				return fmt.Errorf("failed to insert tech card detail media: %w", err)
 			}
 		}
 	}
@@ -195,35 +174,28 @@ type techCardBomItemRow struct {
 	entity.TechCardBomItem
 }
 
-type techCardBomColorwayRow struct {
-	BomItemID  int            `db:"bom_item_id"`
-	ColorwayID int            `db:"colorway_id"`
-	Color      sql.NullString `db:"color"`
-	Pantone    sql.NullString `db:"pantone"`
+type techCardColorwayUsageRow struct {
+	ColorwayID int `db:"colorway_id"`
+	entity.TechCardColorwayUsage
 }
 
-type techCardBomConsumptionRow struct {
-	BomItemID int `db:"bom_item_id"`
+type techCardUsageConsumptionRow struct {
+	UsageID int `db:"usage_id"`
 	entity.TechCardBomSizeConsumption
 }
 
-type techCardPomPointRow struct {
+type techCardDetailRow struct {
 	TechCardID int `db:"tech_card_id"`
-	entity.TechCardPomPoint
+	entity.TechCardDetail
 }
 
-type techCardPomGradeRow struct {
-	PomPointID int `db:"pom_point_id"`
-	entity.TechCardPomGrade
+type techCardDetailMediaRow struct {
+	DetailID int `db:"detail_id"`
+	MediaID  int `db:"media_id"`
 }
 
-type techCardPomActualRow struct {
-	PomPointID int `db:"pom_point_id"`
-	entity.TechCardPomActual
-}
-
-// enrichMaterials loads colourways, BOM lines (+ the per-colourway colour matrix)
-// and POM points (+ grades and actuals) for each card and attaches them.
+// enrichMaterials loads colourways (+ their usages and per-size usage consumption), BOM
+// lines (the article catalog) and construction-description details (+ media) for each card.
 func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) error {
 	if len(cards) == 0 {
 		return nil
@@ -233,11 +205,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		ids = append(ids, cards[i].Id)
 	}
 
-	// Colourways: grouped per card (in display order), plus a colourway id -> index
-	// map so the BOM colour matrix can be emitted by index.
-	// product_id resolves through a LEFT JOIN that excludes soft-deleted products
-	// (products are soft-deleted, so the ON DELETE SET NULL never fires) — a dead
-	// SKU surfaces as NULL instead of a dangling id, mirroring productIdsByTechCardIds.
+	// Colourways grouped per card (in display order). product_id resolves through a LEFT
+	// JOIN that excludes soft-deleted products (a dead SKU surfaces as NULL).
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
 		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment,
 		       c.pantone, c.pantone_system, c.hex, c.swatch_media_id, c.lab_dip_round,
@@ -250,20 +219,70 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		return fmt.Errorf("can't load tech card colorways: %w", err)
 	}
 	colorwaysByCard := make(map[int][]entity.TechCardColorway, len(ids))
-	colorwayIndexByID := make(map[int]int, len(cwRows))
 	for _, r := range cwRows {
-		colorwayIndexByID[r.Id] = len(colorwaysByCard[r.TechCardID])
 		colorwaysByCard[r.TechCardID] = append(colorwaysByCard[r.TechCardID], r.TechCardColorway)
 	}
+	// Index colourways by id to attach usages; collect ids for the usage query.
+	colorwayByID := make(map[int]*entity.TechCardColorway, len(cwRows))
+	colorwayIDs := make([]int, 0, len(cwRows))
+	for card := range colorwaysByCard {
+		cws := colorwaysByCard[card]
+		for i := range cws {
+			colorwayByID[cws[i].Id] = &cws[i]
+			colorwayIDs = append(colorwayIDs, cws[i].Id)
+		}
+	}
+	if len(colorwayIDs) > 0 {
+		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
+			SELECT id, colorway_id, bom_item_index, placement, color, pantone, consumption, quantity
+			FROM tech_card_colorway_usage
+			WHERE colorway_id IN (:ids)
+			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
+		if err != nil {
+			return fmt.Errorf("can't load tech card colorway usages: %w", err)
+		}
+		usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usageRows))
+		usageIDs := make([]int, 0, len(usageRows))
+		for _, r := range usageRows {
+			cw, ok := colorwayByID[r.ColorwayID]
+			if !ok {
+				continue
+			}
+			cw.Usages = append(cw.Usages, r.TechCardColorwayUsage)
+		}
+		// Slices are final now; index usages by id to attach per-size consumption.
+		for cwID := range colorwayByID {
+			us := colorwayByID[cwID].Usages
+			for i := range us {
+				usageByID[us[i].Id] = &us[i]
+				usageIDs = append(usageIDs, us[i].Id)
+			}
+		}
+		if len(usageIDs) > 0 {
+			consRows, err := storeutil.QueryListNamed[techCardUsageConsumptionRow](ctx, s.DB, `
+				SELECT usage_id, size_id, consumption
+				FROM tech_card_colorway_usage_consumption
+				WHERE usage_id IN (:ids)
+				ORDER BY usage_id, display_order`, map[string]any{"ids": usageIDs})
+			if err != nil {
+				return fmt.Errorf("can't load tech card usage consumptions: %w", err)
+			}
+			for _, c := range consRows {
+				if u, ok := usageByID[c.UsageID]; ok {
+					u.SizeConsumptions = append(u.SizeConsumptions, c.TechCardBomSizeConsumption)
+				}
+			}
+		}
+	}
 
-	// BOM lines per card.
+	// BOM lines per card (the article catalog).
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
-		SELECT id, tech_card_id, section, name, placement, supplier, supplier_ref, color, composition, spec,
-		       consumption, unit, quantity, unit_price, currency, comment,
+		SELECT id, tech_card_id, section, name, supplier, supplier_ref, color, composition, spec,
+		       unit, unit_price, currency, comment,
 		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent
 		FROM tech_card_bom_item
 		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card bom items: %w", err)
 	}
@@ -271,104 +290,41 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	for _, r := range bomRows {
 		bomByCard[r.TechCardID] = append(bomByCard[r.TechCardID], r.TechCardBomItem)
 	}
-	// Slices are final now; index BOM items by id to attach the colour matrix.
-	bomItemByID := make(map[int]*entity.TechCardBomItem, len(bomRows))
-	bomItemIDs := make([]int, 0, len(bomRows))
-	for card := range bomByCard {
-		items := bomByCard[card]
-		for i := range items {
-			bomItemByID[items[i].Id] = &items[i]
-			bomItemIDs = append(bomItemIDs, items[i].Id)
-		}
-	}
-	if len(bomItemIDs) > 0 {
-		cells, err := storeutil.QueryListNamed[techCardBomColorwayRow](ctx, s.DB, `
-			SELECT bom_item_id, colorway_id, color, pantone
-			FROM tech_card_bom_colorway
-			WHERE bom_item_id IN (:ids)
-			ORDER BY bom_item_id, display_order`, map[string]any{"ids": bomItemIDs})
-		if err != nil {
-			return fmt.Errorf("can't load tech card bom colorways: %w", err)
-		}
-		for _, c := range cells {
-			item, ok := bomItemByID[c.BomItemID]
-			if !ok {
-				continue
-			}
-			idx, ok := colorwayIndexByID[c.ColorwayID]
-			if !ok {
-				continue
-			}
-			item.ColorwayColors = append(item.ColorwayColors, entity.TechCardBomColorwayColor{
-				ColorwayIndex: idx,
-				Color:         c.Color,
-				Pantone:       c.Pantone,
-			})
-		}
 
-		// Per-size consumption matrix, attached to each BOM line by id.
-		consRows, err := storeutil.QueryListNamed[techCardBomConsumptionRow](ctx, s.DB, `
-			SELECT bom_item_id, size_id, consumption
-			FROM tech_card_bom_consumption
-			WHERE bom_item_id IN (:ids)
-			ORDER BY bom_item_id, display_order`, map[string]any{"ids": bomItemIDs})
-		if err != nil {
-			return fmt.Errorf("can't load tech card bom consumptions: %w", err)
-		}
-		for _, c := range consRows {
-			if item, ok := bomItemByID[c.BomItemID]; ok {
-				item.SizeConsumptions = append(item.SizeConsumptions, c.TechCardBomSizeConsumption)
-			}
-		}
-	}
-
-	// POM points per card, then grades and actuals per point.
-	pomRows, err := storeutil.QueryListNamed[techCardPomPointRow](ctx, s.DB, `
-		SELECT id, tech_card_id, section, code, name, how_to_measure, base_value, tolerance_plus, tolerance_minus
-		FROM tech_card_pom_point
+	// Construction-description details per card, then media per detail.
+	detailRows, err := storeutil.QueryListNamed[techCardDetailRow](ctx, s.DB, `
+		SELECT id, tech_card_id, detail_key, detail_text
+		FROM tech_card_detail
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
 	if err != nil {
-		return fmt.Errorf("can't load tech card pom points: %w", err)
+		return fmt.Errorf("can't load tech card details: %w", err)
 	}
-	pomByCard := make(map[int][]entity.TechCardPomPoint, len(ids))
-	for _, r := range pomRows {
-		pomByCard[r.TechCardID] = append(pomByCard[r.TechCardID], r.TechCardPomPoint)
+	detailsByCard := make(map[int][]entity.TechCardDetail, len(ids))
+	for _, r := range detailRows {
+		detailsByCard[r.TechCardID] = append(detailsByCard[r.TechCardID], r.TechCardDetail)
 	}
-	pomPointByID := make(map[int]*entity.TechCardPomPoint, len(pomRows))
-	pomPointIDs := make([]int, 0, len(pomRows))
-	for card := range pomByCard {
-		points := pomByCard[card]
-		for i := range points {
-			pomPointByID[points[i].Id] = &points[i]
-			pomPointIDs = append(pomPointIDs, points[i].Id)
+	detailByID := make(map[int]*entity.TechCardDetail, len(detailRows))
+	detailIDs := make([]int, 0, len(detailRows))
+	for card := range detailsByCard {
+		ds := detailsByCard[card]
+		for i := range ds {
+			detailByID[ds[i].Id] = &ds[i]
+			detailIDs = append(detailIDs, ds[i].Id)
 		}
 	}
-	if len(pomPointIDs) > 0 {
-		gradeRows, err := storeutil.QueryListNamed[techCardPomGradeRow](ctx, s.DB, `
-			SELECT pom_point_id, size_id, value
-			FROM tech_card_pom_grade
-			WHERE pom_point_id IN (:ids)
-			ORDER BY pom_point_id, id`, map[string]any{"ids": pomPointIDs})
+	if len(detailIDs) > 0 {
+		dmRows, err := storeutil.QueryListNamed[techCardDetailMediaRow](ctx, s.DB, `
+			SELECT detail_id, media_id
+			FROM tech_card_detail_media
+			WHERE detail_id IN (:ids)
+			ORDER BY detail_id, display_order`, map[string]any{"ids": detailIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card pom grades: %w", err)
+			return fmt.Errorf("can't load tech card detail media: %w", err)
 		}
-		for _, g := range gradeRows {
-			if p, ok := pomPointByID[g.PomPointID]; ok {
-				p.Grades = append(p.Grades, g.TechCardPomGrade)
-			}
-		}
-		actualRows, err := storeutil.QueryListNamed[techCardPomActualRow](ctx, s.DB, `
-			SELECT pom_point_id, fitting_id, size_id, label, value
-			FROM tech_card_pom_actual
-			WHERE pom_point_id IN (:ids)
-			ORDER BY pom_point_id, display_order`, map[string]any{"ids": pomPointIDs})
-		if err != nil {
-			return fmt.Errorf("can't load tech card pom actuals: %w", err)
-		}
-		for _, a := range actualRows {
-			if p, ok := pomPointByID[a.PomPointID]; ok {
-				p.Actuals = append(p.Actuals, a.TechCardPomActual)
+		for _, m := range dmRows {
+			if d, ok := detailByID[m.DetailID]; ok {
+				d.MediaIds = append(d.MediaIds, m.MediaID)
 			}
 		}
 	}
@@ -377,33 +333,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		id := cards[i].Id
 		cards[i].Colorways = colorwaysByCard[id]
 		cards[i].BomItems = bomByCard[id]
-		points := pomByCard[id]
-		sortPomGradesBySizeOrder(points, cards[i].SizeIds)
-		cards[i].PomPoints = points
+		cards[i].Details = detailsByCard[id]
 	}
 	return nil
-}
-
-// sortPomGradesBySizeOrder orders each point's grades by the card's declared size
-// range (tech_card_size order), so the graded chart renders its size columns in a
-// stable, meaningful order instead of insertion order. cards[i].SizeIds is already
-// populated by enrich before enrichMaterials runs.
-func sortPomGradesBySizeOrder(points []entity.TechCardPomPoint, sizeIds []int) {
-	if len(sizeIds) == 0 {
-		return
-	}
-	rank := make(map[int]int, len(sizeIds))
-	for i, sid := range sizeIds {
-		rank[sid] = i
-	}
-	order := func(sid int) int {
-		if r, ok := rank[sid]; ok {
-			return r
-		}
-		return len(sizeIds) // sizes outside the range (shouldn't happen) sort last
-	}
-	for i := range points {
-		g := points[i].Grades
-		sort.SliceStable(g, func(a, b int) bool { return order(g[a].SizeId) < order(g[b].SizeId) })
-	}
 }
