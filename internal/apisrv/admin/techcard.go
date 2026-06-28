@@ -22,11 +22,35 @@ const techCardFKMsg = "tech card references a non-existent category, model, size
 // techCardDupMsg is returned when style_number collides within the same season.
 const techCardDupMsg = "a tech card with this style_number and season already exists"
 
+// validateCategoryLeaf rejects a non-leaf category_id (one that has child categories): a
+// tech card must be filed under a leaf type, not a parent bucket (plan Q5). An unset/zero
+// category is allowed; an unknown id falls through to the FK check on write. The category
+// tree comes from the dictionary cache (the same source the product admin uses).
+func (s *Server) validateCategoryLeaf(ctx context.Context, categoryId sql.NullInt32) error {
+	if !categoryId.Valid || categoryId.Int32 <= 0 {
+		return nil
+	}
+	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load categories for leaf check", slog.String("err", err.Error()))
+		return status.Error(codes.Internal, "can't validate category")
+	}
+	for _, c := range di.Categories {
+		if c.ParentID != nil && int32(*c.ParentID) == categoryId.Int32 {
+			return status.Error(codes.InvalidArgument, "category_id must be a leaf category (it has sub-categories)")
+		}
+	}
+	return nil
+}
+
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
+		return nil, err
 	}
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
@@ -71,6 +95,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
+		return nil, err
 	}
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

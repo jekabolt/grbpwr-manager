@@ -169,7 +169,9 @@ const (
 	BomSectionThread      TechCardBomSection = "thread"
 	BomSectionLabel       TechCardBomSection = "label"
 	BomSectionPackaging   TechCardBomSection = "packaging"
-	BomSectionTrim        TechCardBomSection = "trim" // soft trims (бейка / тесьма / резинка / кант / шнур / лента)
+	BomSectionTrim        TechCardBomSection = "trim"       // soft trims (бейка / тесьма / резинка / кант / шнур / лента)
+	BomSectionDecoration  TechCardBomSection = "decoration" // принт / вышивка / аппликация / патч / стразы
+	BomSectionOther       TechCardBomSection = "other"      // прочее (catch-all)
 )
 
 // ValidTechCardBomSections is the set of accepted BOM sections.
@@ -183,6 +185,8 @@ var ValidTechCardBomSections = map[TechCardBomSection]bool{
 	BomSectionLabel:       true,
 	BomSectionPackaging:   true,
 	BomSectionTrim:        true,
+	BomSectionDecoration:  true,
+	BomSectionOther:       true,
 }
 
 // IsValidTechCardBomSection reports whether s is an accepted BOM section.
@@ -231,45 +235,109 @@ type TechCardColorway struct {
 	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
 	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
 	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
+	// Usages is the colour's material recipe (in-memory; persisted to
+	// tech_card_colorway_usage). Each entry binds a catalog BOM article to a garment
+	// part, the colour it takes in this colourway, and its consumption.
+	Usages []TechCardColorwayUsage `db:"-"`
 }
 
-// TechCardBomColorwayColor is the colour of a BOM material in a colourway. On
-// write, ColorwayIndex points into TechCardInsert.Colorways (full-replace has no
-// stable colourway ids yet); on read it is resolved from the stored colorway id.
-type TechCardBomColorwayColor struct {
-	ColorwayIndex int            `db:"-"`
-	Color         sql.NullString `db:"color"`
-	Pantone       sql.NullString `db:"pantone"`
+// TechCardColorwayUsage is one material use inside a colourway: which catalog article
+// (BomItemIndex) goes on which garment part (Placement), the colour it takes here, and
+// how much is consumed (per-garment Consumption/Quantity and/or per-size). The BOM is a
+// pure article catalog; per-colourway divergence lives here.
+type TechCardColorwayUsage struct {
+	Id           int                 `db:"id"`
+	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
+	Placement    sql.NullString      `db:"placement"`
+	Color        sql.NullString      `db:"color"`
+	Pantone      sql.NullString      `db:"pantone"`
+	Consumption  decimal.NullDecimal `db:"consumption"` // per-garment rate (measured materials)
+	Quantity     decimal.NullDecimal `db:"quantity"`    // count (countable trims)
+	// SizeConsumptions is the per-size material rate (in-memory; persisted to
+	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
+	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
 }
 
-// TechCardBomItem is one bill-of-materials line (Sheet «Спецификация»).
+// LineTotal is the usage's per-garment material cost, resolved against its catalog
+// article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
+// per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
+// unit_price with no wastage; a measured material is Consumption × unit_price grossed
+// up by the article's wastage_percent.
+func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDecimal {
+	if len(u.SizeConsumptions) > 0 || bom == nil || !bom.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	if u.Quantity.Valid {
+		return decimal.NullDecimal{Decimal: u.Quantity.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
+	}
+	if !u.Consumption.Valid {
+		return decimal.NullDecimal{}
+	}
+	return decimal.NullDecimal{Decimal: applyWastage(u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
+}
+
+// SizeRunTotal is the usage's whole-run material cost when it has per-size consumption:
+// Σ(consumption_size × order_qty_size) × unit_price, grossed up by the article's
+// wastage_percent. orderQtyBySize maps size_id → order quantity (a size with no order
+// quantity contributes nothing). INVALID when there is no per-size consumption, no
+// unit_price, or no order quantities yet (the cost is then 0, per the costing rule).
+func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+	if len(u.SizeConsumptions) == 0 || bom == nil || !bom.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	totalQty := decimal.Zero
+	for _, sc := range u.SizeConsumptions {
+		qty, ok := orderQtyBySize[sc.SizeId]
+		if !ok || qty <= 0 {
+			continue
+		}
+		totalQty = totalQty.Add(sc.Consumption.Mul(decimal.NewFromInt(int64(qty))))
+	}
+	if totalQty.IsZero() {
+		return decimal.NullDecimal{}
+	}
+	return decimal.NullDecimal{Decimal: applyWastage(totalQty.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
+}
+
+// EffectiveTotal is the usage's contribution to the materials rollup: its whole-run
+// SizeRunTotal when it has per-size consumption (order-scale), otherwise its per-garment
+// LineTotal. Mirrors the «per-size if present, else per-garment» rule applied per usage.
+func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+	if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
+		return rt
+	}
+	return u.LineTotal(bom)
+}
+
+// applyWastage grosses a base cost up by wastage_percent when set (× (1 + pct/100)).
+func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) decimal.Decimal {
+	if !wastagePercent.Valid {
+		return base
+	}
+	return base.Mul(decimal.NewFromInt(1).Add(wastagePercent.Decimal.Div(decimal.NewFromInt(100))))
+}
+
+// TechCardBomItem is one bill-of-materials line — a catalog article (Sheet
+// «Спецификация»). The per-colourway colour, placement and consumption live on
+// TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
-	Id          int                 `db:"id"`
-	Section     TechCardBomSection  `db:"section"`
-	Name        string              `db:"name"`
-	Placement   sql.NullString      `db:"placement"`
-	Supplier    sql.NullString      `db:"supplier"`
-	SupplierRef sql.NullString      `db:"supplier_ref"`
-	Color       sql.NullString      `db:"color"`
-	Composition sql.NullString      `db:"composition"`
-	Spec        sql.NullString      `db:"spec"`
-	Consumption decimal.NullDecimal `db:"consumption"`
-	Unit        sql.NullString      `db:"unit"`
-	Quantity    decimal.NullDecimal `db:"quantity"`
+	Id          int                `db:"id"`
+	Section     TechCardBomSection `db:"section"`
+	Name        string             `db:"name"`
+	Supplier    sql.NullString     `db:"supplier"`
+	SupplierRef sql.NullString     `db:"supplier_ref"`
+	Color       sql.NullString     `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	Composition sql.NullString     `db:"composition"`
+	Spec        sql.NullString     `db:"spec"`
+	Unit        sql.NullString     `db:"unit"`
 	UnitPrice   decimal.NullDecimal `db:"unit_price"`
-	Currency    sql.NullString      `db:"currency"`
-	Comment     sql.NullString      `db:"comment"`
+	Currency    sql.NullString     `db:"currency"`
+	Comment     sql.NullString     `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"`
 	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
-	// ColorwayColors are the per-colourway colours (in-memory; persisted to
-	// tech_card_bom_colorway).
-	ColorwayColors []TechCardBomColorwayColor `db:"-"`
-	// SizeConsumptions is the per-size material rate (in-memory; persisted to
-	// tech_card_bom_consumption). When non-empty it grades fabric usage per size.
-	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of a BOM
@@ -292,58 +360,6 @@ var ValidTechCardFabricDirections = map[TechCardFabricDirection]bool{
 	FabricDirectionAny: true, FabricDirectionOneWay: true, FabricDirectionTwoWay: true,
 }
 
-// LineTotal returns quantity*unit_price (falling back to consumption*unit_price
-// when quantity is unset), grossed up by wastage_percent when set. Invalid (no
-// price) yields an invalid NullDecimal.
-func (b *TechCardBomItem) LineTotal() decimal.NullDecimal {
-	if !b.UnitPrice.Valid {
-		return decimal.NullDecimal{}
-	}
-	qty := b.Quantity
-	if !qty.Valid {
-		qty = b.Consumption
-	}
-	if !qty.Valid {
-		return decimal.NullDecimal{}
-	}
-	total := qty.Decimal.Mul(b.UnitPrice.Decimal)
-	if b.WastagePercent.Valid {
-		total = total.Mul(decimal.NewFromInt(1).Add(b.WastagePercent.Decimal.Div(decimal.NewFromInt(100))))
-	}
-	return decimal.NullDecimal{Decimal: total, Valid: true}
-}
-
-// SizeRunTotal returns the total material cost over the whole size run when this line has
-// per-size consumption: Σ(consumption_size × order_qty_size) × unit_price, grossed up by
-// wastage_percent. orderQtyBySize maps size_id → order quantity (a size with no order
-// quantity contributes nothing). It returns an INVALID NullDecimal when there is no
-// per-size consumption, no unit_price, or no order quantities at all — so the costing
-// rollup can fall back to the per-garment LineTotal (the user's "if per-size empty → old
-// formula" rule, extended to "no quantities yet → old formula"). NOTE: a per-size line's
-// run total is order-scale, whereas LineTotal is per-garment; a costing that mixes both
-// (some lines per-size, some not) mixes scales — kept per-line by explicit choice.
-func (b *TechCardBomItem) SizeRunTotal(orderQtyBySize map[int]int) decimal.NullDecimal {
-	if len(b.SizeConsumptions) == 0 || !b.UnitPrice.Valid {
-		return decimal.NullDecimal{}
-	}
-	totalQty := decimal.Zero
-	for _, sc := range b.SizeConsumptions {
-		qty, ok := orderQtyBySize[sc.SizeId]
-		if !ok || qty <= 0 {
-			continue
-		}
-		totalQty = totalQty.Add(sc.Consumption.Mul(decimal.NewFromInt(int64(qty))))
-	}
-	if totalQty.IsZero() {
-		return decimal.NullDecimal{}
-	}
-	total := totalQty.Mul(b.UnitPrice.Decimal)
-	if b.WastagePercent.Valid {
-		total = total.Mul(decimal.NewFromInt(1).Add(b.WastagePercent.Decimal.Div(decimal.NewFromInt(100))))
-	}
-	return decimal.NullDecimal{Decimal: total, Valid: true}
-}
-
 // TechCardSizeQuantity is the production order quantity for a size (size run).
 type TechCardSizeQuantity struct {
 	SizeId   int `db:"size_id"`
@@ -358,33 +374,14 @@ type TechCardSizePattern struct {
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
 }
 
-// TechCardPomGrade is the graded value of a POM point for a size.
-type TechCardPomGrade struct {
-	SizeId int             `db:"size_id"`
-	Value  decimal.Decimal `db:"value"`
-}
-
-// TechCardPomActual is an actual measured value, optionally from a fitting and at
-// a specific size (so it can be compared to that size's grade ± tolerance).
-type TechCardPomActual struct {
-	FittingId sql.NullInt32   `db:"fitting_id"`
-	SizeId    sql.NullInt32   `db:"size_id"`
-	Label     sql.NullString  `db:"label"`
-	Value     decimal.Decimal `db:"value"`
-}
-
-// TechCardPomPoint is a point of measure with its grade and actuals (Sheet «Измерения»).
-type TechCardPomPoint struct {
-	Id             int                 `db:"id"`
-	Section        sql.NullString      `db:"section"`
-	Code           sql.NullString      `db:"code"`
-	Name           string              `db:"name"`
-	HowToMeasure   sql.NullString      `db:"how_to_measure"`
-	BaseValue      decimal.NullDecimal `db:"base_value"`
-	TolerancePlus  decimal.NullDecimal `db:"tolerance_plus"`
-	ToleranceMinus decimal.NullDecimal `db:"tolerance_minus"`
-	Grades         []TechCardPomGrade  `db:"-"`
-	Actuals        []TechCardPomActual `db:"-"`
+// TechCardDetail is one aspect of the construction description (Sheet «Титул», lower
+// block) with optional reference images. Replaces the flat construction-description
+// strings (silhouette/collar/fastening/…); Key is freeform.
+type TechCardDetail struct {
+	Id       int            `db:"id"`
+	Key      sql.NullString `db:"detail_key"`  // aspect name (silhouette/collar/…); freeform
+	Text     sql.NullString `db:"detail_text"` // the description for this aspect
+	MediaIds []int          `db:"-"`           // FK media(id); persisted to tech_card_detail_media
 }
 
 // TechCardLabelType classifies a label/tag. Mirrors the common.TechCardLabelType
@@ -429,9 +426,6 @@ type TechCardConstruction struct {
 	Pressing        sql.NullString `db:"pressing"`
 	MachineClass    sql.NullString `db:"machine_class"`
 	Notes           sql.NullString `db:"notes"`
-	// labour rate (Phase 3.5b): per-minute cost; × Σ(operation SAM) = labour cost.
-	LabourRate         decimal.NullDecimal `db:"labour_rate"`
-	LabourRateCurrency sql.NullString      `db:"labour_rate_currency"`
 }
 
 // TechCardOperationType is the machine / stitch class of an operation. Mirrors the
@@ -502,10 +496,15 @@ type TechCardOperation struct {
 	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset
 	Zone          TechCardConstructionZone `db:"zone"`           // display-grouping band; "unknown" = unset
 	// BomItemIndex is the 0-based index into the submitted bom_items of the material
-	// this operation applies; NULL = no reference (index 0 is a valid reference).
+	// this operation applies; NULL = no reference (index 0 is a valid reference). When
+	// set it wins; otherwise the material resolves via Placement against the selected
+	// colourway's usages.
 	BomItemIndex sql.NullInt32 `db:"bom_item_index"`
 	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
+	// Placement is the garment part this operation works on; resolves the real material
+	// via the selected colourway's usages (normalized trim+lower match). NULL = unset.
+	Placement sql.NullString `db:"placement"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
@@ -550,7 +549,6 @@ type TechCardSignoffSection string
 const (
 	SignoffDesign       TechCardSignoffSection = "design"
 	SignoffConstruction TechCardSignoffSection = "construction"
-	SignoffPom          TechCardSignoffSection = "pom"
 	SignoffMaterials    TechCardSignoffSection = "materials"
 	SignoffColour       TechCardSignoffSection = "colour"
 	SignoffLabels       TechCardSignoffSection = "labels"
@@ -559,7 +557,7 @@ const (
 )
 
 var ValidTechCardSignoffSections = map[TechCardSignoffSection]bool{
-	SignoffDesign: true, SignoffConstruction: true, SignoffPom: true, SignoffMaterials: true,
+	SignoffDesign: true, SignoffConstruction: true, SignoffMaterials: true,
 	SignoffColour: true, SignoffLabels: true, SignoffPackaging: true, SignoffCosting: true,
 }
 
@@ -624,55 +622,43 @@ type TechCardCosting struct {
 	Notes            sql.NullString      `db:"notes"`
 }
 
-// TechCardInsert is the writable payload for a tech card (header + construction
-// description + child sections). Child slices are full replacements on update.
+// TechCardInsert is the writable payload for a tech card (header + child sections).
+// Child slices are full replacements on update. The construction description lives in
+// Details; the header carries no cost targets (pricing is on Costing).
 type TechCardInsert struct {
-	StyleNumber       string                  `db:"style_number"`
-	Name              string                  `db:"name"`
-	Brand             sql.NullString          `db:"brand"`
-	Season            sql.NullString          `db:"season"`
-	Collection        sql.NullString          `db:"collection"`
-	CategoryId        sql.NullInt32           `db:"category_id"`
-	TargetGender      sql.NullString          `db:"target_gender"`
-	Stage             TechCardStage           `db:"stage"`
-	Status            sql.NullString          `db:"status"`
-	ApprovalState     TechCardApprovalState   `db:"approval_state"`
-	ApprovedBy        sql.NullString          `db:"approved_by"`
-	ApprovedAt        sql.NullTime            `db:"approved_at"`
-	ReleasedAt        sql.NullTime            `db:"released_at"`
-	Version           sql.NullString          `db:"version"`
-	RevisionDate      sql.NullTime            `db:"revision_date"`
-	BaseModelId       sql.NullInt32           `db:"base_model_id"`
-	BaseSampleSizeId  sql.NullInt32           `db:"base_sample_size_id"`
-	Designer          sql.NullString          `db:"designer"`
-	Constructor       sql.NullString          `db:"constructor"`
-	Technologist      sql.NullString          `db:"technologist"`
-	TargetCost        decimal.NullDecimal     `db:"target_cost"`
-	TargetRetailPrice decimal.NullDecimal     `db:"target_retail_price"`
-	Currency          sql.NullString          `db:"currency"`
-	MeasurementUnit   TechCardMeasurementUnit `db:"measurement_unit"`
-	// construction description
-	Description  sql.NullString `db:"description"`
-	Concept      sql.NullString `db:"concept"`
-	Silhouette   sql.NullString `db:"silhouette"`
-	Collar       sql.NullString `db:"collar"`
-	Fastening    sql.NullString `db:"fastening"`
-	Pockets      sql.NullString `db:"pockets"`
-	SleeveCuff   sql.NullString `db:"sleeve_cuff"`
-	ExtraDetails sql.NullString `db:"extra_details"`
-	Topstitching sql.NullString `db:"topstitching"`
-	AuxMaterials sql.NullString `db:"aux_materials"`
-	Notes        sql.NullString `db:"notes"`
+	StyleNumber      string                  `db:"style_number"`
+	Name             string                  `db:"name"`
+	Brand            sql.NullString          `db:"brand"`
+	Season           sql.NullString          `db:"season"`
+	Collection       sql.NullString          `db:"collection"`
+	CategoryId       sql.NullInt32           `db:"category_id"`
+	TargetGender     sql.NullString          `db:"target_gender"`
+	Stage            TechCardStage           `db:"stage"`
+	Status           sql.NullString          `db:"status"`
+	ApprovalState    TechCardApprovalState   `db:"approval_state"`
+	ApprovedBy       sql.NullString          `db:"approved_by"`
+	ApprovedAt       sql.NullTime            `db:"approved_at"`
+	ReleasedAt       sql.NullTime            `db:"released_at"`
+	Version          sql.NullString          `db:"version"`
+	RevisionDate     sql.NullTime            `db:"revision_date"`
+	BaseModelId      sql.NullInt32           `db:"base_model_id"`
+	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
+	Designer         sql.NullString          `db:"designer"`
+	Constructor      sql.NullString          `db:"constructor"`
+	Technologist     sql.NullString          `db:"technologist"`
+	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
+	Concept          sql.NullString          `db:"concept"` // design concept / intent (designer)
+	Notes            sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
 	SizeIds    []int               `db:"-"`
 	ProductIds []int               `db:"-"`
 	Media      []TechCardMediaItem `db:"-"`
 	Callouts   []TechCardCallout   `db:"-"`
 	Revisions  []TechCardRevision  `db:"-"`
+	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
 	// materials (Phase 2)
-	BomItems  []TechCardBomItem  `db:"-"`
-	Colorways []TechCardColorway `db:"-"`
-	PomPoints []TechCardPomPoint `db:"-"`
+	BomItems  []TechCardBomItem  `db:"-"` // article catalog
+	Colorways []TechCardColorway `db:"-"` // colourways carry the usage recipe
 	// production (Phase 3); 1:1 sections are nil when unset
 	Construction   *TechCardConstruction  `db:"-"`
 	Operations     []TechCardOperation    `db:"-"`

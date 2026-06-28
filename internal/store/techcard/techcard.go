@@ -33,20 +33,18 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-// header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard).
+// header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
+// targets and the flat construction-description strings are gone (description → details[];
+// pricing is on costing).
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	target_cost, target_retail_price, currency, measurement_unit,
-	description, concept, silhouette, fastening, pockets, sleeve_cuff, extra_details, collar,
-	topstitching, aux_materials, notes`
+	measurement_unit, concept, notes`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:target_cost, :target_retail_price, :currency, :measurement_unit,
-	:description, :concept, :silhouette, :fastening, :pockets, :sleeve_cuff, :extra_details, :collar,
-	:topstitching, :aux_materials, :notes`
+	:measurement_unit, :concept, :notes`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	return map[string]any{
@@ -70,21 +68,9 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"designer":            tc.Designer,
 		"constructor":         tc.Constructor,
 		"technologist":        tc.Technologist,
-		"target_cost":         tc.TargetCost,
-		"target_retail_price": tc.TargetRetailPrice,
-		"currency":            tc.Currency,
 		"measurement_unit":    string(tc.MeasurementUnit),
-		"description":         tc.Description,
-		"silhouette":          tc.Silhouette,
-		"collar":              tc.Collar,
-		"fastening":           tc.Fastening,
-		"pockets":             tc.Pockets,
-		"sleeve_cuff":         tc.SleeveCuff,
-		"extra_details":       tc.ExtraDetails,
-		"topstitching":        tc.Topstitching,
-		"aux_materials":       tc.AuxMaterials,
-		"notes":               tc.Notes,
 		"concept":             tc.Concept,
+		"notes":               tc.Notes,
 	}
 }
 
@@ -156,14 +142,17 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			}
 			return fmt.Errorf("failed to load tech card for update: %w", err)
 		}
-		if cur.LockVersion != expectedLockVersion {
-			return entity.ErrTechCardConflict
-		}
-		// A released card is frozen for the factory: only a re-open to draft is
-		// allowed; any other edit while still released is rejected.
+		// Freeze check BEFORE the version check (plan §4): a released card is frozen for
+		// the factory — only a re-open to draft is allowed; any other edit while still
+		// released is rejected. Checking this first means a stale-version edit of a
+		// released card gets the actionable "re-open to draft" (FailedPrecondition) rather
+		// than a misleading "modified concurrently" (Aborted).
 		if cur.ApprovalState == string(entity.TechCardApprovalReleased) &&
 			tc.ApprovalState != entity.TechCardApprovalDraft {
 			return entity.ErrTechCardReleased
+		}
+		if cur.LockVersion != expectedLockVersion {
+			return entity.ErrTechCardConflict
 		}
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
@@ -181,11 +170,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				version = :version, revision_date = :revision_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
-				target_cost = :target_cost, target_retail_price = :target_retail_price, currency = :currency,
-				measurement_unit = :measurement_unit,
-				description = :description, concept = :concept, silhouette = :silhouette, collar = :collar,
-				fastening = :fastening, pockets = :pockets, sleeve_cuff = :sleeve_cuff, extra_details = :extra_details,
-				topstitching = :topstitching, aux_materials = :aux_materials, notes = :notes
+				measurement_unit = :measurement_unit, concept = :concept, notes = :notes
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
@@ -196,13 +181,13 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return entity.ErrTechCardConflict
 		}
 
-		// Delete tech_card_bom_item before tech_card_colorway so the bom-colourway
-		// matrix cascades out via the BOM line; pom grades/actuals and bom-colourway
-		// cells cascade from their parents.
+		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade
+		// from their parents — colourway usages (+ their per-size consumption) via
+		// tech_card_colorway, and detail media via tech_card_detail.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
-			"tech_card_callout", "tech_card_revision",
-			"tech_card_bom_item", "tech_card_colorway", "tech_card_pom_point",
+			"tech_card_callout", "tech_card_revision", "tech_card_detail",
+			"tech_card_bom_item", "tech_card_colorway",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 			"tech_card_size_pattern",
@@ -317,16 +302,16 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardRevisions(ctx, db, id, tc.Revisions); err != nil {
 		return err
 	}
-	// Materials (Phase 2): colourways first so the BOM colour matrix can resolve
-	// each colorway_index to a freshly-inserted colourway id.
-	colorwayIds, err := insertTechCardColorways(ctx, db, id, tc.Colorways)
-	if err != nil {
+	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
-	if err := insertTechCardBom(ctx, db, id, tc.BomItems, colorwayIds); err != nil {
+	// Materials (Phase 2): colourways (each with its usage recipe) and the BOM article
+	// catalog. A usage's bom_item_index points into the BOM by position, so order is
+	// not load-bearing between the two inserts.
+	if err := insertTechCardColorways(ctx, db, id, tc.Colorways); err != nil {
 		return err
 	}
-	if err := insertTechCardPom(ctx, db, id, tc.PomPoints); err != nil {
+	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
 		return err
 	}
 	// production (Phase 3)

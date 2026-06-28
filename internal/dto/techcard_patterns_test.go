@@ -15,99 +15,102 @@ func ndFrom(s string) decimal.NullDecimal {
 	return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
 }
 
-func TestTechCardBomSizeRunTotal(t *testing.T) {
-	b := entity.TechCardBomItem{
-		UnitPrice: ndFrom("2.00"),
+func decEq(t *testing.T, nd decimal.NullDecimal, want string) {
+	t.Helper()
+	if !nd.Valid || !nd.Decimal.Equal(decimal.RequireFromString(want)) {
+		t.Fatalf("got %v (valid=%v), want %s", nd.Decimal, nd.Valid, want)
+	}
+}
+
+// TestColorwayUsageTotals locks the per-usage cost formulas: a measured usage is
+// consumption × price grossed up by the article wastage; a countable trim is quantity ×
+// price with NO wastage; a per-size usage moves its cost to size_run_total (line_total
+// goes invalid) and folds per-size consumption against order quantities.
+func TestColorwayUsageTotals(t *testing.T) {
+	bom := &entity.TechCardBomItem{UnitPrice: ndFrom("10"), WastagePercent: ndFrom("10")}
+	bomNoWaste := &entity.TechCardBomItem{UnitPrice: ndFrom("10")}
+
+	// measured consumption, no per-size: line_total = 2 × 10 × 1.1 = 22; size_run invalid.
+	measured := entity.TechCardColorwayUsage{Consumption: ndFrom("2")}
+	decEq(t, measured.LineTotal(bom), "22")
+	if rt := measured.SizeRunTotal(bom, map[int]int{4: 10}); rt.Valid {
+		t.Fatalf("size_run_total should be invalid without per-size consumption")
+	}
+
+	// countable quantity: 3 × 10 = 30, wastage N/A even though the article has a wastage %.
+	countable := entity.TechCardColorwayUsage{Quantity: ndFrom("3")}
+	decEq(t, countable.LineTotal(bom), "30")
+	decEq(t, countable.LineTotal(bomNoWaste), "30")
+
+	// per-size: line_total invalid; size_run = (1.5×10 + 1.8×20) × 10 × 1.1 = 51 × 11 = 561.
+	perSize := entity.TechCardColorwayUsage{
+		Consumption: ndFrom("2"), // ignored once size consumptions are present
 		SizeConsumptions: []entity.TechCardBomSizeConsumption{
 			{SizeId: 4, Consumption: decimal.RequireFromString("1.5")},
 			{SizeId: 5, Consumption: decimal.RequireFromString("1.8")},
 		},
 	}
-	// (1.5*10 + 1.8*20) * 2.00 = 51 * 2 = 102
-	got := b.SizeRunTotal(map[int]int{4: 10, 5: 20})
-	if !got.Valid || !got.Decimal.Equal(decimal.RequireFromString("102")) {
-		t.Fatalf("run total = %v (valid=%v), want 102", got.Decimal, got.Valid)
+	if lt := perSize.LineTotal(bom); lt.Valid {
+		t.Fatalf("line_total must be invalid when per-size consumption is present")
 	}
-	// with 10% wastage: 102 * 1.1 = 112.2
-	b.WastagePercent = ndFrom("10")
-	got = b.SizeRunTotal(map[int]int{4: 10, 5: 20})
-	if !got.Valid || !got.Decimal.Equal(decimal.RequireFromString("112.2")) {
-		t.Fatalf("run total w/ wastage = %v, want 112.2", got.Decimal)
+	decEq(t, perSize.SizeRunTotal(bom, map[int]int{4: 10, 5: 20}), "561")
+	// a size with no order quantity contributes nothing: only size 4 → 1.5×10 × 10 × 1.1 = 165.
+	decEq(t, perSize.SizeRunTotal(bom, map[int]int{4: 10}), "165")
+	// no order quantities at all → invalid (cost is 0 until a size run is set).
+	if rt := perSize.SizeRunTotal(bom, map[int]int{}); rt.Valid {
+		t.Fatalf("size_run_total with no quantities should be invalid")
 	}
-	// a size with no order quantity contributes nothing; here only size 4 has qty.
-	got = b.SizeRunTotal(map[int]int{4: 10})
-	if !got.Valid || !got.Decimal.Equal(decimal.RequireFromString("33")) { // 1.5*10*2*1.1
-		t.Fatalf("run total (partial qty) = %v, want 33", got.Decimal)
-	}
-	// no order quantities at all -> invalid so the rollup falls back to LineTotal.
-	if got := b.SizeRunTotal(map[int]int{}); got.Valid {
-		t.Fatalf("run total with no quantities should be invalid, got %v", got.Decimal)
-	}
-	// no per-size consumption -> invalid.
-	empty := entity.TechCardBomItem{UnitPrice: ndFrom("2")}
-	if got := empty.SizeRunTotal(map[int]int{4: 10}); got.Valid {
-		t.Fatalf("run total with no size consumption should be invalid")
+
+	// EffectiveTotal prefers size_run when valid, else falls back to line_total.
+	decEq(t, perSize.EffectiveTotal(bom, map[int]int{4: 10, 5: 20}), "561")
+	decEq(t, measured.EffectiveTotal(bom, map[int]int{4: 10}), "22")
+
+	// no article (unresolved index) → no cost.
+	if lt := measured.LineTotal(nil); lt.Valid {
+		t.Fatalf("line_total against a nil article should be invalid")
 	}
 }
 
-func TestEffectiveBomLineTotalFallback(t *testing.T) {
-	// no per-size -> per-garment LineTotal (consumption*price).
-	perGarment := entity.TechCardBomItem{Consumption: ndFrom("2"), UnitPrice: ndFrom("3")}
-	if eff := effectiveBomLineTotal(&perGarment, map[int]int{4: 10}); !eff.Valid || !eff.Decimal.Equal(decimal.RequireFromString("6")) {
-		t.Fatalf("effective (fallback) = %v, want 6", eff.Decimal)
-	}
-	// per-size present + quantities -> size-run total.
-	perSize := entity.TechCardBomItem{
-		UnitPrice:        ndFrom("2"),
-		SizeConsumptions: []entity.TechCardBomSizeConsumption{{SizeId: 4, Consumption: decimal.RequireFromString("1.5")}},
-	}
-	if eff := effectiveBomLineTotal(&perSize, map[int]int{4: 10}); !eff.Valid || !eff.Decimal.Equal(decimal.RequireFromString("30")) {
-		t.Fatalf("effective (run) = %v, want 30", eff.Decimal)
-	}
-}
-
-func TestBomMaterialsRollupUsesRunTotal(t *testing.T) {
+// TestColorwayCostRollup checks one colourway's per-currency rollup: usages bucket by their
+// article currency, currency-less lines fold into the costing currency, a foreign currency
+// is excluded and flags has_unconverted_currencies.
+func TestColorwayCostRollup(t *testing.T) {
 	eur := sql.NullString{String: "EUR", Valid: true}
-	items := []entity.TechCardBomItem{
-		{ // per-size line: 1.5*10*2 = 30
-			Currency:         eur,
-			UnitPrice:        ndFrom("2"),
-			SizeConsumptions: []entity.TechCardBomSizeConsumption{{SizeId: 4, Consumption: decimal.RequireFromString("1.5")}},
-		},
-		{Currency: eur, Consumption: ndFrom("2"), UnitPrice: ndFrom("3")}, // per-garment: 6
+	usd := sql.NullString{String: "USD", Valid: true}
+	bomItems := []entity.TechCardBomItem{
+		{UnitPrice: ndFrom("10"), Currency: eur}, // index 0
+		{UnitPrice: ndFrom("3"), Currency: usd},  // index 1
+		{UnitPrice: ndFrom("5")},                 // index 2, currency-less
 	}
-	lines, cost := bomMaterialsRollup(items, eur, map[int]int{4: 10})
-	if !cost.Equal(decimal.RequireFromString("36")) { // 30 + 6
-		t.Fatalf("materials cost = %v, want 36", cost)
+	idx := func(i int32) sql.NullInt32 { return sql.NullInt32{Int32: i, Valid: true} }
+	cw := entity.TechCardColorway{Usages: []entity.TechCardColorwayUsage{
+		{BomItemIndex: idx(0), Quantity: ndFrom("2")}, // 20 EUR
+		{BomItemIndex: idx(1), Quantity: ndFrom("1")}, // 3 USD
+		{BomItemIndex: idx(2), Quantity: ndFrom("4")}, // 20 currency-less
+	}}
+	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{})
+	// materials_cost = EUR(20) + currency-less(20) = 40; USD excluded.
+	if !res.materialsCost.Equal(decimal.RequireFromString("40")) {
+		t.Fatalf("materials_cost = %v, want 40", res.materialsCost)
 	}
-	if len(lines) != 1 || lines[0].Currency != "EUR" {
-		t.Fatalf("unexpected rollup lines: %+v", lines)
+	if !res.hasUnconverted {
+		t.Fatalf("expected has_unconverted_currencies (USD usage vs EUR costing)")
+	}
+	byCcy := map[string]string{}
+	for _, l := range res.materialsTotal {
+		byCcy[l.Currency] = l.Amount.Value
+	}
+	if byCcy["EUR"] != "20" || byCcy["USD"] != "3" || byCcy[""] != "20" {
+		t.Fatalf("materials_total buckets mismatch: %+v", byCcy)
 	}
 }
 
-func TestTechCardPatternsAndColorwayMaterialsRoundTrip(t *testing.T) {
+// TestTechCardPatternsRoundTrip covers parsing and re-emitting the per-size PDF выкройки.
+func TestTechCardPatternsRoundTrip(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-PAT",
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
-		Colorways: []*pb_common.TechCardColorway{
-			{Name: "Black"},
-			{Name: "Navy"},
-		},
-		BomItems: []*pb_common.TechCardBomItem{
-			{
-				Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
-				Name:    "Main fabric",
-				ColorwayColors: []*pb_common.TechCardBomColorwayColor{
-					{ColorwayIndex: 0, Color: "Jet"},
-					{ColorwayIndex: 1, Color: "Indigo"},
-				},
-				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{
-					{SizeId: 4, Consumption: &pb_decimal.Decimal{Value: "1.5"}},
-					{SizeId: 5, Consumption: &pb_decimal.Decimal{Value: "1.8"}},
-				},
-			},
-		},
 		Patterns: []*pb_common.TechCardSizePattern{
 			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234},
 			{SizeId: 4, Url: "https://cdn/x4b.pdf"}, // multiple per size is allowed
@@ -121,34 +124,13 @@ func TestTechCardPatternsAndColorwayMaterialsRoundTrip(t *testing.T) {
 	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/x4.pdf" {
 		t.Fatalf("patterns not parsed: %+v", ent.Patterns)
 	}
-	if len(ent.BomItems[0].SizeConsumptions) != 2 {
-		t.Fatalf("size consumptions not parsed: %+v", ent.BomItems[0].SizeConsumptions)
-	}
-
 	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent})
 	if len(out.TechCard.Patterns) != 3 || out.TechCard.Patterns[0].Filename != "front-m.pdf" || out.TechCard.Patterns[0].SizeBytes != 1234 {
 		t.Fatalf("patterns round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
-	if len(out.TechCard.Colorways) != 2 {
-		t.Fatalf("colorways: %d", len(out.TechCard.Colorways))
-	}
-	black := out.TechCard.Colorways[0]
-	if len(black.Materials) != 1 || black.Materials[0].MaterialName != "Main fabric" ||
-		black.Materials[0].Color != "Jet" || black.Materials[0].BomItemIndex != 0 {
-		t.Fatalf("colorway[0] materials mismatch: %+v", black.Materials)
-	}
-	navy := out.TechCard.Colorways[1]
-	if len(navy.Materials) != 1 || navy.Materials[0].Color != "Indigo" {
-		t.Fatalf("colorway[1] materials mismatch: %+v", navy.Materials)
-	}
-	// size-run total surfaced on the BOM line: (1.5*10 + 1.8*20)*... but no quantities
-	// here, so it must be empty and line_total carries the per-garment value (none set).
-	if out.TechCard.BomItems[0].SizeRunTotal != nil {
-		t.Fatalf("size_run_total should be empty without order quantities: %v", out.TechCard.BomItems[0].SizeRunTotal)
-	}
 }
 
-func TestTechCardPatternAndConsumptionValidation(t *testing.T) {
+func TestTechCardPatternAndUsageValidation(t *testing.T) {
 	cases := map[string]*pb_common.TechCardInsert{
 		"pattern size not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 9, Url: "u"}}},
@@ -156,18 +138,14 @@ func TestTechCardPatternAndConsumptionValidation(t *testing.T) {
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "  "}}},
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
-		"bom consumption size not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			BomItems: []*pb_common.TechCardBomItem{{
-				Section:          pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
-				Name:             "f",
+		"usage size_consumption not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
 				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 9, Consumption: &pb_decimal.Decimal{Value: "1"}}},
-			}}},
-		"bom consumption negative": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			BomItems: []*pb_common.TechCardBomItem{{
-				Section:          pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
-				Name:             "f",
+			}}}}},
+		"usage size_consumption negative": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
 				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 4, Consumption: &pb_decimal.Decimal{Value: "-1"}}},
-			}}},
+			}}}}},
 	}
 	for name, in := range cases {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
