@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
@@ -11,6 +12,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// maxPatternFilename bounds the echoed/stored original pattern filename (mirrors the
+// tech_card_size_pattern.filename / fitting_pattern.filename VARCHAR(255) columns).
+const maxPatternFilename = 255
 
 // UploadContentImage
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
@@ -37,6 +42,33 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 	}
 	return &pb_admin.UploadContentVideoResponse{
 		Media: media,
+	}, nil
+}
+
+// UploadPattern uploads a raw PDF cut pattern (выкройка) and returns its url. The file is
+// stored in object storage (not the media library) and referenced by tech-card per-size
+// patterns and fitting iteration patterns.
+func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternRequest) (*pb_admin.UploadPatternResponse, error) {
+	if len(req.GetFilename()) > maxPatternFilename {
+		return nil, status.Errorf(codes.InvalidArgument, "filename must be at most %d characters", maxPatternFilename)
+	}
+	url, sizeBytes, err := s.bucket.UploadPatternPDF(ctx, req.GetRaw(), bucket.GetMediaName())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't upload pattern pdf",
+			slog.String("err", err.Error()),
+		)
+		// A rejected payload (empty / too large / not a PDF) is the client's fault;
+		// anything else (e.g. an S3 PutObject failure) is an internal error.
+		code := codes.Internal
+		if errors.Is(err, bucket.ErrInvalidPattern) {
+			code = codes.InvalidArgument
+		}
+		return nil, status.Errorf(code, "failed to upload pattern: %v", err)
+	}
+	return &pb_admin.UploadPatternResponse{
+		Url:       url,
+		Filename:  req.GetFilename(),
+		SizeBytes: sizeBytes,
 	}, nil
 }
 

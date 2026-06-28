@@ -20,6 +20,7 @@ const (
 	contentTypeJSON ContentType = "application/json"
 	contentTypeMP4  ContentType = "video/mp4"
 	contentTypeWEBM ContentType = "video/webm"
+	contentTypePDF  ContentType = "application/pdf"
 
 	// Image formats identified by content sniffing. Only JPEG/PNG/WebP/HEIC are
 	// decodable; AVIF/HEIF/GIF are recognized solely to emit a precise error.
@@ -36,6 +37,7 @@ var mimeTypeToFileExtension = map[ContentType]string{
 	contentTypeMP4:  "mp4",
 	contentTypeWEBM: "webm",
 	contentTypeWEBP: "webp",
+	contentTypePDF:  "pdf",
 }
 
 func fileExtensionFromContentType(contentType ContentType) (string, error) {

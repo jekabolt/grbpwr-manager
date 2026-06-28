@@ -45,20 +45,31 @@ type FittingSize struct {
 	FitNote sql.NullString `db:"fit_note"`
 }
 
+// FittingPattern is a PDF cut-pattern (выкройка) iteration measured in a fitting. It is a
+// snapshot of the uploaded file (url + filename), not a live reference to a tech-card
+// pattern — the tech card holds the final pattern, a fitting captures the iteration tried.
+type FittingPattern struct {
+	SizeId    sql.NullInt32  `db:"size_id"`
+	URL       string         `db:"url"`
+	Filename  sql.NullString `db:"filename"`
+	SizeBytes sql.NullInt64  `db:"size_bytes"`
+}
+
 // FittingInsert is the writable payload for a fitting session. A fitting anchors
 // to a tech card (the style) and/or a specific product (the colour/SKU sample);
 // at least one of TechCardId / ProductId is set (enforced in the API layer).
 type FittingInsert struct {
-	TechCardId  sql.NullInt32  `db:"tech_card_id"`
-	ProductId   sql.NullInt32  `db:"product_id"`
-	ModelId     sql.NullInt32  `db:"model_id"`
-	FittingDate time.Time      `db:"fitting_date"`
-	Comment     sql.NullString `db:"comment"`
-	Status      FittingStatus  `db:"status"`
-	Verdict     FittingVerdict `db:"verdict"`
-	RecordedBy  sql.NullString `db:"recorded_by"`
-	Sizes       []FittingSize  `db:"-"`
-	MediaIds    []int          `db:"-"`
+	TechCardId  sql.NullInt32    `db:"tech_card_id"`
+	ProductId   sql.NullInt32    `db:"product_id"`
+	ModelId     sql.NullInt32    `db:"model_id"`
+	FittingDate time.Time        `db:"fitting_date"`
+	Comment     sql.NullString   `db:"comment"`
+	Status      FittingStatus    `db:"status"`
+	Verdict     FittingVerdict   `db:"verdict"`
+	RecordedBy  sql.NullString   `db:"recorded_by"`
+	Sizes       []FittingSize    `db:"-"`
+	MediaIds    []int            `db:"-"`
+	Patterns    []FittingPattern `db:"-"`
 }
 
 // Fitting is a stored fitting session (fitting row + sizes + resolved media).

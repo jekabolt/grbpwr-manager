@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -16,9 +17,10 @@ import (
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
 // over-length input fails as InvalidArgument rather than a MySQL 1406 Internal error.
 const (
-	maxVarchar32 = 32
-	maxVarchar64 = 64
-	maxCurrency  = 3
+	maxVarchar32   = 32
+	maxVarchar64   = 64
+	maxVarchar1024 = 1024
+	maxCurrency    = 3
 
 	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
 	// as InvalidArgument, not a MySQL out-of-range Internal error.
@@ -26,8 +28,6 @@ const (
 	bomQtyLimit     = 10_000_000
 	bomPriceMaxFrac = 4 // unit_price DECIMAL(12,4)
 	bomPriceLimit   = 100_000_000
-	pomMaxFrac      = 2 // POM values DECIMAL(8,2)
-	pomLimit        = 1_000_000
 )
 
 var techCardStagePbToEntity = map[pb_common.TechCardStage]entity.TechCardStage{
@@ -117,6 +117,9 @@ var techCardBomSectionPbToEntity = map[pb_common.TechCardBomSection]entity.TechC
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD:      entity.BomSectionThread,
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL:       entity.BomSectionLabel,
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING:   entity.BomSectionPackaging,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM:        entity.BomSectionTrim,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_DECORATION:  entity.BomSectionDecoration,
+	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_OTHER:       entity.BomSectionOther,
 }
 
 var techCardBomSectionEntityToPb = func() map[entity.TechCardBomSection]pb_common.TechCardBomSection {
@@ -175,10 +178,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
 		}
 	}
-	if pb.Currency != "" && len(pb.Currency) != maxCurrency {
-		return nil, fmt.Errorf("currency must be a 3-letter ISO 4217 code")
-	}
-
 	stage := entity.TechCardStageProto
 	if pb.Stage != pb_common.TechCardStage_TECH_CARD_STAGE_UNKNOWN {
 		s, ok := techCardStagePbToEntity[pb.Stage]
@@ -197,7 +196,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		approvalState = a
 	}
 
-	unit := entity.TechCardUnitCm
+	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
+	// stopped sending cm, though the enum keeps cm for back-compat reads).
+	unit := entity.TechCardUnitMm
 	if pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
 		u, ok := techCardUnitPbToEntity[pb.MeasurementUnit]
 		if !ok {
@@ -213,21 +214,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	if pb.CategoryId < 0 || pb.BaseModelId < 0 || pb.BaseSampleSizeId < 0 {
 		return nil, fmt.Errorf("category_id, base_model_id and base_sample_size_id must not be negative")
-	}
-
-	targetCost, err := nullDecimalFromPb(pb.TargetCost)
-	if err != nil {
-		return nil, fmt.Errorf("target_cost: %w", err)
-	}
-	if err := validateMoney(targetCost, "target_cost"); err != nil {
-		return nil, err
-	}
-	targetRetail, err := nullDecimalFromPb(pb.TargetRetailPrice)
-	if err != nil {
-		return nil, fmt.Errorf("target_retail_price: %w", err)
-	}
-	if err := validateMoney(targetRetail, "target_retail_price"); err != nil {
-		return nil, err
 	}
 
 	sizeIds, err := dedupePositiveIDs(pb.SizeIds, "size_ids")
@@ -316,17 +302,18 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		})
 	}
 
-	// materials (Phase 2). Colorways are parsed first so BOM colorway_index can be
-	// range-checked against them.
-	colorways, err := parseTechCardColorways(pb.Colorways, productIds)
+	details, err := parseTechCardDetails(pb.Details)
 	if err != nil {
 		return nil, err
 	}
-	bomItems, err := parseTechCardBomItems(pb.BomItems, len(colorways))
+
+	// materials (Phase 2). The BOM is parsed first (a pure article catalog); colourways
+	// carry the usage recipe whose bom_item_index is range-checked against the BOM.
+	bomItems, err := parseTechCardBomItems(pb.BomItems)
 	if err != nil {
 		return nil, err
 	}
-	pomPoints, err := parseTechCardPomPoints(pb.PomPoints, sizeIds)
+	colorways, err := parseTechCardColorways(pb.Colorways, productIds, len(bomItems), sizeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +323,14 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	operations, err := parseTechCardOperations(pb.Operations)
+	// Operations may reference a BOM material by index and a sketch callout by
+	// number; both are validated against the same submitted payload (full-replace
+	// has no stable ids to FK against on write).
+	calloutNumbers := make(map[int]bool, len(callouts))
+	for _, c := range callouts {
+		calloutNumbers[c.Number] = true
+	}
+	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems))
 	if err != nil {
 		return nil, err
 	}
@@ -361,6 +355,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 	signoffs, err := parseTechCardSignoffs(pb.Signoffs)
+	if err != nil {
+		return nil, err
+	}
+	patterns, err := parseTechCardPatterns(pb.Patterns, sizeIds)
 	if err != nil {
 		return nil, err
 	}
@@ -399,41 +397,95 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
 		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
 		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
-		Designer:          nullStringFromPb(pb.Designer),
-		Constructor:       nullStringFromPb(pb.Constructor),
-		Technologist:      nullStringFromPb(pb.Technologist),
-		TargetCost:        targetCost,
-		TargetRetailPrice: targetRetail,
-		Currency:          nullStringFromPb(pb.Currency),
-		MeasurementUnit:   unit,
-		Description:       nullStringFromPb(pb.Description),
-		Concept:           nullStringFromPb(pb.Concept),
-		Silhouette:        nullStringFromPb(pb.Silhouette),
-		Collar:            nullStringFromPb(pb.Collar),
-		Fastening:         nullStringFromPb(pb.Fastening),
-		Pockets:           nullStringFromPb(pb.Pockets),
-		SleeveCuff:        nullStringFromPb(pb.SleeveCuff),
-		ExtraDetails:      nullStringFromPb(pb.ExtraDetails),
-		Topstitching:      nullStringFromPb(pb.Topstitching),
-		AuxMaterials:      nullStringFromPb(pb.AuxMaterials),
-		Notes:             nullStringFromPb(pb.Notes),
-		SizeIds:           sizeIds,
-		ProductIds:        productIds,
-		Media:             media,
-		Callouts:          callouts,
-		Revisions:         revisions,
-		BomItems:          bomItems,
-		Colorways:         colorways,
-		PomPoints:         pomPoints,
-		Construction:      construction,
-		Operations:        operations,
-		Labels:            labels,
-		Packaging:         packaging,
-		Costing:           costing,
-		Issues:            issues,
-		SizeQuantities:    sizeQuantities,
-		Signoffs:          signoffs,
+		Designer:         nullStringFromPb(pb.Designer),
+		Constructor:      nullStringFromPb(pb.Constructor),
+		Technologist:     nullStringFromPb(pb.Technologist),
+		MeasurementUnit:  unit,
+		Concept:          nullStringFromPb(pb.Concept),
+		Notes:            nullStringFromPb(pb.Notes),
+		SizeIds:          sizeIds,
+		ProductIds:       productIds,
+		Media:            media,
+		Callouts:         callouts,
+		Revisions:        revisions,
+		Details:          details,
+		BomItems:         bomItems,
+		Colorways:        colorways,
+		Construction:     construction,
+		Operations:       operations,
+		Labels:           labels,
+		Packaging:        packaging,
+		Costing:          costing,
+		Issues:           issues,
+		SizeQuantities:   sizeQuantities,
+		Signoffs:         signoffs,
+		Patterns:         patterns,
 	}, nil
+}
+
+// parseTechCardDetails parses the construction-description aspects, validating the key
+// length and that each referenced media_id is positive (existence is enforced by the
+// tech_card_detail_media FK → surfaces as InvalidArgument on write).
+func parseTechCardDetails(pbs []*pb_common.TechCardDetail) ([]entity.TechCardDetail, error) {
+	out := make([]entity.TechCardDetail, 0, len(pbs))
+	for _, d := range pbs {
+		if len(d.Key) > maxVarchar64 {
+			return nil, fmt.Errorf("detail key must be at most %d characters", maxVarchar64)
+		}
+		mediaIds := make([]int, 0, len(d.MediaIds))
+		seen := make(map[int]bool, len(d.MediaIds))
+		for _, mid := range d.MediaIds {
+			if mid <= 0 {
+				return nil, fmt.Errorf("detail media_id must be positive")
+			}
+			if seen[int(mid)] {
+				return nil, fmt.Errorf("detail has duplicate media_id %d", mid)
+			}
+			seen[int(mid)] = true
+			mediaIds = append(mediaIds, int(mid))
+		}
+		out = append(out, entity.TechCardDetail{
+			Key:      nullStringFromPb(d.Key),
+			Text:     nullStringFromPb(d.Text),
+			MediaIds: mediaIds,
+		})
+	}
+	return out, nil
+}
+
+// parseTechCardPatterns parses the per-size PDF выкройки, validating each size is in the
+// card's size range, the url is present, and the filename is not over-long.
+func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) ([]entity.TechCardSizePattern, error) {
+	out := make([]entity.TechCardSizePattern, 0, len(pbs))
+	for _, p := range pbs {
+		sid := int(p.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids", p.SizeId)
+		}
+		url := strings.TrimSpace(p.Url)
+		if url == "" {
+			return nil, fmt.Errorf("pattern url is required")
+		}
+		if len(url) > maxVarchar1024 {
+			return nil, fmt.Errorf("pattern url must be at most %d characters", maxVarchar1024)
+		}
+		if !isHTTPURL(url) {
+			return nil, fmt.Errorf("pattern url must be an http(s) URL")
+		}
+		if len(p.Filename) > maxVarchar255 {
+			return nil, fmt.Errorf("pattern filename must be at most %d characters", maxVarchar255)
+		}
+		if p.SizeBytes < 0 {
+			return nil, fmt.Errorf("pattern size_bytes must not be negative")
+		}
+		out = append(out, entity.TechCardSizePattern{
+			SizeId:    sid,
+			URL:       url,
+			Filename:  nullStringFromPb(p.Filename),
+			SizeBytes: nullInt64FromPb(p.SizeBytes),
+		})
+	}
+	return out, nil
 }
 
 // ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard.
@@ -486,6 +538,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 	sizeIds := intsToInt32(tc.SizeIds)
 	productIds := intsToInt32(tc.ProductIds)
 
+	// order quantity per size, used to compute each BOM line's size-run material cost.
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+	}
+
 	return &pb_common.TechCard{
 		Id:          int32(tc.Id),
 		LockVersion: int32(tc.LockVersion),
@@ -509,43 +567,59 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
 			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
 			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
-			Designer:          pbStringFromNull(tc.Designer),
-			Constructor:       pbStringFromNull(tc.Constructor),
-			Technologist:      pbStringFromNull(tc.Technologist),
-			TargetCost:        pbDecimalFromNull(tc.TargetCost),
-			TargetRetailPrice: pbDecimalFromNull(tc.TargetRetailPrice),
-			Currency:          pbStringFromNull(tc.Currency),
-			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
-			Description:       pbStringFromNull(tc.Description),
-			Concept:           pbStringFromNull(tc.Concept),
-			Silhouette:        pbStringFromNull(tc.Silhouette),
-			Collar:            pbStringFromNull(tc.Collar),
-			Fastening:         pbStringFromNull(tc.Fastening),
-			Pockets:           pbStringFromNull(tc.Pockets),
-			SleeveCuff:        pbStringFromNull(tc.SleeveCuff),
-			ExtraDetails:      pbStringFromNull(tc.ExtraDetails),
-			Topstitching:      pbStringFromNull(tc.Topstitching),
-			AuxMaterials:      pbStringFromNull(tc.AuxMaterials),
-			Notes:             pbStringFromNull(tc.Notes),
-			SizeIds:           sizeIds,
-			ProductIds:        productIds,
-			Media:             media,
-			Callouts:          callouts,
-			Revisions:         revisions,
-			BomItems:          techCardBomItemsToPb(tc.BomItems),
-			Colorways:         techCardColorwaysToPb(tc.Colorways),
-			PomPoints:         techCardPomPointsToPb(tc.PomPoints),
-			Construction:      techCardConstructionToPb(tc.Construction),
-			Operations:        techCardOperationsToPb(tc.Operations),
-			Labels:            techCardLabelsToPb(tc.Labels),
-			Packaging:         techCardPackagingToPb(tc.Packaging),
-			Costing:           techCardCostingToPb(tc),
-			Issues:            techCardIssuesToPb(tc.Issues),
-			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
-			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
+			Designer:         pbStringFromNull(tc.Designer),
+			Constructor:      pbStringFromNull(tc.Constructor),
+			Technologist:     pbStringFromNull(tc.Technologist),
+			MeasurementUnit:  pbTechCardMeasurementUnit(tc.MeasurementUnit),
+			Concept:          pbStringFromNull(tc.Concept),
+			Notes:            pbStringFromNull(tc.Notes),
+			SizeIds:          sizeIds,
+			ProductIds:       productIds,
+			Media:            media,
+			Callouts:         callouts,
+			Revisions:        revisions,
+			Details:          techCardDetailsToPb(tc.Details),
+			BomItems:         techCardBomItemsToPb(tc.BomItems),
+			Colorways:        techCardColorwaysToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
+			Construction:     techCardConstructionToPb(tc.Construction),
+			Operations:       techCardOperationsToPb(tc.Operations),
+			Labels:           techCardLabelsToPb(tc.Labels),
+			Packaging:        techCardPackagingToPb(tc.Packaging),
+			Costing:          techCardCostingToPb(tc),
+			Issues:           techCardIssuesToPb(tc.Issues),
+			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
+			Patterns:         techCardPatternsToPb(tc.Patterns),
 		},
 		ResolvedMedia: resolved,
 	}
+}
+
+// techCardDetailsToPb emits the construction-description aspects (+ media) for display.
+func techCardDetailsToPb(details []entity.TechCardDetail) []*pb_common.TechCardDetail {
+	out := make([]*pb_common.TechCardDetail, 0, len(details))
+	for _, d := range details {
+		out = append(out, &pb_common.TechCardDetail{
+			Key:      pbStringFromNull(d.Key),
+			Text:     pbStringFromNull(d.Text),
+			MediaIds: intsToInt32(d.MediaIds),
+		})
+	}
+	return out
+}
+
+// techCardPatternsToPb emits the per-size PDF выкройки for display.
+func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCardSizePattern {
+	out := make([]*pb_common.TechCardSizePattern, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, &pb_common.TechCardSizePattern{
+			SizeId:    int32(p.SizeId),
+			Url:       p.URL,
+			Filename:  pbStringFromNull(p.Filename),
+			SizeBytes: p.SizeBytes.Int64,
+		})
+	}
+	return out
 }
 
 // ConvertEntityTechCardToListItemPb converts a header-only entity.TechCard to a
@@ -601,7 +675,7 @@ func pbTechCardMeasurementUnit(u entity.TechCardMeasurementUnit) pb_common.TechC
 	if v, ok := techCardUnitEntityToPb[u]; ok {
 		return v
 	}
-	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_CM
+	return pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM
 }
 
 func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind {
@@ -613,7 +687,7 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 
 // --- materials (Phase 2): parse pb -> entity ---
 
-func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int) ([]entity.TechCardColorway, error) {
+func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
 	// Non-empty codes must be unique within the card (DB enforces
 	// uniq_tech_card_colorway_code); dedupe here so a collision fails as a precise
@@ -667,6 +741,10 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
 			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
 		}
+		usages, err := parseTechCardColorwayUsages(c.Usages, bomItemCount, sizeIds)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardColorway{
 			Code:               nullStringFromPb(c.Code),
 			Name:               c.Name,
@@ -682,12 +760,64 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int)
 			LabDipDecidedAt:    nullDateFromPbTimestamp(c.LabDipDecidedAt),
 			LabDipDecidedBy:    nullStringFromPb(c.LabDipDecidedBy),
 			LabDipRejectReason: nullStringFromPb(c.LabDipRejectReason),
+			Usages:             usages,
 		})
 	}
 	return out, nil
 }
 
-func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) ([]entity.TechCardBomItem, error) {
+// parseTechCardColorwayUsages parses one colourway's material recipe. A usage's
+// bom_item_index (when set) must point at a submitted BOM line; placement is normalised
+// (trim+lower) so the construction resolver can match operation.placement to it (plan §3).
+func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItemCount int, sizeIds []int) ([]entity.TechCardColorwayUsage, error) {
+	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
+	for _, u := range pbs {
+		var bomItemIndex sql.NullInt32
+		if u.BomItemIndex != nil {
+			idx := *u.BomItemIndex
+			if idx < 0 || int(idx) >= bomItemCount {
+				return nil, fmt.Errorf("usage bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
+			}
+			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		}
+		if len(u.Placement) > maxVarchar255 {
+			return nil, fmt.Errorf("usage placement must be at most %d characters", maxVarchar255)
+		}
+		if len(u.Color) > maxVarchar255 || len(u.Pantone) > maxVarchar64 {
+			return nil, fmt.Errorf("usage color/pantone too long")
+		}
+		consumption, err := nullDecimalFromPb(u.Consumption)
+		if err != nil {
+			return nil, fmt.Errorf("usage consumption: %w", err)
+		}
+		if err := validateDecimalScale(consumption, "usage consumption", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		quantity, err := nullDecimalFromPb(u.Quantity)
+		if err != nil {
+			return nil, fmt.Errorf("usage quantity: %w", err)
+		}
+		if err := validateDecimalScale(quantity, "usage quantity", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		sizeConsumptions, err := parseTechCardSizeConsumptions(u.SizeConsumptions, sizeIds)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entity.TechCardColorwayUsage{
+			BomItemIndex:     bomItemIndex,
+			Placement:        normalizedPlacementNull(u.Placement),
+			Color:            nullStringFromPb(u.Color),
+			Pantone:          nullStringFromPb(u.Pantone),
+			Consumption:      consumption,
+			Quantity:         quantity,
+			SizeConsumptions: sizeConsumptions,
+		})
+	}
+	return out, nil
+}
+
+func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardBomItem, error) {
 	out := make([]entity.TechCardBomItem, 0, len(pbs))
 	for _, b := range pbs {
 		section, ok := techCardBomSectionPbToEntity[b.Section]
@@ -703,7 +833,6 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 			max   int
 		}{
 			{"bom name", b.Name, maxVarchar255},
-			{"bom placement", b.Placement, maxVarchar255},
 			{"bom supplier", b.Supplier, maxVarchar255},
 			{"bom supplier_ref", b.SupplierRef, maxVarchar255},
 			{"bom color", b.Color, maxVarchar255},
@@ -718,20 +847,6 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 		if b.Currency != "" && len(b.Currency) != maxCurrency {
 			return nil, fmt.Errorf("bom currency must be a 3-letter ISO 4217 code")
 		}
-		consumption, err := nullDecimalFromPb(b.Consumption)
-		if err != nil {
-			return nil, fmt.Errorf("bom consumption: %w", err)
-		}
-		if err := validateDecimalScale(consumption, "bom consumption", bomQtyMaxFrac, bomQtyLimit); err != nil {
-			return nil, err
-		}
-		quantity, err := nullDecimalFromPb(b.Quantity)
-		if err != nil {
-			return nil, fmt.Errorf("bom quantity: %w", err)
-		}
-		if err := validateDecimalScale(quantity, "bom quantity", bomQtyMaxFrac, bomQtyLimit); err != nil {
-			return nil, err
-		}
 		unitPrice, err := nullDecimalFromPb(b.UnitPrice)
 		if err != nil {
 			return nil, fmt.Errorf("bom unit_price: %w", err)
@@ -739,28 +854,6 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 		if err := validateDecimalScale(unitPrice, "bom unit_price", bomPriceMaxFrac, bomPriceLimit); err != nil {
 			return nil, err
 		}
-
-		colors := make([]entity.TechCardBomColorwayColor, 0, len(b.ColorwayColors))
-		seen := make(map[int]bool, len(b.ColorwayColors))
-		for _, cc := range b.ColorwayColors {
-			idx := int(cc.ColorwayIndex)
-			if idx < 0 || idx >= colorwayCount {
-				return nil, fmt.Errorf("bom colorway_index %d out of range (have %d colorways)", idx, colorwayCount)
-			}
-			if seen[idx] {
-				return nil, fmt.Errorf("bom item has duplicate colorway_index %d", idx)
-			}
-			seen[idx] = true
-			if len(cc.Color) > maxVarchar255 || len(cc.Pantone) > maxVarchar64 {
-				return nil, fmt.Errorf("bom colorway color/pantone too long")
-			}
-			colors = append(colors, entity.TechCardBomColorwayColor{
-				ColorwayIndex: idx,
-				Color:         nullStringFromPb(cc.Color),
-				Pantone:       nullStringFromPb(cc.Pantone),
-			})
-		}
-
 		fabricWidth, err := nullDecimalFromPb(b.FabricWidth)
 		if err != nil {
 			return nil, fmt.Errorf("bom fabric_width: %w", err)
@@ -799,15 +892,12 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 		out = append(out, entity.TechCardBomItem{
 			Section:         section,
 			Name:            b.Name,
-			Placement:       nullStringFromPb(b.Placement),
 			Supplier:        nullStringFromPb(b.Supplier),
 			SupplierRef:     nullStringFromPb(b.SupplierRef),
 			Color:           nullStringFromPb(b.Color),
 			Composition:     nullStringFromPb(b.Composition),
 			Spec:            nullStringFromPb(b.Spec),
-			Consumption:     consumption,
 			Unit:            nullStringFromPb(b.Unit),
-			Quantity:        quantity,
 			UnitPrice:       unitPrice,
 			Currency:        nullStringFromPb(b.Currency),
 			Comment:         nullStringFromPb(b.Comment),
@@ -815,129 +905,47 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem, colorwayCount int) 
 			FabricWeightGsm: fabricGsm,
 			FabricDirection: direction,
 			WastagePercent:  wastage,
-			ColorwayColors:  colors,
 		})
 	}
 	return out, nil
 }
 
-func parseTechCardPomPoints(pbs []*pb_common.TechCardPomPoint, sizeIds []int) ([]entity.TechCardPomPoint, error) {
-	sizeSet := make(map[int]bool, len(sizeIds))
-	for _, s := range sizeIds {
-		sizeSet[s] = true
-	}
-	out := make([]entity.TechCardPomPoint, 0, len(pbs))
-	// Non-empty POM codes must be unique within the card (DB enforces
-	// uniq_tech_card_pom_code); dedupe here for a precise InvalidArgument.
-	seenCode := make(map[string]bool, len(pbs))
-	for _, p := range pbs {
-		if p.Name == "" {
-			return nil, fmt.Errorf("pom point name is required")
+// parseTechCardSizeConsumptions parses the per-size consumption of a colourway usage,
+// validating each size is in the card's size range, consumption is present and
+// non-negative, and no size repeats.
+func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, sizeIds []int) ([]entity.TechCardBomSizeConsumption, error) {
+	out := make([]entity.TechCardBomSizeConsumption, 0, len(pbs))
+	seen := make(map[int]bool, len(pbs))
+	for _, sc := range pbs {
+		sid := int(sc.SizeId)
+		if sid <= 0 || !slices.Contains(sizeIds, sid) {
+			return nil, fmt.Errorf("usage size_consumption size_id %d must be one of size_ids", sc.SizeId)
 		}
-		if len(p.Name) > maxVarchar255 || len(p.Section) > maxVarchar255 {
-			return nil, fmt.Errorf("pom point name/section must be at most %d characters", maxVarchar255)
+		if seen[sid] {
+			return nil, fmt.Errorf("duplicate usage size_consumption for size_id %d", sc.SizeId)
 		}
-		if len(p.Code) > maxVarchar32 {
-			return nil, fmt.Errorf("pom code must be at most %d characters", maxVarchar32)
-		}
-		if p.Code != "" {
-			if seenCode[p.Code] {
-				return nil, fmt.Errorf("pom points contain a duplicate code: %q", p.Code)
-			}
-			seenCode[p.Code] = true
-		}
-		baseValue, err := nullDecimalFromPb(p.BaseValue)
+		seen[sid] = true
+		consumption, err := requiredDecimalFromPb(sc.Consumption, "usage size_consumption", bomQtyMaxFrac, bomQtyLimit)
 		if err != nil {
-			return nil, fmt.Errorf("pom base_value: %w", err)
-		}
-		if err := validateDecimalScale(baseValue, "pom base_value", pomMaxFrac, pomLimit); err != nil {
 			return nil, err
 		}
-		tolPlus, err := nullDecimalFromPb(p.TolerancePlus)
-		if err != nil {
-			return nil, fmt.Errorf("pom tolerance_plus: %w", err)
+		if consumption.IsNegative() {
+			return nil, fmt.Errorf("usage size_consumption must not be negative")
 		}
-		if err := validateDecimalScale(tolPlus, "pom tolerance_plus", pomMaxFrac, pomLimit); err != nil {
-			return nil, err
-		}
-		tolMinus, err := nullDecimalFromPb(p.ToleranceMinus)
-		if err != nil {
-			return nil, fmt.Errorf("pom tolerance_minus: %w", err)
-		}
-		if err := validateDecimalScale(tolMinus, "pom tolerance_minus", pomMaxFrac, pomLimit); err != nil {
-			return nil, err
-		}
-		// Symmetric-tolerance ergonomic: if only one side is given, mirror it.
-		if tolPlus.Valid && !tolMinus.Valid {
-			tolMinus = tolPlus
-		} else if tolMinus.Valid && !tolPlus.Valid {
-			tolPlus = tolMinus
-		}
-
-		grades := make([]entity.TechCardPomGrade, 0, len(p.Grades))
-		seenSize := make(map[int]bool, len(p.Grades))
-		for _, g := range p.Grades {
-			sid := int(g.SizeId)
-			if !sizeSet[sid] {
-				return nil, fmt.Errorf("pom grade size_id %d must be one of size_ids", sid)
-			}
-			if seenSize[sid] {
-				return nil, fmt.Errorf("pom point has duplicate grade for size_id %d", sid)
-			}
-			seenSize[sid] = true
-			val, err := requiredDecimalFromPb(g.Value, "pom grade value", pomMaxFrac, pomLimit)
-			if err != nil {
-				return nil, err
-			}
-			grades = append(grades, entity.TechCardPomGrade{SizeId: sid, Value: val})
-		}
-
-		actuals := make([]entity.TechCardPomActual, 0, len(p.Actuals))
-		for _, a := range p.Actuals {
-			if a.FittingId < 0 {
-				return nil, fmt.Errorf("pom actual fitting_id must not be negative")
-			}
-			if a.SizeId < 0 {
-				return nil, fmt.Errorf("pom actual size_id must not be negative")
-			}
-			if a.SizeId > 0 && !sizeSet[int(a.SizeId)] {
-				return nil, fmt.Errorf("pom actual size_id %d must be one of size_ids", a.SizeId)
-			}
-			if len(a.Label) > maxVarchar64 {
-				return nil, fmt.Errorf("pom actual label must be at most %d characters", maxVarchar64)
-			}
-			val, err := requiredDecimalFromPb(a.Value, "pom actual value", pomMaxFrac, pomLimit)
-			if err != nil {
-				return nil, err
-			}
-			actuals = append(actuals, entity.TechCardPomActual{
-				FittingId: nullInt32FromPb(a.FittingId),
-				SizeId:    nullInt32FromPb(a.SizeId),
-				Label:     nullStringFromPb(a.Label),
-				Value:     val,
-			})
-		}
-
-		out = append(out, entity.TechCardPomPoint{
-			Section:        nullStringFromPb(p.Section),
-			Code:           nullStringFromPb(p.Code),
-			Name:           p.Name,
-			HowToMeasure:   nullStringFromPb(p.HowToMeasure),
-			BaseValue:      baseValue,
-			TolerancePlus:  tolPlus,
-			ToleranceMinus: tolMinus,
-			Grades:         grades,
-			Actuals:        actuals,
-		})
+		out = append(out, entity.TechCardBomSizeConsumption{SizeId: sid, Consumption: consumption})
 	}
 	return out, nil
 }
 
 // --- materials (Phase 2): emit entity -> pb ---
 
-func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardColorway {
+// techCardColorwaysToPb emits colourways with their material recipe (usages). Each usage
+// carries its computed per-garment line_total and whole-run size_run_total, resolved
+// against the BOM article it points at.
+func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorway {
 	out := make([]*pb_common.TechCardColorway, 0, len(cws))
-	for _, c := range cws {
+	for ci := range cws {
+		c := &cws[ci]
 		out = append(out, &pb_common.TechCardColorway{
 			Code:               pbStringFromNull(c.Code),
 			Name:               c.Name,
@@ -953,40 +961,71 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway) []*pb_common.TechCardC
 			LabDipDecidedAt:    pbTimestampFromNullTime(c.LabDipDecidedAt),
 			LabDipDecidedBy:    pbStringFromNull(c.LabDipDecidedBy),
 			LabDipRejectReason: pbStringFromNull(c.LabDipRejectReason),
+			Usages:             techCardUsagesToPb(c.Usages, bomItems, orderQtyBySize),
 		})
 	}
 	return out
+}
+
+// techCardUsagesToPb emits a colourway's usages, each with its computed per-garment
+// line_total and whole-run size_run_total (resolved against the referenced BOM article).
+func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
+	for i := range usages {
+		u := &usages[i]
+		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
+		var bomItemIndex *int32
+		if u.BomItemIndex.Valid {
+			v := u.BomItemIndex.Int32
+			bomItemIndex = &v
+		}
+		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
+		for _, sc := range u.SizeConsumptions {
+			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
+				SizeId:      int32(sc.SizeId),
+				Consumption: pbDecimalFromDecimal(sc.Consumption),
+			})
+		}
+		out = append(out, &pb_common.TechCardColorwayUsage{
+			BomItemIndex:     bomItemIndex,
+			Placement:        pbStringFromNull(u.Placement),
+			Color:            pbStringFromNull(u.Color),
+			Pantone:          pbStringFromNull(u.Pantone),
+			Consumption:      pbDecimalFromNull(u.Consumption),
+			Quantity:         pbDecimalFromNull(u.Quantity),
+			SizeConsumptions: sizeCons,
+			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
+			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+		})
+	}
+	return out
+}
+
+// bomItemAtIndex returns the BOM article a usage/operation bom_item_index points at, or
+// nil when unset or out of range (a draft can reference a not-yet-added article).
+func bomItemAtIndex(bomItems []entity.TechCardBomItem, idx sql.NullInt32) *entity.TechCardBomItem {
+	if !idx.Valid || idx.Int32 < 0 || int(idx.Int32) >= len(bomItems) {
+		return nil
+	}
+	return &bomItems[idx.Int32]
 }
 
 func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardBomItem {
 	out := make([]*pb_common.TechCardBomItem, 0, len(items))
 	for i := range items {
 		b := &items[i]
-		colors := make([]*pb_common.TechCardBomColorwayColor, 0, len(b.ColorwayColors))
-		for _, cc := range b.ColorwayColors {
-			colors = append(colors, &pb_common.TechCardBomColorwayColor{
-				ColorwayIndex: int32(cc.ColorwayIndex),
-				Color:         pbStringFromNull(cc.Color),
-				Pantone:       pbStringFromNull(cc.Pantone),
-			})
-		}
 		out = append(out, &pb_common.TechCardBomItem{
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,
-			Placement:       pbStringFromNull(b.Placement),
 			Supplier:        pbStringFromNull(b.Supplier),
 			SupplierRef:     pbStringFromNull(b.SupplierRef),
 			Color:           pbStringFromNull(b.Color),
 			Composition:     pbStringFromNull(b.Composition),
 			Spec:            pbStringFromNull(b.Spec),
-			Consumption:     pbDecimalFromNull(b.Consumption),
 			Unit:            pbStringFromNull(b.Unit),
-			Quantity:        pbDecimalFromNull(b.Quantity),
 			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
 			Currency:        pbStringFromNull(b.Currency),
 			Comment:         pbStringFromNull(b.Comment),
-			ColorwayColors:  colors,
-			LineTotal:       pbDecimalFromNull(b.LineTotal()),
 			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
 			FabricDirection: pbFabricDirection(b.FabricDirection),
@@ -1008,6 +1047,12 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
 var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// isHTTPURL reports whether s is an http(s) URL — pattern PDFs are served over the CDN,
+// so a non-http scheme (e.g. javascript:/data:) is rejected at the write boundary.
+func isHTTPURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
 
 // isHexColor reports whether s is a #RRGGBB colour (mirrors the colorway.hex CHECK).
 func isHexColor(s string) bool {
@@ -1061,83 +1106,6 @@ func techCardSizeQuantitiesToPb(qs []entity.TechCardSizeQuantity) []*pb_common.T
 	return out
 }
 
-func techCardPomPointsToPb(points []entity.TechCardPomPoint) []*pb_common.TechCardPomPoint {
-	out := make([]*pb_common.TechCardPomPoint, 0, len(points))
-	for i := range points {
-		p := &points[i]
-		grades := make([]*pb_common.TechCardPomGrade, 0, len(p.Grades))
-		gradeBySize := make(map[int]decimal.Decimal, len(p.Grades))
-		for _, g := range p.Grades {
-			gradeBySize[g.SizeId] = g.Value
-			grades = append(grades, &pb_common.TechCardPomGrade{
-				SizeId: int32(g.SizeId),
-				Value:  pbDecimalFromDecimal(g.Value),
-			})
-		}
-		actuals := make([]*pb_common.TechCardPomActual, 0, len(p.Actuals))
-		for _, a := range p.Actuals {
-			pa := &pb_common.TechCardPomActual{
-				FittingId: pbInt32FromNull(a.FittingId),
-				SizeId:    pbInt32FromNull(a.SizeId),
-				Label:     pbStringFromNull(a.Label),
-				Value:     pbDecimalFromDecimal(a.Value),
-			}
-			pa.Deviation, pa.Verdict = pomActualVerdict(p, a, gradeBySize)
-			actuals = append(actuals, pa)
-		}
-		out = append(out, &pb_common.TechCardPomPoint{
-			Section:        pbStringFromNull(p.Section),
-			Code:           pbStringFromNull(p.Code),
-			Name:           p.Name,
-			HowToMeasure:   pbStringFromNull(p.HowToMeasure),
-			BaseValue:      pbDecimalFromNull(p.BaseValue),
-			TolerancePlus:  pbDecimalFromNull(p.TolerancePlus),
-			ToleranceMinus: pbDecimalFromNull(p.ToleranceMinus),
-			Grades:         grades,
-			Actuals:        actuals,
-		})
-	}
-	return out
-}
-
-// pomActualVerdict computes an actual's deviation from its target (the graded value
-// at the measured size, else the point's base value) and the in/out-of-tolerance
-// verdict. Returns (nil, UNKNOWN) when there is no target to compare against.
-func pomActualVerdict(p *entity.TechCardPomPoint, a entity.TechCardPomActual, gradeBySize map[int]decimal.Decimal) (*pb_decimal.Decimal, pb_common.TechCardPomVerdict) {
-	var target decimal.Decimal
-	hasTarget := false
-	if a.SizeId.Valid {
-		// An actual measured at a specific size can only be judged against THAT
-		// size's grade. Do not fall back to base_value (a different size) — that
-		// would emit a confident but cross-size verdict. Ungraded size -> UNKNOWN.
-		if gv, ok := gradeBySize[int(a.SizeId.Int32)]; ok {
-			target, hasTarget = gv, true
-		}
-	} else if p.BaseValue.Valid {
-		// No size given: judge the generic actual against the base-sample value.
-		target, hasTarget = p.BaseValue.Decimal, true
-	}
-	if !hasTarget {
-		return nil, pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNKNOWN
-	}
-	tolPlus := decimal.Zero
-	if p.TolerancePlus.Valid {
-		tolPlus = p.TolerancePlus.Decimal
-	}
-	tolMinus := decimal.Zero
-	if p.ToleranceMinus.Valid {
-		tolMinus = p.ToleranceMinus.Decimal
-	}
-	verdict := pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_IN_TOLERANCE
-	switch {
-	case a.Value.GreaterThan(target.Add(tolPlus)):
-		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_OVER
-	case a.Value.LessThan(target.Sub(tolMinus)):
-		verdict = pb_common.TechCardPomVerdict_TECH_CARD_POM_VERDICT_UNDER
-	}
-	return pbDecimalFromDecimal(a.Value.Sub(target)), verdict
-}
-
 func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
 	if v, ok := techCardBomSectionEntityToPb[s]; ok {
 		return v
@@ -1178,24 +1146,33 @@ func dedupePositiveIDs(ids []int32, field string) ([]int, error) {
 	return out, nil
 }
 
-// validateMoney rejects values that won't fit DECIMAL(10,2): negative, more than
-// 2 fraction digits, or 100000000 and up — so they fail as InvalidArgument
-// instead of a MySQL out-of-range Internal error (mirroring the varchar length
-// checks above).
-func validateMoney(nd decimal.NullDecimal, field string) error {
+// normalizePlacement trims and lowercases a freeform garment-part string so usage and
+// operation placements compare equal regardless of casing/whitespace (plan §3 resolver).
+func normalizePlacement(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// normalizedPlacementNull returns the normalised placement, NULL when empty.
+func normalizedPlacementNull(s string) sql.NullString {
+	n := normalizePlacement(s)
+	if n == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: n, Valid: true}
+}
+
+// pbMoneyFromNull emits a computed money amount rounded to 2 decimals (banker's rounding),
+// or nil when absent. The frontend trusts these server totals and never re-sums.
+func pbMoneyFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 	if !nd.Valid {
 		return nil
 	}
-	if nd.Decimal.IsNegative() {
-		return fmt.Errorf("%s must not be negative", field)
-	}
-	if nd.Decimal.Exponent() < -2 {
-		return fmt.Errorf("%s must have at most 2 decimal places", field)
-	}
-	if nd.Decimal.Abs().GreaterThanOrEqual(decimal.NewFromInt(100_000_000)) {
-		return fmt.Errorf("%s must be less than 100000000", field)
-	}
-	return nil
+	return &pb_decimal.Decimal{Value: roundMoney(nd.Decimal).String()}
+}
+
+// roundMoney rounds a money amount to 2 decimals (banker's rounding) for storage/emit.
+func roundMoney(d decimal.Decimal) decimal.Decimal {
+	return d.RoundBank(2)
 }
 
 func nullDecimalFromPb(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {

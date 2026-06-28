@@ -200,6 +200,13 @@ func nullInt32FromPb(v int32) sql.NullInt32 {
 	return sql.NullInt32{Int32: v, Valid: true}
 }
 
+func nullInt64FromPb(v int64) sql.NullInt64 {
+	if v == 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: v, Valid: true}
+}
+
 func pbInt32FromNull(ni sql.NullInt32) int32 {
 	if ni.Valid {
 		return ni.Int32

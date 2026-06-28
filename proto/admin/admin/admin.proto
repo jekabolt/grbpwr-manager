@@ -50,6 +50,16 @@ service AdminService {
     };
   }
 
+  // UploadPattern uploads a PDF выкройка (cut pattern) to object storage and returns its
+  // url. Used for both tech-card per-size patterns and fitting iteration patterns. The
+  // file is stored raw (no image processing) and is NOT added to the media library.
+  rpc UploadPattern(UploadPatternRequest) returns (UploadPatternResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/content/pattern"
+      body: "*"
+    };
+  }
+
   // DeleteFromBucket deletes objects specified by their keys.
   rpc DeleteFromBucket(DeleteFromBucketRequest) returns (DeleteFromBucketResponse) {
     option (google.api.http) = {delete: "/api/admin/content"};
@@ -575,6 +585,17 @@ message UploadContentVideoRequest {
 
 message UploadContentVideoResponse {
   common.MediaFull media = 1;
+}
+
+message UploadPatternRequest {
+  bytes raw = 1; // raw PDF bytes
+  string filename = 2; // original filename (for display / download)
+}
+
+message UploadPatternResponse {
+  string url = 1; // CDN url of the stored PDF
+  string filename = 2; // echoed original filename
+  int64 size_bytes = 3; // stored file size in bytes
 }
 
 message ListObjectsPagedRequest {

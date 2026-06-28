@@ -66,34 +66,61 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
 		}
 	}
-	if pb.LabourRateCurrency != "" && len(pb.LabourRateCurrency) != maxCurrency {
-		return nil, fmt.Errorf("construction labour_rate_currency must be a 3-letter ISO 4217 code")
-	}
-	labourRate, err := nullDecimalFromPb(pb.LabourRate)
-	if err != nil {
-		return nil, fmt.Errorf("construction labour_rate: %w", err)
-	}
-	// DECIMAL(10,4): 6 integer digits, so the magnitude limit is 1e6, not bomPriceLimit.
-	if err := validateDecimalScale(labourRate, "construction labour_rate", 4, 1_000_000); err != nil {
-		return nil, err
-	}
 	return &entity.TechCardConstruction{
-		MainStitchType:     nullStringFromPb(pb.MainStitchType),
-		StitchDensity:      nullStringFromPb(pb.StitchDensity),
-		OverlockThreads:    nullStringFromPb(pb.OverlockThreads),
-		SeamAllowances:     nullStringFromPb(pb.SeamAllowances),
-		HemFinish:          nullStringFromPb(pb.HemFinish),
-		Pressing:           nullStringFromPb(pb.Pressing),
-		MachineClass:       nullStringFromPb(pb.MachineClass),
-		Notes:              nullStringFromPb(pb.Notes),
-		LabourRate:         labourRate,
-		LabourRateCurrency: nullStringFromPb(pb.LabourRateCurrency),
+		MainStitchType:  nullStringFromPb(pb.MainStitchType),
+		StitchDensity:   nullStringFromPb(pb.StitchDensity),
+		OverlockThreads: nullStringFromPb(pb.OverlockThreads),
+		SeamAllowances:  nullStringFromPb(pb.SeamAllowances),
+		HemFinish:       nullStringFromPb(pb.HemFinish),
+		Pressing:        nullStringFromPb(pb.Pressing),
+		MachineClass:    nullStringFromPb(pb.MachineClass),
+		Notes:           nullStringFromPb(pb.Notes),
 	}, nil
 }
 
-func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechCardOperation, error) {
+var techCardOperationTypePbToEntity = map[pb_common.TechCardOperationType]entity.TechCardOperationType{
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH:    entity.OpTypeLockstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE: entity.OpTypeDoubleNeedle,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OVERLOCK:      entity.OpTypeOverlock,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH:   entity.OpTypeCoverstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_CHAINSTITCH:   entity.OpTypeChainstitch,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BLINDHEM:      entity.OpTypeBlindhem,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BARTACK:       entity.OpTypeBartack,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTONHOLE:    entity.OpTypeButtonhole,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH: entity.OpTypeButtonAttach,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING:        entity.OpTypeFusing,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_HANDWORK:      entity.OpTypeHandwork,
+	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OTHER:         entity.OpTypeOther,
+}
+var techCardOperationTypeEntityToPb = func() map[entity.TechCardOperationType]pb_common.TechCardOperationType {
+	m := make(map[entity.TechCardOperationType]pb_common.TechCardOperationType, len(techCardOperationTypePbToEntity))
+	for k, v := range techCardOperationTypePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+var techCardConstructionZonePbToEntity = map[pb_common.TechCardConstructionZone]entity.TechCardConstructionZone{
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER:       entity.ZoneOuter,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_LINING:      entity.ZoneLining,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_INTERLINING: entity.ZoneInterlining,
+	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OTHER:       entity.ZoneOther,
+}
+var techCardConstructionZoneEntityToPb = func() map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone {
+	m := make(map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone, len(techCardConstructionZonePbToEntity))
+	for k, v := range techCardConstructionZonePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// parseTechCardOperations validates and converts operations. calloutNumbers is the
+// set of TechCardCallout.number values in the same payload (so an operation's
+// callout_number can be range-checked) and bomItemCount is the number of submitted
+// bom_items (so an operation's bom_item_index can be range-checked).
+func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int) ([]entity.TechCardOperation, error) {
 	out := make([]entity.TechCardOperation, 0, len(pbs))
-	for _, o := range pbs {
+	for i, o := range pbs {
 		if o.Node == "" {
 			return nil, fmt.Errorf("operation node is required")
 		}
@@ -104,8 +131,40 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			len(o.SeamAllowance) > maxVarchar64 || len(o.Needle) > maxVarchar64 || len(o.Attachment) > maxVarchar64 {
 			return nil, fmt.Errorf("operation topstitch_width/machine/seam_allowance/needle/attachment must be at most %d characters", maxVarchar64)
 		}
-		if o.OperationNumber < 0 {
-			return nil, fmt.Errorf("operation operation_number must not be negative")
+		if len(o.Placement) > maxVarchar255 {
+			return nil, fmt.Errorf("operation placement must be at most %d characters", maxVarchar255)
+		}
+		opType := entity.OpTypeUnknown
+		if o.OperationType != pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN {
+			t, ok := techCardOperationTypePbToEntity[o.OperationType]
+			if !ok {
+				return nil, fmt.Errorf("unknown operation operation_type: %v", o.OperationType)
+			}
+			opType = t
+		}
+		zone := entity.ZoneUnknown
+		if o.Zone != pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_UNKNOWN {
+			z, ok := techCardConstructionZonePbToEntity[o.Zone]
+			if !ok {
+				return nil, fmt.Errorf("unknown operation zone: %v", o.Zone)
+			}
+			zone = z
+		}
+		// bom_item_index uses proto3 explicit presence: a nil pointer means "no
+		// material" (so index 0 stays a valid reference), a set value must be in range.
+		var bomItemIndex sql.NullInt32
+		if o.BomItemIndex != nil {
+			idx := *o.BomItemIndex
+			if idx < 0 || int(idx) >= bomItemCount {
+				return nil, fmt.Errorf("operation bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
+			}
+			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		}
+		if o.CalloutNumber < 0 {
+			return nil, fmt.Errorf("operation callout_number must not be negative")
+		}
+		if o.CalloutNumber > 0 && !calloutNumbers[int(o.CalloutNumber)] {
+			return nil, fmt.Errorf("operation callout_number %d does not match any callout", o.CalloutNumber)
 		}
 		stitches, err := nullDecimalFromPb(o.StitchesPerCm)
 		if err != nil {
@@ -122,7 +181,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			return nil, err
 		}
 		out = append(out, entity.TechCardOperation{
-			OperationNumber: nullInt32FromPb(o.OperationNumber),
+			// operation_number is server-assigned = (position+1)*10 («оп. 10, 20, …»);
+			// any client value is ignored (plan §4). Reorder shifts numbers (Q6).
+			OperationNumber: sql.NullInt32{Int32: int32((i + 1) * 10), Valid: true},
 			Node:            o.Node,
 			Description:     nullStringFromPb(o.Description),
 			SeamType:        nullStringFromPb(o.SeamType),
@@ -135,6 +196,11 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation) ([]entity.TechC
 			Attachment:      nullStringFromPb(o.Attachment),
 			TimeNorm:        timeNorm,
 			Note:            nullStringFromPb(o.Note),
+			OperationType:   opType,
+			Zone:            zone,
+			BomItemIndex:    bomItemIndex,
+			CalloutNumber:   nullInt32FromPb(o.CalloutNumber),
+			Placement:       normalizedPlacementNull(o.Placement),
 		})
 	}
 	return out, nil
@@ -297,22 +363,26 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 		return nil
 	}
 	return &pb_common.TechCardConstruction{
-		MainStitchType:     pbStringFromNull(c.MainStitchType),
-		StitchDensity:      pbStringFromNull(c.StitchDensity),
-		OverlockThreads:    pbStringFromNull(c.OverlockThreads),
-		SeamAllowances:     pbStringFromNull(c.SeamAllowances),
-		HemFinish:          pbStringFromNull(c.HemFinish),
-		Pressing:           pbStringFromNull(c.Pressing),
-		MachineClass:       pbStringFromNull(c.MachineClass),
-		Notes:              pbStringFromNull(c.Notes),
-		LabourRate:         pbDecimalFromNull(c.LabourRate),
-		LabourRateCurrency: pbStringFromNull(c.LabourRateCurrency),
+		MainStitchType:  pbStringFromNull(c.MainStitchType),
+		StitchDensity:   pbStringFromNull(c.StitchDensity),
+		OverlockThreads: pbStringFromNull(c.OverlockThreads),
+		SeamAllowances:  pbStringFromNull(c.SeamAllowances),
+		HemFinish:       pbStringFromNull(c.HemFinish),
+		Pressing:        pbStringFromNull(c.Pressing),
+		MachineClass:    pbStringFromNull(c.MachineClass),
+		Notes:           pbStringFromNull(c.Notes),
 	}
 }
 
 func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCardOperation {
 	out := make([]*pb_common.TechCardOperation, 0, len(ops))
-	for _, o := range ops {
+	for i := range ops {
+		o := ops[i]
+		var bomItemIndex *int32
+		if o.BomItemIndex.Valid {
+			v := o.BomItemIndex.Int32
+			bomItemIndex = &v
+		}
 		out = append(out, &pb_common.TechCardOperation{
 			OperationNumber: pbInt32FromNull(o.OperationNumber),
 			Node:            o.Node,
@@ -327,6 +397,11 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Attachment:      pbStringFromNull(o.Attachment),
 			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
 			Note:            pbStringFromNull(o.Note),
+			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
+			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
+			BomItemIndex:    bomItemIndex,
+			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
+			Placement:       pbStringFromNull(o.Placement),
 		})
 	}
 	return out
@@ -422,7 +497,6 @@ func techCardIssuesToPb(issues []entity.TechCardIssue) []*pb_common.TechCardIssu
 var techCardSignoffSectionPbToEntity = map[pb_common.TechCardSignoffSection]entity.TechCardSignoffSection{
 	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_DESIGN:       entity.SignoffDesign,
 	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION: entity.SignoffConstruction,
-	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_POM:          entity.SignoffPom,
 	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_MATERIALS:    entity.SignoffMaterials,
 	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COLOUR:       entity.SignoffColour,
 	pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_LABELS:       entity.SignoffLabels,
@@ -531,65 +605,67 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 	}
 }
 
-// techCardCostingToPb emits the stored costing articles plus the computed
-// materials rollup and total. Returns nil when no costing row exists.
+// techCardCostingToPb emits the stored costing articles plus the computed per-colourway
+// material costs and the root rollup. The root (materials_total/materials_cost/total_cost)
+// is the PRIMARY colourway = index 0 (plan Q3). Returns nil when no costing row exists.
 func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	if tc.Costing == nil {
 		return nil
 	}
 	c := tc.Costing
-	materialsTotal, materialsCost := bomMaterialsRollup(tc.BomItems, c.Currency)
-	out := &pb_common.TechCardCosting{
-		CmtCost:          pbDecimalFromNull(c.CmtCost),
-		HardwareCost:     pbDecimalFromNull(c.HardwareCost),
-		PackagingCost:    pbDecimalFromNull(c.PackagingCost),
-		LogisticsCost:    pbDecimalFromNull(c.LogisticsCost),
-		OverheadCost:     pbDecimalFromNull(c.OverheadCost),
-		DefectPercent:    pbDecimalFromNull(c.DefectPercent),
-		MarkupMultiplier: pbDecimalFromNull(c.MarkupMultiplier),
-		WholesalePrice:   pbDecimalFromNull(c.WholesalePrice),
-		RetailPrice:      pbDecimalFromNull(c.RetailPrice),
-		Currency:         pbStringFromNull(c.Currency),
-		Notes:            pbStringFromNull(c.Notes),
-		MaterialsTotal:   materialsTotal,
-		MaterialsCost:    pbDecimalFromDecimal(materialsCost.Round(costMaxFrac)),
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
 	}
-
 	costingCcy := ""
 	if c.Currency.Valid {
 		costingCcy = c.Currency.String
 	}
 
-	// Computed labour: total_sam = Σ(operation time_norm); labour_cost = SAM × rate
-	// (denominated in construction.labour_rate_currency).
-	totalSam := decimal.Zero
-	for i := range tc.Operations {
-		if tc.Operations[i].TimeNorm.Valid {
-			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
-		}
-	}
-	labourCcy := ""
-	var labourCost decimal.NullDecimal
-	if tc.Construction != nil {
-		labourCcy = tc.Construction.LabourRateCurrency.String
-		if totalSam.IsPositive() && tc.Construction.LabourRate.Valid {
-			labourCost = decimal.NullDecimal{Decimal: totalSam.Mul(tc.Construction.LabourRate.Decimal), Valid: true}
+	// Per-colourway material cost (OUTPUT-ONLY), resolving each usage against its BOM
+	// article. The root rollup is the primary colourway (index 0).
+	colorwayCosts := make([]*pb_common.TechCardColorwayCost, 0, len(tc.Colorways))
+	var rootMaterialsTotal []*pb_common.TechCardCostLine
+	rootMaterialsCost := decimal.Zero
+	rootHasUnconverted := false
+	for ci := range tc.Colorways {
+		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize)
+		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
+			ColorwayIndex:            int32(ci),
+			MaterialsTotal:           cc.materialsTotal,
+			MaterialsCost:            pbDecimalFromDecimal(roundMoney(cc.materialsCost)),
+			SizeRunTotal:             pbDecimalFromDecimal(roundMoney(cc.sizeRunTotal)),
+			HasUnconvertedCurrencies: cc.hasUnconverted,
+		})
+		if ci == 0 {
+			rootMaterialsTotal = cc.materialsTotal
+			rootMaterialsCost = cc.materialsCost
+			rootHasUnconverted = cc.hasUnconverted
 		}
 	}
 
-	// Make (sewing) cost folded into total_cost: a manual cmt_cost is authoritative;
-	// otherwise the computed labour stands in as the make cost — but only when its
-	// currency matches the costing currency, so labour is never silently FX-folded.
-	makeCost := c.CmtCost
-	if !c.CmtCost.Valid && labourCost.Valid && labourCcy == costingCcy {
-		makeCost = labourCost
+	out := &pb_common.TechCardCosting{
+		CmtCost:                  pbDecimalFromNull(c.CmtCost),
+		HardwareCost:             pbDecimalFromNull(c.HardwareCost),
+		PackagingCost:            pbDecimalFromNull(c.PackagingCost),
+		LogisticsCost:            pbDecimalFromNull(c.LogisticsCost),
+		OverheadCost:             pbDecimalFromNull(c.OverheadCost),
+		DefectPercent:            pbDecimalFromNull(c.DefectPercent),
+		MarkupMultiplier:         pbDecimalFromNull(c.MarkupMultiplier),
+		WholesalePrice:           pbDecimalFromNull(c.WholesalePrice),
+		RetailPrice:              pbDecimalFromNull(c.RetailPrice),
+		Currency:                 pbStringFromNull(c.Currency),
+		Notes:                    pbStringFromNull(c.Notes),
+		MaterialsTotal:           rootMaterialsTotal,
+		MaterialsCost:            pbDecimalFromDecimal(roundMoney(rootMaterialsCost)),
+		ColorwayCosts:            colorwayCosts,
+		HasUnconvertedCurrencies: rootHasUnconverted,
 	}
 
-	// total_cost = (materials in costing currency + make + hardware+packaging+
-	// logistics+overhead) grossed up by the defect/reserve %. Single-currency,
-	// best-effort: cross-currency materials are surfaced in materials_total.
-	total := materialsCost
-	for _, d := range []decimal.NullDecimal{makeCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
+	// total_cost = (materials_cost[colourway 0] + cmt + hardware + packaging + logistics
+	// + overhead) × (1 + defect/100). No labour fallback (labour pricing removed).
+	total := rootMaterialsCost
+	for _, d := range []decimal.NullDecimal{c.CmtCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
 		if d.Valid {
 			total = total.Add(d.Decimal)
 		}
@@ -597,72 +673,77 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	if c.DefectPercent.Valid {
 		total = total.Mul(decimal.NewFromInt(1).Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100))))
 	}
-	out.TotalCost = pbDecimalFromDecimal(total.Round(costMaxFrac))
+	out.TotalCost = pbDecimalFromDecimal(roundMoney(total))
 
-	if totalSam.IsPositive() {
-		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
-	}
-	if labourCost.Valid {
-		out.LabourCost = pbDecimalFromDecimal(labourCost.Decimal.Round(costMaxFrac))
-	}
-
-	// Flag when part of the cost is excluded from total_cost for want of an FX
-	// conversion: a BOM line in another currency, or computed labour that would be
-	// the make cost but is in a different currency than the costing one.
-	for i := range tc.BomItems {
-		b := &tc.BomItems[i]
-		if b.Currency.Valid && b.Currency.String != "" && b.Currency.String != costingCcy && b.LineTotal().Valid {
-			out.HasUnconvertedCurrencies = true
-			break
+	// total_sam = Σ(operation time_norm); informative, pricing-independent (plan Q4).
+	totalSam := decimal.Zero
+	for i := range tc.Operations {
+		if tc.Operations[i].TimeNorm.Valid {
+			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
 		}
 	}
-	if labourCost.Valid && !c.CmtCost.Valid && labourCcy != costingCcy {
-		out.HasUnconvertedCurrencies = true
+	if totalSam.IsPositive() {
+		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
 	}
 	return out
 }
 
-// bomMaterialsRollup sums BOM line totals grouped by the line's currency (first-
-// seen order preserved), and returns the subtotal foldable into costingCurrency
-// (matching-currency lines plus currency-less lines).
-func bomMaterialsRollup(items []entity.TechCardBomItem, costingCurrency sql.NullString) ([]*pb_common.TechCardCostLine, decimal.Decimal) {
+// colorwayCostResult holds one colourway's computed material cost.
+type colorwayCostResult struct {
+	materialsTotal []*pb_common.TechCardCostLine // Σ usage cost grouped by article currency
+	materialsCost  decimal.Decimal               // Σ in costingCcy (and currency-less)
+	sizeRunTotal   decimal.Decimal               // Σ usage size_run_total (whole-run spend)
+	hasUnconverted bool                          // a usage currency ≠ costingCcy (excluded from materialsCost)
+}
+
+// colorwayCost computes one colourway's material cost from its usages. Each usage
+// contributes its whole-run size_run_total (when it has per-size consumption) else its
+// per-garment line_total, resolved against the BOM article it points at. Buckets are
+// per-currency (no FX conversion); currency-less lines fold into the costing currency.
+func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, costingCcy string, orderQtyBySize map[int]int) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
-	for i := range items {
-		lt := items[i].LineTotal()
-		if !lt.Valid {
+	sizeRunTotal := decimal.Zero
+	hasUnconverted := false
+	for i := range cw.Usages {
+		u := &cw.Usages[i]
+		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
+		if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
+			sizeRunTotal = sizeRunTotal.Add(rt.Decimal)
+		}
+		eff := u.EffectiveTotal(bom, orderQtyBySize)
+		if !eff.Valid {
 			continue
 		}
 		ccy := ""
-		if items[i].Currency.Valid {
-			ccy = items[i].Currency.String
+		if bom != nil && bom.Currency.Valid {
+			ccy = bom.Currency.String
 		}
 		if _, ok := byCcy[ccy]; !ok {
 			order = append(order, ccy)
 		}
-		byCcy[ccy] = byCcy[ccy].Add(lt.Decimal)
+		byCcy[ccy] = byCcy[ccy].Add(eff.Decimal)
+		if ccy != "" && ccy != costingCcy {
+			hasUnconverted = true
+		}
 	}
 
 	lines := make([]*pb_common.TechCardCostLine, 0, len(order))
 	for _, ccy := range order {
 		lines = append(lines, &pb_common.TechCardCostLine{
 			Currency: ccy,
-			Amount:   pbDecimalFromDecimal(byCcy[ccy].Round(costMaxFrac)),
+			Amount:   pbDecimalFromDecimal(roundMoney(byCcy[ccy])),
 		})
 	}
 
-	target := ""
-	if costingCurrency.Valid {
-		target = costingCurrency.String
-	}
 	materialsCost := decimal.Zero
-	if v, ok := byCcy[target]; ok {
+	if v, ok := byCcy[costingCcy]; ok {
 		materialsCost = materialsCost.Add(v)
 	}
-	if target != "" {
+	if costingCcy != "" {
 		if v, ok := byCcy[""]; ok { // currency-less lines fold into the costing currency
 			materialsCost = materialsCost.Add(v)
 		}
 	}
-	return lines, materialsCost
+	return colorwayCostResult{materialsTotal: lines, materialsCost: materialsCost, sizeRunTotal: sizeRunTotal, hasUnconverted: hasUnconverted}
 }

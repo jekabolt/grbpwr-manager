@@ -70,6 +70,10 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err != nil {
 		return err
 	}
+	patterns, err := s.patternsByTechCardIds(ctx, ids)
+	if err != nil {
+		return err
+	}
 
 	for i := range cards {
 		id := cards[i].Id
@@ -80,6 +84,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 		cards[i].ResolvedMedia = mediaFull[id]
 		cards[i].Callouts = callouts[id]
 		cards[i].Revisions = revisions[id]
+		cards[i].Patterns = patterns[id]
 	}
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
@@ -194,6 +199,31 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 type techCardRevisionRow struct {
 	TechCardID int `db:"tech_card_id"`
 	entity.TechCardRevision
+}
+
+type techCardPatternRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardSizePattern
+}
+
+// patternsByTechCardIds loads the per-size PDF выкройки grouped by tech card.
+func (s *Store) patternsByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardSizePattern, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.TechCardSizePattern{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[techCardPatternRow](ctx, s.DB, `
+		SELECT tech_card_id, size_id, url, filename, size_bytes
+		FROM tech_card_size_pattern
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card patterns: %w", err)
+	}
+	out := make(map[int][]entity.TechCardSizePattern, len(ids))
+	for _, r := range rows {
+		out[r.TechCardID] = append(out[r.TechCardID], r.TechCardSizePattern)
+	}
+	return out, nil
 }
 
 func (s *Store) revisionsByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardRevision, error) {
