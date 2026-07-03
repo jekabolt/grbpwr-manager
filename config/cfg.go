@@ -41,6 +41,10 @@ type SecurityConfig struct {
 	// non-positive value falls back to the secure default of one hop, which
 	// matches DigitalOcean App Platform's single edge proxy.
 	TrustProxyHops int `mapstructure:"trust_proxy_hops"`
+	// HeroEmbedAllowedHosts is a comma-separated allowlist of hosts permitted as
+	// hero EMBED iframe sources (e.g. "www.youtube.com,player.vimeo.com"). Empty
+	// means any https host is accepted (scheme/format validation still applies).
+	HeroEmbedAllowedHosts string `mapstructure:"hero_embed_allowed_hosts"`
 }
 
 // defaultTrustProxyHops is the secure default applied when trust_proxy_hops is
@@ -225,6 +229,10 @@ const (
 // bindEnvVars binds environment variables to config keys
 // This allows using both nested keys (MYSQL__DSN) and flat keys (MYSQL_DSN)
 func bindEnvVars() {
+	// Security
+	viper.BindEnv("security.trust_proxy_hops", "SECURITY_TRUST_PROXY_HOPS")
+	viper.BindEnv("security.hero_embed_allowed_hosts", "SECURITY_HERO_EMBED_ALLOWED_HOSTS", "HERO_EMBED_ALLOWED_HOSTS")
+
 	// MySQL
 	viper.BindEnv("mysql.dsn", "MYSQL_DSN")
 	viper.BindEnv("mysql.automigrate", "MYSQL_AUTOMIGRATE")

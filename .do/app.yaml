@@ -48,6 +48,11 @@ envs:
 - key: HTTP_ALLOWED_ORIGINS
   scope: RUN_TIME
   value: '["https://backend.grbpwr.com","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com","https://admin.grbpwr.com"]'
+# Comma-separated allowlist of hosts permitted as hero EMBED iframe sources.
+# Empty accepts any https host (scheme/format validation still applies).
+- key: HERO_EMBED_ALLOWED_HOSTS
+  scope: RUN_TIME
+  value: ""
 - key: AUTH_JWT_SECRET
   scope: RUN_TIME
   type: SECRET
