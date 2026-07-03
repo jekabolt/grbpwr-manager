@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -16,99 +15,38 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// RefreshHero re-builds and updates hero from existing data.
+// RefreshHero re-resolves the stored hero (Insert form) and refreshes the cache.
+// With Insert-form storage there is no reverse flatten: we just read what the
+// admin stored and re-run resolution (picking up e.g. media/product changes).
 func (s *Store) RefreshHero(ctx context.Context) error {
-	hero, err := s.GetHero(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get hero: %w", err)
-	}
-
 	//TODO: update categories count
-
-	heroInsert := entity.HeroFullInsert{
-		Entities:    []entity.HeroEntityInsert{},
-		NavFeatured: entity.NavFeaturedInsert{},
-	}
-	for _, e := range hero.Entities {
-		switch e.Type {
-		case entity.HeroTypeFeaturedProducts:
-			ids := make([]int, 0, len(e.FeaturedProducts.Products))
-			for _, p := range e.FeaturedProducts.Products {
-				ids = append(ids, p.Id)
-			}
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedProducts: entity.HeroFeaturedProductsInsert{
-				ProductIDs:   ids,
-				ExploreLink:  e.FeaturedProducts.ExploreLink,
-				Translations: e.FeaturedProducts.Translations,
-			}})
-		case entity.HeroTypeFeaturedProductsTag:
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedProductsTag: entity.HeroFeaturedProductsTagInsert{
-				Tag:          e.FeaturedProductsTag.Tag,
-				Translations: e.FeaturedProductsTag.Translations,
-			}})
-		case entity.HeroTypeMain:
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Main: entity.HeroMainInsert{
-				MediaPortraitId:  e.Main.Single.MediaPortrait.Id,
-				MediaLandscapeId: e.Main.Single.MediaLandscape.Id,
-				ExploreLink:      e.Main.Single.ExploreLink,
-				Translations:     e.Main.Translations,
-			}})
-		case entity.HeroTypeSingle:
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Single: entity.HeroSingleInsert{
-				MediaPortraitId:  e.Single.MediaPortrait.Id,
-				MediaLandscapeId: e.Single.MediaLandscape.Id,
-				ExploreLink:      e.Single.ExploreLink,
-				Translations:     e.Single.Translations,
-			}})
-		case entity.HeroTypeDouble:
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, Double: entity.HeroDoubleInsert{
-				Left: entity.HeroSingleInsert{
-					MediaPortraitId:  e.Double.Left.MediaPortrait.Id,
-					MediaLandscapeId: e.Double.Left.MediaLandscape.Id,
-					ExploreLink:      e.Double.Left.ExploreLink,
-					Translations:     e.Double.Left.Translations,
-				},
-				Right: entity.HeroSingleInsert{
-					MediaPortraitId:  e.Double.Right.MediaPortrait.Id,
-					MediaLandscapeId: e.Double.Right.MediaLandscape.Id,
-					ExploreLink:      e.Double.Right.ExploreLink,
-					Translations:     e.Double.Right.Translations,
-				},
-			}})
-		case entity.HeroTypeFeaturedArchive:
-			heroInsert.Entities = append(heroInsert.Entities, entity.HeroEntityInsert{Type: e.Type, FeaturedArchive: entity.HeroFeaturedArchiveInsert{
-				ArchiveId:    e.FeaturedArchive.Archive.ArchiveList.Id,
-				Tag:          e.FeaturedArchive.Tag,
-				Translations: e.FeaturedArchive.Translations,
-			}})
-		}
-	}
-
-	err = s.SetHero(ctx, heroInsert)
+	hfi, legacy, err := s.getHeroInsert(ctx)
 	if err != nil {
+		return fmt.Errorf("failed to get hero insert: %w", err)
+	}
+	if legacy {
+		// Never overwrite a legacy row from an incidental refresh — that would
+		// destroy the admin's configured hero. It is replaced only by a
+		// deliberate admin SetHero (AddHero).
+		slog.WarnContext(ctx, "skipping RefreshHero: hero is in legacy format; not overwriting to preserve data")
+		return nil
+	}
+	if hfi == nil {
+		return nil // nothing stored yet
+	}
+	if err := s.SetHero(ctx, *hfi); err != nil {
 		return fmt.Errorf("failed to set hero: %w", err)
 	}
-
 	return nil
 }
 
 func isValidHeroType(t entity.HeroType) bool {
-	switch t {
-	case entity.HeroTypeSingle,
-		entity.HeroTypeDouble,
-		entity.HeroTypeMain,
-		entity.HeroTypeFeaturedProducts,
-		entity.HeroTypeFeaturedProductsTag,
-		entity.HeroTypeFeaturedArchive:
-		return true
-	default:
-		return false
-	}
+	return t >= entity.HeroTypeSingle && t <= entity.HeroTypeLookbook
 }
 
-// SetHero sets hero content with validation and transaction safety.
+// SetHero persists the hero in its Insert form (the source of truth) and
+// refreshes the resolved cache in the same transaction.
 func (s *Store) SetHero(ctx context.Context, hfi entity.HeroFullInsert) error {
-	// Validate hero types
 	for _, e := range hfi.Entities {
 		if !isValidHeroType(e.Type) {
 			return fmt.Errorf("invalid hero type: %d", e.Type)
@@ -116,203 +54,259 @@ func (s *Store) SetHero(ctx context.Context, hfi entity.HeroFullInsert) error {
 	}
 
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// Delete existing hero data
-		err := deleteExistingHeroData(ctx, rep)
-		if err != nil {
+		if err := deleteExistingHeroData(ctx, rep); err != nil {
 			return fmt.Errorf("failed to delete hero data: %w", err)
 		}
 
+		if err := insertHeroInsert(ctx, rep, hfi); err != nil {
+			return fmt.Errorf("failed to insert hero data: %w", err)
+		}
+
+		// Resolve once for the cache (frontend reads the resolved form from cache).
 		heroFull, err := buildHeroData(ctx, rep, hfi)
 		if err != nil {
 			return fmt.Errorf("failed to build hero data: %w", err)
 		}
-		slog.Info("heroFull", "heroFull", heroFull)
-
-		if err := insertHeroData(ctx, rep, heroFull); err != nil {
-			return fmt.Errorf("failed to insert hero data: %w", err)
-		}
-
-		// Update cache
-		hero, err := rep.Hero().GetHero(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get hero: %w", err)
-		}
-		cache.UpdateHero(hero)
+		cache.UpdateHero(heroFull)
 
 		return nil
 	})
 }
 
-// GetHero retrieves the current hero configuration.
+// GetHero reads the stored Insert form and resolves it into the read shape.
+// Resolution needs cross-store access (media/products/archive), so it runs
+// inside a (read) transaction to obtain a repository handle.
 func (s *Store) GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error) {
+	hfi, legacy, err := s.getHeroInsert(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if legacy {
+		slog.WarnContext(ctx, "hero is in legacy (pre-L2) format; serving empty until re-saved from admin (legacy data preserved)")
+		return &entity.HeroFullWithTranslations{}, nil
+	}
+	if hfi == nil {
+		return &entity.HeroFullWithTranslations{}, nil
+	}
+
+	var heroFull *entity.HeroFullWithTranslations
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		heroFull, err = buildHeroData(ctx, rep, *hfi)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve hero: %w", err)
+	}
+	return heroFull, nil
+}
+
+// heroSchemaVersion identifies the persisted hero payload shape. Bump it when
+// the stored HeroFullInsert JSON changes incompatibly. Rows without a matching
+// version are treated as legacy and are never auto-overwritten.
+const heroSchemaVersion = 2
+
+// storedHero is the on-disk envelope: a schema version plus the Insert-form hero.
+// Pre-L2 rows have no envelope (they stored the resolved shape at the top level),
+// so they decode with SchemaVersion == 0 and are recognised as legacy.
+type storedHero struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Hero          entity.HeroFullInsert `json:"hero"`
+}
+
+// getHeroInsert reads the stored hero envelope. It returns (insert, legacy, err):
+//   - legacy == true means the row predates L2 Insert-form storage (resolved
+//     shape, no schema version). Such rows are NOT auto-migratable and MUST NOT
+//     be overwritten by an incidental RefreshHero — only a deliberate admin
+//     SetHero replaces them. Callers should serve an empty hero in that case.
+//   - a genuine JSON error is propagated (fail fast), not silently swallowed.
+func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, bool, error) {
 	query := `SELECT data FROM hero`
 
-	type hero struct {
-		Id        int       `db:"id"`
-		CreatedAt time.Time `db:"created_at"`
-		Data      []byte    `db:"data"`
+	type heroRow struct {
+		Data []byte `db:"data"`
 	}
 
-	heroRaw, err := storeutil.QueryNamedOne[hero](ctx, s.DB, query, nil)
+	heroRaw, err := storeutil.QueryNamedOne[heroRow](ctx, s.DB, query, nil)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			slog.Error("no hero data found")
-			return &entity.HeroFullWithTranslations{}, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("failed to get hero: %w", err)
-	}
-	heroFull := entity.HeroFullWithTranslations{}
-
-	err = json.Unmarshal(heroRaw.Data, &heroFull)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal hero data: %w %s", err, string(heroRaw.Data))
+		return nil, false, fmt.Errorf("failed to get hero: %w", err)
 	}
 
-	return &heroFull, nil
+	var env storedHero
+	if err := json.Unmarshal(heroRaw.Data, &env); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal hero data: %w", err)
+	}
+	if env.SchemaVersion < heroSchemaVersion {
+		// Legacy (pre-L2) resolved-shape row: preserve it, do not overwrite.
+		return nil, true, nil
+	}
+	return &env.Hero, false, nil
 }
 
 func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) error {
 	query := `DELETE FROM hero`
-	_, err := rep.DB().ExecContext(ctx, query)
-	if err != nil {
+	if _, err := rep.DB().ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to delete hero data: %w", err)
 	}
-
 	return nil
 }
 
-func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInsert entity.HeroFullInsert) (*entity.HeroFullWithTranslations, error) {
+func insertHeroInsert(ctx context.Context, rep dependency.Repository, hfi entity.HeroFullInsert) error {
+	jsonData, err := json.Marshal(storedHero{SchemaVersion: heroSchemaVersion, Hero: hfi})
+	if err != nil {
+		return fmt.Errorf("failed to marshal hero insert: %w", err)
+	}
+	query := `INSERT INTO hero (data) VALUES (:data)`
+	if _, err := rep.DB().NamedExecContext(ctx, query, map[string]any{"data": jsonData}); err != nil {
+		return fmt.Errorf("failed to insert hero data: %w", err)
+	}
+	return nil
+}
 
-	entities := make([]entity.HeroEntityWithTranslations, 0, len(heroFullInsert.Entities))
-	for n, e := range heroFullInsert.Entities {
+// ─── resolvers (shared across block types) ──────────────────────────────────
 
+// heroMediaEmpty reports whether a media slot has no image referenced at all.
+func heroMediaEmpty(m entity.HeroMedia) bool {
+	return m.PortraitId == 0 && m.LandscapeId == 0
+}
+
+// resolveHeroMedia turns a HeroMedia (ids) into a HeroMediaFull. A missing
+// portrait/landscape id falls back to the other, matching the prior behaviour.
+func resolveHeroMedia(ctx context.Context, rep dependency.Repository, m entity.HeroMedia) (entity.HeroMediaFull, error) {
+	portraitId, landscapeId := m.PortraitId, m.LandscapeId
+	if portraitId == 0 {
+		portraitId = landscapeId
+	}
+	if landscapeId == 0 {
+		landscapeId = portraitId
+	}
+
+	full := entity.HeroMediaFull{DisableOverlay: m.DisableOverlay}
+	if portraitId != 0 {
+		pm, err := rep.Media().GetMediaById(ctx, portraitId)
+		if err != nil {
+			return full, fmt.Errorf("failed to get portrait media %d: %w", portraitId, err)
+		}
+		full.Portrait = *pm
+	}
+	if landscapeId != 0 {
+		lm, err := rep.Media().GetMediaById(ctx, landscapeId)
+		if err != nil {
+			return full, fmt.Errorf("failed to get landscape media %d: %w", landscapeId, err)
+		}
+		full.Landscape = *lm
+	}
+	return full, nil
+}
+
+func resolveHeroSingle(ctx context.Context, rep dependency.Repository, s entity.HeroSingleInsert) (entity.HeroSingleWithTranslations, error) {
+	media, err := resolveHeroMedia(ctx, rep, s.Media)
+	if err != nil {
+		return entity.HeroSingleWithTranslations{}, err
+	}
+	return entity.HeroSingleWithTranslations{
+		Media:        media,
+		ExploreLink:  s.ExploreLink,
+		Translations: s.Translations,
+	}, nil
+}
+
+func resolveHeroSingleSlice(ctx context.Context, rep dependency.Repository, in []entity.HeroSingleInsert) ([]entity.HeroSingleWithTranslations, error) {
+	out := make([]entity.HeroSingleWithTranslations, 0, len(in))
+	for i := range in {
+		s, err := resolveHeroSingle(ctx, rep, in[i])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func filterVisibleProducts(products []entity.Product) []entity.Product {
+	prds := make([]entity.Product, 0, len(products))
+	for _, p := range products {
+		if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
+			continue
+		}
+		prds = append(prds, p)
+	}
+	return prds
+}
+
+func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.HeroFullInsert) (*entity.HeroFullWithTranslations, error) {
+	entities := make([]entity.HeroEntityWithTranslations, 0, len(hfi.Entities))
+	for n, e := range hfi.Entities {
+		before := len(entities)
 		switch e.Type {
 		case entity.HeroTypeSingle:
-			portraitMedia, err := rep.Media().GetMediaById(ctx, e.Single.MediaPortraitId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Single.MediaPortraitId))
+			if heroMediaEmpty(e.Single.Media) {
 				continue
 			}
-			landscapeMedia, err := rep.Media().GetMediaById(ctx, e.Single.MediaLandscapeId)
+			single, err := resolveHeroSingle(ctx, rep, e.Single)
 			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Single.MediaLandscapeId))
+				slog.ErrorContext(ctx, "failed to resolve single hero, skipping", slog.String("err", err.Error()))
 				continue
 			}
+			entities = append(entities, entity.HeroEntityWithTranslations{Type: e.Type, Single: &single})
 
-			entities = append(entities, entity.HeroEntityWithTranslations{
-				Type: e.Type,
-				Single: &entity.HeroSingleWithTranslations{
-					MediaPortrait:  *portraitMedia,
-					MediaLandscape: *landscapeMedia,
-					ExploreLink:    e.Single.ExploreLink,
-					Translations:   e.Single.Translations,
-				},
-			})
 		case entity.HeroTypeDouble:
-
-			leftMediaId := e.Double.Left.MediaPortraitId
-			if leftMediaId == 0 {
-				leftMediaId = e.Double.Left.MediaLandscapeId
-			}
-
-			leftMedia, err := rep.Media().GetMediaById(ctx, leftMediaId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", leftMediaId))
+			if heroMediaEmpty(e.Double.Left.Media) || heroMediaEmpty(e.Double.Right.Media) {
 				continue
 			}
-
-			rightMediaId := e.Double.Right.MediaPortraitId
-			if rightMediaId == 0 {
-				rightMediaId = e.Double.Right.MediaLandscapeId
-			}
-
-			rightMedia, err := rep.Media().GetMediaById(ctx, rightMediaId)
+			left, err := resolveHeroSingle(ctx, rep, e.Double.Left)
 			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", rightMediaId))
+				slog.ErrorContext(ctx, "failed to resolve double hero left, skipping", slog.String("err", err.Error()))
 				continue
 			}
-
+			right, err := resolveHeroSingle(ctx, rep, e.Double.Right)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve double hero right, skipping", slog.String("err", err.Error()))
+				continue
+			}
 			entities = append(entities, entity.HeroEntityWithTranslations{
-				Type: e.Type,
-				Double: &entity.HeroDoubleWithTranslations{
-					Left: entity.HeroSingleWithTranslations{
-						MediaPortrait:  *leftMedia,
-						MediaLandscape: *leftMedia,
-						ExploreLink:    e.Double.Left.ExploreLink,
-						Translations:   e.Double.Left.Translations,
-					},
-					Right: entity.HeroSingleWithTranslations{
-						MediaPortrait:  *rightMedia,
-						MediaLandscape: *rightMedia,
-						ExploreLink:    e.Double.Right.ExploreLink,
-						Translations:   e.Double.Right.Translations,
-					},
-				},
+				Type:   e.Type,
+				Double: &entity.HeroDoubleWithTranslations{Left: left, Right: right},
 			})
+
 		case entity.HeroTypeMain:
-			// main add should be only on first position
+			// main is only allowed at the first position
 			if n != 0 {
 				continue
 			}
-			portraitMedia, err := rep.Media().GetMediaById(ctx, e.Main.MediaPortraitId)
-			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Main.MediaPortraitId))
+			if heroMediaEmpty(e.Main.Media) {
 				continue
 			}
-
-			landscapeMedia, err := rep.Media().GetMediaById(ctx, e.Main.MediaLandscapeId)
+			media, err := resolveHeroMedia(ctx, rep, e.Main.Media)
 			if err != nil {
-				slog.Error("failed to get media by id",
-					slog.String("err", err.Error()),
-					slog.Int("media_id", e.Main.MediaLandscapeId))
+				slog.ErrorContext(ctx, "failed to resolve main hero, skipping", slog.String("err", err.Error()))
 				continue
 			}
-
 			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
 				Main: &entity.HeroMainWithTranslations{
-					Single: entity.HeroSingleWithTranslations{
-						MediaPortrait:  *portraitMedia,
-						MediaLandscape: *landscapeMedia,
-						ExploreLink:    e.Main.ExploreLink,
-						Translations:   []entity.HeroSingleInsertTranslation{}, // Main doesn't use single translations
-					},
+					Media:        media,
+					ExploreLink:  e.Main.ExploreLink,
 					Translations: e.Main.Translations,
 				},
 			})
+
 		case entity.HeroTypeFeaturedProducts:
 			if len(e.FeaturedProducts.ProductIDs) == 0 {
-				slog.Error("no product ids provided for featured products skipping",
-					slog.Int("product_ids", len(e.FeaturedProducts.ProductIDs)))
+				slog.ErrorContext(ctx, "no product ids provided for featured products, skipping")
 				continue
 			}
-
 			products, err := rep.Products().GetProductsByIds(ctx, e.FeaturedProducts.ProductIDs)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get products by ids: %w", err)
+				slog.ErrorContext(ctx, "failed to get featured products, skipping", slog.String("err", err.Error()))
+				continue
 			}
-			prds := make([]entity.Product, 0, len(products))
-			for _, p := range products {
-				if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
-					continue
-				}
-				prds = append(prds, p)
-			}
-
+			prds := filterVisibleProducts(products)
 			if len(prds) == 0 {
 				continue
 			}
-
 			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
 				FeaturedProducts: &entity.HeroFeaturedProductsWithTranslations{
@@ -321,117 +315,343 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, heroFullInser
 					Translations: e.FeaturedProducts.Translations,
 				},
 			})
+
 		case entity.HeroTypeFeaturedProductsTag:
 			if e.FeaturedProductsTag.Tag == "" {
 				continue
 			}
-
 			products, err := rep.Products().GetProductsByTag(ctx, e.FeaturedProductsTag.Tag)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get products by ids: %w", err)
+				slog.ErrorContext(ctx, "failed to get products by tag, skipping", slog.String("err", err.Error()))
+				continue
 			}
-
-			prds := make([]entity.Product, 0, len(products))
-			for _, p := range products {
-				if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
-					continue
-				}
-				prds = append(prds, p)
-			}
-
+			prds := filterVisibleProducts(products)
 			if len(prds) == 0 {
 				continue
 			}
-
 			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
 				FeaturedProductsTag: &entity.HeroFeaturedProductsTagWithTranslations{
 					Tag: e.FeaturedProductsTag.Tag,
 					Products: entity.HeroFeaturedProductsWithTranslations{
 						Products:     prds,
-						ExploreLink:  "",                                               // No explore link for tag-based products
-						Translations: []entity.HeroFeaturedProductsInsertTranslation{}, // Products has its own translations
+						ExploreLink:  "",  // tag-based products carry no explore link
+						Translations: nil, // outer block carries the translations
 					},
 					Translations: e.FeaturedProductsTag.Translations,
 				},
 			})
-		case entity.HeroTypeFeaturedArchive:
-			if e.FeaturedArchive.ArchiveId == 0 {
-				slog.Error("failed to get archive by id",
-					slog.Int("archive_id", e.FeaturedArchive.ArchiveId))
-			}
 
+		case entity.HeroTypeFeaturedArchive:
 			archive, err := rep.Archive().GetArchiveById(ctx, e.FeaturedArchive.ArchiveId)
 			if err != nil {
-				slog.Error("failed to get archive by id",
+				slog.ErrorContext(ctx, "failed to get archive by id, skipping",
 					slog.String("err", err.Error()),
 					slog.Int("archive_id", e.FeaturedArchive.ArchiveId))
 				continue
 			}
-
 			entities = append(entities, entity.HeroEntityWithTranslations{
 				Type: e.Type,
 				FeaturedArchive: &entity.HeroFeaturedArchiveWithTranslations{
 					Archive:      *archive,
 					Tag:          e.FeaturedArchive.Tag,
-					Headline:     "", // Will be populated from translations when needed
-					ExploreText:  "", // Will be populated from translations when needed
 					Translations: e.FeaturedArchive.Translations,
 				},
 			})
+
+		case entity.HeroTypeEmbed:
+			fallback, err := resolveHeroMedia(ctx, rep, e.Embed.Fallback)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve embed fallback, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Embed: &entity.HeroEmbedWithTranslations{
+					EmbedUrl:     e.Embed.EmbedUrl,
+					Fallback:     fallback,
+					CtaLink:      e.Embed.CtaLink,
+					Translations: e.Embed.Translations,
+				},
+			})
+
+		case entity.HeroTypeDrop:
+			media, err := resolveHeroMedia(ctx, rep, e.Drop.Media)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve drop media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Drop: &entity.HeroDropWithTranslations{
+					Media:        media,
+					ReleaseAt:    e.Drop.ReleaseAt,
+					ExploreLink:  e.Drop.ExploreLink,
+					Tag:          e.Drop.Tag,
+					Translations: e.Drop.Translations,
+				},
+			})
+
+		case entity.HeroTypeLastChance:
+			products, err := rep.Products().GetLowStockProducts(ctx, e.LastChance.StockThreshold, e.LastChance.Limit)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to get low stock products, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			prds := filterVisibleProducts(products)
+			if len(prds) == 0 {
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				LastChance: &entity.HeroLastChanceWithTranslations{
+					Products:     prds,
+					ExploreLink:  e.LastChance.ExploreLink,
+					Translations: e.LastChance.Translations,
+				},
+			})
+
+		case entity.HeroTypeMarquee:
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Marquee: &entity.HeroMarqueeWithTranslations{
+					Link:         e.Marquee.Link,
+					Speed:        e.Marquee.Speed,
+					Translations: e.Marquee.Translations,
+				},
+			})
+
+		case entity.HeroTypeNewArrivals:
+			limit := e.NewArrivals.Limit
+			if limit <= 0 {
+				limit = 8
+			}
+			products, _, err := rep.Products().GetProductsPaged(ctx, limit, 0, []entity.SortFactor{entity.CreatedAt}, entity.Descending, nil, false)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to get newest products, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			prds := filterVisibleProducts(products)
+			if len(prds) == 0 {
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				NewArrivals: &entity.HeroNewArrivalsWithTranslations{
+					Products:     prds,
+					ExploreLink:  e.NewArrivals.ExploreLink,
+					Translations: e.NewArrivals.Translations,
+				},
+			})
+
+		case entity.HeroTypeSlideshow:
+			slides, err := resolveHeroSingleSlice(ctx, rep, e.Slideshow.Slides)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve slideshow slides, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			if len(slides) == 0 {
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Slideshow: &entity.HeroSlideshowWithTranslations{
+					Slides:     slides,
+					IntervalMs: e.Slideshow.IntervalMs,
+				},
+			})
+
+		case entity.HeroTypeMosaic:
+			tiles, err := resolveHeroSingleSlice(ctx, rep, e.Mosaic.Tiles)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve mosaic tiles, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			if len(tiles) == 0 {
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Mosaic: &entity.HeroMosaicWithTranslations{
+					Tiles:   tiles,
+					Columns: e.Mosaic.Columns,
+				},
+			})
+
+		case entity.HeroTypeSplit:
+			media, err := resolveHeroSingle(ctx, rep, e.Split.Media)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve split media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			var prds []entity.Product
+			if len(e.Split.ProductIDs) > 0 {
+				products, err := rep.Products().GetProductsByIds(ctx, e.Split.ProductIDs)
+				if err != nil {
+					slog.ErrorContext(ctx, "failed to get split products, showing media only", slog.String("err", err.Error()))
+				} else {
+					prds = filterVisibleProducts(products)
+				}
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Split: &entity.HeroSplitWithTranslations{
+					Media:     media,
+					Products:  prds,
+					MediaLeft: e.Split.MediaLeft,
+				},
+			})
+
+		case entity.HeroTypeVideo:
+			if e.Video.MediaId == 0 {
+				slog.ErrorContext(ctx, "video hero has no media id, skipping")
+				continue
+			}
+			videoMedia, err := rep.Media().GetMediaById(ctx, e.Video.MediaId)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to get video media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			video := &entity.HeroVideoWithTranslations{
+				Media:        *videoMedia,
+				Autoplay:     e.Video.Autoplay,
+				Loop:         e.Video.Loop,
+				Muted:        e.Video.Muted,
+				CtaLink:      e.Video.CtaLink,
+				Translations: e.Video.Translations,
+			}
+			if e.Video.PosterMediaId != 0 {
+				poster, err := rep.Media().GetMediaById(ctx, e.Video.PosterMediaId)
+				if err != nil {
+					slog.ErrorContext(ctx, "failed to get video poster media", slog.String("err", err.Error()))
+				} else {
+					video.PosterMedia = *poster
+				}
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{Type: e.Type, Video: video})
+
+		case entity.HeroTypeProductSpotlight:
+			if e.ProductSpotlight.ProductId == 0 {
+				slog.ErrorContext(ctx, "product spotlight has no product id, skipping")
+				continue
+			}
+			products, err := rep.Products().GetProductsByIds(ctx, []int{e.ProductSpotlight.ProductId})
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to get spotlight product, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			prds := filterVisibleProducts(products)
+			if len(prds) == 0 {
+				continue
+			}
+			media, err := resolveHeroMedia(ctx, rep, e.ProductSpotlight.Media)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve spotlight media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				ProductSpotlight: &entity.HeroProductSpotlightWithTranslations{
+					Product:      prds[0],
+					Media:        media,
+					ExploreLink:  e.ProductSpotlight.ExploreLink,
+					Translations: e.ProductSpotlight.Translations,
+				},
+			})
+
+		case entity.HeroTypeNewsletter:
+			media, err := resolveHeroMedia(ctx, rep, e.Newsletter.Media)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve newsletter media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Newsletter: &entity.HeroNewsletterWithTranslations{
+					Media:        media,
+					Translations: e.Newsletter.Translations,
+				},
+			})
+
+		case entity.HeroTypeStatement:
+			media, err := resolveHeroMedia(ctx, rep, e.Statement.Media)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve statement media, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Statement: &entity.HeroStatementWithTranslations{
+					Media:        media,
+					ExploreLink:  e.Statement.ExploreLink,
+					Translations: e.Statement.Translations,
+				},
+			})
+
+		case entity.HeroTypeLookbook:
+			frames, err := resolveHeroSingleSlice(ctx, rep, e.Lookbook.Frames)
+			if err != nil {
+				slog.ErrorContext(ctx, "failed to resolve lookbook frames, skipping", slog.String("err", err.Error()))
+				continue
+			}
+			if len(frames) == 0 {
+				continue
+			}
+			entities = append(entities, entity.HeroEntityWithTranslations{
+				Type: e.Type,
+				Lookbook: &entity.HeroLookbookWithTranslations{
+					Frames:       frames,
+					ExploreLink:  e.Lookbook.ExploreLink,
+					Translations: e.Lookbook.Translations,
+				},
+			})
+		}
+
+		// carry the cross-cutting modifiers onto whatever block this iteration
+		// appended (works for every type, old and new)
+		if len(entities) > before {
+			entities[len(entities)-1].Audience = e.Audience
+			entities[len(entities)-1].MinTierId = e.MinTierId
 		}
 	}
+
 	heroFull := entity.HeroFullWithTranslations{
 		Entities: entities,
 		NavFeatured: entity.NavFeaturedWithTranslations{
 			Men: entity.NavFeaturedEntityWithTranslations{
-				FeaturedTag:       heroFullInsert.NavFeatured.Men.FeaturedTag,
-				FeaturedArchiveId: strconv.Itoa(heroFullInsert.NavFeatured.Men.FeaturedArchiveId),
-				Translations:      heroFullInsert.NavFeatured.Men.Translations,
+				FeaturedTag:       hfi.NavFeatured.Men.FeaturedTag,
+				FeaturedArchiveId: strconv.Itoa(hfi.NavFeatured.Men.FeaturedArchiveId),
+				Translations:      hfi.NavFeatured.Men.Translations,
 			},
 			Women: entity.NavFeaturedEntityWithTranslations{
-				FeaturedTag:       heroFullInsert.NavFeatured.Women.FeaturedTag,
-				FeaturedArchiveId: strconv.Itoa(heroFullInsert.NavFeatured.Women.FeaturedArchiveId),
-				Translations:      heroFullInsert.NavFeatured.Women.Translations,
+				FeaturedTag:       hfi.NavFeatured.Women.FeaturedTag,
+				FeaturedArchiveId: strconv.Itoa(hfi.NavFeatured.Women.FeaturedArchiveId),
+				Translations:      hfi.NavFeatured.Women.Translations,
 			},
 		},
 	}
 
-	if heroFullInsert.NavFeatured.Men.MediaId != 0 {
-		menMedia, err := rep.Media().GetMediaById(ctx, heroFullInsert.NavFeatured.Men.MediaId)
+	if hfi.NavFeatured.Men.MediaId != 0 {
+		menMedia, err := rep.Media().GetMediaById(ctx, hfi.NavFeatured.Men.MediaId)
 		if err != nil {
-			slog.Error("failed to get media by id",
+			slog.ErrorContext(ctx, "failed to get nav men media",
 				slog.String("err", err.Error()),
-				slog.Int("media_id", heroFullInsert.NavFeatured.Men.MediaId))
-
+				slog.Int("media_id", hfi.NavFeatured.Men.MediaId))
+		} else {
+			heroFull.NavFeatured.Men.Media = *menMedia
 		}
-		heroFull.NavFeatured.Men.Media = *menMedia
 	}
 
-	if heroFullInsert.NavFeatured.Women.MediaId != 0 {
-		womenMedia, err := rep.Media().GetMediaById(ctx, heroFullInsert.NavFeatured.Women.MediaId)
+	if hfi.NavFeatured.Women.MediaId != 0 {
+		womenMedia, err := rep.Media().GetMediaById(ctx, hfi.NavFeatured.Women.MediaId)
 		if err != nil {
-			slog.Error("failed to get media by id",
+			slog.ErrorContext(ctx, "failed to get nav women media",
 				slog.String("err", err.Error()),
-				slog.Int("media_id", heroFullInsert.NavFeatured.Women.MediaId))
+				slog.Int("media_id", hfi.NavFeatured.Women.MediaId))
+		} else {
+			heroFull.NavFeatured.Women.Media = *womenMedia
 		}
-		heroFull.NavFeatured.Women.Media = *womenMedia
 	}
 
 	return &heroFull, nil
-}
-
-func insertHeroData(ctx context.Context, rep dependency.Repository, hf *entity.HeroFullWithTranslations) error {
-	jsonData, err := json.Marshal(hf)
-	if err != nil {
-		return fmt.Errorf("failed to marshal hero data: %w", err)
-	}
-	query := `INSERT INTO hero (data) VALUES (:data)`
-	_, err = rep.DB().NamedExecContext(ctx, query, map[string]any{
-		"data": jsonData,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to insert hero data: %w", err)
-	}
-	return nil
 }

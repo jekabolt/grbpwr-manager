@@ -35,6 +35,8 @@ type (
 		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error)
 		// GetProductsByTag returns a list of products by their tag.
 		GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error)
+		// GetLowStockProducts returns visible products with total stock in (0, threshold], ordered by ascending stock.
+		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.

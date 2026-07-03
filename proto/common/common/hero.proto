@@ -6,10 +6,63 @@ import "common/archive.proto";
 import "common/language.proto";
 import "common/media.proto";
 import "common/product.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
-// Extended hero structures with translations
+enum HeroType {
+  HERO_TYPE_UNKNOWN = 0;
+  HERO_TYPE_SINGLE = 1;
+  HERO_TYPE_DOUBLE = 2;
+  HERO_TYPE_MAIN = 3;
+  HERO_TYPE_FEATURED_PRODUCTS = 4;
+  HERO_TYPE_FEATURED_PRODUCTS_TAG = 5;
+  HERO_TYPE_FEATURED_ARCHIVE = 6;
+  HERO_TYPE_EMBED = 7;
+  HERO_TYPE_DROP = 8;
+  HERO_TYPE_LAST_CHANCE = 9;
+  HERO_TYPE_MARQUEE = 10;
+  HERO_TYPE_NEW_ARRIVALS = 11;
+  HERO_TYPE_SLIDESHOW = 12;
+  HERO_TYPE_MOSAIC = 13;
+  HERO_TYPE_SPLIT = 14;
+  HERO_TYPE_VIDEO = 15;
+  HERO_TYPE_PRODUCT_SPOTLIGHT = 16;
+  HERO_TYPE_NEWSLETTER = 17;
+  HERO_TYPE_STATEMENT = 18;
+  HERO_TYPE_LOOKBOOK = 19;
+}
+
+// HeroAudience is the TARGETING modifier: who a block is shown to. Enforcement
+// requires the frontend GetHero to know the viewer (auth → tier); until then it
+// is carried through and may be applied client-side.
+enum HeroAudience {
+  HERO_AUDIENCE_UNKNOWN = 0; // treated as ALL
+  HERO_AUDIENCE_ALL = 1;
+  HERO_AUDIENCE_GUESTS = 2;
+  HERO_AUDIENCE_MEMBERS = 3;
+  HERO_AUDIENCE_TIER = 4; // tier >= min_tier_id
+}
+
+// ─── shared fragments ───────────────────────────────────────────────────────
+
+// HeroMedia is a portrait/landscape media pair addressed by id (write side).
+// disable_overlay lives here so the scrim can be toggled per media slot.
+message HeroMedia {
+  int32 portrait_id = 1;
+  int32 landscape_id = 2;
+  bool disable_overlay = 3;
+}
+
+// HeroMediaFull is the resolved form of HeroMedia (read side).
+message HeroMediaFull {
+  common.MediaFull portrait = 1;
+  common.MediaFull landscape = 2;
+  bool disable_overlay = 3;
+}
+
+// ─── read side (resolved) ───────────────────────────────────────────────────
+
 message HeroFullWithTranslations {
   repeated HeroEntityWithTranslations entities = 1;
   NavFeaturedWithTranslations nav_featured = 2;
@@ -27,16 +80,6 @@ message NavFeaturedEntityWithTranslations {
   repeated common.NavFeaturedEntityInsertTranslation translations = 4;
 }
 
-enum HeroType {
-  HERO_TYPE_UNKNOWN = 0;
-  HERO_TYPE_SINGLE = 1;
-  HERO_TYPE_DOUBLE = 2;
-  HERO_TYPE_MAIN = 3;
-  HERO_TYPE_FEATURED_PRODUCTS = 4;
-  HERO_TYPE_FEATURED_PRODUCTS_TAG = 5;
-  HERO_TYPE_FEATURED_ARCHIVE = 6;
-}
-
 message HeroEntityWithTranslations {
   HeroType type = 1;
   HeroSingleWithTranslations single = 2;
@@ -45,13 +88,28 @@ message HeroEntityWithTranslations {
   HeroFeaturedProductsWithTranslations featured_products = 5;
   HeroFeaturedProductsTagWithTranslations featured_products_tag = 6;
   HeroFeaturedArchiveWithTranslations featured_archive = 7;
+  HeroEmbedWithTranslations embed = 8;
+  HeroDropWithTranslations drop = 9;
+  HeroLastChanceWithTranslations last_chance = 10;
+  HeroMarqueeWithTranslations marquee = 11;
+  HeroNewArrivalsWithTranslations new_arrivals = 12;
+  HeroSlideshowWithTranslations slideshow = 13;
+  HeroMosaicWithTranslations mosaic = 14;
+  HeroSplitWithTranslations split = 15;
+  HeroVideoWithTranslations video = 16;
+  HeroProductSpotlightWithTranslations product_spotlight = 17;
+  HeroNewsletterWithTranslations newsletter = 18;
+  HeroStatementWithTranslations statement = 19;
+  HeroLookbookWithTranslations lookbook = 20;
+  // modifiers
+  HeroAudience audience = 50;
+  int32 min_tier_id = 51;
 }
 
 message HeroSingleWithTranslations {
-  common.MediaFull media_portrait = 1;
-  common.MediaFull media_landscape = 2;
-  string explore_link = 3;
-  repeated common.HeroSingleInsertTranslation translations = 4;
+  HeroMediaFull media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
 }
 
 message HeroDoubleWithTranslations {
@@ -60,29 +118,113 @@ message HeroDoubleWithTranslations {
 }
 
 message HeroMainWithTranslations {
-  HeroSingleWithTranslations single = 1;
-  repeated common.HeroMainInsertTranslation translations = 2;
+  HeroMediaFull media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
 }
 
 message HeroFeaturedProductsWithTranslations {
   repeated common.Product products = 1;
   string explore_link = 2;
-  repeated common.HeroFeaturedProductsInsertTranslation translations = 3;
+  repeated common.HeroCopyTranslation translations = 3;
 }
 
 message HeroFeaturedProductsTagWithTranslations {
   string tag = 1;
   HeroFeaturedProductsWithTranslations products = 2;
-  repeated common.HeroFeaturedProductsTagInsertTranslation translations = 3;
+  repeated common.HeroCopyTranslation translations = 3;
 }
 
 message HeroFeaturedArchiveWithTranslations {
   common.ArchiveFull archive = 1;
   string tag = 2;
-  string headline = 3;
-  string explore_text = 4;
-  repeated common.HeroFeaturedArchiveInsertTranslation translations = 5;
+  repeated common.HeroCopyTranslation translations = 3;
 }
+
+message HeroEmbedWithTranslations {
+  string embed_url = 1;
+  HeroMediaFull fallback = 2;
+  string cta_link = 3;
+  repeated common.HeroCopyTranslation translations = 4;
+}
+
+message HeroDropWithTranslations {
+  HeroMediaFull media = 1;
+  google.protobuf.Timestamp release_at = 2;
+  string explore_link = 3;
+  string tag = 4;
+  repeated common.HeroCopyTranslation translations = 5;
+}
+
+message HeroLastChanceWithTranslations {
+  repeated common.Product products = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroMarqueeWithTranslations {
+  string link = 1;
+  int32 speed = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroNewArrivalsWithTranslations {
+  repeated common.Product products = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroSlideshowWithTranslations {
+  repeated HeroSingleWithTranslations slides = 1;
+  int32 interval_ms = 2;
+}
+
+message HeroMosaicWithTranslations {
+  repeated HeroSingleWithTranslations tiles = 1;
+  int32 columns = 2;
+}
+
+message HeroSplitWithTranslations {
+  HeroSingleWithTranslations media = 1;
+  repeated common.Product products = 2;
+  bool media_left = 3;
+}
+
+message HeroVideoWithTranslations {
+  common.MediaFull media = 1;
+  common.MediaFull poster_media = 2;
+  bool autoplay = 3;
+  bool loop = 4;
+  bool muted = 5;
+  string cta_link = 6;
+  repeated common.HeroCopyTranslation translations = 7;
+}
+
+message HeroProductSpotlightWithTranslations {
+  common.Product product = 1;
+  HeroMediaFull media = 2;
+  string explore_link = 3;
+  repeated common.HeroCopyTranslation translations = 4;
+}
+
+message HeroNewsletterWithTranslations {
+  HeroMediaFull media = 1;
+  repeated common.HeroCopyTranslation translations = 2;
+}
+
+message HeroStatementWithTranslations {
+  HeroMediaFull media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroLookbookWithTranslations {
+  repeated HeroSingleWithTranslations frames = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+// ─── write side (insert) ────────────────────────────────────────────────────
 
 message NavFeaturedInsert {
   NavFeaturedEntityInsert men = 1;
@@ -109,30 +251,28 @@ message HeroEntityInsert {
   HeroFeaturedProductsInsert featured_products = 5;
   HeroFeaturedProductsTagInsert featured_products_tag = 6;
   HeroFeaturedArchiveInsert featured_archive = 7;
-}
-
-message HeroFeaturedArchiveInsert {
-  int32 archive_id = 1;
-  string tag = 2;
-  repeated common.HeroFeaturedArchiveInsertTranslation translations = 3;
-}
-
-message HeroFeaturedProductsInsert {
-  repeated int32 product_ids = 1;
-  string explore_link = 2;
-  repeated common.HeroFeaturedProductsInsertTranslation translations = 3;
-}
-
-message HeroFeaturedProductsTagInsert {
-  string tag = 1;
-  repeated common.HeroFeaturedProductsTagInsertTranslation translations = 2;
+  HeroEmbedInsert embed = 8;
+  HeroDropInsert drop = 9;
+  HeroLastChanceInsert last_chance = 10;
+  HeroMarqueeInsert marquee = 11;
+  HeroNewArrivalsInsert new_arrivals = 12;
+  HeroSlideshowInsert slideshow = 13;
+  HeroMosaicInsert mosaic = 14;
+  HeroSplitInsert split = 15;
+  HeroVideoInsert video = 16;
+  HeroProductSpotlightInsert product_spotlight = 17;
+  HeroNewsletterInsert newsletter = 18;
+  HeroStatementInsert statement = 19;
+  HeroLookbookInsert lookbook = 20;
+  // modifiers
+  HeroAudience audience = 50;
+  int32 min_tier_id = 51;
 }
 
 message HeroSingleInsert {
-  int32 media_portrait_id = 1;
-  int32 media_landscape_id = 2;
-  string explore_link = 3;
-  repeated common.HeroSingleInsertTranslation translations = 4;
+  HeroMedia media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
 }
 
 message HeroDoubleInsert {
@@ -141,8 +281,108 @@ message HeroDoubleInsert {
 }
 
 message HeroMainInsert {
-  int32 media_portrait_id = 1;
-  int32 media_landscape_id = 2;
+  HeroMedia media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroFeaturedProductsInsert {
+  repeated int32 product_ids = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroFeaturedProductsTagInsert {
+  string tag = 1;
+  repeated common.HeroCopyTranslation translations = 2;
+}
+
+message HeroFeaturedArchiveInsert {
+  int32 archive_id = 1;
+  string tag = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroEmbedInsert {
+  string embed_url = 1;
+  HeroMedia fallback = 2;
+  string cta_link = 3;
+  repeated common.HeroCopyTranslation translations = 4;
+}
+
+message HeroDropInsert {
+  HeroMedia media = 1;
+  google.protobuf.Timestamp release_at = 2;
   string explore_link = 3;
-  repeated common.HeroMainInsertTranslation translations = 4;
+  string tag = 4;
+  repeated common.HeroCopyTranslation translations = 5;
+}
+
+message HeroLastChanceInsert {
+  int32 stock_threshold = 1;
+  int32 limit = 2;
+  string explore_link = 3;
+  repeated common.HeroCopyTranslation translations = 4;
+}
+
+message HeroMarqueeInsert {
+  string link = 1;
+  int32 speed = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroNewArrivalsInsert {
+  int32 limit = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroSlideshowInsert {
+  repeated HeroSingleInsert slides = 1;
+  int32 interval_ms = 2;
+}
+
+message HeroMosaicInsert {
+  repeated HeroSingleInsert tiles = 1;
+  int32 columns = 2;
+}
+
+message HeroSplitInsert {
+  HeroSingleInsert media = 1;
+  repeated int32 product_ids = 2;
+  bool media_left = 3;
+}
+
+message HeroVideoInsert {
+  int32 media_id = 1;
+  int32 poster_media_id = 2;
+  bool autoplay = 3;
+  bool loop = 4;
+  bool muted = 5;
+  string cta_link = 6;
+  repeated common.HeroCopyTranslation translations = 7;
+}
+
+message HeroProductSpotlightInsert {
+  int32 product_id = 1;
+  HeroMedia media = 2;
+  string explore_link = 3;
+  repeated common.HeroCopyTranslation translations = 4;
+}
+
+message HeroNewsletterInsert {
+  HeroMedia media = 1;
+  repeated common.HeroCopyTranslation translations = 2;
+}
+
+message HeroStatementInsert {
+  HeroMedia media = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
+}
+
+message HeroLookbookInsert {
+  repeated HeroSingleInsert frames = 1;
+  string explore_link = 2;
+  repeated common.HeroCopyTranslation translations = 3;
 }

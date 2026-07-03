@@ -256,7 +256,7 @@ func (a *App) Start(ctx context.Context) error {
 		p.SetGA4MP(ga4mpClient)
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient)
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, a.c.Security.HeroEmbedAllowedHosts)
 
 	var frontendS *frontend.Server
 	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
