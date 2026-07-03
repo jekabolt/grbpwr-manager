@@ -238,7 +238,7 @@ func filterVisibleProducts(products []entity.Product) []entity.Product {
 
 func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.HeroFullInsert) (*entity.HeroFullWithTranslations, error) {
 	entities := make([]entity.HeroEntityWithTranslations, 0, len(hfi.Entities))
-	for n, e := range hfi.Entities {
+	for _, e := range hfi.Entities {
 		before := len(entities)
 		switch e.Type {
 		case entity.HeroTypeSingle:
@@ -272,10 +272,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeMain:
-			// main is only allowed at the first position
-			if n != 0 {
-				continue
-			}
+			// main can now appear any number of times and at any position
 			if heroMediaEmpty(e.Main.Media) {
 				continue
 			}
