@@ -90,8 +90,13 @@ func (s *Store) GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, 
 }
 
 // getHeroInsert reads and decodes the stored hero (Insert form). It returns a
-// nil insert with no error when no hero row exists yet; a genuine JSON error is
-// propagated (fail fast), not silently swallowed.
+// nil insert with no error when no hero row exists yet.
+//
+// A malformed or legacy-format blob (e.g. a pre-L2 resolved-shape hero whose
+// nav_featured.featured_archive_id is a string, not an int) must NOT take down
+// the whole service at boot: GetHero is loaded during App.Start, so a hard
+// unmarshal error there aborts the entire backend. Instead we log and serve an
+// empty hero until an admin re-saves it in the current format.
 func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, error) {
 	query := `SELECT data FROM hero`
 
@@ -109,7 +114,9 @@ func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, erro
 
 	var hfi entity.HeroFullInsert
 	if err := json.Unmarshal(heroRaw.Data, &hfi); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal hero data: %w", err)
+		slog.ErrorContext(ctx, "failed to unmarshal stored hero; serving empty hero until it is re-saved from admin",
+			slog.String("err", err.Error()))
+		return nil, nil
 	}
 	return &hfi, nil
 }
