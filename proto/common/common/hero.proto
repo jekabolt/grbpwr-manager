@@ -215,7 +215,7 @@ message HeroProductSpotlightWithTranslations {
 
 message HeroNewsletterWithTranslations {
   HeroMediaFull media = 1;
-  repeated common.HeroCopyTranslation translations = 2;
+  repeated common.HeroNewsletterTranslation translations = 2;
 }
 
 message HeroStatementWithTranslations {
@@ -378,7 +378,7 @@ message HeroProductSpotlightInsert {
 
 message HeroNewsletterInsert {
   HeroMedia media = 1;
-  repeated common.HeroCopyTranslation translations = 2;
+  repeated common.HeroNewsletterTranslation translations = 2;
 }
 
 message HeroStatementInsert {
