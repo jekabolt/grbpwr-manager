@@ -11,14 +11,29 @@ option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common"
 
 // ArchiveItemType discriminates a timeline body block. The archive body is an
 // ordered, heterogeneous list of these blocks (Insert-form storage, like hero).
+// Blocks may repeat and appear in any order; only the archive thumbnail, title
+// (heading translation) and tag are mandatory — every timeline block is optional.
 enum ArchiveItemType {
   ARCHIVE_ITEM_TYPE_UNKNOWN = 0;
-  ARCHIVE_ITEM_TYPE_MEDIA = 1; // image / video
-  ARCHIVE_ITEM_TYPE_TEXT = 2; // translatable text block
-  ARCHIVE_ITEM_TYPE_EMBED = 3; // iframe
-  ARCHIVE_ITEM_TYPE_PRODUCT = 4; // a single product
-  ARCHIVE_ITEM_TYPE_PRODUCTS_TAG = 5; // products resolved by tag
-  ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL = 6; // hand-picked products
+  ARCHIVE_ITEM_TYPE_MAIN_MEDIA = 1; // single hero-scale media (video or image)
+  ARCHIVE_ITEM_TYPE_MEDIA_LINE = 2; // a row of 1..4 media
+  ARCHIVE_ITEM_TYPE_TEXT = 3; // translatable text block
+  ARCHIVE_ITEM_TYPE_EMBED = 4; // iframe
+  ARCHIVE_ITEM_TYPE_MEDIA_WITH_CAPTION = 5; // media + caption + link
+  ARCHIVE_ITEM_TYPE_PRODUCT = 6; // a single product
+  ARCHIVE_ITEM_TYPE_PRODUCTS_TAG = 7; // products resolved by tag
+  ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL = 8; // hand-picked products
+}
+
+// ArchiveMediaAspectRatio is the presentation aspect ratio for the media blocks.
+// MAIN_MEDIA uses 16X9 / 2X1 / 1X1 (or UNKNOWN — e.g. a video that carries its
+// own dimensions); MEDIA_LINE and MEDIA_WITH_CAPTION use 3X4 / 1X1.
+enum ArchiveMediaAspectRatio {
+  ARCHIVE_MEDIA_ASPECT_RATIO_UNKNOWN = 0;
+  ARCHIVE_MEDIA_ASPECT_RATIO_16X9 = 1;
+  ARCHIVE_MEDIA_ASPECT_RATIO_2X1 = 2;
+  ARCHIVE_MEDIA_ASPECT_RATIO_1X1 = 3;
+  ARCHIVE_MEDIA_ASPECT_RATIO_3X4 = 4;
 }
 
 message ArchiveList {
@@ -30,33 +45,137 @@ message ArchiveList {
   common.MediaFull thumbnail = 6;
 }
 
-// ArchiveItemInsert is a single timeline body block (write side). Only the
-// fields relevant to `type` are used.
-message ArchiveItemInsert {
-  ArchiveItemType type = 1;
-  int32 media_id = 2; // MEDIA
-  string embed_url = 3; // EMBED (iframe src)
-  int32 product_id = 4; // PRODUCT
-  string tag = 5; // PRODUCTS_TAG
-  int32 limit = 6; // PRODUCTS_TAG cap (0 = no cap)
-  repeated int32 product_ids = 7; // PRODUCTS_MANUAL
-  repeated common.ArchiveItemTranslation translations = 8; // caption / text
+// ─── read side (resolved timeline blocks) ────────────────────────────────────
+
+// MAIN_MEDIA: a single hero-scale media (image or video). aspect_ratio applies
+// to images (16X9 / 2X1 / 1X1) and is UNKNOWN for video.
+message ArchiveMainMediaFull {
+  common.MediaFull media = 1;
+  ArchiveMediaAspectRatio aspect_ratio = 2;
 }
 
-// ArchiveItemFull is the resolved timeline body block (read side).
+// MEDIA_LINE: a row of 1..4 media sharing one aspect ratio (3X4 or 1X1).
+message ArchiveMediaLineFull {
+  repeated common.MediaFull media = 1;
+  ArchiveMediaAspectRatio aspect_ratio = 2;
+}
+
+// TEXT: a translatable text block (copy lives in translations.text).
+message ArchiveTextFull {
+  repeated common.ArchiveItemTranslation translations = 1;
+}
+
+// EMBED: an iframe. Optional caption in translations.caption.
+message ArchiveEmbedFull {
+  string embed_url = 1;
+  repeated common.ArchiveItemTranslation translations = 2;
+}
+
+// MEDIA_WITH_CAPTION: one media with a translatable caption and an outbound link.
+message ArchiveMediaWithCaptionFull {
+  common.MediaFull media = 1;
+  string link = 2;
+  ArchiveMediaAspectRatio aspect_ratio = 3;
+  repeated common.ArchiveItemTranslation translations = 4; // caption
+}
+
+// PRODUCT: a single product. Optional caption in translations.caption.
+message ArchiveProductFull {
+  common.Product product = 1;
+  repeated common.ArchiveItemTranslation translations = 2;
+}
+
+// PRODUCTS_TAG: products resolved by tag. Optional caption in translations.caption.
+message ArchiveProductsTagFull {
+  string tag = 1;
+  repeated common.Product products = 2;
+  repeated common.ArchiveItemTranslation translations = 3;
+}
+
+// PRODUCTS_MANUAL: hand-picked, ordered products. Optional caption.
+message ArchiveProductsManualFull {
+  repeated common.Product products = 1;
+  repeated common.ArchiveItemTranslation translations = 2;
+}
+
+// ArchiveItemFull is a single resolved timeline body block (read side). Exactly
+// one payload field is populated, selected by `type`.
 message ArchiveItemFull {
   ArchiveItemType type = 1;
-  common.MediaFull media = 2; // MEDIA
-  string embed_url = 3; // EMBED
-  common.Product product = 4; // PRODUCT
-  string tag = 5; // PRODUCTS_TAG label
-  repeated common.Product products = 6; // PRODUCTS_TAG + PRODUCTS_MANUAL
-  repeated common.ArchiveItemTranslation translations = 7; // caption / text
+  ArchiveMainMediaFull main_media = 2;
+  ArchiveMediaLineFull media_line = 3;
+  ArchiveTextFull text = 4;
+  ArchiveEmbedFull embed = 5;
+  ArchiveMediaWithCaptionFull media_with_caption = 6;
+  ArchiveProductFull product = 7;
+  ArchiveProductsTagFull products_tag = 8;
+  ArchiveProductsManualFull products_manual = 9;
 }
+
+// ─── write side (insert timeline blocks) ─────────────────────────────────────
+
+message ArchiveMainMediaInsert {
+  int32 media_id = 1;
+  ArchiveMediaAspectRatio aspect_ratio = 2;
+}
+
+message ArchiveMediaLineInsert {
+  repeated int32 media_ids = 1; // 1..4
+  ArchiveMediaAspectRatio aspect_ratio = 2;
+}
+
+message ArchiveTextInsert {
+  repeated common.ArchiveItemTranslation translations = 1;
+}
+
+message ArchiveEmbedInsert {
+  string embed_url = 1;
+  repeated common.ArchiveItemTranslation translations = 2; // optional caption
+}
+
+message ArchiveMediaWithCaptionInsert {
+  int32 media_id = 1;
+  string link = 2;
+  ArchiveMediaAspectRatio aspect_ratio = 3;
+  repeated common.ArchiveItemTranslation translations = 4; // caption
+}
+
+message ArchiveProductInsert {
+  int32 product_id = 1;
+  repeated common.ArchiveItemTranslation translations = 2; // optional caption
+}
+
+message ArchiveProductsTagInsert {
+  string tag = 1;
+  int32 limit = 2; // 0 = no cap
+  repeated common.ArchiveItemTranslation translations = 3; // optional caption
+}
+
+message ArchiveProductsManualInsert {
+  repeated int32 product_ids = 1;
+  repeated common.ArchiveItemTranslation translations = 2; // optional caption
+}
+
+// ArchiveItemInsert is a single timeline body block (write side). Exactly one
+// payload field is set, selected by `type`.
+message ArchiveItemInsert {
+  ArchiveItemType type = 1;
+  ArchiveMainMediaInsert main_media = 2;
+  ArchiveMediaLineInsert media_line = 3;
+  ArchiveTextInsert text = 4;
+  ArchiveEmbedInsert embed = 5;
+  ArchiveMediaWithCaptionInsert media_with_caption = 6;
+  ArchiveProductInsert product = 7;
+  ArchiveProductsTagInsert products_tag = 8;
+  ArchiveProductsManualInsert products_manual = 9;
+}
+
+// ─── top-level archive ───────────────────────────────────────────────────────
 
 message ArchiveFull {
   ArchiveList archive_list = 1;
-  repeated common.MediaFull main_media = 2;
+  reserved 2; // was `main_media` (top-level hero) — now the MAIN_MEDIA timeline block
+  reserved "main_media";
   reserved 3; // was `media` (flat media-only body) — replaced by items
   reserved "media";
   repeated ArchiveItemFull items = 4; // ordered, resolved timeline body
@@ -66,7 +185,8 @@ message ArchiveInsert {
   string tag = 1;
   reserved 2; // was `media_ids` (flat media-only body) — replaced by items
   reserved "media_ids";
-  repeated int32 main_media_ids = 3;
+  reserved 3; // was `main_media_ids` (top-level hero) — now the MAIN_MEDIA timeline block
+  reserved "main_media_ids";
   int32 thumbnail_id = 4;
   repeated common.ArchiveInsertTranslation translations = 5;
   repeated ArchiveItemInsert items = 6; // ordered timeline body

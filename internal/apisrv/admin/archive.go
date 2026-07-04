@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest) (*pb_admin.AddArchiveResponse, error) {
-	if err := s.validateArchiveEmbeds(req.ArchiveInsert); err != nil {
+	if err := s.validateArchiveItems(req.ArchiveInsert); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
@@ -45,7 +45,7 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 }
 
 func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveRequest) (*pb_admin.UpdateArchiveResponse, error) {
-	if err := s.validateArchiveEmbeds(req.ArchiveInsert); err != nil {
+	if err := s.validateArchiveItems(req.ArchiveInsert); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
@@ -122,18 +122,69 @@ func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByI
 	}, nil
 }
 
-// validateArchiveEmbeds enforces the shared iframe embed policy on every EMBED
-// timeline block (see validateEmbedURL).
-func (s *Server) validateArchiveEmbeds(ai *pb_common.ArchiveInsert) error {
+// maxArchiveMediaLine is the upper bound on media in a single MEDIA_LINE block.
+const maxArchiveMediaLine = 4
+
+// countNonZero returns how many ids are non-zero (unselected media/product slots
+// arrive as 0 and would otherwise pass a naive len() check then vanish on read).
+func countNonZero(ids []int32) int {
+	n := 0
+	for _, id := range ids {
+		if id != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// validateArchiveItems enforces per-block invariants on the timeline body so that
+// a block which would silently vanish on read (its required reference missing) is
+// instead rejected up front. It also enforces the shared iframe embed allowlist on
+// EMBED blocks and the 1..4 media count on MEDIA_LINE.
+func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 	if ai == nil {
 		return nil
 	}
 	for i, it := range ai.Items {
-		if it.Type != pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_EMBED {
-			continue
-		}
-		if err := s.validateEmbedURL(it.EmbedUrl); err != nil {
-			return fmt.Errorf("archive item %d: %w", i, err)
+		switch it.Type {
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MAIN_MEDIA:
+			if it.MainMedia == nil || it.MainMedia.MediaId == 0 {
+				return fmt.Errorf("archive item %d: main_media requires a media id", i)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MEDIA_LINE:
+			n := 0
+			if it.MediaLine != nil {
+				n = countNonZero(it.MediaLine.MediaIds)
+			}
+			if n < 1 || n > maxArchiveMediaLine {
+				return fmt.Errorf("archive item %d: media_line must have 1..%d media, got %d", i, maxArchiveMediaLine, n)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MEDIA_WITH_CAPTION:
+			if it.MediaWithCaption == nil || it.MediaWithCaption.MediaId == 0 {
+				return fmt.Errorf("archive item %d: media_with_caption requires a media id", i)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_EMBED:
+			var url string
+			if it.Embed != nil {
+				url = it.Embed.EmbedUrl
+			}
+			if err := s.validateEmbedURL(url); err != nil {
+				return fmt.Errorf("archive item %d: %w", i, err)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCT:
+			if it.Product == nil || it.Product.ProductId == 0 {
+				return fmt.Errorf("archive item %d: product requires a product id", i)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_TAG:
+			if it.ProductsTag == nil || it.ProductsTag.Tag == "" {
+				return fmt.Errorf("archive item %d: products_tag requires a tag", i)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL:
+			if it.ProductsManual == nil || countNonZero(it.ProductsManual.ProductIds) == 0 {
+				return fmt.Errorf("archive item %d: products_manual requires at least one product id", i)
+			}
+		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_UNKNOWN:
+			return fmt.Errorf("archive item %d: block type is unset", i)
 		}
 	}
 	return nil
