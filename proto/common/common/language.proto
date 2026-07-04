@@ -58,6 +58,14 @@ message HeroCopyTranslation {
   string success_text = 10;
 }
 
+// HeroNewsletterTranslation is the newsletter block copy — headline + body only
+// (the email placeholder, button text and success message are handled client-side).
+message HeroNewsletterTranslation {
+  int32 language_id = 1;
+  string headline = 2;
+  string body = 3;
+}
+
 message NavFeaturedEntityInsertTranslation {
   int32 language_id = 1;
   string explore_text = 2;

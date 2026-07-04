@@ -222,9 +222,17 @@ type HeroProductSpotlightWithTranslations struct {
 	Translations []HeroCopyTranslation `json:"translations"`
 }
 
+// HeroNewsletterTranslation is the newsletter block copy — headline + body only
+// (email placeholder, button text and success message are handled client-side).
+type HeroNewsletterTranslation struct {
+	LanguageId int    `json:"language_id"`
+	Headline   string `json:"headline"`
+	Body       string `json:"body"`
+}
+
 type HeroNewsletterWithTranslations struct {
-	Media        HeroMediaFull         `json:"media"`
-	Translations []HeroCopyTranslation `json:"translations"`
+	Media        HeroMediaFull               `json:"media"`
+	Translations []HeroNewsletterTranslation `json:"translations"`
 }
 
 type HeroStatementWithTranslations struct {
@@ -380,8 +388,8 @@ type HeroProductSpotlightInsert struct {
 }
 
 type HeroNewsletterInsert struct {
-	Media        HeroMedia             `json:"media"`
-	Translations []HeroCopyTranslation `json:"translations"`
+	Media        HeroMedia                   `json:"media"`
+	Translations []HeroNewsletterTranslation `json:"translations"`
 }
 
 type HeroStatementInsert struct {

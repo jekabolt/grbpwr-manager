@@ -77,6 +77,30 @@ func convertEntityHeroCopyTranslationsToCommon(in []entity.HeroCopyTranslation) 
 	return out
 }
 
+func convertCommonHeroNewsletterTranslationsToEntity(in []*pb_common.HeroNewsletterTranslation) []entity.HeroNewsletterTranslation {
+	out := make([]entity.HeroNewsletterTranslation, len(in))
+	for i, t := range in {
+		out[i] = entity.HeroNewsletterTranslation{
+			LanguageId: int(t.LanguageId),
+			Headline:   t.Headline,
+			Body:       t.Body,
+		}
+	}
+	return out
+}
+
+func convertEntityHeroNewsletterTranslationsToCommon(in []entity.HeroNewsletterTranslation) []*pb_common.HeroNewsletterTranslation {
+	out := make([]*pb_common.HeroNewsletterTranslation, len(in))
+	for i, t := range in {
+		out[i] = &pb_common.HeroNewsletterTranslation{
+			LanguageId: int32(t.LanguageId),
+			Headline:   t.Headline,
+			Body:       t.Body,
+		}
+	}
+	return out
+}
+
 func convertCommonHeroMediaToEntity(m *pb_common.HeroMedia) entity.HeroMedia {
 	if m == nil {
 		return entity.HeroMedia{}
@@ -309,7 +333,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 		if hi.Newsletter != nil {
 			result.Newsletter = entity.HeroNewsletterInsert{
 				Media:        convertCommonHeroMediaToEntity(hi.Newsletter.Media),
-				Translations: convertCommonHeroCopyTranslationsToEntity(hi.Newsletter.Translations),
+				Translations: convertCommonHeroNewsletterTranslationsToEntity(hi.Newsletter.Translations),
 			}
 		}
 	case pb_common.HeroType_HERO_TYPE_STATEMENT:
@@ -601,7 +625,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		if he.Newsletter != nil {
 			result.Newsletter = &pb_common.HeroNewsletterWithTranslations{
 				Media:        convertEntityHeroMediaFullToCommon(&he.Newsletter.Media),
-				Translations: convertEntityHeroCopyTranslationsToCommon(he.Newsletter.Translations),
+				Translations: convertEntityHeroNewsletterTranslationsToCommon(he.Newsletter.Translations),
 			}
 		}
 	case entity.HeroTypeStatement:
