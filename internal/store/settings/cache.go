@@ -66,7 +66,40 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get background hero color: %w", err)
 	}
 
+	if dict.ProductTags, err = s.getProductTags(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get product tags: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getProductTags returns every distinct tag attached to a visible (non-hidden,
+// non-deleted) product, ordered alphabetically. Mirrors getCollections.
+func (s *Store) getProductTags(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT DISTINCT pt.tag AS tag
+		FROM product_tag pt
+		JOIN product p ON pt.product_id = p.id
+		WHERE p.hidden = 0
+			AND p.deleted_at IS NULL
+			AND pt.tag != ''
+		ORDER BY pt.tag
+	`
+
+	type tagResult struct {
+		Tag string `db:"tag"`
+	}
+
+	results, err := storeutil.QueryListNamed[tagResult](ctx, s.DB, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get product tags: %w", err)
+	}
+
+	tags := make([]string, 0, len(results))
+	for _, r := range results {
+		tags = append(tags, r.Tag)
+	}
+	return tags, nil
 }
 
 func (s *Store) getCategories(ctx context.Context) ([]entity.Category, error) {

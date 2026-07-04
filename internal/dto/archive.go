@@ -13,19 +13,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Convert a protobuf ArchiveNew to an entity ArchiveNew
+// Convert a protobuf ArchiveInsert to an entity ArchiveInsert
 func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*entity.ArchiveInsert, error) {
 	if pbArchiveInsert == nil {
 		return nil, errors.New("archive insert is nil")
-	}
-
-	if len(pbArchiveInsert.MediaIds) == 0 {
-		return nil, errors.New("archive media ids must not be empty")
-	}
-
-	mids := make([]int, 0, len(pbArchiveInsert.MediaIds))
-	for _, mid := range pbArchiveInsert.MediaIds {
-		mids = append(mids, int(mid))
 	}
 
 	mainMediaIds := make([]int, 0, len(pbArchiveInsert.MainMediaIds))
@@ -42,24 +33,56 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		})
 	}
 
+	items := make([]entity.ArchiveItemInsert, 0, len(pbArchiveInsert.Items))
+	for _, it := range pbArchiveInsert.Items {
+		items = append(items, convertPbArchiveItemInsertToEntity(it))
+	}
+
 	return &entity.ArchiveInsert{
 		Translations: translations,
 		Tag:          pbArchiveInsert.Tag,
-		MediaIds:     mids,
+		Items:        items,
 		MainMediaIds: mainMediaIds,
 		ThumbnailId:  int(pbArchiveInsert.ThumbnailId),
 	}, nil
 }
 
-// Convert an entity ArchiveFull to a protobuf ArchiveFull
-func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull {
-	if af == nil {
-		return nil
+func convertPbArchiveItemInsertToEntity(it *pb_common.ArchiveItemInsert) entity.ArchiveItemInsert {
+	if it == nil {
+		return entity.ArchiveItemInsert{}
 	}
+	productIds := make([]int, 0, len(it.ProductIds))
+	for _, id := range it.ProductIds {
+		productIds = append(productIds, int(id))
+	}
+	return entity.ArchiveItemInsert{
+		Type:         entity.ArchiveItemType(it.Type),
+		MediaId:      int(it.MediaId),
+		EmbedUrl:     it.EmbedUrl,
+		ProductId:    int(it.ProductId),
+		Tag:          it.Tag,
+		Limit:        int(it.Limit),
+		ProductIds:   productIds,
+		Translations: convertPbArchiveItemTranslationsToEntity(it.Translations),
+	}
+}
 
-	mediaPb := make([]*pb_common.MediaFull, 0, len(af.Media))
-	for _, m := range af.Media {
-		mediaPb = append(mediaPb, ConvertEntityToCommonMedia(&m))
+func convertPbArchiveItemTranslationsToEntity(in []*pb_common.ArchiveItemTranslation) []entity.ArchiveItemTranslation {
+	out := make([]entity.ArchiveItemTranslation, 0, len(in))
+	for _, t := range in {
+		out = append(out, entity.ArchiveItemTranslation{
+			LanguageId: int(t.LanguageId),
+			Caption:    t.Caption,
+			Text:       t.Text,
+		})
+	}
+	return out
+}
+
+// Convert an entity ArchiveFull to a protobuf ArchiveFull
+func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) (*pb_common.ArchiveFull, error) {
+	if af == nil {
+		return nil, nil
 	}
 
 	mainMediaPb := make([]*pb_common.MediaFull, 0, len(af.MainMedia))
@@ -67,11 +90,66 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) *pb_common.ArchiveFull
 		mainMediaPb = append(mainMediaPb, ConvertEntityToCommonMedia(&m))
 	}
 
+	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(af.Items))
+	for i := range af.Items {
+		itemPb, err := convertEntityArchiveItemFullToPb(&af.Items[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert archive item at index %d: %w", i, err)
+		}
+		itemsPb = append(itemsPb, itemPb)
+	}
+
 	return &pb_common.ArchiveFull{
 		ArchiveList: ConvertEntityToCommonArchiveList(&af.ArchiveList),
 		MainMedia:   mainMediaPb,
-		Media:       mediaPb,
+		Items:       itemsPb,
+	}, nil
+}
+
+func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.ArchiveItemFull, error) {
+	if it == nil {
+		return nil, nil
 	}
+	out := &pb_common.ArchiveItemFull{
+		Type:         pb_common.ArchiveItemType(it.Type),
+		EmbedUrl:     it.EmbedUrl,
+		Tag:          it.Tag,
+		Translations: convertEntityArchiveItemTranslationsToPb(it.Translations),
+	}
+	if it.Media.Id != 0 {
+		out.Media = ConvertEntityToCommonMedia(&it.Media)
+	}
+	if it.Product != nil {
+		p, err := ConvertEntityProductToCommon(it.Product)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert product: %w", err)
+		}
+		out.Product = p
+	}
+	if len(it.Products) > 0 {
+		products := make([]*pb_common.Product, 0, len(it.Products))
+		for i := range it.Products {
+			p, err := ConvertEntityProductToCommon(&it.Products[i])
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert product at index %d: %w", i, err)
+			}
+			products = append(products, p)
+		}
+		out.Products = products
+	}
+	return out, nil
+}
+
+func convertEntityArchiveItemTranslationsToPb(in []entity.ArchiveItemTranslation) []*pb_common.ArchiveItemTranslation {
+	out := make([]*pb_common.ArchiveItemTranslation, 0, len(in))
+	for _, t := range in {
+		out = append(out, &pb_common.ArchiveItemTranslation{
+			LanguageId: int32(t.LanguageId),
+			Caption:    t.Caption,
+			Text:       t.Text,
+		})
+	}
+	return out
 }
 
 func ConvertEntityToCommonArchiveList(al *entity.ArchiveList) *pb_common.ArchiveList {

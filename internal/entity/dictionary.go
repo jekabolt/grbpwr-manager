@@ -15,4 +15,5 @@ type DictionaryInfo struct {
 	Announce                    *AnnounceWithTranslations
 	ComplimentaryShippingPrices map[string]decimal.Decimal
 	BackgroundHeroColor         string
+	ProductTags                 []string
 }

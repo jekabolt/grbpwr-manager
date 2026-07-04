@@ -48,6 +48,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
 			IsProd:                      cache.GetPaymentIsProd(),
 			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
+			ProductTags:                 cache.GetProductTags(),
 		}),
 	}, nil
 }

@@ -4,15 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest) (*pb_admin.AddArchiveResponse, error) {
+	if err := s.validateArchiveEmbeds(req.ArchiveInsert); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
 	an, err := dto.ConvertPbArchiveInsertToEntity(req.ArchiveInsert)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert pb archive insert to entity archive insert",
@@ -39,6 +45,9 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 }
 
 func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveRequest) (*pb_admin.UpdateArchiveResponse, error) {
+	if err := s.validateArchiveEmbeds(req.ArchiveInsert); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
 
 	upd, err := dto.ConvertPbArchiveInsertToEntity(req.ArchiveInsert)
 	if err != nil {
@@ -53,6 +62,9 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 		upd,
 	)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "archive not found")
+		}
 		slog.Default().ErrorContext(ctx, "can't update archive",
 			slog.String("err", err.Error()),
 		)
@@ -97,7 +109,32 @@ func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByI
 		return nil, status.Errorf(codes.Internal, "failed to get archive: %v", err)
 	}
 
+	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert archive to pb",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to convert archive: %v", err)
+	}
+
 	return &pb_admin.GetArchiveByIDResponse{
-		Archive: dto.ConvertArchiveFullEntityToPb(af),
+		Archive: pbAf,
 	}, nil
+}
+
+// validateArchiveEmbeds enforces the shared iframe embed policy on every EMBED
+// timeline block (see validateEmbedURL).
+func (s *Server) validateArchiveEmbeds(ai *pb_common.ArchiveInsert) error {
+	if ai == nil {
+		return nil
+	}
+	for i, it := range ai.Items {
+		if it.Type != pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_EMBED {
+			continue
+		}
+		if err := s.validateEmbedURL(it.EmbedUrl); err != nil {
+			return fmt.Errorf("archive item %d: %w", i, err)
+		}
+	}
+	return nil
 }
