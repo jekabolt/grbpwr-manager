@@ -28,6 +28,7 @@ type Dict struct {
 	ComplimentaryShippingPrices map[string]decimal.Decimal
 	IsProd                      bool // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 	BackgroundHeroColor         string
+	ProductTags                 []string
 }
 
 var (
@@ -228,6 +229,7 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 
 	commonDict.IsProd = dict.IsProd
 	commonDict.BackgroundHeroColor = dict.BackgroundHeroColor
+	commonDict.ProductTags = dict.ProductTags
 
 	return commonDict
 }
