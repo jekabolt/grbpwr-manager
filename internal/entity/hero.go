@@ -5,11 +5,15 @@ import "time"
 // ─── shared fragments ───────────────────────────────────────────────────────
 
 // HeroMedia is a portrait/landscape media pair addressed by id (write side).
-// DisableOverlay lives here so the scrim can be toggled per media slot.
+// The per-slot presentation modifiers live here: DisableOverlay toggles the
+// scrim, DisableTint toggles the frontend's background colour tint, and Stroke
+// toggles a border/outline around the media.
 type HeroMedia struct {
 	PortraitId     int  `json:"portrait_id"`
 	LandscapeId    int  `json:"landscape_id"`
 	DisableOverlay bool `json:"disable_overlay"`
+	DisableTint    bool `json:"disable_tint"`
+	Stroke         bool `json:"stroke"`
 }
 
 // HeroMediaFull is the resolved form of HeroMedia (read side).
@@ -17,6 +21,8 @@ type HeroMediaFull struct {
 	Portrait       MediaFull `json:"portrait"`
 	Landscape      MediaFull `json:"landscape"`
 	DisableOverlay bool      `json:"disable_overlay"`
+	DisableTint    bool      `json:"disable_tint"`
+	Stroke         bool      `json:"stroke"`
 }
 
 // HeroCopyTranslation is the single, shared translation for every hero block.

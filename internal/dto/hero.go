@@ -85,6 +85,8 @@ func convertCommonHeroMediaToEntity(m *pb_common.HeroMedia) entity.HeroMedia {
 		PortraitId:     int(m.PortraitId),
 		LandscapeId:    int(m.LandscapeId),
 		DisableOverlay: m.DisableOverlay,
+		DisableTint:    m.DisableTint,
+		Stroke:         m.Stroke,
 	}
 }
 
@@ -96,6 +98,8 @@ func convertEntityHeroMediaFullToCommon(m *entity.HeroMediaFull) *pb_common.Hero
 		Portrait:       ConvertEntityToCommonMedia(&m.Portrait),
 		Landscape:      ConvertEntityToCommonMedia(&m.Landscape),
 		DisableOverlay: m.DisableOverlay,
+		DisableTint:    m.DisableTint,
+		Stroke:         m.Stroke,
 	}
 }
 
