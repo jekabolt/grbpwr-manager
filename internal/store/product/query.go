@@ -258,6 +258,80 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 	return result, nil
 }
 
+// GetLowStockProducts returns visible, non-deleted products whose total stock
+// is in the range (0, threshold], ordered by ascending stock (closest to
+// selling out first), limited to `limit`.
+func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error) {
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+
+	query := `
+	SELECT
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.top_category_id, p.sub_category_id, p.type_id,
+		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
+		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		m.full_size, m.full_size_width, m.full_size_height,
+		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		sm.created_at AS secondary_thumbnail_created_at,
+		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
+		sm.full_size_height AS secondary_full_size_height,
+		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
+		sm.thumbnail_height AS secondary_thumbnail_height,
+		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
+		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+	FROM product p
+	JOIN media m ON p.thumbnail_id = m.id
+	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
+	WHERE p.hidden = 0 AND p.deleted_at IS NULL
+		AND COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) BETWEEN 1 AND :threshold
+	ORDER BY COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) ASC
+	LIMIT :limit`
+
+	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
+		"threshold": threshold,
+		"limit":     limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("can't get low stock products: %w", err)
+	}
+	if len(prdResults) == 0 {
+		return []entity.Product{}, nil
+	}
+
+	ids := make([]int, 0, len(prdResults))
+	for _, r := range prdResults {
+		ids = append(ids, r.Id)
+	}
+
+	translationMap, err := fetchProductTranslations(ctx, s.DB, ids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product translations: %w", err)
+	}
+
+	priceMap, err := fetchProductPrices(ctx, s.DB, ids)
+	if err != nil {
+		return nil, fmt.Errorf("can't get product prices: %w", err)
+	}
+
+	result := make([]entity.Product, 0, len(prdResults))
+	for _, r := range prdResults {
+		product := r.toProduct(translationMap[r.Id])
+		product.Prices = priceMap[r.Id]
+		result = append(result, product)
+	}
+
+	return result, nil
+}
+
 // GetProductsByTag returns a list of products by their tag.
 func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error) {
 	if tag == "" {

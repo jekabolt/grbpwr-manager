@@ -26,36 +26,26 @@ message ArchiveInsertTranslation {
   string description = 3;
 }
 
-message HeroSingleInsertTranslation {
-  int32 language_id = 1;
-  string headline = 2;
-  string explore_text = 3;
-}
-
-message HeroMainInsertTranslation {
+// HeroCopyTranslation is the single, shared translation for every hero block.
+// Each block type uses only the subset of fields it needs:
+//   single/double        -> headline, explore_text
+//   main                 -> tag, body, headline, explore_text
+//   featured_products    -> headline, explore_text
+//   featured_products_tag-> headline, explore_text
+//   featured_archive     -> headline, explore_text
+// (further fields — subhead, cta_text, caption, placeholder, success_text —
+//  are reserved for the block types added on top of this foundation.)
+message HeroCopyTranslation {
   int32 language_id = 1;
   string tag = 2;
-  string description = 3;
-  string headline = 4;
-  string explore_text = 5;
-}
-
-message HeroFeaturedProductsInsertTranslation {
-  int32 language_id = 1;
-  string headline = 2;
-  string explore_text = 3;
-}
-
-message HeroFeaturedProductsTagInsertTranslation {
-  int32 language_id = 1;
-  string headline = 2;
-  string explore_text = 3;
-}
-
-message HeroFeaturedArchiveInsertTranslation {
-  int32 language_id = 1;
-  string headline = 2;
-  string explore_text = 3;
+  string headline = 3;
+  string subhead = 4;
+  string body = 5;
+  string cta_text = 6;
+  string explore_text = 7;
+  string caption = 8;
+  string placeholder = 9;
+  string success_text = 10;
 }
 
 message NavFeaturedEntityInsertTranslation {

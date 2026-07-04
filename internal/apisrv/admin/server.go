@@ -33,6 +33,9 @@ type Server struct {
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
 	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
 	revalidateSem chan struct{}
+	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
+	// Empty means any https host is accepted (scheme/format validation still applies).
+	embedAllowedHosts []string
 }
 
 // New creates a new server with admin handlers.
@@ -45,6 +48,7 @@ func New(
 	re dependency.RevalidationService,
 	reservationMgr dependency.StockReservationManager,
 	ga4mpClient *ga4mp.Client,
+	embedAllowedHosts string,
 ) *Server {
 	return &Server{
 		repo:              r,
@@ -56,6 +60,7 @@ func New(
 		reservationMgr:    reservationMgr,
 		ga4mp:             ga4mpClient,
 		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
+		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 	}
 }
 
