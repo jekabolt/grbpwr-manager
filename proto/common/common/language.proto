@@ -22,14 +22,14 @@ message ProductInsertTranslation {
 
 message ArchiveInsertTranslation {
   int32 language_id = 1;
-  string heading = 2;
-  string description = 3;
+  string heading = 2; // the archive title
 }
 
 // ArchiveItemTranslation is the per-block translation for a timeline body item.
 // Each block type uses only the subset it needs:
-//   text                         -> text
-//   media/embed/product/products -> caption
+//   text                                          -> text
+//   media_with_caption/embed/product/products_*   -> caption
+// (main_media and media_line carry no copy.)
 message ArchiveItemTranslation {
   int32 language_id = 1;
   string caption = 2;

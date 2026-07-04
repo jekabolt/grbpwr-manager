@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -23,8 +24,9 @@ func marshalArchiveBody(items []entity.ArchiveItemInsert) ([]byte, error) {
 	return json.Marshal(items)
 }
 
-// AddArchive adds a new archive: metadata + main media + translations, and the
-// ordered timeline body (typed blocks) stored as JSON in the `body` column.
+// AddArchive adds a new archive: metadata + translations, and the ordered
+// timeline body (typed blocks — main media, media lines, products, etc.) stored
+// as JSON in the `body` column.
 func (s *Store) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int, error) {
 	bodyJSON, err := marshalArchiveBody(aNew.Items)
 	if err != nil {
@@ -44,24 +46,6 @@ func (s *Store) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int
 			return fmt.Errorf("failed to add archive: %w", err)
 		}
 
-		// Insert main media items
-		if len(aNew.MainMediaIds) > 0 {
-			mainMediaRows := make([]map[string]any, 0, len(aNew.MainMediaIds))
-			for i, mid := range aNew.MainMediaIds {
-				row := map[string]any{
-					"archive_id":    aid,
-					"media_id":      mid,
-					"display_order": i,
-				}
-				mainMediaRows = append(mainMediaRows, row)
-			}
-
-			err = storeutil.BulkInsert(ctx, rep.DB(), "archive_main_media", mainMediaRows)
-			if err != nil {
-				return fmt.Errorf("failed to add archive main media: %w", err)
-			}
-		}
-
 		// Insert translations
 		rows := make([]map[string]any, 0, len(aNew.Translations))
 		for _, t := range aNew.Translations {
@@ -69,7 +53,6 @@ func (s *Store) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int
 				"archive_id":  aid,
 				"language_id": t.LanguageId,
 				"heading":     t.Heading,
-				"description": t.Description,
 			}
 			rows = append(rows, row)
 		}
@@ -98,25 +81,16 @@ func (s *Store) UpdateArchive(ctx context.Context, aid int, aInsert *entity.Arch
 		// Ensure the archive exists so an update to a missing id fails loudly
 		// instead of silently affecting zero rows (an UPDATE with unchanged
 		// values reports 0 affected rows, so RowsAffected can't be trusted here).
-		existsQuery := `SELECT 1 FROM archive WHERE id = :id`
-		if _, err := storeutil.QueryNamedOne[int](ctx, rep.DB(), existsQuery, map[string]any{"id": aid}); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("archive %d not found: %w", aid, sql.ErrNoRows)
-			}
+		cnt, err := storeutil.QueryCountNamed(ctx, rep.DB(), `SELECT COUNT(*) FROM archive WHERE id = :id`, map[string]any{"id": aid})
+		if err != nil {
 			return fmt.Errorf("failed to check archive %d exists: %w", aid, err)
 		}
-
-		// Delete existing main media items
-		query := `DELETE FROM archive_main_media WHERE archive_id = :archiveId`
-		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
-			"archiveId": aid,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to delete archive main media with archive Id %d: %w", aid, err)
+		if cnt == 0 {
+			return fmt.Errorf("archive %d not found: %w", aid, sql.ErrNoRows)
 		}
 
 		// Update the archive itself (incl. the timeline body)
-		query = `
+		query := `
 		UPDATE archive SET
 			tag = :tag,
 			thumbnail_id = :thumbnail_id,
@@ -131,24 +105,6 @@ func (s *Store) UpdateArchive(ctx context.Context, aid int, aInsert *entity.Arch
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update archive: %w", err)
-		}
-
-		// Insert new main media items
-		if len(aInsert.MainMediaIds) > 0 {
-			mainMediaRows := make([]map[string]any, 0, len(aInsert.MainMediaIds))
-			for i, mid := range aInsert.MainMediaIds {
-				row := map[string]any{
-					"archive_id":    aid,
-					"media_id":      mid,
-					"display_order": i,
-				}
-				mainMediaRows = append(mainMediaRows, row)
-			}
-
-			err = storeutil.BulkInsert(ctx, rep.DB(), "archive_main_media", mainMediaRows)
-			if err != nil {
-				return fmt.Errorf("failed to add archive main media: %w", err)
-			}
 		}
 
 		// Delete existing translations
@@ -167,7 +123,6 @@ func (s *Store) UpdateArchive(ctx context.Context, aid int, aInsert *entity.Arch
 				"archive_id":  aid,
 				"language_id": t.LanguageId,
 				"heading":     t.Heading,
-				"description": t.Description,
 			}
 			rows = append(rows, row)
 		}
@@ -283,14 +238,6 @@ func (s *Store) DeleteArchiveById(ctx context.Context, id int) error {
 			return fmt.Errorf("failed to delete archive with ID %d: %w", id, err)
 		}
 
-		query = `DELETE FROM archive_item WHERE archive_id = :id`
-		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
-			"id": id,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to delete archive items with ID %d: %w", id, err)
-		}
-
 		query = `DELETE FROM archive_translation WHERE archive_id = :id`
 		_, err = rep.DB().NamedExecContext(ctx, query, map[string]interface{}{
 			"id": id,
@@ -365,24 +312,16 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 		al.Slug = dto.GetArchiveSlug(al.Id, "", al.Tag)
 	}
 
-	// Query all main media for this archive
-	mainMediaQuery := `
-	SELECT 
-		m.id, m.created_at, m.full_size, m.full_size_width, m.full_size_height, m.thumbnail, m.thumbnail_width, m.thumbnail_height, m.compressed, m.compressed_width, m.compressed_height, m.blur_hash
-	FROM archive_main_media amm
-	JOIN media m ON amm.media_id = m.id
-	WHERE amm.archive_id = :archiveId
-	ORDER BY amm.display_order ASC`
-	mainMedia, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB, mainMediaQuery, map[string]any{"archiveId": id})
-	if err != nil {
-		return nil, err
-	}
-
-	// Decode the stored timeline body (typed blocks) and resolve it.
+	// Decode the stored timeline body (typed blocks) and resolve it. A malformed
+	// blob degrades to an empty timeline rather than failing the read: GetArchiveById
+	// runs at boot via hero FEATURED_ARCHIVE resolution, so a single bad body must
+	// not crash App.Start (mirrors the hero getHeroInsert boot-resilience rule).
 	var storedItems []entity.ArchiveItemInsert
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &storedItems); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal archive body for %d: %w", id, err)
+			slog.ErrorContext(ctx, "failed to unmarshal archive body, serving empty timeline",
+				slog.Int("archive_id", id), slog.String("err", err.Error()))
+			storedItems = nil
 		}
 	}
 
@@ -395,7 +334,6 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 
 	return &entity.ArchiveFull{
 		ArchiveList: al,
-		MainMedia:   mainMedia,
 		Items:       items,
 	}, nil
 }
@@ -408,88 +346,120 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 func resolveArchiveItems(ctx context.Context, rep dependency.Repository, items []entity.ArchiveItemInsert) ([]entity.ArchiveItemFull, error) {
 	out := make([]entity.ArchiveItemFull, 0, len(items))
 	for _, it := range items {
-		full := entity.ArchiveItemFull{
-			Type:         it.Type,
-			EmbedUrl:     it.EmbedUrl,
-			Tag:          it.Tag,
-			Translations: it.Translations,
-		}
+		full := entity.ArchiveItemFull{Type: it.Type}
 
 		switch it.Type {
-		case entity.ArchiveItemTypeMedia:
-			if it.MediaId == 0 {
-				slog.WarnContext(ctx, "archive media block has no media id, skipping")
+		case entity.ArchiveItemTypeMainMedia:
+			if it.MainMedia == nil || it.MainMedia.MediaId == 0 {
+				slog.WarnContext(ctx, "archive main_media block has no media id, skipping")
 				continue
 			}
-			m, err := rep.Media().GetMediaById(ctx, it.MediaId)
+			m, ok, err := resolveMediaById(ctx, rep, it.MainMedia.MediaId, "main_media")
 			if err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					slog.WarnContext(ctx, "archive media block references missing media, skipping", slog.Int("media_id", it.MediaId))
-					continue
-				}
-				return nil, fmt.Errorf("failed to get archive media %d: %w", it.MediaId, err)
+				return nil, err
 			}
-			full.Media = *m
+			if !ok {
+				continue
+			}
+			full.MainMedia = &entity.ArchiveMainMediaFull{Media: *m, AspectRatio: it.MainMedia.AspectRatio}
+
+		case entity.ArchiveItemTypeMediaLine:
+			if it.MediaLine == nil || len(it.MediaLine.MediaIds) == 0 {
+				slog.WarnContext(ctx, "archive media_line block has no media ids, skipping")
+				continue
+			}
+			media, err := resolveMediaByIds(ctx, rep, it.MediaLine.MediaIds, "media_line")
+			if err != nil {
+				return nil, err
+			}
+			if len(media) == 0 {
+				continue
+			}
+			full.MediaLine = &entity.ArchiveMediaLineFull{Media: media, AspectRatio: it.MediaLine.AspectRatio}
 
 		case entity.ArchiveItemTypeText:
-			// text lives entirely in the block translations
+			if it.Text == nil || !hasArchiveText(it.Text.Translations) {
+				slog.WarnContext(ctx, "archive text block has no copy, skipping")
+				continue
+			}
+			full.Text = &entity.ArchiveTextFull{Translations: it.Text.Translations}
 
 		case entity.ArchiveItemTypeEmbed:
-			if it.EmbedUrl == "" {
+			if it.Embed == nil || it.Embed.EmbedUrl == "" {
 				slog.WarnContext(ctx, "archive embed block has no url, skipping")
 				continue
 			}
+			full.Embed = &entity.ArchiveEmbedFull{EmbedUrl: it.Embed.EmbedUrl, Translations: it.Embed.Translations}
+
+		case entity.ArchiveItemTypeMediaWithCaption:
+			if it.MediaWithCaption == nil || it.MediaWithCaption.MediaId == 0 {
+				slog.WarnContext(ctx, "archive media_with_caption block has no media id, skipping")
+				continue
+			}
+			m, ok, err := resolveMediaById(ctx, rep, it.MediaWithCaption.MediaId, "media_with_caption")
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			full.MediaWithCaption = &entity.ArchiveMediaWithCaptionFull{
+				Media:        *m,
+				Link:         it.MediaWithCaption.Link,
+				AspectRatio:  it.MediaWithCaption.AspectRatio,
+				Translations: it.MediaWithCaption.Translations,
+			}
 
 		case entity.ArchiveItemTypeProduct:
-			if it.ProductId == 0 {
+			if it.Product == nil || it.Product.ProductId == 0 {
 				slog.WarnContext(ctx, "archive product block has no product id, skipping")
 				continue
 			}
-			products, err := rep.Products().GetProductsByIds(ctx, []int{it.ProductId})
+			products, err := rep.Products().GetProductsByIds(ctx, []int{it.Product.ProductId})
 			if err != nil {
-				return nil, fmt.Errorf("failed to get archive product %d: %w", it.ProductId, err)
+				return nil, fmt.Errorf("failed to get archive product %d: %w", it.Product.ProductId, err)
 			}
 			prds := filterVisibleProducts(products)
 			if len(prds) == 0 {
-				slog.WarnContext(ctx, "archive product block references missing/hidden product, skipping", slog.Int("product_id", it.ProductId))
+				slog.WarnContext(ctx, "archive product block references missing/hidden product, skipping", slog.Int("product_id", it.Product.ProductId))
 				continue
 			}
 			p := prds[0]
-			full.Product = &p
+			full.Product = &entity.ArchiveProductFull{Product: &p, Translations: it.Product.Translations}
 
 		case entity.ArchiveItemTypeProductsTag:
-			if it.Tag == "" {
+			if it.ProductsTag == nil || it.ProductsTag.Tag == "" {
 				slog.WarnContext(ctx, "archive products-by-tag block has no tag, skipping")
 				continue
 			}
-			products, err := rep.Products().GetProductsByTag(ctx, it.Tag)
+			products, err := rep.Products().GetProductsByTag(ctx, it.ProductsTag.Tag)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get archive products by tag %q: %w", it.Tag, err)
+				return nil, fmt.Errorf("failed to get archive products by tag %q: %w", it.ProductsTag.Tag, err)
 			}
 			prds := filterVisibleProducts(products)
-			if it.Limit > 0 && len(prds) > it.Limit {
-				prds = prds[:it.Limit]
+			if it.ProductsTag.Limit > 0 && len(prds) > it.ProductsTag.Limit {
+				prds = prds[:it.ProductsTag.Limit]
 			}
 			if len(prds) == 0 {
 				continue
 			}
-			full.Products = prds
+			full.ProductsTag = &entity.ArchiveProductsTagFull{Tag: it.ProductsTag.Tag, Products: prds, Translations: it.ProductsTag.Translations}
 
 		case entity.ArchiveItemTypeProductsManual:
-			if len(it.ProductIds) == 0 {
+			if it.ProductsManual == nil || len(it.ProductsManual.ProductIds) == 0 {
 				slog.WarnContext(ctx, "archive manual-products block has no product ids, skipping")
 				continue
 			}
-			products, err := rep.Products().GetProductsByIds(ctx, it.ProductIds)
+			products, err := rep.Products().GetProductsByIds(ctx, it.ProductsManual.ProductIds)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get archive manual products: %w", err)
 			}
 			// Preserve the hand-picked order (GetProductsByIds returns DB order).
-			prds := orderProductsByIds(filterVisibleProducts(products), it.ProductIds)
+			prds := orderProductsByIds(filterVisibleProducts(products), it.ProductsManual.ProductIds)
 			if len(prds) == 0 {
 				continue
 			}
-			full.Products = prds
+			full.ProductsManual = &entity.ArchiveProductsManualFull{Products: prds, Translations: it.ProductsManual.Translations}
 
 		default:
 			slog.ErrorContext(ctx, "unknown archive block type, skipping", slog.Int("type", int(it.Type)))
@@ -499,6 +469,52 @@ func resolveArchiveItems(ctx context.Context, rep dependency.Repository, items [
 		out = append(out, full)
 	}
 	return out, nil
+}
+
+// resolveMediaById fetches a single media by id. It returns ok=false (and no
+// error) when the media row is gone, so callers skip just that reference; a
+// genuine DB failure is returned as an error.
+func resolveMediaById(ctx context.Context, rep dependency.Repository, id int, block string) (*entity.MediaFull, bool, error) {
+	m, err := rep.Media().GetMediaById(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "archive "+block+" references missing media, skipping", slog.Int("media_id", id))
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to get archive %s media %d: %w", block, id, err)
+	}
+	return m, true, nil
+}
+
+// resolveMediaByIds fetches media by id in order, skipping (with a warning) any
+// id that is zero or no longer resolves to a row, and propagating genuine DB errors.
+func resolveMediaByIds(ctx context.Context, rep dependency.Repository, ids []int, block string) ([]entity.MediaFull, error) {
+	media := make([]entity.MediaFull, 0, len(ids))
+	for _, mid := range ids {
+		if mid == 0 {
+			continue
+		}
+		m, ok, err := resolveMediaById(ctx, rep, mid, block)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		media = append(media, *m)
+	}
+	return media, nil
+}
+
+// hasArchiveText reports whether any translation carries non-blank body copy, so
+// a TEXT block with no actual text is dropped rather than rendered empty.
+func hasArchiveText(ts []entity.ArchiveItemTranslation) bool {
+	for _, t := range ts {
+		if strings.TrimSpace(t.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // orderProductsByIds returns products ordered to match ids, dropping any id with
@@ -519,8 +535,8 @@ func orderProductsByIds(products []entity.Product, ids []int) []entity.Product {
 
 func (s *Store) GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error) {
 	query := `
-	SELECT 
-		at.language_id, at.heading, at.description
+	SELECT
+		at.language_id, at.heading
 	FROM archive_translation at
 	WHERE at.archive_id = :id`
 	translations, err := storeutil.QueryListNamed[entity.ArchiveTranslation](ctx, s.DB, query, map[string]any{"id": id})
