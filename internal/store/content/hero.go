@@ -20,16 +20,9 @@ import (
 // admin stored and re-run resolution (picking up e.g. media/product changes).
 func (s *Store) RefreshHero(ctx context.Context) error {
 	//TODO: update categories count
-	hfi, legacy, err := s.getHeroInsert(ctx)
+	hfi, err := s.getHeroInsert(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get hero insert: %w", err)
-	}
-	if legacy {
-		// Never overwrite a legacy row from an incidental refresh — that would
-		// destroy the admin's configured hero. It is replaced only by a
-		// deliberate admin SetHero (AddHero).
-		slog.WarnContext(ctx, "skipping RefreshHero: hero is in legacy format; not overwriting to preserve data")
-		return nil
 	}
 	if hfi == nil {
 		return nil // nothing stored yet
@@ -77,13 +70,9 @@ func (s *Store) SetHero(ctx context.Context, hfi entity.HeroFullInsert) error {
 // Resolution needs cross-store access (media/products/archive), so it runs
 // inside a (read) transaction to obtain a repository handle.
 func (s *Store) GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error) {
-	hfi, legacy, err := s.getHeroInsert(ctx)
+	hfi, err := s.getHeroInsert(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if legacy {
-		slog.WarnContext(ctx, "hero is in legacy (pre-L2) format; serving empty until re-saved from admin (legacy data preserved)")
-		return &entity.HeroFullWithTranslations{}, nil
 	}
 	if hfi == nil {
 		return &entity.HeroFullWithTranslations{}, nil
@@ -100,26 +89,10 @@ func (s *Store) GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, 
 	return heroFull, nil
 }
 
-// heroSchemaVersion identifies the persisted hero payload shape. Bump it when
-// the stored HeroFullInsert JSON changes incompatibly. Rows without a matching
-// version are treated as legacy and are never auto-overwritten.
-const heroSchemaVersion = 2
-
-// storedHero is the on-disk envelope: a schema version plus the Insert-form hero.
-// Pre-L2 rows have no envelope (they stored the resolved shape at the top level),
-// so they decode with SchemaVersion == 0 and are recognised as legacy.
-type storedHero struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Hero          entity.HeroFullInsert `json:"hero"`
-}
-
-// getHeroInsert reads the stored hero envelope. It returns (insert, legacy, err):
-//   - legacy == true means the row predates L2 Insert-form storage (resolved
-//     shape, no schema version). Such rows are NOT auto-migratable and MUST NOT
-//     be overwritten by an incidental RefreshHero — only a deliberate admin
-//     SetHero replaces them. Callers should serve an empty hero in that case.
-//   - a genuine JSON error is propagated (fail fast), not silently swallowed.
-func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, bool, error) {
+// getHeroInsert reads and decodes the stored hero (Insert form). It returns a
+// nil insert with no error when no hero row exists yet; a genuine JSON error is
+// propagated (fail fast), not silently swallowed.
+func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, error) {
 	query := `SELECT data FROM hero`
 
 	type heroRow struct {
@@ -129,20 +102,16 @@ func (s *Store) getHeroInsert(ctx context.Context) (*entity.HeroFullInsert, bool
 	heroRaw, err := storeutil.QueryNamedOne[heroRow](ctx, s.DB, query, nil)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, false, nil
+			return nil, nil
 		}
-		return nil, false, fmt.Errorf("failed to get hero: %w", err)
+		return nil, fmt.Errorf("failed to get hero: %w", err)
 	}
 
-	var env storedHero
-	if err := json.Unmarshal(heroRaw.Data, &env); err != nil {
-		return nil, false, fmt.Errorf("failed to unmarshal hero data: %w", err)
+	var hfi entity.HeroFullInsert
+	if err := json.Unmarshal(heroRaw.Data, &hfi); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal hero data: %w", err)
 	}
-	if env.SchemaVersion < heroSchemaVersion {
-		// Legacy (pre-L2) resolved-shape row: preserve it, do not overwrite.
-		return nil, true, nil
-	}
-	return &env.Hero, false, nil
+	return &hfi, nil
 }
 
 func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) error {
@@ -154,7 +123,7 @@ func deleteExistingHeroData(ctx context.Context, rep dependency.Repository) erro
 }
 
 func insertHeroInsert(ctx context.Context, rep dependency.Repository, hfi entity.HeroFullInsert) error {
-	jsonData, err := json.Marshal(storedHero{SchemaVersion: heroSchemaVersion, Hero: hfi})
+	jsonData, err := json.Marshal(hfi)
 	if err != nil {
 		return fmt.Errorf("failed to marshal hero insert: %w", err)
 	}
