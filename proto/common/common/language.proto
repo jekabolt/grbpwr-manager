@@ -26,6 +26,16 @@ message ArchiveInsertTranslation {
   string description = 3;
 }
 
+// ArchiveItemTranslation is the per-block translation for a timeline body item.
+// Each block type uses only the subset it needs:
+//   text                         -> text
+//   media/embed/product/products -> caption
+message ArchiveItemTranslation {
+  int32 language_id = 1;
+  string caption = 2;
+  string text = 3;
+}
+
 // HeroCopyTranslation is the single, shared translation for every hero block.
 // Each block type uses only the subset of fields it needs:
 //   single/double        -> headline, explore_text

@@ -53,7 +53,11 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 
-	pbAf := dto.ConvertArchiveFullEntityToPb(af)
+	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert archive to pb", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "failed to convert archive")
+	}
 
 	return &pb_frontend.GetArchiveResponse{
 		Archive: pbAf,

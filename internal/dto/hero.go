@@ -481,8 +481,12 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeFeaturedArchive:
 		if he.FeaturedArchive != nil {
+			archive, err := ConvertArchiveFullEntityToPb(&he.FeaturedArchive.Archive)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert featured archive: %w", err)
+			}
 			result.FeaturedArchive = &pb_common.HeroFeaturedArchiveWithTranslations{
-				Archive:      ConvertArchiveFullEntityToPb(&he.FeaturedArchive.Archive),
+				Archive:      archive,
 				Tag:          he.FeaturedArchive.Tag,
 				Translations: convertEntityHeroCopyTranslationsToCommon(he.FeaturedArchive.Translations),
 			}
