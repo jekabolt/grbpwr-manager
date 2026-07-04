@@ -31,6 +31,7 @@ message Dictionary {
   bool is_prod = 16; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
   // Hero section background color for the storefront (CSS). Empty if unset.
   string background_hero_color = 17;
+  repeated string product_tags = 18; // all distinct tags across visible products
 }
 
 message Collection {

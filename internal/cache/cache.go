@@ -107,6 +107,8 @@ var (
 
 	entityCollections = []entity.Collection{}
 
+	entityProductTags = []string{}
+
 	entityLanguages = []entity.Language{}
 
 	promoCodes                   = make(map[string]entity.PromoCode)
@@ -193,6 +195,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
+	entityProductTags = dInfo.ProductTags
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
 	announce = dInfo.Announce
@@ -303,8 +306,9 @@ func UpdateHero(hf *entity.HeroFullWithTranslations) {
 	cacheMu.Unlock()
 }
 
-// RefreshDictionary updates categories, sizes, and collections (including CountMen/CountWomen) in the in-memory cache.
-// Call after product add/update/delete so counts stay accurate.
+// RefreshDictionary updates categories, sizes, collections (including CountMen/CountWomen)
+// and product tags in the in-memory cache.
+// Call after product add/update/delete so counts and tags stay accurate.
 func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	if dInfo == nil {
 		return
@@ -314,6 +318,7 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entityCategories = dInfo.Categories
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
+	entityProductTags = dInfo.ProductTags
 	sizeById = make(map[int]entity.Size, len(entitySizes))
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
@@ -648,6 +653,12 @@ func GetCollections() []entity.Collection {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 	return entityCollections
+}
+
+func GetProductTags() []string {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityProductTags
 }
 
 func GetShipmentCarriers() []entity.ShipmentCarrier {

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -36,8 +37,21 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 	return &pb_admin.AddHeroResponse{}, nil
 }
 
-// validateHeroEmbeds ensures every EMBED block references a safe iframe source:
-// an absolute https URL, and — when an allowlist is configured — a permitted host.
+// validateEmbedURL enforces the shared iframe embed policy: an absolute https
+// URL whose host is in the allowlist (when one is configured). Shared by hero
+// and archive embed validation so the policy has a single source of truth.
+func (s *Server) validateEmbedURL(embedURL string) error {
+	u, err := url.Parse(embedURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return errors.New("embed_url must be an absolute https URL")
+	}
+	if len(s.embedAllowedHosts) > 0 && !hostAllowed(u.Hostname(), s.embedAllowedHosts) {
+		return fmt.Errorf("embed host %q is not in the allowlist", u.Hostname())
+	}
+	return nil
+}
+
+// validateHeroEmbeds ensures every EMBED block references a safe iframe source.
 func (s *Server) validateHeroEmbeds(h *pb_common.HeroFullInsert) error {
 	if h == nil {
 		return nil
@@ -46,12 +60,8 @@ func (s *Server) validateHeroEmbeds(h *pb_common.HeroFullInsert) error {
 		if e.Type != pb_common.HeroType_HERO_TYPE_EMBED || e.Embed == nil {
 			continue
 		}
-		u, err := url.Parse(e.Embed.EmbedUrl)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" {
-			return fmt.Errorf("hero entity %d: embed_url must be an absolute https URL", i)
-		}
-		if len(s.embedAllowedHosts) > 0 && !hostAllowed(u.Hostname(), s.embedAllowedHosts) {
-			return fmt.Errorf("hero entity %d: embed host %q is not in the allowlist", i, u.Hostname())
+		if err := s.validateEmbedURL(e.Embed.EmbedUrl); err != nil {
+			return fmt.Errorf("hero entity %d: %w", i, err)
 		}
 	}
 	return nil

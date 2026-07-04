@@ -4,9 +4,22 @@ package common;
 
 import "common/language.proto";
 import "common/media.proto";
+import "common/product.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// ArchiveItemType discriminates a timeline body block. The archive body is an
+// ordered, heterogeneous list of these blocks (Insert-form storage, like hero).
+enum ArchiveItemType {
+  ARCHIVE_ITEM_TYPE_UNKNOWN = 0;
+  ARCHIVE_ITEM_TYPE_MEDIA = 1; // image / video
+  ARCHIVE_ITEM_TYPE_TEXT = 2; // translatable text block
+  ARCHIVE_ITEM_TYPE_EMBED = 3; // iframe
+  ARCHIVE_ITEM_TYPE_PRODUCT = 4; // a single product
+  ARCHIVE_ITEM_TYPE_PRODUCTS_TAG = 5; // products resolved by tag
+  ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL = 6; // hand-picked products
+}
 
 message ArchiveList {
   int32 id = 1;
@@ -17,16 +30,44 @@ message ArchiveList {
   common.MediaFull thumbnail = 6;
 }
 
+// ArchiveItemInsert is a single timeline body block (write side). Only the
+// fields relevant to `type` are used.
+message ArchiveItemInsert {
+  ArchiveItemType type = 1;
+  int32 media_id = 2; // MEDIA
+  string embed_url = 3; // EMBED (iframe src)
+  int32 product_id = 4; // PRODUCT
+  string tag = 5; // PRODUCTS_TAG
+  int32 limit = 6; // PRODUCTS_TAG cap (0 = no cap)
+  repeated int32 product_ids = 7; // PRODUCTS_MANUAL
+  repeated common.ArchiveItemTranslation translations = 8; // caption / text
+}
+
+// ArchiveItemFull is the resolved timeline body block (read side).
+message ArchiveItemFull {
+  ArchiveItemType type = 1;
+  common.MediaFull media = 2; // MEDIA
+  string embed_url = 3; // EMBED
+  common.Product product = 4; // PRODUCT
+  string tag = 5; // PRODUCTS_TAG label
+  repeated common.Product products = 6; // PRODUCTS_TAG + PRODUCTS_MANUAL
+  repeated common.ArchiveItemTranslation translations = 7; // caption / text
+}
+
 message ArchiveFull {
   ArchiveList archive_list = 1;
   repeated common.MediaFull main_media = 2;
-  repeated common.MediaFull media = 3;
+  reserved 3; // was `media` (flat media-only body) — replaced by items
+  reserved "media";
+  repeated ArchiveItemFull items = 4; // ordered, resolved timeline body
 }
 
 message ArchiveInsert {
   string tag = 1;
-  repeated int32 media_ids = 2;
+  reserved 2; // was `media_ids` (flat media-only body) — replaced by items
+  reserved "media_ids";
   repeated int32 main_media_ids = 3;
   int32 thumbnail_id = 4;
   repeated common.ArchiveInsertTranslation translations = 5;
+  repeated ArchiveItemInsert items = 6; // ordered timeline body
 }
