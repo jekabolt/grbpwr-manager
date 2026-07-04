@@ -47,11 +47,15 @@ enum HeroAudience {
 // ─── shared fragments ───────────────────────────────────────────────────────
 
 // HeroMedia is a portrait/landscape media pair addressed by id (write side).
-// disable_overlay lives here so the scrim can be toggled per media slot.
+// The per-slot presentation modifiers live here: disable_overlay toggles the
+// scrim, disable_tint toggles the frontend's background colour tint, and stroke
+// toggles a border/outline around the media.
 message HeroMedia {
   int32 portrait_id = 1;
   int32 landscape_id = 2;
   bool disable_overlay = 3;
+  bool disable_tint = 4;
+  bool stroke = 5;
 }
 
 // HeroMediaFull is the resolved form of HeroMedia (read side).
@@ -59,6 +63,8 @@ message HeroMediaFull {
   common.MediaFull portrait = 1;
   common.MediaFull landscape = 2;
   bool disable_overlay = 3;
+  bool disable_tint = 4;
+  bool stroke = 5;
 }
 
 // ─── read side (resolved) ───────────────────────────────────────────────────

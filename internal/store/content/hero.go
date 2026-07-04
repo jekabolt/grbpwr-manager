@@ -183,7 +183,11 @@ func resolveHeroMedia(ctx context.Context, rep dependency.Repository, m entity.H
 		landscapeId = portraitId
 	}
 
-	full := entity.HeroMediaFull{DisableOverlay: m.DisableOverlay}
+	full := entity.HeroMediaFull{
+		DisableOverlay: m.DisableOverlay,
+		DisableTint:    m.DisableTint,
+		Stroke:         m.Stroke,
+	}
 	if portraitId != 0 {
 		pm, err := rep.Media().GetMediaById(ctx, portraitId)
 		if err != nil {
