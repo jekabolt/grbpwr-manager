@@ -19,17 +19,11 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		return nil, errors.New("archive insert is nil")
 	}
 
-	mainMediaIds := make([]int, 0, len(pbArchiveInsert.MainMediaIds))
-	for _, mid := range pbArchiveInsert.MainMediaIds {
-		mainMediaIds = append(mainMediaIds, int(mid))
-	}
-
 	translations := make([]entity.ArchiveTranslation, 0, len(pbArchiveInsert.Translations))
 	for _, translation := range pbArchiveInsert.Translations {
 		translations = append(translations, entity.ArchiveTranslation{
-			LanguageId:  int(translation.LanguageId),
-			Heading:     translation.Heading,
-			Description: translation.Description,
+			LanguageId: int(translation.LanguageId),
+			Heading:    translation.Heading,
 		})
 	}
 
@@ -42,29 +36,78 @@ func ConvertPbArchiveInsertToEntity(pbArchiveInsert *pb_common.ArchiveInsert) (*
 		Translations: translations,
 		Tag:          pbArchiveInsert.Tag,
 		Items:        items,
-		MainMediaIds: mainMediaIds,
 		ThumbnailId:  int(pbArchiveInsert.ThumbnailId),
 	}, nil
 }
 
+// convertPbArchiveItemInsertToEntity maps a single timeline block, copying only
+// the payload selected by Type into its typed sub-struct.
 func convertPbArchiveItemInsertToEntity(it *pb_common.ArchiveItemInsert) entity.ArchiveItemInsert {
 	if it == nil {
 		return entity.ArchiveItemInsert{}
 	}
-	productIds := make([]int, 0, len(it.ProductIds))
-	for _, id := range it.ProductIds {
-		productIds = append(productIds, int(id))
+	out := entity.ArchiveItemInsert{Type: entity.ArchiveItemType(it.Type)}
+	switch it.Type {
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MAIN_MEDIA:
+		if b := it.MainMedia; b != nil {
+			out.MainMedia = &entity.ArchiveMainMediaInsert{
+				MediaId:     int(b.MediaId),
+				AspectRatio: entity.ArchiveMediaAspectRatio(b.AspectRatio),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MEDIA_LINE:
+		if b := it.MediaLine; b != nil {
+			out.MediaLine = &entity.ArchiveMediaLineInsert{
+				MediaIds:    convertMediaIds(b.MediaIds),
+				AspectRatio: entity.ArchiveMediaAspectRatio(b.AspectRatio),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_TEXT:
+		if b := it.Text; b != nil {
+			out.Text = &entity.ArchiveTextInsert{
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_EMBED:
+		if b := it.Embed; b != nil {
+			out.Embed = &entity.ArchiveEmbedInsert{
+				EmbedUrl:     b.EmbedUrl,
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_MEDIA_WITH_CAPTION:
+		if b := it.MediaWithCaption; b != nil {
+			out.MediaWithCaption = &entity.ArchiveMediaWithCaptionInsert{
+				MediaId:      int(b.MediaId),
+				Link:         b.Link,
+				AspectRatio:  entity.ArchiveMediaAspectRatio(b.AspectRatio),
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCT:
+		if b := it.Product; b != nil {
+			out.Product = &entity.ArchiveProductInsert{
+				ProductId:    int(b.ProductId),
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_TAG:
+		if b := it.ProductsTag; b != nil {
+			out.ProductsTag = &entity.ArchiveProductsTagInsert{
+				Tag:          b.Tag,
+				Limit:        int(b.Limit),
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
+	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL:
+		if b := it.ProductsManual; b != nil {
+			out.ProductsManual = &entity.ArchiveProductsManualInsert{
+				ProductIds:   convertMediaIds(b.ProductIds),
+				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
+			}
+		}
 	}
-	return entity.ArchiveItemInsert{
-		Type:         entity.ArchiveItemType(it.Type),
-		MediaId:      int(it.MediaId),
-		EmbedUrl:     it.EmbedUrl,
-		ProductId:    int(it.ProductId),
-		Tag:          it.Tag,
-		Limit:        int(it.Limit),
-		ProductIds:   productIds,
-		Translations: convertPbArchiveItemTranslationsToEntity(it.Translations),
-	}
+	return out
 }
 
 func convertPbArchiveItemTranslationsToEntity(in []*pb_common.ArchiveItemTranslation) []entity.ArchiveItemTranslation {
@@ -85,11 +128,6 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) (*pb_common.ArchiveFul
 		return nil, nil
 	}
 
-	mainMediaPb := make([]*pb_common.MediaFull, 0, len(af.MainMedia))
-	for _, m := range af.MainMedia {
-		mainMediaPb = append(mainMediaPb, ConvertEntityToCommonMedia(&m))
-	}
-
 	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(af.Items))
 	for i := range af.Items {
 		itemPb, err := convertEntityArchiveItemFullToPb(&af.Items[i])
@@ -101,41 +139,91 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) (*pb_common.ArchiveFul
 
 	return &pb_common.ArchiveFull{
 		ArchiveList: ConvertEntityToCommonArchiveList(&af.ArchiveList),
-		MainMedia:   mainMediaPb,
 		Items:       itemsPb,
 	}, nil
 }
 
+// convertEntityArchiveItemFullToPb maps a single resolved timeline block into its
+// typed pb payload, selected by Type.
 func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.ArchiveItemFull, error) {
 	if it == nil {
 		return nil, nil
 	}
-	out := &pb_common.ArchiveItemFull{
-		Type:         pb_common.ArchiveItemType(it.Type),
-		EmbedUrl:     it.EmbedUrl,
-		Tag:          it.Tag,
-		Translations: convertEntityArchiveItemTranslationsToPb(it.Translations),
-	}
-	if it.Media.Id != 0 {
-		out.Media = ConvertEntityToCommonMedia(&it.Media)
-	}
-	if it.Product != nil {
-		p, err := ConvertEntityProductToCommon(it.Product)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert product: %w", err)
-		}
-		out.Product = p
-	}
-	if len(it.Products) > 0 {
-		products := make([]*pb_common.Product, 0, len(it.Products))
-		for i := range it.Products {
-			p, err := ConvertEntityProductToCommon(&it.Products[i])
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert product at index %d: %w", i, err)
+	out := &pb_common.ArchiveItemFull{Type: pb_common.ArchiveItemType(it.Type)}
+	switch it.Type {
+	case entity.ArchiveItemTypeMainMedia:
+		if b := it.MainMedia; b != nil {
+			out.MainMedia = &pb_common.ArchiveMainMediaFull{
+				Media:       ConvertEntityToCommonMedia(&b.Media),
+				AspectRatio: pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
 			}
-			products = append(products, p)
 		}
-		out.Products = products
+	case entity.ArchiveItemTypeMediaLine:
+		if b := it.MediaLine; b != nil {
+			out.MediaLine = &pb_common.ArchiveMediaLineFull{
+				Media:       ConvertEntityMediaListToPbMedia(b.Media),
+				AspectRatio: pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
+			}
+		}
+	case entity.ArchiveItemTypeText:
+		if b := it.Text; b != nil {
+			out.Text = &pb_common.ArchiveTextFull{
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeEmbed:
+		if b := it.Embed; b != nil {
+			out.Embed = &pb_common.ArchiveEmbedFull{
+				EmbedUrl:     b.EmbedUrl,
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeMediaWithCaption:
+		if b := it.MediaWithCaption; b != nil {
+			out.MediaWithCaption = &pb_common.ArchiveMediaWithCaptionFull{
+				Media:        ConvertEntityToCommonMedia(&b.Media),
+				Link:         b.Link,
+				AspectRatio:  pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeProduct:
+		if b := it.Product; b != nil {
+			pf := &pb_common.ArchiveProductFull{
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+			if b.Product != nil {
+				p, err := ConvertEntityProductToCommon(b.Product)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert product: %w", err)
+				}
+				pf.Product = p
+			}
+			out.Product = pf
+		}
+	case entity.ArchiveItemTypeProductsTag:
+		if b := it.ProductsTag; b != nil {
+			products, err := convertEntityProductsToCommon(b.Products)
+			if err != nil {
+				return nil, err
+			}
+			out.ProductsTag = &pb_common.ArchiveProductsTagFull{
+				Tag:          b.Tag,
+				Products:     products,
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeProductsManual:
+		if b := it.ProductsManual; b != nil {
+			products, err := convertEntityProductsToCommon(b.Products)
+			if err != nil {
+				return nil, err
+			}
+			out.ProductsManual = &pb_common.ArchiveProductsManualFull{
+				Products:     products,
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
 	}
 	return out, nil
 }
@@ -160,9 +248,8 @@ func ConvertEntityToCommonArchiveList(al *entity.ArchiveList) *pb_common.Archive
 	translations := make([]*pb_common.ArchiveInsertTranslation, 0, len(al.Translations))
 	for _, t := range al.Translations {
 		translations = append(translations, &pb_common.ArchiveInsertTranslation{
-			LanguageId:  int32(t.LanguageId),
-			Heading:     t.Heading,
-			Description: t.Description,
+			LanguageId: int32(t.LanguageId),
+			Heading:    t.Heading,
 		})
 	}
 
