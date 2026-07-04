@@ -220,11 +220,19 @@ func getBlurHash(img image.Image) (string, error) {
 	componentsX = clamp(componentsX, 1, 9)
 	componentsY = clamp(componentsY, 1, 9)
 
-	hash, err := blurhash.Encode(componentsX, componentsY, img)
+	hash, err := blurhash.Encode(componentsX, componentsY, toGrayscale(img))
 	if err != nil {
 		return "", fmt.Errorf("failed to encode image to BlurHash: %v", err)
 	}
 	return hash, nil
+}
+
+// toGrayscale returns a monochrome copy of img (standard Rec. 601 luma), so the
+// resulting blurhash is black-and-white rather than colored.
+func toGrayscale(img image.Image) image.Image {
+	gray := image.NewGray(img.Bounds())
+	draw.Draw(gray, gray.Bounds(), img, img.Bounds().Min, draw.Src)
+	return gray
 }
 
 // resizeImage resizes img so that its height is at most maxHeight px, preserving aspect ratio.
