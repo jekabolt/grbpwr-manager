@@ -111,7 +111,7 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 				Value:         val,
 				Currency:      order.Order.Currency,
 				Items:         items,
-				ServerSide:    true,
+				ServerSide:    1,
 			},
 		}},
 	}
@@ -163,7 +163,11 @@ type mpPurchaseParams struct {
 	Value         float64  `json:"value"`
 	Currency      string   `json:"currency"`
 	Items         []mpItem `json:"items"`
-	ServerSide    bool     `json:"server_side"`
+	// ServerSide is sent as an int (1), not a bool: GA4 exports a numeric MP
+	// param to BigQuery as event_params.value.int_value, which is exactly what the
+	// purchase funnel reads to dedup server- vs client-side purchases. A JSON bool
+	// would not land in int_value and the dedup would silently miss it.
+	ServerSide int `json:"server_side"`
 }
 
 type mpItem struct {

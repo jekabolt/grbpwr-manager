@@ -383,3 +383,87 @@ func (c *Client) getPaymentFailures(
 	}
 	return rows, nil
 }
+
+// GetRefunds returns per-day refund aggregates (count + value) grouped by
+// currency and return_reason, from GA4 `refund` events.
+func (c *Client) GetRefunds(
+	ctx context.Context,
+	startDate, endDate time.Time,
+) ([]entity.RefundMetric, error) {
+	var result []entity.RefundMetric
+	err := c.withCircuitBreaker(ctx, func(ctx context.Context) error {
+		rows, err := c.getRefunds(ctx, startDate, endDate)
+		if err != nil {
+			return err
+		}
+		result = rows
+		return nil
+	})
+	return result, err
+}
+
+func (c *Client) getRefunds(
+	ctx context.Context,
+	startDate, endDate time.Time,
+) ([]entity.RefundMetric, error) {
+	ctx, cancel := c.queryContext(ctx)
+	defer cancel()
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "event_params", "event_name")
+	if err != nil {
+		return nil, fmt.Errorf("GetRefunds: %w", err)
+	}
+	// value is read as double OR int (round totals land in int_value), matching
+	// how the revenue/ecommerce queries coalesce numeric event params.
+	sql := fmt.Sprintf(`
+		SELECT
+			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'currency'), '') AS currency,
+			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'return_reason'), '') AS return_reason,
+			COUNT(*) AS refund_count,
+			COALESCE(SUM(COALESCE(
+				(SELECT value.double_value FROM UNNEST(event_params) WHERE key = 'value'),
+				(SELECT CAST(value.int_value AS FLOAT64) FROM UNNEST(event_params) WHERE key = 'value')
+			)), 0) AS total_refund_value
+		FROM %s
+		WHERE %s
+			AND event_name = 'refund'
+		GROUP BY event_date, currency, return_reason
+	`, src, c.dateFilterSQL(startDate, endDate))
+
+	query := c.client.Query(sql)
+	if !c.useLiteralDates {
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "start_date", Value: startDate},
+			{Name: "end_date", Value: endDate},
+		}
+	}
+
+	it, err := query.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetRefunds: %w", err)
+	}
+
+	var rows []entity.RefundMetric
+	for {
+		var r struct {
+			EventDate        civil.Date `bigquery:"event_date"`
+			Currency         string     `bigquery:"currency"`
+			ReturnReason     string     `bigquery:"return_reason"`
+			RefundCount      int64      `bigquery:"refund_count"`
+			TotalRefundValue float64    `bigquery:"total_refund_value"`
+		}
+		if err := it.Next(&r); err == iterator.Done {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("GetRefunds iterate: %w", err)
+		}
+		rows = append(rows, entity.RefundMetric{
+			Date:             civilDateToTime(r.EventDate),
+			Currency:         r.Currency,
+			ReturnReason:     r.ReturnReason,
+			RefundCount:      ClampInt64(r.RefundCount),
+			TotalRefundValue: decimal.NewFromFloat(SanitizeFloat64ForDecimal(r.TotalRefundValue)),
+		})
+	}
+	return rows, nil
+}

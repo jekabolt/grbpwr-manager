@@ -16,13 +16,13 @@ import (
 // scroll and scroll_depth events on product pages for engagement depth
 // (GA4 sends built-in scroll with percent_scrolled=90; scroll_depth uses 25/50/75/100),
 // product_zoom custom events (event_params.product_id) for zoom counts, and
-// time_on_page events (event_params.visible_time_seconds) for avg time on page.
+// time_on_page + time_on_page_final events (event_params.visible_time_seconds) for avg time on page.
 //
 // All CTEs use the 10-digit product ID extracted via REGEXP_EXTRACT:
 // - product_views: extracts from item.item_id SKU (e.g., BOT-NAV-F1773009533-SS26 → 1773009533)
 // - product_scrolls: extracts from page_path trailing segment (e.g., /product/.../1773009533 → 1773009533)
 // - product_zoom_counts: uses event_params.product_id directly (already numeric string)
-// - product_time_on_page: extracts from page_path, takes last heartbeat per visit, caps at 1800s
+// - product_time_on_page: from page_path, takes last time_on_page[_final] per visit, caps at 1800s
 func (c *Client) GetProductEngagement(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -128,7 +128,7 @@ func (c *Client) getProductEngagement(
 					) AS rn
 				FROM %[1]s
 				WHERE %[2]s
-					AND event_name = 'time_on_page'
+					AND event_name IN ('time_on_page', 'time_on_page_final')
 					AND REGEXP_CONTAINS(
 						IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), ''),
 						r'/product[s]?/'

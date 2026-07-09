@@ -39,10 +39,13 @@ func (c *Client) getTimeOnPage(
 		return nil, fmt.Errorf("GetTimeOnPage: %w", err)
 	}
 
-	// The frontend fires time_on_page as periodic heartbeats (~40 s interval).
-	// Each heartbeat carries cumulative visible/total time for the current page visit.
-	// We keep only the LAST heartbeat per (user, session, page, day) — the final
-	// measurement — and cap values at 1800 s (30 min) to filter bots/background tabs.
+	// The frontend emits time_on_page on SPA navigation (page change) and
+	// time_on_page_final on page leave (pagehide); both carry cumulative
+	// visible/total time for the page being left. We read BOTH names and keep only
+	// the LAST event per (user, session, page, day) — the final measurement —
+	// capping values at 1800 s (30 min) to filter bots/background tabs.
+	// time_on_page_final MUST be included, else the last page of every session
+	// (and every single-page/bounce visit) would be dropped from the metric.
 	sql := fmt.Sprintf(`
 		WITH ranked AS (
 			SELECT
@@ -63,7 +66,7 @@ func (c *Client) getTimeOnPage(
 				) AS rn
 			FROM %s
 			WHERE %s
-				AND event_name = 'time_on_page'
+				AND event_name IN ('time_on_page', 'time_on_page_final')
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') IS NOT NULL
 		)
 		SELECT
@@ -598,7 +601,7 @@ func (c *Client) getNotifyMeIntent(
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'action'), 'unknown') AS action
 			FROM %s
 			WHERE %s
-				AND event_name = 'notify_me_intent'
+				AND event_name IN ('notify_me_intent', 'notify_me_action')
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
 		ranked_notify AS (

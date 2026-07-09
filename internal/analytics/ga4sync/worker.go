@@ -664,6 +664,13 @@ func (w *Worker) runBQPrecompute(ctx context.Context, startDate, endDate time.Ti
 			}
 			return w.bqCache.SaveBQPaymentFailures(ctx, rows)
 		}},
+		{"bq_refunds", func() error {
+			rows, err := w.bqClient.GetRefunds(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch refunds: %w", err)
+			}
+			return w.bqCache.SaveBQRefunds(ctx, rows)
+		}},
 		{"bq_web_vitals", func() error {
 			rows, err := w.bqClient.GetWebVitals(ctx, startDate, endDate)
 			if err != nil {

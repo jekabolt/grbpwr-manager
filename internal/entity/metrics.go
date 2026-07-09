@@ -439,6 +439,16 @@ type PaymentFailureMetric struct {
 	AvgFailedOrderValue decimal.Decimal
 }
 
+// RefundMetric is a per-day aggregate of GA4 `refund` events, grouped by
+// currency and return_reason. Cached in bq_refunds by the ga4sync BQ tier.
+type RefundMetric struct {
+	Date             time.Time
+	Currency         string
+	ReturnReason     string
+	RefundCount      int64
+	TotalRefundValue decimal.Decimal
+}
+
 type WebVitalMetric struct {
 	Date           time.Time
 	MetricName     string
