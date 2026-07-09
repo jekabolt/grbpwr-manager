@@ -28,22 +28,25 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	hasCompare := !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero()
 
 	var (
-		rev, cRev                      decimal.Decimal
-		orders, cOrders                int
-		placedOrders, cPlacedOrders    int
-		aov, cAov                      decimal.Decimal
-		itemsPerOrder, cItemsPerOrder  decimal.Decimal
-		revRefund, cRevRefund          decimal.Decimal
-		grossTotal, cGrossTotal        decimal.Decimal
-		productSaleDiscount, promoCodeDiscount     decimal.Decimal
-		cProductSaleDiscount, cPromoCodeDiscount   decimal.Decimal
-		promoOrders, cPromoOrders                  int
-		newSubs, cNewSubs              int
-		repeatRate, avgOrders, avgDays decimal.Decimal
-		cRepeatRate, cAvgOrders, cAvgDays decimal.Decimal
-		emailSummary, cEmailSummary    *entity.EmailMetricsSummary
-		avgShipCost, cAvgShipCost      decimal.Decimal
-		totalShipCost, cTotalShipCost  decimal.Decimal
+		rev, cRev                                decimal.Decimal
+		orders, cOrders                          int
+		placedOrders, cPlacedOrders              int
+		aov, cAov                                decimal.Decimal
+		itemsPerOrder, cItemsPerOrder            decimal.Decimal
+		revRefund, cRevRefund                    decimal.Decimal
+		grossTotal, cGrossTotal                  decimal.Decimal
+		productSaleDiscount, promoCodeDiscount   decimal.Decimal
+		cProductSaleDiscount, cPromoCodeDiscount decimal.Decimal
+		promoOrders, cPromoOrders                int
+		newSubs, cNewSubs                        int
+		repeatRate, avgOrders, avgDays           decimal.Decimal
+		cRepeatRate, cAvgOrders, cAvgDays        decimal.Decimal
+		emailSummary, cEmailSummary              *entity.EmailMetricsSummary
+		avgShipCost, cAvgShipCost                decimal.Decimal
+		totalShipCost, cTotalShipCost            decimal.Decimal
+		costedRev, cCostedRev                    decimal.Decimal
+		cogs, cCogs                              decimal.Decimal
+		totalItemRev                             decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -87,6 +90,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		avgShipCost, totalShipCost, err = s.getShippingCostMetrics(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		costedRev, cogs, totalItemRev, err = s.getMarginMetrics(gctx, period.From, period.To)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
@@ -128,6 +136,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		g.Go(func() error {
 			var err error
 			cAvgShipCost, cTotalShipCost, err = s.getShippingCostMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cCostedRev, cCogs, _, err = s.getMarginMetrics(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -612,6 +625,31 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.AvgShippingCost.Value = avgShipCost
 	m.TotalShippingCost.Value = totalShipCost
 
+	// Margin metrics (COGS from product.cost_price over the costed revenue subset).
+	grossMargin := costedRev.Sub(cogs)
+	m.RevenueCost.Value = cogs
+	m.GrossMargin.Value = grossMargin
+	m.ContributionMargin.Value = grossMargin.Sub(totalShipCost)
+	if costedRev.GreaterThan(decimal.Zero) {
+		m.GrossMarginPct.Value = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2)
+	}
+	if totalItemRev.GreaterThan(decimal.Zero) {
+		m.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	}
+	switch {
+	case totalItemRev.LessThanOrEqual(decimal.Zero):
+		// No product revenue in the period — leave margins at zero, no caveat needed.
+	case costedRev.LessThanOrEqual(decimal.Zero):
+		note := "No product cost data in this period — set product cost_price to compute margins."
+		m.GrossMargin.Caveat = note
+		m.GrossMarginPct.Caveat = note
+	case m.CostCoveragePct < 99.5:
+		note := fmt.Sprintf("Margins cover %.0f%% of product revenue (only items with a cost set); COGS is refund-adjusted, not reduced by discounts.", m.CostCoveragePct)
+		m.GrossMargin.Caveat = note
+		m.GrossMarginPct.Caveat = note
+	}
+	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost; meaningful when cost coverage is high."
+
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
 	m.Users.Value = decimal.NewFromInt(int64(totalUsers))
@@ -680,13 +718,13 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.TotalRefunded.ChangePct = changePct(revRefund, cRevRefund)
 		m.TotalDiscount.CompareValue = &cTotalDiscount
 		m.TotalDiscount.ChangePct = changePct(totalDiscount, cTotalDiscount)
-		
+
 		// When previous period had zero discounts, gross revenue and net revenue baselines are identical.
 		// Add caveat to clarify this is correct data, not a display error.
 		if cTotalDiscount.IsZero() && !totalDiscount.IsZero() {
 			m.GrossRevenue.Caveat = "Gross revenue before discounts; previous period had no active discounts."
 		}
-		
+
 		// Add caveat when gross revenue includes fully refunded orders (status=Refunded).
 		// This clarifies that gross revenue is calculated at list prices before any refunds are applied.
 		if grossRev.GreaterThan(decimal.Zero) && revRefund.GreaterThan(decimal.Zero) {
@@ -712,6 +750,21 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.AvgShippingCost.ChangePct = changePct(avgShipCost, cAvgShipCost)
 		m.TotalShippingCost.CompareValue = &cTotalShipCost
 		m.TotalShippingCost.ChangePct = changePct(totalShipCost, cTotalShipCost)
+
+		// Margin comparison
+		cGrossMargin := cCostedRev.Sub(cCogs)
+		m.RevenueCost.CompareValue = &cCogs
+		m.RevenueCost.ChangePct = changePct(cogs, cCogs)
+		m.GrossMargin.CompareValue = &cGrossMargin
+		m.GrossMargin.ChangePct = changePct(grossMargin, cGrossMargin)
+		cContribution := cGrossMargin.Sub(cTotalShipCost)
+		m.ContributionMargin.CompareValue = &cContribution
+		m.ContributionMargin.ChangePct = changePct(m.ContributionMargin.Value, cContribution)
+		if cCostedRev.GreaterThan(decimal.Zero) {
+			cGrossMarginPct := cGrossMargin.Div(cCostedRev).Mul(decimal.NewFromInt(100)).Round(2)
+			m.GrossMarginPct.CompareValue = &cGrossMarginPct
+			m.GrossMarginPct.ChangePct = changePct(m.GrossMarginPct.Value, cGrossMarginPct)
+		}
 	}
 
 	// Email delivery metrics

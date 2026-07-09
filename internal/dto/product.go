@@ -226,12 +226,28 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	// Convert prices
 	prices := convertPrices(pbProductNew.Prices)
 
+	// cost_price is optional COGS in base currency. When absent/empty it stays invalid so
+	// the store leaves the stored value unchanged (COALESCE on update). Negatives are
+	// rejected (treated as unset) rather than persisted.
+	costPrice, err := nullDecimalFromPb(pbProductNew.CostPrice)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cost_price: %w", err)
+	}
+	if costPrice.Valid {
+		if costPrice.Decimal.IsNegative() {
+			costPrice = decimal.NullDecimal{}
+		} else {
+			costPrice.Decimal = roundMoney(costPrice.Decimal)
+		}
+	}
+
 	return &entity.ProductInsert{
 		ProductBodyInsert:         productBody.ProductBodyInsert,
 		ThumbnailMediaID:          int(pbProductNew.ThumbnailMediaId),
 		SecondaryThumbnailMediaID: secondaryThumbnailID,
 		Translations:              translations,
 		Prices:                    prices,
+		CostPrice:                 costPrice,
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -66,6 +67,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
+	s.seedProductCostsFromTechCard(ctx, id)
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
 }
 
@@ -120,7 +122,33 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't update tech card")
 	}
+	s.seedProductCostsFromTechCard(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
+}
+
+// seedProductCostsFromTechCard best-effort propagates a saved tech card's computed unit
+// cost to its linked products' cost_price for margin analytics. It is intentionally
+// non-fatal (a failure never blocks the tech card save) and only runs when the costing is
+// already in the base currency — the shop has no live FX, so a non-base costing cannot be
+// converted. Last write wins when a product is linked to several tech cards.
+func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	if err != nil || card == nil || len(card.ProductIds) == 0 {
+		return
+	}
+	unit, currency := dto.ComputeTechCardUnitCost(card)
+	if !unit.Valid {
+		return
+	}
+	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
+		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: costing not in base currency",
+			slog.Int("tech_card_id", techCardID), slog.String("currency", currency))
+		return
+	}
+	if err := s.repo.Products().SetProductsCostPrice(ctx, card.ProductIds, unit.Decimal); err != nil {
+		slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+	}
 }
 
 // DeleteTechCard deletes a tech card by id (nested sections cascade).

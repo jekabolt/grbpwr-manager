@@ -1034,6 +1034,20 @@ message BusinessMetrics {
   // Distinct from orders_count, which counts only net-revenue statuses. Use this as the
   // denominator when deriving status shares (cancellation rate, refund rate, etc.).
   MetricWithComparison total_placed_orders = 84;
+
+  // Margin metrics, derived from product.cost_price (per-unit COGS in base currency).
+  // Computed ONLY over line items whose product has a cost set, so revenue_cost and the
+  // margins are on the "costed" subset of revenue — gross_margin_pct.caveat and
+  // cost_coverage_pct report how much of revenue that subset is. COGS is net of the
+  // refund proration but NOT reduced by promo/sale discounts (a discount lowers revenue,
+  // not the cost of the goods).
+  MetricWithComparison revenue_cost = 85; // COGS: Σ(cost × qty), refund-adjusted
+  MetricWithComparison gross_margin = 86; // costed net revenue − COGS
+  MetricWithComparison gross_margin_pct = 87; // gross_margin / costed net revenue × 100
+  MetricWithComparison contribution_margin = 88; // gross_margin − total_shipping_cost
+  // Share (%) of net product revenue (base currency) whose product has a cost set — the
+  // fraction the margin figures above are computed over. 100 = full cost coverage.
+  double cost_coverage_pct = 89;
 }
 
 message PaymentMethodMetric {
@@ -1095,6 +1109,15 @@ message ProductMetric {
   string brand = 3;
   google.type.Decimal value = 4;
   int32 count = 5;
+  // Margin fields, populated only for revenue/quantity product breakdowns (zero for
+  // view-based metrics). unit_cost is the product's current base-currency COGS;
+  // revenue_cost is Σ(cost × net qty); gross_margin = value − revenue_cost. When
+  // has_cost is false the product's cost is unknown — treat margins as N/A, not as 100%.
+  google.type.Decimal unit_cost = 6;
+  google.type.Decimal revenue_cost = 7;
+  google.type.Decimal gross_margin = 8;
+  double gross_margin_pct = 9;
+  bool has_cost = 10;
 }
 
 message CategoryMetric {

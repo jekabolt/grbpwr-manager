@@ -63,10 +63,20 @@ func itemAdjGross(alias string) string {
 			/ NULLIF(%[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END, 0))`, alias)
 }
 
+// costAdj is the per-order multiplier for COGS on the order_factors row aliased `alias`.
+// Unlike itemAdj it applies ONLY the refund proration — a product's cost is not reduced
+// by a promo/sale discount, nor scaled by the settled-vs-list (FX) gap, since cost_price
+// is already stored in base currency. Using the same refund ratio as itemAdj keeps a
+// refunded unit removed from both revenue and cost, so margin stays on net units.
+func costAdj(alias string) string {
+	return fmt.Sprintf(`((%[1]s.total_price - %[1]s.refunded_amount) / NULLIF(%[1]s.total_price, 0))`, alias)
+}
+
 // Convenience values for the common single-period case: a CTE named order_factors over
 // [:from, :to), joined as alias `ofac`.
 var (
 	orderFactorsCTE  = orderFactorsCTENamed("order_factors", "from", "to")
 	itemAdjExpr      = itemAdj("ofac")
 	itemAdjGrossExpr = itemAdjGross("ofac")
+	costAdjExpr      = costAdj("ofac")
 )

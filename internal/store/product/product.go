@@ -194,8 +194,8 @@ func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.Pro
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, id int, sku string) (int, error) {
 	query := `
 	INSERT INTO product
-	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier)
-	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier)`
+	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price)
+	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice)`
 
 	params := map[string]any{
 		"id":                   id,
@@ -222,6 +222,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 		"collection":           product.ProductBodyInsert.Collection,
 		"fit":                  product.ProductBodyInsert.Fit,
 		"minTier":              product.ProductBodyInsert.MinTier,
+		"costPrice":            product.CostPrice,
 	}
 
 	id, err := storeutil.ExecNamedLastId(ctx, db, query, params)
@@ -411,7 +412,10 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		version = :version,
 		collection = :collection,
 		fit = :fit,
-		min_tier = :minTier
+		min_tier = :minTier,
+		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
+		-- product edits from the admin panel (which does not carry cost) never wipe it.
+		cost_price = COALESCE(:costPrice, cost_price)
 	WHERE id = :id
 	`
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
@@ -437,8 +441,21 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		"collection":           prd.ProductBodyInsert.Collection,
 		"fit":                  prd.ProductBodyInsert.Fit,
 		"minTier":              prd.ProductBodyInsert.MinTier,
+		"costPrice":            prd.CostPrice,
 		"id":                   id,
 	})
+}
+
+// SetProductsCostPrice sets cost_price (per-unit COGS in base currency) on the given
+// products. Used to seed product cost from a tech card costing. An empty id slice is a
+// no-op. Last write wins when a product is linked to more than one tech card.
+func (s *Store) SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error {
+	if len(productIDs) == 0 {
+		return nil
+	}
+	return storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE product SET cost_price = :cost WHERE id IN (:ids)`,
+		map[string]any{"cost": cost, "ids": productIDs})
 }
 
 func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
@@ -658,21 +675,21 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		ProductDisplay: entity.ProductDisplay{
 			ProductBody: entity.ProductBody{
 				ProductBodyInsert: entity.ProductBodyInsert{
-					Preorder:           pqr.Preorder,
-					Brand:              pqr.Brand,
-					Collection:         pqr.Collection,
-					Color:              pqr.Color,
-					ColorHex:           pqr.ColorHex,
-					CountryOfOrigin:    pqr.CountryOfOrigin,
-					SalePercentage:     pqr.SalePercentage,
-					TopCategoryId:      pqr.TopCategoryId,
-					SubCategoryId:      pqr.SubCategoryId,
-					TypeId:             pqr.TypeId,
-					ModelWearsHeightCm: pqr.ModelWearsHeightCm,
-					ModelWearsSizeId:   pqr.ModelWearsSizeId,
-					CareInstructions:   pqr.CareInstructions,
-					Composition:        pqr.Composition,
-					Version:            pqr.Version,
+					Preorder:              pqr.Preorder,
+					Brand:                 pqr.Brand,
+					Collection:            pqr.Collection,
+					Color:                 pqr.Color,
+					ColorHex:              pqr.ColorHex,
+					CountryOfOrigin:       pqr.CountryOfOrigin,
+					SalePercentage:        pqr.SalePercentage,
+					TopCategoryId:         pqr.TopCategoryId,
+					SubCategoryId:         pqr.SubCategoryId,
+					TypeId:                pqr.TypeId,
+					ModelWearsHeightCm:    pqr.ModelWearsHeightCm,
+					ModelWearsSizeId:      pqr.ModelWearsSizeId,
+					CareInstructions:      pqr.CareInstructions,
+					Composition:           pqr.Composition,
+					Version:               pqr.Version,
 					Hidden:                pqr.Hidden,
 					TargetGender:          pqr.TargetGender,
 					Season:                pqr.Season,
