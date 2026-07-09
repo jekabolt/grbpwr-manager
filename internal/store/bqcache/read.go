@@ -3,9 +3,11 @@ package bqcache
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -1057,6 +1059,25 @@ func (s *ReadStore) GetBQAbandonedCart(ctx context.Context, from, to time.Time) 
 		})
 	}
 	return result, nil
+}
+
+// GetChannelSpendByCampaign returns operator-entered marketing spend aggregated by channel
+// over [from, to] (inclusive dates, matching the attribution read), in base currency only —
+// the shop has no live FX, so non-base spend cannot be compared to base-currency revenue and
+// is excluded from ROAS.
+func (s *ReadStore) GetChannelSpendByCampaign(ctx context.Context, from, to time.Time) ([]entity.ChannelSpendRow, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	query := `
+		SELECT utm_source, utm_medium, utm_campaign, COALESCE(SUM(amount), 0) AS spend
+		FROM channel_spend
+		WHERE date >= :fromDate AND date <= :toDate AND UPPER(currency) = :baseCurrency
+		GROUP BY utm_source, utm_medium, utm_campaign
+	`
+	return storeutil.QueryListNamed[entity.ChannelSpendRow](ctx, s.DB, query, map[string]any{
+		"fromDate":     from.Format("2006-01-02"),
+		"toDate":       to.Format("2006-01-02"),
+		"baseCurrency": baseCurrency,
+	})
 }
 
 func (s *ReadStore) GetBQCampaignAttribution(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.CampaignAttributionRow, error) {

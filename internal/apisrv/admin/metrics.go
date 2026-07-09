@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,16 +22,16 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 	if strings.TrimSpace(req.Period) == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d, today, WTD, MTD, QTD, YTD)")
 	}
-	
+
 	endAt := time.Now().UTC()
 	if req.EndAt != nil {
 		endAt = req.EndAt.AsTime().UTC()
 	}
-	
+
 	// Check if period is a special "to date" format first
 	periodFrom, periodTo, isSpecial := computePeriodBounds(req.Period, endAt)
 	var dur time.Duration
-	
+
 	if !isSpecial {
 		// Parse as duration (7d, 30d, P7D, etc.)
 		var err error
@@ -516,6 +517,11 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get campaign attribution", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get campaign attribution")
 		}
+		// Enrich with operator-entered spend + ROAS (non-fatal: attribution still renders
+		// without spend if the join fails, e.g. before the channel_spend migration).
+		if err := s.enrichCampaignSpend(ctx, from, to, items); err != nil {
+			slog.Default().WarnContext(ctx, "can't enrich campaign spend", slog.String("err", err.Error()))
+		}
 		resp.CampaignAttribution = dto.ConvertCampaignAttributionAggregatedToPb(items)
 	}
 
@@ -703,14 +709,14 @@ func parseMetricsPeriod(s string) (time.Duration, error) {
 func computePeriodBounds(period string, endAt time.Time) (from, to time.Time, isSpecial bool) {
 	pl := strings.ToLower(strings.TrimSpace(period))
 	now := endAt
-	
+
 	switch pl {
 	case "today", "1d":
 		// Start of today (00:00:00) to now
 		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		to = now
 		return from, to, true
-		
+
 	case "wtd": // Week to date (Monday 00:00 to now)
 		weekday := now.Weekday()
 		daysFromMonday := int(weekday - time.Monday)
@@ -720,25 +726,25 @@ func computePeriodBounds(period string, endAt time.Time) (from, to time.Time, is
 		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -daysFromMonday)
 		to = now
 		return from, to, true
-		
+
 	case "mtd": // Month to date (1st of month 00:00 to now)
 		from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		to = now
 		return from, to, true
-		
+
 	case "qtd": // Quarter to date (start of Q1/Q2/Q3/Q4 to now)
 		quarter := int((now.Month()-1)/3) + 1
 		quarterStartMonth := time.Month((quarter-1)*3 + 1)
 		from = time.Date(now.Year(), quarterStartMonth, 1, 0, 0, 0, 0, time.UTC)
 		to = now
 		return from, to, true
-		
+
 	case "ytd": // Year to date (Jan 1 00:00 to now)
 		from = time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
 		to = now
 		return from, to, true
 	}
-	
+
 	return time.Time{}, time.Time{}, false
 }
 
@@ -752,4 +758,72 @@ func inferMetricsGranularity(dur time.Duration) entity.MetricsGranularity {
 		return entity.MetricsGranularityWeek
 	}
 	return entity.MetricsGranularityMonth
+}
+
+// UpsertInventoryTargets sets per-SKU reorder targets used by the inventory-health metrics.
+func (s *Server) UpsertInventoryTargets(ctx context.Context, req *pb_admin.UpsertInventoryTargetsRequest) (*pb_admin.UpsertInventoryTargetsResponse, error) {
+	for _, t := range req.GetTargets() {
+		if t.GetProductId() <= 0 || t.GetSizeId() <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "each inventory target needs a positive product_id and size_id")
+		}
+	}
+	targets := dto.ConvertPbInventoryTargetsToEntity(req.GetTargets())
+	if len(targets) == 0 {
+		return &pb_admin.UpsertInventoryTargetsResponse{}, nil
+	}
+	if err := s.repo.Metrics().UpsertInventoryTargets(ctx, targets); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert inventory targets", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert inventory targets")
+	}
+	return &pb_admin.UpsertInventoryTargetsResponse{}, nil
+}
+
+// UpsertChannelSpend records operator-entered marketing spend per channel per day.
+func (s *Server) UpsertChannelSpend(ctx context.Context, req *pb_admin.UpsertChannelSpendRequest) (*pb_admin.UpsertChannelSpendResponse, error) {
+	rows, err := dto.ConvertPbChannelSpendToEntity(req.GetSpend())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if len(rows) == 0 {
+		return &pb_admin.UpsertChannelSpendResponse{}, nil
+	}
+	if err := s.repo.BQCache().UpsertChannelSpend(ctx, rows); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert channel spend", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert channel spend")
+	}
+	return &pb_admin.UpsertChannelSpendResponse{}, nil
+}
+
+// channelKey joins the three UTM dimensions into a single map key (NUL-separated so empty
+// segments can't collide, e.g. "a|" vs "|a").
+func channelKey(source, medium, campaign string) string {
+	return source + "\x00" + medium + "\x00" + campaign
+}
+
+// enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,
+// matching by the UTM triple over the same period. Mutates rows in place.
+func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, rows []entity.CampaignAttributionAggregatedFull) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	spend, err := s.repo.BQCache().GetChannelSpendByCampaign(ctx, from, to)
+	if err != nil {
+		return err
+	}
+	if len(spend) == 0 {
+		return nil
+	}
+	byChannel := make(map[string]decimal.Decimal, len(spend))
+	for _, sp := range spend {
+		byChannel[channelKey(sp.UTMSource, sp.UTMMedium, sp.UTMCampaign)] = sp.Spend
+	}
+	for i := range rows {
+		sp, ok := byChannel[channelKey(rows[i].UTMSource, rows[i].UTMMedium, rows[i].UTMCampaign)]
+		if !ok || !sp.IsPositive() {
+			continue
+		}
+		rows[i].Spend = sp
+		rows[i].ROAS = rows[i].Revenue.Div(sp).InexactFloat64()
+	}
+	return nil
 }
