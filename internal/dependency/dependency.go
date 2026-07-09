@@ -342,6 +342,7 @@ type (
 		GetFunnelAnalysisStream(ctx context.Context, startDate, endDate time.Time, batchSize int, fn func([]entity.DailyFunnel) error) error
 		GetOOSImpact(ctx context.Context, startDate, endDate time.Time) ([]entity.OOSImpactMetric, error)
 		GetPaymentFailures(ctx context.Context, startDate, endDate time.Time) ([]entity.PaymentFailureMetric, error)
+		GetRefunds(ctx context.Context, startDate, endDate time.Time) ([]entity.RefundMetric, error)
 		GetWebVitals(ctx context.Context, startDate, endDate time.Time) ([]entity.WebVitalMetric, error)
 		GetUserJourneys(ctx context.Context, startDate, endDate time.Time, limit int) ([]entity.UserJourneyMetric, error)
 		GetSessionDuration(ctx context.Context, startDate, endDate time.Time) ([]entity.SessionDurationMetric, error)
@@ -424,6 +425,7 @@ type (
 		SaveBQFunnelAnalysis(ctx context.Context, rows []entity.DailyFunnel) error
 		SaveBQOOSImpact(ctx context.Context, rows []entity.OOSImpactMetric) error
 		SaveBQPaymentFailures(ctx context.Context, rows []entity.PaymentFailureMetric) error
+		SaveBQRefunds(ctx context.Context, rows []entity.RefundMetric) error
 		SaveBQWebVitals(ctx context.Context, rows []entity.WebVitalMetric) error
 		SaveBQUserJourneys(ctx context.Context, rows []entity.UserJourneyMetric) error
 		SaveBQSessionDuration(ctx context.Context, rows []entity.SessionDurationMetric) error

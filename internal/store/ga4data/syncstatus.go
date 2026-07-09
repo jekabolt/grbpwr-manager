@@ -167,6 +167,7 @@ func (s *SyncStatusStore) DeleteOldAnalyticsData(ctx context.Context, olderThan 
 		"bq_funnel_analysis",
 		"bq_oos_impact",
 		"bq_payment_failures",
+		"bq_refunds",
 		"bq_web_vitals",
 		"bq_user_journeys",
 		"bq_session_duration",

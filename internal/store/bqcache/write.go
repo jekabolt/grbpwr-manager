@@ -100,6 +100,23 @@ func (s *WriteStore) SaveBQPaymentFailures(ctx context.Context, rows []entity.Pa
 	return nil
 }
 
+func (s *WriteStore) SaveBQRefunds(ctx context.Context, rows []entity.RefundMetric) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"date", "currency", "return_reason", "refund_count", "total_refund_value"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		args = append(args, []any{
+			r.Date.Format("2006-01-02"), r.Currency, r.ReturnReason, r.RefundCount, r.TotalRefundValue,
+		})
+	}
+	if err := storeutil.BulkReplaceByDate(ctx, s.DB, "bq_refunds", cols, args); err != nil {
+		return fmt.Errorf("save bq refunds: %w", err)
+	}
+	return nil
+}
+
 func (s *WriteStore) SaveBQWebVitals(ctx context.Context, rows []entity.WebVitalMetric) error {
 	if len(rows) == 0 {
 		return nil
