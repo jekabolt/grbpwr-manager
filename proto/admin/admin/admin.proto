@@ -1172,16 +1172,30 @@ message GeographySessionMetric {
   int32 users = 5;
 }
 
+// RefundReason is the canonical, structured refund/return reason used by the return-analysis
+// breakdown. Keys mirror the historical free-text buckets.
+enum RefundReason {
+  REFUND_REASON_UNSPECIFIED = 0; // not provided — falls back to free-text reason
+  REFUND_REASON_WRONG_SIZE = 1;
+  REFUND_REASON_NOT_AS_DESCRIBED = 2;
+  REFUND_REASON_DEFECTIVE = 3;
+  REFUND_REASON_CHANGED_MIND = 4;
+  REFUND_REASON_OTHER = 5;
+}
+
 message RefundOrderRequest {
   string order_uuid = 1;
   // Only used when status is PendingReturn. Empty = full refund. Non-empty = partial refund for specified order_item IDs.
   repeated int32 order_item_ids = 2;
-  // Optional reason for the refund (stored in order for audit).
+  // Optional free-text note for the refund (stored in order for audit).
   string reason = 3;
   // Whether to include shipping fee in the refund amount.
   // For full refund of not-yet-shipped orders this is automatically true.
   // For partial refunds, the caller decides whether to refund shipping.
   bool refund_shipping = 4;
+  // Optional structured reason. When set, it drives the return-analysis breakdown exactly
+  // (the free-text reason is only bucketed heuristically). Additive to reason (field 3).
+  RefundReason reason_code = 5;
 }
 
 message RefundOrderResponse {}

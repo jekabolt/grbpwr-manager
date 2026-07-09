@@ -208,7 +208,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 			}
 
 			// RefundOrder transitions RefundInProgress → Refunded, restores stock, records refunded items
-			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason, true); err != nil {
+			if err := s.repo.Order().RefundOrder(ctx, req.OrderUuid, nil, req.Reason, "", true); err != nil {
 				slog.Default().ErrorContext(ctx, "can't finalize refund in DB",
 					slog.String("err", err.Error()),
 					slog.String("order_uuid", req.OrderUuid),

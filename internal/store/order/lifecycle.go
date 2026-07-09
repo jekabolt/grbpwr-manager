@@ -199,7 +199,7 @@ func (s *Store) SetTrackingNumber(ctx context.Context, orderUUID string, trackin
 }
 
 // RefundOrder processes a full or partial refund for an order.
-func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string, refundShipping bool) error {
+func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUIDForUpdate(ctx, rep.DB(), orderUUID)
 		if err != nil {
@@ -290,7 +290,7 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 			}
 		}
 
-		return updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason)
+		return updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason, reasonCode)
 	})
 }
 

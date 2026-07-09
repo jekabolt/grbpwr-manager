@@ -14,12 +14,13 @@ import (
 
 // returnByProductRawRow is the raw DB row before aggregation.
 type returnByProductRawRow struct {
-	ProductID     int     `db:"product_id"`
-	ProductName   string  `db:"product_name"`
-	RefundReason  string  `db:"refund_reason"`
-	RefundedQty   int64   `db:"refunded_qty"`
-	TotalSold     int64   `db:"total_sold"`
-	ReturnRatePct float64 `db:"return_rate_pct"`
+	ProductID        int     `db:"product_id"`
+	ProductName      string  `db:"product_name"`
+	RefundReason     string  `db:"refund_reason"`
+	RefundReasonCode string  `db:"refund_reason_code"`
+	RefundedQty      int64   `db:"refunded_qty"`
+	TotalSold        int64   `db:"total_sold"`
+	ReturnRatePct    float64 `db:"return_rate_pct"`
 }
 
 type analyticsStore struct {
@@ -114,6 +115,15 @@ func normalizeRefundReason(s string) string {
 	}
 }
 
+// reasonBucket picks the chart key for a refund: the exact canonical code when the
+// admin submitted one (RefundReason enum), else fuzzy-normalizing the legacy free-text.
+func reasonBucket(code, text string) string {
+	if c := strings.TrimSpace(code); c != "" {
+		return c
+	}
+	return normalizeRefundReason(text)
+}
+
 // GetReturnByProduct returns return/refund rate per product with breakdown by refund reason.
 // Uses refunded_order_item for accurate refund quantities (not order_item).
 func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.Time, limit int) ([]entity.ReturnByProductRow, error) {
@@ -136,12 +146,15 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			SELECT
 				oi.product_id,
 				COALESCE(NULLIF(TRIM(co.refund_reason), ''), 'Not specified') AS refund_reason,
+				COALESCE(NULLIF(TRIM(co.refund_reason_code), ''), '') AS refund_reason_code,
 				SUM(roi.quantity_refunded) AS refunded_qty
 			FROM refunded_order_item roi
 			JOIN order_item oi ON roi.order_item_id = oi.id
 			JOIN customer_order co ON roi.order_id = co.id
 			WHERE co.placed >= :from AND co.placed < :to
-			GROUP BY oi.product_id, COALESCE(NULLIF(TRIM(co.refund_reason), ''), 'Not specified')
+			GROUP BY oi.product_id,
+				COALESCE(NULLIF(TRIM(co.refund_reason), ''), 'Not specified'),
+				COALESCE(NULLIF(TRIM(co.refund_reason_code), ''), '')
 		)
 		SELECT
 			p.id AS product_id,
@@ -150,6 +163,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 				p.brand
 			) AS product_name,
 			COALESCE(r.refund_reason, '') AS refund_reason,
+			COALESCE(r.refund_reason_code, '') AS refund_reason_code,
 			COALESCE(r.refunded_qty, 0) AS refunded_qty,
 			s.total_sold,
 			CASE WHEN s.total_sold > 0 AND COALESCE(r.refunded_qty, 0) > 0
@@ -186,7 +200,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			byProduct[r.ProductID] = row
 		}
 		if r.ReturnRatePct > 0 {
-			key := normalizeRefundReason(r.RefundReason)
+			key := reasonBucket(r.RefundReasonCode, r.RefundReason)
 			row.Reasons[key] += r.ReturnRatePct
 			row.TotalReturnRate += r.ReturnRatePct
 		}
