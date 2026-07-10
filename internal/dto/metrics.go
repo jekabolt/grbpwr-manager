@@ -22,38 +22,46 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		return nil
 	}
 	pb := &pb_admin.BusinessMetrics{
-		Period:                         timeRangeToPb(m.Period),
-		Revenue:                        metricWithComparisonToPb(m.Revenue),
-		OrdersCount:                    metricWithComparisonToPb(m.OrdersCount),
-		TotalPlacedOrders:              metricWithComparisonToPb(m.TotalPlacedOrders),
-		AvgOrderValue:                  metricWithComparisonToPb(m.AvgOrderValue),
-		ItemsPerOrder:                  metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
-		RefundRate:                     metricWithComparisonToPb(m.RefundRate, true), // lower is better
-		PromoUsageRate:                 metricWithComparisonToPb(m.PromoUsageRate),
-		GrossRevenue:                   metricWithComparisonToPb(m.GrossRevenue),
-		TotalRefunded:                  metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
-		TotalDiscount:                  metricWithComparisonToPb(m.TotalDiscount),
-		ProductSaleDiscount:            metricWithComparisonToPb(m.ProductSaleDiscount),
-		PromoCodeDiscount:              metricWithComparisonToPb(m.PromoCodeDiscount),
-		Sessions:                       metricWithComparisonToPb(m.Sessions),
-		Users:                          metricWithComparisonToPb(m.Users),
-		NewUsers:                       metricWithComparisonToPb(m.NewUsers),
-		PageViews:                      metricWithComparisonToPb(m.PageViews),
-		BounceRate:                     metricWithComparisonToPb(m.BounceRate, true), // lower is better
-		AvgSessionDuration:             metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // round to 1 decimal place for consistent delta display
-		PagesPerSession:                metricWithComparisonToPb(m.PagesPerSession),
-		ConversionRate:                 metricWithComparisonToPb(m.ConversionRate),
-		RevenuePerSession:              metricWithComparisonToPb(m.RevenuePerSession),
-		NewSubscribers:                 metricWithComparisonToPb(m.NewSubscribers),
-		RepeatCustomersRate:            metricWithComparisonToPb(m.RepeatCustomersRate),
-		AvgOrdersPerCustomer:           metricWithComparisonToPb(m.AvgOrdersPerCustomer),
-		AvgDaysBetweenOrders:           metricWithComparisonToPb(m.AvgDaysBetweenOrders),
-		NewCustomers:                   metricWithComparisonToPb(m.NewCustomers),
-		ClvDistribution:                clvStatsToPb(m.CLVDistribution),
+		Period:               timeRangeToPb(m.Period),
+		Revenue:              metricWithComparisonToPb(m.Revenue),
+		OrdersCount:          metricWithComparisonToPb(m.OrdersCount),
+		TotalPlacedOrders:    metricWithComparisonToPb(m.TotalPlacedOrders),
+		AvgOrderValue:        metricWithComparisonToPb(m.AvgOrderValue),
+		ItemsPerOrder:        metricWithComparisonToPb(m.ItemsPerOrder, false, true), // round to int so "1 vs 1" shows 0%
+		RefundRate:           metricWithComparisonToPb(m.RefundRate, true),           // lower is better
+		PromoUsageRate:       metricWithComparisonToPb(m.PromoUsageRate),
+		GrossRevenue:         metricWithComparisonToPb(m.GrossRevenue),
+		TotalRefunded:        metricWithComparisonToPb(m.TotalRefunded, true), // lower is better
+		TotalDiscount:        metricWithComparisonToPb(m.TotalDiscount),
+		ProductSaleDiscount:  metricWithComparisonToPb(m.ProductSaleDiscount),
+		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
+		Sessions:             metricWithComparisonToPb(m.Sessions),
+		Users:                metricWithComparisonToPb(m.Users),
+		NewUsers:             metricWithComparisonToPb(m.NewUsers),
+		PageViews:            metricWithComparisonToPb(m.PageViews),
+		BounceRate:           metricWithComparisonToPb(m.BounceRate, true),                           // lower is better
+		AvgSessionDuration:   metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // round to 1 decimal place for consistent delta display
+		PagesPerSession:      metricWithComparisonToPb(m.PagesPerSession),
+		ConversionRate:       metricWithComparisonToPb(m.ConversionRate),
+		RevenuePerSession:    metricWithComparisonToPb(m.RevenuePerSession),
+		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
+		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
+		AvgOrdersPerCustomer: metricWithComparisonToPb(m.AvgOrdersPerCustomer),
+		AvgDaysBetweenOrders: metricWithComparisonToPb(m.AvgDaysBetweenOrders),
+		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
+		ClvDistribution:      clvStatsToPb(m.CLVDistribution),
 
 		// Shipping / logistics metrics
 		AvgShippingCost:   metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)), // Round to 2 decimal places
 		TotalShippingCost: metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
+
+		// Margin metrics (COGS from product.cost_price). COGS is a volume-scaling cost like
+		// shipping — neutral, not "lower is better" (higher COGS from more sales isn't bad).
+		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
+		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
+		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
+		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
+		CostCoveragePct:    m.CostCoveragePct,
 
 		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
 		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
@@ -154,7 +162,7 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_ad
 		cv := *m.CompareValue
 		displayCompareValue = &cv
 	}
-	
+
 	var decimalPlaces int32 = -1
 	if roundToDecimalPlaces >= 0 {
 		decimalPlaces = roundToDecimalPlaces
@@ -187,7 +195,7 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_ad
 	} else {
 		changePct = ptrFloat64ToVal(m.ChangePct)
 	}
-	
+
 	// Format decimal strings with fixed precision when rounding was applied (preserves trailing zeros)
 	var valueStr, compareValueStr string
 	if decimalPlaces >= 0 {
@@ -201,7 +209,7 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_ad
 			compareValueStr = displayCompareValue.String()
 		}
 	}
-	
+
 	pb := &pb_admin.MetricWithComparison{
 		Value:          &decimal.Decimal{Value: valueStr},
 		ChangePct:      changePct,
@@ -315,13 +323,23 @@ func productMetricsToPb(list []entity.ProductMetric) []*pb_admin.ProductMetric {
 	}
 	pb := make([]*pb_admin.ProductMetric, len(list))
 	for i, p := range list {
-		pb[i] = &pb_admin.ProductMetric{
+		pm := &pb_admin.ProductMetric{
 			ProductId:   int32(p.ProductId),
 			ProductName: p.ProductName,
 			Brand:       p.Brand,
 			Value:       &decimal.Decimal{Value: p.Value.String()},
 			Count:       int32(p.Count),
+			HasCost:     p.HasCost,
 		}
+		// Emit margin only when the product has a cost — otherwise leave the fields unset
+		// so the client shows N/A rather than a misleading 100% margin.
+		if p.HasCost {
+			pm.UnitCost = &decimal.Decimal{Value: p.UnitCost.String()}
+			pm.RevenueCost = &decimal.Decimal{Value: p.RevenueCost.String()}
+			pm.GrossMargin = &decimal.Decimal{Value: p.GrossMargin.String()}
+			pm.GrossMarginPct = p.GrossMarginPct
+		}
+		pb[i] = pm
 	}
 	return pb
 }
@@ -660,14 +678,14 @@ func ConvertProductEngagementMetricsToPb(list []entity.ProductEngagementMetric) 
 	pb := make([]*pb_admin.ProductEngagementMetric, len(list))
 	for i, m := range list {
 		pb[i] = &pb_admin.ProductEngagementMetric{
-			Date:                   timestamppb.New(m.Date),
-			ProductId:              m.ProductID,
-			ProductName:            m.ProductName,
-			ImageViews:             m.ImageViews,
-			ZoomEvents:             m.ZoomEvents,
-			Scroll_75:              m.Scroll75,
-			Scroll_100:             m.Scroll100,
-			AvgTimeOnPageSeconds:   m.AvgTimeOnPageSeconds,
+			Date:                 timestamppb.New(m.Date),
+			ProductId:            m.ProductID,
+			ProductName:          m.ProductName,
+			ImageViews:           m.ImageViews,
+			ZoomEvents:           m.ZoomEvents,
+			Scroll_75:            m.Scroll75,
+			Scroll_100:           m.Scroll100,
+			AvgTimeOnPageSeconds: m.AvgTimeOnPageSeconds,
 		}
 	}
 	return pb

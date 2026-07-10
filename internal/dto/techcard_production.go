@@ -688,6 +688,25 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	return out
 }
 
+// ComputeTechCardUnitCost returns a tech card's per-garment total cost and its currency,
+// computed exactly as the read path renders total_cost — it reuses techCardCostingToPb so
+// there is a single source of truth for the math. Returns an invalid NullDecimal when there
+// is no costing row or the computed total is not positive.
+func ComputeTechCardUnitCost(tc *entity.TechCard) (decimal.NullDecimal, string) {
+	if tc == nil {
+		return decimal.NullDecimal{}, ""
+	}
+	pb := techCardCostingToPb(tc)
+	if pb == nil || pb.TotalCost == nil {
+		return decimal.NullDecimal{}, ""
+	}
+	v, err := decimal.NewFromString(pb.TotalCost.Value)
+	if err != nil || !v.IsPositive() {
+		return decimal.NullDecimal{}, ""
+	}
+	return decimal.NullDecimal{Decimal: v, Valid: true}, pb.Currency
+}
+
 // colorwayCostResult holds one colourway's computed material cost.
 type colorwayCostResult struct {
 	materialsTotal []*pb_common.TechCardCostLine // Σ usage cost grouped by article currency

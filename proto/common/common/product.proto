@@ -109,6 +109,11 @@ message ProductInsert {
   repeated common.ProductInsertTranslation translations = 3;
   int32 secondary_thumbnail_media_id = 4;
   repeated ProductPriceInsert prices = 5;
+  // cost_price is the confidential per-unit cost of goods (COGS) in base currency (EUR),
+  // used for margin analytics. Omit/empty to leave the stored value unchanged on update.
+  // Deliberately on ProductInsert (write-only) and NOT on ProductBodyInsert, so it is
+  // never serialized on the storefront product read path.
+  google.type.Decimal cost_price = 6;
 }
 
 message ProductDisplay {

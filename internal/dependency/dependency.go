@@ -29,6 +29,9 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
+		// SetProductsCostPrice sets cost_price (base-currency COGS) on the given products,
+		// used to seed product cost from a tech card costing. Empty ids is a no-op.
+		SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductsByIds returns a list of products by their IDs.

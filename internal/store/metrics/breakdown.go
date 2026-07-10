@@ -133,7 +133,9 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
-			SUM(oi.quantity) AS cnt
+			SUM(oi.quantity) AS cnt,
+			MAX(p.cost_price) AS unit_cost,
+			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -141,13 +143,15 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 		GROUP BY oi.product_id, p.brand
 		ORDER BY value DESC
 		LIMIT :limit
-	`, orderFactorsCTE, itemAdjExpr)
+	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
-		ProductId   int             `db:"product_id"`
-		Brand       string          `db:"brand"`
-		ProductName string          `db:"product_name"`
-		Value       decimal.Decimal `db:"value"`
-		Count       int             `db:"cnt"`
+		ProductId   int                 `db:"product_id"`
+		Brand       string              `db:"brand"`
+		ProductName string              `db:"product_name"`
+		Value       decimal.Decimal     `db:"value"`
+		Count       int                 `db:"cnt"`
+		UnitCost    decimal.NullDecimal `db:"unit_cost"`
+		RevenueCost decimal.Decimal     `db:"revenue_cost"`
 	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
@@ -159,6 +163,7 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 			productName = r.Brand
 		}
 		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: productName, Brand: r.Brand, Value: r.Value, Count: r.Count}
+		applyProductMargin(&result[i], r.UnitCost, r.RevenueCost)
 	}
 	return result, nil
 }
@@ -170,7 +175,9 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			SUM(oi.quantity) AS cnt,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value
+			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
+			MAX(p.cost_price) AS unit_cost,
+			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -178,13 +185,15 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 		GROUP BY oi.product_id, p.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
-	`, orderFactorsCTE, itemAdjExpr)
+	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
-		ProductId   int             `db:"product_id"`
-		Brand       string          `db:"brand"`
-		ProductName string          `db:"product_name"`
-		Count       int             `db:"cnt"`
-		Value       decimal.Decimal `db:"value"`
+		ProductId   int                 `db:"product_id"`
+		Brand       string              `db:"brand"`
+		ProductName string              `db:"product_name"`
+		Count       int                 `db:"cnt"`
+		Value       decimal.Decimal     `db:"value"`
+		UnitCost    decimal.NullDecimal `db:"unit_cost"`
+		RevenueCost decimal.Decimal     `db:"revenue_cost"`
 	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "limit": limit, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
 		return nil, err
@@ -196,6 +205,7 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 			productName = r.Brand
 		}
 		result[i] = entity.ProductMetric{ProductId: r.ProductId, ProductName: productName, Brand: r.Brand, Value: r.Value, Count: r.Count}
+		applyProductMargin(&result[i], r.UnitCost, r.RevenueCost)
 	}
 	return result, nil
 }
