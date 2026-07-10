@@ -270,7 +270,9 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 					(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
 					p.brand
 				) AS product_name,
-				SUM(pp_base.price * oi.quantity) AS revenue
+				SUM(pp_base.price * oi.quantity) AS revenue,
+				MAX(p.cost_price) AS unit_cost,
+				COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
 			JOIN product p ON p.id = oi.product_id
@@ -286,6 +288,8 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 				product_id,
 				product_name,
 				revenue,
+				unit_cost,
+				revenue_cost,
 				ROW_NUMBER() OVER (ORDER BY revenue DESC) AS rank_num
 			FROM product_revenue
 		),
@@ -297,6 +301,8 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 			r.product_id,
 			r.product_name,
 			r.revenue,
+			r.unit_cost,
+			r.revenue_cost,
 			SUM(r.revenue) OVER (ORDER BY r.rank_num ROWS UNBOUNDED PRECEDING) / t.total_revenue * 100 AS cumulative_pct
 		FROM ranked r
 		CROSS JOIN total t
@@ -304,7 +310,14 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 		LIMIT :limit
 	`, statusIDs)
 
-	result, err := storeutil.QueryListNamed[entity.RevenueParetoRow](ctx, rs.DB, query, map[string]any{
+	// Pareto revenue is gross list revenue (Σ price×qty, no refund/discount adjustment), so
+	// revenue_cost is Σ(cost×qty) on the same un-adjusted basis — the margin ties out to this
+	// row's own `revenue`. computeRowMargin leaves the fields N/A when there is no cost_price.
+	rows, err := storeutil.QueryListNamed[struct {
+		entity.RevenueParetoRow
+		UnitCostRaw    decimal.NullDecimal `db:"unit_cost"`
+		RevenueCostRaw decimal.Decimal     `db:"revenue_cost"`
+	}](ctx, rs.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"from":         from,
 		"to":           to,
@@ -312,6 +325,14 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get revenue pareto: %w", err)
+	}
+	result := make([]entity.RevenueParetoRow, len(rows))
+	for i, r := range rows {
+		row := r.RevenueParetoRow
+		rm := computeRowMargin(row.Revenue, r.UnitCostRaw, r.RevenueCostRaw)
+		row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
+		row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
+		result[i] = row
 	}
 	return result, nil
 }

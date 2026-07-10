@@ -125,8 +125,11 @@ var methodRequirements = map[string]Requirement{
 	"CreateCustomOrder": wr(SectionOrders),
 	// analytics
 	"GetMetrics":             rd(SectionAnalytics),
+	"GetDashboard":           rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
+	"GetAlertSettings":       rd(SectionAnalytics),
+	"UpsertAlertSettings":    wr(SectionAnalytics),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),

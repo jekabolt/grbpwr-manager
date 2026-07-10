@@ -110,8 +110,12 @@ type BusinessMetrics struct {
 	RevenueCost        MetricWithComparison // COGS: Σ(cost × qty), refund-adjusted
 	GrossMargin        MetricWithComparison // costed net revenue − COGS
 	GrossMarginPct     MetricWithComparison // GrossMargin / costed net revenue × 100
-	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost
+	PaymentFees        MetricWithComparison // Σ Stripe processing fees (base ccy), not refund-adjusted
+	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost − PaymentFees
 	CostCoveragePct    float64              // % of net product revenue with a cost set
+	// Product IDs sold in the period with no cost_price set, ranked by period revenue desc —
+	// the products darkening the margins above. Empty when cost coverage is 100%.
+	UncostedProductIds []int
 
 	// Promo
 	RevenueByPromo []PromoMetric
@@ -188,6 +192,12 @@ type MetricWithComparison struct {
 	CompareValue *decimal.Decimal
 	ChangePct    *float64
 	Caveat       string
+	// SampleSize is the number of observations behind the metric (orders, sessions, customers…).
+	// 0 = not populated for this metric. Lets the UI gate a metric on n instead of an arbitrary
+	// display floor. MarginOfError is the 95% CI half-width in the metric's own units, populated
+	// only for true count-proportions (e.g. conversion, promo usage); 0 = not computed.
+	SampleSize    int
+	MarginOfError float64
 }
 
 type GeographyMetric struct {
@@ -519,6 +529,13 @@ type RevenueParetoRow struct {
 	ProductName   string          `db:"product_name"`
 	Revenue       decimal.Decimal `db:"revenue"`
 	CumulativePct float64         `db:"cumulative_pct"`
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	// HasCost=false ⇒ no cost_price, so margins are N/A rather than a misleading 100%.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
 }
 
 type SpendingCurvePoint struct {
@@ -571,6 +588,7 @@ type InventoryHealthRow struct {
 	// Server-side decision, computed after the query.
 	HasTarget    bool `db:"-"` // any target is set for this SKU
 	NeedsReorder bool `db:"-"` // stock at/below reorder point, or cover below lead time / target
+	IsSelling    bool `db:"-"` // sold >0 units in the window; days_on_hand is a sentinel when false
 }
 
 // InventoryTargetInsert is an admin-supplied per-SKU reorder target. A nil field leaves
@@ -591,6 +609,75 @@ type SizeRunEfficiencyRow struct {
 	EfficiencyPct    float64 `db:"efficiency_pct"`
 }
 
+// SellThroughByDropRow rolls a release/drop cohort (product.collection) into decision-grade
+// totals. Lifetime (current-state), not windowed: sell-through is inherently cumulative.
+type SellThroughByDropRow struct {
+	Collection     string          `db:"collection"`
+	ProductCount   int             `db:"product_count"`
+	UnitsSold      int64           `db:"units_sold"`
+	UnitsRemaining int64           `db:"units_remaining"`
+	SellThroughPct float64         `db:"sell_through_pct"`
+	Revenue        decimal.Decimal `db:"revenue"`
+}
+
+// --- Dashboard (decision-grade summary) ---
+
+// AlertSeverity ranks a dashboard alert. Kept as small string codes so the store can emit
+// them without importing the proto enum.
+type AlertSeverity string
+
+const (
+	AlertSeverityInfo     AlertSeverity = "info"
+	AlertSeverityWarning  AlertSeverity = "warning"
+	AlertSeverityCritical AlertSeverity = "critical"
+)
+
+// AlertThresholds are the operator-tunable thresholds behind the dashboard alerts, loaded
+// from the alert_setting table (with DefaultAlertThresholds as the fallback).
+type AlertThresholds struct {
+	CoverageWarnPct      float64 // warn when cost coverage (% of revenue with a cost) is below this
+	RefundRateWarnPct    float64 // warn when refund rate is at/above this
+	RateFloorN           int     // min orders before any rate-based alert fires (significance floor)
+	ContributionTrustPct float64 // only trust the contribution-margin sign at/above this coverage
+}
+
+// DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
+func DefaultAlertThresholds() AlertThresholds {
+	return AlertThresholds{
+		CoverageWarnPct:      70,
+		RefundRateWarnPct:    10,
+		RateFloorN:           30,
+		ContributionTrustPct: 50,
+	}
+}
+
+// DashboardAlert is a server-computed, threshold-driven alert for the dashboard.
+type DashboardAlert struct {
+	Severity AlertSeverity
+	Code     string // stable machine key, e.g. "low_cost_coverage"
+	Title    string
+	Detail   string
+}
+
+// Dashboard is the small, DB-trusted decision payload: headline figures + server alerts +
+// short action lists. It is intentionally cheap (no ~90-field BusinessMetrics god-object).
+type Dashboard struct {
+	Period             TimeRange
+	Revenue            decimal.Decimal
+	Orders             int
+	GrossMargin        decimal.Decimal
+	GrossMarginPct     float64
+	ContributionMargin decimal.Decimal
+	CostCoveragePct    float64
+	Caveat             string
+	UncostedProductIds []int
+	Alerts             []DashboardAlert
+	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
+	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
+	Clear              []SlowMoverRow       // slow movers to clear
+	Drops              []SellThroughByDropRow
+}
+
 // --- Slow Movers ---
 
 type SlowMoverRow struct {
@@ -602,6 +689,13 @@ type SlowMoverRow struct {
 	LastSaleDate  *time.Time      `db:"last_sale_date"`
 	ProductHidden bool            `db:"product_hidden"`
 	TotalViews    int64           `db:"total_views"`
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	// HasCost=false ⇒ no cost_price, so margins are N/A rather than a misleading 100%.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
 }
 
 // --- Return Analysis ---
@@ -830,6 +924,10 @@ type CampaignAttributionAggregatedFull struct {
 	// Spend is zero when none is recorded; ROAS (revenue / spend) is set only when spend > 0.
 	Spend decimal.Decimal
 	ROAS  float64
+	// CAC = spend / conversions (cost to acquire a converting customer), set only when spend
+	// and conversions are both > 0. Note: attribution-based, so directional for an
+	// organic-heavy channel mix rather than an exact acquisition cost.
+	CAC float64
 }
 
 // ChannelSpendInsert is an operator-entered marketing spend row for one channel on one day.

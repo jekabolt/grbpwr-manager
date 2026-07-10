@@ -77,6 +77,10 @@ func (s *Store) UpsertInventoryTargets(ctx context.Context, targets []entity.Inv
 	return s.inventory().UpsertInventoryTargets(ctx, targets)
 }
 
+func (s *Store) GetSellThroughByDrop(ctx context.Context, from, to time.Time, limit int) ([]entity.SellThroughByDropRow, error) {
+	return s.inventory().GetSellThroughByDrop(ctx, from, to, limit)
+}
+
 // --- Metrics interface: Analytics methods ---
 
 func (s *Store) GetSlowMovers(ctx context.Context, from, to time.Time, limit int) ([]entity.SlowMoverRow, error) {
