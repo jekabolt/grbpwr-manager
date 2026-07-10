@@ -7,14 +7,27 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	authjwt "github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+// account is a small helper building an AdminAccount mock return value.
+func account(username, pwHash string, super bool, perms ...entity.AdminPermission) *entity.AdminAccount {
+	return &entity.AdminAccount{
+		Admin:       entity.Admin{Username: username, PasswordHash: pwHash, IsSuper: super},
+		Permissions: perms,
+	}
+}
 
 const (
 	jwtSecret      = "hehe"
@@ -44,9 +57,10 @@ func TestAuth(t *testing.T) {
 	pwHashNew, err := authsrv.pwhash.HashPassword(newPassword)
 	assert.NoError(t, err)
 
-	// Username is converted to lowercase in the Create method
+	// Username is converted to lowercase in the Create method. Create bootstraps a
+	// super-admin (isSuper=true, no per-section grants).
 	lowercaseUsername := strings.ToLower(username)
-	as.EXPECT().AddAdmin(mock.Anything, lowercaseUsername, mock.Anything).Return(nil)
+	as.EXPECT().AddAccount(mock.Anything, lowercaseUsername, mock.Anything, true, mock.Anything).Return(nil)
 
 	_, err = authsrv.Create(ctx, &pb_auth.CreateRequest{
 		MasterPassword: masterPassword,
@@ -57,7 +71,8 @@ func TestAuth(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	as.EXPECT().PasswordHashByUsername(ctx, lowercaseUsername).Return(pwHash, nil).Once()
+	as.EXPECT().GetAccountWithPermissions(ctx, lowercaseUsername).
+		Return(account(lowercaseUsername, pwHash, true), nil).Once()
 	as.EXPECT().ChangePassword(ctx, lowercaseUsername, mock.Anything).Return(nil)
 
 	_, err = authsrv.ChangePassword(ctx, &pb_auth.ChangePasswordRequest{
@@ -67,7 +82,8 @@ func TestAuth(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	as.EXPECT().PasswordHashByUsername(ctx, lowercaseUsername).Return(pwHashNew, nil).Once()
+	as.EXPECT().GetAccountWithPermissions(ctx, lowercaseUsername).
+		Return(account(lowercaseUsername, pwHashNew, true), nil).Once()
 	resp, err := authsrv.Login(ctx, &pb_auth.LoginRequest{
 		Username: username,
 		Password: newPassword,
@@ -77,7 +93,7 @@ func TestAuth(t *testing.T) {
 	token := fmt.Sprintf("Bearer %s", resp.AuthToken)
 
 	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	handlerAuth := authsrv.WithAuth(nextHandler)
@@ -134,7 +150,7 @@ func TestCreateWithInvalidMasterPassword(t *testing.T) {
 
 	t.Run("Create with correct master password succeeds", func(t *testing.T) {
 		lowercaseUsername := strings.ToLower(username)
-		as.EXPECT().AddAdmin(mock.Anything, lowercaseUsername, mock.Anything).Return(nil)
+		as.EXPECT().AddAccount(mock.Anything, lowercaseUsername, mock.Anything, true, mock.Anything).Return(nil)
 
 		resp, err := authsrv.Create(ctx, &pb_auth.CreateRequest{
 			MasterPassword: masterPassword,
@@ -229,7 +245,8 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		assert.NoError(t, err)
 
 		lowercaseUsername := strings.ToLower(username)
-		as.EXPECT().PasswordHashByUsername(ctx, lowercaseUsername).Return(pwHash, nil).Once()
+		as.EXPECT().GetAccountWithPermissions(ctx, lowercaseUsername).
+			Return(account(lowercaseUsername, pwHash, true), nil).Once()
 
 		loginResp, err := authsrv.Login(ctx, &pb_auth.LoginRequest{
 			Username: username,
@@ -260,4 +277,74 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		assert.Equal(t, "response", resp)
 		assert.True(t, handlerCalled)
 	})
+}
+
+// TestInterceptorEnforcesSections drives the interceptor with tokens minted
+// directly (bypassing Login) to assert per-section, per-access enforcement,
+// allowlisting, fail-closed on unmapped methods, super bypass, and legacy grace.
+func TestInterceptorEnforcesSections(t *testing.T) {
+	as := mocks.NewMockAdmin(t)
+	c := &Config{
+		JWTSecret:                jwtSecret,
+		MasterPassword:           masterPassword,
+		PasswordHasherSaltSize:   16,
+		PasswordHasherIterations: 100000,
+		JWTTTL:                   "60m",
+	}
+	authsrv, err := New(c, as)
+	assert.NoError(t, err)
+	interceptor := authsrv.UnaryAdminAuthInterceptor()
+
+	mint := func(super bool, perms []string) string {
+		tok, err := authjwt.NewAdminToken(authsrv.JwtAuth, time.Hour, "u", super, perms, nil)
+		assert.NoError(t, err)
+		return tok
+	}
+	// Legacy token: pre-RBAC, carries no super/perms claims → full access.
+	legacyTok, err := authjwt.NewTokenWithSubject(authsrv.JwtAuth, time.Hour, "legacy")
+	assert.NoError(t, err)
+
+	scoped := mint(false, []string{"orders:read", "content:write"})
+	super := mint(true, nil)
+	noAccess := mint(false, nil)
+
+	call := func(token, method string) error {
+		handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
+		md := metadata.New(map[string]string{
+			strings.ToLower(AuthMetadataKey): "Bearer " + token,
+		})
+		ctx := metadata.NewIncomingContext(context.Background(), md)
+		_, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, handler)
+		return err
+	}
+
+	cases := []struct {
+		name    string
+		token   string
+		method  string
+		allowed bool
+	}{
+		{"scoped read allowed", scoped, "/admin.AdminService/GetOrderByUUID", true},
+		{"scoped write on read grant denied", scoped, "/admin.AdminService/RefundOrder", false},
+		{"scoped write allowed", scoped, "/admin.AdminService/UploadContentImage", true},
+		{"scoped other section denied", scoped, "/admin.AdminService/UpsertProduct", false},
+		{"allowlist always allowed", scoped, "/admin.AdminService/GetDictionary", true},
+		{"self view allowlisted", noAccess, "/admin.AdminService/GetCurrentAccount", true},
+		{"no-access denied", noAccess, "/admin.AdminService/ListOrders", false},
+		{"super bypass", super, "/admin.AdminService/UpsertProduct", true},
+		{"super on accounts", super, "/admin.AdminService/CreateAccount", true},
+		{"scoped cannot manage accounts", scoped, "/admin.AdminService/CreateAccount", false},
+		{"legacy full access", legacyTok, "/admin.AdminService/UpsertProduct", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := call(tc.token, tc.method)
+			if tc.allowed {
+				assert.NoError(t, err)
+				return
+			}
+			assert.Error(t, err)
+			assert.Equal(t, codes.PermissionDenied, status.Code(err))
+		})
+	}
 }
