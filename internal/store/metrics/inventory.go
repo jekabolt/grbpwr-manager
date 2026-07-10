@@ -88,6 +88,9 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 // supplier lead time or fall short of the target cover. The no-sales sentinel (days_on_hand
 // = 99999) is excluded from the cover checks, so a dead SKU only trips via the reorder point.
 func applyReorderDecision(r *entity.InventoryHealthRow) {
+	// Always set from the sales velocity so the client never has to detect the days_on_hand
+	// sentinel to know whether the SKU moved in the window.
+	r.IsSelling = r.AvgDailySales > 0
 	r.HasTarget = r.ReorderPoint.Valid || r.TargetDaysCover.Valid || r.LeadTimeDays.Valid
 	if !r.HasTarget {
 		return

@@ -1844,15 +1844,23 @@ message InventoryHealthRow {
   int32 size_id = 3;
   string size_name = 4;
   int32 quantity = 5;
-  double avg_daily_sales = 6;
-  double days_on_hand = 7; // days of cover at the current sales rate
-  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived
-  // from them. needs_reorder is meaningful only when has_target is true.
+  double avg_daily_sales = 6; // units/day over the requested (trailing) window
+  // Days of cover at the current sales rate. When is_selling is false there were no sales in
+  // the window, so this carries a large sentinel (sorts dead stock last) — read is_selling,
+  // not a magic number, and render days of cover as N/A in that case.
+  double days_on_hand = 7;
+  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived from
+  // them. needs_reorder is meaningful only when has_target is true; setting a target is the
+  // operator's opt-in that this SKU is continuity stock (limited drops get no target, hence
+  // no reorder noise — days of cover is misleading for them).
   int32 reorder_point = 8;
   int32 target_days_cover = 9;
   int32 lead_time_days = 10;
   bool needs_reorder = 11;
   bool has_target = 12;
+  // True when the SKU sold at least one unit in the window. Replaces the client-side
+  // qty/avgDailySales sentinel check: gate any days-of-cover display on this.
+  bool is_selling = 13;
 }
 
 // InventoryTargetInsert is an admin-supplied per-SKU reorder target. Each threshold is

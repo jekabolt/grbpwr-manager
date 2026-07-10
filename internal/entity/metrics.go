@@ -588,6 +588,7 @@ type InventoryHealthRow struct {
 	// Server-side decision, computed after the query.
 	HasTarget    bool `db:"-"` // any target is set for this SKU
 	NeedsReorder bool `db:"-"` // stock at/below reorder point, or cover below lead time / target
+	IsSelling    bool `db:"-"` // sold >0 units in the window; days_on_hand is a sentinel when false
 }
 
 // InventoryTargetInsert is an admin-supplied per-SKU reorder target. A nil field leaves

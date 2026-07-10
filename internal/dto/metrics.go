@@ -980,6 +980,7 @@ func ConvertInventoryHealthToPb(list []entity.InventoryHealthRow) []*pb_admin.In
 			LeadTimeDays:    int32(r.LeadTimeDays.Int64),
 			NeedsReorder:    r.NeedsReorder,
 			HasTarget:       r.HasTarget,
+			IsSelling:       r.IsSelling,
 		}
 	}
 	return pb
