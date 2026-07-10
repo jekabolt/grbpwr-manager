@@ -238,11 +238,11 @@ func updateOrderStatusAndRefundedAmountWithValidation(ctx context.Context, db de
 	return insertOrderStatusHistoryEntry(ctx, db, orderId, orderStatusId, changedBy, notes)
 }
 
-func updateOrderStatusAndAccumulateRefundedAmount(ctx context.Context, db dependency.DB, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string) error {
-	return updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx, db, orderId, orderStatusId, refundedAmount, refundReason, "admin")
+func updateOrderStatusAndAccumulateRefundedAmount(ctx context.Context, db dependency.DB, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason, refundReasonCode string) error {
+	return updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx, db, orderId, orderStatusId, refundedAmount, refundReason, refundReasonCode, "admin")
 }
 
-func updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx context.Context, db dependency.DB, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason string, changedBy string) error {
+func updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx context.Context, db dependency.DB, orderId int, orderStatusId int, refundedAmount decimal.Decimal, refundReason, refundReasonCode string, changedBy string) error {
 	var currentStatusId int
 	query := `SELECT order_status_id FROM customer_order WHERE id = ?`
 	err := db.GetContext(ctx, &currentStatusId, query, orderId)
@@ -269,19 +269,21 @@ func updateOrderStatusAndAccumulateRefundedAmountWithValidation(ctx context.Cont
 	}
 
 	updateQuery := `
-		UPDATE customer_order 
+		UPDATE customer_order
 		SET order_status_id = :orderStatusId,
 			refunded_amount = refunded_amount + :refundedAmount,
 			refund_reason = COALESCE(NULLIF(:refundReason, ''), refund_reason),
+			refund_reason_code = COALESCE(NULLIF(:refundReasonCode, ''), refund_reason_code),
 			modified = CURRENT_TIMESTAMP
 		WHERE id = :orderId
 	`
 
 	err = storeutil.ExecNamed(ctx, db, updateQuery, map[string]any{
-		"orderId":        orderId,
-		"orderStatusId":  orderStatusId,
-		"refundedAmount": refundedAmount.Round(2),
-		"refundReason":   refundReason,
+		"orderId":          orderId,
+		"orderStatusId":    orderStatusId,
+		"refundedAmount":   refundedAmount.Round(2),
+		"refundReason":     refundReason,
+		"refundReasonCode": refundReasonCode,
 	})
 	if err != nil {
 		return fmt.Errorf("update order: %w", err)

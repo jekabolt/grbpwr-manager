@@ -57,7 +57,26 @@ func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderI
 	}, nil
 }
 
-// ConvertCreateCustomOrderRequestToEntity converts CreateCustomOrderRequest to entity.OrderNew.
+// RefundReasonKey maps the structured RefundReason enum to its canonical storage key
+// (the same buckets the return-analysis chart uses). Returns "" for UNSPECIFIED so the
+// caller leaves refund_reason_code NULL and falls back to the free-text reason.
+func RefundReasonKey(r pb_admin.RefundReason) string {
+	switch r {
+	case pb_admin.RefundReason_REFUND_REASON_WRONG_SIZE:
+		return "wrong_size"
+	case pb_admin.RefundReason_REFUND_REASON_NOT_AS_DESCRIBED:
+		return "not_as_described"
+	case pb_admin.RefundReason_REFUND_REASON_DEFECTIVE:
+		return "defective"
+	case pb_admin.RefundReason_REFUND_REASON_CHANGED_MIND:
+		return "changed_mind"
+	case pb_admin.RefundReason_REFUND_REASON_OTHER:
+		return "other"
+	default:
+		return ""
+	}
+}
+
 func ConvertCreateCustomOrderRequestToEntity(req *pb_admin.CreateCustomOrderRequest) (*entity.OrderNew, error) {
 	if req == nil {
 		return nil, fmt.Errorf("create_custom_order_request is nil")
@@ -73,7 +92,7 @@ func ConvertCreateCustomOrderRequestToEntity(req *pb_admin.CreateCustomOrderRequ
 	orderNew := &entity.OrderNew{
 		Items:             items,
 		ShippingAddress:   convertAddress(req.ShippingAddress),
-		BillingAddress:   convertAddress(req.BillingAddress),
+		BillingAddress:    convertAddress(req.BillingAddress),
 		Buyer:             convertBuyer(req.Buyer),
 		PaymentMethod:     ConvertPbPaymentMethodToEntity(req.PaymentMethod),
 		ShipmentCarrierId: int(req.ShipmentCarrierId),
@@ -325,12 +344,12 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 		return nil, fmt.Errorf("error converting order: %w", err)
 	}
 
-		pbOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.OrderItems, e.Order.Currency)
-		if err != nil {
-			return nil, fmt.Errorf("error converting order items: %w", err)
-		}
+	pbOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.OrderItems, e.Order.Currency)
+	if err != nil {
+		return nil, fmt.Errorf("error converting order items: %w", err)
+	}
 
-		pbRefundedOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.RefundedOrderItems, e.Order.Currency)
+	pbRefundedOrderItems, err := ConvertEntityOrderItemsToPbOrderItems(e.RefundedOrderItems, e.Order.Currency)
 	if err != nil {
 		return nil, fmt.Errorf("error converting refunded order items: %w", err)
 	}
@@ -466,9 +485,9 @@ func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, 
 // EntityShippingRegionToPb maps entity region string to proto enum
 var entityRegionToPb = map[string]pb_common.ShippingRegion{
 	string(entity.ShippingRegionAfrica):      pb_common.ShippingRegion_SHIPPING_REGION_AFRICA,
-	string(entity.ShippingRegionAmericas):   pb_common.ShippingRegion_SHIPPING_REGION_AMERICAS,
+	string(entity.ShippingRegionAmericas):    pb_common.ShippingRegion_SHIPPING_REGION_AMERICAS,
 	string(entity.ShippingRegionAsiaPacific): pb_common.ShippingRegion_SHIPPING_REGION_ASIA_PACIFIC,
-	string(entity.ShippingRegionEurope):     pb_common.ShippingRegion_SHIPPING_REGION_EUROPE,
+	string(entity.ShippingRegionEurope):      pb_common.ShippingRegion_SHIPPING_REGION_EUROPE,
 	string(entity.ShippingRegionMiddleEast):  pb_common.ShippingRegion_SHIPPING_REGION_MIDDLE_EAST,
 }
 
