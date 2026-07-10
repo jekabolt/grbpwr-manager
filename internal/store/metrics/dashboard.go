@@ -10,17 +10,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Server-side alert thresholds. These live on the backend (not the frontend) so alerting is
-// consistent across clients and gated on real sample size. Rate-based alerts only fire once
-// there are at least alertRateFloorN orders, so a 1-order period can't trip a "100% refund
-// rate" alarm.
-const (
-	alertCoverageWarnPct      = 70.0 // warn when cost coverage (% of revenue with a cost) is below this
-	alertRefundRateWarnPct    = 10.0 // warn when refund rate is at/above this
-	alertRateFloorN           = 30   // min orders before any rate-based alert fires (the significance floor)
-	alertContributionTrustPct = 50.0 // only trust the contribution-margin sign when coverage is at least this
-	dashboardReorderScanLimit = 500  // inventory rows scanned to collect the reorder list
-)
+// dashboardReorderScanLimit bounds how many inventory rows we scan to collect the reorder
+// list. The alert thresholds themselves are operator-tunable and loaded from alert_setting
+// (see settings.go / entity.AlertThresholds); rate-based alerts are still gated on a minimum
+// order count so a 1-order period can't trip a "100% refund rate" alarm.
+const dashboardReorderScanLimit = 500 // inventory rows scanned to collect the reorder list
 
 // GetDashboard assembles the decision-grade dashboard payload: a small set of DB-trusted
 // headline figures, server-computed alerts, and the short action lists (top products by
@@ -80,6 +74,10 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard drops: %w", err)
 	}
+	thresholds, err := s.GetAlertThresholds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard alert thresholds: %w", err)
+	}
 
 	grossMargin := costedRev.Sub(cogs).Round(2)
 	d := &entity.Dashboard{
@@ -134,18 +132,18 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if grossRev.GreaterThan(decimal.Zero) {
 		refundRatePct = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
-	d.Alerts = buildDashboardAlerts(d, refundRatePct, placedOrders, len(reorder), totalItemRev)
+	d.Alerts = buildDashboardAlerts(d, thresholds, refundRatePct, placedOrders, len(reorder), totalItemRev)
 
 	return d, nil
 }
 
 // buildDashboardAlerts derives the server-side alert list from the headline figures using the
-// backend thresholds. Rate-based alerts (refund rate) are gated on alertRateFloorN so they
-// never fire on a statistically meaningless handful of orders.
-func buildDashboardAlerts(d *entity.Dashboard, refundRatePct float64, placedOrders, reorderCount int, totalItemRev decimal.Decimal) []entity.DashboardAlert {
+// operator-tunable thresholds. Rate-based alerts (refund rate) are gated on t.RateFloorN so
+// they never fire on a statistically meaningless handful of orders.
+func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundRatePct float64, placedOrders, reorderCount int, totalItemRev decimal.Decimal) []entity.DashboardAlert {
 	var out []entity.DashboardAlert
 
-	if d.CostCoveragePct >= alertContributionTrustPct && d.ContributionMargin.IsNegative() {
+	if d.CostCoveragePct >= t.ContributionTrustPct && d.ContributionMargin.IsNegative() {
 		out = append(out, entity.DashboardAlert{
 			Severity: entity.AlertSeverityCritical,
 			Code:     "negative_contribution_margin",
@@ -153,7 +151,7 @@ func buildDashboardAlerts(d *entity.Dashboard, refundRatePct float64, placedOrde
 			Detail:   fmt.Sprintf("Contribution margin is %s after COGS, shipping and payment fees.", d.ContributionMargin.StringFixed(2)),
 		})
 	}
-	if totalItemRev.GreaterThan(decimal.Zero) && d.CostCoveragePct > 0 && d.CostCoveragePct < alertCoverageWarnPct {
+	if totalItemRev.GreaterThan(decimal.Zero) && d.CostCoveragePct > 0 && d.CostCoveragePct < t.CoverageWarnPct {
 		out = append(out, entity.DashboardAlert{
 			Severity: entity.AlertSeverityWarning,
 			Code:     "low_cost_coverage",
@@ -177,7 +175,7 @@ func buildDashboardAlerts(d *entity.Dashboard, refundRatePct float64, placedOrde
 			Detail:   fmt.Sprintf("%d SKU(s) at or below their reorder point.", reorderCount),
 		})
 	}
-	if placedOrders >= alertRateFloorN && refundRatePct >= alertRefundRateWarnPct {
+	if placedOrders >= t.RateFloorN && refundRatePct >= t.RefundRateWarnPct {
 		out = append(out, entity.DashboardAlert{
 			Severity: entity.AlertSeverityWarning,
 			Code:     "high_refund_rate",

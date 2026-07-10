@@ -632,6 +632,25 @@ const (
 	AlertSeverityCritical AlertSeverity = "critical"
 )
 
+// AlertThresholds are the operator-tunable thresholds behind the dashboard alerts, loaded
+// from the alert_setting table (with DefaultAlertThresholds as the fallback).
+type AlertThresholds struct {
+	CoverageWarnPct      float64 // warn when cost coverage (% of revenue with a cost) is below this
+	RefundRateWarnPct    float64 // warn when refund rate is at/above this
+	RateFloorN           int     // min orders before any rate-based alert fires (significance floor)
+	ContributionTrustPct float64 // only trust the contribution-margin sign at/above this coverage
+}
+
+// DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
+func DefaultAlertThresholds() AlertThresholds {
+	return AlertThresholds{
+		CoverageWarnPct:      70,
+		RefundRateWarnPct:    10,
+		RateFloorN:           30,
+		ContributionTrustPct: 50,
+	}
+}
+
 // DashboardAlert is a server-computed, threshold-driven alert for the dashboard.
 type DashboardAlert struct {
 	Severity AlertSeverity

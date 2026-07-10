@@ -836,6 +836,35 @@ func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardReq
 	return dto.ConvertDashboardToPb(d), nil
 }
 
+// GetAlertSettings returns the operator-tunable dashboard alert thresholds.
+func (s *Server) GetAlertSettings(ctx context.Context, _ *pb_admin.GetAlertSettingsRequest) (*pb_admin.GetAlertSettingsResponse, error) {
+	t, err := s.repo.Metrics().GetAlertThresholds(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get alert settings", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get alert settings")
+	}
+	return &pb_admin.GetAlertSettingsResponse{Settings: dto.AlertThresholdsToPb(t)}, nil
+}
+
+// UpsertAlertSettings updates the dashboard alert thresholds after validating their ranges.
+func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAlertSettingsRequest) (*pb_admin.UpsertAlertSettingsResponse, error) {
+	if req.Settings == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "settings is required")
+	}
+	t := dto.AlertThresholdsFromPb(req.Settings)
+	if t.CoverageWarnPct < 0 || t.CoverageWarnPct > 100 ||
+		t.RefundRateWarnPct < 0 || t.RefundRateWarnPct > 100 ||
+		t.ContributionTrustPct < 0 || t.ContributionTrustPct > 100 ||
+		t.RateFloorN < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "percentages must be within [0,100] and rate_floor_n >= 0")
+	}
+	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert alert settings")
+	}
+	return &pb_admin.UpsertAlertSettingsResponse{}, nil
+}
+
 // enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,
 // matching by the UTM triple over the same period. Mutates rows in place.
 func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, rows []entity.CampaignAttributionAggregatedFull) error {

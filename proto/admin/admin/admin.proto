@@ -197,6 +197,19 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/dashboard"};
   }
 
+  // Reads the operator-tunable thresholds behind the dashboard alerts.
+  rpc GetAlertSettings(GetAlertSettingsRequest) returns (GetAlertSettingsResponse) {
+    option (google.api.http) = {get: "/api/admin/dashboard/alert-settings"};
+  }
+
+  // Updates the operator-tunable dashboard alert thresholds.
+  rpc UpsertAlertSettings(UpsertAlertSettingsRequest) returns (UpsertAlertSettingsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dashboard/alert-settings/upsert"
+      body: "*"
+    };
+  }
+
   // Sets per-SKU inventory reorder targets used by the inventory-health metrics.
   rpc UpsertInventoryTargets(UpsertInventoryTargetsRequest) returns (UpsertInventoryTargetsResponse) {
     option (google.api.http) = {
@@ -968,6 +981,26 @@ message GetDashboardResponse {
   repeated SlowMoverRow clear = 13; // slow movers to clear
   repeated SellThroughByDropRow drops = 14; // drop sell-through
 }
+
+// AlertSettings are the operator-tunable thresholds behind the dashboard alerts.
+message AlertSettings {
+  double coverage_warn_pct = 1; // warn when cost coverage (% of revenue with a cost) is below this
+  double refund_rate_warn_pct = 2; // warn when refund rate is at/above this
+  int32 rate_floor_n = 3; // min orders before any rate-based alert fires (significance floor)
+  double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
+}
+
+message GetAlertSettingsRequest {}
+
+message GetAlertSettingsResponse {
+  AlertSettings settings = 1;
+}
+
+message UpsertAlertSettingsRequest {
+  AlertSettings settings = 1;
+}
+
+message UpsertAlertSettingsResponse {}
 
 message FunnelSection {
   FunnelAggregate aggregate = 1;

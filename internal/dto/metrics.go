@@ -1076,6 +1076,28 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 	return pb
 }
 
+// AlertThresholdsToPb / AlertThresholdsFromPb map the operator-tunable alert thresholds.
+func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
+	return &pb_admin.AlertSettings{
+		CoverageWarnPct:      t.CoverageWarnPct,
+		RefundRateWarnPct:    t.RefundRateWarnPct,
+		RateFloorN:           int32(t.RateFloorN),
+		ContributionTrustPct: t.ContributionTrustPct,
+	}
+}
+
+func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
+	if s == nil {
+		return entity.DefaultAlertThresholds()
+	}
+	return entity.AlertThresholds{
+		CoverageWarnPct:      s.CoverageWarnPct,
+		RefundRateWarnPct:    s.RefundRateWarnPct,
+		RateFloorN:           int(s.RateFloorN),
+		ContributionTrustPct: s.ContributionTrustPct,
+	}
+}
+
 func alertSeverityToPb(s entity.AlertSeverity) pb_admin.AlertSeverity {
 	switch s {
 	case entity.AlertSeverityInfo:

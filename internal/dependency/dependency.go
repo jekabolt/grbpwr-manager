@@ -277,6 +277,10 @@ type (
 		// GetDashboard returns the small, DB-trusted decision payload (headline + alerts +
 		// action lists) without building the full BusinessMetrics god-object.
 		GetDashboard(ctx context.Context, from, to time.Time, limit int) (*entity.Dashboard, error)
+		// GetAlertThresholds / UpsertAlertThresholds read and write the operator-tunable
+		// thresholds behind the dashboard alerts (alert_setting table).
+		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
+		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).
