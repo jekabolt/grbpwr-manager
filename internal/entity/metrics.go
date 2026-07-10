@@ -620,6 +620,45 @@ type SellThroughByDropRow struct {
 	Revenue        decimal.Decimal `db:"revenue"`
 }
 
+// --- Dashboard (decision-grade summary) ---
+
+// AlertSeverity ranks a dashboard alert. Kept as small string codes so the store can emit
+// them without importing the proto enum.
+type AlertSeverity string
+
+const (
+	AlertSeverityInfo     AlertSeverity = "info"
+	AlertSeverityWarning  AlertSeverity = "warning"
+	AlertSeverityCritical AlertSeverity = "critical"
+)
+
+// DashboardAlert is a server-computed, threshold-driven alert for the dashboard.
+type DashboardAlert struct {
+	Severity AlertSeverity
+	Code     string // stable machine key, e.g. "low_cost_coverage"
+	Title    string
+	Detail   string
+}
+
+// Dashboard is the small, DB-trusted decision payload: headline figures + server alerts +
+// short action lists. It is intentionally cheap (no ~90-field BusinessMetrics god-object).
+type Dashboard struct {
+	Period             TimeRange
+	Revenue            decimal.Decimal
+	Orders             int
+	GrossMargin        decimal.Decimal
+	GrossMarginPct     float64
+	ContributionMargin decimal.Decimal
+	CostCoveragePct    float64
+	Caveat             string
+	UncostedProductIds []int
+	Alerts             []DashboardAlert
+	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
+	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
+	Clear              []SlowMoverRow       // slow movers to clear
+	Drops              []SellThroughByDropRow
+}
+
 // --- Slow Movers ---
 
 type SlowMoverRow struct {

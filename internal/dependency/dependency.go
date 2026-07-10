@@ -274,6 +274,9 @@ type (
 		Inventory
 		Analytics
 		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
+		// GetDashboard returns the small, DB-trusted decision payload (headline + alerts +
+		// action lists) without building the full BusinessMetrics god-object.
+		GetDashboard(ctx context.Context, from, to time.Time, limit int) (*entity.Dashboard, error)
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).

@@ -190,6 +190,13 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics"};
   }
 
+  // GetDashboard returns a small, DB-trusted decision payload: headline revenue/orders/margin
+  // (+ caveat), server-computed alerts, and short action lists (top by margin €, reorder,
+  // clear, drop sell-through). Use GetMetrics for deep, sectioned drill-down.
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse) {
+    option (google.api.http) = {get: "/api/admin/dashboard"};
+  }
+
   // Sets per-SKU inventory reorder targets used by the inventory-health metrics.
   rpc UpsertInventoryTargets(UpsertInventoryTargetsRequest) returns (UpsertInventoryTargetsResponse) {
     option (google.api.http) = {
@@ -916,6 +923,50 @@ message GetMetricsResponse {
   repeated CustomerSegmentRow customer_segments = 46;
   repeated RFMSegmentRow rfm_analysis = 47;
   repeated SellThroughByDropRow sell_through_by_drop = 48;
+}
+
+// --- Dashboard (decision-grade summary) ---
+
+message GetDashboardRequest {
+  // Period spec, same grammar as GetMetrics (7d, 30d, 90d, today, WTD, MTD, QTD, YTD).
+  string period = 1;
+  // Optional window end (defaults to now). The period is measured back from here.
+  google.protobuf.Timestamp end_at = 2;
+  // Max rows per action list (top-by-margin, reorder, clear, drops). 0 = server default.
+  int32 limit = 3;
+}
+
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  ALERT_SEVERITY_INFO = 1;
+  ALERT_SEVERITY_WARNING = 2;
+  ALERT_SEVERITY_CRITICAL = 3;
+}
+
+// DashboardAlert is a server-computed, threshold-driven alert. Rate-based alerts are gated on
+// a minimum order count, so they never fire on a statistically meaningless sample.
+message DashboardAlert {
+  AlertSeverity severity = 1;
+  string code = 2; // stable machine key, e.g. "low_cost_coverage"
+  string title = 3;
+  string detail = 4;
+}
+
+message GetDashboardResponse {
+  TimeRange period = 1;
+  google.type.Decimal revenue = 2; // net revenue (base currency)
+  int32 orders = 3; // net-revenue order count
+  google.type.Decimal gross_margin = 4; // costed net revenue − COGS
+  double gross_margin_pct = 5;
+  google.type.Decimal contribution_margin = 6; // gross_margin − shipping − payment_fees
+  double cost_coverage_pct = 7; // % of product revenue with a cost set (trust gate for margins)
+  string caveat = 8; // set when coverage is low, so margins are only partial
+  repeated int32 uncosted_product_ids = 9; // products sold this period with no cost, ranked by revenue
+  repeated DashboardAlert alerts = 10;
+  repeated ProductMetric top_by_margin = 11; // top revenue products re-ranked by gross margin €
+  repeated InventoryHealthRow reorder = 12; // SKUs flagged needs_reorder, most urgent first
+  repeated SlowMoverRow clear = 13; // slow movers to clear
+  repeated SellThroughByDropRow drops = 14; // drop sell-through
 }
 
 message FunnelSection {

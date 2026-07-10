@@ -809,6 +809,33 @@ func channelKey(source, medium, campaign string) string {
 	return source + "\x00" + medium + "\x00" + campaign
 }
 
+// GetDashboard returns the small, DB-trusted decision payload. It reuses the GetMetrics
+// period grammar but computes only the headline figures, alerts and short action lists.
+func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardRequest) (*pb_admin.GetDashboardResponse, error) {
+	if strings.TrimSpace(req.Period) == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d, today, WTD, MTD, QTD, YTD)")
+	}
+	endAt := time.Now().UTC()
+	if req.EndAt != nil {
+		endAt = req.EndAt.AsTime().UTC()
+	}
+	from, to, isSpecial := computePeriodBounds(req.Period, endAt)
+	if !isSpecial {
+		dur, err := parseMetricsPeriod(req.Period)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
+		}
+		to = endAt
+		from = endAt.Add(-dur)
+	}
+	d, err := s.repo.Metrics().GetDashboard(ctx, from, to, int(req.Limit))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get dashboard", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get dashboard")
+	}
+	return dto.ConvertDashboardToPb(d), nil
+}
+
 // enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,
 // matching by the UTM triple over the same period. Mutates rows in place.
 func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, rows []entity.CampaignAttributionAggregatedFull) error {

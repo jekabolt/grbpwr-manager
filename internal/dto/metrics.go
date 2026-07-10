@@ -1048,6 +1048,54 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 	return pb
 }
 
+func alertSeverityToPb(s entity.AlertSeverity) pb_admin.AlertSeverity {
+	switch s {
+	case entity.AlertSeverityInfo:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_INFO
+	case entity.AlertSeverityWarning:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_WARNING
+	case entity.AlertSeverityCritical:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_CRITICAL
+	default:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_UNSPECIFIED
+	}
+}
+
+// ConvertDashboardToPb maps the decision-grade dashboard payload, reusing the section
+// converters for the action lists.
+func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
+	if d == nil {
+		return nil
+	}
+	resp := &pb_admin.GetDashboardResponse{
+		Period:             timeRangeToPb(d.Period),
+		Revenue:            &decimal.Decimal{Value: d.Revenue.String()},
+		Orders:             int32(d.Orders),
+		GrossMargin:        &decimal.Decimal{Value: d.GrossMargin.String()},
+		GrossMarginPct:     d.GrossMarginPct,
+		ContributionMargin: &decimal.Decimal{Value: d.ContributionMargin.String()},
+		CostCoveragePct:    d.CostCoveragePct,
+		Caveat:             d.Caveat,
+		UncostedProductIds: intsToInt32(d.UncostedProductIds),
+		TopByMargin:        productMetricsToPb(d.TopByMargin),
+		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
+		Clear:              ConvertSlowMoversToPb(d.Clear),
+		Drops:              ConvertSellThroughByDropToPb(d.Drops),
+	}
+	if len(d.Alerts) > 0 {
+		resp.Alerts = make([]*pb_admin.DashboardAlert, len(d.Alerts))
+		for i, a := range d.Alerts {
+			resp.Alerts[i] = &pb_admin.DashboardAlert{
+				Severity: alertSeverityToPb(a.Severity),
+				Code:     a.Code,
+				Title:    a.Title,
+				Detail:   a.Detail,
+			}
+		}
+	}
+	return resp
+}
+
 func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow {
 	if len(list) == 0 {
 		return nil
