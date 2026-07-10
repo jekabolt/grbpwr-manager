@@ -502,11 +502,23 @@ type (
 	}
 
 	Admin interface {
-		AddAdmin(ctx context.Context, un, pwHash string) error
+		// AddAccount creates an account with an initial permission set; isSuper
+		// grants full access (permissions are then ignored).
+		AddAccount(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error
+		// SetAccountPermissions replaces an account's super flag and permission set.
+		SetAccountPermissions(ctx context.Context, username string, isSuper bool, perms []entity.AdminPermission) error
+		// SetAccountDisabled toggles whether an account may log in (get new tokens).
+		SetAccountDisabled(ctx context.Context, username string, disabled bool) error
 		DeleteAdmin(ctx context.Context, username string) error
 		ChangePassword(ctx context.Context, un, newHash string) error
 		PasswordHashByUsername(ctx context.Context, un string) (string, error)
 		GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error)
+		// GetAccountWithPermissions returns an account with its resolved permissions.
+		GetAccountWithPermissions(ctx context.Context, username string) (*entity.AdminAccount, error)
+		// ListAccounts returns every account with its permissions.
+		ListAccounts(ctx context.Context) ([]entity.AdminAccount, error)
+		// CountSuperAdmins returns the number of enabled super-admin accounts.
+		CountSuperAdmins(ctx context.Context) (int, error)
 	}
 
 	Settings interface {

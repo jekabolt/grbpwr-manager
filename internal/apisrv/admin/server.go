@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
+	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -30,6 +31,8 @@ type Server struct {
 	re                dependency.RevalidationService
 	reservationMgr    dependency.StockReservationManager
 	ga4mp             *ga4mp.Client
+	// pwhash hashes passwords for admin-account management RPCs (create / reset).
+	pwhash *pwhash.PasswordHasher
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
 	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
 	revalidateSem chan struct{}
@@ -48,6 +51,7 @@ func New(
 	re dependency.RevalidationService,
 	reservationMgr dependency.StockReservationManager,
 	ga4mpClient *ga4mp.Client,
+	ph *pwhash.PasswordHasher,
 	embedAllowedHosts string,
 ) *Server {
 	return &Server{
@@ -59,6 +63,7 @@ func New(
 		re:                re,
 		reservationMgr:    reservationMgr,
 		ga4mp:             ga4mpClient,
+		pwhash:            ph,
 		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 	}
