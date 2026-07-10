@@ -1064,6 +1064,11 @@ message BusinessMetrics {
   // Share (%) of net product revenue (base currency) whose product has a cost set — the
   // fraction the margin figures above are computed over. 100 = full cost coverage.
   double cost_coverage_pct = 89;
+  // Product IDs that sold in the period but have NO cost_price set, ordered by their period
+  // revenue descending — the products darkening the margin figures above. This is the
+  // actionable companion to cost_coverage_pct: set a cost (via a tech card) for the top
+  // entries first to raise coverage. Empty when coverage is already 100%.
+  repeated int32 uncosted_product_ids = 90;
 }
 
 message PaymentMethodMetric {
@@ -1790,6 +1795,16 @@ message RevenueParetoRow {
   string product_name = 3;
   google.type.Decimal revenue = 4;
   double cumulative_pct = 5;
+  // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
+  // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Note the
+  // margin here is computed on this row's own `revenue` basis (gross list revenue, Σ price×qty),
+  // so revenue_cost is Σ(cost × qty) on the same un-adjusted basis — internally consistent
+  // with `revenue`, but not directly comparable to the refund/discount-adjusted BusinessMetrics margin.
+  google.type.Decimal unit_cost = 6; // current per-unit COGS (base currency)
+  google.type.Decimal revenue_cost = 7; // Σ(cost × qty) matched to `revenue`
+  google.type.Decimal gross_margin = 8; // revenue − revenue_cost
+  double gross_margin_pct = 9; // gross_margin / revenue × 100
+  bool has_cost = 10;
 }
 
 // --- Analytics: Customer Spending Curve ---
@@ -1864,6 +1879,15 @@ message SlowMoverRow {
   google.protobuf.Timestamp last_sale_date = 6;
   bool product_hidden = 7; // Product visibility flag (from product.hidden)
   int64 total_views = 8; // GA4 page views for period (from ga4_product_page_metrics)
+  // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
+  // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Computed on
+  // this row's `revenue` (the refund/FX/discount-adjusted net revenue), so revenue_cost is the
+  // refund-adjusted COGS — the same basis as the BusinessMetrics and product-breakdown margins.
+  google.type.Decimal unit_cost = 9; // current per-unit COGS (base currency)
+  google.type.Decimal revenue_cost = 10; // Σ(cost × net qty), refund-adjusted
+  google.type.Decimal gross_margin = 11; // revenue − revenue_cost
+  double gross_margin_pct = 12; // gross_margin / revenue × 100
+  bool has_cost = 13;
 }
 
 // --- Analytics: Return Analysis ---

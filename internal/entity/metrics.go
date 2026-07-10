@@ -112,6 +112,9 @@ type BusinessMetrics struct {
 	GrossMarginPct     MetricWithComparison // GrossMargin / costed net revenue × 100
 	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost
 	CostCoveragePct    float64              // % of net product revenue with a cost set
+	// Product IDs sold in the period with no cost_price set, ranked by period revenue desc —
+	// the products darkening the margins above. Empty when cost coverage is 100%.
+	UncostedProductIds []int
 
 	// Promo
 	RevenueByPromo []PromoMetric
@@ -519,6 +522,13 @@ type RevenueParetoRow struct {
 	ProductName   string          `db:"product_name"`
 	Revenue       decimal.Decimal `db:"revenue"`
 	CumulativePct float64         `db:"cumulative_pct"`
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	// HasCost=false ⇒ no cost_price, so margins are N/A rather than a misleading 100%.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
 }
 
 type SpendingCurvePoint struct {
@@ -602,6 +612,13 @@ type SlowMoverRow struct {
 	LastSaleDate  *time.Time      `db:"last_sale_date"`
 	ProductHidden bool            `db:"product_hidden"`
 	TotalViews    int64           `db:"total_views"`
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	// HasCost=false ⇒ no cost_price, so margins are N/A rather than a misleading 100%.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
 }
 
 // --- Return Analysis ---

@@ -67,6 +67,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
 		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
 		CostCoveragePct:    m.CostCoveragePct,
+		UncostedProductIds: intsToInt32(m.UncostedProductIds),
 
 		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
 		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
@@ -902,13 +903,23 @@ func ConvertRevenueParetoToPb(list []entity.RevenueParetoRow) []*pb_admin.Revenu
 	}
 	pb := make([]*pb_admin.RevenueParetoRow, len(list))
 	for i, m := range list {
-		pb[i] = &pb_admin.RevenueParetoRow{
+		row := &pb_admin.RevenueParetoRow{
 			Rank:          int32(m.Rank),
 			ProductId:     int32(m.ProductID),
 			ProductName:   m.ProductName,
 			Revenue:       &decimal.Decimal{Value: m.Revenue.String()},
 			CumulativePct: m.CumulativePct,
+			HasCost:       m.HasCost,
 		}
+		// Emit margin only when the product has a cost — otherwise leave the fields unset so
+		// the client shows N/A rather than a misleading 100% margin.
+		if m.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: m.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: m.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: m.GrossMargin.String()}
+			row.GrossMarginPct = m.GrossMarginPct
+		}
+		pb[i] = row
 	}
 	return pb
 }
@@ -1017,7 +1028,7 @@ func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow 
 	}
 	pb := make([]*pb_admin.SlowMoverRow, len(list))
 	for i, r := range list {
-		pb[i] = &pb_admin.SlowMoverRow{
+		row := &pb_admin.SlowMoverRow{
 			ProductId:     int32(r.ProductID),
 			ProductName:   r.ProductName,
 			Revenue:       &decimal.Decimal{Value: r.Revenue.String()},
@@ -1025,10 +1036,20 @@ func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow 
 			DaysInStock:   r.DaysInStock,
 			ProductHidden: r.ProductHidden,
 			TotalViews:    r.TotalViews,
+			HasCost:       r.HasCost,
 		}
 		if r.LastSaleDate != nil {
-			pb[i].LastSaleDate = timestamppb.New(*r.LastSaleDate)
+			row.LastSaleDate = timestamppb.New(*r.LastSaleDate)
 		}
+		// Emit margin only when the product has a cost — otherwise leave the fields unset so
+		// the client shows N/A rather than a misleading 100% margin.
+		if r.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: r.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: r.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
+			row.GrossMarginPct = r.GrossMarginPct
+		}
+		pb[i] = row
 	}
 	return pb
 }

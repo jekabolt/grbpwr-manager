@@ -95,6 +95,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		costedRev, cogs, totalItemRev, err = s.getMarginMetrics(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		m.UncostedProductIds, err = s.getUncostedSoldProductIDs(gctx, period.From, period.To)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
