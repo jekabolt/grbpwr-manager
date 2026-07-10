@@ -242,6 +242,8 @@ type (
 	Inventory interface {
 		GetInventoryHealth(ctx context.Context, from, to time.Time, limit int) ([]entity.InventoryHealthRow, error)
 		GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error)
+		// UpsertInventoryTargets sets per-SKU reorder targets (insert or replace by product+size).
+		UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error
 	}
 
 	Retention interface {
@@ -418,10 +420,15 @@ type (
 		GetBQSizeGuideClicks(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeGuideClickRow, error)
 		GetBQDetailsExpansion(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.DetailsExpansionRow, error)
 		GetBQNotifyMeIntent(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotifyMeIntentRow, error)
+		// GetChannelSpendByCampaign returns operator-entered marketing spend aggregated by
+		// channel over [from, to] in base currency, for computing ROAS.
+		GetChannelSpendByCampaign(ctx context.Context, from, to time.Time) ([]entity.ChannelSpendRow, error)
 	}
 
 	// BQCacheStoreWriter handles BigQuery precomputed analytics cache writes
 	BQCacheStoreWriter interface {
+		// UpsertChannelSpend records operator-entered marketing spend per channel per day.
+		UpsertChannelSpend(ctx context.Context, rows []entity.ChannelSpendInsert) error
 		DeleteBQFunnelAnalysisByDateRange(ctx context.Context, startDate, endDate time.Time) error
 		InsertBQFunnelAnalysisBatch(ctx context.Context, rows []entity.DailyFunnel) error
 		SaveBQFunnelAnalysis(ctx context.Context, rows []entity.DailyFunnel) error

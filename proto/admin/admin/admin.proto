@@ -190,6 +190,22 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics"};
   }
 
+  // Sets per-SKU inventory reorder targets used by the inventory-health metrics.
+  rpc UpsertInventoryTargets(UpsertInventoryTargetsRequest) returns (UpsertInventoryTargetsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/inventory/targets/upsert"
+      body: "*"
+    };
+  }
+
+  // Records operator-entered marketing spend per channel per day, used for ROAS.
+  rpc UpsertChannelSpend(UpsertChannelSpendRequest) returns (UpsertChannelSpendResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/channel-spend/upsert"
+      body: "*"
+    };
+  }
+
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
@@ -1787,8 +1803,31 @@ message InventoryHealthRow {
   string size_name = 4;
   int32 quantity = 5;
   double avg_daily_sales = 6;
-  double days_on_hand = 7;
+  double days_on_hand = 7; // days of cover at the current sales rate
+  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived
+  // from them. needs_reorder is meaningful only when has_target is true.
+  int32 reorder_point = 8;
+  int32 target_days_cover = 9;
+  int32 lead_time_days = 10;
+  bool needs_reorder = 11;
+  bool has_target = 12;
 }
+
+// InventoryTargetInsert is an admin-supplied per-SKU reorder target. Each threshold is
+// optional — 0 means "no trigger on that dimension" (stored as NULL).
+message InventoryTargetInsert {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  int32 reorder_point = 3;
+  int32 target_days_cover = 4;
+  int32 lead_time_days = 5;
+}
+
+message UpsertInventoryTargetsRequest {
+  repeated InventoryTargetInsert targets = 1;
+}
+
+message UpsertInventoryTargetsResponse {}
 
 // --- Analytics: Size Run Efficiency ---
 
@@ -2015,7 +2054,28 @@ message CampaignAttributionRow {
   int32 conversions = 7;
   google.type.Decimal revenue = 8;
   double conversion_rate = 9;
+  // Marketing spend (base currency, from channel_spend) and ROAS = revenue / spend. spend is
+  // zero when none is recorded for the channel; roas is 0 unless spend > 0.
+  google.type.Decimal spend = 10;
+  double roas = 11;
 }
+
+// ChannelSpendInsert is one operator-entered marketing spend row for a channel on a day.
+// Enter spend in base currency for it to feed ROAS (the shop has no live FX).
+message ChannelSpendInsert {
+  string date = 1; // YYYY-MM-DD
+  string utm_source = 2;
+  string utm_medium = 3;
+  string utm_campaign = 4;
+  google.type.Decimal amount = 5;
+  string currency = 6;
+}
+
+message UpsertChannelSpendRequest {
+  repeated ChannelSpendInsert spend = 1;
+}
+
+message UpsertChannelSpendResponse {}
 
 // ==================== Review Messages ====================
 

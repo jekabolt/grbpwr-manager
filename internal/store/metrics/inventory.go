@@ -51,11 +51,15 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			CASE
 				WHEN COALESCE(ds.total_sold, 0) = 0 THEN 99999
 				ELSE ps.quantity / (ds.total_sold / GREATEST(DATEDIFF(:to, :from), 1))
-			END AS days_on_hand
+			END AS days_on_hand,
+			it.reorder_point,
+			it.target_days_cover,
+			it.lead_time_days
 		FROM product_size ps
 		JOIN product p ON p.id = ps.product_id
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN daily_sales ds ON ds.product_id = ps.product_id AND ds.size_id = ps.size_id
+		LEFT JOIN inventory_target it ON it.product_id = ps.product_id AND it.size_id = ps.size_id
 		WHERE ps.quantity > 0
 			AND p.deleted_at IS NULL
 			AND (p.hidden IS NULL OR p.hidden = 0)
@@ -72,7 +76,57 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 	if err != nil {
 		return nil, fmt.Errorf("get inventory health: %w", err)
 	}
+	for i := range result {
+		applyReorderDecision(&result[i])
+	}
 	return result, nil
+}
+
+// applyReorderDecision derives HasTarget and NeedsReorder from the SKU's stock, sales
+// velocity and its optional targets. A SKU needs reordering when it is at/below its reorder
+// point, or — while it is actually selling — when its days of cover would run out within the
+// supplier lead time or fall short of the target cover. The no-sales sentinel (days_on_hand
+// = 99999) is excluded from the cover checks, so a dead SKU only trips via the reorder point.
+func applyReorderDecision(r *entity.InventoryHealthRow) {
+	r.HasTarget = r.ReorderPoint.Valid || r.TargetDaysCover.Valid || r.LeadTimeDays.Valid
+	if !r.HasTarget {
+		return
+	}
+	if r.ReorderPoint.Valid && int64(r.Quantity) <= r.ReorderPoint.Int64 {
+		r.NeedsReorder = true
+	}
+	if r.AvgDailySales > 0 {
+		if r.LeadTimeDays.Valid && r.DaysOnHand <= float64(r.LeadTimeDays.Int64) {
+			r.NeedsReorder = true
+		}
+		if r.TargetDaysCover.Valid && r.DaysOnHand < float64(r.TargetDaysCover.Int64) {
+			r.NeedsReorder = true
+		}
+	}
+}
+
+// UpsertInventoryTargets sets per-SKU reorder targets (insert or replace by product+size).
+// A NULL field clears that threshold. Empty input is a no-op.
+func (is *inventoryStore) UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error {
+	for _, t := range targets {
+		if err := storeutil.ExecNamed(ctx, is.DB, `
+			INSERT INTO inventory_target (product_id, size_id, reorder_point, target_days_cover, lead_time_days)
+			VALUES (:product_id, :size_id, :reorder_point, :target_days_cover, :lead_time_days)
+			ON DUPLICATE KEY UPDATE
+				reorder_point = VALUES(reorder_point),
+				target_days_cover = VALUES(target_days_cover),
+				lead_time_days = VALUES(lead_time_days)`,
+			map[string]any{
+				"product_id":        t.ProductID,
+				"size_id":           t.SizeID,
+				"reorder_point":     t.ReorderPoint,
+				"target_days_cover": t.TargetDaysCover,
+				"lead_time_days":    t.LeadTimeDays,
+			}); err != nil {
+			return fmt.Errorf("upsert inventory target (product %d size %d): %w", t.ProductID, t.SizeID, err)
+		}
+	}
+	return nil
 }
 
 // GetSizeRunEfficiency returns the percentage of sizes that have any sales activity

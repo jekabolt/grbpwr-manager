@@ -105,8 +105,14 @@ func changePct(current, previous decimal.Decimal) *float64 {
 	return &f
 }
 
+// minComparisonCountBase is the smallest previous-period count for which a percentage
+// change is reported. Below it the ratio is dominated by noise — a 1→2 move reads as a
+// +100% swing — so changePctInt returns nil and callers fall back to the absolute delta
+// (always emitted by the DTO). Kept small (3) because this shop's per-period counts are low.
+const minComparisonCountBase = 3
+
 func changePctInt(current, previous int) *float64 {
-	if previous == 0 {
+	if previous < minComparisonCountBase {
 		return nil
 	}
 	f := (float64(current-previous) / float64(previous)) * 100

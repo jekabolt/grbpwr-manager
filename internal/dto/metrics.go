@@ -1,6 +1,11 @@
 package dto
 
 import (
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	shopspring "github.com/shopspring/decimal"
@@ -945,16 +950,48 @@ func ConvertInventoryHealthToPb(list []entity.InventoryHealthRow) []*pb_admin.In
 	pb := make([]*pb_admin.InventoryHealthRow, len(list))
 	for i, r := range list {
 		pb[i] = &pb_admin.InventoryHealthRow{
-			ProductId:     int32(r.ProductID),
-			ProductName:   r.ProductName,
-			SizeId:        int32(r.SizeID),
-			SizeName:      r.SizeName,
-			Quantity:      int32(r.Quantity),
-			AvgDailySales: r.AvgDailySales,
-			DaysOnHand:    r.DaysOnHand,
+			ProductId:       int32(r.ProductID),
+			ProductName:     r.ProductName,
+			SizeId:          int32(r.SizeID),
+			SizeName:        r.SizeName,
+			Quantity:        int32(r.Quantity),
+			AvgDailySales:   r.AvgDailySales,
+			DaysOnHand:      r.DaysOnHand,
+			ReorderPoint:    int32(r.ReorderPoint.Int64),
+			TargetDaysCover: int32(r.TargetDaysCover.Int64),
+			LeadTimeDays:    int32(r.LeadTimeDays.Int64),
+			NeedsReorder:    r.NeedsReorder,
+			HasTarget:       r.HasTarget,
 		}
 	}
 	return pb
+}
+
+// ConvertPbInventoryTargetsToEntity maps admin-supplied targets to entity inserts. A 0 on
+// any threshold means "unset" and is stored as NULL (no trigger on that dimension).
+func ConvertPbInventoryTargetsToEntity(list []*pb_admin.InventoryTargetInsert) []entity.InventoryTargetInsert {
+	out := make([]entity.InventoryTargetInsert, 0, len(list))
+	for _, t := range list {
+		if t == nil {
+			continue
+		}
+		out = append(out, entity.InventoryTargetInsert{
+			ProductID:       int(t.ProductId),
+			SizeID:          int(t.SizeId),
+			ReorderPoint:    nullInt64FromPositive(t.ReorderPoint),
+			TargetDaysCover: nullInt64FromPositive(t.TargetDaysCover),
+			LeadTimeDays:    nullInt64FromPositive(t.LeadTimeDays),
+		})
+	}
+	return out
+}
+
+// nullInt64FromPositive treats a non-positive proto int (the default 0) as "unset" → NULL.
+func nullInt64FromPositive(v int32) sql.NullInt64 {
+	if v <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(v), Valid: true}
 }
 
 func ConvertSizeRunEfficiencyToPb(list []entity.SizeRunEfficiencyRow) []*pb_admin.SizeRunEfficiencyRow {
@@ -1371,9 +1408,45 @@ func ConvertCampaignAttributionAggregatedToPb(list []entity.CampaignAttributionA
 			Conversions:    int32(r.Conversions),
 			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
 			ConversionRate: r.ConversionRate,
+			Spend:          &decimal.Decimal{Value: r.Spend.String()},
+			Roas:           r.ROAS,
 		})
 	}
 	return pb
+}
+
+// ConvertPbChannelSpendToEntity parses admin-supplied marketing spend rows. Date must be
+// YYYY-MM-DD and amount must be a non-negative decimal.
+func ConvertPbChannelSpendToEntity(list []*pb_admin.ChannelSpendInsert) ([]entity.ChannelSpendInsert, error) {
+	out := make([]entity.ChannelSpendInsert, 0, len(list))
+	for _, sp := range list {
+		if sp == nil {
+			continue
+		}
+		d, err := time.Parse("2006-01-02", sp.Date)
+		if err != nil {
+			return nil, fmt.Errorf("invalid channel spend date %q: %w", sp.Date, err)
+		}
+		amount := shopspring.Zero
+		if sp.Amount != nil && sp.Amount.Value != "" {
+			amount, err = shopspring.NewFromString(sp.Amount.Value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid channel spend amount %q: %w", sp.Amount.Value, err)
+			}
+		}
+		if amount.IsNegative() {
+			return nil, fmt.Errorf("channel spend amount must be >= 0")
+		}
+		out = append(out, entity.ChannelSpendInsert{
+			Date:        d,
+			UTMSource:   sp.UtmSource,
+			UTMMedium:   sp.UtmMedium,
+			UTMCampaign: sp.UtmCampaign,
+			Amount:      amount.Round(2),
+			Currency:    strings.ToUpper(sp.Currency),
+		})
+	}
+	return out, nil
 }
 
 // ConvertCustomerSegmentationToPb converts AOV customer segments to protobuf.

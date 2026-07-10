@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -562,7 +563,24 @@ type InventoryHealthRow struct {
 	SizeName      string  `db:"size_name"`
 	Quantity      int     `db:"quantity"`
 	AvgDailySales float64 `db:"avg_daily_sales"`
-	DaysOnHand    float64 `db:"days_on_hand"`
+	DaysOnHand    float64 `db:"days_on_hand"` // days of cover at the current sales rate
+	// Optional per-SKU targets (from inventory_target); NULL when unset.
+	ReorderPoint    sql.NullInt64 `db:"reorder_point"`
+	TargetDaysCover sql.NullInt64 `db:"target_days_cover"`
+	LeadTimeDays    sql.NullInt64 `db:"lead_time_days"`
+	// Server-side decision, computed after the query.
+	HasTarget    bool `db:"-"` // any target is set for this SKU
+	NeedsReorder bool `db:"-"` // stock at/below reorder point, or cover below lead time / target
+}
+
+// InventoryTargetInsert is an admin-supplied per-SKU reorder target. A nil field leaves
+// that threshold unset (no trigger on that dimension).
+type InventoryTargetInsert struct {
+	ProductID       int           `db:"product_id"`
+	SizeID          int           `db:"size_id"`
+	ReorderPoint    sql.NullInt64 `db:"reorder_point"`
+	TargetDaysCover sql.NullInt64 `db:"target_days_cover"`
+	LeadTimeDays    sql.NullInt64 `db:"lead_time_days"`
 }
 
 type SizeRunEfficiencyRow struct {
@@ -808,4 +826,27 @@ type CampaignAttributionAggregatedFull struct {
 	Conversions    int64
 	Revenue        decimal.Decimal
 	ConversionRate float64
+	// Spend and ROAS are enriched from channel_spend (operator-entered, base currency).
+	// Spend is zero when none is recorded; ROAS (revenue / spend) is set only when spend > 0.
+	Spend decimal.Decimal
+	ROAS  float64
+}
+
+// ChannelSpendInsert is an operator-entered marketing spend row for one channel on one day.
+type ChannelSpendInsert struct {
+	Date        time.Time       `db:"date"`
+	UTMSource   string          `db:"utm_source"`
+	UTMMedium   string          `db:"utm_medium"`
+	UTMCampaign string          `db:"utm_campaign"`
+	Amount      decimal.Decimal `db:"amount"`
+	Currency    string          `db:"currency"`
+}
+
+// ChannelSpendRow is spend aggregated by channel over a period (base currency), used to
+// compute ROAS against campaign-attribution revenue.
+type ChannelSpendRow struct {
+	UTMSource   string          `db:"utm_source"`
+	UTMMedium   string          `db:"utm_medium"`
+	UTMCampaign string          `db:"utm_campaign"`
+	Spend       decimal.Decimal `db:"spend"`
 }
