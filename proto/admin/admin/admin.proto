@@ -2135,6 +2135,9 @@ message CampaignAttributionRow {
   // zero when none is recorded for the channel; roas is 0 unless spend > 0.
   google.type.Decimal spend = 10;
   double roas = 11;
+  // CAC = spend / conversions (0 unless both > 0). Attribution-based, so directional for an
+  // organic-heavy channel mix rather than an exact acquisition cost.
+  double cac = 12;
 }
 
 // ChannelSpendInsert is one operator-entered marketing spend row for a channel on a day.

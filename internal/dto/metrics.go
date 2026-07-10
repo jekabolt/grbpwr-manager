@@ -1457,6 +1457,7 @@ func ConvertCampaignAttributionAggregatedToPb(list []entity.CampaignAttributionA
 			ConversionRate: r.ConversionRate,
 			Spend:          &decimal.Decimal{Value: r.Spend.String()},
 			Roas:           r.ROAS,
+			Cac:            r.CAC,
 		})
 	}
 	return pb

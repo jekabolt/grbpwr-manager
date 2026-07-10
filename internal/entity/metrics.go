@@ -866,6 +866,10 @@ type CampaignAttributionAggregatedFull struct {
 	// Spend is zero when none is recorded; ROAS (revenue / spend) is set only when spend > 0.
 	Spend decimal.Decimal
 	ROAS  float64
+	// CAC = spend / conversions (cost to acquire a converting customer), set only when spend
+	// and conversions are both > 0. Note: attribution-based, so directional for an
+	// organic-heavy channel mix rather than an exact acquisition cost.
+	CAC float64
 }
 
 // ChannelSpendInsert is an operator-entered marketing spend row for one channel on one day.

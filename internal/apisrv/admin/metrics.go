@@ -833,6 +833,9 @@ func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, ro
 		}
 		rows[i].Spend = sp
 		rows[i].ROAS = rows[i].Revenue.Div(sp).InexactFloat64()
+		if rows[i].Conversions > 0 {
+			rows[i].CAC = sp.Div(decimal.NewFromInt(rows[i].Conversions)).InexactFloat64()
+		}
 	}
 	return nil
 }
