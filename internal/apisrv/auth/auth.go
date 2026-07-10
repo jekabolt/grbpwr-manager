@@ -16,8 +16,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
+	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -177,7 +179,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, err
 	}
 
-	pwHash, err := s.adminRepository.PasswordHashByUsername(ctx, username)
+	account, err := s.adminRepository.GetAccountWithPermissions(ctx, username)
 	if err != nil {
 		// Unknown username is an expected failed login (client 401), not a server
 		// error — log at warn to keep it out of error dashboards. A genuine DB
@@ -187,7 +189,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 				slog.String("username", username),
 			)
 		} else {
-			slog.Default().ErrorContext(ctx, "failed to get password hash by username",
+			slog.Default().ErrorContext(ctx, "failed to get account by username",
 				slog.String("username", username),
 				slog.String("err", err.Error()),
 			)
@@ -195,7 +197,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	err = s.pwhash.Validate(req.Password, pwHash)
+	err = s.pwhash.Validate(req.Password, account.PasswordHash)
 	if err != nil {
 		// Wrong password is also an expected failed login, not a server error.
 		slog.Default().WarnContext(ctx, "login attempt with invalid password",
@@ -204,7 +206,19 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
+	// A disabled account keeps a valid password but may not obtain new tokens.
+	// Enforcement is stateless (permissions ride in the JWT), so this is the point
+	// where a revoked account is actually shut out; any still-valid token it holds
+	// lives until it expires.
+	if account.Disabled {
+		slog.Default().WarnContext(ctx, "login attempt for disabled account",
+			slog.String("username", username),
+		)
+		return nil, status.Errorf(codes.PermissionDenied, "account is disabled")
+	}
+
+	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username,
+		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -217,7 +231,10 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 	}, nil
 }
 
-// Create creates a new user requires an admin password.
+// Create bootstraps a new super-admin account, gated by the master password.
+// This is the bootstrap path: it always creates a full-access (super) account.
+// Scoped accounts are created in-panel via AdminService, which is itself gated by
+// the accounts permission a super-admin holds.
 func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.CreateResponse, error) {
 
 	// Gated by the master password, which has no username key — throttle per IP
@@ -252,7 +269,8 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
+	// Bootstrap accounts are super-admins: full access, no per-section grants.
+	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username, true, nil, s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -260,7 +278,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	err = s.adminRepository.AddAdmin(ctx, username, pwHash)
+	err = s.adminRepository.AddAccount(ctx, username, pwHash, true, nil)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to add admin",
 			slog.String("err", err.Error()),
@@ -319,9 +337,9 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, err
 	}
 
-	currentPwdHash, err := s.adminRepository.PasswordHashByUsername(ctx, username)
+	account, err := s.adminRepository.GetAccountWithPermissions(ctx, username)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to get password hash by username",
+		slog.Default().ErrorContext(ctx, "failed to get account by username",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
@@ -329,7 +347,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 
 	err = s.pwhash.Validate(req.CurrentPassword, s.masterHash)
 	if err != nil {
-		err = s.pwhash.Validate(req.CurrentPassword, currentPwdHash)
+		err = s.pwhash.Validate(req.CurrentPassword, account.PasswordHash)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "failed to validate current password",
 				slog.String("err", err.Error()),
@@ -346,7 +364,10 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	token, err := jwt.NewTokenWithSubjectOpts(s.JwtAuth, s.jwtTTL, username, s.jwtIssueOpts())
+	// Re-issue the token with the account's current authorization so a password
+	// change never widens or drops the caller's permissions.
+	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username,
+		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.jwtIssueOpts())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -427,10 +448,42 @@ func PutAdminUsername(ctx context.Context, username string) context.Context {
 	return context.WithValue(ctx, adminUsernameKey, username)
 }
 
-const adminServicePrefix = "/admin.AdminService/"
+// AdminAuthz is the authorization resolved from an admin JWT and stashed in
+// context by the interceptor for handlers (e.g. GetCurrentAccount) to read.
+// Legacy marks a pre-RBAC token, which is treated as full access. Super grants
+// full access. Perms is the section→access map for scoped accounts.
+type AdminAuthz struct {
+	Legacy bool
+	Super  bool
+	Perms  map[string]entity.AccessLevel
+}
 
-// UnaryAdminAuthInterceptor returns an interceptor that enforces JWT authentication
-// for all admin RPCs and extracts the JWT subject (admin username) into context.
+// FullAccess reports whether the authorization grants unrestricted access
+// (super-admin or a legacy pre-RBAC token).
+func (a AdminAuthz) FullAccess() bool { return a.Super || a.Legacy }
+
+const adminAuthzKey adminContextKey = "admin_authz"
+
+// GetAdminAuthz returns the admin authorization from context (set by the
+// interceptor). ok is false on the non-admin / unauthenticated path.
+func GetAdminAuthz(ctx context.Context) (AdminAuthz, bool) {
+	a, ok := ctx.Value(adminAuthzKey).(AdminAuthz)
+	return a, ok
+}
+
+func putAdminAuthz(ctx context.Context, a AdminAuthz) context.Context {
+	return context.WithValue(ctx, adminAuthzKey, a)
+}
+
+const adminServicePrefix = rbac.MethodPrefix
+
+// UnaryAdminAuthInterceptor returns an interceptor that authenticates every admin
+// RPC via its JWT and authorizes it against the account's embedded permissions.
+// Authorization is stateless — it reads only the token's claims (super + perms)
+// via rbac.Authorize, which fails closed on any method not explicitly mapped or
+// allowlisted. Tokens minted before RBAC carry no permission claims and are
+// treated as full access (legacy) so already-issued sessions keep working until
+// they expire. The resolved subject and authorization are placed in context.
 func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !strings.HasPrefix(info.FullMethod, adminServicePrefix) {
@@ -440,13 +493,22 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		if err != nil {
 			return nil, status.Errorf(codes.Unauthenticated, "missing auth token: %v", err)
 		}
-		sub, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
+		sub, super, permStrs, legacy, err := jwt.VerifyAdminToken(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
 			return nil, status.Errorf(codes.Unauthenticated, "invalid auth token: %v", err)
+		}
+		perms := rbac.ParsePermissions(permStrs)
+		if !rbac.Authorize(info.FullMethod, legacy, super, perms) {
+			slog.Default().WarnContext(ctx, "admin authorization denied",
+				slog.String("username", sub),
+				slog.String("method", info.FullMethod),
+			)
+			return nil, status.Errorf(codes.PermissionDenied, "insufficient permissions for %s", info.FullMethod)
 		}
 		if sub != "" {
 			ctx = PutAdminUsername(ctx, sub)
 		}
+		ctx = putAdminAuthz(ctx, AdminAuthz{Legacy: legacy, Super: super, Perms: perms})
 		return handler(ctx, req)
 	}
 }
