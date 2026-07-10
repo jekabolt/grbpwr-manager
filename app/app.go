@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
@@ -256,7 +257,17 @@ func (a *App) Start(ctx context.Context) error {
 		p.SetGA4MP(ga4mpClient)
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, a.c.Security.HeroEmbedAllowedHosts)
+	// Password hasher for admin-account management RPCs. Hashes are self-describing
+	// (salt + iterations stored inline), so this shares the auth service's config.
+	adminPwHasher, err := pwhash.New(a.c.Auth.PasswordHasherSaltSize, a.c.Auth.PasswordHasherIterations)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create admin password hasher",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, a.c.Security.HeroEmbedAllowedHosts)
 
 	var frontendS *frontend.Server
 	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)

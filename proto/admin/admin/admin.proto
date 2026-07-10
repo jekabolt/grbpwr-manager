@@ -574,6 +574,69 @@ service AdminService {
       body: "*"
     };
   }
+
+  // ADMIN ACCOUNTS (RBAC)
+
+  // GetCurrentAccount returns the calling account's identity and effective
+  // permissions (what its token authorizes). Any authenticated admin may call it;
+  // the admin panel uses it to decide which sections to show.
+  rpc GetCurrentAccount(GetCurrentAccountRequest) returns (GetCurrentAccountResponse) {
+    option (google.api.http) = {get: "/api/admin/accounts/me"};
+  }
+
+  // ListAccountSections returns the catalog of grantable admin-panel sections
+  // (for the permission picker). Any authenticated admin may call it.
+  rpc ListAccountSections(ListAccountSectionsRequest) returns (ListAccountSectionsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounts/sections"};
+  }
+
+  // ListAccounts lists every admin account with its permissions. Requires the
+  // accounts section (read).
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounts"};
+  }
+
+  // CreateAccount creates a scoped (or super) admin account. Requires the accounts
+  // section (write).
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounts"
+      body: "*"
+    };
+  }
+
+  // UpdateAccountPermissions replaces an account's super flag and permission set.
+  // Requires the accounts section (write).
+  rpc UpdateAccountPermissions(UpdateAccountPermissionsRequest) returns (UpdateAccountPermissionsResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/accounts/{username}/permissions"
+      body: "*"
+    };
+  }
+
+  // SetAccountDisabled enables or disables an account (a disabled account cannot
+  // obtain new tokens at login). Requires the accounts section (write).
+  rpc SetAccountDisabled(SetAccountDisabledRequest) returns (SetAccountDisabledResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/accounts/{username}/disabled"
+      body: "*"
+    };
+  }
+
+  // ResetAccountPassword sets a new password for an account. Requires the accounts
+  // section (write).
+  rpc ResetAccountPassword(ResetAccountPasswordRequest) returns (ResetAccountPasswordResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/accounts/{username}/password"
+      body: "*"
+    };
+  }
+
+  // DeleteAccount removes an admin account (and its permissions). Requires the
+  // accounts section (write).
+  rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {
+    option (google.api.http) = {delete: "/api/admin/accounts/{username}"};
+  }
 }
 
 // DICITONARY
@@ -2386,3 +2449,97 @@ message ListTechCardsResponse {
   repeated common.TechCardListItem tech_cards = 1;
   int32 total = 2;
 }
+
+// ADMIN ACCOUNTS (RBAC)
+
+// AccessLevel is the level of access an account has to a section. WRITE implies READ.
+enum AccessLevel {
+  ACCESS_LEVEL_UNSPECIFIED = 0;
+  ACCESS_LEVEL_READ = 1;
+  ACCESS_LEVEL_WRITE = 2;
+}
+
+// AdminPermission grants an account a level of access to one section.
+message AdminPermission {
+  // section is a section key from ListAccountSections (e.g. "orders").
+  string section = 1;
+  AccessLevel access = 2;
+}
+
+// AdminAccount is an admin account with its permission set. is_super grants full
+// access, in which case permissions is empty.
+message AdminAccount {
+  string username = 1;
+  bool is_super = 2;
+  bool disabled = 3;
+  repeated AdminPermission permissions = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// AdminSectionInfo describes a grantable section for the permission picker.
+message AdminSectionInfo {
+  string key = 1;
+  string title = 2;
+  string description = 3;
+}
+
+message GetCurrentAccountRequest {}
+
+message GetCurrentAccountResponse {
+  AdminAccount account = 1;
+}
+
+message ListAccountSectionsRequest {}
+
+message ListAccountSectionsResponse {
+  repeated AdminSectionInfo sections = 1;
+}
+
+message ListAccountsRequest {}
+
+message ListAccountsResponse {
+  repeated AdminAccount accounts = 1;
+}
+
+message CreateAccountRequest {
+  string username = 1;
+  string password = 2;
+  // is_super grants full access; when true, permissions is ignored.
+  bool is_super = 3;
+  repeated AdminPermission permissions = 4;
+}
+
+message CreateAccountResponse {
+  AdminAccount account = 1;
+}
+
+message UpdateAccountPermissionsRequest {
+  string username = 1;
+  bool is_super = 2;
+  repeated AdminPermission permissions = 3;
+}
+
+message UpdateAccountPermissionsResponse {
+  AdminAccount account = 1;
+}
+
+message SetAccountDisabledRequest {
+  string username = 1;
+  bool disabled = 2;
+}
+
+message SetAccountDisabledResponse {}
+
+message ResetAccountPasswordRequest {
+  string username = 1;
+  string new_password = 2;
+}
+
+message ResetAccountPasswordResponse {}
+
+message DeleteAccountRequest {
+  string username = 1;
+}
+
+message DeleteAccountResponse {}
