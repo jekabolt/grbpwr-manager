@@ -22,12 +22,30 @@ func fractionToPct(v float64) float64 {
 	return v * 100
 }
 
+// ConvertEntityBusinessMetricsToPb maps the flat internal entity into the typed, provenance-
+// grouped API message (commerce / margin / traffic / email). The entity stays flat; only the
+// wire shape is grouped.
 func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.BusinessMetrics {
 	if m == nil {
 		return nil
 	}
 	pb := &pb_admin.BusinessMetrics{
-		Period:               timeRangeToPb(m.Period),
+		Period:   timeRangeToPb(m.Period),
+		Commerce: commerceCoreMetricsToPb(m),
+		Margin:   marginMetricsToPb(m),
+		Traffic:  trafficMetricsToPb(m),
+		Email:    emailMetricsToPb(m),
+	}
+	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
+		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
+	}
+	return pb
+}
+
+// commerceCoreMetricsToPb builds the DB-trusted commerce view (sales, customers, discounts,
+// shipping) with its breakdowns and daily series.
+func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMetrics {
+	return &pb_admin.CommerceCoreMetrics{
 		Revenue:              metricWithComparisonToPb(m.Revenue),
 		OrdersCount:          metricWithComparisonToPb(m.OrdersCount),
 		TotalPlacedOrders:    metricWithComparisonToPb(m.TotalPlacedOrders),
@@ -40,48 +58,25 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		TotalDiscount:        metricWithComparisonToPb(m.TotalDiscount),
 		ProductSaleDiscount:  metricWithComparisonToPb(m.ProductSaleDiscount),
 		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
-		Sessions:             metricWithComparisonToPb(m.Sessions),
-		Users:                metricWithComparisonToPb(m.Users),
-		NewUsers:             metricWithComparisonToPb(m.NewUsers),
-		PageViews:            metricWithComparisonToPb(m.PageViews),
-		BounceRate:           metricWithComparisonToPb(m.BounceRate, true),                           // lower is better
-		AvgSessionDuration:   metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // round to 1 decimal place for consistent delta display
-		PagesPerSession:      metricWithComparisonToPb(m.PagesPerSession),
-		ConversionRate:       metricWithComparisonToPb(m.ConversionRate),
-		RevenuePerSession:    metricWithComparisonToPb(m.RevenuePerSession),
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
+		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
 		AvgOrdersPerCustomer: metricWithComparisonToPb(m.AvgOrdersPerCustomer),
 		AvgDaysBetweenOrders: metricWithComparisonToPb(m.AvgDaysBetweenOrders),
-		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
+		AvgShippingCost:      metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)),
+		TotalShippingCost:    metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
 		ClvDistribution:      clvStatsToPb(m.CLVDistribution),
-
-		// Shipping / logistics metrics
-		AvgShippingCost:   metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)), // Round to 2 decimal places
-		TotalShippingCost: metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
-
-		// Margin metrics (COGS from product.cost_price). COGS is a volume-scaling cost like
-		// shipping — neutral, not "lower is better" (higher COGS from more sales isn't bad).
-		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
-		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
-		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
-		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
-		CostCoveragePct:    m.CostCoveragePct,
 
 		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
 		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
 		RevenueByRegion:                regionMetricsToPb(m.RevenueByRegion),
 		AvgOrderByCountry:              geographyMetricsToPb(m.AvgOrderByCountry),
-		SessionsByCountry:              geographySessionMetricsToPb(m.SessionsByCountry),
 		RevenueByCurrency:              currencyMetricsToPb(m.RevenueByCurrency),
 		RevenueByPaymentMethod:         paymentMethodMetricsToPb(m.RevenueByPaymentMethod),
 		TopProductsByRevenue:           productMetricsToPb(m.TopProductsByRevenue),
 		TopProductsByQuantity:          productMetricsToPb(m.TopProductsByQuantity),
-		TopProductsByViews:             productViewMetricsToPb(m.TopProductsByViews),
 		RevenueByCategory:              categoryMetricsToPb(m.RevenueByCategory),
 		CrossSellPairs:                 crossSellPairsToPb(m.CrossSellPairs),
-		TrafficBySource:                trafficSourceMetricsToPb(m.TrafficBySource),
-		TrafficByDevice:                deviceMetricsToPb(m.TrafficByDevice),
 		RevenueByPromo:                 promoMetricsToPb(m.RevenueByPromo),
 		OrdersByStatus:                 statusCountsToPb(m.OrdersByStatus),
 		RevenueByDay:                   timeSeriesToPb(m.RevenueByDay),
@@ -95,10 +90,6 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		ReturningCustomersByDay:        timeSeriesToPb(m.ReturningCustomersByDay),
 		ShippedByDay:                   timeSeriesToPb(m.ShippedByDay),
 		DeliveredByDay:                 timeSeriesToPb(m.DeliveredByDay),
-		SessionsByDay:                  timeSeriesToPb(m.SessionsByDay),
-		UsersByDay:                     timeSeriesToPb(m.UsersByDay),
-		PageViewsByDay:                 timeSeriesToPb(m.PageViewsByDay),
-		ConversionRateByDay:            timeSeriesToPb(m.ConversionRateByDay),
 		RevenueByDayCompare:            timeSeriesToPb(m.RevenueByDayCompare),
 		OrdersByDayCompare:             timeSeriesToPb(m.OrdersByDayCompare),
 		SubscribersByDayCompare:        timeSeriesToPb(m.SubscribersByDayCompare),
@@ -110,21 +101,60 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		ReturningCustomersByDayCompare: timeSeriesToPb(m.ReturningCustomersByDayCompare),
 		ShippedByDayCompare:            timeSeriesToPb(m.ShippedByDayCompare),
 		DeliveredByDayCompare:          timeSeriesToPb(m.DeliveredByDayCompare),
-		SessionsByDayCompare:           timeSeriesToPb(m.SessionsByDayCompare),
-		UsersByDayCompare:              timeSeriesToPb(m.UsersByDayCompare),
-		PageViewsByDayCompare:          timeSeriesToPb(m.PageViewsByDayCompare),
-		ConversionRateByDayCompare:     timeSeriesToPb(m.ConversionRateByDayCompare),
-		EmailsSent:                     metricWithComparisonToPb(m.EmailsSent),
-		EmailsDelivered:                metricWithComparisonToPb(m.EmailsDelivered),
-		EmailDeliveryRate:              metricWithComparisonToPb(m.EmailDeliveryRate),
-		EmailOpenRate:                  metricWithComparisonToPb(m.EmailOpenRate),
-		EmailClickRate:                 metricWithComparisonToPb(m.EmailClickRate),
-		EmailBounceRate:                metricWithComparisonToPb(m.EmailBounceRate, true), // lower is better
 	}
-	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
-		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
+}
+
+// marginMetricsToPb builds the DB-trusted COGS / margin view. COGS is a volume-scaling cost
+// like shipping — neutral, not "lower is better".
+func marginMetricsToPb(m *entity.BusinessMetrics) *pb_admin.MarginMetrics {
+	return &pb_admin.MarginMetrics{
+		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
+		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
+		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
+		PaymentFees:        metricWithComparisonToPb(m.PaymentFees, false, false, int32(2)),
+		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
+		CostCoveragePct:    m.CostCoveragePct,
+		UncostedProductIds: intsToInt32(m.UncostedProductIds),
 	}
-	return pb
+}
+
+// trafficMetricsToPb builds the GA4-estimated traffic / engagement view.
+func trafficMetricsToPb(m *entity.BusinessMetrics) *pb_admin.TrafficMetrics {
+	return &pb_admin.TrafficMetrics{
+		Sessions:                   metricWithComparisonToPb(m.Sessions),
+		Users:                      metricWithComparisonToPb(m.Users),
+		NewUsers:                   metricWithComparisonToPb(m.NewUsers),
+		PageViews:                  metricWithComparisonToPb(m.PageViews),
+		BounceRate:                 metricWithComparisonToPb(m.BounceRate, true),                           // lower is better
+		AvgSessionDuration:         metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // 1 decimal place
+		PagesPerSession:            metricWithComparisonToPb(m.PagesPerSession),
+		ConversionRate:             metricWithComparisonToPb(m.ConversionRate),
+		RevenuePerSession:          metricWithComparisonToPb(m.RevenuePerSession),
+		SessionsByCountry:          geographySessionMetricsToPb(m.SessionsByCountry),
+		TopProductsByViews:         productViewMetricsToPb(m.TopProductsByViews),
+		TrafficBySource:            trafficSourceMetricsToPb(m.TrafficBySource),
+		TrafficByDevice:            deviceMetricsToPb(m.TrafficByDevice),
+		SessionsByDay:              timeSeriesToPb(m.SessionsByDay),
+		UsersByDay:                 timeSeriesToPb(m.UsersByDay),
+		PageViewsByDay:             timeSeriesToPb(m.PageViewsByDay),
+		ConversionRateByDay:        timeSeriesToPb(m.ConversionRateByDay),
+		SessionsByDayCompare:       timeSeriesToPb(m.SessionsByDayCompare),
+		UsersByDayCompare:          timeSeriesToPb(m.UsersByDayCompare),
+		PageViewsByDayCompare:      timeSeriesToPb(m.PageViewsByDayCompare),
+		ConversionRateByDayCompare: timeSeriesToPb(m.ConversionRateByDayCompare),
+	}
+}
+
+// emailMetricsToPb builds the Resend email-delivery view.
+func emailMetricsToPb(m *entity.BusinessMetrics) *pb_admin.EmailMetrics {
+	return &pb_admin.EmailMetrics{
+		EmailsSent:        metricWithComparisonToPb(m.EmailsSent),
+		EmailsDelivered:   metricWithComparisonToPb(m.EmailsDelivered),
+		EmailDeliveryRate: metricWithComparisonToPb(m.EmailDeliveryRate),
+		EmailOpenRate:     metricWithComparisonToPb(m.EmailOpenRate),
+		EmailClickRate:    metricWithComparisonToPb(m.EmailClickRate),
+		EmailBounceRate:   metricWithComparisonToPb(m.EmailBounceRate, true), // lower is better
+	}
 }
 
 func timeRangeToPb(tr entity.TimeRange) *pb_admin.TimeRange {
@@ -228,6 +258,12 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_ad
 	}
 	if m.Caveat != "" {
 		pb.Caveat = m.Caveat
+	}
+	if m.SampleSize > 0 {
+		pb.SampleSize = int32(m.SampleSize)
+	}
+	if m.MarginOfError > 0 {
+		pb.MarginOfError = m.MarginOfError
 	}
 	return pb
 }
@@ -902,13 +938,23 @@ func ConvertRevenueParetoToPb(list []entity.RevenueParetoRow) []*pb_admin.Revenu
 	}
 	pb := make([]*pb_admin.RevenueParetoRow, len(list))
 	for i, m := range list {
-		pb[i] = &pb_admin.RevenueParetoRow{
+		row := &pb_admin.RevenueParetoRow{
 			Rank:          int32(m.Rank),
 			ProductId:     int32(m.ProductID),
 			ProductName:   m.ProductName,
 			Revenue:       &decimal.Decimal{Value: m.Revenue.String()},
 			CumulativePct: m.CumulativePct,
+			HasCost:       m.HasCost,
 		}
+		// Emit margin only when the product has a cost — otherwise leave the fields unset so
+		// the client shows N/A rather than a misleading 100% margin.
+		if m.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: m.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: m.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: m.GrossMargin.String()}
+			row.GrossMarginPct = m.GrossMarginPct
+		}
+		pb[i] = row
 	}
 	return pb
 }
@@ -962,6 +1008,7 @@ func ConvertInventoryHealthToPb(list []entity.InventoryHealthRow) []*pb_admin.In
 			LeadTimeDays:    int32(r.LeadTimeDays.Int64),
 			NeedsReorder:    r.NeedsReorder,
 			HasTarget:       r.HasTarget,
+			IsSelling:       r.IsSelling,
 		}
 	}
 	return pb
@@ -1011,13 +1058,101 @@ func ConvertSizeRunEfficiencyToPb(list []entity.SizeRunEfficiencyRow) []*pb_admi
 	return pb
 }
 
+func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admin.SellThroughByDropRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SellThroughByDropRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SellThroughByDropRow{
+			Collection:     r.Collection,
+			ProductCount:   int32(r.ProductCount),
+			UnitsSold:      r.UnitsSold,
+			UnitsRemaining: r.UnitsRemaining,
+			SellThroughPct: r.SellThroughPct,
+			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
+		}
+	}
+	return pb
+}
+
+// AlertThresholdsToPb / AlertThresholdsFromPb map the operator-tunable alert thresholds.
+func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
+	return &pb_admin.AlertSettings{
+		CoverageWarnPct:      t.CoverageWarnPct,
+		RefundRateWarnPct:    t.RefundRateWarnPct,
+		RateFloorN:           int32(t.RateFloorN),
+		ContributionTrustPct: t.ContributionTrustPct,
+	}
+}
+
+func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
+	if s == nil {
+		return entity.DefaultAlertThresholds()
+	}
+	return entity.AlertThresholds{
+		CoverageWarnPct:      s.CoverageWarnPct,
+		RefundRateWarnPct:    s.RefundRateWarnPct,
+		RateFloorN:           int(s.RateFloorN),
+		ContributionTrustPct: s.ContributionTrustPct,
+	}
+}
+
+func alertSeverityToPb(s entity.AlertSeverity) pb_admin.AlertSeverity {
+	switch s {
+	case entity.AlertSeverityInfo:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_INFO
+	case entity.AlertSeverityWarning:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_WARNING
+	case entity.AlertSeverityCritical:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_CRITICAL
+	default:
+		return pb_admin.AlertSeverity_ALERT_SEVERITY_UNSPECIFIED
+	}
+}
+
+// ConvertDashboardToPb maps the decision-grade dashboard payload, reusing the section
+// converters for the action lists.
+func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
+	if d == nil {
+		return nil
+	}
+	resp := &pb_admin.GetDashboardResponse{
+		Period:             timeRangeToPb(d.Period),
+		Revenue:            &decimal.Decimal{Value: d.Revenue.String()},
+		Orders:             int32(d.Orders),
+		GrossMargin:        &decimal.Decimal{Value: d.GrossMargin.String()},
+		GrossMarginPct:     d.GrossMarginPct,
+		ContributionMargin: &decimal.Decimal{Value: d.ContributionMargin.String()},
+		CostCoveragePct:    d.CostCoveragePct,
+		Caveat:             d.Caveat,
+		UncostedProductIds: intsToInt32(d.UncostedProductIds),
+		TopByMargin:        productMetricsToPb(d.TopByMargin),
+		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
+		Clear:              ConvertSlowMoversToPb(d.Clear),
+		Drops:              ConvertSellThroughByDropToPb(d.Drops),
+	}
+	if len(d.Alerts) > 0 {
+		resp.Alerts = make([]*pb_admin.DashboardAlert, len(d.Alerts))
+		for i, a := range d.Alerts {
+			resp.Alerts[i] = &pb_admin.DashboardAlert{
+				Severity: alertSeverityToPb(a.Severity),
+				Code:     a.Code,
+				Title:    a.Title,
+				Detail:   a.Detail,
+			}
+		}
+	}
+	return resp
+}
+
 func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow {
 	if len(list) == 0 {
 		return nil
 	}
 	pb := make([]*pb_admin.SlowMoverRow, len(list))
 	for i, r := range list {
-		pb[i] = &pb_admin.SlowMoverRow{
+		row := &pb_admin.SlowMoverRow{
 			ProductId:     int32(r.ProductID),
 			ProductName:   r.ProductName,
 			Revenue:       &decimal.Decimal{Value: r.Revenue.String()},
@@ -1025,10 +1160,20 @@ func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow 
 			DaysInStock:   r.DaysInStock,
 			ProductHidden: r.ProductHidden,
 			TotalViews:    r.TotalViews,
+			HasCost:       r.HasCost,
 		}
 		if r.LastSaleDate != nil {
-			pb[i].LastSaleDate = timestamppb.New(*r.LastSaleDate)
+			row.LastSaleDate = timestamppb.New(*r.LastSaleDate)
 		}
+		// Emit margin only when the product has a cost — otherwise leave the fields unset so
+		// the client shows N/A rather than a misleading 100% margin.
+		if r.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: r.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: r.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
+			row.GrossMarginPct = r.GrossMarginPct
+		}
+		pb[i] = row
 	}
 	return pb
 }
@@ -1410,6 +1555,7 @@ func ConvertCampaignAttributionAggregatedToPb(list []entity.CampaignAttributionA
 			ConversionRate: r.ConversionRate,
 			Spend:          &decimal.Decimal{Value: r.Spend.String()},
 			Roas:           r.ROAS,
+			Cac:            r.CAC,
 		})
 	}
 	return pb

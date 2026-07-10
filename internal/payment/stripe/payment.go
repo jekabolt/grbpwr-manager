@@ -330,13 +330,19 @@ func (p *Processor) captureSettledBase(ctx context.Context, rep dependency.Repos
 		return
 	}
 	settledBase := AmountFromSmallestUnit(bt.Amount, baseCurrency)
-	if err := rep.Order().UpdateTotalSettledBase(ctx, orderUUID, settledBase); err != nil {
+	// The processing fee rides on the same balance transaction (same base currency, already
+	// expanded above), so capture it here for free. Stripe keeps the fee even on refunds, so
+	// it is the full fee actually paid — a real contribution-margin cost.
+	paymentFee := AmountFromSmallestUnit(bt.Fee, baseCurrency)
+	if err := rep.Order().UpdateSettledBaseAndFee(ctx, orderUUID, settledBase, paymentFee); err != nil {
 		slog.Default().ErrorContext(ctx, "settled-base: can't persist",
 			slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
 		return
 	}
 	slog.Default().InfoContext(ctx, "settled-base captured",
-		slog.String("orderUUID", orderUUID), slog.String("amount_base", settledBase.String()))
+		slog.String("orderUUID", orderUUID),
+		slog.String("amount_base", settledBase.String()),
+		slog.String("payment_fee_base", paymentFee.String()))
 }
 
 // flagUnderpaidForReview records a persistent, admin-visible marker on the order

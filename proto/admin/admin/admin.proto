@@ -190,6 +190,26 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics"};
   }
 
+  // GetDashboard returns a small, DB-trusted decision payload: headline revenue/orders/margin
+  // (+ caveat), server-computed alerts, and short action lists (top by margin €, reorder,
+  // clear, drop sell-through). Use GetMetrics for deep, sectioned drill-down.
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse) {
+    option (google.api.http) = {get: "/api/admin/dashboard"};
+  }
+
+  // Reads the operator-tunable thresholds behind the dashboard alerts.
+  rpc GetAlertSettings(GetAlertSettingsRequest) returns (GetAlertSettingsResponse) {
+    option (google.api.http) = {get: "/api/admin/dashboard/alert-settings"};
+  }
+
+  // Updates the operator-tunable dashboard alert thresholds.
+  rpc UpsertAlertSettings(UpsertAlertSettingsRequest) returns (UpsertAlertSettingsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dashboard/alert-settings/upsert"
+      body: "*"
+    };
+  }
+
   // Sets per-SKU inventory reorder targets used by the inventory-health metrics.
   rpc UpsertInventoryTargets(UpsertInventoryTargetsRequest) returns (UpsertInventoryTargetsResponse) {
     option (google.api.http) = {
@@ -919,6 +939,7 @@ enum MetricsSection {
   METRICS_SECTION_GEOGRAPHY = 42;
   METRICS_SECTION_CUSTOMER_SEGMENTATION = 43;
   METRICS_SECTION_RFM = 44;
+  METRICS_SECTION_SELL_THROUGH_BY_DROP = 45;
 }
 
 message GetMetricsRequest {
@@ -977,7 +998,72 @@ message GetMetricsResponse {
   GeographySection geography = 45;
   repeated CustomerSegmentRow customer_segments = 46;
   repeated RFMSegmentRow rfm_analysis = 47;
+  repeated SellThroughByDropRow sell_through_by_drop = 48;
 }
+
+// --- Dashboard (decision-grade summary) ---
+
+message GetDashboardRequest {
+  // Period spec, same grammar as GetMetrics (7d, 30d, 90d, today, WTD, MTD, QTD, YTD).
+  string period = 1;
+  // Optional window end (defaults to now). The period is measured back from here.
+  google.protobuf.Timestamp end_at = 2;
+  // Max rows per action list (top-by-margin, reorder, clear, drops). 0 = server default.
+  int32 limit = 3;
+}
+
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  ALERT_SEVERITY_INFO = 1;
+  ALERT_SEVERITY_WARNING = 2;
+  ALERT_SEVERITY_CRITICAL = 3;
+}
+
+// DashboardAlert is a server-computed, threshold-driven alert. Rate-based alerts are gated on
+// a minimum order count, so they never fire on a statistically meaningless sample.
+message DashboardAlert {
+  AlertSeverity severity = 1;
+  string code = 2; // stable machine key, e.g. "low_cost_coverage"
+  string title = 3;
+  string detail = 4;
+}
+
+message GetDashboardResponse {
+  TimeRange period = 1;
+  google.type.Decimal revenue = 2; // net revenue (base currency)
+  int32 orders = 3; // net-revenue order count
+  google.type.Decimal gross_margin = 4; // costed net revenue − COGS
+  double gross_margin_pct = 5;
+  google.type.Decimal contribution_margin = 6; // gross_margin − shipping − payment_fees
+  double cost_coverage_pct = 7; // % of product revenue with a cost set (trust gate for margins)
+  string caveat = 8; // set when coverage is low, so margins are only partial
+  repeated int32 uncosted_product_ids = 9; // products sold this period with no cost, ranked by revenue
+  repeated DashboardAlert alerts = 10;
+  repeated ProductMetric top_by_margin = 11; // top revenue products re-ranked by gross margin €
+  repeated InventoryHealthRow reorder = 12; // SKUs flagged needs_reorder, most urgent first
+  repeated SlowMoverRow clear = 13; // slow movers to clear
+  repeated SellThroughByDropRow drops = 14; // drop sell-through
+}
+
+// AlertSettings are the operator-tunable thresholds behind the dashboard alerts.
+message AlertSettings {
+  double coverage_warn_pct = 1; // warn when cost coverage (% of revenue with a cost) is below this
+  double refund_rate_warn_pct = 2; // warn when refund rate is at/above this
+  int32 rate_floor_n = 3; // min orders before any rate-based alert fires (significance floor)
+  double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
+}
+
+message GetAlertSettingsRequest {}
+
+message GetAlertSettingsResponse {
+  AlertSettings settings = 1;
+}
+
+message UpsertAlertSettingsRequest {
+  AlertSettings settings = 1;
+}
+
+message UpsertAlertSettingsResponse {}
 
 message FunnelSection {
   FunnelAggregate aggregate = 1;
@@ -992,141 +1078,129 @@ message FunnelSection {
   string caveat = 5;
 }
 
+// BusinessMetrics groups the overview metrics by data provenance so consumers can tell
+// DB-trusted figures from GA4-estimated ones at a glance. BREAKING: replaces the former
+// ~90-field flat message — read metrics from commerce / margin / traffic / email instead.
 message BusinessMetrics {
   TimeRange period = 1;
   TimeRange compare_period = 2;
+  CommerceCoreMetrics commerce = 3; // DB-trusted sales, customers, discounts, shipping
+  MarginMetrics margin = 4; // DB-trusted COGS / margin (from product.cost_price)
+  TrafficMetrics traffic = 5; // GA4-estimated sessions / engagement / conversion
+  EmailMetrics email = 6; // Resend email-delivery metrics
+}
 
-  MetricWithComparison revenue = 3;
-  MetricWithComparison orders_count = 4;
-  MetricWithComparison avg_order_value = 5;
-  MetricWithComparison items_per_order = 25;
+// CommerceCoreMetrics is the DB-authoritative commerce view: sales, customers, discounts,
+// shipping, plus their breakdowns and daily series.
+message CommerceCoreMetrics {
+  MetricWithComparison revenue = 1;
+  MetricWithComparison orders_count = 2; // net-revenue statuses only
+  MetricWithComparison total_placed_orders = 3; // all placed, any status (status-share denominator)
+  MetricWithComparison avg_order_value = 4;
+  MetricWithComparison items_per_order = 5;
   MetricWithComparison refund_rate = 6;
-  // Share of orders with a promo_code attached (customer_order.promo_id). Unrelated to total_discount
-  // when discounts come only from product sale percentages — see product_sale_discount / promo_code_discount.
   MetricWithComparison promo_usage_rate = 7;
-  // Gross revenue at list prices (before any discounts or refunds) + shipping.
-  // Includes original order value of fully refunded orders (status=Refunded).
-  // Revenue = GrossRevenue - ProductSaleDiscount - PromoCodeDiscount - TotalRefunded.
-  MetricWithComparison gross_revenue = 39;
-  MetricWithComparison total_refunded = 40;
-  // Sum of product_sale_discount + promo_code_discount (base currency, net-revenue order statuses).
-  MetricWithComparison total_discount = 41;
-  // Line-item sale % off list price (not from promo codes).
-  MetricWithComparison product_sale_discount = 78;
-  // Extra % off subtotal from an applied promo_code (orders with promo_id only).
-  MetricWithComparison promo_code_discount = 79;
+  MetricWithComparison gross_revenue = 8;
+  MetricWithComparison total_refunded = 9;
+  MetricWithComparison total_discount = 10;
+  MetricWithComparison product_sale_discount = 11;
+  MetricWithComparison promo_code_discount = 12;
+  MetricWithComparison new_subscribers = 13;
+  MetricWithComparison new_customers = 14;
+  MetricWithComparison repeat_customers_rate = 15;
+  MetricWithComparison avg_orders_per_customer = 16;
+  MetricWithComparison avg_days_between_orders = 17;
+  MetricWithComparison avg_shipping_cost = 18;
+  MetricWithComparison total_shipping_cost = 19;
+  CLVStats clv_distribution = 20;
 
-  repeated GeographyMetric revenue_by_country = 8;
-  repeated GeographyMetric revenue_by_city = 9;
-  repeated RegionMetric revenue_by_region = 26;
-  repeated GeographyMetric avg_order_by_country = 10;
+  repeated GeographyMetric revenue_by_country = 21;
+  repeated GeographyMetric revenue_by_city = 22;
+  repeated RegionMetric revenue_by_region = 23;
+  repeated GeographyMetric avg_order_by_country = 24;
+  repeated CurrencyMetric revenue_by_currency = 25;
+  repeated PaymentMethodMetric revenue_by_payment_method = 26;
+  repeated ProductMetric top_products_by_revenue = 27;
+  repeated ProductMetric top_products_by_quantity = 28;
+  repeated CategoryMetric revenue_by_category = 29;
+  repeated CrossSellPair cross_sell_pairs = 30;
+  repeated PromoMetric revenue_by_promo = 31;
+  // Every order PLACED in the period bucketed by its current status (one per bucket); sums to
+  // total_placed_orders, not orders_count.
+  repeated StatusCount orders_by_status = 32;
 
-  repeated CurrencyMetric revenue_by_currency = 27;
-  repeated PaymentMethodMetric revenue_by_payment_method = 42;
+  repeated TimeSeriesPoint revenue_by_day = 33;
+  repeated TimeSeriesPoint orders_by_day = 34;
+  repeated TimeSeriesPoint subscribers_by_day = 35;
+  repeated TimeSeriesPoint gross_revenue_by_day = 36;
+  repeated TimeSeriesPoint refunds_by_day = 37;
+  repeated TimeSeriesPoint avg_order_value_by_day = 38;
+  repeated TimeSeriesPoint units_sold_by_day = 39;
+  repeated TimeSeriesPoint new_customers_by_day = 40;
+  repeated TimeSeriesPoint returning_customers_by_day = 41;
+  repeated TimeSeriesPoint shipped_by_day = 42;
+  repeated TimeSeriesPoint delivered_by_day = 43;
+  repeated TimeSeriesPoint revenue_by_day_compare = 44;
+  repeated TimeSeriesPoint orders_by_day_compare = 45;
+  repeated TimeSeriesPoint subscribers_by_day_compare = 46;
+  repeated TimeSeriesPoint gross_revenue_by_day_compare = 47;
+  repeated TimeSeriesPoint refunds_by_day_compare = 48;
+  repeated TimeSeriesPoint avg_order_value_by_day_compare = 49;
+  repeated TimeSeriesPoint units_sold_by_day_compare = 50;
+  repeated TimeSeriesPoint new_customers_by_day_compare = 51;
+  repeated TimeSeriesPoint returning_customers_by_day_compare = 52;
+  repeated TimeSeriesPoint shipped_by_day_compare = 53;
+  repeated TimeSeriesPoint delivered_by_day_compare = 54;
+}
 
-  repeated ProductMetric top_products_by_revenue = 11;
-  repeated ProductMetric top_products_by_quantity = 12;
-  repeated CategoryMetric revenue_by_category = 13;
-  repeated CrossSellPair cross_sell_pairs = 14;
+// MarginMetrics is the DB-trusted COGS / margin view (from product.cost_price), computed over
+// the "costed" revenue subset; cost_coverage_pct says how much of revenue that subset is.
+message MarginMetrics {
+  MetricWithComparison revenue_cost = 1; // COGS: Σ(cost × qty), refund-adjusted
+  MetricWithComparison gross_margin = 2; // costed net revenue − COGS
+  MetricWithComparison gross_margin_pct = 3; // gross_margin / costed net revenue × 100
+  MetricWithComparison payment_fees = 4; // Σ Stripe processing fees, NOT refund-adjusted
+  MetricWithComparison contribution_margin = 5; // gross_margin − shipping − payment_fees
+  double cost_coverage_pct = 6; // % of product revenue with a cost set (trust gate for margins)
+  repeated int32 uncosted_product_ids = 7; // sold this period with no cost, ranked by revenue
+}
 
-  MetricWithComparison new_subscribers = 15;
-  MetricWithComparison repeat_customers_rate = 16;
-  MetricWithComparison avg_orders_per_customer = 17;
-  MetricWithComparison avg_days_between_orders = 18;
-  CLVStats clv_distribution = 19;
+// TrafficMetrics is the GA4-estimated traffic / engagement / conversion view. These figures
+// are sampled/modelled by GA4 — treat as directional, not DB-exact.
+message TrafficMetrics {
+  MetricWithComparison sessions = 1;
+  MetricWithComparison users = 2;
+  MetricWithComparison new_users = 3;
+  MetricWithComparison page_views = 4;
+  MetricWithComparison bounce_rate = 5;
+  MetricWithComparison avg_session_duration = 6;
+  MetricWithComparison pages_per_session = 7;
+  MetricWithComparison conversion_rate = 8;
+  MetricWithComparison revenue_per_session = 9;
 
-  repeated PromoMetric revenue_by_promo = 20;
-  // orders_by_status is every order PLACED in the period bucketed by its current status
-  // (one order per bucket), so it sums to total_placed_orders, NOT to orders_count.
-  // orders_count counts only net-revenue statuses (confirmed/shipped/delivered/partially_refunded),
-  // so cancelled/refunded/pending_return orders are excluded from it. Use total_placed_orders
-  // as the denominator for status shares such as cancellation% / refund%.
-  repeated StatusCount orders_by_status = 21;
+  repeated GeographySessionMetric sessions_by_country = 10;
+  repeated ProductViewMetric top_products_by_views = 11;
+  repeated TrafficSourceMetric traffic_by_source = 12;
+  repeated DeviceMetric traffic_by_device = 13;
 
-  repeated TimeSeriesPoint revenue_by_day = 22;
-  repeated TimeSeriesPoint orders_by_day = 23;
-  repeated TimeSeriesPoint subscribers_by_day = 24;
-  repeated TimeSeriesPoint gross_revenue_by_day = 28;
-  repeated TimeSeriesPoint refunds_by_day = 29;
-  repeated TimeSeriesPoint avg_order_value_by_day = 30;
-  repeated TimeSeriesPoint units_sold_by_day = 31;
-  repeated TimeSeriesPoint new_customers_by_day = 43;
-  repeated TimeSeriesPoint returning_customers_by_day = 44;
-  repeated TimeSeriesPoint shipped_by_day = 45;
-  repeated TimeSeriesPoint delivered_by_day = 46;
-  repeated TimeSeriesPoint revenue_by_day_compare = 32;
-  repeated TimeSeriesPoint orders_by_day_compare = 33;
-  repeated TimeSeriesPoint subscribers_by_day_compare = 34;
-  repeated TimeSeriesPoint gross_revenue_by_day_compare = 35;
-  repeated TimeSeriesPoint refunds_by_day_compare = 36;
-  repeated TimeSeriesPoint avg_order_value_by_day_compare = 37;
-  repeated TimeSeriesPoint units_sold_by_day_compare = 38;
-  repeated TimeSeriesPoint new_customers_by_day_compare = 47;
-  repeated TimeSeriesPoint returning_customers_by_day_compare = 48;
-  repeated TimeSeriesPoint shipped_by_day_compare = 49;
-  repeated TimeSeriesPoint delivered_by_day_compare = 50;
+  repeated TimeSeriesPoint sessions_by_day = 14;
+  repeated TimeSeriesPoint users_by_day = 15;
+  repeated TimeSeriesPoint page_views_by_day = 16;
+  repeated TimeSeriesPoint conversion_rate_by_day = 17;
+  repeated TimeSeriesPoint sessions_by_day_compare = 18;
+  repeated TimeSeriesPoint users_by_day_compare = 19;
+  repeated TimeSeriesPoint page_views_by_day_compare = 20;
+  repeated TimeSeriesPoint conversion_rate_by_day_compare = 21;
+}
 
-  // GA4 Traffic & Engagement
-  MetricWithComparison sessions = 51;
-  MetricWithComparison users = 52;
-  MetricWithComparison new_users = 53;
-  MetricWithComparison page_views = 54;
-  MetricWithComparison bounce_rate = 55;
-  // Average engagement time per session (seconds), derived from GA4
-  // userEngagementDuration / sessions at sync — not raw averageSessionDuration
-  // (wall-clock first-to-last event, often inflated by background tabs).
-  MetricWithComparison avg_session_duration = 56;
-  MetricWithComparison pages_per_session = 57;
-  MetricWithComparison conversion_rate = 58;
-  MetricWithComparison revenue_per_session = 59;
-
-  repeated GeographySessionMetric sessions_by_country = 60;
-  repeated ProductViewMetric top_products_by_views = 61;
-  repeated TrafficSourceMetric traffic_by_source = 62;
-  repeated DeviceMetric traffic_by_device = 63;
-
-  repeated TimeSeriesPoint sessions_by_day = 64;
-  repeated TimeSeriesPoint users_by_day = 65;
-  repeated TimeSeriesPoint page_views_by_day = 66;
-  repeated TimeSeriesPoint conversion_rate_by_day = 67;
-  repeated TimeSeriesPoint sessions_by_day_compare = 68;
-  repeated TimeSeriesPoint users_by_day_compare = 69;
-  repeated TimeSeriesPoint page_views_by_day_compare = 70;
-  repeated TimeSeriesPoint conversion_rate_by_day_compare = 71;
-
-  // Email delivery metrics (from Resend webhooks)
-  MetricWithComparison emails_sent = 72;
-  MetricWithComparison emails_delivered = 73;
-  MetricWithComparison email_delivery_rate = 74;
-  MetricWithComparison email_open_rate = 75;
-  MetricWithComparison email_click_rate = 76;
-  MetricWithComparison email_bounce_rate = 77;
-
-  // Customer acquisition aggregate (sum of new_customers_by_day series)
-  MetricWithComparison new_customers = 80;
-
-  // Shipping / logistics metrics
-  MetricWithComparison avg_shipping_cost = 82;
-  MetricWithComparison total_shipping_cost = 83;
-
-  // Total orders PLACED in the period, regardless of status (sum of orders_by_status).
-  // Distinct from orders_count, which counts only net-revenue statuses. Use this as the
-  // denominator when deriving status shares (cancellation rate, refund rate, etc.).
-  MetricWithComparison total_placed_orders = 84;
-
-  // Margin metrics, derived from product.cost_price (per-unit COGS in base currency).
-  // Computed ONLY over line items whose product has a cost set, so revenue_cost and the
-  // margins are on the "costed" subset of revenue — gross_margin_pct.caveat and
-  // cost_coverage_pct report how much of revenue that subset is. COGS is net of the
-  // refund proration but NOT reduced by promo/sale discounts (a discount lowers revenue,
-  // not the cost of the goods).
-  MetricWithComparison revenue_cost = 85; // COGS: Σ(cost × qty), refund-adjusted
-  MetricWithComparison gross_margin = 86; // costed net revenue − COGS
-  MetricWithComparison gross_margin_pct = 87; // gross_margin / costed net revenue × 100
-  MetricWithComparison contribution_margin = 88; // gross_margin − total_shipping_cost
-  // Share (%) of net product revenue (base currency) whose product has a cost set — the
-  // fraction the margin figures above are computed over. 100 = full cost coverage.
-  double cost_coverage_pct = 89;
+// EmailMetrics is the Resend email-delivery view.
+message EmailMetrics {
+  MetricWithComparison emails_sent = 1;
+  MetricWithComparison emails_delivered = 2;
+  MetricWithComparison email_delivery_rate = 3;
+  MetricWithComparison email_open_rate = 4;
+  MetricWithComparison email_click_rate = 5;
+  MetricWithComparison email_bounce_rate = 6;
 }
 
 message PaymentMethodMetric {
@@ -1151,6 +1225,14 @@ message MetricWithComparison {
   double change_absolute = 5;
   // Optional tooltip/caveat text to clarify metric interpretation (e.g., data limitations, calculation notes).
   string caveat = 6;
+  // Number of observations behind the metric (orders, sessions, customers…). 0 = not
+  // populated. Prefer gating a metric on this (e.g. hide/greytext when sample_size < 30)
+  // over an arbitrary display floor.
+  int32 sample_size = 7;
+  // 95% confidence-interval half-width in the metric's own units (e.g. ±2.4 for a 12.0%
+  // rate). Populated only for true count-proportions (conversion, promo usage); 0 = not
+  // computed. Frontend can render "12.0% ± 2.4" instead of guessing significance from a floor.
+  double margin_of_error = 8;
 }
 
 message GeographyMetric {
@@ -1853,6 +1935,16 @@ message RevenueParetoRow {
   string product_name = 3;
   google.type.Decimal revenue = 4;
   double cumulative_pct = 5;
+  // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
+  // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Note the
+  // margin here is computed on this row's own `revenue` basis (gross list revenue, Σ price×qty),
+  // so revenue_cost is Σ(cost × qty) on the same un-adjusted basis — internally consistent
+  // with `revenue`, but not directly comparable to the refund/discount-adjusted BusinessMetrics margin.
+  google.type.Decimal unit_cost = 6; // current per-unit COGS (base currency)
+  google.type.Decimal revenue_cost = 7; // Σ(cost × qty) matched to `revenue`
+  google.type.Decimal gross_margin = 8; // revenue − revenue_cost
+  double gross_margin_pct = 9; // gross_margin / revenue × 100
+  bool has_cost = 10;
 }
 
 // --- Analytics: Customer Spending Curve ---
@@ -1879,15 +1971,23 @@ message InventoryHealthRow {
   int32 size_id = 3;
   string size_name = 4;
   int32 quantity = 5;
-  double avg_daily_sales = 6;
-  double days_on_hand = 7; // days of cover at the current sales rate
-  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived
-  // from them. needs_reorder is meaningful only when has_target is true.
+  double avg_daily_sales = 6; // units/day over the requested (trailing) window
+  // Days of cover at the current sales rate. When is_selling is false there were no sales in
+  // the window, so this carries a large sentinel (sorts dead stock last) — read is_selling,
+  // not a magic number, and render days of cover as N/A in that case.
+  double days_on_hand = 7;
+  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived from
+  // them. needs_reorder is meaningful only when has_target is true; setting a target is the
+  // operator's opt-in that this SKU is continuity stock (limited drops get no target, hence
+  // no reorder noise — days of cover is misleading for them).
   int32 reorder_point = 8;
   int32 target_days_cover = 9;
   int32 lead_time_days = 10;
   bool needs_reorder = 11;
   bool has_target = 12;
+  // True when the SKU sold at least one unit in the window. Replaces the client-side
+  // qty/avgDailySales sentinel check: gate any days-of-cover display on this.
+  bool is_selling = 13;
 }
 
 // InventoryTargetInsert is an admin-supplied per-SKU reorder target. Each threshold is
@@ -1905,6 +2005,22 @@ message UpsertInventoryTargetsRequest {
 }
 
 message UpsertInventoryTargetsResponse {}
+
+// --- Analytics: Sell-through by Drop ---
+
+// SellThroughByDropRow aggregates a release/drop cohort (product.collection) into
+// decision-grade totals, so tiny per-day/per-SKU samples roll up to a statistically
+// meaningful drop-level view. sell_through_pct = units_sold / (units_sold +
+// units_remaining) × 100 over the whole drop, computed lifetime (current state), not
+// windowed — sell-through is inherently cumulative. Sorted by revenue desc.
+message SellThroughByDropRow {
+  string collection = 1; // the drop identifier (product.collection)
+  int32 product_count = 2; // distinct products in the drop
+  int64 units_sold = 3; // lifetime net units sold across the drop
+  int64 units_remaining = 4; // current on-hand units across the drop
+  double sell_through_pct = 5; // units_sold / (units_sold + units_remaining) × 100
+  google.type.Decimal revenue = 6; // lifetime net revenue (base currency) for the drop
+}
 
 // --- Analytics: Size Run Efficiency ---
 
@@ -1927,6 +2043,15 @@ message SlowMoverRow {
   google.protobuf.Timestamp last_sale_date = 6;
   bool product_hidden = 7; // Product visibility flag (from product.hidden)
   int64 total_views = 8; // GA4 page views for period (from ga4_product_page_metrics)
+  // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
+  // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Computed on
+  // this row's `revenue` (the refund/FX/discount-adjusted net revenue), so revenue_cost is the
+  // refund-adjusted COGS — the same basis as the BusinessMetrics and product-breakdown margins.
+  google.type.Decimal unit_cost = 9; // current per-unit COGS (base currency)
+  google.type.Decimal revenue_cost = 10; // Σ(cost × net qty), refund-adjusted
+  google.type.Decimal gross_margin = 11; // revenue − revenue_cost
+  double gross_margin_pct = 12; // gross_margin / revenue × 100
+  bool has_cost = 13;
 }
 
 // --- Analytics: Return Analysis ---
@@ -2135,6 +2260,9 @@ message CampaignAttributionRow {
   // zero when none is recorded for the channel; roas is 0 unless spend > 0.
   google.type.Decimal spend = 10;
   double roas = 11;
+  // CAC = spend / conversions (0 unless both > 0). Attribution-based, so directional for an
+  // organic-heavy channel mix rather than an exact acquisition cost.
+  double cac = 12;
 }
 
 // ChannelSpendInsert is one operator-entered marketing spend row for a channel on a day.

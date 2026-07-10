@@ -47,6 +47,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		costedRev, cCostedRev                    decimal.Decimal
 		cogs, cCogs                              decimal.Decimal
 		totalItemRev                             decimal.Decimal
+		paymentFees, cPaymentFees                decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -95,6 +96,16 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		costedRev, cogs, totalItemRev, err = s.getMarginMetrics(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		m.UncostedProductIds, err = s.getUncostedSoldProductIDs(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		paymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
@@ -141,6 +152,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		g.Go(func() error {
 			var err error
 			cCostedRev, cCogs, _, err = s.getMarginMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cPaymentFees, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -608,6 +624,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if grossRev.GreaterThan(decimal.Zero) {
 		m.RefundRate.Value = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100))
 	}
+	// Gate refund rate on the order count (a money ratio, so no proportion CI). n lets the UI
+	// suppress a noisy rate at low volume instead of applying a hardcoded floor.
+	m.RefundRate.SampleSize = placedOrders
 	m.GrossRevenue.Value = grossRev
 	m.TotalRefunded.Value = revRefund
 	m.TotalDiscount.Value = totalDiscount
@@ -615,6 +634,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.PromoCodeDiscount.Value = promoCodeDiscount
 	if orders > 0 {
 		m.PromoUsageRate.Value = decimal.NewFromInt(int64(promoOrders)).Div(decimal.NewFromInt(int64(orders))).Mul(decimal.NewFromInt(100))
+		// True count-proportion (promo orders / orders): expose n and a 95% CI half-width.
+		m.PromoUsageRate.SampleSize = orders
+		m.PromoUsageRate.MarginOfError = proportionMarginOfError(m.PromoUsageRate.Value.InexactFloat64(), orders)
 	}
 	m.NewSubscribers.Value = decimal.NewFromInt(int64(newSubs))
 	m.RepeatCustomersRate.Value = repeatRate
@@ -629,7 +651,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	grossMargin := costedRev.Sub(cogs)
 	m.RevenueCost.Value = cogs
 	m.GrossMargin.Value = grossMargin
-	m.ContributionMargin.Value = grossMargin.Sub(totalShipCost)
+	m.PaymentFees.Value = paymentFees
+	m.ContributionMargin.Value = grossMargin.Sub(totalShipCost).Sub(paymentFees)
 	if costedRev.GreaterThan(decimal.Zero) {
 		m.GrossMarginPct.Value = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2)
 	}
@@ -648,7 +671,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.GrossMargin.Caveat = note
 		m.GrossMarginPct.Caveat = note
 	}
-	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost; meaningful when cost coverage is high."
+	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and Stripe payment fees; meaningful when cost coverage is high."
 
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
@@ -658,6 +681,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if totalSessions > 0 {
 		// Session-weighted averages: divide weighted sums by total sessions
 		m.BounceRate.Value = decimal.NewFromFloat(weightedBounceRate / float64(totalSessions))
+		// Bounce is a session-level proportion: n = sessions, with a 95% CI half-width.
+		m.BounceRate.SampleSize = totalSessions
+		m.BounceRate.MarginOfError = proportionMarginOfError(m.BounceRate.Value.InexactFloat64(), totalSessions)
 		// Prefer total foreground engagement / total sessions (column from GA4 sync).
 		// Falls back to weighted avg_session_duration when engagement was not stored (pre-migration / legacy rows).
 		if totalUserEngagementSeconds > 0 {
@@ -672,6 +698,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if totalSessions > 0 {
 		m.ConversionRate.Value = decimal.NewFromInt(int64(orders)).Div(decimal.NewFromInt(int64(totalSessions))).Mul(decimal.NewFromInt(100))
 		m.RevenuePerSession.Value = rev.Div(decimal.NewFromInt(int64(totalSessions)))
+		// Conversion is a session-level proportion (orders / sessions): n + 95% CI half-width.
+		m.ConversionRate.SampleSize = totalSessions
+		m.ConversionRate.MarginOfError = proportionMarginOfError(m.ConversionRate.Value.InexactFloat64(), totalSessions)
 	}
 
 	// Compute conversion rate by day
@@ -757,7 +786,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.RevenueCost.ChangePct = changePct(cogs, cCogs)
 		m.GrossMargin.CompareValue = &cGrossMargin
 		m.GrossMargin.ChangePct = changePct(grossMargin, cGrossMargin)
-		cContribution := cGrossMargin.Sub(cTotalShipCost)
+		m.PaymentFees.CompareValue = &cPaymentFees
+		m.PaymentFees.ChangePct = changePct(paymentFees, cPaymentFees)
+		cContribution := cGrossMargin.Sub(cTotalShipCost).Sub(cPaymentFees)
 		m.ContributionMargin.CompareValue = &cContribution
 		m.ContributionMargin.ChangePct = changePct(m.ContributionMargin.Value, cContribution)
 		if cCostedRev.GreaterThan(decimal.Zero) {

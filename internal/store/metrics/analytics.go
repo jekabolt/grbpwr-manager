@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // returnByProductRawRow is the raw DB row before aggregation.
@@ -40,6 +41,10 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 	// Revenue is the actual settled base apportioned across line items (order_factors /
 	// itemAdjExpr); all order currencies are included (no co.currency filter) and prices
 	// come from product_price in base currency rather than the order-currency snapshot.
+	// revenue_cost mirrors the product breakdowns: Σ(cost × qty) prorated by the same
+	// refund ratio as revenue (costAdj), so a refunded unit drops out of both. unit_cost is
+	// the product's current per-unit cost_price. computeRowMargin turns these into the
+	// margin fields after the query (leaving them N/A when the product has no cost).
 	query := fmt.Sprintf(`
 		WITH %s,
 		product_sales AS (
@@ -47,9 +52,11 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 				oi.product_id,
 				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity)     AS units_sold,
-				MAX(ofac.placed)     AS last_sale_date
+				MAX(ofac.placed)     AS last_sale_date,
+				COALESCE(SUM(CASE WHEN cp.cost_price IS NOT NULL THEN cp.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN order_factors ofac ON ofac.order_id = oi.order_id
+			JOIN product cp ON cp.id = oi.product_id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id
 		),
@@ -72,15 +79,21 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			DATEDIFF(NOW(), p.created_at) AS days_in_stock,
 			ps.last_sale_date,
 			COALESCE(p.hidden, 0) AS product_hidden,
-			COALESCE(gv.total_views, 0) AS total_views
+			COALESCE(gv.total_views, 0) AS total_views,
+			p.cost_price AS unit_cost,
+			COALESCE(ps.revenue_cost, 0) AS revenue_cost
 		FROM product p
 		LEFT JOIN product_sales ps ON ps.product_id = p.id
 		LEFT JOIN ga4_views gv ON gv.product_id = p.id
 		ORDER BY revenue ASC, days_in_stock DESC
 		LIMIT :limit
-	`, orderFactorsCTE, itemAdjExpr)
+	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
 
-	result, err := storeutil.QueryListNamed[entity.SlowMoverRow](ctx, as.DB, query, map[string]any{
+	rows, err := storeutil.QueryListNamed[struct {
+		entity.SlowMoverRow
+		UnitCostRaw    decimal.NullDecimal `db:"unit_cost"`
+		RevenueCostRaw decimal.Decimal     `db:"revenue_cost"`
+	}](ctx, as.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
 		"from":         from,
@@ -91,6 +104,14 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get slow movers: %w", err)
+	}
+	result := make([]entity.SlowMoverRow, len(rows))
+	for i, r := range rows {
+		row := r.SlowMoverRow
+		rm := computeRowMargin(row.Revenue, r.UnitCostRaw, r.RevenueCostRaw)
+		row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
+		row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
+		result[i] = row
 	}
 	return result, nil
 }

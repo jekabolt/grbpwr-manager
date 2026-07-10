@@ -113,7 +113,7 @@ type (
 		InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error)
 		AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID string, paymentIntentId string) error
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
-		UpdateTotalSettledBase(ctx context.Context, orderUUID string, settledBase decimal.Decimal) error
+		UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
@@ -244,6 +244,9 @@ type (
 		GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error)
 		// UpsertInventoryTargets sets per-SKU reorder targets (insert or replace by product+size).
 		UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error
+		// GetSellThroughByDrop rolls each drop cohort (product.collection) into lifetime
+		// sell-through totals. from/to are accepted for interface consistency but not applied.
+		GetSellThroughByDrop(ctx context.Context, from, to time.Time, limit int) ([]entity.SellThroughByDropRow, error)
 	}
 
 	Retention interface {
@@ -271,6 +274,13 @@ type (
 		Inventory
 		Analytics
 		GetBusinessMetrics(ctx context.Context, period, comparePeriod entity.TimeRange, granularity entity.MetricsGranularity) (*entity.BusinessMetrics, error)
+		// GetDashboard returns the small, DB-trusted decision payload (headline + alerts +
+		// action lists) without building the full BusinessMetrics god-object.
+		GetDashboard(ctx context.Context, from, to time.Time, limit int) (*entity.Dashboard, error)
+		// GetAlertThresholds / UpsertAlertThresholds read and write the operator-tunable
+		// thresholds behind the dashboard alerts (alert_setting table).
+		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
+		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).

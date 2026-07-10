@@ -339,6 +339,15 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.SlowMovers = dto.ConvertSlowMoversToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SELL_THROUGH_BY_DROP) {
+		items, err := s.repo.Metrics().GetSellThroughByDrop(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get sell-through by drop", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get sell-through by drop")
+		}
+		resp.SellThroughByDrop = dto.ConvertSellThroughByDropToPb(items)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
 		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
 		if err != nil {
@@ -800,6 +809,62 @@ func channelKey(source, medium, campaign string) string {
 	return source + "\x00" + medium + "\x00" + campaign
 }
 
+// GetDashboard returns the small, DB-trusted decision payload. It reuses the GetMetrics
+// period grammar but computes only the headline figures, alerts and short action lists.
+func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardRequest) (*pb_admin.GetDashboardResponse, error) {
+	if strings.TrimSpace(req.Period) == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "period is required (e.g. 7d, 30d, 90d, today, WTD, MTD, QTD, YTD)")
+	}
+	endAt := time.Now().UTC()
+	if req.EndAt != nil {
+		endAt = req.EndAt.AsTime().UTC()
+	}
+	from, to, isSpecial := computePeriodBounds(req.Period, endAt)
+	if !isSpecial {
+		dur, err := parseMetricsPeriod(req.Period)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
+		}
+		to = endAt
+		from = endAt.Add(-dur)
+	}
+	d, err := s.repo.Metrics().GetDashboard(ctx, from, to, int(req.Limit))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get dashboard", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get dashboard")
+	}
+	return dto.ConvertDashboardToPb(d), nil
+}
+
+// GetAlertSettings returns the operator-tunable dashboard alert thresholds.
+func (s *Server) GetAlertSettings(ctx context.Context, _ *pb_admin.GetAlertSettingsRequest) (*pb_admin.GetAlertSettingsResponse, error) {
+	t, err := s.repo.Metrics().GetAlertThresholds(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get alert settings", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get alert settings")
+	}
+	return &pb_admin.GetAlertSettingsResponse{Settings: dto.AlertThresholdsToPb(t)}, nil
+}
+
+// UpsertAlertSettings updates the dashboard alert thresholds after validating their ranges.
+func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAlertSettingsRequest) (*pb_admin.UpsertAlertSettingsResponse, error) {
+	if req.Settings == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "settings is required")
+	}
+	t := dto.AlertThresholdsFromPb(req.Settings)
+	if t.CoverageWarnPct < 0 || t.CoverageWarnPct > 100 ||
+		t.RefundRateWarnPct < 0 || t.RefundRateWarnPct > 100 ||
+		t.ContributionTrustPct < 0 || t.ContributionTrustPct > 100 ||
+		t.RateFloorN < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "percentages must be within [0,100] and rate_floor_n >= 0")
+	}
+	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert alert settings")
+	}
+	return &pb_admin.UpsertAlertSettingsResponse{}, nil
+}
+
 // enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,
 // matching by the UTM triple over the same period. Mutates rows in place.
 func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, rows []entity.CampaignAttributionAggregatedFull) error {
@@ -824,6 +889,9 @@ func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, ro
 		}
 		rows[i].Spend = sp
 		rows[i].ROAS = rows[i].Revenue.Div(sp).InexactFloat64()
+		if rows[i].Conversions > 0 {
+			rows[i].CAC = sp.Div(decimal.NewFromInt(rows[i].Conversions)).InexactFloat64()
+		}
 	}
 	return nil
 }
