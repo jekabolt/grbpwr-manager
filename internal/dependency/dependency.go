@@ -29,6 +29,9 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
+		// SetProductsCostPrice sets cost_price (base-currency COGS) on the given products,
+		// used to seed product cost from a tech card costing. Empty ids is a no-op.
+		SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
@@ -122,7 +125,7 @@ type (
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
-		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason string, refundShipping bool) error
+		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		CancelOrder(ctx context.Context, orderUUID string) error
 		GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error)
@@ -239,6 +242,8 @@ type (
 	Inventory interface {
 		GetInventoryHealth(ctx context.Context, from, to time.Time, limit int) ([]entity.InventoryHealthRow, error)
 		GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error)
+		// UpsertInventoryTargets sets per-SKU reorder targets (insert or replace by product+size).
+		UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error
 	}
 
 	Retention interface {
@@ -415,10 +420,15 @@ type (
 		GetBQSizeGuideClicks(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.SizeGuideClickRow, error)
 		GetBQDetailsExpansion(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.DetailsExpansionRow, error)
 		GetBQNotifyMeIntent(ctx context.Context, from, to time.Time, limit, offset int) ([]entity.NotifyMeIntentRow, error)
+		// GetChannelSpendByCampaign returns operator-entered marketing spend aggregated by
+		// channel over [from, to] in base currency, for computing ROAS.
+		GetChannelSpendByCampaign(ctx context.Context, from, to time.Time) ([]entity.ChannelSpendRow, error)
 	}
 
 	// BQCacheStoreWriter handles BigQuery precomputed analytics cache writes
 	BQCacheStoreWriter interface {
+		// UpsertChannelSpend records operator-entered marketing spend per channel per day.
+		UpsertChannelSpend(ctx context.Context, rows []entity.ChannelSpendInsert) error
 		DeleteBQFunnelAnalysisByDateRange(ctx context.Context, startDate, endDate time.Time) error
 		InsertBQFunnelAnalysisBatch(ctx context.Context, rows []entity.DailyFunnel) error
 		SaveBQFunnelAnalysis(ctx context.Context, rows []entity.DailyFunnel) error

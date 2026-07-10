@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -41,14 +42,14 @@ type BusinessMetrics struct {
 	// (sum of OrdersByStatus). Use it as the denominator for status shares.
 	TotalPlacedOrders MetricWithComparison
 	AvgOrderValue     MetricWithComparison
-	ItemsPerOrder  MetricWithComparison
-	RefundRate     MetricWithComparison
-	PromoUsageRate MetricWithComparison
+	ItemsPerOrder     MetricWithComparison
+	RefundRate        MetricWithComparison
+	PromoUsageRate    MetricWithComparison
 	// GrossRevenue is revenue at list prices (before any discounts or refunds) + shipping.
 	// Revenue = GrossRevenue - ProductSaleDiscount - PromoCodeDiscount - TotalRefunded.
-	GrossRevenue   MetricWithComparison
-	TotalRefunded  MetricWithComparison
-	TotalDiscount  MetricWithComparison
+	GrossRevenue  MetricWithComparison
+	TotalRefunded MetricWithComparison
+	TotalDiscount MetricWithComparison
 	// ProductSaleDiscount is sum of list-price reductions from order_item.product_sale_percentage.
 	// PromoCodeDiscount is promo_code percentage applied to post–product-sale subtotal.
 	// TotalDiscount.Value == ProductSaleDiscount + PromoCodeDiscount.
@@ -101,6 +102,16 @@ type BusinessMetrics struct {
 	// Shipping / logistics metrics
 	AvgShippingCost   MetricWithComparison
 	TotalShippingCost MetricWithComparison
+
+	// Margin (COGS from product.cost_price, base currency). Computed over the "costed"
+	// revenue subset — line items whose product has a cost set. CostCoveragePct is that
+	// subset's share of net product revenue, so a low coverage flags that the margins
+	// only describe part of sales. COGS is refund-adjusted but not reduced by discounts.
+	RevenueCost        MetricWithComparison // COGS: Σ(cost × qty), refund-adjusted
+	GrossMargin        MetricWithComparison // costed net revenue − COGS
+	GrossMarginPct     MetricWithComparison // GrossMargin / costed net revenue × 100
+	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost
+	CostCoveragePct    float64              // % of net product revenue with a cost set
 
 	// Promo
 	RevenueByPromo []PromoMetric
@@ -180,14 +191,14 @@ type MetricWithComparison struct {
 }
 
 type GeographyMetric struct {
-	Country      string
-	State        *string
-	City         *string
-	Value        decimal.Decimal
-	CompareValue *decimal.Decimal
-	Count        int
-	CompareCount *int // optional, for comparison period
-	SharePct     *float64 // percentage of total revenue
+	Country       string
+	State         *string
+	City          *string
+	Value         decimal.Decimal
+	CompareValue  *decimal.Decimal
+	Count         int
+	CompareCount  *int             // optional, for comparison period
+	SharePct      *float64         // percentage of total revenue
 	AvgOrderValue *decimal.Decimal // average order value for this geography
 }
 
@@ -211,6 +222,14 @@ type ProductMetric struct {
 	Brand       string
 	Value       decimal.Decimal
 	Count       int
+	// Margin fields, populated only for revenue/quantity product breakdowns (left zero
+	// for view-based metrics). When HasCost is false the product's cost is unknown, so
+	// consumers should render margins as N/A rather than as 100%.
+	HasCost        bool            // product has a cost_price set
+	UnitCost       decimal.Decimal // current per-unit COGS (base currency)
+	RevenueCost    decimal.Decimal // Σ(cost × net qty), refund-adjusted
+	GrossMargin    decimal.Decimal // Value − RevenueCost
+	GrossMarginPct float64         // GrossMargin / Value × 100
 }
 
 type CategoryMetric struct {
@@ -329,34 +348,34 @@ type DeviceFunnelMetric struct {
 }
 
 type ProductEngagementMetric struct {
-	Date                  time.Time
-	ProductID             string
-	ProductName           string
-	ImageViews            int64
-	ZoomEvents            int64
-	Scroll75              int64
-	Scroll100             int64
-	AvgTimeOnPageSeconds  float64
+	Date                 time.Time
+	ProductID            string
+	ProductName          string
+	ImageViews           int64
+	ZoomEvents           int64
+	Scroll75             int64
+	Scroll100            int64
+	AvgTimeOnPageSeconds float64
 }
 
 type ProductEngagementBubbleRow struct {
-	ProductID             string
-	ProductName           string
-	TotalImageViews       int64
-	TotalZoomEvents       int64
-	TotalScroll75         int64
-	TotalScroll100        int64
-	ZoomRatePct           float64
-	Scroll75RatePct       float64
-	Scroll100RatePct      float64
-	AvgTimeOnPageSeconds  float64
+	ProductID            string
+	ProductName          string
+	TotalImageViews      int64
+	TotalZoomEvents      int64
+	TotalScroll75        int64
+	TotalScroll100       int64
+	ZoomRatePct          float64
+	Scroll75RatePct      float64
+	Scroll100RatePct     float64
+	AvgTimeOnPageSeconds float64
 }
 
 type ProductEngagementMetricsPct struct {
-	AvgZoomRatePct        float64
-	AvgScroll75RatePct    float64
-	AvgScroll100RatePct   float64
-	AvgTimeOnPageSeconds  float64
+	AvgZoomRatePct       float64
+	AvgScroll75RatePct   float64
+	AvgScroll100RatePct  float64
+	AvgTimeOnPageSeconds float64
 }
 
 type ProductEngagementBubbleMatrix struct {
@@ -465,13 +484,13 @@ type SessionDurationMetric struct {
 
 type CohortRetentionRow struct {
 	CohortMonth time.Time
-	CohortSize  int64 `db:"cohort_size"`
-	M1          int64 `db:"m1"`
-	M2          int64 `db:"m2"`
-	M3          int64 `db:"m3"`
-	M4          int64 `db:"m4"`
-	M5          int64 `db:"m5"`
-	M6          int64 `db:"m6"`
+	CohortSize  int64           `db:"cohort_size"`
+	M1          int64           `db:"m1"`
+	M2          int64           `db:"m2"`
+	M3          int64           `db:"m3"`
+	M4          int64           `db:"m4"`
+	M5          int64           `db:"m5"`
+	M6          int64           `db:"m6"`
 	M1Revenue   decimal.Decimal `db:"m1_revenue"`
 	M2Revenue   decimal.Decimal `db:"m2_revenue"`
 	M3Revenue   decimal.Decimal `db:"m3_revenue"`
@@ -526,9 +545,9 @@ type CustomerSegmentRow struct {
 // RFMSegmentRow represents RFM (Recency, Frequency, Monetary) analysis results.
 type RFMSegmentRow struct {
 	Email          string
-	RecencyScore   int // 1-5 (5 = purchased recently)
-	FrequencyScore int // 1-5 (5 = frequent buyer)
-	MonetaryScore  int // 1-5 (5 = high spender)
+	RecencyScore   int    // 1-5 (5 = purchased recently)
+	FrequencyScore int    // 1-5 (5 = frequent buyer)
+	MonetaryScore  int    // 1-5 (5 = high spender)
 	RFMLabel       string // "Champions", "Loyal", "At-Risk", "Lost", etc.
 	LastPurchase   time.Time
 	OrderCount     int64
@@ -544,7 +563,24 @@ type InventoryHealthRow struct {
 	SizeName      string  `db:"size_name"`
 	Quantity      int     `db:"quantity"`
 	AvgDailySales float64 `db:"avg_daily_sales"`
-	DaysOnHand    float64 `db:"days_on_hand"`
+	DaysOnHand    float64 `db:"days_on_hand"` // days of cover at the current sales rate
+	// Optional per-SKU targets (from inventory_target); NULL when unset.
+	ReorderPoint    sql.NullInt64 `db:"reorder_point"`
+	TargetDaysCover sql.NullInt64 `db:"target_days_cover"`
+	LeadTimeDays    sql.NullInt64 `db:"lead_time_days"`
+	// Server-side decision, computed after the query.
+	HasTarget    bool `db:"-"` // any target is set for this SKU
+	NeedsReorder bool `db:"-"` // stock at/below reorder point, or cover below lead time / target
+}
+
+// InventoryTargetInsert is an admin-supplied per-SKU reorder target. A nil field leaves
+// that threshold unset (no trigger on that dimension).
+type InventoryTargetInsert struct {
+	ProductID       int           `db:"product_id"`
+	SizeID          int           `db:"size_id"`
+	ReorderPoint    sql.NullInt64 `db:"reorder_point"`
+	TargetDaysCover sql.NullInt64 `db:"target_days_cover"`
+	LeadTimeDays    sql.NullInt64 `db:"lead_time_days"`
 }
 
 type SizeRunEfficiencyRow struct {
@@ -558,14 +594,14 @@ type SizeRunEfficiencyRow struct {
 // --- Slow Movers ---
 
 type SlowMoverRow struct {
-	ProductID    int             `db:"product_id"`
-	ProductName  string          `db:"product_name"`
-	Revenue      decimal.Decimal `db:"revenue"`
-	UnitsSold    int64           `db:"units_sold"`
-	DaysInStock  float64         `db:"days_in_stock"`
-	LastSaleDate *time.Time      `db:"last_sale_date"`
-	ProductHidden bool           `db:"product_hidden"`
-	TotalViews    int64          `db:"total_views"`
+	ProductID     int             `db:"product_id"`
+	ProductName   string          `db:"product_name"`
+	Revenue       decimal.Decimal `db:"revenue"`
+	UnitsSold     int64           `db:"units_sold"`
+	DaysInStock   float64         `db:"days_in_stock"`
+	LastSaleDate  *time.Time      `db:"last_sale_date"`
+	ProductHidden bool            `db:"product_hidden"`
+	TotalViews    int64           `db:"total_views"`
 }
 
 // --- Return Analysis ---
@@ -790,4 +826,27 @@ type CampaignAttributionAggregatedFull struct {
 	Conversions    int64
 	Revenue        decimal.Decimal
 	ConversionRate float64
+	// Spend and ROAS are enriched from channel_spend (operator-entered, base currency).
+	// Spend is zero when none is recorded; ROAS (revenue / spend) is set only when spend > 0.
+	Spend decimal.Decimal
+	ROAS  float64
+}
+
+// ChannelSpendInsert is an operator-entered marketing spend row for one channel on one day.
+type ChannelSpendInsert struct {
+	Date        time.Time       `db:"date"`
+	UTMSource   string          `db:"utm_source"`
+	UTMMedium   string          `db:"utm_medium"`
+	UTMCampaign string          `db:"utm_campaign"`
+	Amount      decimal.Decimal `db:"amount"`
+	Currency    string          `db:"currency"`
+}
+
+// ChannelSpendRow is spend aggregated by channel over a period (base currency), used to
+// compute ROAS against campaign-attribution revenue.
+type ChannelSpendRow struct {
+	UTMSource   string          `db:"utm_source"`
+	UTMMedium   string          `db:"utm_medium"`
+	UTMCampaign string          `db:"utm_campaign"`
+	Spend       decimal.Decimal `db:"spend"`
 }

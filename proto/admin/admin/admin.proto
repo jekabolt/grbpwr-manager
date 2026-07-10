@@ -190,6 +190,22 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics"};
   }
 
+  // Sets per-SKU inventory reorder targets used by the inventory-health metrics.
+  rpc UpsertInventoryTargets(UpsertInventoryTargetsRequest) returns (UpsertInventoryTargetsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/inventory/targets/upsert"
+      body: "*"
+    };
+  }
+
+  // Records operator-entered marketing spend per channel per day, used for ROAS.
+  rpc UpsertChannelSpend(UpsertChannelSpendRequest) returns (UpsertChannelSpendResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/channel-spend/upsert"
+      body: "*"
+    };
+  }
+
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
@@ -1034,6 +1050,20 @@ message BusinessMetrics {
   // Distinct from orders_count, which counts only net-revenue statuses. Use this as the
   // denominator when deriving status shares (cancellation rate, refund rate, etc.).
   MetricWithComparison total_placed_orders = 84;
+
+  // Margin metrics, derived from product.cost_price (per-unit COGS in base currency).
+  // Computed ONLY over line items whose product has a cost set, so revenue_cost and the
+  // margins are on the "costed" subset of revenue — gross_margin_pct.caveat and
+  // cost_coverage_pct report how much of revenue that subset is. COGS is net of the
+  // refund proration but NOT reduced by promo/sale discounts (a discount lowers revenue,
+  // not the cost of the goods).
+  MetricWithComparison revenue_cost = 85; // COGS: Σ(cost × qty), refund-adjusted
+  MetricWithComparison gross_margin = 86; // costed net revenue − COGS
+  MetricWithComparison gross_margin_pct = 87; // gross_margin / costed net revenue × 100
+  MetricWithComparison contribution_margin = 88; // gross_margin − total_shipping_cost
+  // Share (%) of net product revenue (base currency) whose product has a cost set — the
+  // fraction the margin figures above are computed over. 100 = full cost coverage.
+  double cost_coverage_pct = 89;
 }
 
 message PaymentMethodMetric {
@@ -1095,6 +1125,15 @@ message ProductMetric {
   string brand = 3;
   google.type.Decimal value = 4;
   int32 count = 5;
+  // Margin fields, populated only for revenue/quantity product breakdowns (zero for
+  // view-based metrics). unit_cost is the product's current base-currency COGS;
+  // revenue_cost is Σ(cost × net qty); gross_margin = value − revenue_cost. When
+  // has_cost is false the product's cost is unknown — treat margins as N/A, not as 100%.
+  google.type.Decimal unit_cost = 6;
+  google.type.Decimal revenue_cost = 7;
+  google.type.Decimal gross_margin = 8;
+  double gross_margin_pct = 9;
+  bool has_cost = 10;
 }
 
 message CategoryMetric {
@@ -1172,16 +1211,30 @@ message GeographySessionMetric {
   int32 users = 5;
 }
 
+// RefundReason is the canonical, structured refund/return reason used by the return-analysis
+// breakdown. Keys mirror the historical free-text buckets.
+enum RefundReason {
+  REFUND_REASON_UNSPECIFIED = 0; // not provided — falls back to free-text reason
+  REFUND_REASON_WRONG_SIZE = 1;
+  REFUND_REASON_NOT_AS_DESCRIBED = 2;
+  REFUND_REASON_DEFECTIVE = 3;
+  REFUND_REASON_CHANGED_MIND = 4;
+  REFUND_REASON_OTHER = 5;
+}
+
 message RefundOrderRequest {
   string order_uuid = 1;
   // Only used when status is PendingReturn. Empty = full refund. Non-empty = partial refund for specified order_item IDs.
   repeated int32 order_item_ids = 2;
-  // Optional reason for the refund (stored in order for audit).
+  // Optional free-text note for the refund (stored in order for audit).
   string reason = 3;
   // Whether to include shipping fee in the refund amount.
   // For full refund of not-yet-shipped orders this is automatically true.
   // For partial refunds, the caller decides whether to refund shipping.
   bool refund_shipping = 4;
+  // Optional structured reason. When set, it drives the return-analysis breakdown exactly
+  // (the free-text reason is only bucketed heuristically). Additive to reason (field 3).
+  RefundReason reason_code = 5;
 }
 
 message RefundOrderResponse {}
@@ -1764,8 +1817,31 @@ message InventoryHealthRow {
   string size_name = 4;
   int32 quantity = 5;
   double avg_daily_sales = 6;
-  double days_on_hand = 7;
+  double days_on_hand = 7; // days of cover at the current sales rate
+  // Optional per-SKU targets (0 = unset) and the server-side reorder decision derived
+  // from them. needs_reorder is meaningful only when has_target is true.
+  int32 reorder_point = 8;
+  int32 target_days_cover = 9;
+  int32 lead_time_days = 10;
+  bool needs_reorder = 11;
+  bool has_target = 12;
 }
+
+// InventoryTargetInsert is an admin-supplied per-SKU reorder target. Each threshold is
+// optional — 0 means "no trigger on that dimension" (stored as NULL).
+message InventoryTargetInsert {
+  int32 product_id = 1;
+  int32 size_id = 2;
+  int32 reorder_point = 3;
+  int32 target_days_cover = 4;
+  int32 lead_time_days = 5;
+}
+
+message UpsertInventoryTargetsRequest {
+  repeated InventoryTargetInsert targets = 1;
+}
+
+message UpsertInventoryTargetsResponse {}
 
 // --- Analytics: Size Run Efficiency ---
 
@@ -1992,7 +2068,28 @@ message CampaignAttributionRow {
   int32 conversions = 7;
   google.type.Decimal revenue = 8;
   double conversion_rate = 9;
+  // Marketing spend (base currency, from channel_spend) and ROAS = revenue / spend. spend is
+  // zero when none is recorded for the channel; roas is 0 unless spend > 0.
+  google.type.Decimal spend = 10;
+  double roas = 11;
 }
+
+// ChannelSpendInsert is one operator-entered marketing spend row for a channel on a day.
+// Enter spend in base currency for it to feed ROAS (the shop has no live FX).
+message ChannelSpendInsert {
+  string date = 1; // YYYY-MM-DD
+  string utm_source = 2;
+  string utm_medium = 3;
+  string utm_campaign = 4;
+  google.type.Decimal amount = 5;
+  string currency = 6;
+}
+
+message UpsertChannelSpendRequest {
+  repeated ChannelSpendInsert spend = 1;
+}
+
+message UpsertChannelSpendResponse {}
 
 // ==================== Review Messages ====================
 

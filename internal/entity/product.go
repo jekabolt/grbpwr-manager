@@ -198,6 +198,10 @@ type ProductInsert struct {
 	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
 	Translations              []ProductTranslationInsert `valid:"required"`
 	Prices                    []ProductPriceInsert       `valid:"required"` // At least one price required
+	// CostPrice is the confidential per-unit cost of goods (COGS) in base currency
+	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
+	// on update. Never serialized on the storefront read path — write-only.
+	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
 }
 
 type ProductDisplay struct {

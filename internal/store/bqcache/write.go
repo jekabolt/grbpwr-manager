@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"strings"
 	"time"
 
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
@@ -492,6 +493,29 @@ func (s *WriteStore) SaveBQAbandonedCart(ctx context.Context, rows []entity.Aban
 	}
 	if err := storeutil.BulkReplaceByDate(ctx, s.DB, "bq_abandoned_cart", cols, args); err != nil {
 		return fmt.Errorf("save bq abandoned cart: %w", err)
+	}
+	return nil
+}
+
+// UpsertChannelSpend inserts or replaces operator-entered marketing spend by
+// (date, utm_source, utm_medium, utm_campaign, currency). Empty input is a no-op. Unlike the
+// bq_* tables here, channel_spend is source-of-truth data, not a re-syncable cache.
+func (s *WriteStore) UpsertChannelSpend(ctx context.Context, rows []entity.ChannelSpendInsert) error {
+	for _, r := range rows {
+		if err := storeutil.ExecNamed(ctx, s.DB, `
+			INSERT INTO channel_spend (date, utm_source, utm_medium, utm_campaign, amount, currency)
+			VALUES (:date, :utm_source, :utm_medium, :utm_campaign, :amount, :currency)
+			ON DUPLICATE KEY UPDATE amount = VALUES(amount)`,
+			map[string]any{
+				"date":         r.Date.Format("2006-01-02"),
+				"utm_source":   r.UTMSource,
+				"utm_medium":   r.UTMMedium,
+				"utm_campaign": r.UTMCampaign,
+				"amount":       r.Amount,
+				"currency":     strings.ToUpper(r.Currency),
+			}); err != nil {
+			return fmt.Errorf("upsert channel spend (%s/%s/%s %s): %w", r.UTMSource, r.UTMMedium, r.UTMCampaign, r.Currency, err)
+		}
 	}
 	return nil
 }

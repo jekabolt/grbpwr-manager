@@ -73,6 +73,10 @@ func (s *Store) GetSizeRunEfficiency(ctx context.Context, from, to time.Time, li
 	return s.inventory().GetSizeRunEfficiency(ctx, from, to, limit)
 }
 
+func (s *Store) UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error {
+	return s.inventory().UpsertInventoryTargets(ctx, targets)
+}
+
 // --- Metrics interface: Analytics methods ---
 
 func (s *Store) GetSlowMovers(ctx context.Context, from, to time.Time, limit int) ([]entity.SlowMoverRow, error) {
