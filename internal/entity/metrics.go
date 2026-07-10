@@ -609,6 +609,17 @@ type SizeRunEfficiencyRow struct {
 	EfficiencyPct    float64 `db:"efficiency_pct"`
 }
 
+// SellThroughByDropRow rolls a release/drop cohort (product.collection) into decision-grade
+// totals. Lifetime (current-state), not windowed: sell-through is inherently cumulative.
+type SellThroughByDropRow struct {
+	Collection     string          `db:"collection"`
+	ProductCount   int             `db:"product_count"`
+	UnitsSold      int64           `db:"units_sold"`
+	UnitsRemaining int64           `db:"units_remaining"`
+	SellThroughPct float64         `db:"sell_through_pct"`
+	Revenue        decimal.Decimal `db:"revenue"`
+}
+
 // --- Slow Movers ---
 
 type SlowMoverRow struct {

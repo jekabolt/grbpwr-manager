@@ -339,6 +339,15 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.SlowMovers = dto.ConvertSlowMoversToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_SELL_THROUGH_BY_DROP) {
+		items, err := s.repo.Metrics().GetSellThroughByDrop(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get sell-through by drop", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get sell-through by drop")
+		}
+		resp.SellThroughByDrop = dto.ConvertSellThroughByDropToPb(items)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
 		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
 		if err != nil {

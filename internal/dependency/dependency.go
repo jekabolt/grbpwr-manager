@@ -244,6 +244,9 @@ type (
 		GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error)
 		// UpsertInventoryTargets sets per-SKU reorder targets (insert or replace by product+size).
 		UpsertInventoryTargets(ctx context.Context, targets []entity.InventoryTargetInsert) error
+		// GetSellThroughByDrop rolls each drop cohort (product.collection) into lifetime
+		// sell-through totals. from/to are accepted for interface consistency but not applied.
+		GetSellThroughByDrop(ctx context.Context, from, to time.Time, limit int) ([]entity.SellThroughByDropRow, error)
 	}
 
 	Retention interface {

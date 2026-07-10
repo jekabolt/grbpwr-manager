@@ -132,6 +132,64 @@ func (is *inventoryStore) UpsertInventoryTargets(ctx context.Context, targets []
 	return nil
 }
 
+// GetSellThroughByDrop rolls each release/drop cohort (product.collection) into
+// decision-grade totals: distinct products, lifetime net units sold, current on-hand units,
+// sell-through % (sold / (sold + remaining)), and lifetime net revenue. Sell-through is
+// inherently cumulative, so it is computed lifetime (current state) — the from/to window is
+// intentionally NOT applied to the sold/revenue aggregation. Products with an empty
+// collection (untagged) are excluded. Sorted by revenue desc, limited.
+func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to time.Time, limit int) ([]entity.SellThroughByDropRow, error) {
+	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+
+	query := fmt.Sprintf(`
+		WITH sold AS (
+			SELECT
+				oi.product_id,
+				SUM(oi.quantity) AS units_sold,
+				COALESCE(SUM(pp_base.price * oi.quantity), 0) AS revenue
+			FROM order_item oi
+			JOIN customer_order co ON oi.order_id = co.id
+			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+			WHERE co.order_status_id IN (%s)
+			GROUP BY oi.product_id
+		),
+		stock AS (
+			SELECT product_id, SUM(quantity) AS units_remaining
+			FROM product_size
+			GROUP BY product_id
+		)
+		SELECT
+			p.collection,
+			COUNT(DISTINCT p.id) AS product_count,
+			COALESCE(SUM(s.units_sold), 0) AS units_sold,
+			COALESCE(SUM(st.units_remaining), 0) AS units_remaining,
+			COALESCE(SUM(s.revenue), 0) AS revenue,
+			CASE
+				WHEN COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0) > 0
+				THEN COALESCE(SUM(s.units_sold), 0) * 100.0 / (COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0))
+				ELSE 0
+			END AS sell_through_pct
+		FROM product p
+		LEFT JOIN sold s ON s.product_id = p.id
+		LEFT JOIN stock st ON st.product_id = p.id
+		WHERE p.deleted_at IS NULL
+			AND p.collection IS NOT NULL AND p.collection <> ''
+		GROUP BY p.collection
+		ORDER BY revenue DESC
+		LIMIT :limit
+	`, statusIDs)
+
+	result, err := storeutil.QueryListNamed[entity.SellThroughByDropRow](ctx, is.DB, query, map[string]any{
+		"baseCurrency": baseCurrency,
+		"limit":        limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get sell-through by drop: %w", err)
+	}
+	return result, nil
+}
+
 // GetSizeRunEfficiency returns the percentage of sizes that have any sales activity
 // for each product. Sell-through is computed from initial stock vs current stock.
 func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to time.Time, limit int) ([]entity.SizeRunEfficiencyRow, error) {

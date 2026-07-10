@@ -1030,6 +1030,24 @@ func ConvertSizeRunEfficiencyToPb(list []entity.SizeRunEfficiencyRow) []*pb_admi
 	return pb
 }
 
+func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admin.SellThroughByDropRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.SellThroughByDropRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.SellThroughByDropRow{
+			Collection:     r.Collection,
+			ProductCount:   int32(r.ProductCount),
+			UnitsSold:      r.UnitsSold,
+			UnitsRemaining: r.UnitsRemaining,
+			SellThroughPct: r.SellThroughPct,
+			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
+		}
+	}
+	return pb
+}
+
 func ConvertSlowMoversToPb(list []entity.SlowMoverRow) []*pb_admin.SlowMoverRow {
 	if len(list) == 0 {
 		return nil

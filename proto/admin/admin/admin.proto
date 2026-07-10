@@ -856,6 +856,7 @@ enum MetricsSection {
   METRICS_SECTION_GEOGRAPHY = 42;
   METRICS_SECTION_CUSTOMER_SEGMENTATION = 43;
   METRICS_SECTION_RFM = 44;
+  METRICS_SECTION_SELL_THROUGH_BY_DROP = 45;
 }
 
 message GetMetricsRequest {
@@ -914,6 +915,7 @@ message GetMetricsResponse {
   GeographySection geography = 45;
   repeated CustomerSegmentRow customer_segments = 46;
   repeated RFMSegmentRow rfm_analysis = 47;
+  repeated SellThroughByDropRow sell_through_by_drop = 48;
 }
 
 message FunnelSection {
@@ -1878,6 +1880,22 @@ message UpsertInventoryTargetsRequest {
 }
 
 message UpsertInventoryTargetsResponse {}
+
+// --- Analytics: Sell-through by Drop ---
+
+// SellThroughByDropRow aggregates a release/drop cohort (product.collection) into
+// decision-grade totals, so tiny per-day/per-SKU samples roll up to a statistically
+// meaningful drop-level view. sell_through_pct = units_sold / (units_sold +
+// units_remaining) × 100 over the whole drop, computed lifetime (current state), not
+// windowed — sell-through is inherently cumulative. Sorted by revenue desc.
+message SellThroughByDropRow {
+  string collection = 1; // the drop identifier (product.collection)
+  int32 product_count = 2; // distinct products in the drop
+  int64 units_sold = 3; // lifetime net units sold across the drop
+  int64 units_remaining = 4; // current on-hand units across the drop
+  double sell_through_pct = 5; // units_sold / (units_sold + units_remaining) × 100
+  google.type.Decimal revenue = 6; // lifetime net revenue (base currency) for the drop
+}
 
 // --- Analytics: Size Run Efficiency ---
 
