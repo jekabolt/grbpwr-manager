@@ -1098,6 +1098,14 @@ message MetricWithComparison {
   double change_absolute = 5;
   // Optional tooltip/caveat text to clarify metric interpretation (e.g., data limitations, calculation notes).
   string caveat = 6;
+  // Number of observations behind the metric (orders, sessions, customers…). 0 = not
+  // populated. Prefer gating a metric on this (e.g. hide/greytext when sample_size < 30)
+  // over an arbitrary display floor.
+  int32 sample_size = 7;
+  // 95% confidence-interval half-width in the metric's own units (e.g. ±2.4 for a 12.0%
+  // rate). Populated only for true count-proportions (conversion, promo usage); 0 = not
+  // computed. Frontend can render "12.0% ± 2.4" instead of guessing significance from a floor.
+  double margin_of_error = 8;
 }
 
 message GeographyMetric {

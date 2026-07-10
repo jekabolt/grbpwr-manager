@@ -192,6 +192,12 @@ type MetricWithComparison struct {
 	CompareValue *decimal.Decimal
 	ChangePct    *float64
 	Caveat       string
+	// SampleSize is the number of observations behind the metric (orders, sessions, customers…).
+	// 0 = not populated for this metric. Lets the UI gate a metric on n instead of an arbitrary
+	// display floor. MarginOfError is the 95% CI half-width in the metric's own units, populated
+	// only for true count-proportions (e.g. conversion, promo usage); 0 = not computed.
+	SampleSize    int
+	MarginOfError float64
 }
 
 type GeographyMetric struct {

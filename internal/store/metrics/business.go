@@ -624,6 +624,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if grossRev.GreaterThan(decimal.Zero) {
 		m.RefundRate.Value = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100))
 	}
+	// Gate refund rate on the order count (a money ratio, so no proportion CI). n lets the UI
+	// suppress a noisy rate at low volume instead of applying a hardcoded floor.
+	m.RefundRate.SampleSize = placedOrders
 	m.GrossRevenue.Value = grossRev
 	m.TotalRefunded.Value = revRefund
 	m.TotalDiscount.Value = totalDiscount
@@ -631,6 +634,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.PromoCodeDiscount.Value = promoCodeDiscount
 	if orders > 0 {
 		m.PromoUsageRate.Value = decimal.NewFromInt(int64(promoOrders)).Div(decimal.NewFromInt(int64(orders))).Mul(decimal.NewFromInt(100))
+		// True count-proportion (promo orders / orders): expose n and a 95% CI half-width.
+		m.PromoUsageRate.SampleSize = orders
+		m.PromoUsageRate.MarginOfError = proportionMarginOfError(m.PromoUsageRate.Value.InexactFloat64(), orders)
 	}
 	m.NewSubscribers.Value = decimal.NewFromInt(int64(newSubs))
 	m.RepeatCustomersRate.Value = repeatRate
@@ -675,6 +681,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if totalSessions > 0 {
 		// Session-weighted averages: divide weighted sums by total sessions
 		m.BounceRate.Value = decimal.NewFromFloat(weightedBounceRate / float64(totalSessions))
+		// Bounce is a session-level proportion: n = sessions, with a 95% CI half-width.
+		m.BounceRate.SampleSize = totalSessions
+		m.BounceRate.MarginOfError = proportionMarginOfError(m.BounceRate.Value.InexactFloat64(), totalSessions)
 		// Prefer total foreground engagement / total sessions (column from GA4 sync).
 		// Falls back to weighted avg_session_duration when engagement was not stored (pre-migration / legacy rows).
 		if totalUserEngagementSeconds > 0 {
@@ -689,6 +698,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if totalSessions > 0 {
 		m.ConversionRate.Value = decimal.NewFromInt(int64(orders)).Div(decimal.NewFromInt(int64(totalSessions))).Mul(decimal.NewFromInt(100))
 		m.RevenuePerSession.Value = rev.Div(decimal.NewFromInt(int64(totalSessions)))
+		// Conversion is a session-level proportion (orders / sessions): n + 95% CI half-width.
+		m.ConversionRate.SampleSize = totalSessions
+		m.ConversionRate.MarginOfError = proportionMarginOfError(m.ConversionRate.Value.InexactFloat64(), totalSessions)
 	}
 
 	// Compute conversion rate by day

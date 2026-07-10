@@ -231,6 +231,12 @@ func metricWithComparisonToPb(m entity.MetricWithComparison, opts ...any) *pb_ad
 	if m.Caveat != "" {
 		pb.Caveat = m.Caveat
 	}
+	if m.SampleSize > 0 {
+		pb.SampleSize = int32(m.SampleSize)
+	}
+	if m.MarginOfError > 0 {
+		pb.MarginOfError = m.MarginOfError
+	}
 	return pb
 }
 
