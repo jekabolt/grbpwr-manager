@@ -22,12 +22,30 @@ func fractionToPct(v float64) float64 {
 	return v * 100
 }
 
+// ConvertEntityBusinessMetricsToPb maps the flat internal entity into the typed, provenance-
+// grouped API message (commerce / margin / traffic / email). The entity stays flat; only the
+// wire shape is grouped.
 func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.BusinessMetrics {
 	if m == nil {
 		return nil
 	}
 	pb := &pb_admin.BusinessMetrics{
-		Period:               timeRangeToPb(m.Period),
+		Period:   timeRangeToPb(m.Period),
+		Commerce: commerceCoreMetricsToPb(m),
+		Margin:   marginMetricsToPb(m),
+		Traffic:  trafficMetricsToPb(m),
+		Email:    emailMetricsToPb(m),
+	}
+	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
+		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
+	}
+	return pb
+}
+
+// commerceCoreMetricsToPb builds the DB-trusted commerce view (sales, customers, discounts,
+// shipping) with its breakdowns and daily series.
+func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMetrics {
+	return &pb_admin.CommerceCoreMetrics{
 		Revenue:              metricWithComparisonToPb(m.Revenue),
 		OrdersCount:          metricWithComparisonToPb(m.OrdersCount),
 		TotalPlacedOrders:    metricWithComparisonToPb(m.TotalPlacedOrders),
@@ -40,50 +58,25 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		TotalDiscount:        metricWithComparisonToPb(m.TotalDiscount),
 		ProductSaleDiscount:  metricWithComparisonToPb(m.ProductSaleDiscount),
 		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
-		Sessions:             metricWithComparisonToPb(m.Sessions),
-		Users:                metricWithComparisonToPb(m.Users),
-		NewUsers:             metricWithComparisonToPb(m.NewUsers),
-		PageViews:            metricWithComparisonToPb(m.PageViews),
-		BounceRate:           metricWithComparisonToPb(m.BounceRate, true),                           // lower is better
-		AvgSessionDuration:   metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // round to 1 decimal place for consistent delta display
-		PagesPerSession:      metricWithComparisonToPb(m.PagesPerSession),
-		ConversionRate:       metricWithComparisonToPb(m.ConversionRate),
-		RevenuePerSession:    metricWithComparisonToPb(m.RevenuePerSession),
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
+		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
 		AvgOrdersPerCustomer: metricWithComparisonToPb(m.AvgOrdersPerCustomer),
 		AvgDaysBetweenOrders: metricWithComparisonToPb(m.AvgDaysBetweenOrders),
-		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
+		AvgShippingCost:      metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)),
+		TotalShippingCost:    metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
 		ClvDistribution:      clvStatsToPb(m.CLVDistribution),
-
-		// Shipping / logistics metrics
-		AvgShippingCost:   metricWithComparisonToPb(m.AvgShippingCost, false, false, int32(2)), // Round to 2 decimal places
-		TotalShippingCost: metricWithComparisonToPb(m.TotalShippingCost, false, false, int32(2)),
-
-		// Margin metrics (COGS from product.cost_price). COGS is a volume-scaling cost like
-		// shipping — neutral, not "lower is better" (higher COGS from more sales isn't bad).
-		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
-		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
-		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
-		PaymentFees:        metricWithComparisonToPb(m.PaymentFees, false, false, int32(2)),
-		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
-		CostCoveragePct:    m.CostCoveragePct,
-		UncostedProductIds: intsToInt32(m.UncostedProductIds),
 
 		RevenueByCountry:               geographyMetricsToPb(m.RevenueByCountry),
 		RevenueByCity:                  geographyMetricsToPb(m.RevenueByCity),
 		RevenueByRegion:                regionMetricsToPb(m.RevenueByRegion),
 		AvgOrderByCountry:              geographyMetricsToPb(m.AvgOrderByCountry),
-		SessionsByCountry:              geographySessionMetricsToPb(m.SessionsByCountry),
 		RevenueByCurrency:              currencyMetricsToPb(m.RevenueByCurrency),
 		RevenueByPaymentMethod:         paymentMethodMetricsToPb(m.RevenueByPaymentMethod),
 		TopProductsByRevenue:           productMetricsToPb(m.TopProductsByRevenue),
 		TopProductsByQuantity:          productMetricsToPb(m.TopProductsByQuantity),
-		TopProductsByViews:             productViewMetricsToPb(m.TopProductsByViews),
 		RevenueByCategory:              categoryMetricsToPb(m.RevenueByCategory),
 		CrossSellPairs:                 crossSellPairsToPb(m.CrossSellPairs),
-		TrafficBySource:                trafficSourceMetricsToPb(m.TrafficBySource),
-		TrafficByDevice:                deviceMetricsToPb(m.TrafficByDevice),
 		RevenueByPromo:                 promoMetricsToPb(m.RevenueByPromo),
 		OrdersByStatus:                 statusCountsToPb(m.OrdersByStatus),
 		RevenueByDay:                   timeSeriesToPb(m.RevenueByDay),
@@ -97,10 +90,6 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		ReturningCustomersByDay:        timeSeriesToPb(m.ReturningCustomersByDay),
 		ShippedByDay:                   timeSeriesToPb(m.ShippedByDay),
 		DeliveredByDay:                 timeSeriesToPb(m.DeliveredByDay),
-		SessionsByDay:                  timeSeriesToPb(m.SessionsByDay),
-		UsersByDay:                     timeSeriesToPb(m.UsersByDay),
-		PageViewsByDay:                 timeSeriesToPb(m.PageViewsByDay),
-		ConversionRateByDay:            timeSeriesToPb(m.ConversionRateByDay),
 		RevenueByDayCompare:            timeSeriesToPb(m.RevenueByDayCompare),
 		OrdersByDayCompare:             timeSeriesToPb(m.OrdersByDayCompare),
 		SubscribersByDayCompare:        timeSeriesToPb(m.SubscribersByDayCompare),
@@ -112,21 +101,60 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		ReturningCustomersByDayCompare: timeSeriesToPb(m.ReturningCustomersByDayCompare),
 		ShippedByDayCompare:            timeSeriesToPb(m.ShippedByDayCompare),
 		DeliveredByDayCompare:          timeSeriesToPb(m.DeliveredByDayCompare),
-		SessionsByDayCompare:           timeSeriesToPb(m.SessionsByDayCompare),
-		UsersByDayCompare:              timeSeriesToPb(m.UsersByDayCompare),
-		PageViewsByDayCompare:          timeSeriesToPb(m.PageViewsByDayCompare),
-		ConversionRateByDayCompare:     timeSeriesToPb(m.ConversionRateByDayCompare),
-		EmailsSent:                     metricWithComparisonToPb(m.EmailsSent),
-		EmailsDelivered:                metricWithComparisonToPb(m.EmailsDelivered),
-		EmailDeliveryRate:              metricWithComparisonToPb(m.EmailDeliveryRate),
-		EmailOpenRate:                  metricWithComparisonToPb(m.EmailOpenRate),
-		EmailClickRate:                 metricWithComparisonToPb(m.EmailClickRate),
-		EmailBounceRate:                metricWithComparisonToPb(m.EmailBounceRate, true), // lower is better
 	}
-	if m.ComparePeriod != nil && (!m.ComparePeriod.From.IsZero() || !m.ComparePeriod.To.IsZero()) {
-		pb.ComparePeriod = timeRangeToPb(*m.ComparePeriod)
+}
+
+// marginMetricsToPb builds the DB-trusted COGS / margin view. COGS is a volume-scaling cost
+// like shipping — neutral, not "lower is better".
+func marginMetricsToPb(m *entity.BusinessMetrics) *pb_admin.MarginMetrics {
+	return &pb_admin.MarginMetrics{
+		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
+		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
+		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
+		PaymentFees:        metricWithComparisonToPb(m.PaymentFees, false, false, int32(2)),
+		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
+		CostCoveragePct:    m.CostCoveragePct,
+		UncostedProductIds: intsToInt32(m.UncostedProductIds),
 	}
-	return pb
+}
+
+// trafficMetricsToPb builds the GA4-estimated traffic / engagement view.
+func trafficMetricsToPb(m *entity.BusinessMetrics) *pb_admin.TrafficMetrics {
+	return &pb_admin.TrafficMetrics{
+		Sessions:                   metricWithComparisonToPb(m.Sessions),
+		Users:                      metricWithComparisonToPb(m.Users),
+		NewUsers:                   metricWithComparisonToPb(m.NewUsers),
+		PageViews:                  metricWithComparisonToPb(m.PageViews),
+		BounceRate:                 metricWithComparisonToPb(m.BounceRate, true),                           // lower is better
+		AvgSessionDuration:         metricWithComparisonToPb(m.AvgSessionDuration, false, false, int32(1)), // 1 decimal place
+		PagesPerSession:            metricWithComparisonToPb(m.PagesPerSession),
+		ConversionRate:             metricWithComparisonToPb(m.ConversionRate),
+		RevenuePerSession:          metricWithComparisonToPb(m.RevenuePerSession),
+		SessionsByCountry:          geographySessionMetricsToPb(m.SessionsByCountry),
+		TopProductsByViews:         productViewMetricsToPb(m.TopProductsByViews),
+		TrafficBySource:            trafficSourceMetricsToPb(m.TrafficBySource),
+		TrafficByDevice:            deviceMetricsToPb(m.TrafficByDevice),
+		SessionsByDay:              timeSeriesToPb(m.SessionsByDay),
+		UsersByDay:                 timeSeriesToPb(m.UsersByDay),
+		PageViewsByDay:             timeSeriesToPb(m.PageViewsByDay),
+		ConversionRateByDay:        timeSeriesToPb(m.ConversionRateByDay),
+		SessionsByDayCompare:       timeSeriesToPb(m.SessionsByDayCompare),
+		UsersByDayCompare:          timeSeriesToPb(m.UsersByDayCompare),
+		PageViewsByDayCompare:      timeSeriesToPb(m.PageViewsByDayCompare),
+		ConversionRateByDayCompare: timeSeriesToPb(m.ConversionRateByDayCompare),
+	}
+}
+
+// emailMetricsToPb builds the Resend email-delivery view.
+func emailMetricsToPb(m *entity.BusinessMetrics) *pb_admin.EmailMetrics {
+	return &pb_admin.EmailMetrics{
+		EmailsSent:        metricWithComparisonToPb(m.EmailsSent),
+		EmailsDelivered:   metricWithComparisonToPb(m.EmailsDelivered),
+		EmailDeliveryRate: metricWithComparisonToPb(m.EmailDeliveryRate),
+		EmailOpenRate:     metricWithComparisonToPb(m.EmailOpenRate),
+		EmailClickRate:    metricWithComparisonToPb(m.EmailClickRate),
+		EmailBounceRate:   metricWithComparisonToPb(m.EmailBounceRate, true), // lower is better
+	}
 }
 
 func timeRangeToPb(tr entity.TimeRange) *pb_admin.TimeRange {
