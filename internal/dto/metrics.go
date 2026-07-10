@@ -65,6 +65,7 @@ func ConvertEntityBusinessMetricsToPb(m *entity.BusinessMetrics) *pb_admin.Busin
 		RevenueCost:        metricWithComparisonToPb(m.RevenueCost, false, false, int32(2)),
 		GrossMargin:        metricWithComparisonToPb(m.GrossMargin, false, false, int32(2)),
 		GrossMarginPct:     metricWithComparisonToPb(m.GrossMarginPct, false, false, int32(2)),
+		PaymentFees:        metricWithComparisonToPb(m.PaymentFees, false, false, int32(2)),
 		ContributionMargin: metricWithComparisonToPb(m.ContributionMargin, false, false, int32(2)),
 		CostCoveragePct:    m.CostCoveragePct,
 		UncostedProductIds: intsToInt32(m.UncostedProductIds),

@@ -196,20 +196,23 @@ func (s *Store) UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string
 	return nil
 }
 
-// UpdateTotalSettledBase records the actual Stripe-settled amount for an order,
-// converted to the base currency (EUR). Captured once at payment confirmation.
-func (s *Store) UpdateTotalSettledBase(ctx context.Context, orderUUID string, settledBase decimal.Decimal) error {
+// UpdateSettledBaseAndFee records the actual Stripe-settled amount and the Stripe processing
+// fee for an order, both converted to the base currency (EUR) from the charge's balance
+// transaction. Captured together, once, at payment confirmation.
+func (s *Store) UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error {
 	query := `
 	UPDATE customer_order
-	SET total_settled_base = :settledBase
+	SET total_settled_base = :settledBase,
+	    payment_fee = :paymentFee
 	WHERE uuid = :orderUUID`
 
 	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
 		"settledBase": settledBase,
+		"paymentFee":  paymentFee,
 		"orderUUID":   orderUUID,
 	})
 	if err != nil {
-		return fmt.Errorf("can't update total settled base: %w", err)
+		return fmt.Errorf("can't update settled base and fee: %w", err)
 	}
 	return nil
 }

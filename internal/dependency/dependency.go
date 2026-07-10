@@ -113,7 +113,7 @@ type (
 		InsertFiatInvoice(ctx context.Context, orderUUID string, clientSecret string, pm entity.PaymentMethod, expiredAt time.Time) (*entity.OrderFull, error)
 		AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID string, paymentIntentId string) error
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
-		UpdateTotalSettledBase(ctx context.Context, orderUUID string, settledBase decimal.Decimal) error
+		UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)

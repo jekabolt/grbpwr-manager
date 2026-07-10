@@ -47,6 +47,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		costedRev, cCostedRev                    decimal.Decimal
 		cogs, cCogs                              decimal.Decimal
 		totalItemRev                             decimal.Decimal
+		paymentFees, cPaymentFees                decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -100,6 +101,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.UncostedProductIds, err = s.getUncostedSoldProductIDs(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		paymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
@@ -146,6 +152,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		g.Go(func() error {
 			var err error
 			cCostedRev, cCogs, _, err = s.getMarginMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cPaymentFees, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -634,7 +645,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	grossMargin := costedRev.Sub(cogs)
 	m.RevenueCost.Value = cogs
 	m.GrossMargin.Value = grossMargin
-	m.ContributionMargin.Value = grossMargin.Sub(totalShipCost)
+	m.PaymentFees.Value = paymentFees
+	m.ContributionMargin.Value = grossMargin.Sub(totalShipCost).Sub(paymentFees)
 	if costedRev.GreaterThan(decimal.Zero) {
 		m.GrossMarginPct.Value = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2)
 	}
@@ -653,7 +665,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.GrossMargin.Caveat = note
 		m.GrossMarginPct.Caveat = note
 	}
-	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost; meaningful when cost coverage is high."
+	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and Stripe payment fees; meaningful when cost coverage is high."
 
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
@@ -762,7 +774,9 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.RevenueCost.ChangePct = changePct(cogs, cCogs)
 		m.GrossMargin.CompareValue = &cGrossMargin
 		m.GrossMargin.ChangePct = changePct(grossMargin, cGrossMargin)
-		cContribution := cGrossMargin.Sub(cTotalShipCost)
+		m.PaymentFees.CompareValue = &cPaymentFees
+		m.PaymentFees.ChangePct = changePct(paymentFees, cPaymentFees)
+		cContribution := cGrossMargin.Sub(cTotalShipCost).Sub(cPaymentFees)
 		m.ContributionMargin.CompareValue = &cContribution
 		m.ContributionMargin.ChangePct = changePct(m.ContributionMargin.Value, cContribution)
 		if cCostedRev.GreaterThan(decimal.Zero) {

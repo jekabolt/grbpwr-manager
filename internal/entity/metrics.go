@@ -110,7 +110,8 @@ type BusinessMetrics struct {
 	RevenueCost        MetricWithComparison // COGS: Σ(cost × qty), refund-adjusted
 	GrossMargin        MetricWithComparison // costed net revenue − COGS
 	GrossMarginPct     MetricWithComparison // GrossMargin / costed net revenue × 100
-	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost
+	PaymentFees        MetricWithComparison // Σ Stripe processing fees (base ccy), not refund-adjusted
+	ContributionMargin MetricWithComparison // GrossMargin − TotalShippingCost − PaymentFees
 	CostCoveragePct    float64              // % of net product revenue with a cost set
 	// Product IDs sold in the period with no cost_price set, ranked by period revenue desc —
 	// the products darkening the margins above. Empty when cost coverage is 100%.

@@ -1060,7 +1060,12 @@ message BusinessMetrics {
   MetricWithComparison revenue_cost = 85; // COGS: Σ(cost × qty), refund-adjusted
   MetricWithComparison gross_margin = 86; // costed net revenue − COGS
   MetricWithComparison gross_margin_pct = 87; // gross_margin / costed net revenue × 100
-  MetricWithComparison contribution_margin = 88; // gross_margin − total_shipping_cost
+  MetricWithComparison contribution_margin = 88; // gross_margin − total_shipping_cost − payment_fees
+  // Σ Stripe processing fees (base currency) captured from each order's charge balance
+  // transaction. NOT refund-adjusted — Stripe keeps the fee on refunds, so it is the full
+  // fee actually paid. A real contribution-margin cost that gross_margin ignores. Only
+  // orders with a captured fee contribute (pre-feature / non-Stripe orders are excluded).
+  MetricWithComparison payment_fees = 91;
   // Share (%) of net product revenue (base currency) whose product has a cost set — the
   // fraction the margin figures above are computed over. 100 = full cost coverage.
   double cost_coverage_pct = 89;
