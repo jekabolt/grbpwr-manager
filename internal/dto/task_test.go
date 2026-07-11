@@ -12,18 +12,21 @@ import (
 
 func TestConvertPbTaskInsertToEntity(t *testing.T) {
 	due := timestamppb.New(time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC))
+	start := timestamppb.New(time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC))
 	valid := &pb_common.TaskInsert{
 		Title:       "  Sew the sample  ",
 		Description: "cut + assemble",
 		Assignee:    "olya",
 		Priority:    pb_common.TaskPriority_TASK_PRIORITY_HIGH,
 		DueDate:     due,
+		StartDate:   start,
 		Labels:      []string{"urgent", "urgent", " sample ", ""},
 		MediaIds:    []int32{11, 12, 11},
 		TechCardId:  8,
 		ProductId:   0,
 		OrderUuid:   "  ",
 		ArchiveId:   3,
+		FittingId:   5,
 	}
 
 	got, err := ConvertPbTaskInsertToEntity(valid)
@@ -39,8 +42,12 @@ func TestConvertPbTaskInsertToEntity(t *testing.T) {
 	if !got.DueDate.Valid || !got.DueDate.Time.Equal(time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("due date mismatch: %+v", got.DueDate)
 	}
-	if !got.TechCardId.Valid || got.TechCardId.Int32 != 8 || got.ProductId.Valid || !got.ArchiveId.Valid {
+	if !got.TechCardId.Valid || got.TechCardId.Int32 != 8 || got.ProductId.Valid || !got.ArchiveId.Valid ||
+		!got.FittingId.Valid || got.FittingId.Int32 != 5 {
 		t.Errorf("deep-link ids mismatch: %+v", got)
+	}
+	if !got.StartDate.Valid || !got.StartDate.Time.Equal(time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("start date mismatch: %+v", got.StartDate)
 	}
 	if got.OrderUuid.Valid {
 		t.Errorf("blank order_uuid should be NULL, got %+v", got.OrderUuid)
@@ -75,6 +82,7 @@ func TestConvertPbTaskInsertToEntity(t *testing.T) {
 		{"long title", &pb_common.TaskInsert{Title: string(make([]byte, 256))}},
 		{"negative tech_card", &pb_common.TaskInsert{Title: "x", TechCardId: -1}},
 		{"negative product", &pb_common.TaskInsert{Title: "x", ProductId: -2}},
+		{"negative fitting", &pb_common.TaskInsert{Title: "x", FittingId: -1}},
 		{"zero media id", &pb_common.TaskInsert{Title: "x", MediaIds: []int32{0}}},
 		{"long label", &pb_common.TaskInsert{Title: "x", Labels: []string{string(make([]byte, 65))}}},
 		{"long order_uuid", &pb_common.TaskInsert{Title: "x", OrderUuid: string(make([]byte, 37))}},
@@ -95,6 +103,8 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 			Priority:   entity.TaskPriorityMedium,
 			Labels:     []string{"content"},
 			TechCardId: nullInt32FromPb(2),
+			FittingId:  nullInt32FromPb(7),
+			StartDate:  sql.NullTime{Time: now, Valid: true},
 		},
 		Board:     entity.TaskBoardContent,
 		Status:    entity.TaskStatusInProgress,
@@ -102,6 +112,7 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 		CreatedBy: "max",
 		CreatedAt: now,
 		UpdatedAt: now,
+		StartedAt: sql.NullTime{Time: now, Valid: true},
 		Media: []entity.MediaFull{
 			{Id: 9, MediaItem: entity.MediaItem{FullSizeMediaURL: "https://x/9.jpg"}},
 		},
@@ -113,6 +124,9 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 	}
 	if pb.Task.Title != "Shoot the drop" || pb.Task.Priority != pb_common.TaskPriority_TASK_PRIORITY_MEDIUM {
 		t.Errorf("content mismatch: %+v", pb.Task)
+	}
+	if pb.Task.FittingId != 7 || pb.Task.StartDate == nil || pb.StartedAt == nil {
+		t.Errorf("fitting/start fields mismatch: fitting=%d start_date=%v started_at=%v", pb.Task.FittingId, pb.Task.StartDate, pb.StartedAt)
 	}
 	if len(pb.Media) != 1 || pb.Media[0].Id != 9 || len(pb.Task.MediaIds) != 1 || pb.Task.MediaIds[0] != 9 {
 		t.Errorf("media mismatch: media=%+v ids=%+v", pb.Media, pb.Task.MediaIds)

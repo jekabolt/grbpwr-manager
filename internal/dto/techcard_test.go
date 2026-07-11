@@ -33,9 +33,13 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		RevisionDate:     revDate,
 		SizeIds:          []int32{4, 5, 6},
 		ProductIds:       []int32{100, 101},
-		Media: []*pb_common.TechCardMediaItem{
+		MoodboardMedia: []*pb_common.TechCardMediaItem{
+			{MediaId: 20, Kind: pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_REFERENCE},
+			{MediaId: 21}, // unset kind in moodboard list -> defaults to moodboard
+		},
+		TechnicalMedia: []*pb_common.TechCardMediaItem{
 			{MediaId: 11, Kind: pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_FRONT},
-			{MediaId: 12}, // unset kind -> defaults to preview
+			{MediaId: 12}, // unset kind in technical list -> defaults to preview
 		},
 		Callouts: []*pb_common.TechCardCallout{
 			{Number: 1, Part: "collar", Description: "two-piece", Dimensions: "h=4cm", MediaId: 11},
@@ -73,8 +77,14 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if len(got.SizeIds) != 3 || got.SizeIds[2] != 6 || len(got.ProductIds) != 2 {
 		t.Errorf("size/product ids mismatch: %+v %+v", got.SizeIds, got.ProductIds)
 	}
-	if len(got.Media) != 2 || got.Media[0].Kind != entity.TechCardMediaFront || got.Media[1].Kind != entity.TechCardMediaPreview {
-		t.Errorf("media mismatch: %+v", got.Media)
+	// media is concatenated moodboard-first, each tagged by category; unset kind defaults
+	// per list (moodboard list → moodboard, technical list → preview).
+	if len(got.Media) != 4 ||
+		got.Media[0].Category != entity.TechCardMediaCategoryMoodboard || got.Media[0].Kind != entity.TechCardMediaReference ||
+		got.Media[1].Category != entity.TechCardMediaCategoryMoodboard || got.Media[1].Kind != entity.TechCardMediaMoodboard ||
+		got.Media[2].Category != entity.TechCardMediaCategoryTechnical || got.Media[2].Kind != entity.TechCardMediaFront ||
+		got.Media[3].Category != entity.TechCardMediaCategoryTechnical || got.Media[3].Kind != entity.TechCardMediaPreview {
+		t.Errorf("media split mismatch: %+v", got.Media)
 	}
 	if len(got.Callouts) != 1 || got.Callouts[0].Number != 1 || got.Callouts[0].MediaId.Int32 != 11 {
 		t.Errorf("callouts mismatch: %+v", got.Callouts)
@@ -118,7 +128,8 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"dup product":       {StyleNumber: "x", Name: "y", ProductIds: []int32{1, 1}},
 		"size id zero":      {StyleNumber: "x", Name: "y", SizeIds: []int32{0}},
 		"base not in range": {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
-		"media id zero":     {StyleNumber: "x", Name: "y", Media: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
+		"moodboard media id zero": {StyleNumber: "x", Name: "y", MoodboardMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
+		"technical media id zero":  {StyleNumber: "x", Name: "y", TechnicalMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
 		"version too long":  {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
 		"detail media zero": {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{0}}}},
 		"detail media dup":  {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{5, 5}}}},
@@ -149,14 +160,20 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 			Concept:         nullStringFromPb("intent"),
 			SizeIds:         []int{4, 5},
 			ProductIds:      []int{100},
-			Media:           []entity.TechCardMediaItem{{MediaId: 11, Kind: entity.TechCardMediaFront}},
-			Callouts:        []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
-			Revisions:       []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
-			Details:         []entity.TechCardDetail{{Key: nullStringFromPb("collar"), Text: nullStringFromPb("two-piece"), MediaIds: []int{11}}},
+			Media: []entity.TechCardMediaItem{
+				{MediaId: 11, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
+				{MediaId: 20, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference},
+			},
+			Callouts:  []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
+			Revisions: []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
+			Details:   []entity.TechCardDetail{{Key: nullStringFromPb("collar"), Text: nullStringFromPb("two-piece"), MediaIds: []int{11}}},
 		},
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-		ResolvedMedia: []entity.TechCardMediaFull{{Media: entity.MediaFull{Id: 11}, Kind: entity.TechCardMediaFront}},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ResolvedMedia: []entity.TechCardMediaFull{
+			{Media: entity.MediaFull{Id: 11}, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
+			{Media: entity.MediaFull{Id: 20}, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference, Caption: nullStringFromPb("mood")},
+		},
 	}
 
 	pb := ConvertEntityTechCardToPb(tc)
@@ -174,8 +191,15 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	if len(pb.TechCard.Details) != 1 || pb.TechCard.Details[0].Key != "collar" || len(pb.TechCard.Details[0].MediaIds) != 1 {
 		t.Errorf("details round-trip mismatch: %+v", pb.TechCard.Details)
 	}
-	if len(pb.ResolvedMedia) != 1 || pb.ResolvedMedia[0].Media.Id != 11 {
-		t.Errorf("resolved media mismatch: %+v", pb.ResolvedMedia)
+	// writable media splits into the two lists by category.
+	if len(pb.TechCard.TechnicalMedia) != 1 || pb.TechCard.TechnicalMedia[0].MediaId != 11 ||
+		len(pb.TechCard.MoodboardMedia) != 1 || pb.TechCard.MoodboardMedia[0].MediaId != 20 {
+		t.Errorf("writable media split mismatch: technical=%+v moodboard=%+v", pb.TechCard.TechnicalMedia, pb.TechCard.MoodboardMedia)
+	}
+	// resolved media splits the same way, carrying kind + caption.
+	if len(pb.ResolvedTechnicalMedia) != 1 || pb.ResolvedTechnicalMedia[0].Media.Id != 11 ||
+		len(pb.ResolvedMoodboardMedia) != 1 || pb.ResolvedMoodboardMedia[0].Media.Id != 20 || pb.ResolvedMoodboardMedia[0].Caption != "mood" {
+		t.Errorf("resolved media split mismatch: technical=%+v moodboard=%+v", pb.ResolvedTechnicalMedia, pb.ResolvedMoodboardMedia)
 	}
 }
 
@@ -274,7 +298,8 @@ func TestConvertTechCardCosting(t *testing.T) {
 			{Node: "collar", TimeNorm: dec("2")},
 			{Node: "side", TimeNorm: dec("3")},
 		},
-		Costing: &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
+		SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 100}},
+		Costing:        &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
 	}
 	got, err := ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
@@ -286,22 +311,28 @@ func TestConvertTechCardCosting(t *testing.T) {
 		t.Fatalf("costing not emitted")
 	}
 
-	// per-colourway costs.
+	// per-colourway costs. materials are per-garment; unit_cost folds in the shared manual
+	// articles (× 1+defect%); order_cost = unit_cost × order_qty (Σ size_quantities = 100).
 	if len(cost.ColorwayCosts) != 2 {
 		t.Fatalf("expected 2 colorway_costs, got %d", len(cost.ColorwayCosts))
 	}
 	black := cost.ColorwayCosts[0]
-	if black.ColorwayIndex != 0 || black.MaterialsCost.Value != "20" || !black.HasUnconvertedCurrencies {
+	// Black: materials_per_unit 20 EUR (USD excluded), unit=(20+10)×1.1=33, order=33×100=3300.
+	if black.ColorwayIndex != 0 || black.MaterialsPerUnit.Value != "20" || black.UnitCost.Value != "33" ||
+		black.OrderQty != 100 || black.OrderCost.Value != "3300" || !black.HasUnconvertedCurrencies {
 		t.Errorf("black colorway cost mismatch: %+v", black)
 	}
 	white := cost.ColorwayCosts[1]
-	if white.ColorwayIndex != 1 || white.MaterialsCost.Value != "30" || white.HasUnconvertedCurrencies {
+	// White: materials_per_unit 30, unit=(30+10)×1.1=44, order=44×100=4400.
+	if white.ColorwayIndex != 1 || white.MaterialsPerUnit.Value != "30" || white.UnitCost.Value != "44" ||
+		white.OrderQty != 100 || white.OrderCost.Value != "4400" || white.HasUnconvertedCurrencies {
 		t.Errorf("white colorway cost mismatch: %+v", white)
 	}
 
 	// root rollup = primary colourway (index 0 = Black).
-	if cost.MaterialsCost.Value != "20" || !cost.HasUnconvertedCurrencies {
-		t.Errorf("root rollup should mirror colourway 0: materials=%v unconv=%v", cost.MaterialsCost, cost.HasUnconvertedCurrencies)
+	if cost.MaterialsPerUnit.Value != "20" || cost.UnitCost.Value != "33" ||
+		cost.OrderQty != 100 || cost.OrderCost.Value != "3300" || !cost.HasUnconvertedCurrencies {
+		t.Errorf("root rollup should mirror colourway 0: %+v", cost)
 	}
 	byCcy := map[string]string{}
 	for _, l := range cost.MaterialsTotal {
@@ -309,10 +340,6 @@ func TestConvertTechCardCosting(t *testing.T) {
 	}
 	if byCcy["EUR"] != "20" || byCcy["USD"] != "3" {
 		t.Errorf("root materials_total buckets mismatch: %+v", byCcy)
-	}
-	// total_cost = (20 materials + 10 cmt) × 1.1 = 33. No labour fallback.
-	if cost.TotalCost == nil || cost.TotalCost.Value != "33" {
-		t.Errorf("total_cost mismatch: %+v", cost.TotalCost)
 	}
 	// total_sam = 2 + 3 = 5.
 	if cost.TotalSam == nil || cost.TotalSam.Value != "5" {
@@ -362,13 +389,12 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
 	cost := pb.TechCard.Costing
 	cc := cost.ColorwayCosts[0]
-	// materials_cost = size-run 102 + per-garment 3 = 105.
-	if cc.MaterialsCost.Value != "105" {
-		t.Errorf("mixed-scale materials_cost mismatch: %+v", cc.MaterialsCost)
-	}
-	// size_run_total = just the per-size usage's run cost = 102.
-	if cc.SizeRunTotal == nil || cc.SizeRunTotal.Value != "102" {
-		t.Errorf("colorway size_run_total mismatch: %+v", cc.SizeRunTotal)
+	// Per-unit: the per-size usage normalises to 102/30 = 3.4, the per-garment zip is 3, so
+	// materials_per_unit = 6.4. With no manual articles / defect, unit_cost = 6.4 and
+	// order_cost = 6.4 × 30 = 192 — which equals size-run 102 + zip run 90, recovering the run.
+	if cc.MaterialsPerUnit.Value != "6.4" || cc.UnitCost.Value != "6.4" ||
+		cc.OrderQty != 30 || cc.OrderCost.Value != "192" {
+		t.Errorf("mixed-scale per-unit/per-order mismatch: %+v", cc)
 	}
 	// the per-size usage emits size_run_total and an absent line_total.
 	pus := pb.TechCard.Colorways[0].Usages

@@ -3,6 +3,8 @@ package entity
 import (
 	"database/sql"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // FittingStatus is the lifecycle state of a fitting session.
@@ -55,6 +57,17 @@ type FittingPattern struct {
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
 }
 
+// FittingCallout is a numbered marker pinned to a fitting photo, flagging a fit
+// problem at a point on the image (a pin + a note). Simpler than TechCardCallout —
+// no part/dimensions (a fitting flags posadka, not spec geometry).
+type FittingCallout struct {
+	Number  int                 `db:"callout_number"`
+	Note    sql.NullString      `db:"note"`
+	MediaId sql.NullInt32       `db:"media_id"` // the fitting photo this callout is pinned to
+	PosX    decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
+	PosY    decimal.NullDecimal `db:"pos_y"`
+}
+
 // FittingInsert is the writable payload for a fitting session. A fitting anchors
 // to a tech card (the style) and/or a specific product (the colour/SKU sample);
 // at least one of TechCardId / ProductId is set (enforced in the API layer).
@@ -70,6 +83,7 @@ type FittingInsert struct {
 	Sizes       []FittingSize    `db:"-"`
 	MediaIds    []int            `db:"-"`
 	Patterns    []FittingPattern `db:"-"`
+	Callouts    []FittingCallout `db:"-"`
 }
 
 // Fitting is a stored fitting session (fitting row + sizes + resolved media).

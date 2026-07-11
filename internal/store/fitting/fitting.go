@@ -50,7 +50,10 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		if err := insertFittingMedia(ctx, rep.DB(), id, f.MediaIds); err != nil {
 			return err
 		}
-		return insertFittingPatterns(ctx, rep.DB(), id, f.Patterns)
+		if err := insertFittingPatterns(ctx, rep.DB(), id, f.Patterns); err != nil {
+			return err
+		}
+		return insertFittingCallouts(ctx, rep.DB(), id, f.Callouts)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add fitting: %w", err)
@@ -99,13 +102,20 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 			`DELETE FROM fitting_pattern WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear fitting patterns: %w", err)
 		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM fitting_callout WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear fitting callouts: %w", err)
+		}
 		if err := insertFittingSizes(ctx, rep.DB(), id, f.Sizes); err != nil {
 			return err
 		}
 		if err := insertFittingMedia(ctx, rep.DB(), id, f.MediaIds); err != nil {
 			return err
 		}
-		return insertFittingPatterns(ctx, rep.DB(), id, f.Patterns)
+		if err := insertFittingPatterns(ctx, rep.DB(), id, f.Patterns); err != nil {
+			return err
+		}
+		return insertFittingCallouts(ctx, rep.DB(), id, f.Callouts)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update fitting: %w", err)
@@ -141,9 +151,14 @@ func (s *Store) GetFittingById(ctx context.Context, id int) (*entity.Fitting, er
 	if err != nil {
 		return nil, err
 	}
+	callouts, err := s.calloutsByFittingIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	f.Sizes = sizes[id]
 	f.Media = media[id]
 	f.Patterns = patterns[id]
+	f.Callouts = callouts[id]
 	return &f, nil
 }
 
@@ -207,10 +222,15 @@ func (s *Store) ListFittings(ctx context.Context, limit, offset int, orderFactor
 	if err != nil {
 		return nil, 0, err
 	}
+	callouts, err := s.calloutsByFittingIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range fittings {
 		fittings[i].Sizes = sizes[fittings[i].Id]
 		fittings[i].Media = media[fittings[i].Id]
 		fittings[i].Patterns = patterns[fittings[i].Id]
+		fittings[i].Callouts = callouts[fittings[i].Id]
 	}
 	return fittings, total, nil
 }
@@ -283,6 +303,28 @@ func insertFittingPatterns(ctx context.Context, db dependency.DB, fittingID int,
 	return nil
 }
 
+func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int, callouts []entity.FittingCallout) error {
+	if len(callouts) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(callouts))
+	for i, c := range callouts {
+		rows = append(rows, map[string]any{
+			"fitting_id":     fittingID,
+			"callout_number": c.Number,
+			"note":           c.Note,
+			"media_id":       c.MediaId,
+			"pos_x":          c.PosX,
+			"pos_y":          c.PosY,
+			"display_order":  i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "fitting_callout", rows); err != nil {
+		return fmt.Errorf("failed to insert fitting callouts: %w", err)
+	}
+	return nil
+}
+
 func insertFittingMedia(ctx context.Context, db dependency.DB, fittingID int, mediaIDs []int) error {
 	if len(mediaIDs) == 0 {
 		return nil
@@ -333,6 +375,30 @@ type fittingMediaRow struct {
 type fittingPatternRow struct {
 	FittingID int `db:"fitting_id"`
 	entity.FittingPattern
+}
+
+type fittingCalloutRow struct {
+	FittingID int `db:"fitting_id"`
+	entity.FittingCallout
+}
+
+func (s *Store) calloutsByFittingIds(ctx context.Context, ids []int) (map[int][]entity.FittingCallout, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.FittingCallout{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[fittingCalloutRow](ctx, s.DB, `
+		SELECT fitting_id, callout_number, note, media_id, pos_x, pos_y
+		FROM fitting_callout
+		WHERE fitting_id IN (:ids)
+		ORDER BY fitting_id, display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load fitting callouts: %w", err)
+	}
+	out := make(map[int][]entity.FittingCallout, len(ids))
+	for _, r := range rows {
+		out[r.FittingID] = append(out[r.FittingID], r.FittingCallout)
+	}
+	return out, nil
 }
 
 func (s *Store) patternsByFittingIds(ctx context.Context, ids []int) (map[int][]entity.FittingPattern, error) {

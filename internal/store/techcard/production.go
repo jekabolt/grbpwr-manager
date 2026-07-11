@@ -130,22 +130,19 @@ func insertTechCardCosting(ctx context.Context, db dependency.DB, tcID int, c *e
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_costing
 			(tech_card_id, cmt_cost, hardware_cost, packaging_cost, logistics_cost, overhead_cost,
-			 defect_percent, markup_multiplier, wholesale_price, retail_price, currency, notes)
+			 defect_percent, currency, notes)
 		VALUES (:tech_card_id, :cmt_cost, :hardware_cost, :packaging_cost, :logistics_cost, :overhead_cost,
-			 :defect_percent, :markup_multiplier, :wholesale_price, :retail_price, :currency, :notes)`,
+			 :defect_percent, :currency, :notes)`,
 		map[string]any{
-			"tech_card_id":      tcID,
-			"cmt_cost":          c.CmtCost,
-			"hardware_cost":     c.HardwareCost,
-			"packaging_cost":    c.PackagingCost,
-			"logistics_cost":    c.LogisticsCost,
-			"overhead_cost":     c.OverheadCost,
-			"defect_percent":    c.DefectPercent,
-			"markup_multiplier": c.MarkupMultiplier,
-			"wholesale_price":   c.WholesalePrice,
-			"retail_price":      c.RetailPrice,
-			"currency":          c.Currency,
-			"notes":             c.Notes,
+			"tech_card_id":   tcID,
+			"cmt_cost":       c.CmtCost,
+			"hardware_cost":  c.HardwareCost,
+			"packaging_cost": c.PackagingCost,
+			"logistics_cost": c.LogisticsCost,
+			"overhead_cost":  c.OverheadCost,
+			"defect_percent": c.DefectPercent,
+			"currency":       c.Currency,
+			"notes":          c.Notes,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card costing: %w", err)
 	}
