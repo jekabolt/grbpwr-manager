@@ -56,8 +56,9 @@ message FulfillmentCard {
   bool has_notes = 6; // whether internal notes are present
 }
 
-// FulfillmentColumnCards groups one column's cards, in fulfillment order
-// (oldest order first, so the longest-waiting order is picked first).
+// FulfillmentColumnCards groups one column's cards. The active columns
+// (TO_FULFILL, SHIPPED) are oldest order first (longest-waiting picked first);
+// the historical DELIVERED column is newest first and bounded.
 message FulfillmentColumnCards {
   FulfillmentColumn column = 1;
   repeated FulfillmentCard cards = 2;

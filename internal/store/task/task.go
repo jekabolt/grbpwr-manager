@@ -122,10 +122,14 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 // task with the given id exists.
 func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Only active tasks have a meaningful position in the gap-free sequence.
+		// An archived task carries a frozen, out-of-band position, so moving it
+		// would corrupt the active column — require it be active (NotFound
+		// otherwise; unarchive first).
 		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
-			`SELECT board, status, position FROM task WHERE id = :id`, map[string]any{"id": id})
+			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`, map[string]any{"id": id})
 		if err != nil {
-			return err // wraps sql.ErrNoRows when missing
+			return err // wraps sql.ErrNoRows when missing or archived
 		}
 		if board == "" {
 			board = cur.Board

@@ -60,8 +60,9 @@ type FulfillmentCard struct {
 	HasNotes       bool
 }
 
-// FulfillmentBoard is the three-column projection returned to the board UI. Cards
-// within a column are oldest order first (longest-waiting picked first).
+// FulfillmentBoard is the three-column projection returned to the board UI. The
+// active columns (ToFulfill, Shipped) are oldest order first (longest-waiting
+// picked first); the historical Delivered column is newest first and bounded.
 type FulfillmentBoard struct {
 	ToFulfill []FulfillmentCard
 	Shipped   []FulfillmentCard
