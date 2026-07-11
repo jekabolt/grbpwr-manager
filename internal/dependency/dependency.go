@@ -339,6 +339,19 @@ type (
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
 	}
 
+	// Tasks manages the internal team kanban (task manager): cards with content,
+	// board/status/position placement, labels, media and comments.
+	Tasks interface {
+		AddTask(ctx context.Context, t *entity.Task) (int, error)
+		GetTaskById(ctx context.Context, id int) (*entity.Task, error)
+		UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) error
+		MoveTask(ctx context.Context, id int, board entity.TaskBoard, status entity.TaskStatus, position int) error
+		DeleteTask(ctx context.Context, id int) error
+		ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error)
+		AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert, author string) (int, error)
+		ListTaskComments(ctx context.Context, taskID int) ([]entity.TaskComment, error)
+	}
+
 	// TechCards manages garment tech packs (техкарта): the header, size range,
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
@@ -557,6 +570,7 @@ type (
 		Promo() Promo
 		Models() Models
 		Fittings() Fittings
+		Tasks() Tasks
 		TechCards() TechCards
 		Admin() Admin
 		Cache() Cache
