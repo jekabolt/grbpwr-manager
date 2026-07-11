@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 type inventoryStore struct {
@@ -164,7 +166,10 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			COUNT(DISTINCT p.id) AS product_count,
 			COALESCE(SUM(s.units_sold), 0) AS units_sold,
 			COALESCE(SUM(st.units_remaining), 0) AS units_remaining,
+			COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0) AS units_bought,
 			COALESCE(SUM(s.revenue), 0) AS revenue,
+			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * COALESCE(s.units_sold, 0) ELSE 0 END), 0) AS revenue_cost,
+			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN COALESCE(s.revenue, 0) ELSE 0 END), 0) AS costed_revenue,
 			CASE
 				WHEN COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0) > 0
 				THEN COALESCE(SUM(s.units_sold), 0) * 100.0 / (COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0))
@@ -187,7 +192,91 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 	if err != nil {
 		return nil, fmt.Errorf("get sell-through by drop: %w", err)
 	}
+	if len(result) == 0 {
+		return result, nil
+	}
+
+	// days_to_50pct needs a per-drop daily sales timeline. Fetch it once (lifetime, same
+	// net-revenue universe as the aggregate above) and compute the crossing in Go.
+	timeline, err := is.sellThroughTimeline(ctx, statusIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	hundred := decimal.NewFromInt(100)
+	for i := range result {
+		r := &result[i]
+		// Margin over the costed subset. HasCost=false ⇒ no costed sales, so N/A not 0.
+		r.HasCost = r.CostedRevenue.IsPositive()
+		if r.HasCost {
+			r.GrossMargin = r.CostedRevenue.Sub(r.RevenueCost)
+			pct, _ := r.GrossMargin.Div(r.CostedRevenue).Mul(hundred).Float64()
+			r.GrossMarginPct = pct
+		}
+		// days_to_50pct is only defined once the drop has actually reached 50% sell-through.
+		if r.SellThroughPct >= 50 {
+			r.DaysTo50Pct = daysToSellThrough(timeline[r.Collection], r.UnitsBought, 50)
+		}
+	}
 	return result, nil
+}
+
+// dropSalePoint is one day's net units sold for a drop, used to find the 50%-sell-through date.
+type dropSalePoint struct {
+	Date  time.Time `db:"d"`
+	Units int64     `db:"units"`
+}
+
+// sellThroughTimeline returns, per collection, the daily net units sold over all time (same
+// net-revenue statuses as the aggregate), ascending by date — the input to daysToSellThrough.
+func (is *inventoryStore) sellThroughTimeline(ctx context.Context, statusIDs string) (map[string][]dropSalePoint, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Collection string    `db:"collection"`
+		Date       time.Time `db:"d"`
+		Units      int64     `db:"units"`
+	}](ctx, is.DB, fmt.Sprintf(`
+		SELECT p.collection AS collection, DATE(co.placed) AS d, SUM(oi.quantity) AS units
+		FROM order_item oi
+		JOIN customer_order co ON oi.order_id = co.id
+		JOIN product p ON oi.product_id = p.id
+		WHERE co.order_status_id IN (%s)
+			AND p.deleted_at IS NULL
+			AND p.collection IS NOT NULL AND p.collection <> ''
+		GROUP BY p.collection, DATE(co.placed)
+		ORDER BY p.collection, d
+	`, statusIDs), map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("sell-through timeline: %w", err)
+	}
+	m := make(map[string][]dropSalePoint)
+	for _, r := range rows {
+		m[r.Collection] = append(m[r.Collection], dropSalePoint{Date: r.Date, Units: r.Units})
+	}
+	return m, nil
+}
+
+// daysToSellThrough returns the whole days from the first sale to the day cumulative units sold
+// first reached targetPct percent of initialUnits. It is invalid (null) when there are no
+// sales, the inputs are degenerate, or the target is never reached (the drop hasn't sold that
+// share yet). points must be sorted ascending by date.
+func daysToSellThrough(points []dropSalePoint, initialUnits int64, targetPct float64) sql.NullInt64 {
+	if len(points) == 0 || initialUnits <= 0 || targetPct <= 0 {
+		return sql.NullInt64{}
+	}
+	threshold := targetPct / 100 * float64(initialUnits)
+	first := points[0].Date
+	var cumulative int64
+	for _, pt := range points {
+		cumulative += pt.Units
+		if float64(cumulative) >= threshold {
+			days := int64(pt.Date.Sub(first).Hours() / 24)
+			if days < 0 {
+				days = 0
+			}
+			return sql.NullInt64{Int64: days, Valid: true}
+		}
+	}
+	return sql.NullInt64{}
 }
 
 // GetSizeRunEfficiency returns the percentage of sizes that have any sales activity
@@ -231,7 +320,14 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			) AS product_name,
 			COUNT(*) AS total_sizes,
 			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) AS sold_through_sizes,
-			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) * 100 / COUNT(*) AS efficiency_pct
+			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) * 100 / COUNT(*) AS efficiency_pct,
+			COALESCE(SUM(sa.initial_qty), 0) AS units_bought,
+			COALESCE(SUM(sa.sold), 0) AS units_sold,
+			CASE
+				WHEN COALESCE(SUM(sa.initial_qty), 0) > 0
+				THEN SUM(sa.sold) * 100.0 / SUM(sa.initial_qty)
+				ELSE 0
+			END AS sell_through_pct
 		FROM size_analysis sa
 		JOIN product p ON p.id = sa.product_id
 		WHERE sa.initial_qty > 0

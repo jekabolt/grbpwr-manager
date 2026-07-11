@@ -251,40 +251,83 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 }
 
 func (s *Store) getCrossSellPairs(ctx context.Context, from, to time.Time, limit int) ([]entity.CrossSellPair, error) {
-	query := `
-		SELECT oi1.product_id AS product_a_id, oi2.product_id AS product_b_id,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p1.id ORDER BY pt.language_id LIMIT 1), p1.brand) AS product_a_name,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p2.id ORDER BY pt.language_id LIMIT 1), p2.brand) AS product_b_name,
-			COUNT(*) AS cnt
-		FROM order_item oi1
-		JOIN order_item oi2 ON oi1.order_id = oi2.order_id AND oi1.product_id < oi2.product_id
-		JOIN product p1 ON oi1.product_id = p1.id
-		JOIN product p2 ON oi2.product_id = p2.id
-		JOIN customer_order co ON oi1.order_id = co.id
+	statusIDs := storeutil.JoinInts(cache.OrderStatusIDsForNetRevenue())
+	baseArgs := map[string]any{"from": from, "to": to}
+
+	// totalOrders: distinct orders in the same universe as the co-occurrence (net-revenue,
+	// in period) — the denominator for support and lift.
+	total, err := storeutil.QueryNamedOne[struct {
+		Count int `db:"cnt"`
+	}](ctx, s.DB, fmt.Sprintf(`
+		SELECT COUNT(DISTINCT co.id) AS cnt
+		FROM customer_order co
 		WHERE co.placed >= :from AND co.placed < :to
-		AND co.order_status_id IN (:statusIds)
-		GROUP BY oi1.product_id, oi2.product_id, p1.brand, p2.brand
-		ORDER BY cnt DESC
-		LIMIT :limit
-	`
+			AND co.order_status_id IN (%s)
+	`, statusIDs), baseArgs)
+	if err != nil {
+		return nil, fmt.Errorf("cross-sell total orders: %w", err)
+	}
+
+	// ordersByProduct: distinct orders containing each product — the marginal P(A), P(B)
+	// denominators for confidence and lift.
+	prodRows, err := storeutil.QueryListNamed[struct {
+		ProductID int `db:"product_id"`
+		Count     int `db:"cnt"`
+	}](ctx, s.DB, fmt.Sprintf(`
+		SELECT oi.product_id, COUNT(DISTINCT oi.order_id) AS cnt
+		FROM order_item oi
+		JOIN customer_order co ON oi.order_id = co.id
+		WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (%s)
+		GROUP BY oi.product_id
+	`, statusIDs), baseArgs)
+	if err != nil {
+		return nil, fmt.Errorf("cross-sell product orders: %w", err)
+	}
+	ordersByProduct := make(map[int]int, len(prodRows))
+	for _, r := range prodRows {
+		ordersByProduct[r.ProductID] = r.Count
+	}
+
+	// top co-occurring pairs — COUNT(DISTINCT order_id) so multiple sizes/lines of the same
+	// product in one order count that order once, not once per line.
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductAId   int    `db:"product_a_id"`
 		ProductBId   int    `db:"product_b_id"`
 		ProductAName string `db:"product_a_name"`
 		ProductBName string `db:"product_b_name"`
 		Count        int    `db:"cnt"`
-	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "limit": limit, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	}](ctx, s.DB, fmt.Sprintf(`
+		SELECT oi1.product_id AS product_a_id, oi2.product_id AS product_b_id,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p1.id ORDER BY pt.language_id LIMIT 1), p1.brand) AS product_a_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p2.id ORDER BY pt.language_id LIMIT 1), p2.brand) AS product_b_name,
+			COUNT(DISTINCT oi1.order_id) AS cnt
+		FROM order_item oi1
+		JOIN order_item oi2 ON oi1.order_id = oi2.order_id AND oi1.product_id < oi2.product_id
+		JOIN product p1 ON oi1.product_id = p1.id
+		JOIN product p2 ON oi2.product_id = p2.id
+		JOIN customer_order co ON oi1.order_id = co.id
+		WHERE co.placed >= :from AND co.placed < :to
+			AND co.order_status_id IN (%s)
+		GROUP BY oi1.product_id, oi2.product_id, p1.brand, p2.brand
+		ORDER BY cnt DESC
+		LIMIT :limit
+	`, statusIDs), map[string]any{"from": from, "to": to, "limit": limit})
 	if err != nil {
 		return nil, err
 	}
 	result := make([]entity.CrossSellPair, len(rows))
 	for i, r := range rows {
+		support, confidence, lift := associationMetrics(r.Count, ordersByProduct[r.ProductAId], ordersByProduct[r.ProductBId], total.Count)
 		result[i] = entity.CrossSellPair{
 			ProductAId:   r.ProductAId,
 			ProductBId:   r.ProductBId,
 			ProductAName: r.ProductAName,
 			ProductBName: r.ProductBName,
 			Count:        r.Count,
+			Support:      support,
+			Confidence:   confidence,
+			Lift:         lift,
 		}
 	}
 	return result, nil
