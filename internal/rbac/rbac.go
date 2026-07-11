@@ -24,6 +24,11 @@ const (
 	SectionProducts   = "products"
 	SectionPromo      = "promo"
 	SectionOrders     = "orders"
+	// SectionFulfillment governs the orders-fulfillment board: assign/notes/
+	// checklist annotations and the ship/deliver transitions. It is separate from
+	// SectionOrders so a warehouse role can fulfill orders without the broader
+	// orders:write (which also grants refunds and cancellations).
+	SectionFulfillment = "fulfillment"
 	SectionAnalytics  = "analytics"
 	SectionContent    = "content"
 	SectionHero       = "hero"
@@ -53,6 +58,7 @@ var catalog = []SectionInfo{
 	{SectionProducts, "Products", "Catalog: products, stock and stock history."},
 	{SectionPromo, "Promo codes", "Promotional codes."},
 	{SectionOrders, "Orders", "Orders, refunds, tracking, cancellations, custom orders."},
+	{SectionFulfillment, "Fulfillment", "Orders-fulfillment board: assignee, packing checklist, ship and deliver."},
 	{SectionAnalytics, "Analytics", "Business metrics, inventory targets, channel spend."},
 	{SectionContent, "Content / media", "Media library: images, videos, patterns."},
 	{SectionHero, "Hero", "Homepage hero and background."},
@@ -174,6 +180,22 @@ var methodRequirements = map[string]Requirement{
 	"AddTaskComment":   wr(SectionTasks),
 	"ListTaskComments": rd(SectionTasks),
 	"ListTasks":        rd(SectionTasks),
+	// task archive + checklist
+	"ArchiveTask":              wr(SectionTasks),
+	"UnarchiveTask":            wr(SectionTasks),
+	"AddTaskChecklistItem":     wr(SectionTasks),
+	"SetTaskChecklistItemDone": wr(SectionTasks),
+	"DeleteTaskChecklistItem":  wr(SectionTasks),
+	// fulfillment board (orders projection: annotations + ship/deliver)
+	"GetFulfillmentBoard":             rd(SectionFulfillment),
+	"GetFulfillmentCard":              rd(SectionFulfillment),
+	"SetFulfillmentAssignee":          wr(SectionFulfillment),
+	"SetFulfillmentNotes":             wr(SectionFulfillment),
+	"AddFulfillmentChecklistItem":     wr(SectionFulfillment),
+	"SetFulfillmentChecklistItemDone": wr(SectionFulfillment),
+	"DeleteFulfillmentChecklistItem":  wr(SectionFulfillment),
+	"ShipFulfillmentOrder":            wr(SectionFulfillment),
+	"MarkFulfillmentDelivered":        wr(SectionFulfillment),
 	// settings
 	"UpdateSettings":        wr(SectionSettings),
 	"AddShipmentCarrier":    wr(SectionSettings),
