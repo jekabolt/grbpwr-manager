@@ -126,6 +126,44 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		})
 	}
 
+	callouts := make([]entity.FittingCallout, 0, len(pb.Callouts))
+	for _, c := range pb.Callouts {
+		if c.Number < 0 {
+			return nil, fmt.Errorf("fitting callout number must not be negative")
+		}
+		note := strings.TrimSpace(c.Note)
+		if note == "" {
+			return nil, fmt.Errorf("fitting callout note is required")
+		}
+		if len(note) > maxTaskText {
+			return nil, fmt.Errorf("fitting callout note must be at most %d characters", maxTaskText)
+		}
+		if c.MediaId < 0 {
+			return nil, fmt.Errorf("fitting callout media_id must not be negative")
+		}
+		posX, err := nullDecimalFromPb(c.PosX)
+		if err != nil {
+			return nil, fmt.Errorf("fitting callout pos_x: %w", err)
+		}
+		posY, err := nullDecimalFromPb(c.PosY)
+		if err != nil {
+			return nil, fmt.Errorf("fitting callout pos_y: %w", err)
+		}
+		if err := validateUnitInterval(posX, "fitting callout pos_x"); err != nil {
+			return nil, err
+		}
+		if err := validateUnitInterval(posY, "fitting callout pos_y"); err != nil {
+			return nil, err
+		}
+		callouts = append(callouts, entity.FittingCallout{
+			Number:  int(c.Number),
+			Note:    nullStringFromPb(note),
+			MediaId: nullInt32FromPb(c.MediaId),
+			PosX:    posX,
+			PosY:    posY,
+		})
+	}
+
 	// Normalize to a UTC calendar date so storage into the DATE column is
 	// deterministic regardless of the incoming timestamp's time-of-day.
 	// (Clients should send the fitting date at UTC midnight.)
@@ -144,6 +182,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		Sizes:       sizes,
 		MediaIds:    mediaIds,
 		Patterns:    patterns,
+		Callouts:    callouts,
 	}, nil
 }
 
@@ -183,11 +222,27 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 			Sizes:       sizes,
 			MediaIds:    mediaIds,
 			Patterns:    fittingPatternsToPb(f.Patterns),
+			Callouts:    fittingCalloutsToPb(f.Callouts),
 		},
 		Media:     media,
 		CreatedAt: timestamppb.New(f.CreatedAt),
 		UpdatedAt: timestamppb.New(f.UpdatedAt),
 	}
+}
+
+// fittingCalloutsToPb emits a fitting's photo callouts for display.
+func fittingCalloutsToPb(cs []entity.FittingCallout) []*pb_common.FittingCallout {
+	out := make([]*pb_common.FittingCallout, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, &pb_common.FittingCallout{
+			Number:  int32(c.Number),
+			Note:    pbStringFromNull(c.Note),
+			MediaId: pbInt32FromNull(c.MediaId),
+			PosX:    pbDecimalFromNull(c.PosX),
+			PosY:    pbDecimalFromNull(c.PosY),
+		})
+	}
+	return out
 }
 
 // fittingPatternsToPb emits a fitting's PDF выкройка iterations for display.

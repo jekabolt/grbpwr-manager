@@ -88,10 +88,11 @@ func TestColorwayCostRollup(t *testing.T) {
 		{BomItemIndex: idx(1), Quantity: ndFrom("1")}, // 3 USD
 		{BomItemIndex: idx(2), Quantity: ndFrom("4")}, // 20 currency-less
 	}}
-	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{})
-	// materials_cost = EUR(20) + currency-less(20) = 40; USD excluded.
-	if !res.materialsCost.Equal(decimal.RequireFromString("40")) {
-		t.Fatalf("materials_cost = %v, want 40", res.materialsCost)
+	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{}, 0)
+	// materials_per_unit = EUR(20) + currency-less(20) = 40; USD excluded. All usages are
+	// per-garment (countable Quantity), so totalOrderQty is irrelevant here.
+	if !res.materialsPerUnit.Equal(decimal.RequireFromString("40")) {
+		t.Fatalf("materials_per_unit = %v, want 40", res.materialsPerUnit)
 	}
 	if !res.hasUnconverted {
 		t.Fatalf("expected has_unconverted_currencies (USD usage vs EUR costing)")

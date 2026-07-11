@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const taskFKViolationMsg = "tech_card_id, product_id, archive_id, or media_id does not reference an existing record"
+const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, or media_id does not reference an existing record"
 
 // AddTask creates a new kanban task from its content + placement. created_by is
 // stamped from the caller's JWT; the card is appended to its (board,status) column.

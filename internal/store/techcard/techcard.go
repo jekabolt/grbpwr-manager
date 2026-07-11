@@ -405,6 +405,7 @@ func insertTechCardMedia(ctx context.Context, db dependency.DB, id int, media []
 		rows = append(rows, map[string]any{
 			"tech_card_id":  id,
 			"media_id":      m.MediaId,
+			"category":      string(m.Category),
 			"kind":          string(m.Kind),
 			"caption":       m.Caption,
 			"display_order": i,

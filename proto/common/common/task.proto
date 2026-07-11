@@ -73,6 +73,12 @@ message TaskInsert {
   int32 product_id = 9; // specific product / SKU / sample; GetProductByID
   string order_uuid = 10; // order needing action; GetOrderByUUID
   int32 archive_id = 11; // drop / timeline being prepared; GetArchiveByID
+  int32 fitting_id = 12; // примерка — try-on session this card is about; GetFitting
+
+  // Planned start (when work SHOULD begin), the manual counterpart of due_date.
+  // The ACTUAL start (when the card first entered IN_PROGRESS) is the
+  // server-stamped Task.started_at, not this field. Unset = no planned start.
+  google.protobuf.Timestamp start_date = 13;
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
@@ -106,6 +112,10 @@ message Task {
   // Orthogonal to placement — archiving does not change board/status/position.
   google.protobuf.Timestamp archived_at = 10;
   repeated TaskChecklistItem checklist = 11; // resolved checklist items, ordered by position
+  // Actual start: server-stamped the FIRST time the card enters IN_PROGRESS
+  // (never client-supplied, never cleared on later moves). Unset = the card has
+  // not been started yet. This is distinct from the planned TaskInsert.start_date.
+  google.protobuf.Timestamp started_at = 12;
 }
 
 // TaskCommentInsert is the writable payload for a comment. author is set
