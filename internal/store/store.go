@@ -24,6 +24,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
+	"github.com/jekabolt/grbpwr-manager/internal/store/fulfillment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
 	"github.com/jekabolt/grbpwr-manager/internal/store/language"
 	"github.com/jekabolt/grbpwr-manager/internal/store/membership"
@@ -88,25 +89,26 @@ type MYSQLStore struct {
 	close context.CancelFunc
 
 	// Sub-stores (composed for transaction propagation)
-	productStore    *product.Store
-	orderStore      *order.Store
-	bqcache         *bqcache.Store
-	ga4             *ga4data.Store
-	syncStatus      *ga4data.SyncStatusStore
-	metrics         *metrics.Store
-	content         *content.Store
-	settingsStore   *settings.Store
-	comm            *communication.Store
-	supportStore    *support.Store
-	adminStore      *admin.Store
-	promoStore      *promo.Store
-	langStore       *language.Store
-	accountStore    *account.Store
-	membershipStore *membership.Store
-	modelStore      *model.Store
-	fittingStore    *fitting.Store
-	taskStore       *task.Store
-	techCardStore   *techcard.Store
+	productStore     *product.Store
+	orderStore       *order.Store
+	bqcache          *bqcache.Store
+	ga4              *ga4data.Store
+	syncStatus       *ga4data.SyncStatusStore
+	metrics          *metrics.Store
+	content          *content.Store
+	settingsStore    *settings.Store
+	comm             *communication.Store
+	supportStore     *support.Store
+	adminStore       *admin.Store
+	promoStore       *promo.Store
+	langStore        *language.Store
+	accountStore     *account.Store
+	membershipStore  *membership.Store
+	modelStore       *model.Store
+	fittingStore     *fitting.Store
+	taskStore        *task.Store
+	fulfillmentStore *fulfillment.Store
+	techCardStore    *techcard.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -355,6 +357,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.modelStore = model.New(base, ms.Tx)
 	ms.fittingStore = fitting.New(base, ms.Tx)
 	ms.taskStore = task.New(base, ms.Tx)
+	ms.fulfillmentStore = fulfillment.New(base, ms.Tx)
 	ms.techCardStore = techcard.New(base, ms.Tx)
 }
 
@@ -379,6 +382,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.modelStore = model.New(base, outerTx)
 	txStore.fittingStore = fitting.New(base, outerTx)
 	txStore.taskStore = task.New(base, outerTx)
+	txStore.fulfillmentStore = fulfillment.New(base, outerTx)
 	txStore.techCardStore = techcard.New(base, outerTx)
 }
 
@@ -448,6 +452,7 @@ func (ms *MYSQLStore) Membership() dependency.Membership      { return ms.member
 func (ms *MYSQLStore) Models() dependency.Models              { return ms.modelStore }
 func (ms *MYSQLStore) Fittings() dependency.Fittings          { return ms.fittingStore }
 func (ms *MYSQLStore) Tasks() dependency.Tasks                { return ms.taskStore }
+func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment    { return ms.fulfillmentStore }
 func (ms *MYSQLStore) TechCards() dependency.TechCards        { return ms.techCardStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore

@@ -350,6 +350,30 @@ type (
 		ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entity.Task, int, error)
 		AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert, author string) (int, error)
 		ListTaskComments(ctx context.Context, taskID int) ([]entity.TaskComment, error)
+		ArchiveTask(ctx context.Context, id int) error
+		UnarchiveTask(ctx context.Context, id int) error
+		AddTaskChecklistItem(ctx context.Context, taskID int, content string) (int, error)
+		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
+		DeleteTaskChecklistItem(ctx context.Context, id int) error
+	}
+
+	// Fulfillment is the orders-fulfillment board's storage: the board-owned
+	// annotation (assignee/notes/checklist) overlaid on orders. Order STATUS
+	// transitions (ship/deliver) are NOT here — they go through Order so the board
+	// never duplicates order status.
+	Fulfillment interface {
+		// GetFulfillmentBoard returns the three columns (to_fulfill/shipped/
+		// delivered) as a projection of orders, with each card's annotation
+		// summary. deliveredLimit caps the (historical) delivered column.
+		GetFulfillmentBoard(ctx context.Context, deliveredLimit int) (*entity.FulfillmentBoard, error)
+		// GetOrderFulfillment returns an order's annotation (assignee/notes/
+		// checklist), or (nil, nil) when the order has none yet.
+		GetOrderFulfillment(ctx context.Context, orderUUID string) (*entity.OrderFulfillment, error)
+		SetFulfillmentAssignee(ctx context.Context, orderUUID, assignee, createdBy string) error
+		SetFulfillmentNotes(ctx context.Context, orderUUID, notes, createdBy string) error
+		AddFulfillmentChecklistItem(ctx context.Context, orderUUID, content, createdBy string) (int, error)
+		SetFulfillmentChecklistItemDone(ctx context.Context, id int, done bool) error
+		DeleteFulfillmentChecklistItem(ctx context.Context, id int) error
 	}
 
 	// TechCards manages garment tech packs (техкарта): the header, size range,
@@ -571,6 +595,7 @@ type (
 		Models() Models
 		Fittings() Fittings
 		Tasks() Tasks
+		Fulfillment() Fulfillment
 		TechCards() TechCards
 		Admin() Admin
 		Cache() Cache

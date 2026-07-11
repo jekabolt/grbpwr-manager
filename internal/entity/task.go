@@ -91,10 +91,10 @@ type Task struct {
 	Board     TaskBoard   `db:"board"`
 	Status    TaskStatus  `db:"status"`
 	Position  int         `db:"position"`
-	Media     []MediaFull  `db:"-"`
-	CreatedBy string       `db:"created_by"`
-	CreatedAt time.Time    `db:"created_at"`
-	UpdatedAt time.Time    `db:"updated_at"`
+	Media     []MediaFull `db:"-"`
+	CreatedBy string      `db:"created_by"`
+	CreatedAt time.Time   `db:"created_at"`
+	UpdatedAt time.Time   `db:"updated_at"`
 	// ArchivedAt is the soft-archive marker: Valid = archived (hidden from the
 	// board and default list, but restorable); invalid/NULL = active.
 	ArchivedAt sql.NullTime        `db:"archived_at"`

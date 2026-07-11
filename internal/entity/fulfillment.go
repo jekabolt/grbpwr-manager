@@ -29,13 +29,13 @@ var OrderStatusToFulfillmentColumn = map[OrderStatusName]FulfillmentColumn{
 // internal notes, packing checklist). It carries NO order status — that lives on
 // the order. 1:1 with an order via OrderUuid; lazily created on first edit.
 type OrderFulfillment struct {
-	Id        int            `db:"id"`
-	OrderUuid string         `db:"order_uuid"`
-	Assignee  string         `db:"assignee"`
-	Notes     sql.NullString `db:"notes"`
-	CreatedBy string         `db:"created_by"`
-	CreatedAt time.Time      `db:"created_at"`
-	UpdatedAt time.Time      `db:"updated_at"`
+	Id        int                        `db:"id"`
+	OrderUuid string                     `db:"order_uuid"`
+	Assignee  string                     `db:"assignee"`
+	Notes     sql.NullString             `db:"notes"`
+	CreatedBy string                     `db:"created_by"`
+	CreatedAt time.Time                  `db:"created_at"`
+	UpdatedAt time.Time                  `db:"updated_at"`
 	Checklist []FulfillmentChecklistItem `db:"-"`
 }
 

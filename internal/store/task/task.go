@@ -37,9 +37,10 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// Append to the end of the target column.
+		// Append to the end of the target column. Archived tasks are excluded from
+		// position accounting (they are outside the visible sequence).
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status`,
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
 			map[string]any{"board": string(t.Board), "status": string(t.Status)})
 		if err != nil {
 			return fmt.Errorf("failed to compute task position: %w", err)
@@ -130,10 +131,11 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 			board = cur.Board
 		}
 
-		// 1) Close the gap left in the source column.
+		// 1) Close the gap left in the source column. Archived tasks are outside
+		// the position sequence, so they are excluded here and below.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position - 1
-			WHERE board = :board AND status = :status AND position > :pos`,
+			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
 			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
 			return fmt.Errorf("failed to compact source column: %w", err)
 		}
@@ -141,7 +143,7 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 		// 2) Clamp the target position to the target column's current size
 		// (excluding this task, which is not yet placed there).
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
-			SELECT COUNT(*) FROM task WHERE board = :board AND status = :status AND id != :id`,
+			SELECT COUNT(*) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id`,
 			map[string]any{"board": string(board), "status": string(status), "id": id})
 		if err != nil {
 			return fmt.Errorf("failed to size target column: %w", err)
@@ -156,7 +158,7 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 		// 3) Open a slot in the target column.
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE task SET position = position + 1
-			WHERE board = :board AND status = :status AND id != :id AND position >= :pos`,
+			WHERE board = :board AND status = :status AND archived_at IS NULL AND id != :id AND position >= :pos`,
 			map[string]any{"board": string(board), "status": string(status), "id": id, "pos": position}); err != nil {
 			return fmt.Errorf("failed to open target slot: %w", err)
 		}
@@ -175,11 +177,136 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 	return nil
 }
 
-// DeleteTask deletes a task by id (labels, media, comments cascade).
+// DeleteTask deletes a task by id (labels, media, comments, checklist cascade).
 func (s *Store) DeleteTask(ctx context.Context, id int) error {
 	if err := storeutil.ExecNamed(ctx, s.DB,
 		`DELETE FROM task WHERE id = :id`, map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("failed to delete task: %w", err)
+	}
+	return nil
+}
+
+// ArchiveTask soft-archives an active task (hidden from the board, restorable) and
+// compacts its former (board,status) column so active positions stay gap-free.
+// Returns sql.ErrNoRows when no active task with the given id exists.
+func (s *Store) ArchiveTask(ctx context.Context, id int) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
+			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NULL`,
+			map[string]any{"id": id})
+		if err != nil {
+			return err // wraps sql.ErrNoRows when missing or already archived
+		}
+		// Mark archived first, removing it from the active position sequence, then
+		// compact the gap it left behind (the archived row is now excluded).
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`UPDATE task SET archived_at = UTC_TIMESTAMP() WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to archive task: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			UPDATE task SET position = position - 1
+			WHERE board = :board AND status = :status AND archived_at IS NULL AND position > :pos`,
+			map[string]any{"board": string(cur.Board), "status": string(cur.Status), "pos": cur.Position}); err != nil {
+			return fmt.Errorf("failed to compact column after archive: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("can't archive task: %w", err)
+	}
+	return nil
+}
+
+// UnarchiveTask restores an archived task, appending it to the end of its
+// (board,status) column. Returns sql.ErrNoRows when no archived task with the id
+// exists.
+func (s *Store) UnarchiveTask(ctx context.Context, id int) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[taskPlacement](ctx, rep.DB(),
+			`SELECT board, status, position FROM task WHERE id = :id AND archived_at IS NOT NULL`,
+			map[string]any{"id": id})
+		if err != nil {
+			return err // wraps sql.ErrNoRows when missing or not archived
+		}
+		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task WHERE board = :board AND status = :status AND archived_at IS NULL`,
+			map[string]any{"board": string(cur.Board), "status": string(cur.Status)})
+		if err != nil {
+			return fmt.Errorf("failed to compute unarchive position: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`UPDATE task SET archived_at = NULL, position = :pos WHERE id = :id`,
+			map[string]any{"pos": pos, "id": id}); err != nil {
+			return fmt.Errorf("failed to unarchive task: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("can't unarchive task: %w", err)
+	}
+	return nil
+}
+
+// AddTaskChecklistItem appends a checklist item to a task, returning the new id.
+// Returns sql.ErrNoRows when no task with the given id exists.
+func (s *Store) AddTaskChecklistItem(ctx context.Context, taskID int, content string) (int, error) {
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM task WHERE id = :id`, map[string]any{"id": taskID})
+		if err != nil {
+			return fmt.Errorf("failed to check task existence: %w", err)
+		}
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
+		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COALESCE(MAX(position)+1, 0) FROM task_checklist_item WHERE task_id = :id`,
+			map[string]any{"id": taskID})
+		if err != nil {
+			return fmt.Errorf("failed to compute checklist position: %w", err)
+		}
+		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
+			`INSERT INTO task_checklist_item (task_id, content, position) VALUES (:taskId, :content, :position)`,
+			map[string]any{"taskId": taskID, "content": content, "position": pos})
+		if err != nil {
+			return fmt.Errorf("failed to insert checklist item: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("can't add task checklist item: %w", err)
+	}
+	return id, nil
+}
+
+// SetTaskChecklistItemDone sets a checklist item's done flag. Returns
+// sql.ErrNoRows when no item with the given id exists.
+func (s *Store) SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM task_checklist_item WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to check checklist item existence: %w", err)
+		}
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
+		return storeutil.ExecNamed(ctx, rep.DB(),
+			`UPDATE task_checklist_item SET is_done = :done WHERE id = :id`,
+			map[string]any{"done": done, "id": id})
+	})
+	if err != nil {
+		return fmt.Errorf("can't set task checklist item done: %w", err)
+	}
+	return nil
+}
+
+// DeleteTaskChecklistItem removes a checklist item by id (idempotent).
+func (s *Store) DeleteTaskChecklistItem(ctx context.Context, id int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB,
+		`DELETE FROM task_checklist_item WHERE id = :id`, map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("failed to delete task checklist item: %w", err)
 	}
 	return nil
 }
@@ -199,8 +326,13 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	checklist, err := s.checklistByTaskIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	t.Labels = labels[id]
 	t.Media = media[id]
+	t.Checklist = checklist[id]
 	return &t, nil
 }
 
@@ -232,6 +364,11 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if f.ProductId != 0 {
 		where += " AND product_id = :productId"
 		filterParams["productId"] = f.ProductId
+	}
+	// Active-only by default: archived tasks are hidden from the board unless
+	// explicitly requested.
+	if !f.IncludeArchived {
+		where += " AND archived_at IS NULL"
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
@@ -267,9 +404,14 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if err != nil {
 		return nil, 0, err
 	}
+	checklist, err := s.checklistByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range tasks {
 		tasks[i].Labels = labels[tasks[i].Id]
 		tasks[i].Media = media[tasks[i].Id]
+		tasks[i].Checklist = checklist[tasks[i].Id]
 	}
 	return tasks, total, nil
 }
@@ -427,6 +569,25 @@ func (s *Store) mediaByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 	out := make(map[int][]entity.MediaFull, len(ids))
 	for _, r := range rows {
 		out[r.TaskID] = append(out[r.TaskID], r.MediaFull)
+	}
+	return out, nil
+}
+
+func (s *Store) checklistByTaskIds(ctx context.Context, ids []int) (map[int][]entity.TaskChecklistItem, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.TaskChecklistItem{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TaskChecklistItem](ctx, s.DB, `
+		SELECT id, task_id, content, is_done, position, created_at
+		FROM task_checklist_item
+		WHERE task_id IN (:ids)
+		ORDER BY task_id, position, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task checklist: %w", err)
+	}
+	out := make(map[int][]entity.TaskChecklistItem, len(ids))
+	for i := range rows {
+		out[rows[i].TaskId] = append(out[rows[i].TaskId], rows[i])
 	}
 	return out, nil
 }
