@@ -17,6 +17,7 @@ import "common/product.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
 import "common/support.proto";
+import "common/task.proto";
 import "common/techcard.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
@@ -357,6 +358,72 @@ service AdminService {
   // is not shadowed by GET /fitting/{id}.
   rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
     option (google.api.http) = {get: "/api/admin/fitting/list"};
+  }
+
+  // TASK MANAGER
+  // Internal team kanban (NOT customer orders). Same list-after-{id} route
+  // ordering as fitting/models: GET /task/list is declared AFTER GET /task/{id}
+  // so it is not shadowed.
+
+  // AddTask creates a new kanban task from its content plus placement (target
+  // board + optional initial column). Server sets created_by (from JWT) and
+  // appends the card to the end of its (board,status) column (position).
+  rpc AddTask(AddTaskRequest) returns (AddTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/add"
+      body: "*"
+    };
+  }
+
+  // GetTask returns a task by id.
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse) {
+    option (google.api.http) = {get: "/api/admin/task/{id}"};
+  }
+
+  // UpdateTask replaces a task's content (title, description, assignee, priority,
+  // due_date, labels, media, entity links). Placement — board, column (status),
+  // ordering — is NOT touched here; it changes only through MoveTask.
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/update"
+      body: "*"
+    };
+  }
+
+  // MoveTask changes a task's placement: its board, its column (status), and/or
+  // its order within a column (position) — a card can be dragged across columns
+  // and across boards. This is the drag-and-drop endpoint; the server
+  // re-sequences sibling positions as needed.
+  rpc MoveTask(MoveTaskRequest) returns (MoveTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/move"
+      body: "*"
+    };
+  }
+
+  // DeleteTask deletes a task by id (cascades its comments).
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse) {
+    option (google.api.http) = {delete: "/api/admin/task/{id}"};
+  }
+
+  // AddTaskComment appends a comment to a task. Server sets author from JWT.
+  rpc AddTaskComment(AddTaskCommentRequest) returns (AddTaskCommentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/comment/add"
+      body: "*"
+    };
+  }
+
+  // ListTaskComments returns a task's comments, oldest first.
+  rpc ListTaskComments(ListTaskCommentsRequest) returns (ListTaskCommentsResponse) {
+    option (google.api.http) = {get: "/api/admin/task/{task_id}/comments"};
+  }
+
+  // ListTasks lists tasks with optional board/status/assignee filters. Declared
+  // last (see route-ordering note above) so GET /task/list is not shadowed by
+  // GET /task/{id}.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
+    option (google.api.http) = {get: "/api/admin/task/list"};
   }
 
   // TECH CARD MANAGER
@@ -1548,6 +1615,80 @@ message DeleteFittingRequest {
 }
 
 message DeleteFittingResponse {}
+
+// TASK MANAGER
+
+message AddTaskRequest {
+  common.TaskInsert task = 1; // content
+  common.TaskBoard board = 2; // required: the department lane the card is created in
+  common.TaskStatus status = 3; // initial column; TASK_STATUS_UNKNOWN = server default (TODO)
+}
+
+message AddTaskResponse {
+  int32 id = 1;
+}
+
+message GetTaskRequest {
+  int32 id = 1;
+}
+
+message GetTaskResponse {
+  common.Task task = 1;
+}
+
+message UpdateTaskRequest {
+  int32 id = 1;
+  common.TaskInsert task = 2; // content only; board/status/position change via MoveTask, not here
+}
+
+message UpdateTaskResponse {}
+
+message MoveTaskRequest {
+  int32 id = 1;
+  common.TaskBoard board = 2; // target board; TASK_BOARD_UNKNOWN = keep current board
+  common.TaskStatus status = 3; // target column
+  int32 position = 4; // target index within the column (0-based)
+}
+
+message MoveTaskResponse {}
+
+message DeleteTaskRequest {
+  int32 id = 1;
+}
+
+message DeleteTaskResponse {}
+
+message ListTasksRequest {
+  common.TaskBoard board = 1; // optional filter; TASK_BOARD_UNKNOWN = all boards
+  common.TaskStatus status = 2; // optional filter; TASK_STATUS_UNKNOWN = all columns
+  string assignee = 3; // optional filter; "" = any assignee
+  int32 limit = 4; // 0 = default (all tasks for the board)
+  int32 offset = 5;
+  common.OrderFactor order_factor = 6;
+  int32 tech_card_id = 7; // optional filter; 0 = no filter ("tasks for this техкарта")
+  int32 product_id = 8; // optional filter; 0 = no filter ("tasks for this product")
+}
+
+message ListTasksResponse {
+  repeated common.Task tasks = 1;
+  int32 total = 2; // total matching tasks, ignoring pagination
+}
+
+message AddTaskCommentRequest {
+  common.TaskCommentInsert comment = 1;
+}
+
+message AddTaskCommentResponse {
+  int32 id = 1;
+}
+
+message ListTaskCommentsRequest {
+  int32 task_id = 1;
+}
+
+message ListTaskCommentsResponse {
+  repeated common.TaskComment comments = 1;
+}
 
 // SETTINGS
 
