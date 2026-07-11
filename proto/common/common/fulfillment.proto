@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package common;
+
+import "common/order.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// The orders-fulfillment board is a KANBAN PROJECTION of real orders — NOT a copy
+// of them. Its columns map 1:1 to a real order status, so orders remain the single
+// source of truth for fulfillment state: moving a card performs the real order
+// transition (record tracking → shipped, mark delivered), never a duplicated
+// status. The only board-owned data is a lightweight annotation (assignee, notes,
+// packing checklist) overlaid on an order by its uuid — it adds a task-like
+// workflow without ever drifting from the order's true status.
+
+// FulfillmentColumn is a lane on the fulfillment board. Unlike TaskStatus (free
+// kanban columns), each column is bound to a concrete order status.
+enum FulfillmentColumn {
+  FULFILLMENT_COLUMN_UNKNOWN = 0;
+  FULFILLMENT_COLUMN_TO_FULFILL = 1; // order status CONFIRMED (paid, not yet shipped)
+  FULFILLMENT_COLUMN_SHIPPED = 2; // order status SHIPPED
+  FULFILLMENT_COLUMN_DELIVERED = 3; // order status DELIVERED
+}
+
+// FulfillmentChecklistItem is one packing-checklist row on a fulfillment card
+// (e.g. "picked", "packed", "label printed"). Managed by dedicated add/toggle/
+// delete RPCs, same as a task checklist item.
+message FulfillmentChecklistItem {
+  int32 id = 1;
+  string content = 2;
+  bool is_done = 3;
+  int32 position = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// FulfillmentAnnotation is the board-owned overlay on an order: an assignee,
+// internal packing notes and a checklist. It carries NO order status — that lives
+// on the order. Lazily created on first edit; keyed by order_uuid.
+message FulfillmentAnnotation {
+  string order_uuid = 1;
+  string assignee = 2; // AdminAccount.username; "" = unassigned
+  string notes = 3; // internal packing notes
+  repeated FulfillmentChecklistItem checklist = 4;
+}
+
+// FulfillmentCard is one tile on the board: the compact order plus its annotation
+// summary. Full order detail + full annotation come from GetFulfillmentCard.
+message FulfillmentCard {
+  common.Order order = 1; // compact order (uuid, placed, total, status)
+  FulfillmentColumn column = 2; // derived from the order's status
+  string assignee = 3; // annotation assignee ("" = unassigned)
+  int32 checklist_done = 4; // completed checklist items
+  int32 checklist_total = 5; // total checklist items
+  bool has_notes = 6; // whether internal notes are present
+}
+
+// FulfillmentColumnCards groups one column's cards. The active columns
+// (TO_FULFILL, SHIPPED) are oldest order first (longest-waiting picked first);
+// the historical DELIVERED column is newest first and bounded.
+message FulfillmentColumnCards {
+  FulfillmentColumn column = 1;
+  repeated FulfillmentCard cards = 2;
+}

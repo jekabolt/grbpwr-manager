@@ -95,18 +95,35 @@ type Task struct {
 	CreatedBy string      `db:"created_by"`
 	CreatedAt time.Time   `db:"created_at"`
 	UpdatedAt time.Time   `db:"updated_at"`
+	// ArchivedAt is the soft-archive marker: Valid = archived (hidden from the
+	// board and default list, but restorable); invalid/NULL = active.
+	ArchivedAt sql.NullTime        `db:"archived_at"`
+	Checklist  []TaskChecklistItem `db:"-"`
+}
+
+// TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
+// a done flag. Managed by dedicated add/toggle/delete operations, never wiped by a
+// content edit.
+type TaskChecklistItem struct {
+	Id        int       `db:"id"`
+	TaskId    int       `db:"task_id"`
+	Content   string    `db:"content"`
+	IsDone    bool      `db:"is_done"`
+	Position  int       `db:"position"`
+	CreatedAt time.Time `db:"created_at"`
 }
 
 // TaskListFilter narrows a ListTasks query. Zero-value fields are "no filter".
 type TaskListFilter struct {
-	Board       TaskBoard // "" = all boards
-	Status      TaskStatus // "" = all columns
-	Assignee    string // "" = any assignee
-	TechCardId  int // 0 = no filter
-	ProductId   int // 0 = no filter
-	Limit       int
-	Offset      int
-	OrderFactor OrderFactor
+	Board           TaskBoard  // "" = all boards
+	Status          TaskStatus // "" = all columns
+	Assignee        string     // "" = any assignee
+	TechCardId      int        // 0 = no filter
+	ProductId       int        // 0 = no filter
+	IncludeArchived bool       // false = active only (default); true = include archived
+	Limit           int
+	Offset          int
+	OrderFactor     OrderFactor
 }
 
 // TaskCommentInsert is the writable payload for a task comment. Author is stamped
