@@ -1294,7 +1294,10 @@ message CrossSellPair {
   int32 product_b_id = 2;
   string product_a_name = 3;
   string product_b_name = 4;
-  int32 count = 5;
+  int32 count = 5; // orders containing both A and B (distinct orders)
+  double support = 6; // P(A∧B): count / total orders
+  double confidence = 7; // P(B|A): count / orders containing A
+  double lift = 8; // support / (P(A)·P(B)); >1 ⇒ bought together more than chance, so the client can rank/threshold on strength instead of raw count
 }
 
 message PromoMetric {
@@ -2020,6 +2023,11 @@ message SellThroughByDropRow {
   int64 units_remaining = 4; // current on-hand units across the drop
   double sell_through_pct = 5; // units_sold / (units_sold + units_remaining) × 100
   google.type.Decimal revenue = 6; // lifetime net revenue (base currency) for the drop
+  int64 units_bought = 7; // initial-stock proxy: units_sold + units_remaining
+  google.type.Decimal gross_margin = 8; // costed-subset gross margin (base ccy): Σ over the drop's costed products of (revenue − cost_price×units_sold). Meaningful only when has_cost.
+  double gross_margin_pct = 9; // gross_margin / costed_revenue × 100
+  bool has_cost = 10; // at least one product in the drop has a cost_price (else gross_margin is N/A, not 0)
+  optional int64 days_to_50pct = 11; // days from the drop's first sale to 50% sell-through; unset when the drop hasn't reached 50% yet
 }
 
 // --- Analytics: Size Run Efficiency ---
@@ -2029,7 +2037,10 @@ message SizeRunEfficiencyRow {
   string product_name = 2;
   int32 total_sizes = 3;
   int32 sold_through_sizes = 4; // Count of sizes with any sales activity (>0 units sold)
-  double efficiency_pct = 5; // (sold_through_sizes / total_sizes) * 100
+  double efficiency_pct = 5; // size-run coverage: (sold_through_sizes / total_sizes) * 100
+  int64 units_bought = 6; // Σ initial stock across sizes (current on-hand + net units sold)
+  int64 units_sold = 7; // Σ net units sold across sizes
+  double sell_through_pct = 8; // true unit sell-through: units_sold / units_bought * 100 (distinct from the size-coverage efficiency_pct)
 }
 
 // --- Analytics: Slow Movers ---
