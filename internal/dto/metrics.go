@@ -414,6 +414,9 @@ func crossSellPairsToPb(list []entity.CrossSellPair) []*pb_admin.CrossSellPair {
 			ProductAName: c.ProductAName,
 			ProductBName: c.ProductBName,
 			Count:        int32(c.Count),
+			Support:      c.Support,
+			Confidence:   c.Confidence,
+			Lift:         c.Lift,
 		}
 	}
 	return pb
@@ -1053,6 +1056,9 @@ func ConvertSizeRunEfficiencyToPb(list []entity.SizeRunEfficiencyRow) []*pb_admi
 			TotalSizes:       int32(r.TotalSizes),
 			SoldThroughSizes: int32(r.SoldThroughSizes),
 			EfficiencyPct:    r.EfficiencyPct,
+			UnitsBought:      r.UnitsBought,
+			UnitsSold:        r.UnitsSold,
+			SellThroughPct:   r.SellThroughPct,
 		}
 	}
 	return pb
@@ -1064,14 +1070,25 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 	}
 	pb := make([]*pb_admin.SellThroughByDropRow, len(list))
 	for i, r := range list {
-		pb[i] = &pb_admin.SellThroughByDropRow{
+		row := &pb_admin.SellThroughByDropRow{
 			Collection:     r.Collection,
 			ProductCount:   int32(r.ProductCount),
 			UnitsSold:      r.UnitsSold,
 			UnitsRemaining: r.UnitsRemaining,
+			UnitsBought:    r.UnitsBought,
 			SellThroughPct: r.SellThroughPct,
 			Revenue:        &decimal.Decimal{Value: r.Revenue.String()},
+			HasCost:        r.HasCost,
 		}
+		if r.HasCost {
+			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
+			row.GrossMarginPct = r.GrossMarginPct
+		}
+		if r.DaysTo50Pct.Valid {
+			v := r.DaysTo50Pct.Int64
+			row.DaysTo_50Pct = &v
+		}
+		pb[i] = row
 	}
 	return pb
 }

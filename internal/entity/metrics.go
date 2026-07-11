@@ -255,7 +255,10 @@ type CrossSellPair struct {
 	ProductBId   int
 	ProductAName string
 	ProductBName string
-	Count        int
+	Count        int     // orders containing both A and B (distinct orders)
+	Support      float64 // P(A∧B): Count / total orders
+	Confidence   float64 // P(B|A): Count / orders containing A
+	Lift         float64 // Support / (P(A)·P(B)); >1 ⇒ bought together more than chance
 }
 
 type PromoMetric struct {
@@ -606,7 +609,11 @@ type SizeRunEfficiencyRow struct {
 	ProductName      string  `db:"product_name"`
 	TotalSizes       int     `db:"total_sizes"`
 	SoldThroughSizes int     `db:"sold_through_sizes"`
-	EfficiencyPct    float64 `db:"efficiency_pct"`
+	EfficiencyPct    float64 `db:"efficiency_pct"` // size-run coverage: % of sizes with any sale
+	// True unit sell-through (distinct from the size-coverage EfficiencyPct above).
+	UnitsBought    int64   `db:"units_bought"`     // Σ initial stock across sizes (on-hand + net sold)
+	UnitsSold      int64   `db:"units_sold"`       // Σ net units sold across sizes
+	SellThroughPct float64 `db:"sell_through_pct"` // UnitsSold / UnitsBought × 100
 }
 
 // SellThroughByDropRow rolls a release/drop cohort (product.collection) into decision-grade
@@ -616,8 +623,21 @@ type SellThroughByDropRow struct {
 	ProductCount   int             `db:"product_count"`
 	UnitsSold      int64           `db:"units_sold"`
 	UnitsRemaining int64           `db:"units_remaining"`
+	UnitsBought    int64           `db:"units_bought"` // units_sold + units_remaining (initial-stock proxy)
 	SellThroughPct float64         `db:"sell_through_pct"`
 	Revenue        decimal.Decimal `db:"revenue"`
+	// Margin over the costed subset (products with a cost_price). RevenueCost/CostedRevenue are
+	// scanned; HasCost/GrossMargin/GrossMarginPct are derived in Go (mirrors SlowMoverRow). When
+	// nothing in the drop has a cost, HasCost=false and the margins are N/A rather than a
+	// misleading 0/100.
+	RevenueCost    decimal.Decimal `db:"revenue_cost"`   // Σ(cost_price × units_sold) over costed products
+	CostedRevenue  decimal.Decimal `db:"costed_revenue"` // Σ(revenue) over costed products
+	HasCost        bool            `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
+	// DaysTo50Pct is the whole days from the drop's first sale to 50% sell-through; invalid when
+	// the drop hasn't reached 50% yet (or has no sales).
+	DaysTo50Pct sql.NullInt64 `db:"-"`
 }
 
 // --- Dashboard (decision-grade summary) ---
