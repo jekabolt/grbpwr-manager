@@ -174,12 +174,13 @@ func (s *Server) ListTaskComments(ctx context.Context, req *pb_admin.ListTaskCom
 // ListTasks lists tasks with optional board/status/assignee/tech-card/product filters.
 func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) (*pb_admin.ListTasksResponse, error) {
 	filter := entity.TaskListFilter{
-		Assignee:    req.Assignee,
-		TechCardId:  int(req.TechCardId),
-		ProductId:   int(req.ProductId),
-		Limit:       int(req.Limit),
-		Offset:      int(req.Offset),
-		OrderFactor: dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+		Assignee:        req.Assignee,
+		TechCardId:      int(req.TechCardId),
+		ProductId:       int(req.ProductId),
+		IncludeArchived: req.IncludeArchived,
+		Limit:           int(req.Limit),
+		Offset:          int(req.Offset),
+		OrderFactor:     dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	}
 	if req.Board != pb_common.TaskBoard_TASK_BOARD_UNKNOWN {
 		b, err := dto.ConvertPbTaskBoardToEntity(req.Board)
@@ -206,4 +207,81 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		pbTasks = append(pbTasks, dto.ConvertEntityTaskToPb(&tasks[i]))
 	}
 	return &pb_admin.ListTasksResponse{Tasks: pbTasks, Total: int32(total)}, nil
+}
+
+// ArchiveTask soft-archives a task (hidden from the board, restorable).
+func (s *Server) ArchiveTask(ctx context.Context, req *pb_admin.ArchiveTaskRequest) (*pb_admin.ArchiveTaskResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "task id is required")
+	}
+	if err := s.repo.Tasks().ArchiveTask(ctx, int(req.Id)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "task not found or already archived")
+		}
+		slog.Default().ErrorContext(ctx, "can't archive task", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't archive task")
+	}
+	return &pb_admin.ArchiveTaskResponse{}, nil
+}
+
+// UnarchiveTask restores an archived task to the end of its column.
+func (s *Server) UnarchiveTask(ctx context.Context, req *pb_admin.UnarchiveTaskRequest) (*pb_admin.UnarchiveTaskResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "task id is required")
+	}
+	if err := s.repo.Tasks().UnarchiveTask(ctx, int(req.Id)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "task not found or not archived")
+		}
+		slog.Default().ErrorContext(ctx, "can't unarchive task", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't unarchive task")
+	}
+	return &pb_admin.UnarchiveTaskResponse{}, nil
+}
+
+// AddTaskChecklistItem appends a checklist item (subtask) to a task.
+func (s *Server) AddTaskChecklistItem(ctx context.Context, req *pb_admin.AddTaskChecklistItemRequest) (*pb_admin.AddTaskChecklistItemResponse, error) {
+	if req.TaskId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	content, err := dto.ValidateChecklistContent(req.Content)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	id, err := s.repo.Tasks().AddTaskChecklistItem(ctx, int(req.TaskId), content)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "task not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't add task checklist item", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't add task checklist item")
+	}
+	return &pb_admin.AddTaskChecklistItemResponse{Id: int32(id)}, nil
+}
+
+// SetTaskChecklistItemDone sets a checklist item's done flag.
+func (s *Server) SetTaskChecklistItemDone(ctx context.Context, req *pb_admin.SetTaskChecklistItemDoneRequest) (*pb_admin.SetTaskChecklistItemDoneResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "checklist item id is required")
+	}
+	if err := s.repo.Tasks().SetTaskChecklistItemDone(ctx, int(req.Id), req.IsDone); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "checklist item not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't set task checklist item done", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't set task checklist item done")
+	}
+	return &pb_admin.SetTaskChecklistItemDoneResponse{}, nil
+}
+
+// DeleteTaskChecklistItem removes a checklist item.
+func (s *Server) DeleteTaskChecklistItem(ctx context.Context, req *pb_admin.DeleteTaskChecklistItemRequest) (*pb_admin.DeleteTaskChecklistItemResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "checklist item id is required")
+	}
+	if err := s.repo.Tasks().DeleteTaskChecklistItem(ctx, int(req.Id)); err != nil {
+		slog.Default().ErrorContext(ctx, "can't delete task checklist item", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't delete task checklist item")
+	}
+	return &pb_admin.DeleteTaskChecklistItemResponse{}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	v "github.com/asaskevich/govalidator"
@@ -101,34 +102,29 @@ func (s *Server) SetTrackingNumber(ctx context.Context, req *pb_admin.SetTrackin
 		slog.Default().ErrorContext(ctx, "tracking code is empty")
 		return nil, status.Errorf(codes.InvalidArgument, "tracking code is empty")
 	}
-
-	_, err := s.repo.Order().SetTrackingNumber(ctx, req.OrderUuid, req.TrackingCode)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't update tracking number info",
-			slog.String("err", err.Error()),
-		)
+	if err := s.shipOrder(ctx, req.OrderUuid, req.TrackingCode); err != nil {
+		slog.Default().ErrorContext(ctx, "can't set tracking number", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't update shipping info")
 	}
-
-	// Get full order details for email
-	orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, req.OrderUuid)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get order full by uuid",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't get order details")
-	}
-
-	shipmentDetails := dto.OrderFullToOrderShipment(orderFull)
-	err = s.mailer.SendOrderShipped(ctx, s.repo, orderFull.Buyer.Email, shipmentDetails)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't send order shipped email",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't send order shipped email")
-	}
-
 	return &pb_admin.SetTrackingNumberResponse{}, nil
+}
+
+// shipOrder records an order's tracking code (the real shipped transition) and
+// sends the shipped email. Shared by SetTrackingNumber (orders section) and
+// ShipFulfillmentOrder (fulfillment section) so both perform the same operation.
+func (s *Server) shipOrder(ctx context.Context, orderUUID, trackingCode string) error {
+	if _, err := s.repo.Order().SetTrackingNumber(ctx, orderUUID, trackingCode); err != nil {
+		return fmt.Errorf("can't set tracking number: %w", err)
+	}
+	orderFull, err := s.repo.Order().GetOrderFullByUUID(ctx, orderUUID)
+	if err != nil {
+		return fmt.Errorf("can't get order details: %w", err)
+	}
+	shipmentDetails := dto.OrderFullToOrderShipment(orderFull)
+	if err := s.mailer.SendOrderShipped(ctx, s.repo, orderFull.Buyer.Email, shipmentDetails); err != nil {
+		return fmt.Errorf("can't send order shipped email: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {

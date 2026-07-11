@@ -112,6 +112,58 @@ func TestMoveTaskStatusRequired(t *testing.T) {
 	}
 }
 
+// ArchiveTask requires an id and maps a missing/already-archived task to NotFound.
+func TestArchiveTaskValidationAndNotFound(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	s := &Server{repo: repo}
+	if _, err := s.ArchiveTask(context.Background(), &pb_admin.ArchiveTaskRequest{Id: 0}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("id required: want InvalidArgument, got %v", err)
+	}
+
+	repo2 := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo2.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().ArchiveTask(mock.Anything, 5).Return(sql.ErrNoRows)
+	s2 := &Server{repo: repo2}
+	if _, err := s2.ArchiveTask(context.Background(), &pb_admin.ArchiveTaskRequest{Id: 5}); status.Code(err) != codes.NotFound {
+		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
+// AddTaskChecklistItem validates content, requires a task_id, and maps a missing
+// task to NotFound.
+func TestAddTaskChecklistItemValidatesAndMapsNotFound(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	s := &Server{repo: repo}
+	if _, err := s.AddTaskChecklistItem(context.Background(), &pb_admin.AddTaskChecklistItemRequest{TaskId: 1, Content: "   "}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("empty content: want InvalidArgument, got %v", err)
+	}
+	if _, err := s.AddTaskChecklistItem(context.Background(), &pb_admin.AddTaskChecklistItemRequest{TaskId: 0, Content: "x"}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("missing task_id: want InvalidArgument, got %v", err)
+	}
+
+	repo2 := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo2.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().AddTaskChecklistItem(mock.Anything, 1, "pack it").Return(0, sql.ErrNoRows)
+	s2 := &Server{repo: repo2}
+	if _, err := s2.AddTaskChecklistItem(context.Background(), &pb_admin.AddTaskChecklistItemRequest{TaskId: 1, Content: "  pack it  "}); status.Code(err) != codes.NotFound {
+		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
+// SetTaskChecklistItemDone maps a missing item to NotFound.
+func TestSetTaskChecklistItemDoneNotFound(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tasks := mocks.NewMockTasks(t)
+	repo.EXPECT().Tasks().Return(tasks)
+	tasks.EXPECT().SetTaskChecklistItemDone(mock.Anything, 9, true).Return(sql.ErrNoRows)
+	s := &Server{repo: repo}
+	if _, err := s.SetTaskChecklistItemDone(context.Background(), &pb_admin.SetTaskChecklistItemDoneRequest{Id: 9, IsDone: true}); status.Code(err) != codes.NotFound {
+		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
 // AddTaskComment stamps the author from the JWT.
 func TestAddTaskCommentStampsAuthor(t *testing.T) {
 	repo := mocks.NewMockRepository(t)

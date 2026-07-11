@@ -7,6 +7,7 @@ import "common/buyer.proto";
 import "common/dict.proto";
 import "common/filter.proto";
 import "common/fitting.proto";
+import "common/fulfillment.proto";
 import "common/hero.proto";
 import "common/language.proto";
 import "common/media.proto";
@@ -424,6 +425,125 @@ service AdminService {
   // GET /task/{id}.
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
     option (google.api.http) = {get: "/api/admin/task/list"};
+  }
+
+  // ArchiveTask soft-archives a task: it is hidden from the board and the default
+  // list (restorable), and its former (board,status) column is re-sequenced so
+  // positions stay gap-free. Placement is otherwise preserved.
+  rpc ArchiveTask(ArchiveTaskRequest) returns (ArchiveTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/archive"
+      body: "*"
+    };
+  }
+
+  // UnarchiveTask restores an archived task, appending it to the end of its
+  // (board,status) column.
+  rpc UnarchiveTask(UnarchiveTaskRequest) returns (UnarchiveTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/unarchive"
+      body: "*"
+    };
+  }
+
+  // AddTaskChecklistItem appends a checklist item (subtask) to a task.
+  rpc AddTaskChecklistItem(AddTaskChecklistItemRequest) returns (AddTaskChecklistItemResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/checklist/add"
+      body: "*"
+    };
+  }
+
+  // SetTaskChecklistItemDone sets a checklist item's done flag.
+  rpc SetTaskChecklistItemDone(SetTaskChecklistItemDoneRequest) returns (SetTaskChecklistItemDoneResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/checklist/done"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskChecklistItem removes a checklist item.
+  rpc DeleteTaskChecklistItem(DeleteTaskChecklistItemRequest) returns (DeleteTaskChecklistItemResponse) {
+    option (google.api.http) = {delete: "/api/admin/task/checklist/{id}"};
+  }
+
+  // ORDER FULFILLMENT BOARD
+  // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
+  // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
+  // order transitions; only the annotation (assignee/notes/checklist) is
+  // board-owned, so board state can never drift from the order's true status.
+  // These are gated by a dedicated `fulfillment` RBAC section so a warehouse role
+  // can fulfill without full `orders:write` (which includes refunds/cancels).
+  // GET /fulfillment/board and /fulfillment/card/{order_uuid} are distinct paths
+  // (no route shadowing).
+
+  // GetFulfillmentBoard returns the three columns of cards (compact order +
+  // annotation summary), oldest order first within each column.
+  rpc GetFulfillmentBoard(GetFulfillmentBoardRequest) returns (GetFulfillmentBoardResponse) {
+    option (google.api.http) = {get: "/api/admin/fulfillment/board"};
+  }
+
+  // GetFulfillmentCard returns full order detail plus the full annotation
+  // (assignee, notes, checklist) for one order.
+  rpc GetFulfillmentCard(GetFulfillmentCardRequest) returns (GetFulfillmentCardResponse) {
+    option (google.api.http) = {get: "/api/admin/fulfillment/card/{order_uuid}"};
+  }
+
+  // SetFulfillmentAssignee sets (or clears, with "") the order's fulfillment
+  // assignee, lazily creating the annotation.
+  rpc SetFulfillmentAssignee(SetFulfillmentAssigneeRequest) returns (SetFulfillmentAssigneeResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/assignee"
+      body: "*"
+    };
+  }
+
+  // SetFulfillmentNotes sets the order's internal packing notes.
+  rpc SetFulfillmentNotes(SetFulfillmentNotesRequest) returns (SetFulfillmentNotesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/notes"
+      body: "*"
+    };
+  }
+
+  // AddFulfillmentChecklistItem appends a packing-checklist item to an order.
+  rpc AddFulfillmentChecklistItem(AddFulfillmentChecklistItemRequest) returns (AddFulfillmentChecklistItemResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/checklist/add"
+      body: "*"
+    };
+  }
+
+  // SetFulfillmentChecklistItemDone sets a packing-checklist item's done flag.
+  rpc SetFulfillmentChecklistItemDone(SetFulfillmentChecklistItemDoneRequest) returns (SetFulfillmentChecklistItemDoneResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/checklist/done"
+      body: "*"
+    };
+  }
+
+  // DeleteFulfillmentChecklistItem removes a packing-checklist item.
+  rpc DeleteFulfillmentChecklistItem(DeleteFulfillmentChecklistItemRequest) returns (DeleteFulfillmentChecklistItemResponse) {
+    option (google.api.http) = {delete: "/api/admin/fulfillment/checklist/{id}"};
+  }
+
+  // ShipFulfillmentOrder records a To-Fulfill order's tracking code, performing
+  // the real shipped transition (and the shipped email) — gated by fulfillment
+  // perms. Requires a non-empty tracking code.
+  rpc ShipFulfillmentOrder(ShipFulfillmentOrderRequest) returns (ShipFulfillmentOrderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/ship"
+      body: "*"
+    };
+  }
+
+  // MarkFulfillmentDelivered performs the real delivered transition for a shipped
+  // order.
+  rpc MarkFulfillmentDelivered(MarkFulfillmentDeliveredRequest) returns (MarkFulfillmentDeliveredResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/deliver"
+      body: "*"
+    };
   }
 
   // TECH CARD MANAGER
@@ -1667,6 +1787,7 @@ message ListTasksRequest {
   common.OrderFactor order_factor = 6;
   int32 tech_card_id = 7; // optional filter; 0 = no filter ("tasks for this техкарта")
   int32 product_id = 8; // optional filter; 0 = no filter ("tasks for this product")
+  bool include_archived = 9; // false (default) = active only; true = include archived tasks
 }
 
 message ListTasksResponse {
@@ -1689,6 +1810,108 @@ message ListTaskCommentsRequest {
 message ListTaskCommentsResponse {
   repeated common.TaskComment comments = 1;
 }
+
+message ArchiveTaskRequest {
+  int32 id = 1;
+}
+
+message ArchiveTaskResponse {}
+
+message UnarchiveTaskRequest {
+  int32 id = 1;
+}
+
+message UnarchiveTaskResponse {}
+
+message AddTaskChecklistItemRequest {
+  int32 task_id = 1;
+  string content = 2; // required
+}
+
+message AddTaskChecklistItemResponse {
+  int32 id = 1;
+}
+
+message SetTaskChecklistItemDoneRequest {
+  int32 id = 1; // checklist item id
+  bool is_done = 2;
+}
+
+message SetTaskChecklistItemDoneResponse {}
+
+message DeleteTaskChecklistItemRequest {
+  int32 id = 1; // checklist item id
+}
+
+message DeleteTaskChecklistItemResponse {}
+
+// ORDER FULFILLMENT BOARD
+
+message GetFulfillmentBoardRequest {
+  int32 delivered_limit = 1; // max Delivered cards to include; 0 = default (50)
+}
+
+message GetFulfillmentBoardResponse {
+  repeated common.FulfillmentColumnCards columns = 1;
+}
+
+message GetFulfillmentCardRequest {
+  string order_uuid = 1;
+}
+
+message GetFulfillmentCardResponse {
+  common.OrderFull order = 1; // full order detail
+  common.FulfillmentAnnotation annotation = 2; // assignee / notes / checklist
+}
+
+message SetFulfillmentAssigneeRequest {
+  string order_uuid = 1;
+  string assignee = 2; // AdminAccount.username; "" clears the assignee
+}
+
+message SetFulfillmentAssigneeResponse {}
+
+message SetFulfillmentNotesRequest {
+  string order_uuid = 1;
+  string notes = 2;
+}
+
+message SetFulfillmentNotesResponse {}
+
+message AddFulfillmentChecklistItemRequest {
+  string order_uuid = 1;
+  string content = 2; // required
+}
+
+message AddFulfillmentChecklistItemResponse {
+  int32 id = 1;
+}
+
+message SetFulfillmentChecklistItemDoneRequest {
+  int32 id = 1; // checklist item id
+  bool is_done = 2;
+}
+
+message SetFulfillmentChecklistItemDoneResponse {}
+
+message DeleteFulfillmentChecklistItemRequest {
+  int32 id = 1; // checklist item id
+}
+
+message DeleteFulfillmentChecklistItemResponse {}
+
+message ShipFulfillmentOrderRequest {
+  string order_uuid = 1;
+  string tracking_code = 2; // required
+}
+
+message ShipFulfillmentOrderResponse {}
+
+message MarkFulfillmentDeliveredRequest {
+  string order_uuid = 1;
+}
+
+message MarkFulfillmentDeliveredResponse {}
 
 // SETTINGS
 
