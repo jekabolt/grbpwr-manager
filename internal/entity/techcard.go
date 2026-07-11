@@ -123,17 +123,31 @@ func IsValidTechCardMediaKind(k TechCardMediaKind) bool {
 	return ValidTechCardMediaKinds[k]
 }
 
-// TechCardMediaItem is a writable sketch-media reference (id + kind).
+// TechCardMediaCategory is which of the two sketch lists a media item belongs to:
+// moodboard (mood / inspiration / reference) vs technical (flat sketches used in
+// construction). Stored as a string in tech_card_media.category; the item's Kind is
+// the within-list sub-classifier.
+type TechCardMediaCategory string
+
+const (
+	TechCardMediaCategoryMoodboard TechCardMediaCategory = "moodboard"
+	TechCardMediaCategoryTechnical TechCardMediaCategory = "technical"
+)
+
+// TechCardMediaItem is a writable sketch-media reference (id + category + kind).
 type TechCardMediaItem struct {
-	MediaId int               `db:"media_id"`
-	Kind    TechCardMediaKind `db:"kind"`
-	Caption sql.NullString    `db:"caption"`
+	MediaId  int                   `db:"media_id"`
+	Category TechCardMediaCategory `db:"category"`
+	Kind     TechCardMediaKind     `db:"kind"`
+	Caption  sql.NullString        `db:"caption"`
 }
 
 // TechCardMediaFull is a resolved sketch-media reference for display.
 type TechCardMediaFull struct {
-	Media MediaFull
-	Kind  TechCardMediaKind
+	Media    MediaFull
+	Category TechCardMediaCategory
+	Kind     TechCardMediaKind
+	Caption  sql.NullString
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
@@ -307,6 +321,24 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 		return rt
 	}
 	return u.LineTotal(bom)
+}
+
+// UnitTotal is the usage's PER-GARMENT material cost for costing. A per-garment usage
+// (measured Consumption or countable Quantity) uses its LineTotal directly. A usage graded
+// ONLY per size has no single per-garment rate, so its per-garment figure is the whole-run
+// SizeRunTotal divided by totalOrderQty (a qty-weighted average) — this keeps per-unit and
+// per-order on ONE scale, since unit × totalOrderQty recovers the run. INVALID when neither
+// is available (e.g. per-size only with no order quantities yet).
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, orderQtyBySize map[int]int, totalOrderQty int) decimal.NullDecimal {
+	if lt := u.LineTotal(bom); lt.Valid {
+		return lt
+	}
+	if totalOrderQty > 0 {
+		if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
+			return decimal.NullDecimal{Decimal: rt.Decimal.Div(decimal.NewFromInt(int64(totalOrderQty))), Valid: true}
+		}
+	}
+	return decimal.NullDecimal{}
 }
 
 // applyWastage grosses a base cost up by wastage_percent when set (× (1 + pct/100)).
@@ -606,20 +638,19 @@ type TechCardPackaging struct {
 	Notes         sql.NullString      `db:"notes"`
 }
 
-// TechCardCosting holds the manually-entered cost articles (Sheet «Калькуляция», 1:1).
-// The materials rollup and total are computed on read (see dto), not stored.
+// TechCardCosting holds the manually-entered per-unit cost articles (Sheet
+// «Калькуляция», 1:1), all in a single currency. The materials line and the unit/order
+// totals are computed on read (see dto), not stored. Pricing (markup/wholesale/retail)
+// was removed — it lives on the published product.
 type TechCardCosting struct {
-	CmtCost          decimal.NullDecimal `db:"cmt_cost"`
-	HardwareCost     decimal.NullDecimal `db:"hardware_cost"`
-	PackagingCost    decimal.NullDecimal `db:"packaging_cost"`
-	LogisticsCost    decimal.NullDecimal `db:"logistics_cost"`
-	OverheadCost     decimal.NullDecimal `db:"overhead_cost"`
-	DefectPercent    decimal.NullDecimal `db:"defect_percent"`
-	MarkupMultiplier decimal.NullDecimal `db:"markup_multiplier"`
-	WholesalePrice   decimal.NullDecimal `db:"wholesale_price"`
-	RetailPrice      decimal.NullDecimal `db:"retail_price"`
-	Currency         sql.NullString      `db:"currency"`
-	Notes            sql.NullString      `db:"notes"`
+	CmtCost       decimal.NullDecimal `db:"cmt_cost"`
+	HardwareCost  decimal.NullDecimal `db:"hardware_cost"`
+	PackagingCost decimal.NullDecimal `db:"packaging_cost"`
+	LogisticsCost decimal.NullDecimal `db:"logistics_cost"`
+	OverheadCost  decimal.NullDecimal `db:"overhead_cost"`
+	DefectPercent decimal.NullDecimal `db:"defect_percent"`
+	Currency      sql.NullString      `db:"currency"`
+	Notes         sql.NullString      `db:"notes"`
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).

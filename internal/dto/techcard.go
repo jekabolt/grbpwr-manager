@@ -108,6 +108,45 @@ var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.
 	return m
 }()
 
+// defaultTechCardMediaKind is the fallback kind for an item whose kind is unset, chosen
+// per list so a moodboard item doesn't default to a technical "preview".
+func defaultTechCardMediaKind(cat entity.TechCardMediaCategory) entity.TechCardMediaKind {
+	if cat == entity.TechCardMediaCategoryMoodboard {
+		return entity.TechCardMediaMoodboard
+	}
+	return entity.TechCardMediaPreview
+}
+
+// parseTechCardMediaItems validates one sketch-media list (moodboard or technical) and
+// tags each item with its category. Media in the two lists share the same shape; the
+// category is implied by which list the item arrived in.
+func parseTechCardMediaItems(items []*pb_common.TechCardMediaItem, cat entity.TechCardMediaCategory) ([]entity.TechCardMediaItem, error) {
+	out := make([]entity.TechCardMediaItem, 0, len(items))
+	for _, m := range items {
+		if m.MediaId <= 0 {
+			return nil, fmt.Errorf("tech card media media_id must be positive")
+		}
+		kind := defaultTechCardMediaKind(cat)
+		if m.Kind != pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_UNKNOWN {
+			k, ok := techCardMediaKindPbToEntity[m.Kind]
+			if !ok {
+				return nil, fmt.Errorf("unknown tech card media kind: %v", m.Kind)
+			}
+			kind = k
+		}
+		if len(m.Caption) > maxVarchar255 {
+			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
+		}
+		out = append(out, entity.TechCardMediaItem{
+			MediaId:  int(m.MediaId),
+			Category: cat,
+			Kind:     kind,
+			Caption:  nullStringFromPb(m.Caption),
+		})
+	}
+	return out, nil
+}
+
 var techCardBomSectionPbToEntity = map[pb_common.TechCardBomSection]entity.TechCardBomSection{
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC:      entity.BomSectionFabric,
 	pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_LINING:      entity.BomSectionLining,
@@ -233,24 +272,19 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, fmt.Errorf("base_sample_size_id %d must be one of size_ids", pb.BaseSampleSizeId)
 	}
 
-	media := make([]entity.TechCardMediaItem, 0, len(pb.Media))
-	for _, m := range pb.Media {
-		if m.MediaId <= 0 {
-			return nil, fmt.Errorf("tech card media media_id must be positive")
-		}
-		kind := entity.TechCardMediaPreview
-		if m.Kind != pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_UNKNOWN {
-			k, ok := techCardMediaKindPbToEntity[m.Kind]
-			if !ok {
-				return nil, fmt.Errorf("unknown tech card media kind: %v", m.Kind)
-			}
-			kind = k
-		}
-		if len(m.Caption) > maxVarchar255 {
-			return nil, fmt.Errorf("media caption must be at most %d characters", maxVarchar255)
-		}
-		media = append(media, entity.TechCardMediaItem{MediaId: int(m.MediaId), Kind: kind, Caption: nullStringFromPb(m.Caption)})
+	// Sketch media arrives as two independent lists; concat into one internal slice,
+	// each item tagged by its category (moodboard vs technical).
+	moodboardMedia, err := parseTechCardMediaItems(pb.MoodboardMedia, entity.TechCardMediaCategoryMoodboard)
+	if err != nil {
+		return nil, err
 	}
+	technicalMedia, err := parseTechCardMediaItems(pb.TechnicalMedia, entity.TechCardMediaCategoryTechnical)
+	if err != nil {
+		return nil, err
+	}
+	media := make([]entity.TechCardMediaItem, 0, len(moodboardMedia)+len(technicalMedia))
+	media = append(media, moodboardMedia...)
+	media = append(media, technicalMedia...)
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
 	for _, c := range pb.Callouts {
@@ -494,21 +528,33 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 		return nil
 	}
 
-	media := make([]*pb_common.TechCardMediaItem, 0, len(tc.Media))
+	// Split the single internal media slice back into the two contract lists by category.
+	var moodboardMedia, technicalMedia []*pb_common.TechCardMediaItem
 	for _, m := range tc.Media {
-		media = append(media, &pb_common.TechCardMediaItem{
+		item := &pb_common.TechCardMediaItem{
 			MediaId: int32(m.MediaId),
 			Kind:    pbTechCardMediaKind(m.Kind),
 			Caption: pbStringFromNull(m.Caption),
-		})
+		}
+		if m.Category == entity.TechCardMediaCategoryMoodboard {
+			moodboardMedia = append(moodboardMedia, item)
+		} else {
+			technicalMedia = append(technicalMedia, item)
+		}
 	}
 
-	resolved := make([]*pb_common.TechCardMediaFull, 0, len(tc.ResolvedMedia))
+	var resolvedMoodboard, resolvedTechnical []*pb_common.TechCardMediaFull
 	for i := range tc.ResolvedMedia {
-		resolved = append(resolved, &pb_common.TechCardMediaFull{
-			Media: ConvertEntityToCommonMedia(&tc.ResolvedMedia[i].Media),
-			Kind:  pbTechCardMediaKind(tc.ResolvedMedia[i].Kind),
-		})
+		item := &pb_common.TechCardMediaFull{
+			Media:   ConvertEntityToCommonMedia(&tc.ResolvedMedia[i].Media),
+			Kind:    pbTechCardMediaKind(tc.ResolvedMedia[i].Kind),
+			Caption: pbStringFromNull(tc.ResolvedMedia[i].Caption),
+		}
+		if tc.ResolvedMedia[i].Category == entity.TechCardMediaCategoryMoodboard {
+			resolvedMoodboard = append(resolvedMoodboard, item)
+		} else {
+			resolvedTechnical = append(resolvedTechnical, item)
+		}
 	}
 
 	callouts := make([]*pb_common.TechCardCallout, 0, len(tc.Callouts))
@@ -575,7 +621,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Notes:            pbStringFromNull(tc.Notes),
 			SizeIds:          sizeIds,
 			ProductIds:       productIds,
-			Media:            media,
+			MoodboardMedia:   moodboardMedia,
+			TechnicalMedia:   technicalMedia,
 			Callouts:         callouts,
 			Revisions:        revisions,
 			Details:          techCardDetailsToPb(tc.Details),
@@ -591,7 +638,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
 			Patterns:         techCardPatternsToPb(tc.Patterns),
 		},
-		ResolvedMedia: resolved,
+		ResolvedMoodboardMedia: resolvedMoodboard,
+		ResolvedTechnicalMedia: resolvedTechnical,
 	}
 }
 

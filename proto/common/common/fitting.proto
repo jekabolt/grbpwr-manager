@@ -4,6 +4,7 @@ package common;
 
 import "common/media.proto";
 import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
 
@@ -50,6 +51,22 @@ message FittingInsert {
   // uploaded via Admin.UploadPattern; the url is stored as a snapshot (immune to later
   // tech-card edits).
   repeated FittingPattern patterns = 11;
+  // Callouts pinned onto the fitting's photos — a marker + note flagging what is
+  // wrong with the fit at a point on a specific photo (media_ids). Full-replace on
+  // update, like sizes/media/patterns.
+  repeated FittingCallout callouts = 12;
+}
+
+// FittingCallout is a numbered marker pinned to a fitting photo, noting a fit
+// problem at a point on the image ("here the shoulder is too tight"). It is the
+// fitting analogue of TechCardCallout but deliberately simpler: a pin + a note,
+// with no part/dimensions (a fitting flags posadka, not spec geometry).
+message FittingCallout {
+  int32 number = 1; // marker number shown on the photo
+  string note = 2; // what is wrong with the fit here (required)
+  int32 media_id = 3; // FK media(id); the fitting photo this callout is pinned to (0 = unanchored)
+  google.type.Decimal pos_x = 4; // normalised x (0..1) of the marker on its photo
+  google.type.Decimal pos_y = 5; // normalised y (0..1) of the marker on its photo
 }
 
 // FittingPattern is one PDF выкройка iteration tried in a fitting (snapshot of the

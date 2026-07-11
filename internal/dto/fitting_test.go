@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -115,5 +116,58 @@ func TestConvertEntityFittingToPb(t *testing.T) {
 	}
 	if len(pb.Media) != 2 || len(pb.Fitting.MediaIds) != 2 || pb.Fitting.MediaIds[1] != 12 {
 		t.Errorf("media mismatch: media=%d ids=%+v", len(pb.Media), pb.Fitting.MediaIds)
+	}
+}
+
+// TestFittingCalloutsRoundTrip covers parsing, validating and re-emitting fitting photo
+// callouts (pin + note), plus the validation rejections.
+func TestFittingCalloutsRoundTrip(t *testing.T) {
+	date := timestamppb.New(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	in := &pb_common.FittingInsert{
+		ProductId:   42,
+		FittingDate: date,
+		Callouts: []*pb_common.FittingCallout{
+			{Number: 1, Note: "shoulder too tight", MediaId: 11, PosX: &pb_decimal.Decimal{Value: "0.25"}, PosY: &pb_decimal.Decimal{Value: "0.5"}},
+			{Number: 2, Note: "hem uneven"}, // unanchored, no position
+		},
+	}
+	got, err := ConvertPbFittingInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(got.Callouts) != 2 {
+		t.Fatalf("callouts not parsed: %+v", got.Callouts)
+	}
+	if got.Callouts[0].Number != 1 || got.Callouts[0].Note.String != "shoulder too tight" ||
+		got.Callouts[0].MediaId.Int32 != 11 || !got.Callouts[0].PosX.Valid || got.Callouts[0].PosX.Decimal.String() != "0.25" {
+		t.Errorf("callout[0] mismatch: %+v", got.Callouts[0])
+	}
+	if got.Callouts[1].MediaId.Valid || got.Callouts[1].PosX.Valid {
+		t.Errorf("callout[1] should be unanchored with no position: %+v", got.Callouts[1])
+	}
+
+	pb := ConvertEntityFittingToPb(&entity.Fitting{FittingInsert: *got})
+	if len(pb.Fitting.Callouts) != 2 || pb.Fitting.Callouts[0].Note != "shoulder too tight" ||
+		pb.Fitting.Callouts[0].MediaId != 11 || pb.Fitting.Callouts[0].PosX == nil || pb.Fitting.Callouts[0].PosX.Value != "0.25" ||
+		pb.Fitting.Callouts[0].PosY == nil || pb.Fitting.Callouts[0].PosY.Value != "0.5" {
+		t.Errorf("anchored callout round-trip mismatch: %+v", pb.Fitting.Callouts)
+	}
+	// the unanchored callout emits with no media/position.
+	if pb.Fitting.Callouts[1].Note != "hem uneven" || pb.Fitting.Callouts[1].MediaId != 0 ||
+		pb.Fitting.Callouts[1].PosX != nil || pb.Fitting.Callouts[1].PosY != nil {
+		t.Errorf("unanchored callout round-trip mismatch: %+v", pb.Fitting.Callouts[1])
+	}
+
+	bad := map[string]*pb_common.FittingInsert{
+		"note required":   {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: 1, Note: "  "}}},
+		"note too long":   {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: 1, Note: string(make([]byte, maxTaskText+1))}}},
+		"negative number": {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: -1, Note: "x"}}},
+		"negative media":  {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Note: "x", MediaId: -1}}},
+		"pos_x over 1":    {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Note: "x", PosX: &pb_decimal.Decimal{Value: "1.5"}}}},
+	}
+	for name, bi := range bad {
+		if _, err := ConvertPbFittingInsertToEntity(bi); err == nil {
+			t.Errorf("case %q: expected error, got nil", name)
+		}
 	}
 }

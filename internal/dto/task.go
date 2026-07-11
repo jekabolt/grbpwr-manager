@@ -109,7 +109,7 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	if len(pb.Assignee) > maxVarchar255 {
 		return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
 	}
-	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 {
+	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 {
 		return nil, fmt.Errorf("task deep-link ids must not be negative")
 	}
 	orderUUID := strings.TrimSpace(pb.OrderUuid)
@@ -130,6 +130,10 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	var dueDate sql.NullTime
 	if pb.DueDate != nil {
 		dueDate = sql.NullTime{Time: pb.DueDate.AsTime().UTC(), Valid: true}
+	}
+	var startDate sql.NullTime
+	if pb.StartDate != nil {
+		startDate = sql.NullTime{Time: pb.StartDate.AsTime().UTC(), Valid: true}
 	}
 
 	labels := make([]string, 0, len(pb.Labels))
@@ -168,10 +172,12 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		Assignee:    strings.TrimSpace(pb.Assignee),
 		Priority:    priority,
 		DueDate:     dueDate,
+		StartDate:   startDate,
 		TechCardId:  nullInt32FromPb(pb.TechCardId),
 		ProductId:   nullInt32FromPb(pb.ProductId),
 		OrderUuid:   nullStringFromPb(orderUUID),
 		ArchiveId:   nullInt32FromPb(pb.ArchiveId),
+		FittingId:   nullInt32FromPb(pb.FittingId),
 		Labels:      labels,
 		MediaIds:    mediaIds,
 	}, nil
@@ -199,12 +205,14 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			Assignee:    t.Assignee,
 			Priority:    taskPriorityEntityToPb[t.Priority],
 			DueDate:     pbTimestampFromNullTime(t.DueDate),
+			StartDate:   pbTimestampFromNullTime(t.StartDate),
 			Labels:      t.Labels,
 			MediaIds:    mediaIds,
 			TechCardId:  pbInt32FromNull(t.TechCardId),
 			ProductId:   pbInt32FromNull(t.ProductId),
 			OrderUuid:   pbStringFromNull(t.OrderUuid),
 			ArchiveId:   pbInt32FromNull(t.ArchiveId),
+			FittingId:   pbInt32FromNull(t.FittingId),
 		},
 		Board:      taskBoardEntityToPb[t.Board],
 		Status:     taskStatusEntityToPb[t.Status],
@@ -214,6 +222,7 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 		CreatedAt:  timestamppb.New(t.CreatedAt),
 		UpdatedAt:  timestamppb.New(t.UpdatedAt),
 		ArchivedAt: pbTimestampFromNullTime(t.ArchivedAt),
+		StartedAt:  pbTimestampFromNullTime(t.StartedAt),
 		Checklist:  ConvertEntityTaskChecklistToPb(t.Checklist),
 	}
 }

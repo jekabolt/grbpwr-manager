@@ -64,6 +64,7 @@ message TechCardMediaItem {
 message TechCardMediaFull {
   MediaFull media = 1;
   TechCardMediaKind kind = 2;
+  string caption = 3; // image caption / view name
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
@@ -364,46 +365,54 @@ message TechCardCostLine {
   google.type.Decimal amount = 2;
 }
 
-// TechCardColorwayCost is the computed material cost of ONE colourway (Sheet «Калькуляция»).
-// OUTPUT-ONLY (ignored on write). Per-currency buckets; no FX conversion.
+// TechCardColorwayCost is the computed cost of ONE colourway (Sheet «Калькуляция»),
+// OUTPUT-ONLY (ignored on write). Materials come from that colourway's usages; the manual
+// articles (CMT/hardware/…) are shared across colourways, so unit_cost folds them in. All
+// figures are per GARMENT except order_cost (whole run). No FX conversion.
 message TechCardColorwayCost {
   int32 colorway_index = 1; // 0-based index into TechCardInsert.colorways
-  repeated TechCardCostLine materials_total = 2; // Σ usage cost grouped by article currency
-  google.type.Decimal materials_cost = 3; // Σ in costing.currency (and currency-less)
-  google.type.Decimal size_run_total = 4; // whole-run material spend for this colourway
-  bool has_unconverted_currencies = 5; // a usage currency ≠ costing.currency → excluded from materials_cost
+  repeated TechCardCostLine materials_total = 2; // per-unit material cost grouped by article currency
+  google.type.Decimal materials_per_unit = 6; // Σ per-garment usage cost in costing.currency (and currency-less)
+  google.type.Decimal unit_cost = 7; // (materials_per_unit + shared manual articles) × (1 + defect/100), per garment
+  int32 order_qty = 8; // Σ size_quantities.order_qty (same whole-run qty for every colourway)
+  google.type.Decimal order_cost = 9; // unit_cost × order_qty
+  bool has_unconverted_currencies = 5; // a usage currency ≠ costing.currency → excluded from materials_per_unit
+  reserved 3, 4; // was materials_cost, size_run_total (superseded by the per-unit / per-order model)
 }
 
-// TechCardCosting holds the manually-entered cost articles (Sheet «Калькуляция»).
-// The materials rollup and total are COMPUTED on read from the BOM; they are
-// output-only (ignored on write) and never converted across currencies.
+// TechCardCosting holds the manually-entered per-unit cost articles (Sheet «Калькуляция»).
+// Everything is in a SINGLE currency. The materials line and the unit/order totals are
+// COMPUTED on read (output-only, ignored on write). Model: cost is built per GARMENT, then
+// scaled to the whole order by order_qty. There is NO pricing here — markup/wholesale/retail
+// were removed; pricing lives on the published product.
 message TechCardCosting {
-  google.type.Decimal cmt_cost = 1; // пошив / работа (CMT)
-  google.type.Decimal hardware_cost = 2; // фурнитура (если вне BOM)
-  google.type.Decimal packaging_cost = 3; // упаковка и маркировка
-  google.type.Decimal logistics_cost = 4; // логистика / доставка
-  google.type.Decimal overhead_cost = 5; // накладные расходы
+  // manual per-unit cost articles (per ONE garment), all in `currency`.
+  google.type.Decimal cmt_cost = 1; // пошив / работа (CMT) за 1 изделие
+  google.type.Decimal hardware_cost = 2; // фурнитура вне BOM, за 1 изделие
+  google.type.Decimal packaging_cost = 3; // упаковка и маркировка, за 1 изделие
+  google.type.Decimal logistics_cost = 4; // логистика / доставка, за 1 изделие
+  google.type.Decimal overhead_cost = 5; // накладные расходы, за 1 изделие
   google.type.Decimal defect_percent = 6; // брак / запас (%), 0..100
-  // Pricing is single (brand policy): markup_multiplier, wholesale_price, retail_price
-  // and currency are the SAME across colourways. Per-SKU pricing, if ever needed, lives
-  // on the published product, not here.
-  google.type.Decimal markup_multiplier = 7; // наценка (×)
-  google.type.Decimal wholesale_price = 8; // оптовая цена
-  google.type.Decimal retail_price = 9; // розничная цена
-  string currency = 10; // ISO 4217 for the articles above
+  string currency = 10; // ISO 4217 — the single currency for every article and total
   string notes = 11;
 
-  // OUTPUT-ONLY computed rollup (ignored on write; no currency conversion). The root
-  // rollup is the PRIMARY colourway (colorways index 0); per-colourway figures are in
-  // colorway_costs. A usage with per-size consumption contributes its whole-run
-  // size_run_total (order-scale); a usage without contributes its per-garment line_total.
-  repeated TechCardCostLine materials_total = 12; // Σ usage cost (colourway 0) grouped by article currency
-  google.type.Decimal materials_cost = 13; // Σ usage cost (colourway 0) in `currency` (and currency-less)
-  google.type.Decimal total_cost = 14; // (materials_cost + cmt_cost + hardware + packaging + logistics + overhead) × (1 + defect/100). No labour fallback.
-  bool has_unconverted_currencies = 15; // OUTPUT-ONLY: a usage line (colourway 0) is in a currency other than `currency`, so it is excluded from total_cost
-  google.type.Decimal total_sam = 16; // OUTPUT-ONLY: Σ of operation time_norm (minutes), informative
+  // OUTPUT-ONLY computed rollup (ignored on write). Root figures are the PRIMARY colourway
+  // (colorways index 0); per-colourway figures are in colorway_costs. Materials come from the
+  // BOM via each colourway's usages, normalised to a PER-GARMENT figure (a usage graded only
+  // per size is divided by order_qty), then taken in the single `currency` — a BOM line in
+  // another currency is flagged in has_unconverted_currencies and left out of materials_per_unit
+  // (it still appears in materials_total under its own currency, never silently dropped).
+  repeated TechCardCostLine materials_total = 12; // per-unit material cost (colourway 0) grouped by article currency
+  google.type.Decimal materials_per_unit = 19; // Σ per-garment material cost (colourway 0) in `currency`
+  google.type.Decimal unit_cost = 20; // (materials_per_unit + cmt + hardware + packaging + logistics + overhead) × (1 + defect/100)
+  int32 order_qty = 21; // Σ size_quantities.order_qty (the whole production run)
+  google.type.Decimal order_cost = 22; // unit_cost × order_qty
+  bool has_unconverted_currencies = 15; // a material line (colourway 0) is in a currency other than `currency`
+  google.type.Decimal total_sam = 16; // Σ operation time_norm (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
-  reserved 17; // was labour_cost (OUTPUT); labour pricing removed
+
+  reserved 7, 8, 9; // pricing removed (markup_multiplier, wholesale_price, retail_price — moved to product)
+  reserved 13, 14, 17; // was materials_cost, total_cost, labour_cost (superseded / removed)
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
@@ -469,8 +478,14 @@ message TechCardInsert {
   // children (full-replace on update)
   repeated int32 size_ids = 30; // size range / grade (FK size(id))
   repeated int32 product_ids = 31; // linked catalog products (FK product(id))
-  repeated TechCardMediaItem media = 32; // sketch / preview media
-  repeated TechCardCallout callouts = 33; // sketch callouts
+  // Sketch media split into two INDEPENDENT lists (replaces the single `media = 32`):
+  //   moodboard_media — mood / inspiration / reference / fabric-swatch photos (design intent)
+  //   technical_media — flat sketches used in construction (front / back / detail / lining / preview)
+  // Construction consumes ONLY technical_media. Each item's `kind` sub-classifies within its
+  // list. Both are full-replace on update; callouts pin onto technical_media by media_id.
+  repeated TechCardMediaItem moodboard_media = 55;
+  repeated TechCardMediaItem technical_media = 56;
+  repeated TechCardCallout callouts = 33; // sketch callouts (pin onto technical_media)
   repeated TechCardRevision revisions = 34; // revision log
 
   // materials (Phase 2): bill of materials (article catalog) and colourways (recipes).
@@ -496,8 +511,9 @@ message TechCardInsert {
   repeated TechCardDetail details = 54;
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
-  // 20-28 construction-desc strings → details[]; 42 pom_points; 39 prior.
-  reserved 17 to 28, 39, 42, 55 to 99;
+  // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
+  // moodboard_media/technical_media); 42 pom_points; 39 prior.
+  reserved 17 to 28, 32, 39, 42, 57 to 99;
 }
 
 // TechCard is a stored tech card with resolved sketch media.
@@ -506,8 +522,11 @@ message TechCard {
   TechCardInsert tech_card = 2;
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
-  repeated TechCardMediaFull resolved_media = 5; // sketch media with resolved MediaFull
   int32 lock_version = 6; // optimistic-lock token; echo into UpdateTechCardRequest.expected_lock_version
+  // Resolved sketch media (MediaFull), split to mirror the writable lists.
+  repeated TechCardMediaFull resolved_moodboard_media = 7;
+  repeated TechCardMediaFull resolved_technical_media = 8;
+  reserved 5; // was resolved_media (single combined list; now split)
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.

@@ -16,8 +16,6 @@ const (
 
 	costMaxFrac = 2 // cost articles DECIMAL(12,2)
 	costLimit   = 10_000_000_000
-	markupFrac  = 3 // markup_multiplier DECIMAL(6,3)
-	markupLimit = 1_000
 	weightFrac  = 3 // weight DECIMAL(8,3)
 	weightLimit = 100_000
 	stitchFrac  = 2 // stitches_per_cm DECIMAL(5,2)
@@ -316,14 +314,6 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if err != nil {
 		return nil, err
 	}
-	wholesale, err := cost(pb.WholesalePrice, "wholesale_price")
-	if err != nil {
-		return nil, err
-	}
-	retail, err := cost(pb.RetailPrice, "retail_price")
-	if err != nil {
-		return nil, err
-	}
 	defect, err := nullDecimalFromPb(pb.DefectPercent)
 	if err != nil {
 		return nil, fmt.Errorf("costing defect_percent: %w", err)
@@ -334,25 +324,15 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if defect.Valid && defect.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 		return nil, fmt.Errorf("costing defect_percent must be between 0 and 100")
 	}
-	markup, err := nullDecimalFromPb(pb.MarkupMultiplier)
-	if err != nil {
-		return nil, fmt.Errorf("costing markup_multiplier: %w", err)
-	}
-	if err := validateDecimalScale(markup, "costing markup_multiplier", markupFrac, markupLimit); err != nil {
-		return nil, err
-	}
 	return &entity.TechCardCosting{
-		CmtCost:          cmt,
-		HardwareCost:     hardware,
-		PackagingCost:    packaging,
-		LogisticsCost:    logistics,
-		OverheadCost:     overhead,
-		DefectPercent:    defect,
-		MarkupMultiplier: markup,
-		WholesalePrice:   wholesale,
-		RetailPrice:      retail,
-		Currency:         nullStringFromPb(pb.Currency),
-		Notes:            nullStringFromPb(pb.Notes),
+		CmtCost:       cmt,
+		HardwareCost:  hardware,
+		PackagingCost: packaging,
+		LogisticsCost: logistics,
+		OverheadCost:  overhead,
+		DefectPercent: defect,
+		Currency:      nullStringFromPb(pb.Currency),
+		Notes:         nullStringFromPb(pb.Notes),
 	}, nil
 }
 
@@ -605,45 +585,72 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 	}
 }
 
-// techCardCostingToPb emits the stored costing articles plus the computed per-colourway
-// material costs and the root rollup. The root (materials_total/materials_cost/total_cost)
-// is the PRIMARY colourway = index 0 (plan Q3). Returns nil when no costing row exists.
+// techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway
+// costs and the root rollup. Root figures are the PRIMARY colourway = index 0. Cost is built
+// per GARMENT (unit_cost = materials_per_unit + shared manual articles, × (1 + defect%)), then
+// scaled to the whole run (order_cost = unit_cost × order_qty, order_qty = Σ size_quantities).
+// Returns nil when no costing row exists.
 func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	if tc.Costing == nil {
 		return nil
 	}
 	c := tc.Costing
 	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	totalOrderQty := 0
 	for _, q := range tc.SizeQuantities {
 		orderQtyBySize[q.SizeId] = q.OrderQty
+		if q.OrderQty > 0 {
+			totalOrderQty += q.OrderQty
+		}
 	}
 	costingCcy := ""
 	if c.Currency.Valid {
 		costingCcy = c.Currency.String
 	}
 
-	// Per-colourway material cost (OUTPUT-ONLY), resolving each usage against its BOM
-	// article. The root rollup is the primary colourway (index 0).
+	// Manual per-unit articles are shared across colourways; each colourway's unit cost is
+	// its own materials plus these, grossed up by defect%.
+	manualPerUnit := decimal.Zero
+	for _, d := range []decimal.NullDecimal{c.CmtCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
+		if d.Valid {
+			manualPerUnit = manualPerUnit.Add(d.Decimal)
+		}
+	}
+	defectMul := decimal.NewFromInt(1)
+	if c.DefectPercent.Valid {
+		defectMul = decimal.NewFromInt(1).Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100)))
+	}
+	qtyDec := decimal.NewFromInt(int64(totalOrderQty))
+	unitAndOrder := func(materialsPerUnit decimal.Decimal) (unit, order decimal.Decimal) {
+		unit = materialsPerUnit.Add(manualPerUnit).Mul(defectMul)
+		return unit, unit.Mul(qtyDec)
+	}
+
+	// Per-colourway cost (OUTPUT-ONLY). The root rollup is the primary colourway (index 0).
 	colorwayCosts := make([]*pb_common.TechCardColorwayCost, 0, len(tc.Colorways))
 	var rootMaterialsTotal []*pb_common.TechCardCostLine
-	rootMaterialsCost := decimal.Zero
+	rootMaterialsPerUnit := decimal.Zero
 	rootHasUnconverted := false
 	for ci := range tc.Colorways {
-		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize)
+		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize, totalOrderQty)
+		unit, order := unitAndOrder(cc.materialsPerUnit)
 		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
 			ColorwayIndex:            int32(ci),
 			MaterialsTotal:           cc.materialsTotal,
-			MaterialsCost:            pbDecimalFromDecimal(roundMoney(cc.materialsCost)),
-			SizeRunTotal:             pbDecimalFromDecimal(roundMoney(cc.sizeRunTotal)),
+			MaterialsPerUnit:         pbDecimalFromDecimal(roundMoney(cc.materialsPerUnit)),
+			UnitCost:                 pbDecimalFromDecimal(roundMoney(unit)),
+			OrderQty:                 int32(totalOrderQty),
+			OrderCost:                pbDecimalFromDecimal(roundMoney(order)),
 			HasUnconvertedCurrencies: cc.hasUnconverted,
 		})
 		if ci == 0 {
 			rootMaterialsTotal = cc.materialsTotal
-			rootMaterialsCost = cc.materialsCost
+			rootMaterialsPerUnit = cc.materialsPerUnit
 			rootHasUnconverted = cc.hasUnconverted
 		}
 	}
 
+	rootUnit, rootOrder := unitAndOrder(rootMaterialsPerUnit)
 	out := &pb_common.TechCardCosting{
 		CmtCost:                  pbDecimalFromNull(c.CmtCost),
 		HardwareCost:             pbDecimalFromNull(c.HardwareCost),
@@ -651,31 +658,18 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		LogisticsCost:            pbDecimalFromNull(c.LogisticsCost),
 		OverheadCost:             pbDecimalFromNull(c.OverheadCost),
 		DefectPercent:            pbDecimalFromNull(c.DefectPercent),
-		MarkupMultiplier:         pbDecimalFromNull(c.MarkupMultiplier),
-		WholesalePrice:           pbDecimalFromNull(c.WholesalePrice),
-		RetailPrice:              pbDecimalFromNull(c.RetailPrice),
 		Currency:                 pbStringFromNull(c.Currency),
 		Notes:                    pbStringFromNull(c.Notes),
 		MaterialsTotal:           rootMaterialsTotal,
-		MaterialsCost:            pbDecimalFromDecimal(roundMoney(rootMaterialsCost)),
-		ColorwayCosts:            colorwayCosts,
+		MaterialsPerUnit:         pbDecimalFromDecimal(roundMoney(rootMaterialsPerUnit)),
+		UnitCost:                 pbDecimalFromDecimal(roundMoney(rootUnit)),
+		OrderQty:                 int32(totalOrderQty),
+		OrderCost:                pbDecimalFromDecimal(roundMoney(rootOrder)),
 		HasUnconvertedCurrencies: rootHasUnconverted,
+		ColorwayCosts:            colorwayCosts,
 	}
 
-	// total_cost = (materials_cost[colourway 0] + cmt + hardware + packaging + logistics
-	// + overhead) × (1 + defect/100). No labour fallback (labour pricing removed).
-	total := rootMaterialsCost
-	for _, d := range []decimal.NullDecimal{c.CmtCost, c.HardwareCost, c.PackagingCost, c.LogisticsCost, c.OverheadCost} {
-		if d.Valid {
-			total = total.Add(d.Decimal)
-		}
-	}
-	if c.DefectPercent.Valid {
-		total = total.Mul(decimal.NewFromInt(1).Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100))))
-	}
-	out.TotalCost = pbDecimalFromDecimal(roundMoney(total))
-
-	// total_sam = Σ(operation time_norm); informative, pricing-independent (plan Q4).
+	// total_sam = Σ(operation time_norm); informative, pricing-independent.
 	totalSam := decimal.Zero
 	for i := range tc.Operations {
 		if tc.Operations[i].TimeNorm.Valid {
@@ -688,50 +682,46 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	return out
 }
 
-// ComputeTechCardUnitCost returns a tech card's per-garment total cost and its currency,
-// computed exactly as the read path renders total_cost — it reuses techCardCostingToPb so
+// ComputeTechCardUnitCost returns a tech card's per-garment unit cost and its currency,
+// computed exactly as the read path renders unit_cost — it reuses techCardCostingToPb so
 // there is a single source of truth for the math. Returns an invalid NullDecimal when there
-// is no costing row or the computed total is not positive.
+// is no costing row or the computed unit cost is not positive.
 func ComputeTechCardUnitCost(tc *entity.TechCard) (decimal.NullDecimal, string) {
 	if tc == nil {
 		return decimal.NullDecimal{}, ""
 	}
 	pb := techCardCostingToPb(tc)
-	if pb == nil || pb.TotalCost == nil {
+	if pb == nil || pb.UnitCost == nil {
 		return decimal.NullDecimal{}, ""
 	}
-	v, err := decimal.NewFromString(pb.TotalCost.Value)
+	v, err := decimal.NewFromString(pb.UnitCost.Value)
 	if err != nil || !v.IsPositive() {
 		return decimal.NullDecimal{}, ""
 	}
 	return decimal.NullDecimal{Decimal: v, Valid: true}, pb.Currency
 }
 
-// colorwayCostResult holds one colourway's computed material cost.
+// colorwayCostResult holds one colourway's computed PER-GARMENT material cost.
 type colorwayCostResult struct {
-	materialsTotal []*pb_common.TechCardCostLine // Σ usage cost grouped by article currency
-	materialsCost  decimal.Decimal               // Σ in costingCcy (and currency-less)
-	sizeRunTotal   decimal.Decimal               // Σ usage size_run_total (whole-run spend)
-	hasUnconverted bool                          // a usage currency ≠ costingCcy (excluded from materialsCost)
+	materialsTotal   []*pb_common.TechCardCostLine // per-unit material cost grouped by article currency
+	materialsPerUnit decimal.Decimal               // Σ per-garment usage cost in costingCcy (and currency-less)
+	hasUnconverted   bool                          // a usage currency ≠ costingCcy (excluded from materialsPerUnit)
 }
 
-// colorwayCost computes one colourway's material cost from its usages. Each usage
-// contributes its whole-run size_run_total (when it has per-size consumption) else its
-// per-garment line_total, resolved against the BOM article it points at. Buckets are
-// per-currency (no FX conversion); currency-less lines fold into the costing currency.
-func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, costingCcy string, orderQtyBySize map[int]int) colorwayCostResult {
+// colorwayCost computes one colourway's PER-GARMENT material cost from its usages. Each usage
+// contributes its per-garment UnitTotal (a per-size-only usage is normalised to per-garment by
+// dividing its whole-run cost by totalOrderQty), resolved against the BOM article it points at.
+// Buckets are per-currency (no FX conversion); currency-less lines fold into the costing
+// currency, and a line in another currency is flagged (and left out of materialsPerUnit).
+func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, costingCcy string, orderQtyBySize map[int]int, totalOrderQty int) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
-	sizeRunTotal := decimal.Zero
 	hasUnconverted := false
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
-		if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
-			sizeRunTotal = sizeRunTotal.Add(rt.Decimal)
-		}
-		eff := u.EffectiveTotal(bom, orderQtyBySize)
-		if !eff.Valid {
+		ut := u.UnitTotal(bom, orderQtyBySize, totalOrderQty)
+		if !ut.Valid {
 			continue
 		}
 		ccy := ""
@@ -741,7 +731,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		if _, ok := byCcy[ccy]; !ok {
 			order = append(order, ccy)
 		}
-		byCcy[ccy] = byCcy[ccy].Add(eff.Decimal)
+		byCcy[ccy] = byCcy[ccy].Add(ut.Decimal)
 		if ccy != "" && ccy != costingCcy {
 			hasUnconverted = true
 		}
@@ -755,14 +745,14 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		})
 	}
 
-	materialsCost := decimal.Zero
+	materialsPerUnit := decimal.Zero
 	if v, ok := byCcy[costingCcy]; ok {
-		materialsCost = materialsCost.Add(v)
+		materialsPerUnit = materialsPerUnit.Add(v)
 	}
 	if costingCcy != "" {
 		if v, ok := byCcy[""]; ok { // currency-less lines fold into the costing currency
-			materialsCost = materialsCost.Add(v)
+			materialsPerUnit = materialsPerUnit.Add(v)
 		}
 	}
-	return colorwayCostResult{materialsTotal: lines, materialsCost: materialsCost, sizeRunTotal: sizeRunTotal, hasUnconverted: hasUnconverted}
+	return colorwayCostResult{materialsTotal: lines, materialsPerUnit: materialsPerUnit, hasUnconverted: hasUnconverted}
 }

@@ -51,8 +51,9 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, created_by, tech_card_id, product_id, order_uuid, archive_id)
-			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId)`,
+			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, started_at)
+			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId,
+				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert task: %w", err)
@@ -90,10 +91,12 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 				assignee = :assignee,
 				priority = :priority,
 				due_date = :dueDate,
+				start_date = :startDate,
 				tech_card_id = :techCardId,
 				product_id = :productId,
 				order_uuid = :orderUuid,
-				archive_id = :archiveId
+				archive_id = :archiveId,
+				fitting_id = :fittingId
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update task: %w", err)
 		}
@@ -172,6 +175,17 @@ func (s *Store) MoveTask(ctx context.Context, id int, board entity.TaskBoard, st
 			UPDATE task SET board = :board, status = :status, position = :pos WHERE id = :id`,
 			map[string]any{"board": string(board), "status": string(status), "pos": position, "id": id}); err != nil {
 			return fmt.Errorf("failed to place task: %w", err)
+		}
+
+		// 5) Stamp the actual start the FIRST time the card enters in_progress. The
+		// `started_at IS NULL` guard makes it idempotent — a later re-entry keeps the
+		// original start.
+		if status == entity.TaskStatusInProgress {
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				UPDATE task SET started_at = UTC_TIMESTAMP() WHERE id = :id AND started_at IS NULL`,
+				map[string]any{"id": id}); err != nil {
+				return fmt.Errorf("failed to stamp task start: %w", err)
+			}
 		}
 		return nil
 	})
@@ -485,10 +499,12 @@ func taskContentParams(t *entity.TaskInsert) map[string]any {
 		"assignee":    t.Assignee,
 		"priority":    string(t.Priority),
 		"dueDate":     t.DueDate,
+		"startDate":   t.StartDate,
 		"techCardId":  t.TechCardId,
 		"productId":   t.ProductId,
 		"orderUuid":   t.OrderUuid,
 		"archiveId":   t.ArchiveId,
+		"fittingId":   t.FittingId,
 	}
 }
 

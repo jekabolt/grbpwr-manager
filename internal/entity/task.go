@@ -75,10 +75,12 @@ type TaskInsert struct {
 	Assignee    string         `db:"assignee"`
 	Priority    TaskPriority   `db:"priority"`
 	DueDate     sql.NullTime   `db:"due_date"`
+	StartDate   sql.NullTime   `db:"start_date"` // planned start (manual); actual start is Task.StartedAt
 	TechCardId  sql.NullInt32  `db:"tech_card_id"`
 	ProductId   sql.NullInt32  `db:"product_id"`
 	OrderUuid   sql.NullString `db:"order_uuid"`
 	ArchiveId   sql.NullInt32  `db:"archive_id"`
+	FittingId   sql.NullInt32  `db:"fitting_id"`
 	Labels      []string       `db:"-"`
 	MediaIds    []int          `db:"-"`
 }
@@ -97,8 +99,11 @@ type Task struct {
 	UpdatedAt time.Time   `db:"updated_at"`
 	// ArchivedAt is the soft-archive marker: Valid = archived (hidden from the
 	// board and default list, but restorable); invalid/NULL = active.
-	ArchivedAt sql.NullTime        `db:"archived_at"`
-	Checklist  []TaskChecklistItem `db:"-"`
+	ArchivedAt sql.NullTime `db:"archived_at"`
+	// StartedAt is the actual start: server-stamped the first time the card enters
+	// in_progress, never cleared afterwards. Invalid/NULL = not started yet.
+	StartedAt sql.NullTime        `db:"started_at"`
+	Checklist []TaskChecklistItem `db:"-"`
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
