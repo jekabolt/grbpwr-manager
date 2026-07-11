@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -118,6 +119,50 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 	}
 	if len(pb.Task.Labels) != 1 || pb.Task.Labels[0] != "content" {
 		t.Errorf("labels mismatch: %+v", pb.Task.Labels)
+	}
+}
+
+func TestConvertEntityTaskToPbArchiveChecklist(t *testing.T) {
+	now := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	archived := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+
+	// Active task: archived_at unset, one checklist item.
+	active := &entity.Task{
+		Id:         1,
+		TaskInsert: entity.TaskInsert{Title: "t"},
+		Board:      entity.TaskBoardDesign,
+		Status:     entity.TaskStatusTodo,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Checklist: []entity.TaskChecklistItem{
+			{Id: 7, TaskId: 1, Content: "cut", IsDone: true, Position: 0, CreatedAt: now},
+		},
+	}
+	pb := ConvertEntityTaskToPb(active)
+	if pb.ArchivedAt != nil {
+		t.Errorf("active task should have nil archived_at, got %v", pb.ArchivedAt)
+	}
+	if len(pb.Checklist) != 1 || pb.Checklist[0].Id != 7 || pb.Checklist[0].Content != "cut" ||
+		!pb.Checklist[0].IsDone || pb.Checklist[0].TaskId != 1 {
+		t.Errorf("checklist mismatch: %+v", pb.Checklist)
+	}
+
+	// Archived task: archived_at present.
+	arch := &entity.Task{
+		Id:         2,
+		TaskInsert: entity.TaskInsert{Title: "t2"},
+		Board:      entity.TaskBoardDesign,
+		Status:     entity.TaskStatusDone,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		ArchivedAt: sql.NullTime{Time: archived, Valid: true},
+	}
+	pb = ConvertEntityTaskToPb(arch)
+	if pb.ArchivedAt == nil || !pb.ArchivedAt.AsTime().Equal(archived) {
+		t.Errorf("archived_at mismatch: %v", pb.ArchivedAt)
+	}
+	if len(pb.Checklist) != 0 {
+		t.Errorf("expected empty checklist, got %+v", pb.Checklist)
 	}
 }
 

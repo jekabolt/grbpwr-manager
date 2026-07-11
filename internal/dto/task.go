@@ -206,14 +206,49 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			OrderUuid:   pbStringFromNull(t.OrderUuid),
 			ArchiveId:   pbInt32FromNull(t.ArchiveId),
 		},
-		Board:     taskBoardEntityToPb[t.Board],
-		Status:    taskStatusEntityToPb[t.Status],
-		Position:  int32(t.Position),
-		Media:     media,
-		CreatedBy: t.CreatedBy,
-		CreatedAt: timestamppb.New(t.CreatedAt),
-		UpdatedAt: timestamppb.New(t.UpdatedAt),
+		Board:      taskBoardEntityToPb[t.Board],
+		Status:     taskStatusEntityToPb[t.Status],
+		Position:   int32(t.Position),
+		Media:      media,
+		CreatedBy:  t.CreatedBy,
+		CreatedAt:  timestamppb.New(t.CreatedAt),
+		UpdatedAt:  timestamppb.New(t.UpdatedAt),
+		ArchivedAt: pbTimestampFromNullTime(t.ArchivedAt),
+		Checklist:  ConvertEntityTaskChecklistToPb(t.Checklist),
 	}
+}
+
+// ConvertEntityTaskChecklistToPb converts a task's checklist items to proto.
+func ConvertEntityTaskChecklistToPb(items []entity.TaskChecklistItem) []*pb_common.TaskChecklistItem {
+	out := make([]*pb_common.TaskChecklistItem, 0, len(items))
+	for i := range items {
+		out = append(out, &pb_common.TaskChecklistItem{
+			Id:        int32(items[i].Id),
+			TaskId:    int32(items[i].TaskId),
+			Content:   items[i].Content,
+			IsDone:    items[i].IsDone,
+			Position:  int32(items[i].Position),
+			CreatedAt: timestamppb.New(items[i].CreatedAt),
+		})
+	}
+	return out
+}
+
+// maxChecklistContent bounds a checklist item's content (VARCHAR(512) in both
+// task_checklist_item and order_fulfillment_checklist_item).
+const maxChecklistContent = 512
+
+// ValidateChecklistContent trims and length-checks a checklist item's content,
+// shared by task and fulfillment checklist item creation.
+func ValidateChecklistContent(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("checklist item content is required")
+	}
+	if len(s) > maxChecklistContent {
+		return "", fmt.Errorf("checklist item content must be at most %d characters", maxChecklistContent)
+	}
+	return s, nil
 }
 
 // ConvertPbTaskCommentInsertToEntity validates and converts a comment payload.
