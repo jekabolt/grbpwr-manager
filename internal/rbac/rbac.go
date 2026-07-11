@@ -31,6 +31,7 @@ const (
 	SectionModels     = "models"
 	SectionFittings   = "fittings"
 	SectionTechCards  = "tech_cards"
+	SectionTasks      = "tasks"
 	SectionSettings   = "settings"
 	SectionSupport    = "support"
 	SectionMembership = "membership"
@@ -59,6 +60,7 @@ var catalog = []SectionInfo{
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
+	{SectionTasks, "Tasks", "Internal team kanban board."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
 	{SectionSupport, "Support", "Support tickets and reviews."},
 	{SectionMembership, "Membership", "Members, loyalty tiers, hacker invites."},
@@ -163,6 +165,15 @@ var methodRequirements = map[string]Requirement{
 	"UpdateTechCard": wr(SectionTechCards),
 	"DeleteTechCard": wr(SectionTechCards),
 	"ListTechCards":  rd(SectionTechCards),
+	// tasks (internal team kanban)
+	"AddTask":          wr(SectionTasks),
+	"GetTask":          rd(SectionTasks),
+	"UpdateTask":       wr(SectionTasks),
+	"MoveTask":         wr(SectionTasks),
+	"DeleteTask":       wr(SectionTasks),
+	"AddTaskComment":   wr(SectionTasks),
+	"ListTaskComments": rd(SectionTasks),
+	"ListTasks":        rd(SectionTasks),
 	// settings
 	"UpdateSettings":        wr(SectionSettings),
 	"AddShipmentCarrier":    wr(SectionSettings),

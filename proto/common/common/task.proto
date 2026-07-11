@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// Task is a unit of internal team work tracked on the kanban board (NOT a
+// customer order). Tasks belong to a board (department) and move across status
+// columns via drag-and-drop.
+//
+// Identity (assignee, created_by, comment author) references an
+// admin.AdminAccount by its `username` — the SAME identity used for RBAC. There
+// is no separate display name / email in the account model, so `username` is
+// exactly what the UI renders and what the assignee picker (populated from
+// ListAccounts) stores. `created_by`/`author` are stamped server-side from the
+// caller's JWT (never client-supplied); the board itself is gated by a new
+// `tasks` RBAC section.
+
+// TaskBoard is the department lane a task lives in. Fixed taxonomy for now; a
+// task belongs to exactly one board. Extend by appending members (never reuse
+// numbers) — 0 stays UNKNOWN per proto3 convention.
+enum TaskBoard {
+  TASK_BOARD_UNKNOWN = 0;
+  TASK_BOARD_DEVELOPMENT = 1; // портной/конструктор — разработка вещей (образцы, техкарты)
+  TASK_BOARD_DESIGN = 2; // дизайн
+  TASK_BOARD_MARKETING = 3; // маркетинг
+  TASK_BOARD_PRODUCTION = 4; // производство / пошив партии
+  TASK_BOARD_SOURCING = 5; // закупка тканей и фурнитуры, поставщики
+  TASK_BOARD_CONTENT = 6; // съёмка / контент / подготовка дропа
+}
+
+// TaskStatus is the kanban column. A drag between columns is a status change.
+enum TaskStatus {
+  TASK_STATUS_UNKNOWN = 0;
+  TASK_STATUS_BACKLOG = 1;
+  TASK_STATUS_TODO = 2;
+  TASK_STATUS_IN_PROGRESS = 3;
+  TASK_STATUS_REVIEW = 4;
+  TASK_STATUS_DONE = 5;
+}
+
+enum TaskPriority {
+  TASK_PRIORITY_UNKNOWN = 0;
+  TASK_PRIORITY_LOW = 1;
+  TASK_PRIORITY_MEDIUM = 2;
+  TASK_PRIORITY_HIGH = 3;
+  TASK_PRIORITY_URGENT = 4;
+}
+
+// TaskInsert is the writable CONTENT of a task (create/update). Placement on the
+// board — board, status, position — is deliberately NOT here: it is set at
+// AddTask and changed only via MoveTask, so a content edit can never silently
+// re-file a card into another lane/column or reorder it. Other server-managed
+// fields (id, created_by, timestamps, resolved media) also live on Task.
+message TaskInsert {
+  string title = 1; // required
+  string description = 2; // optional, free text / markdown
+  string assignee = 3; // AdminAccount.username; "" = unassigned
+  TaskPriority priority = 4; // TASK_PRIORITY_UNKNOWN = unset
+  google.protobuf.Timestamp due_date = 5; // optional; unset = no deadline
+  repeated string labels = 6; // freeform lightweight tags within a board (client/list filtering)
+  repeated int32 media_ids = 7; // attached reference images/files via the existing media bucket
+
+  // Optional typed links to existing admin entities (0 / "" = none). Follows the
+  // fitting precedent (several nullable typed FKs, NOT a polymorphic entity_type
+  // ref) so a card can deep-link to the artifact it is about while that artifact
+  // keeps its own state machine (techcard stage/approval, fitting verdict, …).
+  // Each target has a single-get RPC so the card can resolve a title/thumbnail.
+  int32 tech_card_id = 8; // техкарта — DEVELOPMENT/PRODUCTION anchor; GetTechCard
+  int32 product_id = 9; // specific product / SKU / sample; GetProductByID
+  string order_uuid = 10; // order needing action; GetOrderByUUID
+  int32 archive_id = 11; // drop / timeline being prepared; GetArchiveByID
+}
+
+// Task is a stored kanban card: its content (TaskInsert), its placement on the
+// board (board/status/position — server-managed, set by AddTask and mutated only
+// by MoveTask), resolved media, and server-stamped identity/timestamps.
+message Task {
+  int32 id = 1;
+  TaskInsert task = 2; // content
+  TaskBoard board = 3; // placement: department lane; set by AddTask, changed by MoveTask
+  TaskStatus status = 4; // placement: kanban column; set by AddTask, changed by MoveTask
+  int32 position = 5; // placement: order within its (board,status) column; managed by AddTask/MoveTask
+  repeated MediaFull media = 6; // resolved from task.media_ids for display
+  string created_by = 7; // AdminAccount.username, set from the caller's JWT
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// TaskCommentInsert is the writable payload for a comment. author is set
+// server-side from the caller's JWT (not client-supplied).
+message TaskCommentInsert {
+  int32 task_id = 1;
+  string body = 2;
+}
+
+message TaskComment {
+  int32 id = 1;
+  int32 task_id = 2;
+  string author = 3; // AdminAccount.username
+  string body = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
