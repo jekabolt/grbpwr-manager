@@ -8,6 +8,7 @@ package fulfillment
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -134,7 +135,7 @@ func (s *Store) GetOrderFulfillment(ctx context.Context, orderUUID string) (*ent
 		`SELECT id, order_uuid, assignee, notes, created_by, created_at, updated_at
 		 FROM order_fulfillment WHERE order_uuid = :uuid`, map[string]any{"uuid": orderUUID})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("can't get order fulfillment: %w", err)
