@@ -130,10 +130,17 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // cost to its linked products' cost_price for margin analytics. It is intentionally
 // non-fatal (a failure never blocks the tech card save) and only runs when the costing is
 // already in the base currency — the shop has no live FX, so a non-base costing cannot be
-// converted. Last write wins when a product is linked to several tech cards.
+// converted. Only products whose PRIMARY card is this one are seeded, and a manually-set
+// cost is never overwritten (use SyncProductCostFromTechCard to force). Newly-linked
+// products with no primary yet adopt this card as their primary.
 func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
 	if err != nil || card == nil || len(card.ProductIds) == 0 {
+		return
+	}
+	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, card.ProductIds); err != nil {
+		slog.Default().ErrorContext(ctx, "can't assign primary tech card to products",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return
 	}
 	unit, currency := dto.ComputeTechCardUnitCost(card)
@@ -145,10 +152,14 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 			slog.Int("tech_card_id", techCardID), slog.String("currency", currency))
 		return
 	}
-	if err := s.repo.Products().SetProductsCostPrice(ctx, card.ProductIds, unit.Decimal); err != nil {
+	n, err := s.repo.Products().SeedProductsCostPriceFromTechCard(ctx, techCardID, unit.Decimal)
+	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
 	}
+	slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
+		slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", n))
 }
 
 // DeleteTechCard deletes a tech card by id (nested sections cascade).

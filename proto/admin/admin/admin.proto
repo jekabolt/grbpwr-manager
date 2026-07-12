@@ -105,6 +105,16 @@ service AdminService {
     };
   }
 
+  // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
+  // any manual value. If tech_card_id is set it also becomes the product's primary card;
+  // otherwise the product's existing primary card is used.
+  rpc SyncProductCostFromTechCard(SyncProductCostFromTechCardRequest) returns (SyncProductCostFromTechCardResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/cost/sync-from-tech-card"
+      body: "*"
+    };
+  }
+
   // Lists stock change history with optional filters.
   rpc ListStockChangeHistory(ListStockChangeHistoryRequest) returns (ListStockChangeHistoryResponse) {
     option (google.api.http) = {get: "/api/admin/stock-change-history"};
@@ -930,6 +940,36 @@ message GetProductByIDRequest {
 
 message GetProductByIDResponse {
   common.ProductFull product = 1;
+  // cost_info carries the confidential COGS/provenance fields. Admin-only — this lives on the
+  // admin GetProductByID response, never on the shared ProductFull, so it cannot leak to the
+  // storefront read path.
+  ProductCostInfo cost_info = 2;
+}
+
+// ProductCostInfo is the admin-only view of a product's confidential cost of goods and where
+// that cost came from. source is "manual" | "tech_card" | "" (unset); tech-card ids are 0
+// when absent.
+message ProductCostInfo {
+  google.type.Decimal cost_price = 1;
+  string cost_price_source = 2;
+  int32 cost_price_tech_card_id = 3;
+  google.protobuf.Timestamp cost_price_updated_at = 4;
+  int32 primary_tech_card_id = 5;
+}
+
+message SyncProductCostFromTechCardRequest {
+  int32 product_id = 1;
+  // tech_card_id optionally repoints the product's primary card before seeding; 0 = use the
+  // product's existing primary card.
+  int32 tech_card_id = 2;
+}
+
+message SyncProductCostFromTechCardResponse {
+  // the cost_price written, in base currency.
+  google.type.Decimal cost_price = 1;
+  string currency = 2;
+  // the tech card the cost was sourced from.
+  int32 tech_card_id = 3;
 }
 
 message DeleteProductByIDRequest {

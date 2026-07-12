@@ -29,9 +29,22 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
-		// SetProductsCostPrice sets cost_price (base-currency COGS) on the given products,
-		// used to seed product cost from a tech card costing. Empty ids is a no-op.
-		SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error
+		// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing)
+		// card of each given product that has no primary yet. Empty ids is a no-op.
+		AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int, productIDs []int) error
+		// SeedProductsCostPriceFromTechCard writes cost as the tech-card-sourced cost of every
+		// product whose primary card is techCardID (and cost is not manual, and the card links
+		// it), never overwriting a manual cost. Returns the number of products updated.
+		SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error)
+		// ForceSetProductCostPriceFromTechCard writes cost as the tech-card-sourced cost of one
+		// product, overriding any manual value (explicit SyncProductCostFromTechCard action).
+		ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error
+		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
+		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
+		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
+		GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error)
+		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
+		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductsByIds returns a list of products by their IDs.

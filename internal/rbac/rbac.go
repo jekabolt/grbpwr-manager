@@ -110,13 +110,14 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// products
-	"UpsertProduct":          wr(SectionProducts),
-	"GetProductsPaged":       rd(SectionProducts),
-	"GetProductByID":         rd(SectionProducts),
-	"DeleteProductByID":      wr(SectionProducts),
-	"UpdateProductSizeStock": wr(SectionProducts),
-	"ListStockChangeHistory": rd(SectionProducts),
-	"ListStockChanges":       rd(SectionProducts),
+	"UpsertProduct":               wr(SectionProducts),
+	"GetProductsPaged":            rd(SectionProducts),
+	"GetProductByID":              rd(SectionProducts),
+	"DeleteProductByID":           wr(SectionProducts),
+	"UpdateProductSizeStock":      wr(SectionProducts),
+	"SyncProductCostFromTechCard": wr(SectionProducts),
+	"ListStockChangeHistory":      rd(SectionProducts),
+	"ListStockChanges":            rd(SectionProducts),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
