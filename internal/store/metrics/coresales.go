@@ -10,11 +10,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (revenue decimal.Decimal, orders int, aov decimal.Decimal, err error) {
+// getCoreSalesMetrics returns headline revenue (base currency) over [from, to). Revenue is
+// NET of VAT — prices are VAT-inclusive, so the per-order gross-incl-VAT figure is multiplied
+// by 100/(100+vat_rate_pct) using the rate snapshotted on the order (0 for pre-feature/export
+// → no change). grossInclVat is the same figure before removing VAT (what the company actually
+// collected), and vatAmount = grossInclVat − revenueNet. AOV is computed on net revenue.
+func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (revenueNet, grossInclVat, vatAmount decimal.Decimal, orders int, aov decimal.Decimal, err error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	type row struct {
-		Revenue decimal.Decimal `db:"revenue"`
-		Orders  int             `db:"orders"`
+		RevenueNet   decimal.Decimal `db:"revenue_net"`
+		GrossInclVat decimal.Decimal `db:"gross_incl_vat"`
+		Orders       int             `db:"orders"`
 	}
 	query := `
 		WITH order_base AS (
@@ -25,6 +31,7 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 				co.total_price,
 				co.total_settled_base,
+				COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct,
 				COALESCE(co.refunded_amount, 0) AS refunded_amount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -34,26 +41,33 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
 			AND co.order_status_id IN (:statusIds)
-			GROUP BY co.id, co.total_price, co.refunded_amount, co.total_settled_base
+			GROUP BY co.id, co.total_price, co.refunded_amount, co.total_settled_base, co.vat_rate_pct
+		),
+		order_rev AS (
+			SELECT
+				COALESCE(total_settled_base, items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
+					* (total_price - refunded_amount) / NULLIF(total_price, 0) AS gross_ivat,
+				vat_rate_pct
+			FROM order_base
 		)
 		SELECT
-			COALESCE(SUM(
-				COALESCE(total_settled_base, items_base * (100 - discount) / 100.0 + CASE WHEN free_shipping THEN 0 ELSE shipment_base END)
-				* (total_price - refunded_amount) / NULLIF(total_price, 0)
-			), 0) AS revenue,
+			COALESCE(SUM(gross_ivat), 0) AS gross_incl_vat,
+			COALESCE(SUM(gross_ivat * 100.0 / (100 + vat_rate_pct)), 0) AS revenue_net,
 			COUNT(*) AS orders
-		FROM order_base
+		FROM order_rev
 	`
 	r, err := storeutil.QueryNamedOne[row](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
 	if err != nil {
-		return decimal.Zero, 0, decimal.Zero, err
+		return decimal.Zero, decimal.Zero, decimal.Zero, 0, decimal.Zero, err
 	}
-	revenue = r.Revenue
+	revenueNet = r.RevenueNet.Round(2)
+	grossInclVat = r.GrossInclVat.Round(2)
+	vatAmount = grossInclVat.Sub(revenueNet).Round(2)
 	orders = r.Orders
 	if orders > 0 {
-		aov = revenue.Div(decimal.NewFromInt(int64(orders))).Round(2)
+		aov = revenueNet.Div(decimal.NewFromInt(int64(orders))).Round(2)
 	}
-	return revenue, orders, aov, nil
+	return revenueNet, grossInclVat, vatAmount, orders, aov, nil
 }
 
 func (s *Store) getItemsPerOrder(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {

@@ -29,6 +29,7 @@ func orderFactorsCTENamed(name, fromParam, toParam string) string {
 		SELECT co.id AS order_id, co.placed, co.total_price,
 			COALESCE(co.refunded_amount, 0) AS refunded_amount,
 			co.total_settled_base,
+			COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct,
 			COALESCE(MAX(pc.discount), 0) AS discount,
 			COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 			COALESCE(MAX(scp.price), 0) AS shipment_base,
@@ -41,26 +42,38 @@ func orderFactorsCTENamed(name, fromParam, toParam string) string {
 		LEFT JOIN promo_code pc ON co.promo_id = pc.id
 		WHERE co.placed >= :%s AND co.placed < :%s
 		AND co.order_status_id IN (:statusIds)
-		GROUP BY co.id, co.placed, co.total_price, co.refunded_amount, co.total_settled_base
+		GROUP BY co.id, co.placed, co.total_price, co.refunded_amount, co.total_settled_base, co.vat_rate_pct
 	)`, name, fromParam, toParam)
 }
 
-// itemAdj is the per-order multiplier (incl. refund ratio) for the order_factors row
-// joined as `alias`. Note: `of` is a reserved word in MySQL 8, so callers alias e.g. `ofac`.
+// netOfVat is the per-order factor that converts a VAT-inclusive gross amount to net-of-VAT
+// revenue, using the rate snapshotted on the order (0 → factor 1, no change). Prices are
+// VAT-inclusive, so net = gross × 100/(100+rate). Applied to revenue only, never to cost
+// (cost_price carries no VAT). `alias` is the order_factors row alias.
+func netOfVat(alias string) string {
+	return fmt.Sprintf(`(100.0 / (100 + COALESCE(%[1]s.vat_rate_pct, 0)))`, alias)
+}
+
+// itemAdj is the per-order revenue multiplier (incl. refund ratio and net-of-VAT) for the
+// order_factors row joined as `alias`. Note: `of` is a reserved word in MySQL 8, so callers
+// alias e.g. `ofac`.
 func itemAdj(alias string) string {
 	return fmt.Sprintf(`((100 - %[1]s.discount) / 100.0
 		* COALESCE(%[1]s.total_settled_base, %[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END)
 			/ NULLIF(%[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END, 0)
-		* (%[1]s.total_price - %[1]s.refunded_amount) / NULLIF(%[1]s.total_price, 0))`, alias)
+		* (%[1]s.total_price - %[1]s.refunded_amount) / NULLIF(%[1]s.total_price, 0)
+		* %[2]s)`, alias, netOfVat(alias))
 }
 
-// itemAdjGross is itemAdj WITHOUT the refund ratio — promo discount × fx/actual scaling
-// only. Use it where refunds are already accounted for at the line-item level (e.g. net
-// units via refunded_order_item), so refunds are not double-counted.
+// itemAdjGross is itemAdj WITHOUT the refund ratio — promo discount × fx/actual scaling ×
+// net-of-VAT only. Use it where refunds are already accounted for at the line-item level (e.g.
+// net units via refunded_order_item), so refunds are not double-counted. "Gross" here refers
+// to gross-of-refunds, not gross-of-VAT: VAT is still removed.
 func itemAdjGross(alias string) string {
 	return fmt.Sprintf(`((100 - %[1]s.discount) / 100.0
 		* COALESCE(%[1]s.total_settled_base, %[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END)
-			/ NULLIF(%[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END, 0))`, alias)
+			/ NULLIF(%[1]s.items_base_total * (100 - %[1]s.discount) / 100.0 + CASE WHEN %[1]s.free_shipping THEN 0 ELSE %[1]s.shipment_base END, 0)
+		* %[2]s)`, alias, netOfVat(alias))
 }
 
 // costAdj is the per-order multiplier for COGS on the order_factors row aliased `alias`.

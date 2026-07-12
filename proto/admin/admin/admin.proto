@@ -1378,6 +1378,11 @@ message CommerceCoreMetrics {
   MetricWithComparison total_discount = 10;
   MetricWithComparison product_sale_discount = 11;
   MetricWithComparison promo_code_discount = 12;
+  // revenue (field 1) is NET of VAT. revenue_incl_vat is post-discount/refund revenue BEFORE
+  // removing VAT (what the company collected); vat_amount = revenue_incl_vat - revenue. VAT is
+  // resolved per order from the destination country (0 for export / pre-feature orders).
+  MetricWithComparison revenue_incl_vat = 55;
+  MetricWithComparison vat_amount = 56;
   MetricWithComparison new_subscribers = 13;
   MetricWithComparison new_customers = 14;
   MetricWithComparison repeat_customers_rate = 15;

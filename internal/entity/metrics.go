@@ -55,6 +55,12 @@ type BusinessMetrics struct {
 	// TotalDiscount.Value == ProductSaleDiscount + PromoCodeDiscount.
 	ProductSaleDiscount MetricWithComparison
 	PromoCodeDiscount   MetricWithComparison
+	// RevenueInclVat is post-discount/refund revenue BEFORE removing VAT — what the company
+	// actually collected from customers. Revenue (headline) is RevenueInclVat net of VAT, and
+	// VatAmount = RevenueInclVat - Revenue. VAT is resolved per order from the destination
+	// country and is 0 for export / pre-feature orders. All margins are computed on net Revenue.
+	RevenueInclVat MetricWithComparison
+	VatAmount      MetricWithComparison
 
 	// GA4 Traffic & Engagement
 	Sessions           MetricWithComparison

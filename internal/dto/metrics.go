@@ -58,6 +58,8 @@ func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMe
 		TotalDiscount:        metricWithComparisonToPb(m.TotalDiscount),
 		ProductSaleDiscount:  metricWithComparisonToPb(m.ProductSaleDiscount),
 		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
+		RevenueInclVat:       metricWithComparisonToPb(m.RevenueInclVat),
+		VatAmount:            metricWithComparisonToPb(m.VatAmount),
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
 		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),

@@ -26,7 +26,7 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 		limit = 10
 	}
 
-	rev, orders, _, err := s.getCoreSalesMetrics(ctx, from, to)
+	rev, _, _, orders, _, err := s.getCoreSalesMetrics(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard core sales: %w", err)
 	}
