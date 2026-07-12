@@ -140,6 +140,8 @@ var methodRequirements = map[string]Requirement{
 	"UpsertChannelSpend":     wr(SectionAnalytics),
 	"GetAlertSettings":       rd(SectionAnalytics),
 	"UpsertAlertSettings":    wr(SectionAnalytics),
+	"GetVatRates":            rd(SectionAnalytics),
+	"UpsertVatRates":         wr(SectionAnalytics),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),

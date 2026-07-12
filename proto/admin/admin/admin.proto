@@ -609,6 +609,20 @@ service AdminService {
     };
   }
 
+  // GetVatRates returns the configured destination-country VAT rates used to compute
+  // net-of-VAT revenue.
+  rpc GetVatRates(GetVatRatesRequest) returns (GetVatRatesResponse) {
+    option (google.api.http) = {get: "/api/admin/vat-rates"};
+  }
+
+  // UpsertVatRates inserts or updates the standard VAT rate per destination country.
+  rpc UpsertVatRates(UpsertVatRatesRequest) returns (UpsertVatRatesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/vat-rates"
+      body: "*"
+    };
+  }
+
   // SETTINGS
 
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse) {
@@ -3065,6 +3079,26 @@ message UpsertCostingFxRatesRequest {
 }
 
 message UpsertCostingFxRatesResponse {}
+
+// VatRate is the standard VAT rate for a destination country (ISO 3166-1 alpha-2). A country
+// absent from the list is treated as 0% (export / non-EU).
+message VatRate {
+  string country_code = 1; // ISO 3166-1 alpha-2, uppercase
+  google.type.Decimal rate_pct = 2; // standard VAT rate %, e.g. 21.00
+  google.protobuf.Timestamp valid_from = 3; // informational: when this rate took effect
+}
+
+message GetVatRatesRequest {}
+
+message GetVatRatesResponse {
+  repeated VatRate rates = 1;
+}
+
+message UpsertVatRatesRequest {
+  repeated VatRate rates = 1;
+}
+
+message UpsertVatRatesResponse {}
 
 // ADMIN ACCOUNTS (RBAC)
 

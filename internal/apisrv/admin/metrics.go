@@ -14,8 +14,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest) (*pb_admin.GetMetricsResponse, error) {
@@ -894,4 +896,55 @@ func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, ro
 		}
 	}
 	return nil
+}
+
+// GetVatRates returns the configured destination-country VAT rates for the admin management
+// surface (net-of-VAT revenue configuration).
+func (s *Server) GetVatRates(ctx context.Context, _ *pb_admin.GetVatRatesRequest) (*pb_admin.GetVatRatesResponse, error) {
+	rates, err := s.repo.Metrics().ListVatRates(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list vat rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list vat rates")
+	}
+	out := make([]*pb_admin.VatRate, 0, len(rates))
+	for _, r := range rates {
+		out = append(out, &pb_admin.VatRate{
+			CountryCode: r.CountryCode,
+			RatePct:     &pb_decimal.Decimal{Value: r.RatePct.String()},
+			ValidFrom:   timestamppb.New(r.ValidFrom),
+		})
+	}
+	return &pb_admin.GetVatRatesResponse{Rates: out}, nil
+}
+
+// UpsertVatRates inserts or updates the standard VAT rate per destination country (ISO alpha-2).
+// Rates must be in [0, 100); a country absent from the table is treated as 0% (export).
+func (s *Server) UpsertVatRates(ctx context.Context, req *pb_admin.UpsertVatRatesRequest) (*pb_admin.UpsertVatRatesResponse, error) {
+	if req == nil || len(req.Rates) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one vat rate is required")
+	}
+	ents := make([]entity.VatRate, 0, len(req.Rates))
+	for _, r := range req.Rates {
+		cc := strings.ToUpper(strings.TrimSpace(r.CountryCode))
+		if len(cc) != 2 {
+			return nil, status.Errorf(codes.InvalidArgument, "country_code must be a 2-letter ISO code, got %q", r.CountryCode)
+		}
+		if r.RatePct == nil {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_pct is required for %s", cc)
+		}
+		rate, err := decimal.NewFromString(r.RatePct.Value)
+		if err != nil || rate.IsNegative() || rate.GreaterThanOrEqual(decimal.NewFromInt(100)) {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_pct for %s must be a number in [0, 100)", cc)
+		}
+		vr := entity.VatRate{CountryCode: cc, RatePct: rate}
+		if r.ValidFrom != nil {
+			vr.ValidFrom = r.ValidFrom.AsTime().UTC()
+		}
+		ents = append(ents, vr)
+	}
+	if err := s.repo.Metrics().UpsertVatRates(ctx, ents); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert vat rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert vat rates")
+	}
+	return &pb_admin.UpsertVatRatesResponse{}, nil
 }

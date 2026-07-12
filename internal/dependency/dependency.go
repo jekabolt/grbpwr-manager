@@ -295,6 +295,10 @@ type (
 		// thresholds behind the dashboard alerts (alert_setting table).
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
 		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
+		// ListVatRates / UpsertVatRates read and write the destination-country VAT rates
+		// (vat_rate table) used to compute net-of-VAT revenue.
+		ListVatRates(ctx context.Context) ([]entity.VatRate, error)
+		UpsertVatRates(ctx context.Context, rates []entity.VatRate) error
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).

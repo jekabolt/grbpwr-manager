@@ -11,6 +11,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -253,8 +254,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id)
-	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId)
+	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount)
+	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount)
 	`
 
 	orderRef, err := generateOrderReference()
@@ -265,6 +266,13 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	if order.TotalPriceEUR.Valid {
 		totalPriceEur = order.TotalPriceEUR.Decimal
 	}
+	var vatRatePct, vatAmount any
+	if order.VatRatePct.Valid {
+		vatRatePct = order.VatRatePct.Decimal
+	}
+	if order.VatAmount.Valid {
+		vatAmount = order.VatAmount.Decimal
+	}
 	order.Id, err = storeutil.ExecNamedLastId(ctx, db, query, map[string]interface{}{
 		"uuid":          orderRef,
 		"totalPrice":    order.TotalPriceDecimal(),
@@ -273,6 +281,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
 		"gaClientId":    order.GAClientID,
+		"vatRatePct":    vatRatePct,
+		"vatAmount":     vatAmount,
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)
@@ -287,6 +297,22 @@ func (s *Store) insertOrderDetails(ctx context.Context, db dependency.DB, order 
 		slog.Default().WarnContext(ctx, "can't compute EUR snapshot for order", slog.String("err", eerr.Error()))
 	} else {
 		order.TotalPriceEUR = eur
+	}
+	// Resolve + snapshot destination VAT so net-of-VAT revenue is reproducible if a rate later
+	// changes. Rate comes from the shipping country (absent/non-EU → 0); prices are
+	// VAT-inclusive, so vat_amount = total × rate/(100+rate) in the order currency.
+	shippingCountry := ""
+	if orderNew.ShippingAddress != nil {
+		shippingCountry = orderNew.ShippingAddress.Country
+	}
+	vatRate, verr := getVatRatePct(ctx, db, shippingCountry)
+	if verr != nil {
+		return fmt.Errorf("error while resolving vat rate: %w", verr)
+	}
+	order.VatRatePct = decimal.NullDecimal{Decimal: vatRate, Valid: true}
+	order.VatAmount = decimal.NullDecimal{
+		Decimal: dto.RoundForCurrency(entity.VatFromInclusive(order.TotalPriceDecimal(), vatRate), order.Currency),
+		Valid:   true,
 	}
 	order.Id, order.UUID, err = insertOrder(ctx, db, order)
 	if err != nil {

@@ -74,6 +74,13 @@ type Order struct {
 	// base-currency revenue figure. NULL when not captured (pre-feature, non-Stripe,
 	// or unpaid), in which case metrics fall back to the product_price reconstruction.
 	TotalSettledBase decimal.NullDecimal `db:"total_settled_base"`
+	// VatRatePct is the destination-country VAT rate (percent) resolved from the
+	// shipping country and snapshotted at order time, so historical net revenue is
+	// reproducible if a rate later changes. NULL for pre-feature orders (metrics treat
+	// it as 0). VatAmount is the VAT included in total_price (order currency, inclusive
+	// pricing: total × rate/(100+rate)).
+	VatRatePct decimal.NullDecimal `db:"vat_rate_pct"`
+	VatAmount  decimal.NullDecimal `db:"vat_amount"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
