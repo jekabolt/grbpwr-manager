@@ -170,3 +170,85 @@ func TestCostingFxRates(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, rates["USD"].Equal(d("0.96")), "updated in place: got %s", rates["USD"])
 }
+
+// TestPaymentMethodFees exercises the task-05 per-method fee model: SetPaymentMethodFees writes
+// the fee_pct/fee_fixed of a method by name, and the values round-trip. Resets to 0 on cleanup
+// so the seeded row is left as it was.
+func TestPaymentMethodFees(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+	defer func() {
+		_ = s.Settings().SetPaymentMethodFees(ctx, entity.BANK_INVOICE, decimal.Zero, decimal.Zero)
+	}()
+
+	require.NoError(t, s.Settings().SetPaymentMethodFees(ctx,
+		entity.BANK_INVOICE, decimal.RequireFromString("1.90"), decimal.RequireFromString("0.30")))
+
+	var pct, fixed decimal.Decimal
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT fee_pct, fee_fixed FROM payment_method WHERE name = ?", string(entity.BANK_INVOICE)).
+		Scan(&pct, &fixed))
+	require.True(t, pct.Equal(decimal.RequireFromString("1.90")), "fee_pct: got %s", pct)
+	require.True(t, fixed.Equal(decimal.RequireFromString("0.30")), "fee_fixed: got %s", fixed)
+}
+
+// TestShipmentActualCost exercises the task-06 store method: SetShipmentActualCost writes the
+// real carrier invoice and return-leg cost onto an order's shipment (keyed by order UUID),
+// clears them when passed an invalid NullDecimal, and errors on an unknown UUID.
+func TestShipmentActualCost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	const uuid = "ECO-SHIP-TEST-0001"
+	var orderID int64
+	defer func() {
+		if orderID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM shipment WHERE order_id = ?", orderID)
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", orderID)
+		}
+	}()
+
+	// minimal order (status 1 = placed) + shipment (carrier 1 = DHL, seeded by migrations)
+	res, err := testDB.ExecContext(ctx,
+		"INSERT INTO customer_order (uuid, order_status_id, currency, total_price) VALUES (?, 1, 'EUR', 100)", uuid)
+	require.NoError(t, err)
+	orderID, err = res.LastInsertId()
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx,
+		"INSERT INTO shipment (carrier_id, order_id, cost, free_shipping) VALUES (1, ?, 10, 0)", orderID)
+	require.NoError(t, err)
+
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
+
+	// set both actual + return cost
+	require.NoError(t, s.Order().SetShipmentActualCost(ctx, uuid, nd("12.34"), nd("3.21")))
+	var actual, ret decimal.NullDecimal
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT actual_cost, return_shipping_cost FROM shipment WHERE order_id = ?", orderID).Scan(&actual, &ret))
+	require.True(t, actual.Valid && actual.Decimal.Equal(decimal.RequireFromString("12.34")), "actual_cost: %+v", actual)
+	require.True(t, ret.Valid && ret.Decimal.Equal(decimal.RequireFromString("3.21")), "return_shipping_cost: %+v", ret)
+
+	// clearing with invalid NullDecimal sets the columns back to NULL
+	require.NoError(t, s.Order().SetShipmentActualCost(ctx, uuid, decimal.NullDecimal{}, decimal.NullDecimal{}))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT actual_cost, return_shipping_cost FROM shipment WHERE order_id = ?", orderID).Scan(&actual, &ret))
+	require.False(t, actual.Valid, "actual_cost cleared")
+	require.False(t, ret.Valid, "return_shipping_cost cleared")
+
+	// unknown order UUID → error
+	require.Error(t, s.Order().SetShipmentActualCost(ctx, "does-not-exist", nd("1.00"), decimal.NullDecimal{}))
+}

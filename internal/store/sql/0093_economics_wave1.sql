@@ -79,8 +79,37 @@ CREATE TABLE costing_fx_rate (
   PRIMARY KEY (currency, valid_from)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT 'Manual FX rates to fold multi-currency costing into base currency';
 
+-- === Task 05: per-method payment fee model =================================================
+-- Payment fees were captured only for Stripe (customer_order.payment_fee from the balance
+-- transaction). bank-invoice / cash / non-EUR-settled / pre-feature orders contributed a €0
+-- fee, so contribution margin was systematically overstated for them. Give each payment
+-- method a fee model (percent + fixed) so the fee of an order without a captured Stripe fee
+-- can be estimated. Default 0 → no behaviour change until an operator sets a method's fees.
+ALTER TABLE payment_method
+  ADD COLUMN fee_pct DECIMAL(5, 2) NOT NULL DEFAULT 0 COMMENT 'estimated processing fee as %% of the order total',
+  ADD COLUMN fee_fixed DECIMAL(10, 2) NOT NULL DEFAULT 0 COMMENT 'estimated fixed processing fee per order, base currency';
+
+-- === Task 06: actual shipping cost ========================================================
+-- Margin used the customer-charged carrier price as the shipping "cost" proxy, so shipping
+-- revenue and cost largely cancelled and real logistics (incl. subsidised/free shipping and
+-- return legs) were invisible. Record the actual carrier invoice and the return-leg cost so
+-- contribution margin can use them (falling back to the charged price when not entered).
+ALTER TABLE shipment
+  ADD COLUMN actual_cost DECIMAL(10, 2) NULL COMMENT 'actual carrier invoice for this shipment, base currency (NULL = not entered)',
+  ADD COLUMN return_shipping_cost DECIMAL(10, 2) NULL COMMENT 'reverse-logistics cost of a return, base currency (NULL = none)';
+
 -- +migrate Down
 -- Reverse Wave-1 sections in reverse order.
+
+-- Task 06
+ALTER TABLE shipment
+  DROP COLUMN actual_cost,
+  DROP COLUMN return_shipping_cost;
+
+-- Task 05
+ALTER TABLE payment_method
+  DROP COLUMN fee_pct,
+  DROP COLUMN fee_fixed;
 
 -- Task 04
 DROP TABLE IF EXISTS costing_fx_rate;

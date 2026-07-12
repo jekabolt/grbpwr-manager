@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"unicode/utf8"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -194,4 +196,55 @@ func (s *Server) SetBackgroundHeroColor(ctx context.Context, req *pb_admin.SetBa
 	})
 
 	return &pb_admin.SetBackgroundHeroColorResponse{}, nil
+}
+
+// UpsertPaymentMethodFees sets the estimated processing-fee model (percent + fixed) per
+// payment method. These fees estimate the processing cost of orders that lack a captured
+// Stripe fee (bank-invoice, cash, non-EUR-settled, pre-feature) so contribution margin is
+// not systematically overstated for them. Fees default to 0, so nothing changes until set.
+func (s *Server) UpsertPaymentMethodFees(ctx context.Context, req *pb_admin.UpsertPaymentMethodFeesRequest) (*pb_admin.UpsertPaymentMethodFeesResponse, error) {
+	if req == nil || len(req.Fees) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one payment-method fee is required")
+	}
+	for _, f := range req.Fees {
+		pm, ok := dto.ConvertPbToEntityPaymentMethod(f.PaymentMethod)
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "unknown payment method %v", f.PaymentMethod)
+		}
+		feePct, err := parseNonNegativeDecimal(f.FeePct)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "fee_pct for %s: %v", pm, err)
+		}
+		if feePct.GreaterThan(decimal.NewFromInt(100)) {
+			return nil, status.Errorf(codes.InvalidArgument, "fee_pct for %s must be between 0 and 100", pm)
+		}
+		feeFixed, err := parseNonNegativeDecimal(f.FeeFixed)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "fee_fixed for %s: %v", pm, err)
+		}
+		if err := s.repo.Settings().SetPaymentMethodFees(ctx, pm, feePct, feeFixed); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set payment method fees",
+				slog.String("payment_method", string(pm)),
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "can't set payment method fees")
+		}
+	}
+	return &pb_admin.UpsertPaymentMethodFeesResponse{}, nil
+}
+
+// parseNonNegativeDecimal reads a google.type.Decimal that must be present and >= 0. A nil
+// message is treated as 0 (the field is optional and defaults to no fee).
+func parseNonNegativeDecimal(d *pb_decimal.Decimal) (decimal.Decimal, error) {
+	if d == nil || d.Value == "" {
+		return decimal.Zero, nil
+	}
+	v, err := decimal.NewFromString(d.Value)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("invalid decimal %q", d.Value)
+	}
+	if v.IsNegative() {
+		return decimal.Zero, fmt.Errorf("must not be negative")
+	}
+	return v, nil
 }

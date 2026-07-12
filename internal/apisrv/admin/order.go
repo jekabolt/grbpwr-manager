@@ -16,6 +16,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -396,4 +397,47 @@ func calculateFullRefundAmount(orderFull *entity.OrderFull, includeShipping bool
 		total = total.Add(orderFull.Shipment.CostDecimal(orderFull.Order.Currency))
 	}
 	return dto.RoundForCurrency(total, orderFull.Order.Currency)
+}
+
+// SetShipmentActualCost records the real carrier invoice (actual_cost) and the optional
+// return-leg cost (return_shipping_cost) for an order's shipment. These are base currency
+// (EUR) and feed contribution-margin analytics, which otherwise falls back to the
+// customer-charged carrier price (shipment.cost). An empty/omitted decimal clears the field.
+func (s *Server) SetShipmentActualCost(ctx context.Context, req *pb_admin.SetShipmentActualCostRequest) (*pb_admin.SetShipmentActualCostResponse, error) {
+	if req == nil || req.OrderUuid == "" {
+		return nil, status.Error(codes.InvalidArgument, "order_uuid is required")
+	}
+	actual, err := parseOptionalNonNegativeNullDecimal(req.ActualCost)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "actual_cost: %v", err)
+	}
+	ret, err := parseOptionalNonNegativeNullDecimal(req.ReturnShippingCost)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "return_shipping_cost: %v", err)
+	}
+	if err := s.repo.Order().SetShipmentActualCost(ctx, req.OrderUuid, actual, ret); err != nil {
+		slog.Default().ErrorContext(ctx, "can't set shipment actual cost",
+			slog.String("order_uuid", req.OrderUuid),
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't set shipment actual cost")
+	}
+	return &pb_admin.SetShipmentActualCostResponse{}, nil
+}
+
+// parseOptionalNonNegativeNullDecimal reads an optional google.type.Decimal into a
+// decimal.NullDecimal: nil or empty → invalid (clears the DB column to NULL); a present value
+// must parse and be non-negative.
+func parseOptionalNonNegativeNullDecimal(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {
+	if d == nil || d.Value == "" {
+		return decimal.NullDecimal{}, nil
+	}
+	v, err := decimal.NewFromString(d.Value)
+	if err != nil {
+		return decimal.NullDecimal{}, fmt.Errorf("invalid decimal %q", d.Value)
+	}
+	if v.IsNegative() {
+		return decimal.NullDecimal{}, fmt.Errorf("must not be negative")
+	}
+	return decimal.NullDecimal{Decimal: v, Valid: true}, nil
 }

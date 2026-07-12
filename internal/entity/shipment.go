@@ -115,10 +115,10 @@ type ShipmentCarrierPrice struct {
 
 // ShipmentCarrier represents the shipment_carrier table
 type ShipmentCarrier struct {
-	Id             int `db:"id"`
+	Id int `db:"id"`
 	ShipmentCarrierInsert
 	Prices         []ShipmentCarrierPrice // Multi-currency prices
-	AllowedRegions []string              // Regions where carrier is available; empty = global
+	AllowedRegions []string               // Regions where carrier is available; empty = global
 }
 
 type ShipmentCarrierInsert struct {
@@ -166,6 +166,13 @@ type Shipment struct {
 	ShippingDate         sql.NullTime    `db:"shipping_date"`
 	EstimatedArrivalDate sql.NullTime    `db:"estimated_arrival_date"`
 	DeliveredAt          sql.NullTime    `db:"delivered_at"`
+	// ActualCost is the real carrier invoice for this shipment (base currency EUR),
+	// distinct from Cost (the price charged to the customer). NULL until an operator
+	// enters it; margin analytics falls back to Cost when it is absent.
+	ActualCost decimal.NullDecimal `db:"actual_cost"`
+	// ReturnShippingCost is the reverse-logistics cost of a return (base currency EUR),
+	// NULL when the order was not returned.
+	ReturnShippingCost decimal.NullDecimal `db:"return_shipping_cost"`
 }
 
 // CostDecimal returns shipment cost with currency-aware rounding

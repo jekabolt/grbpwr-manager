@@ -618,6 +618,24 @@ service AdminService {
     };
   }
 
+  // UpsertPaymentMethodFees sets the estimated processing-fee model (percent + fixed) per
+  // payment method, used to estimate the fee of orders without a captured Stripe fee.
+  rpc UpsertPaymentMethodFees(UpsertPaymentMethodFeesRequest) returns (UpsertPaymentMethodFeesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/settings/payment-method-fees"
+      body: "*"
+    };
+  }
+
+  // SetShipmentActualCost records the actual carrier invoice (and optional return-leg cost)
+  // for an order's shipment, so contribution margin can use real logistics cost.
+  rpc SetShipmentActualCost(SetShipmentActualCostRequest) returns (SetShipmentActualCostResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/order/shipment/actual-cost"
+      body: "*"
+    };
+  }
+
   rpc GetBackgroundHeroColor(GetBackgroundHeroColorRequest) returns (GetBackgroundHeroColorResponse) {
     option (google.api.http) = {get: "/api/admin/settings/background-hero-color"};
   }
@@ -1982,6 +2000,27 @@ message UpdateSettingsRequest {
 }
 
 message UpdateSettingsResponse {}
+
+// PaymentMethodFee is the estimated processing-fee model of a payment method.
+message PaymentMethodFee {
+  common.PaymentMethodNameEnum payment_method = 1;
+  google.type.Decimal fee_pct = 2; // percent of the order total (0..100)
+  google.type.Decimal fee_fixed = 3; // fixed amount per order, base currency
+}
+
+message UpsertPaymentMethodFeesRequest {
+  repeated PaymentMethodFee fees = 1;
+}
+
+message UpsertPaymentMethodFeesResponse {}
+
+message SetShipmentActualCostRequest {
+  string order_uuid = 1;
+  google.type.Decimal actual_cost = 2; // actual carrier invoice, base currency
+  google.type.Decimal return_shipping_cost = 3; // optional reverse-logistics cost, base currency
+}
+
+message SetShipmentActualCostResponse {}
 
 message GetBackgroundHeroColorRequest {}
 

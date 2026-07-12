@@ -48,6 +48,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		cogs, cCogs                              decimal.Decimal
 		totalItemRev                             decimal.Decimal
 		paymentFees, cPaymentFees                decimal.Decimal
+		estPaymentFees                           decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -103,7 +104,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	})
 	g.Go(func() error {
 		var err error
-		paymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
+		paymentFees, estPaymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
 		return err
 	})
 
@@ -156,7 +157,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		})
 		g.Go(func() error {
 			var err error
-			cPaymentFees, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
+			cPaymentFees, _, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -671,7 +672,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.GrossMargin.Caveat = note
 		m.GrossMarginPct.Caveat = note
 	}
-	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and Stripe payment fees; meaningful when cost coverage is high."
+	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and payment fees; meaningful when cost coverage is high."
+	if estPaymentFees.GreaterThan(decimal.Zero) {
+		m.PaymentFees.Caveat = fmt.Sprintf("Includes %s in estimated fees for orders without a captured Stripe fee (per payment-method fee model).", estPaymentFees.StringFixed(2))
+	}
 
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))

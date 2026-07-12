@@ -38,7 +38,7 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard shipping: %w", err)
 	}
-	fees, err := s.getPaymentFees(ctx, from, to)
+	fees, _, err := s.getPaymentFees(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard fees: %w", err)
 	}

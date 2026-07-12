@@ -128,6 +128,7 @@ type (
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
+		SetShipmentActualCost(ctx context.Context, orderUUID string, actualCost, returnShippingCost decimal.NullDecimal) error
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
@@ -585,6 +586,8 @@ type (
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
 		SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
+		// SetPaymentMethodFees sets a method's estimated processing-fee model (percent + fixed).
+		SetPaymentMethodFees(ctx context.Context, paymentMethod entity.PaymentMethodName, feePct, feeFixed decimal.Decimal) error
 		SetPaymentIsProd(ctx context.Context, isProd bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
