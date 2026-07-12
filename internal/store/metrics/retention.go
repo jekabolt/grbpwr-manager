@@ -271,8 +271,8 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 					p.brand
 				) AS product_name,
 				SUM(pp_base.price * oi.quantity) AS revenue,
-				MAX(p.cost_price) AS unit_cost,
-				COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity ELSE 0 END), 0) AS revenue_cost
+				MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+				COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
 			JOIN product p ON p.id = oi.product_id

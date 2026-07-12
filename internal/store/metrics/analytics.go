@@ -53,7 +53,8 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity)     AS units_sold,
 				MAX(ofac.placed)     AS last_sale_date,
-				COALESCE(SUM(CASE WHEN cp.cost_price IS NOT NULL THEN cp.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+				MAX(COALESCE(oi.cost_price_at_sale, cp.cost_price)) AS unit_cost,
+				COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, cp.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, cp.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN order_factors ofac ON ofac.order_id = oi.order_id
 			JOIN product cp ON cp.id = oi.product_id
@@ -80,7 +81,7 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			ps.last_sale_date,
 			COALESCE(p.hidden, 0) AS product_hidden,
 			COALESCE(gv.total_views, 0) AS total_views,
-			p.cost_price AS unit_cost,
+			COALESCE(ps.unit_cost, p.cost_price) AS unit_cost,
 			COALESCE(ps.revenue_cost, 0) AS revenue_cost
 		FROM product p
 		LEFT JOIN product_sales ps ON ps.product_id = p.id

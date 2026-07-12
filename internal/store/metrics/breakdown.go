@@ -134,8 +134,8 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt,
-			MAX(p.cost_price) AS unit_cost,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -176,8 +176,8 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			SUM(oi.quantity) AS cnt,
 			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
-			MAX(p.cost_price) AS unit_cost,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id

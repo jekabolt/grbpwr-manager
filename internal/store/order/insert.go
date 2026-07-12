@@ -119,6 +119,15 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	if len(items) == 0 {
 		return fmt.Errorf("no order items to insert")
 	}
+	// Snapshot each line's COGS (base currency) from the product's current cost_price so
+	// historical margins stay reproducible when a product is later re-costed. cost_price is
+	// confidential and deliberately not loaded on the order-validation product read, so fetch
+	// it here directly. A product with no cost stays NULL; metrics fall back to the live
+	// product cost for such legacy/uncosted lines.
+	costByProduct, err := fetchProductCostPrices(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch product costs for order-item snapshot: %w", err)
+	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		row := map[string]any{
@@ -128,11 +137,46 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"product_sale_percentage": item.ProductSalePercentageDecimal(),
 			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeId,
+			"cost_price_at_sale":      nil,
+		}
+		if cost, ok := costByProduct[item.ProductId]; ok {
+			row["cost_price_at_sale"] = cost
 		}
 		rows = append(rows, row)
 	}
 
 	return storeutil.BulkInsert(ctx, db, "order_item", rows)
+}
+
+// fetchProductCostPrices returns the current per-unit cost_price (base currency) for the
+// distinct products in items, omitting products whose cost_price is NULL. Used to snapshot
+// COGS onto order lines at sale time.
+func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := make([]int, 0, len(items))
+	seen := make(map[int]struct{}, len(items))
+	for _, item := range items {
+		if _, ok := seen[item.ProductId]; ok {
+			continue
+		}
+		seen[item.ProductId] = struct{}{}
+		ids = append(ids, item.ProductId)
+	}
+	if len(ids) == 0 {
+		return map[int]decimal.Decimal{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ID        int             `db:"id"`
+		CostPrice decimal.Decimal `db:"cost_price"`
+	}](ctx, db, `SELECT id, cost_price FROM product WHERE id IN (:ids) AND cost_price IS NOT NULL`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.CostPrice
+	}
+	return out, nil
 }
 
 func deleteOrderItems(ctx context.Context, db dependency.DB, orderId int) error {
