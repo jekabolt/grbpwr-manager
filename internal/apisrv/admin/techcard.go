@@ -6,14 +6,18 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // techCardFKMsg is returned when a tech card references a missing category, base
@@ -86,7 +90,7 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
-	return &pb_admin.GetTechCardResponse{TechCard: dto.ConvertEntityTechCardToPb(tc)}, nil
+	return &pb_admin.GetTechCardResponse{TechCard: dto.ConvertEntityTechCardToPb(tc, s.costingFx(ctx))}, nil
 }
 
 // UpdateTechCard updates a tech card, replacing its nested sections.
@@ -143,12 +147,18 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return
 	}
-	unit, currency := dto.ComputeTechCardUnitCost(card)
+	// ComputeTechCardUnitCost returns the base-currency unit cost when the costing can be folded
+	// into the base currency via the FX rates (so a non-base costing seeds too); it returns an
+	// invalid value when the cost cannot be expressed in base (missing rate), in which case we
+	// skip rather than write a wrong-currency number.
+	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
 	if !unit.Valid {
+		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: no base-currency unit cost (check FX rates)",
+			slog.Int("tech_card_id", techCardID))
 		return
 	}
 	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
-		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: costing not in base currency",
+		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: unit cost not in base currency",
 			slog.Int("tech_card_id", techCardID), slog.String("currency", currency))
 		return
 	}
@@ -160,6 +170,64 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 	}
 	slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
 		slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", n))
+}
+
+// costingFx loads the effective manual FX rates and pairs them with the base currency, so the
+// tech-card costing can be folded into a base-currency unit cost. A load failure degrades to no
+// rates (base rollup only for already-base costings) rather than failing the request.
+func (s *Server) costingFx(ctx context.Context) dto.CostingFx {
+	rates, err := s.repo.TechCards().GetCostingFxRatesToBase(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load costing fx rates", slog.String("err", err.Error()))
+		rates = nil
+	}
+	return dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+}
+
+// GetCostingFxRates returns every stored manual FX rate for the admin management surface.
+func (s *Server) GetCostingFxRates(ctx context.Context, _ *pb_admin.GetCostingFxRatesRequest) (*pb_admin.GetCostingFxRatesResponse, error) {
+	rates, err := s.repo.TechCards().ListCostingFxRates(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list costing fx rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list costing fx rates")
+	}
+	out := make([]*pb_admin.CostingFxRate, 0, len(rates))
+	for _, r := range rates {
+		out = append(out, &pb_admin.CostingFxRate{
+			Currency:   r.Currency,
+			RateToBase: &pb_decimal.Decimal{Value: r.RateToBase.String()},
+			ValidFrom:  timestamppb.New(r.ValidFrom),
+		})
+	}
+	return &pb_admin.GetCostingFxRatesResponse{Rates: out}, nil
+}
+
+// UpsertCostingFxRates inserts or updates manual FX rates (by currency + effective date).
+func (s *Server) UpsertCostingFxRates(ctx context.Context, req *pb_admin.UpsertCostingFxRatesRequest) (*pb_admin.UpsertCostingFxRatesResponse, error) {
+	ents := make([]entity.CostingFxRate, 0, len(req.Rates))
+	for _, r := range req.Rates {
+		ccy := strings.ToUpper(strings.TrimSpace(r.Currency))
+		if len(ccy) != 3 {
+			return nil, status.Errorf(codes.InvalidArgument, "currency must be a 3-letter ISO code, got %q", r.Currency)
+		}
+		if r.RateToBase == nil {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_to_base is required for %s", ccy)
+		}
+		rate, err := decimal.NewFromString(r.RateToBase.Value)
+		if err != nil || !rate.IsPositive() {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_to_base must be a positive number for %s", ccy)
+		}
+		validFrom := time.Now().UTC().Truncate(24 * time.Hour)
+		if r.ValidFrom != nil {
+			validFrom = r.ValidFrom.AsTime().UTC().Truncate(24 * time.Hour)
+		}
+		ents = append(ents, entity.CostingFxRate{Currency: ccy, RateToBase: rate, ValidFrom: validFrom})
+	}
+	if err := s.repo.TechCards().UpsertCostingFxRates(ctx, ents); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert costing fx rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert costing fx rates")
+	}
+	return &pb_admin.UpsertCostingFxRatesResponse{}, nil
 }
 
 // DeleteTechCard deletes a tech card by id (nested sections cascade).

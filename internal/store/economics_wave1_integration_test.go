@@ -128,3 +128,45 @@ func TestEconomicsWave1CostProvenance(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, linked)
 }
+
+// TestCostingFxRates exercises the task-04 manual FX rate store methods: upsert-by-key, the
+// latest-effective-rate-per-currency read (ignoring future-dated rows), and update-in-place.
+func TestCostingFxRates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM costing_fx_rate WHERE currency IN ('USD','CNY')") }()
+
+	T := s.TechCards()
+	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
+	day := func(y int, m time.Month, dd int) time.Time { return time.Date(y, m, dd, 0, 0, 0, 0, time.UTC) }
+
+	require.NoError(t, T.UpsertCostingFxRates(ctx, []entity.CostingFxRate{
+		{Currency: "USD", RateToBase: d("0.90"), ValidFrom: day(2026, 1, 1)},
+		{Currency: "USD", RateToBase: d("0.95"), ValidFrom: day(2026, 6, 1)},
+		{Currency: "USD", RateToBase: d("1.00"), ValidFrom: day(2099, 1, 1)}, // future — ignored
+		{Currency: "CNY", RateToBase: d("0.13"), ValidFrom: day(2026, 1, 1)},
+	}))
+
+	rates, err := T.GetCostingFxRatesToBase(ctx)
+	require.NoError(t, err)
+	require.True(t, rates["USD"].Equal(d("0.95")), "latest effective USD rate, not the future one: got %s", rates["USD"])
+	require.True(t, rates["CNY"].Equal(d("0.13")))
+
+	all, err := T.ListCostingFxRates(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(all), 4)
+
+	// update-in-place by (currency, valid_from)
+	require.NoError(t, T.UpsertCostingFxRates(ctx, []entity.CostingFxRate{
+		{Currency: "USD", RateToBase: d("0.96"), ValidFrom: day(2026, 6, 1)},
+	}))
+	rates, err = T.GetCostingFxRatesToBase(ctx)
+	require.NoError(t, err)
+	require.True(t, rates["USD"].Equal(d("0.96")), "updated in place: got %s", rates["USD"])
+}

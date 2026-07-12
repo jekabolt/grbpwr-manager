@@ -397,6 +397,13 @@ type (
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
+		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
+		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
+		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
+		// ListCostingFxRates returns every stored rate (all effective dates) for admin display.
+		ListCostingFxRates(ctx context.Context) ([]entity.CostingFxRate, error)
+		// UpsertCostingFxRates inserts/updates rates by (currency, valid_from). Empty is a no-op.
+		UpsertCostingFxRates(ctx context.Context, rates []entity.CostingFxRate) error
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.

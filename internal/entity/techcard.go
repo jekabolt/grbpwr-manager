@@ -353,18 +353,18 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 // «Спецификация»). The per-colourway colour, placement and consumption live on
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
-	Id          int                `db:"id"`
-	Section     TechCardBomSection `db:"section"`
-	Name        string             `db:"name"`
-	Supplier    sql.NullString     `db:"supplier"`
-	SupplierRef sql.NullString     `db:"supplier_ref"`
-	Color       sql.NullString     `db:"color"` // base/reference colour (per-colourway colour is on the usage)
-	Composition sql.NullString     `db:"composition"`
-	Spec        sql.NullString     `db:"spec"`
-	Unit        sql.NullString     `db:"unit"`
+	Id          int                 `db:"id"`
+	Section     TechCardBomSection  `db:"section"`
+	Name        string              `db:"name"`
+	Supplier    sql.NullString      `db:"supplier"`
+	SupplierRef sql.NullString      `db:"supplier_ref"`
+	Color       sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	Composition sql.NullString      `db:"composition"`
+	Spec        sql.NullString      `db:"spec"`
+	Unit        sql.NullString      `db:"unit"`
 	UnitPrice   decimal.NullDecimal `db:"unit_price"`
-	Currency    sql.NullString     `db:"currency"`
-	Comment     sql.NullString     `db:"comment"`
+	Currency    sql.NullString      `db:"currency"`
+	Comment     sql.NullString      `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
@@ -651,6 +651,15 @@ type TechCardCosting struct {
 	DefectPercent decimal.NullDecimal `db:"defect_percent"`
 	Currency      sql.NullString      `db:"currency"`
 	Notes         sql.NullString      `db:"notes"`
+}
+
+// CostingFxRate is a manual FX rate used to fold a multi-currency tech-card costing into the
+// base currency. RateToBase is how many base-currency units one unit of Currency is worth; the
+// latest ValidFrom on or before today is the effective rate.
+type CostingFxRate struct {
+	Currency   string          `db:"currency"`
+	RateToBase decimal.Decimal `db:"rate_to_base"`
+	ValidFrom  time.Time       `db:"valid_from"`
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).

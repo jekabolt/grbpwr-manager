@@ -88,7 +88,7 @@ func TestColorwayCostRollup(t *testing.T) {
 		{BomItemIndex: idx(1), Quantity: ndFrom("1")}, // 3 USD
 		{BomItemIndex: idx(2), Quantity: ndFrom("4")}, // 20 currency-less
 	}}
-	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{}, 0)
+	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{}, 0, CostingFx{})
 	// materials_per_unit = EUR(20) + currency-less(20) = 40; USD excluded. All usages are
 	// per-garment (countable Quantity), so totalOrderQty is irrelevant here.
 	if !res.materialsPerUnit.Equal(decimal.RequireFromString("40")) {
@@ -125,7 +125,7 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/x4.pdf" {
 		t.Fatalf("patterns not parsed: %+v", ent.Patterns)
 	}
-	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent})
+	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent}, CostingFx{})
 	if len(out.TechCard.Patterns) != 3 || out.TechCard.Patterns[0].Filename != "front-m.pdf" || out.TechCard.Patterns[0].SizeBytes != 1234 {
 		t.Fatalf("patterns round-trip mismatch: %+v", out.TechCard.Patterns)
 	}

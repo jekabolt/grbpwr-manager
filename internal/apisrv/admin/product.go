@@ -195,13 +195,14 @@ func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.
 	if err != nil || card == nil {
 		return nil, status.Error(codes.NotFound, "tech card not found")
 	}
-	unit, currency := dto.ComputeTechCardUnitCost(card)
+	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
 	if !unit.Valid {
-		return nil, status.Error(codes.FailedPrecondition, "tech card has no computable unit cost")
+		return nil, status.Error(codes.FailedPrecondition,
+			"tech card has no base-currency unit cost — check the costing and its FX rates")
 	}
 	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"tech card costing is in %s, not base currency %s — cannot convert (no live FX)", currency, cache.GetBaseCurrency())
+			"tech card unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
 	}
 
 	// Repoint the primary card only when an explicit, different card was requested.

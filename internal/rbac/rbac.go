@@ -21,25 +21,25 @@ const MethodPrefix = "/admin.AdminService/"
 // Section keys. These strings are stored verbatim in the admin_permission table
 // and embedded in JWT claims, so they must stay stable.
 const (
-	SectionProducts   = "products"
-	SectionPromo      = "promo"
-	SectionOrders     = "orders"
+	SectionProducts = "products"
+	SectionPromo    = "promo"
+	SectionOrders   = "orders"
 	// SectionFulfillment governs the orders-fulfillment board: assign/notes/
 	// checklist annotations and the ship/deliver transitions. It is separate from
 	// SectionOrders so a warehouse role can fulfill orders without the broader
 	// orders:write (which also grants refunds and cancellations).
 	SectionFulfillment = "fulfillment"
-	SectionAnalytics  = "analytics"
-	SectionContent    = "content"
-	SectionHero       = "hero"
-	SectionArchive    = "archive"
-	SectionModels     = "models"
-	SectionFittings   = "fittings"
-	SectionTechCards  = "tech_cards"
-	SectionTasks      = "tasks"
-	SectionSettings   = "settings"
-	SectionSupport    = "support"
-	SectionMembership = "membership"
+	SectionAnalytics   = "analytics"
+	SectionContent     = "content"
+	SectionHero        = "hero"
+	SectionArchive     = "archive"
+	SectionModels      = "models"
+	SectionFittings    = "fittings"
+	SectionTechCards   = "tech_cards"
+	SectionTasks       = "tasks"
+	SectionSettings    = "settings"
+	SectionSupport     = "support"
+	SectionMembership  = "membership"
 	// SectionAccounts governs the account-management RPCs themselves. Only a
 	// super-admin or an account with accounts:write may create/edit accounts.
 	SectionAccounts = "accounts"
@@ -167,11 +167,13 @@ var methodRequirements = map[string]Requirement{
 	"DeleteFitting": wr(SectionFittings),
 	"ListFittings":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard": wr(SectionTechCards),
-	"GetTechCard":    rd(SectionTechCards),
-	"UpdateTechCard": wr(SectionTechCards),
-	"DeleteTechCard": wr(SectionTechCards),
-	"ListTechCards":  rd(SectionTechCards),
+	"CreateTechCard":       wr(SectionTechCards),
+	"GetTechCard":          rd(SectionTechCards),
+	"UpdateTechCard":       wr(SectionTechCards),
+	"DeleteTechCard":       wr(SectionTechCards),
+	"ListTechCards":        rd(SectionTechCards),
+	"GetCostingFxRates":    rd(SectionTechCards),
+	"UpsertCostingFxRates": wr(SectionTechCards),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),

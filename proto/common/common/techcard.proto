@@ -411,6 +411,14 @@ message TechCardCosting {
   google.type.Decimal total_sam = 16; // Σ operation time_norm (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 
+  // OUTPUT-ONLY base-currency rollup. The unit/order cost of the primary colourway folded into
+  // the base currency via the manual costing FX rates. Set ONLY when every currency involved
+  // has a rate — this is the figure the product-cost seed uses, so a non-base costing can seed
+  // cost_price too. Absent when a needed rate is missing (then has_unconverted_currencies).
+  google.type.Decimal unit_cost_base = 23; // unit_cost converted to base_currency
+  google.type.Decimal order_cost_base = 24; // unit_cost_base × order_qty
+  string base_currency = 25; // the base currency the *_base figures are in
+
   reserved 7, 8, 9; // pricing removed (markup_multiplier, wholesale_price, retail_price — moved to product)
   reserved 13, 14, 17; // was materials_cost, total_cost, labour_cost (superseded / removed)
 }

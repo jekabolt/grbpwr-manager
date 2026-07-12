@@ -176,7 +176,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 		},
 	}
 
-	pb := ConvertEntityTechCardToPb(tc)
+	pb := ConvertEntityTechCardToPb(tc, CostingFx{})
 	if pb.Id != 9 || pb.TechCard.StyleNumber != "ST-001" {
 		t.Errorf("id/style mismatch: %+v", pb)
 	}
@@ -242,7 +242,7 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 	}
 
 	// round-trip: usages emit with computed line_total resolved against the BOM article.
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	pus := pb.TechCard.Colorways[0].Usages
 	if len(pus) != 2 || pus[0].Placement != "outer shell" {
 		t.Fatalf("pb usages mismatch: %+v", pus)
@@ -305,7 +305,7 @@ func TestConvertTechCardCosting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	cost := pb.TechCard.Costing
 	if cost == nil {
 		t.Fatalf("costing not emitted")
@@ -386,7 +386,7 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	cost := pb.TechCard.Costing
 	cc := cost.ColorwayCosts[0]
 	// Per-unit: the per-size usage normalises to 102/30 = 3.4, the per-garment zip is 3, so
@@ -441,7 +441,7 @@ func TestConvertTechCardOperations(t *testing.T) {
 		t.Errorf("bom_item_index 0 should be present: %+v", got.Operations[1].BomItemIndex)
 	}
 
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	if pb.TechCard.Operations[0].OperationNumber != 10 || pb.TechCard.Operations[0].Placement != "outer hem" {
 		t.Errorf("pb operation mismatch: %+v", pb.TechCard.Operations[0])
 	}
@@ -518,7 +518,7 @@ func TestConvertTechCardSignoffs(t *testing.T) {
 	if got.Signoffs[1].State != entity.SignoffStatePending {
 		t.Errorf("signoff default state mismatch: %+v", got.Signoffs[1])
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	if len(pb.TechCard.Signoffs) != 2 || pb.TechCard.Signoffs[0].Section != pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING {
 		t.Errorf("pb signoffs mismatch: %+v", pb.TechCard.Signoffs)
 	}

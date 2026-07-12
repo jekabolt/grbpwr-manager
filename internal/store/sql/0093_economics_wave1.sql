@@ -63,8 +63,27 @@ UPDATE product p
   SET p.cost_price_source = 'manual', p.cost_price_updated_at = NOW()
   WHERE p.cost_price IS NOT NULL AND p.cost_price_source IS NULL;
 
+-- === Task 04: manual FX rates for costing =================================================
+-- The shop has no live FX (currency_rate was dropped in 0053), but a tech card's costing is
+-- genuinely multi-currency: fabric bought in USD/CNY, CMT billed in another currency. Before
+-- this, a costing not in the base currency was silently skipped by the product-cost seed, and
+-- a BOM line in a foreign currency was excluded from unit_cost — so unit_cost was undercounted
+-- and such products fell out of margin analytics entirely. This table holds a rarely-changed,
+-- operator-entered rate per currency (how many base-currency units one unit is worth), letting
+-- the costing fold every currency into a base (*_base) unit cost that the seed can use.
+CREATE TABLE costing_fx_rate (
+  currency CHAR(3) NOT NULL COMMENT 'ISO 4217, uppercase',
+  rate_to_base DECIMAL(18, 8) NOT NULL COMMENT 'how many base-currency units 1 of this currency is worth'
+    CHECK (rate_to_base > 0),
+  valid_from DATE NOT NULL COMMENT 'the rate applies from this date; the latest <= today is used',
+  PRIMARY KEY (currency, valid_from)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT 'Manual FX rates to fold multi-currency costing into base currency';
+
 -- +migrate Down
 -- Reverse Wave-1 sections in reverse order.
+
+-- Task 04
+DROP TABLE IF EXISTS costing_fx_rate;
 
 -- Task 02
 ALTER TABLE product

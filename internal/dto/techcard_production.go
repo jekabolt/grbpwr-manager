@@ -3,12 +3,39 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
+
+// CostingFx carries the manual FX rates used to fold a tech card's multi-currency costing into
+// the base currency for the *_base rollup. ToBase maps an UPPERCASE ISO currency to how many
+// base-currency units one unit is worth; the base currency itself is implicitly 1. A zero
+// value (Base == "") means "no base configured" — the *_base fields are then left unset.
+type CostingFx struct {
+	ToBase map[string]decimal.Decimal
+	Base   string
+}
+
+// toBase converts amount from ccy into the base currency. An empty ccy is treated as the base
+// currency (amounts with no currency are assumed already-base). Returns ok=false when no base
+// is configured or the currency has no rate — the caller then leaves the base figure unset.
+func (fx CostingFx) toBase(amount decimal.Decimal, ccy string) (decimal.Decimal, bool) {
+	if fx.Base == "" {
+		return decimal.Zero, false
+	}
+	if ccy == "" || strings.EqualFold(ccy, fx.Base) {
+		return amount, true
+	}
+	r, ok := fx.ToBase[strings.ToUpper(ccy)]
+	if !ok {
+		return decimal.Zero, false
+	}
+	return amount.Mul(r), true
+}
 
 // Decimal bounds for the Phase 3 production/costing columns.
 const (
@@ -590,7 +617,7 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 // per GARMENT (unit_cost = materials_per_unit + shared manual articles, × (1 + defect%)), then
 // scaled to the whole run (order_cost = unit_cost × order_qty, order_qty = Σ size_quantities).
 // Returns nil when no costing row exists.
-func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
+func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardCosting {
 	if tc.Costing == nil {
 		return nil
 	}
@@ -631,8 +658,10 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 	var rootMaterialsTotal []*pb_common.TechCardCostLine
 	rootMaterialsPerUnit := decimal.Zero
 	rootHasUnconverted := false
+	rootMaterialsPerUnitBase := decimal.Zero
+	rootBaseConvertible := false
 	for ci := range tc.Colorways {
-		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize, totalOrderQty)
+		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize, totalOrderQty, fx)
 		unit, order := unitAndOrder(cc.materialsPerUnit)
 		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
 			ColorwayIndex:            int32(ci),
@@ -647,6 +676,8 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 			rootMaterialsTotal = cc.materialsTotal
 			rootMaterialsPerUnit = cc.materialsPerUnit
 			rootHasUnconverted = cc.hasUnconverted
+			rootMaterialsPerUnitBase = cc.materialsPerUnitBase
+			rootBaseConvertible = cc.baseConvertible
 		}
 	}
 
@@ -669,6 +700,17 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 		ColorwayCosts:            colorwayCosts,
 	}
 
+	// Base-currency rollup (OUTPUT-ONLY): fold the primary colourway's materials and the manual
+	// articles (in the costing currency) into the base currency via the FX rates. Set only when
+	// every currency involved has a rate, so the seed can trust unit_cost_base as a complete
+	// figure; otherwise it is left unset and callers fall back / skip.
+	if manualBase, ok := fx.toBase(manualPerUnit, costingCcy); ok && rootBaseConvertible {
+		unitBase := rootMaterialsPerUnitBase.Add(manualBase).Mul(defectMul)
+		out.UnitCostBase = pbDecimalFromDecimal(roundMoney(unitBase))
+		out.OrderCostBase = pbDecimalFromDecimal(roundMoney(unitBase.Mul(qtyDec)))
+		out.BaseCurrency = fx.Base
+	}
+
 	// total_sam = Σ(operation time_norm); informative, pricing-independent.
 	totalSam := decimal.Zero
 	for i := range tc.Operations {
@@ -686,12 +728,24 @@ func techCardCostingToPb(tc *entity.TechCard) *pb_common.TechCardCosting {
 // computed exactly as the read path renders unit_cost — it reuses techCardCostingToPb so
 // there is a single source of truth for the math. Returns an invalid NullDecimal when there
 // is no costing row or the computed unit cost is not positive.
-func ComputeTechCardUnitCost(tc *entity.TechCard) (decimal.NullDecimal, string) {
+func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDecimal, string) {
 	if tc == nil {
 		return decimal.NullDecimal{}, ""
 	}
-	pb := techCardCostingToPb(tc)
-	if pb == nil || pb.UnitCost == nil {
+	pb := techCardCostingToPb(tc, fx)
+	if pb == nil {
+		return decimal.NullDecimal{}, ""
+	}
+	// Prefer the base-currency rollup so a non-base costing can still seed the product cost;
+	// it is set only when every currency involved has an FX rate. Fall back to the costing-
+	// currency unit_cost when no base figure is available (e.g. no rates configured) AND the
+	// costing is already in the base currency, so an all-base card still seeds without rates.
+	if pb.UnitCostBase != nil {
+		if v, err := decimal.NewFromString(pb.UnitCostBase.Value); err == nil && v.IsPositive() {
+			return decimal.NullDecimal{Decimal: v, Valid: true}, pb.BaseCurrency
+		}
+	}
+	if pb.UnitCost == nil {
 		return decimal.NullDecimal{}, ""
 	}
 	v, err := decimal.NewFromString(pb.UnitCost.Value)
@@ -706,6 +760,10 @@ type colorwayCostResult struct {
 	materialsTotal   []*pb_common.TechCardCostLine // per-unit material cost grouped by article currency
 	materialsPerUnit decimal.Decimal               // Σ per-garment usage cost in costingCcy (and currency-less)
 	hasUnconverted   bool                          // a usage currency ≠ costingCcy (excluded from materialsPerUnit)
+	// baseConvertible is true when every usage currency could be folded into the base currency
+	// via the FX rates; materialsPerUnitBase is that Σ in base currency (valid only when true).
+	baseConvertible      bool
+	materialsPerUnitBase decimal.Decimal
 }
 
 // colorwayCost computes one colourway's PER-GARMENT material cost from its usages. Each usage
@@ -713,7 +771,7 @@ type colorwayCostResult struct {
 // dividing its whole-run cost by totalOrderQty), resolved against the BOM article it points at.
 // Buckets are per-currency (no FX conversion); currency-less lines fold into the costing
 // currency, and a line in another currency is flagged (and left out of materialsPerUnit).
-func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, costingCcy string, orderQtyBySize map[int]int, totalOrderQty int) colorwayCostResult {
+func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, costingCcy string, orderQtyBySize map[int]int, totalOrderQty int, fx CostingFx) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
@@ -754,5 +812,30 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 			materialsPerUnit = materialsPerUnit.Add(v)
 		}
 	}
-	return colorwayCostResult{materialsTotal: lines, materialsPerUnit: materialsPerUnit, hasUnconverted: hasUnconverted}
+
+	// Base-currency rollup: fold every bucket into the base currency via the FX rates. A
+	// currency-less bucket is treated as the costing currency first. If any bucket cannot be
+	// converted (no rate), the base figure is incomplete and marked not convertible.
+	baseSum := decimal.Zero
+	baseConvertible := true
+	for _, ccy := range order {
+		eff := ccy
+		if eff == "" {
+			eff = costingCcy
+		}
+		b, ok := fx.toBase(byCcy[ccy], eff)
+		if !ok {
+			baseConvertible = false
+			continue
+		}
+		baseSum = baseSum.Add(b)
+	}
+
+	return colorwayCostResult{
+		materialsTotal:       lines,
+		materialsPerUnit:     materialsPerUnit,
+		hasUnconverted:       hasUnconverted,
+		baseConvertible:      baseConvertible,
+		materialsPerUnitBase: baseSum,
+	}
 }

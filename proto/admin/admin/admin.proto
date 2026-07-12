@@ -595,6 +595,20 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/list"};
   }
 
+  // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
+  // costing into the base currency.
+  rpc GetCostingFxRates(GetCostingFxRatesRequest) returns (GetCostingFxRatesResponse) {
+    option (google.api.http) = {get: "/api/admin/costing/fx-rates"};
+  }
+
+  // UpsertCostingFxRates inserts or updates costing FX rates (by currency + effective date).
+  rpc UpsertCostingFxRates(UpsertCostingFxRatesRequest) returns (UpsertCostingFxRatesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/costing/fx-rates"
+      body: "*"
+    };
+  }
+
   // SETTINGS
 
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse) {
@@ -2992,6 +3006,26 @@ message ListTechCardsResponse {
   repeated common.TechCardListItem tech_cards = 1;
   int32 total = 2;
 }
+
+// CostingFxRate is a manual FX rate: how many base-currency units one unit of `currency` is
+// worth, effective from `valid_from` (the latest on or before today is used).
+message CostingFxRate {
+  string currency = 1; // ISO 4217, uppercase
+  google.type.Decimal rate_to_base = 2;
+  google.protobuf.Timestamp valid_from = 3;
+}
+
+message GetCostingFxRatesRequest {}
+
+message GetCostingFxRatesResponse {
+  repeated CostingFxRate rates = 1;
+}
+
+message UpsertCostingFxRatesRequest {
+  repeated CostingFxRate rates = 1;
+}
+
+message UpsertCostingFxRatesResponse {}
 
 // ADMIN ACCOUNTS (RBAC)
 

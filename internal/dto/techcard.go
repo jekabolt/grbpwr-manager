@@ -414,23 +414,23 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	return &entity.TechCardInsert{
-		StyleNumber:       pb.StyleNumber,
-		Name:              pb.Name,
-		Brand:             nullStringFromPb(pb.Brand),
-		Season:            nullStringFromPb(pb.Season),
-		Collection:        nullStringFromPb(pb.Collection),
-		CategoryId:        nullInt32FromPb(pb.CategoryId),
-		TargetGender:      gender,
-		Stage:             stage,
-		Status:            nullStringFromPb(pb.Status),
-		ApprovalState:     approvalState,
-		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
-		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
-		Version:           nullStringFromPb(pb.Version),
-		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
-		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
+		StyleNumber:      pb.StyleNumber,
+		Name:             pb.Name,
+		Brand:            nullStringFromPb(pb.Brand),
+		Season:           nullStringFromPb(pb.Season),
+		Collection:       nullStringFromPb(pb.Collection),
+		CategoryId:       nullInt32FromPb(pb.CategoryId),
+		TargetGender:     gender,
+		Stage:            stage,
+		Status:           nullStringFromPb(pb.Status),
+		ApprovalState:    approvalState,
+		ApprovedBy:       nullStringFromPb(pb.ApprovedBy),
+		ApprovedAt:       nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:       nullTimeFromPbTimestamp(pb.ReleasedAt),
+		Version:          nullStringFromPb(pb.Version),
+		RevisionDate:     nullDateFromPbTimestamp(pb.RevisionDate),
+		BaseModelId:      nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId: nullInt32FromPb(pb.BaseSampleSizeId),
 		Designer:         nullStringFromPb(pb.Designer),
 		Constructor:      nullStringFromPb(pb.Constructor),
 		Technologist:     nullStringFromPb(pb.Technologist),
@@ -522,8 +522,10 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 	return out, nil
 }
 
-// ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard.
-func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
+// ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard. fx supplies the
+// manual FX rates used to render the costing's base-currency rollup; pass a zero CostingFx to
+// omit the *_base figures (e.g. in tests that don't exercise conversion).
+func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCard {
 	if tc == nil {
 		return nil
 	}
@@ -596,23 +598,23 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 		CreatedAt:   timestamppb.New(tc.CreatedAt),
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
-			StyleNumber:       tc.StyleNumber,
-			Name:              tc.Name,
-			Brand:             pbStringFromNull(tc.Brand),
-			Season:            pbStringFromNull(tc.Season),
-			Collection:        pbStringFromNull(tc.Collection),
-			CategoryId:        pbInt32FromNull(tc.CategoryId),
-			TargetGender:      pbGenderFromNull(tc.TargetGender),
-			Stage:             pbTechCardStage(tc.Stage),
-			Status:            pbStringFromNull(tc.Status),
-			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
-			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
-			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
-			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
-			Version:           pbStringFromNull(tc.Version),
-			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
-			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
-			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
+			StyleNumber:      tc.StyleNumber,
+			Name:             tc.Name,
+			Brand:            pbStringFromNull(tc.Brand),
+			Season:           pbStringFromNull(tc.Season),
+			Collection:       pbStringFromNull(tc.Collection),
+			CategoryId:       pbInt32FromNull(tc.CategoryId),
+			TargetGender:     pbGenderFromNull(tc.TargetGender),
+			Stage:            pbTechCardStage(tc.Stage),
+			Status:           pbStringFromNull(tc.Status),
+			ApprovalState:    pbTechCardApprovalState(tc.ApprovalState),
+			ApprovedBy:       pbStringFromNull(tc.ApprovedBy),
+			ApprovedAt:       pbTimestampFromNullTime(tc.ApprovedAt),
+			ReleasedAt:       pbTimestampFromNullTime(tc.ReleasedAt),
+			Version:          pbStringFromNull(tc.Version),
+			RevisionDate:     pbTimestampFromNullTime(tc.RevisionDate),
+			BaseModelId:      pbInt32FromNull(tc.BaseModelId),
+			BaseSampleSizeId: pbInt32FromNull(tc.BaseSampleSizeId),
 			Designer:         pbStringFromNull(tc.Designer),
 			Constructor:      pbStringFromNull(tc.Constructor),
 			Technologist:     pbStringFromNull(tc.Technologist),
@@ -632,7 +634,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Operations:       techCardOperationsToPb(tc.Operations),
 			Labels:           techCardLabelsToPb(tc.Labels),
 			Packaging:        techCardPackagingToPb(tc.Packaging),
-			Costing:          techCardCostingToPb(tc),
+			Costing:          techCardCostingToPb(tc, fx),
 			Issues:           techCardIssuesToPb(tc.Issues),
 			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
 			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
