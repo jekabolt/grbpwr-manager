@@ -33,7 +33,7 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -149,7 +149,7 @@ func (rs *retentionStore) GetOrderSequenceMetrics(ctx context.Context, from, to 
 			SELECT
 				co.id,
 				co.placed,
-				COALESCE(co.total_settled_base, (COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
+				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
 					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
 					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
 			FROM customer_order co
@@ -233,7 +233,7 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 				p.brand
 			) AS product_name,
 			COUNT(*) AS purchase_count,
-			SUM(pp_base.price * oi.quantity) AS total_revenue
+			SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS total_revenue
 		FROM first_orders fo
 		JOIN order_item oi ON oi.order_id = fo.first_order_id
 		JOIN product p ON p.id = oi.product_id
@@ -270,7 +270,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 					(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
 					p.brand
 				) AS product_name,
-				SUM(pp_base.price * oi.quantity) AS revenue,
+				SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS revenue,
 				MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
 				COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
@@ -348,7 +348,7 @@ func (rs *retentionStore) GetCustomerSpendingCurve(ctx context.Context, from, to
 			SELECT
 				co.id,
 				co.placed,
-				COALESCE(co.total_settled_base, (COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
+				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
 					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
 					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
 			FROM customer_order co

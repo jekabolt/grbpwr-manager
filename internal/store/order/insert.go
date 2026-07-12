@@ -9,6 +9,7 @@ import (
 
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -128,6 +129,14 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	if err != nil {
 		return fmt.Errorf("can't fetch product costs for order-item snapshot: %w", err)
 	}
+	// Snapshot each line's base-currency (EUR) list price too, so fallback revenue
+	// reconstruction (orders without total_settled_base) stays reproducible when a product is
+	// later repriced. Products with no base-currency price row stay NULL; metrics fall back to
+	// the live base price for such lines.
+	basePriceByProduct, err := fetchProductBasePrices(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch product base prices for order-item snapshot: %w", err)
+	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		row := map[string]any{
@@ -138,9 +147,13 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeId,
 			"cost_price_at_sale":      nil,
+			"product_price_base":      nil,
 		}
 		if cost, ok := costByProduct[item.ProductId]; ok {
 			row["cost_price_at_sale"] = cost
+		}
+		if base, ok := basePriceByProduct[item.ProductId]; ok {
+			row["product_price_base"] = base
 		}
 		rows = append(rows, row)
 	}
@@ -148,10 +161,8 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	return storeutil.BulkInsert(ctx, db, "order_item", rows)
 }
 
-// fetchProductCostPrices returns the current per-unit cost_price (base currency) for the
-// distinct products in items, omitting products whose cost_price is NULL. Used to snapshot
-// COGS onto order lines at sale time.
-func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+// distinctProductIDs returns the unique product ids referenced by items, order-preserving.
+func distinctProductIDs(items []entity.OrderItemInsert) []int {
 	ids := make([]int, 0, len(items))
 	seen := make(map[int]struct{}, len(items))
 	for _, item := range items {
@@ -161,6 +172,14 @@ func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entit
 		seen[item.ProductId] = struct{}{}
 		ids = append(ids, item.ProductId)
 	}
+	return ids
+}
+
+// fetchProductCostPrices returns the current per-unit cost_price (base currency) for the
+// distinct products in items, omitting products whose cost_price is NULL. Used to snapshot
+// COGS onto order lines at sale time.
+func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := distinctProductIDs(items)
 	if len(ids) == 0 {
 		return map[int]decimal.Decimal{}, nil
 	}
@@ -175,6 +194,29 @@ func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entit
 	out := make(map[int]decimal.Decimal, len(rows))
 	for _, r := range rows {
 		out[r.ID] = r.CostPrice
+	}
+	return out, nil
+}
+
+// fetchProductBasePrices returns the current base-currency (EUR) list price for the distinct
+// products in items, read from product_price. Products with no base-currency price row are
+// omitted. Used to snapshot the base list price onto order lines at sale time.
+func fetchProductBasePrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := distinctProductIDs(items)
+	if len(ids) == 0 {
+		return map[int]decimal.Decimal{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ProductID int             `db:"product_id"`
+		Price     decimal.Decimal `db:"price"`
+	}](ctx, db, `SELECT product_id, price FROM product_price WHERE product_id IN (:ids) AND UPPER(currency) = :base`,
+		map[string]any{"ids": ids, "base": strings.ToUpper(cache.GetBaseCurrency())})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.ProductID] = r.Price
 	}
 	return out, nil
 }

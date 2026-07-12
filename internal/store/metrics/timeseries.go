@@ -20,7 +20,7 @@ func (s *Store) getRevenueByPeriod(ctx context.Context, from, to time.Time, date
 				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -113,7 +113,7 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 				(ob.items_list_price + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * oi.quantity), 0) AS items_list_price,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
@@ -160,7 +160,7 @@ func (s *Store) getGrossRevenueTotal(ctx context.Context, from, to time.Time) (d
 				(ob.items_list_price + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) AS gross_revenue_base
 			FROM (
 				SELECT co.id,
-					COALESCE(SUM(pp_base.price * oi.quantity), 0) AS items_list_price,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
@@ -195,7 +195,7 @@ func (s *Store) getRefundsByPeriod(ctx context.Context, from, to time.Time, date
 				refunded_amount * COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) / NULLIF(ob.total_price, 0) AS refunded_base
 			FROM (
 				SELECT co.id, co.placed, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -242,7 +242,7 @@ func (s *Store) getAvgOrderValueByPeriod(ctx context.Context, from, to time.Time
 				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
 				SELECT co.id, co.placed,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,

@@ -50,7 +50,7 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 		product_sales AS (
 			SELECT
 				oi.product_id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity)     AS units_sold,
 				MAX(ofac.placed)     AS last_sale_date,
 				MAX(COALESCE(oi.cost_price_at_sale, cp.cost_price)) AS unit_cost,
@@ -318,7 +318,7 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 				oi.product_id,
 				oi.size_id,
 				SUM(oi.quantity) - COALESCE(SUM(r.quantity_refunded), 0) AS units_sold,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * (oi.quantity - COALESCE(r.quantity_refunded, 0)) * %s), 0) AS revenue
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * (oi.quantity - COALESCE(r.quantity_refunded, 0)) * %s), 0) AS revenue
 			FROM order_item oi
 			JOIN order_factors ofac ON ofac.order_id = oi.order_id
 			LEFT JOIN refunds r ON r.order_item_id = oi.id
@@ -457,7 +457,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		current_period AS (
 			SELECT
 				oi.product_id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity) AS units
 			FROM order_item oi
 			JOIN order_factors_cur ofc ON ofc.order_id = oi.order_id
@@ -467,7 +467,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		previous_period AS (
 			SELECT
 				oi.product_id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity) AS units
 			FROM order_item oi
 			JOIN order_factors_prev ofp ON ofp.order_id = oi.order_id

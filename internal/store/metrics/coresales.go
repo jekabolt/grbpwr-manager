@@ -19,7 +19,7 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 	query := `
 		WITH order_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -91,7 +91,7 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 	query := `
 		WITH order_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
 				COALESCE(MAX(pc.discount), 0) AS discount,
 				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
@@ -132,7 +132,7 @@ func (s *Store) getDiscountComponents(ctx context.Context, from, to time.Time) (
 	productDiscount, err := storeutil.QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
 	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(pp_base.price * COALESCE(oi.product_sale_percentage, 0) / 100.0 * oi.quantity), 0) AS v
+		SELECT COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * COALESCE(oi.product_sale_percentage, 0) / 100.0 * oi.quantity), 0) AS v
 		FROM customer_order co
 		JOIN order_item oi ON co.id = oi.order_id
 		JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -147,7 +147,7 @@ func (s *Store) getDiscountComponents(ctx context.Context, from, to time.Time) (
 	}](ctx, s.DB, `
 		WITH order_items_base AS (
 			SELECT co.id,
-				COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(pc.discount, 0) AS discount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id

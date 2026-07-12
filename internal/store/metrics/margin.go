@@ -74,13 +74,13 @@ func (s *Store) getMarginMetrics(ctx context.Context, from, to time.Time) (coste
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND pp_base.price IS NOT NULL
-				THEN pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+				THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
 				ELSE 0 END), 0) AS costed_revenue,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND pp_base.price IS NOT NULL
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
 				THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s
 				ELSE 0 END), 0) AS cogs,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -112,7 +112,7 @@ func (s *Store) getUncostedSoldProductIDs(ctx context.Context, from, to time.Tim
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		WHERE p.cost_price IS NULL AND p.deleted_at IS NULL
 		GROUP BY oi.product_id
-		ORDER BY COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
+		ORDER BY COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
 	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductID int `db:"product_id"`

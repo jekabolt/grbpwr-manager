@@ -7,7 +7,7 @@ import "fmt"
 // Order-level revenue metrics anchor to customer_order.total_settled_base (the amount
 // Stripe actually settled, in base currency) when present, falling back to the
 // product_price reconstruction. Item/category metrics cannot use that order total
-// directly, so each line item's base list value (pp_base.price * (1-sale) * qty) is
+// directly, so each line item's base list value (COALESCE(oi.product_price_base, pp_base.price) * (1-sale) * qty) is
 // scaled by a per-order factor that reproduces the same total:
 //
 //	adj = (100 - discount)/100               -- promo discount applied to items
@@ -32,7 +32,7 @@ func orderFactorsCTENamed(name, fromParam, toParam string) string {
 			COALESCE(MAX(pc.discount), 0) AS discount,
 			COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 			COALESCE(MAX(scp.price), 0) AS shipment_base,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base_total
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base_total
 		FROM customer_order co
 		LEFT JOIN order_item oi ON co.id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)

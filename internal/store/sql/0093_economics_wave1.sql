@@ -98,8 +98,26 @@ ALTER TABLE shipment
   ADD COLUMN actual_cost DECIMAL(10, 2) NULL COMMENT 'actual carrier invoice for this shipment, base currency (NULL = not entered)',
   ADD COLUMN return_shipping_cost DECIMAL(10, 2) NULL COMMENT 'reverse-logistics cost of a return, base currency (NULL = none)';
 
+-- === Task 07: snapshot base-currency line price ===========================================
+-- Fallback revenue (orders without total_settled_base) reconstructs from the CURRENT base
+-- price × the snapshotted sale%, so changing a product's price rewrote historical revenue for
+-- those orders. Snapshot the base-currency (EUR) list price onto each line at sale, mirroring
+-- product_price / product_sale_percentage, so history is stable; metrics fall back to the live
+-- base price for rows placed before the column existed.
+ALTER TABLE order_item
+  ADD COLUMN product_price_base DECIMAL(10, 2) NULL COMMENT 'base-currency (EUR) list price snapshotted at sale; NULL = unknown, metrics fall back to product_price';
+
+-- Backfill with today's base price (EUR is the base currency). This is the value metrics used
+-- before the column existed, so no history change on deploy.
+UPDATE order_item oi
+  JOIN product_price pp ON pp.product_id = oi.product_id AND UPPER(pp.currency) = 'EUR'
+  SET oi.product_price_base = pp.price;
+
 -- +migrate Down
 -- Reverse Wave-1 sections in reverse order.
+
+-- Task 07
+ALTER TABLE order_item DROP COLUMN product_price_base;
 
 -- Task 06
 ALTER TABLE shipment

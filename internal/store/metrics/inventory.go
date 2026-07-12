@@ -149,7 +149,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			SELECT
 				oi.product_id,
 				SUM(oi.quantity) AS units_sold,
-				COALESCE(SUM(pp_base.price * oi.quantity), 0) AS revenue,
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS revenue,
 				COALESCE(SUM(COALESCE(oi.cost_price_at_sale, p2.cost_price) * oi.quantity), 0) AS sold_cost
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
