@@ -23,8 +23,18 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
 // caller-declared content type, because browsers routinely upload HEIC photos
 // (e.g. from Apple devices) mislabeled as image/jpeg. declared is used only to
 // enrich error messages.
+// maxImagePixels bounds the decoded raster size. It is checked from the image
+// header (DecodeConfig) BEFORE the full decode, so a small but highly-compressed
+// payload that expands to a huge raster (a decompression bomb) is rejected before
+// allocating hundreds of MB. ~40 MP is generous for a storefront master image.
+const maxImagePixels = 40_000_000
+
 func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
-	switch ct := sniffImageType(raw); ct {
+	ct := sniffImageType(raw)
+	if err := checkImagePixelBudget(ct, raw); err != nil {
+		return nil, err
+	}
+	switch ct {
 	case contentTypeJPEG:
 		return jpeg.Decode(bytes.NewReader(raw))
 	case contentTypePNG:
@@ -38,6 +48,33 @@ func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
 	default:
 		return nil, fmt.Errorf("unsupported image format %q (declared %q); supported formats: JPEG, PNG, WebP, HEIC", ct, declared)
 	}
+}
+
+// checkImagePixelBudget reads only the image header (cheap, no full raster) and
+// rejects images whose pixel count exceeds maxImagePixels. HEIC has no header
+// config path here and is bounded separately (see decodeHEIC).
+func checkImagePixelBudget(ct ContentType, raw []byte) error {
+	var (
+		cfg image.Config
+		err error
+	)
+	switch ct {
+	case contentTypeJPEG:
+		cfg, err = jpeg.DecodeConfig(bytes.NewReader(raw))
+	case contentTypePNG:
+		cfg, err = png.DecodeConfig(bytes.NewReader(raw))
+	case contentTypeWEBP:
+		cfg, err = webp.DecodeConfig(bytes.NewReader(raw))
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("can't read image header: %w", err)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return fmt.Errorf("image too large: %dx%d exceeds %d-pixel limit", cfg.Width, cfg.Height, maxImagePixels)
+	}
+	return nil
 }
 
 // decodeHEIC decodes a HEIC payload via native libheif, loaded at runtime by
@@ -57,7 +94,25 @@ func decodeHEIC(raw []byte) (img image.Image, err error) {
 			img, err = nil, fmt.Errorf("heic decode failed: %v", r)
 		}
 	}()
+	// Reject oversized images from the header before the full decode (see
+	// maxImagePixels). libheif reports dimensions without decoding the whole raster,
+	// so a small HEIC that would expand to a huge buffer is rejected cheaply.
+	cfg, cErr := heic.DecodeConfig(bytes.NewReader(raw))
+	if cErr != nil {
+		return nil, fmt.Errorf("can't read heic header: %w", cErr)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, fmt.Errorf("image too large: %dx%d exceeds %d-pixel limit", cfg.Width, cfg.Height, maxImagePixels)
+	}
 	return heic.Decode(bytes.NewReader(raw))
+}
+
+// HEICAvailable reports whether the native libheif required for HEIC uploads is
+// loadable at runtime. It is a thin wrapper over the dynamic loader so callers
+// (e.g. App.Start) can surface a boot-time warning instead of only discovering the
+// gap on the first HEIC upload.
+func HEICAvailable() error {
+	return heic.Dynamic()
 }
 
 // sniffImageType reports the actual content type of an image payload from its
@@ -106,6 +161,21 @@ func sniffISOBMFF(b []byte) ContentType {
 		}
 	}
 	return contentTypeHEIF
+}
+
+// sniffVideoType reports the container type of a video payload from its magic
+// bytes, or "" if unrecognized. WebM (Matroska/EBML) starts with 0x1A45DFA3;
+// MP4/ISO-BMFF carries the "ftyp" box at bytes 4:8. Mirrors sniffImageType so the
+// video path validates bytes instead of trusting the client-declared content type.
+func sniffVideoType(b []byte) ContentType {
+	switch {
+	case len(b) >= 4 && b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		return contentTypeWEBM
+	case len(b) >= 12 && string(b[4:8]) == "ftyp":
+		return contentTypeMP4
+	default:
+		return ""
+	}
 }
 
 func encodeWEBP(w io.Writer, img image.Image, quality int) error {

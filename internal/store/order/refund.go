@@ -135,10 +135,7 @@ func getOrdersByStatusAndPayment(ctx context.Context, db dependency.DB, orderSta
         `
 	}
 
-	orders, err := storeutil.QueryListNamed[entity.Order](ctx, db, query, map[string]interface{}{
-		"status":           orderStatusId,
-		"paymentMethodIds": paymentMethodIds,
-	})
+	orders, err := storeutil.QueryListNamed[entity.Order](ctx, db, query, params)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []entity.Order{}, nil

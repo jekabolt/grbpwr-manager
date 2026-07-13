@@ -580,6 +580,8 @@ func GetCategories() []entity.Category {
 }
 
 func GetMeasurements() []entity.MeasurementName {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entityMeasurements
 }
 
@@ -596,6 +598,8 @@ func GetOrderFactors() []pb_common.OrderFactors {
 }
 
 func GetOrderStatuses() []entity.OrderStatus {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
 	return entityOrderStatuses
 }
 

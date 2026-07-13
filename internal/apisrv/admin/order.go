@@ -140,14 +140,15 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 		return nil, status.Errorf(codes.InvalidArgument, "payment method is invalid")
 	}
 
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
 	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
 		req.Email,
 		req.OrderUuid,
 		int(req.Status),
 		cache.GetPaymentMethodIdByPbId(req.PaymentMethod),
 		int(req.OrderId),
-		int(req.Limit),
-		int(req.Offset),
+		limit,
+		offset,
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
@@ -386,14 +387,30 @@ func calculateRefundAmount(orderItems []entity.OrderItem, orderItemIds []int32, 
 	return dto.RoundForCurrency(total, currency)
 }
 
-// calculateFullRefundAmount calculates the total refund amount for a full refund (all items + optional shipping).
-// Used when doing a full refund on non-confirmed orders where we need an explicit amount for Stripe.
+// calculateFullRefundAmount calculates the total refund amount for a full refund (all
+// remaining items + optional shipping). Used when doing a full refund on non-confirmed
+// orders where we need an explicit amount for Stripe.
+//
+// It subtracts quantities already recorded in the refunded_order_item ledger
+// (orderFull.RefundedOrderItems, keyed by order_item id) and gates shipping on
+// Order.ShippingRefunded, mirroring the DB refund layer. Without this, a full refund of
+// a PartiallyRefunded order asked Stripe to refund the full original quantities plus
+// shipping again; since Stripe is called before the DB refund, Stripe rejected the
+// over-amount and the whole RPC failed, leaving the order stuck in PartiallyRefunded.
 func calculateFullRefundAmount(orderFull *entity.OrderFull, includeShipping bool) decimal.Decimal {
+	alreadyRefunded := make(map[int]decimal.Decimal, len(orderFull.RefundedOrderItems))
+	for _, r := range orderFull.RefundedOrderItems {
+		alreadyRefunded[r.Id] = alreadyRefunded[r.Id].Add(r.Quantity)
+	}
+
 	var total decimal.Decimal
 	for _, item := range orderFull.OrderItems {
-		total = total.Add(item.ProductPriceWithSale.Mul(item.Quantity))
+		remaining := item.Quantity.Sub(alreadyRefunded[item.Id])
+		if remaining.IsPositive() {
+			total = total.Add(item.ProductPriceWithSale.Mul(remaining))
+		}
 	}
-	if includeShipping && !orderFull.Shipment.FreeShipping {
+	if includeShipping && !orderFull.Shipment.FreeShipping && !orderFull.Order.ShippingRefunded {
 		total = total.Add(orderFull.Shipment.CostDecimal(orderFull.Order.Currency))
 	}
 	return dto.RoundForCurrency(total, orderFull.Order.Currency)

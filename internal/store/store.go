@@ -138,10 +138,25 @@ func resolveCertPath(path string) string {
 	return path
 }
 
+// bakedCACertPath is the DO managed-MySQL CA certificate shipped in the runtime
+// image (see Dockerfile). It is the fallback CA source when the DSN requires
+// tls=custom but no CA path/env is configured.
+const bakedCACertPath = "/etc/grbpwr-products-manager/certs/ca-certificate.crt"
+
 // registerTLSConfig registers a custom TLS configuration with the MySQL driver
 func registerTLSConfig(cfg Config) error {
 	var caCert []byte
 	var err error
+
+	// If the DSN asks for tls=custom (the canonical form the DSN builder, beta, and
+	// CLAUDE.md all use) but no CA source is configured, fall back to the CA baked
+	// into the image. Without this a DSN rotated to tls=custom would leave "custom"
+	// unregistered and crash the driver with "unknown config name: custom" on boot —
+	// and since prod auto-migrates on deploy, that is a hard crash-loop. Beta sets
+	// MYSQL_TLS_CA_PATH explicitly; this makes prod safe even when that env is unset.
+	if cfg.TLSCAPath == "" && os.Getenv("db.CA_CERT") == "" && strings.Contains(cfg.DSN, "tls=custom") {
+		cfg.TLSCAPath = bakedCACertPath
+	}
 
 	if dbCACert := os.Getenv("db.CA_CERT"); dbCACert != "" {
 		caCert = []byte(dbCACert)

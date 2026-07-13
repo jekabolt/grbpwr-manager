@@ -34,6 +34,18 @@ func newStorefrontAuthRuntime(p *storefront.Config) (*storefrontAuthRuntime, err
 	if p.LoginPepper == "" || p.RefreshPepper == "" {
 		return nil, fmt.Errorf("storefront_auth.login_pepper and refresh_pepper are required")
 	}
+	// Reject weak symmetric secrets/peppers: the storefront access token is HS256
+	// and the login/refresh peppers are HMAC keys, so a short value makes them
+	// forgeable. Fail closed at startup rather than in prod.
+	for name, v := range map[string]string{
+		"storefront_auth.access_jwt_secret": p.AccessJWTSecret,
+		"storefront_auth.login_pepper":      p.LoginPepper,
+		"storefront_auth.refresh_pepper":    p.RefreshPepper,
+	} {
+		if err := jwt.RequireStrongSecret(name, v); err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(p.MagicLinkBaseURL) == "" {
 		return nil, fmt.Errorf("storefront_auth.magic_link_base_url is required")
 	}

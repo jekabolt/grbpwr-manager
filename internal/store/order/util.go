@@ -13,7 +13,9 @@ import (
 
 func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, error) {
 	for _, price := range prd.Prices {
-		if price.Currency == currency {
+		// Stored currencies are uppercase; compare case-insensitively so a
+		// lowercase/mixed-case client currency does not falsely miss the price.
+		if strings.EqualFold(price.Currency, currency) {
 			return price.Price, nil
 		}
 	}

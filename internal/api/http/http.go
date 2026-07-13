@@ -241,6 +241,50 @@ var corsDevOrigins = []string{
 // they let any attacker-controlled *.vercel.app / *.github.io deployment make
 // credentialed cross-origin calls. Localhost dev origins are gated behind
 // allowDevOrigins (env-driven; off in prod) so they never widen the prod surface.
+// maxJSONBodyBytes caps frontend/auth JSON request bodies. The grpc-gateway
+// marshaler buffers the whole body into memory before the loopback gRPC hop, so an
+// unbounded body is a memory-exhaustion / JSON-bomb vector. Admin is capped higher
+// (maxAdminJSONBodyBytes) because it carries base64 media uploads.
+const maxJSONBodyBytes = 4 << 20 // 4 MB
+
+// maxAdminJSONBodyBytes caps admin REST/JSON request bodies. Admin media uploads carry
+// raw bytes base64-encoded in the JSON body (proto `bytes` over grpc-gateway), which
+// inflates the largest raw payload — video, maxVideoPayloadBytes = 50 MiB — by ~4/3 to
+// ~66.7 MiB on the wire. The cap must therefore sit above that expanded size, so it is
+// deliberately larger than grpcMaxRecvMsgSize (which bounds the post-base64-decode gRPC
+// hop, not the JSON body). Reusing grpcMaxRecvMsgSize here would silently reject any
+// video over ~37.5 MiB (= 50 MiB × 3/4) before it reached the handler.
+const maxAdminJSONBodyBytes = 72 << 20 // 72 MiB (base64 of a 50 MiB video ≈ 66.7 MiB + JSON envelope)
+
+// limitBody caps the request body via http.MaxBytesReader, so an oversized body is
+// rejected instead of being fully buffered by the JSON gateway.
+func limitBody(max int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, max)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// recoverMiddleware recovers panics in non-gRPC HTTP handlers, logs the stack via
+// slog, and returns 500 instead of letting net/http drop the connection silently.
+func recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Default().ErrorContext(r.Context(), "recovered panic in http handler",
+					slog.Any("panic", rec),
+					slog.String("path", r.URL.Path),
+					slog.String("stack", string(debug.Stack())),
+				)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Handler) http.Handler {
 	origins := make([]string, 0, len(allowedOrigins)+len(corsDevOrigins))
 
@@ -251,19 +295,33 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 		origins = append(origins, corsDevOrigins...)
 	}
 
-	return cors.Handler(cors.Options{
+	opts := cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Requested-With", "Accept", "Grpc-Metadata-Authorization", "Origin"},
 		ExposedHeaders:   []string{"Content-Length", "X-Request-Id"},
 		AllowCredentials: true,
 		MaxAge:           3600,
-	})
+	}
+	if len(origins) == 0 {
+		// Fail closed. go-chi treats an empty AllowedOrigins as "allow all", which
+		// with AllowCredentials=true degrades a strict credentialed allowlist to
+		// allow-all when HTTP_ALLOWED_ORIGINS is empty/typo'd and dev origins are off.
+		// Reject every cross-origin request instead.
+		opts.AllowedOrigins = nil
+		opts.AllowOriginFunc = func(_ *http.Request, _ string) bool { return false }
+	}
+	return cors.Handler(opts)
 }
 
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
 
 	r := chi.NewRouter()
+	// App-level panic recovery for the non-gRPC HTTP surface (webhooks, /statusz,
+	// swagger, fileserver, REST gateway). The gRPC interceptor chain covers only the
+	// gRPC path; without this a panic in a chi handler drops the connection with no
+	// slog stack and no clean 500. Placed at the root so it wraps every route.
+	r.Use(recoverMiddleware)
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
@@ -368,15 +426,18 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
 		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
-		r.Mount("/admin", auth.WithAuth(adminHandler))
-		r.Mount("/frontend", frontendHandler)
-		r.Mount("/auth", authHandler)
+		// Admin carries base64-encoded media uploads, so it gets a cap sized for the
+		// base64-expanded video payload (see maxAdminJSONBodyBytes); frontend/auth JSON
+		// is bounded tightly.
+		r.With(limitBody(maxAdminJSONBodyBytes)).Mount("/admin", auth.WithAuth(adminHandler))
+		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
+		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
 	})
 
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.
 	if s.webhookHandler != nil {
 		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
-		r.Post("/api/webhooks/list-unsubscribe/{email_b64}", s.webhookHandler.HandleListUnsubscribe)
+		r.Post("/api/webhooks/list-unsubscribe/{email_b64}/{token}", s.webhookHandler.HandleListUnsubscribe)
 	}
 	if s.stripeWebhookHandler != nil {
 		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)

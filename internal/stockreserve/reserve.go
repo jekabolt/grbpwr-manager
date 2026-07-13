@@ -115,6 +115,48 @@ func (rm *Manager) Stop() {
 
 // Reserve temporarily holds stock for a cart with abuse prevention checks
 func (rm *Manager) Reserve(ctx context.Context, sessionID string, productID, sizeID int, qty decimal.Decimal) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	return rm.reserveLocked(ctx, sessionID, productID, sizeID, qty)
+}
+
+// ReserveIfAvailable atomically computes availability (totalStock minus the stock
+// OTHER sessions currently hold) and reserves min(qty, available) for sessionID,
+// all under a single rm.mu lock. This closes the check-then-act window that
+// existed when a caller read GetAvailableStock and then called Reserve in a
+// separate critical section: two sessions could each read "1 available" and both
+// reserve it, inflating the in-memory hold above real stock. It returns the
+// available quantity (floored at zero) so the caller can still emit out-of-stock /
+// quantity-reduced adjustments. The in-memory hold stays advisory — the
+// authoritative guard against oversell is the atomic SQL decrement — so a
+// best-effort abuse-limit rejection is returned as err while the computed
+// availability remains valid.
+func (rm *Manager) ReserveIfAvailable(ctx context.Context, totalStock decimal.Decimal, sessionID string, productID, sizeID int, qty decimal.Decimal) (decimal.Decimal, error) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	reservedOthers := rm.reservedQuantityLocked(productID, sizeID, sessionID)
+	available := totalStock.Sub(reservedOthers)
+	if available.LessThanOrEqual(decimal.Zero) {
+		return decimal.Zero, nil
+	}
+
+	reserveQty := qty
+	if reserveQty.GreaterThan(available) {
+		reserveQty = available
+	}
+	if err := rm.reserveLocked(ctx, sessionID, productID, sizeID, reserveQty); err != nil {
+		// Not held (abuse limit); availability is still valid and the DB decrement
+		// remains the real guard.
+		return available, err
+	}
+	return available, nil
+}
+
+// reserveLocked performs the abuse-prevention checks and the reservation
+// insert/update. The caller must hold rm.mu (write). Split out so both Reserve
+// and ReserveIfAvailable share identical reservation semantics.
+func (rm *Manager) reserveLocked(ctx context.Context, sessionID string, productID, sizeID int, qty decimal.Decimal) error {
 	if qty.LessThanOrEqual(decimal.Zero) {
 		return fmt.Errorf("quantity must be positive")
 	}
@@ -122,9 +164,6 @@ func (rm *Manager) Reserve(ctx context.Context, sessionID string, productID, siz
 	if qty.GreaterThan(rm.limits.MaxQtyPerItem) {
 		return fmt.Errorf("quantity %s exceeds maximum %s per item", qty.String(), rm.limits.MaxQtyPerItem.String())
 	}
-
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
 
 	// Rate limit per session
 	if !rm.allowSessionRate(sessionID) {
@@ -282,7 +321,14 @@ func (rm *Manager) ReleaseSession(ctx context.Context, sessionID string) {
 func (rm *Manager) GetReservedQuantity(productID, sizeID int, excludeSessionID string) decimal.Decimal {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
+	return rm.reservedQuantityLocked(productID, sizeID, excludeSessionID)
+}
 
+// reservedQuantityLocked sums active (non-expired) reservations for a product-size,
+// excluding excludeSessionID. The caller must hold rm.mu (read or write). Shared by
+// GetReservedQuantity (RLock) and ReserveIfAvailable (Lock) so availability is
+// computed identically in both.
+func (rm *Manager) reservedQuantityLocked(productID, sizeID int, excludeSessionID string) decimal.Decimal {
 	total := decimal.Zero
 	now := time.Now().UTC()
 

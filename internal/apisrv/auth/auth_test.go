@@ -30,7 +30,7 @@ func account(username, pwHash string, super bool, perms ...entity.AdminPermissio
 }
 
 const (
-	jwtSecret      = "hehe"
+	jwtSecret      = "test-jwt-secret-at-least-32-bytes-long!!"
 	masterPassword = "FJKqDyBvr9pAQMB3f8Uj4s"
 
 	username    = "testUsername"
@@ -213,7 +213,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 		assert.False(t, handlerCalled)
-		assert.Contains(t, err.Error(), "missing auth token")
+		assert.Contains(t, err.Error(), "unauthorized")
 	})
 
 	t.Run("Admin RPC with invalid token is rejected", func(t *testing.T) {
@@ -236,7 +236,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 		assert.False(t, handlerCalled)
-		assert.Contains(t, err.Error(), "invalid auth token")
+		assert.Contains(t, err.Error(), "unauthorized")
 	})
 
 	t.Run("Admin RPC with valid token succeeds", func(t *testing.T) {

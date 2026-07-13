@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -62,8 +63,20 @@ type App struct {
 	// can be stopped on shutdown before the DB is closed.
 	stripeMain *stripe.Processor
 	stripeTest *stripe.Processor
-	c          *config.Config
-	done       chan struct{}
+	// adminS is retained so Stop can drain the admin server's in-flight async
+	// storefront revalidations (best-effort Vercel calls) at shutdown.
+	adminS *admin.Server
+	// frontendS/authS are retained so Stop can terminate their in-memory
+	// rate-limiter cleanup goroutines (lifecycle discipline; they are singletons).
+	frontendS *frontend.Server
+	authS     *auth.Server
+	c         *config.Config
+	done      chan struct{}
+	// stopping guards Stop so it runs exactly once, regardless of which path
+	// triggers it: an OS signal, the listener-crash bridge (see Start), or the
+	// boot-error cleanup in cmd/run.go. Without it, a second caller would panic
+	// on close(a.done) (double close).
+	stopping atomic.Bool
 }
 
 // New returns a new instance of App
@@ -132,6 +145,14 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return fmt.Errorf("cannot init bucket %v", err.Error())
 	}
+	// HEIC is optional: warn at boot if libheif can't be loaded so the gap is visible
+	// immediately, but do not fail startup — non-HEIC uploads and everything else
+	// still work.
+	if herr := bucket.HEICAvailable(); herr != nil {
+		slog.Default().WarnContext(ctx, "libheif unavailable; HEIC image uploads will fail (other uploads unaffected)",
+			slog.String("err", herr.Error()),
+		)
+	}
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
 	if err != nil {
@@ -140,6 +161,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	a.authS = authS
 
 	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
 	if err != nil {
@@ -268,6 +290,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, a.c.Security.HeroEmbedAllowedHosts)
+	a.adminS = adminS
 
 	var frontendS *frontend.Server
 	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
@@ -277,6 +300,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	a.frontendS = frontendS
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()
@@ -289,7 +313,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Set up Resend webhook handler (bounce/complaint suppression + list-unsubscribe)
-	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret)
+	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret, a.c.Mailer.UnsubscribePepper)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create webhook handler",
 			slog.String("err", err.Error()),
@@ -298,9 +322,16 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.hs.SetWebhookHandler(webhookHandler)
 
-	// Stripe webhook: server-to-server payment confirmation (primary path; the
-	// in-process monitor and lazy CheckForTransactions remain fallbacks). Enabled
-	// only when a signing secret is configured for at least one processor.
+	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
+	// When a signing secret is configured for a processor it delivers the fastest
+	// (immediate push) confirmation, but it is not the sole mechanism: confirmation
+	// is always backstopped by the in-process payment monitor, lazy
+	// CheckForTransactions on order reads, and the ordercleanup safety-net worker.
+	// So a deployment with no webhook secret (the current prod config — the secrets
+	// in .do/app.yaml are blank) still confirms payments correctly, only with added
+	// latency after a restart (up to one ordercleanup tick). Mounted only when at
+	// least one processor has a signing secret; set the Stripe-dashboard signing
+	// secrets in .do/app.yaml to enable the immediate path.
 	var stripeProcs []*stripe.Processor
 	if p, ok := stripeMain.(*stripe.Processor); ok {
 		stripeProcs = append(stripeProcs, p)
@@ -327,6 +358,19 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Bridge an unexpected listener exit to a full shutdown. hs.Start is
+	// non-blocking; if the HTTP server later stops on its own (fatal serve error,
+	// a bind failure surfaced post-start), nothing else would notice and the
+	// process would hang with live workers and a dead API. Watch hs.Done() and
+	// tear the app down so Done() fires and cmd/run.go exits non-zero, letting the
+	// platform restart the instance. During a normal shutdown a.Stop already ran,
+	// so this call is a no-op via the stopping guard.
+	go func() {
+		<-a.hs.Done()
+		slog.Default().ErrorContext(context.Background(), "http server exited unexpectedly; shutting down")
+		a.Stop(context.Background())
+	}()
+
 	return nil
 }
 
@@ -334,6 +378,13 @@ func (a *App) Start(ctx context.Context) error {
 // Shutdown order: drain the API server first (so no new request reaches a worker
 // or the DB), then stop the workers, then close the database.
 func (a *App) Stop(ctx context.Context) {
+	// Idempotent: the signal handler, the listener-crash bridge (see Start), and
+	// the boot-error cleanup can all reach here. Only the first proceeds; the rest
+	// return immediately so close(a.done) runs exactly once.
+	if !a.stopping.CompareAndSwap(false, true) {
+		return
+	}
+
 	// Drain in-flight gRPC/REST requests and stop the listener before tearing
 	// anything down, so handlers don't race against stopped workers or a closed
 	// connection pool.
@@ -345,6 +396,26 @@ func (a *App) Stop(ctx context.Context) {
 			)
 		}
 		cancel()
+	}
+
+	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.
+	// Cancel and wait (bounded) for any in-flight ones so best-effort Vercel ISR
+	// calls don't keep retrying after shutdown. Independent of the DB close
+	// (RevalidateAll makes no DB calls), so ordering here is not load-bearing.
+	if a.adminS != nil {
+		revalStopCtx, revalStopCancel := context.WithTimeout(ctx, 10*time.Second)
+		a.adminS.StopRevalidation(revalStopCtx)
+		revalStopCancel()
+	}
+
+	// Terminate the in-memory rate-limiter cleanup goroutines (frontend + auth).
+	// They are effectively singletons living the whole process, but stopping them
+	// keeps lifecycle discipline consistent with the other background components.
+	if a.frontendS != nil {
+		a.frontendS.StopRateLimiter()
+	}
+	if a.authS != nil {
+		a.authS.StopRateLimiter()
 	}
 
 	// Stop workers before closing DB — avoids panics and error storms from workers
@@ -389,7 +460,11 @@ func (a *App) Stop(ctx context.Context) {
 	if a.bqc != nil {
 		a.bqc.Close()
 	}
-	a.db.Close()
+	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
+	// failed before store.New assigned a.db.
+	if a.db != nil {
+		a.db.Close()
+	}
 	close(a.done)
 }
 

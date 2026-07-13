@@ -31,19 +31,34 @@ func run(cmd *cobra.Command, args []string) error {
 	app.SetCommitHash(commitHash)
 	a := app.New(cfg)
 	if err := a.Start(ctx); err != nil {
+		// Start wires resources incrementally (DB, mailer, workers, HTTP). On a
+		// mid-sequence failure the already-started pieces — worker goroutines, a
+		// live DB pool, Stripe monitors — would otherwise leak until process exit.
+		// Stop is idempotent and partial-init safe, so tear down what came up.
+		a.Stop(ctx)
 		return fmt.Errorf("cannot start the application %v", err.Error())
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	// The service has no config hot-reload, so a stray SIGHUP (controlling-terminal
+	// close, some process managers) must be a genuine no-op. It has to be ignored
+	// *explicitly*: merely leaving it out of signal.Notify reverts it to the OS default
+	// disposition, which for SIGHUP is to terminate the process abruptly — no graceful
+	// drain, worse than the shutdown we're trying to avoid. DO App Platform terminates
+	// instances with SIGTERM, which we do handle below.
+	signal.Ignore(syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case s := <-sigCh:
 		logger.With("signal", s.String()).Warn("signal received, exiting")
 		a.Stop(ctx)
 		logger.Info("application exited")
+		return nil
 	case <-a.Done():
-		logger.Error("application exited")
+		// Reached only when the app tore itself down without an OS signal — the
+		// HTTP listener exited unexpectedly and the crash bridge invoked Stop.
+		// Return an error so the process exits non-zero and the platform restarts it.
+		logger.Error("application exited unexpectedly")
+		return fmt.Errorf("application exited unexpectedly")
 	}
-
-	return nil
 }

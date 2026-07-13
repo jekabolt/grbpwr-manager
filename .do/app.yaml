@@ -168,6 +168,11 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:LGACthmLZ9j7dxcDNHm0Qb5TCzq1c2Ry:tOJ+iArxiTSu120LFts+Ndv03UyvjS1JRPUgEElDM/HvzsCzq5om5cbu3K6yxyQasQ3opcxq]
+# MAILER_UNSUBSCRIBE_PEPPER keys the per-recipient one-click List-Unsubscribe
+# token. Set it as a SECRET in the DO dashboard with a strong random value (it will
+# be stored encrypted as EV[...]). It is intentionally NOT committed with a value:
+# a placeholder would be a publicly-known pepper. Until set, the app fails closed —
+# no List-Unsubscribe header is emitted and the unsubscribe endpoint returns 503.
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
@@ -208,6 +213,13 @@ envs:
 - key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
   scope: RUN_TIME
   value: 15m
+# Stripe webhook signing secrets. Blank = the /api/webhooks/stripe endpoint is
+# not mounted (see stripe.NewWebhookHandler.Enabled), so there is no real-time
+# push confirmation of card payments — confirmation falls back to the in-process
+# monitor + lazy CheckForTransactions + the ordercleanup worker (correct, but up
+# to one ordercleanup tick of extra latency after a restart). To enable immediate
+# confirmation, register /api/webhooks/stripe in the Stripe dashboard and store
+# the live/test signing secrets here as encrypted SECRET values.
 - key: STRIPE_PAYMENT_WEBHOOK_SECRET
   scope: RUN_TIME
   type: SECRET
@@ -321,6 +333,14 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:jzOY1Ue7MdglYDBsGCRvXyG/Cmo5XeWU:zXemcpOYL2HdBTnaESqxD0/3Q43pF4losleb5N0s+21j/kMN6nj4iGZllJnSY01R/Ki4drR0mOXxQADwe2aLu6iNrrYMdt2fdYR+lsYKjRPhNIfKdS2OOD0gbUIYkcHKZdOd8GJSwOqAMLHtLgIG580P/y3z7AnE9YdgzwL0BV3LMBsd7cgyCT8cWfOGJVbADMVSdeQnZUOEdgEjj2U/m0BecAMb]
+# Path to the DO managed-MySQL CA baked into the image, matching beta. Registers
+# the tls=custom config so the DB connection fully verifies the server cert.
+# NOTE: for prod to actually verify like beta, the MYSQL_DSN secret must use
+# tls=custom (rotate it in the DO dashboard); if it currently uses tls=true /
+# skip-verify, this entry is harmless but does not upgrade verification on its own.
+- key: MYSQL_TLS_CA_PATH
+  scope: RUN_TIME
+  value: /etc/grbpwr-products-manager/certs/ca-certificate.crt
 features:
 - buildpack-stack=ubuntu-22
 ingress:
@@ -343,13 +363,19 @@ ingress:
       - PATCH
       - DELETE
       - OPTIONS
+      # Must mirror the app-level HTTP_ALLOWED_ORIGINS allowlist exactly. The app's
+      # corsMiddleware deliberately dropped credentialed wildcards; the edge must
+      # not re-open them. No ^https://.*\.vercel\.app$ / ^https://[a-z0-9-]+\.github\.io$
+      # / localhost regexes here — those let any attacker-controlled *.vercel.app or
+      # *.github.io deployment pass edge CORS and short-circuit preflight before the
+      # strict app layer runs.
       allow_origins:
       - exact: https://grbpwr.com
       - exact: https://admin.grbpwr.com
       - exact: https://backend.grbpwr.com
-      - regex: ^http://localhost(:[0-9]+)?$
-      - regex: ^https://[a-z0-9-]+\.github\.io$
-      - regex: ^https://.*\.vercel\.app$
+      - exact: https://mikevelko.github.io
+      - exact: https://jekabolt.github.io
+      - exact: https://0101oak.github.io
       expose_headers:
       - Content-Length
       - X-Request-Id

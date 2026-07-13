@@ -3,6 +3,8 @@ package bucket
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +37,18 @@ func (b *Bucket) UploadPatternPDF(ctx context.Context, raw []byte, objectName st
 	if !isPDF(raw) {
 		return "", 0, fmt.Errorf("%w: payload is not a PDF", ErrInvalidPattern)
 	}
+
+	// Pattern PDFs are internal production IP (выкройки) but are stored public-read
+	// because the admin app reads them by CDN url. Add 128 bits of random entropy to
+	// the object key so the public url is effectively unguessable and non-enumerable
+	// (the GetMediaName-derived key had only ~16 bits). The durable fix is to store
+	// the object privately and serve it via a short-lived presigned url, which needs
+	// a read-path (and admin frontend) change; this hardening is non-breaking.
+	suffix := make([]byte, 16)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", 0, fmt.Errorf("can't generate pattern object name: %w", err)
+	}
+	objectName = objectName + "-" + hex.EncodeToString(suffix)
 
 	ext, err := fileExtensionFromContentType(contentTypePDF)
 	if err != nil {

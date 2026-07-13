@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 	"google.golang.org/grpc/codes"
@@ -88,6 +89,11 @@ type Config struct {
 	// UnsubscribeBaseURL is the base URL used to construct List-Unsubscribe headers and one-click
 	// unsubscribe URLs. Example: "https://backend.grbpwr.com" (no trailing slash).
 	UnsubscribeBaseURL string `mapstructure:"unsubscribe_base_url"`
+	// UnsubscribePepper is the server-side HMAC key used to mint the per-recipient
+	// one-click unsubscribe token embedded in the List-Unsubscribe URL (RFC 8058:
+	// the URL must be unique and unguessable per recipient). Without it no
+	// List-Unsubscribe header is emitted and the unsubscribe endpoint fails closed.
+	UnsubscribePepper string `mapstructure:"unsubscribe_pepper"`
 }
 
 type Mailer struct {
@@ -379,11 +385,17 @@ func htmlToText(h string) string {
 // listUnsubscribeHeaders returns RFC 8058 List-Unsubscribe headers for the given recipient.
 // Returns nil when UnsubscribeBaseURL is not configured.
 func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
-	if m.c.UnsubscribeBaseURL == "" {
+	// A base URL and a pepper are both required. Without the pepper we cannot mint
+	// a per-recipient token, and an unauthenticated /{email_b64} link would let
+	// anyone unsubscribe any guessable address. RFC 8058 requires the one-click URL
+	// to be unique and unguessable per recipient, so omit the header rather than
+	// emit an insecure one (the endpoint also fails closed without the pepper).
+	if m.c.UnsubscribeBaseURL == "" || m.c.UnsubscribePepper == "" {
 		return nil
 	}
 	emailB64 := base64.StdEncoding.EncodeToString([]byte(to))
-	unsubURL := fmt.Sprintf("%s/api/webhooks/list-unsubscribe/%s", m.c.UnsubscribeBaseURL, emailB64)
+	token := tokenhash.Hash(m.c.UnsubscribePepper, unsubscribeTokenValue(to))
+	unsubURL := fmt.Sprintf("%s/api/webhooks/list-unsubscribe/%s/%s", m.c.UnsubscribeBaseURL, emailB64, token)
 	h := map[string]interface{}{
 		"List-Unsubscribe":      fmt.Sprintf("<%s>", unsubURL),
 		"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

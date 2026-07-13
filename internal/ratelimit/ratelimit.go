@@ -12,11 +12,21 @@ type Limiter struct {
 	counters map[string]*counter
 	window   time.Duration
 	max      int
+	// stop terminates the cleanup goroutine; stopOnce makes Stop idempotent and
+	// safe against a double close (mirrors stockreserve.Manager).
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
+// counter holds the timestamps of requests currently inside the window for one
+// key. Entries older than the window are pruned on access, which makes this a
+// true sliding window. The previous form stored a single count + expiry and
+// reset both wholesale once the window elapsed (a fixed window), so a caller
+// could burst up to max at the end of one window and max again at the start of
+// the next — ~2*max in quick succession — undermining the sensitive auth/OTP
+// limits that document sliding-window behaviour.
 type counter struct {
-	count     int
-	expiresAt time.Time
+	timestamps []time.Time
 }
 
 // NewLimiter creates a new rate limiter with the specified window and max requests
@@ -25,6 +35,7 @@ func NewLimiter(window time.Duration, max int) *Limiter {
 		counters: make(map[string]*counter),
 		window:   window,
 		max:      max,
+		stop:     make(chan struct{}),
 	}
 	go l.cleanup()
 	return l
@@ -37,20 +48,16 @@ func (l *Limiter) Allow(key string) bool {
 
 	now := time.Now().UTC()
 	c, exists := l.counters[key]
-
-	if !exists || now.After(c.expiresAt) {
-		l.counters[key] = &counter{
-			count:     1,
-			expiresAt: now.Add(l.window),
-		}
-		return true
+	if !exists {
+		c = &counter{}
+		l.counters[key] = c
 	}
+	c.timestamps = pruneBefore(c.timestamps, now.Add(-l.window))
 
-	if c.count >= l.max {
+	if len(c.timestamps) >= l.max {
 		return false
 	}
-
-	c.count++
+	c.timestamps = append(c.timestamps, now)
 	return true
 }
 
@@ -59,35 +66,65 @@ func (l *Limiter) GetRemaining(key string) int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	now := time.Now().UTC()
 	c, exists := l.counters[key]
-
-	if !exists || now.After(c.expiresAt) {
+	if !exists {
 		return l.max
 	}
 
-	remaining := l.max - c.count
+	// Count without mutating so this stays safe under the read lock.
+	cutoff := time.Now().UTC().Add(-l.window)
+	active := 0
+	for _, t := range c.timestamps {
+		if t.After(cutoff) {
+			active++
+		}
+	}
+	remaining := l.max - active
 	if remaining < 0 {
 		return 0
 	}
 	return remaining
 }
 
-// cleanup periodically removes expired counters
+// pruneBefore drops timestamps at or before cutoff, filtering in place. The
+// slice is appended in time order, so a single pass suffices.
+func pruneBefore(ts []time.Time, cutoff time.Time) []time.Time {
+	kept := ts[:0]
+	for _, t := range ts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// cleanup periodically prunes windows and removes keys that have gone idle. It
+// exits when Stop closes l.stop.
 func (l *Limiter) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		l.mu.Lock()
-		now := time.Now().UTC()
-		for key, c := range l.counters {
-			if now.After(c.expiresAt) {
-				delete(l.counters, key)
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-ticker.C:
+			l.mu.Lock()
+			cutoff := time.Now().UTC().Add(-l.window)
+			for key, c := range l.counters {
+				c.timestamps = pruneBefore(c.timestamps, cutoff)
+				if len(c.timestamps) == 0 {
+					delete(l.counters, key)
+				}
 			}
+			l.mu.Unlock()
 		}
-		l.mu.Unlock()
 	}
+}
+
+// Stop terminates the cleanup goroutine. Idempotent and safe to call concurrently.
+func (l *Limiter) Stop() {
+	l.stopOnce.Do(func() { close(l.stop) })
 }
 
 // MultiKeyLimiter manages multiple rate limiters for different types of operations
@@ -110,7 +147,19 @@ func NewMultiKeyLimiter() *MultiKeyLimiter {
 			"ip_account_verify":        NewLimiter(10*time.Minute, 30), // verify / refresh per IP
 			"email_account_verify":     NewLimiter(10*time.Minute, 10), // OTP verify per email (anti distributed guess)
 			"challenge_account_verify": NewLimiter(10*time.Minute, 10), // magic token verify per token hash
+			"ip_subscribe":             NewLimiter(10*time.Minute, 10), // newsletter/waitlist subscribes per IP
+			"email_subscribe":          NewLimiter(10*time.Minute, 5),  // newsletter/waitlist subscribes per email
 		},
+	}
+}
+
+// Stop terminates the cleanup goroutines of every underlying limiter. Idempotent
+// (each Limiter.Stop is guarded), so it is safe to call from App.Stop.
+func (m *MultiKeyLimiter) Stop() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, l := range m.limiters {
+		l.Stop()
 	}
 }
 
@@ -164,6 +213,39 @@ func (m *MultiKeyLimiter) CheckSupportTicket(ip, email string) error {
 
 	if email != "" && !m.limiters["email_support"].Allow(email) {
 		return fmt.Errorf("too many support tickets from this email address, please try again later")
+	}
+
+	return nil
+}
+
+// CheckSubscribe rate-limits the public newsletter/waitlist endpoints, which are
+// unauthenticated yet create rows (storefront_account, subscriber, waitlist) and
+// can send mail to the supplied address.
+func (m *MultiKeyLimiter) CheckSubscribe(ip, email string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_subscribe"].Allow(ip) {
+		return fmt.Errorf("too many subscription requests from this IP address, please try again later")
+	}
+	if email != "" && !m.limiters["email_subscribe"].Allow(email) {
+		return fmt.Errorf("too many subscription requests for this email, please try again later")
+	}
+
+	return nil
+}
+
+// CheckOrderInvoiceIP rate-limits per-IP access to the order-UUID-only endpoints
+// (invoice fetch/cancel, guest order lookup). It keys on IP only by design: the
+// order UUID is attacker-supplied and unique per guess, so keying a limiter on it
+// (as CheckSupportTicket(ip, orderUUID) did) lands every attempt in a fresh
+// never-filling bucket that offers no protection.
+func (m *MultiKeyLimiter) CheckOrderInvoiceIP(ip string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_support"].Allow(ip) {
+		return fmt.Errorf("too many requests from this IP address, please try again later")
 	}
 
 	return nil

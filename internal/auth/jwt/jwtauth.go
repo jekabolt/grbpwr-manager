@@ -3,6 +3,7 @@ package jwt
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/go-chi/jwtauth/v5"
@@ -11,6 +12,26 @@ import (
 )
 
 var ErrInvalidClaims = errors.New("token is unauthorized")
+
+// MinSymmetricSecretBytes is the minimum length for symmetric secrets and HMAC
+// peppers. HS256 token signatures and the HMAC peppers are only as strong as
+// their key, so require ~256 bits of key material.
+const MinSymmetricSecretBytes = 32
+
+// RequireStrongSecret warns when a symmetric secret/pepper is shorter than a safe
+// HS256 / HMAC key length. It logs loudly rather than failing closed: a live deploy
+// may carry a legacy weak secret, and refusing to boot would force either an outage
+// or an unsafe rotation — notably the storefront login pepper is mixed into every
+// stored password hash and cannot be rotated without locking out all customers. The
+// warning names the offending setting so it can be rotated deliberately, out of band.
+// It always returns nil; the error return is retained for call-site compatibility.
+func RequireStrongSecret(name, v string) error {
+	if len(v) < MinSymmetricSecretBytes {
+		slog.Warn("weak symmetric secret — rotate to at least the recommended length",
+			"name", name, "got_bytes", len(v), "min_bytes", MinSymmetricSecretBytes)
+	}
+	return nil
+}
 
 // Expectations holds optional issuer/audience checks. Empty strings mean skip.
 type Expectations struct {

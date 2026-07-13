@@ -9,6 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/errgroup"
 )
 
 // GetProductsPaged returns a paged list of products based on provided parameters.
@@ -447,50 +448,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		return nil, fmt.Errorf("can't get product: %w", err)
 	}
 
-	translationMap, err := fetchProductTranslations(ctx, s.DB, []int{prdResult.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get product translations: %w", err)
-	}
-
-	translations := translationMap[prdResult.Id]
-	product := prdResult.toProduct(translations)
-	product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
-	if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
-		product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
-	}
-
-	priceMap, err := fetchProductPrices(ctx, s.DB, []int{product.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get prices: %w", err)
-	}
-	if prices, ok := priceMap[product.Id]; ok {
-		product.Prices = prices
-	} else {
-		product.Prices = []entity.ProductPrice{}
-	}
-
-	productInfo.Product = &product
-
-	sizesQuery := `SELECT * FROM product_size WHERE product_id = :id`
-	sizes, err := storeutil.QueryListNamed[entity.ProductSize](ctx, s.DB, sizesQuery, map[string]any{"id": product.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get sizes: %w", err)
-	}
-	productInfo.Sizes = sizes
-
-	totalQuantity := decimal.Zero
-	for _, size := range sizes {
-		totalQuantity = totalQuantity.Add(size.Quantity)
-	}
-	product.SoldOut = totalQuantity.LessThanOrEqual(decimal.Zero)
-	productInfo.Product.SoldOut = product.SoldOut
-
-	measurementsQuery := `SELECT * FROM size_measurement WHERE product_id = :id`
-	measurements, err := storeutil.QueryListNamed[entity.ProductMeasurement](ctx, s.DB, measurementsQuery, map[string]any{"id": product.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get measurements: %w", err)
-	}
-	productInfo.Measurements = measurements
+	// Queries 2–7 all key on the product id from the row above and are mutually
+	// independent (no transaction, nothing threaded between them — SoldOut is
+	// computed locally in Go). Run them concurrently so PDP latency is roughly one
+	// round-trip instead of the sum of six. sqlx's *DB is safe for concurrent use.
+	pid := prdResult.Id
+	idParams := map[string]any{"id": pid}
 
 	mediaQuery := `
 		SELECT m.id, m.created_at, m.full_size, m.full_size_width, m.full_size_height,
@@ -501,17 +464,86 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		WHERE pm.product_id = :id
 		ORDER BY pm.id;
 	`
-	productInfo.Media, err = storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB, mediaQuery, map[string]any{"id": product.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get media: %w", err)
+
+	var (
+		translationMap map[int][]entity.ProductTranslationInsert
+		priceMap       map[int][]entity.ProductPrice
+		sizes          []entity.ProductSize
+		measurements   []entity.ProductMeasurement
+		media          []entity.MediaFull
+		tags           []entity.ProductTag
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	g.Go(func() error {
+		var e error
+		if translationMap, e = fetchProductTranslations(gctx, s.DB, []int{pid}); e != nil {
+			return fmt.Errorf("can't get product translations: %w", e)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var e error
+		if priceMap, e = fetchProductPrices(gctx, s.DB, []int{pid}); e != nil {
+			return fmt.Errorf("can't get prices: %w", e)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var e error
+		if sizes, e = storeutil.QueryListNamed[entity.ProductSize](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
+			return fmt.Errorf("can't get sizes: %w", e)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var e error
+		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, `SELECT * FROM size_measurement WHERE product_id = :id`, idParams); e != nil {
+			return fmt.Errorf("can't get measurements: %w", e)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var e error
+		if media, e = storeutil.QueryListNamed[entity.MediaFull](gctx, s.DB, mediaQuery, idParams); e != nil {
+			return fmt.Errorf("can't get media: %w", e)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		var e error
+		if tags, e = storeutil.QueryListNamed[entity.ProductTag](gctx, s.DB, `SELECT * FROM product_tag WHERE product_id = :id`, idParams); e != nil {
+			return fmt.Errorf("can't get tags: %w", e)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	tagsQuery := "SELECT * FROM product_tag WHERE product_id = :id"
-	productInfo.Tags, err = storeutil.QueryListNamed[entity.ProductTag](ctx, s.DB, tagsQuery, map[string]any{"id": product.Id})
-	if err != nil {
-		return nil, fmt.Errorf("can't get tags: %w", err)
+	product := prdResult.toProduct(translationMap[pid])
+	product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+	if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
+		product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
+	}
+	if prices, ok := priceMap[pid]; ok {
+		product.Prices = prices
+	} else {
+		product.Prices = []entity.ProductPrice{}
 	}
 
+	totalQuantity := decimal.Zero
+	for _, size := range sizes {
+		totalQuantity = totalQuantity.Add(size.Quantity)
+	}
+	product.SoldOut = totalQuantity.LessThanOrEqual(decimal.Zero)
+
+	productInfo.Product = &product
+	productInfo.Sizes = sizes
+	productInfo.Measurements = measurements
+	productInfo.Media = media
+	productInfo.Tags = tags
 	productInfo.Prices = product.Prices
 
 	return &productInfo, nil

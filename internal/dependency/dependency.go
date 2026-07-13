@@ -630,6 +630,7 @@ type (
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
 		GetMediaById(ctx context.Context, id int) (*entity.MediaFull, error)
+		GetMediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 	}
@@ -754,6 +755,10 @@ type (
 		UploadPatternPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
+		// DeleteObjects best-effort removes the S3 objects behind the given media URLs
+		// (empty and duplicate URLs are ignored). Used so deleting a media row or a
+		// partially-failed variant upload does not orphan public CDN objects.
+		DeleteObjects(ctx context.Context, urls ...string) error
 	}
 
 	RevalidationService interface {

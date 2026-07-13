@@ -146,6 +146,7 @@ func (p *Processor) initAddressesFromUnpaidOrders(ctx context.Context) error {
 		p.ctxMu.Unlock()
 
 		slog.Default().Info("monitorPayment", slog.Any("poid", poid))
+		p.monWg.Add(1)
 		go p.monitorPayment(ctx, poid.OrderUUID, &poid.Payment)
 	}
 
@@ -229,7 +230,18 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 	// Stripe received less, leave the order AwaitingPayment and flag for review
 	// instead of fulfilling it for less than it owes.
 	expected := payment.TransactionAmountPaymentCurrency
-	if expected.IsPositive() && receivedAmount.LessThan(expected) {
+	if !expected.IsPositive() {
+		// The expected amount is not finalized yet. The payment row is created with
+		// expected=0 and InsertFiatInvoice commits the real total only after the PI's
+		// order_id metadata is published, so a payment_intent.succeeded webhook can
+		// arrive in that window. Treating 0 as "no check" would skip the underpayment
+		// guard below and fulfill for whatever Stripe collected (possibly the lower
+		// pre-checkout amount). Return a transient error so the webhook (mapped to HTTP
+		// 500) is retried by Stripe once the invoice commits; the monitor and
+		// lazy-check paths simply retry on their next pass.
+		return fmt.Errorf("order %s expected amount not finalized yet, retry", orderUUID)
+	}
+	if receivedAmount.LessThan(expected) {
 		slog.Default().ErrorContext(ctx, "UNDERPAID order: payment intent succeeded for less than the order total; leaving AwaitingPayment for manual review",
 			slog.String("orderUUID", orderUUID),
 			slog.String("received", receivedAmount.String()),
@@ -466,6 +478,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 
 	// The monitor's lifecycle is governed by the processor's parent context
 	// (monParentCtx), not the passed ctx — see monitorPayment.
+	p.monWg.Add(1)
 	go p.monitorPayment(context.Background(), orderUUID, payment)
 
 	return &payment.PaymentInsert, nil
@@ -478,7 +491,10 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 // moment the RPC returns). Monitors are tracked in monWg so shutdown can wait for
 // them to finish before the DB is closed.
 func (p *Processor) monitorPayment(_ context.Context, orderUUID string, payment *entity.Payment) {
-	p.monWg.Add(1)
+	// The caller does monWg.Add(1) immediately before `go`, so the monitor is
+	// registered before StopAllMonitors' Wait can observe the counter. Adding inside
+	// the goroutine raced Wait, which could return early and let the DB close under a
+	// live monitor (violating the WaitGroup Add-before-Wait contract).
 	defer p.monWg.Done()
 
 	ctx, cancel := context.WithCancel(p.monParentCtx)
@@ -583,6 +599,13 @@ func (p *Processor) StopAllMonitors(ctx context.Context) {
 	case <-ctx.Done():
 		slog.Default().WarnContext(ctx, "timed out waiting for stripe payment monitors to stop",
 			slog.String("err", ctx.Err().Error()))
+	}
+
+	// Stop the pre-order session cleanup goroutine, which this processor owns and
+	// which otherwise leaks one ticker per shutdown. Stop is stopOnce-guarded, so
+	// this stays safe alongside StopAllMonitors being called more than once.
+	if p.preOrderStore != nil {
+		p.preOrderStore.Stop()
 	}
 }
 
@@ -837,6 +860,7 @@ func (p *Processor) UpdatePaymentIntentWithOrderNew(ctx context.Context, payment
 // context (monParentCtx), not the supplied ctx, so it survives the caller's
 // request returning and is stopped centrally via StopAllMonitors at shutdown.
 func (p *Processor) StartMonitoringPayment(ctx context.Context, orderUUID string, payment entity.Payment) {
+	p.monWg.Add(1)
 	go p.monitorPayment(ctx, orderUUID, &payment)
 }
 

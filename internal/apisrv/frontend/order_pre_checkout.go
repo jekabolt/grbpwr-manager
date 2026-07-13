@@ -212,6 +212,20 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 }
 
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.ValidateOrderByUUIDRequest) (*pb_frontend.ValidateOrderByUUIDResponse, error) {
+	// The order reference is a guessable ~36-bit token ("ORD-" + 7 base36 chars),
+	// and this endpoint is unauthenticated with no email/token binding. Rate-limit
+	// per IP (keyed on IP only — keying on the attacker-supplied UUID would put
+	// every guess in a fresh never-filling bucket) to make brute-force enumeration
+	// impractical, matching GetOrderInvoice / CancelOrderInvoice.
+	clientIP := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckOrderInvoiceIP(clientIP); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for validate order by uuid",
+			slog.String("ip", clientIP),
+			slog.String("order_uuid", req.OrderUuid),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded, please try again later")
+	}
+
 	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
@@ -227,6 +241,16 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
 	}
+
+	// This endpoint validates item availability/stock/price before checkout; it is
+	// not an order-detail view. Strip buyer PII (name, email, phone, billing and
+	// shipping addresses) so that hitting a valid reference — even past the rate
+	// limit — yields no personal data. Owner-scoped order detail lives behind
+	// GetOrderByUUIDAndEmail (email match).
+	of.Buyer = nil
+	of.Billing = nil
+	of.Shipping = nil
+
 	return &pb_frontend.ValidateOrderByUUIDResponse{
 		Order: of,
 	}, nil
@@ -265,8 +289,21 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 			continue
 		}
 
-		// Calculate available stock (total - reservations, excluding current session)
-		availableStock := s.reservationMgr.GetAvailableStock(currentStock, item.ProductId, item.SizeId, sessionID)
+		// Atomically compute availability (total minus other sessions' active
+		// reservations) and reserve for this session under a single lock — closing
+		// the read-then-reserve TOCTOU where two carts could both claim the last
+		// unit in the in-memory map. availableStock still drives the out-of-stock /
+		// quantity-reduced adjustments; a returned error is a best-effort
+		// abuse-limit signal and does not invalidate availableStock.
+		availableStock, rerr := s.reservationMgr.ReserveIfAvailable(ctx, currentStock, sessionID, item.ProductId, item.SizeId, item.Quantity)
+		if rerr != nil {
+			slog.Default().WarnContext(ctx, "failed to reserve stock",
+				slog.String("session_id", sessionID),
+				slog.Int("product_id", item.ProductId),
+				slog.Int("size_id", item.SizeId),
+				slog.String("err", rerr.Error()),
+			)
+		}
 
 		if availableStock.LessThanOrEqual(decimal.Zero) {
 			// No stock available after accounting for reservations
@@ -290,16 +327,6 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 				Reason:            entity.AdjustmentReasonQuantityReduced,
 			})
 			item.Quantity = availableStock
-		}
-
-		// Reserve the stock for this session
-		if err := s.reservationMgr.Reserve(ctx, sessionID, item.ProductId, item.SizeId, item.Quantity); err != nil {
-			slog.Default().WarnContext(ctx, "failed to reserve stock",
-				slog.String("session_id", sessionID),
-				slog.Int("product_id", item.ProductId),
-				slog.Int("size_id", item.SizeId),
-				slog.String("err", err.Error()),
-			)
 		}
 
 		adjustedItems = append(adjustedItems, item)

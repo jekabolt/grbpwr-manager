@@ -54,6 +54,12 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
+	// Bound the fan-out. This assembles ~60 metrics, most of them DB-bound queries,
+	// against a 15-20 connection pool shared with storefront/checkout traffic and a
+	// 76-connection managed cluster split across three apps. Without a limit a single
+	// admin dashboard render could exhaust the pool and starve public traffic and the
+	// health probes. Parallelism is preserved, just capped.
+	g.SetLimit(8)
 
 	var ga4Daily, ga4DailyCompare []ga4.DailyMetrics
 

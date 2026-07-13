@@ -6,7 +6,9 @@ import (
 	"errors"
 	"log/slog"
 
+	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,11 +17,14 @@ import (
 func (s *Server) NotifyMe(ctx context.Context, req *pb_frontend.NotifyMeRequest) (*pb_frontend.NotifyMeResponse, error) {
 	productId := int(req.ProductId)
 	sizeId := int(req.SizeId)
-	email := req.Email
 
-	// Validate email
-	if email == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "email is required")
+	email := normalizeEmail(req.Email)
+	if email == "" || !v.IsEmail(email) {
+		return nil, status.Errorf(codes.InvalidArgument, "valid email is required")
+	}
+	ip := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckSubscribe(ip, email); err != nil {
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
 
 	// Validate product exists and is not hidden/deleted

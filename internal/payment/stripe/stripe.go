@@ -29,24 +29,22 @@ func PaymentIntentSucceeded(pi *stripe.PaymentIntent) bool {
 	return pi != nil && pi.Status == stripe.PaymentIntentStatusSucceeded
 }
 
-// AmountToSmallestUnit converts an amount to the smallest currency unit for Stripe
-// For zero-decimal currencies (like JPY, KRW), rounds to whole units (no decimals)
-// For other currencies, multiplies by 100 to convert to cents
+// AmountToSmallestUnit converts an amount to the smallest currency unit for Stripe.
+// The factor is 10^DecimalPlaces — 1 for zero-decimal (JPY, KRW), 100 for
+// two-decimal, 1000 for three-decimal — so the conversion is correct for every
+// currency exponent instead of a hardcoded x100 that would under-charge a
+// three-decimal currency 10x. The amount is rounded to the currency precision
+// first so sub-minor-unit noise doesn't leak into the integer.
 func AmountToSmallestUnit(amount decimal.Decimal, c string) int64 {
-	if curr.IsZeroDecimal(c) {
-		return curr.Round(amount, c).IntPart()
-	}
-	return amount.Mul(decimal.NewFromInt(100)).IntPart()
+	factor := decimal.New(1, curr.DecimalPlaces(c))
+	return curr.Round(amount, c).Mul(factor).IntPart()
 }
 
-// AmountFromSmallestUnit converts an amount from Stripe's smallest currency unit back to decimal
-// For zero-decimal currencies (like JPY, KRW), returns the amount as-is
-// For other currencies, divides by 100 to convert from cents
+// AmountFromSmallestUnit converts an amount from Stripe's smallest currency unit
+// back to decimal, dividing by 10^DecimalPlaces.
 func AmountFromSmallestUnit(amount int64, c string) decimal.Decimal {
-	if curr.IsZeroDecimal(c) {
-		return decimal.NewFromInt(amount)
-	}
-	return decimal.NewFromInt(amount).Div(decimal.NewFromInt(100))
+	factor := decimal.New(1, curr.DecimalPlaces(c))
+	return decimal.NewFromInt(amount).Div(factor)
 }
 
 // amountToSmallestUnit converts an amount to the smallest currency unit for Stripe

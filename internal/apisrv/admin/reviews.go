@@ -13,8 +13,9 @@ import (
 
 func (s *Server) GetOrderReviewsPaged(ctx context.Context, req *pb_admin.GetOrderReviewsPagedRequest) (*pb_admin.GetOrderReviewsPagedResponse, error) {
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
 
-	reviews, total, err := s.repo.Order().GetOrderReviewsPaged(ctx, int(req.Limit), int(req.Offset), of)
+	reviews, total, err := s.repo.Order().GetOrderReviewsPaged(ctx, limit, offset, of)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get order reviews paged",
 			slog.String("err", err.Error()),
@@ -47,8 +48,9 @@ func (s *Server) DeleteOrderReview(ctx context.Context, req *pb_admin.DeleteOrde
 
 func (s *Server) GetProductReviewsPaged(ctx context.Context, req *pb_admin.GetProductReviewsPagedRequest) (*pb_admin.GetProductReviewsPagedResponse, error) {
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
 
-	reviews, total, err := s.repo.Order().GetProductReviewsPaged(ctx, int(req.ProductId), int(req.Limit), int(req.Offset), of)
+	reviews, total, err := s.repo.Order().GetProductReviewsPaged(ctx, int(req.ProductId), limit, offset, of)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get product reviews paged",
 			slog.String("err", err.Error()),

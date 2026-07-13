@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
@@ -17,6 +18,14 @@ import (
 )
 
 func (s *Server) GetOrderByUUIDAndEmail(ctx context.Context, req *pb_frontend.GetOrderByUUIDAndEmailRequest) (*pb_frontend.GetOrderByUUIDAndEmailResponse, error) {
+	// Rate-limit per IP: this public, unauthenticated endpoint drives a live
+	// Stripe PaymentIntents.Get for AwaitingPayment orders via CheckForTransactions
+	// below, so an unthrottled caller could amplify calls against the Stripe API.
+	clientIP := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckOrderInvoiceIP(clientIP); err != nil {
+		return nil, status.Errorf(codes.ResourceExhausted, "too many requests")
+	}
+
 	email, err := base64.StdEncoding.DecodeString(req.B64Email)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't decode email",

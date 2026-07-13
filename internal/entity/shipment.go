@@ -132,7 +132,9 @@ type ShipmentCarrierInsert struct {
 // PriceDecimal returns the price for the specified currency (currency-aware rounding)
 func (sc *ShipmentCarrier) PriceDecimal(c string) (decimal.Decimal, error) {
 	for _, price := range sc.Prices {
-		if price.Currency == c {
+		// Compare case-insensitively: stored currencies are uppercase, the client
+		// value may not be (mirrors getProductPrice).
+		if strings.EqualFold(price.Currency, c) {
 			return currency.Round(price.Price, c), nil
 		}
 	}

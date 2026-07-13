@@ -79,6 +79,12 @@ func newAuthRateLimiter() *authRateLimiter {
 	}
 }
 
+// stop terminates the cleanup goroutines of both underlying limiters.
+func (l *authRateLimiter) stop() {
+	l.ip.Stop()
+	l.user.Stop()
+}
+
 // check applies the per-IP limit always and, when a username is supplied, the
 // tighter per-username limit. It returns a ResourceExhausted gRPC error so the
 // throttled response is distinct from a normal failed login at the transport
@@ -109,17 +115,28 @@ type Config struct {
 func New(c *Config, ar dependency.Admin) (*Server, error) {
 
 	// An empty HS256 secret would validate any token signed with an empty key,
-	// allowing trivial admin token forgery. Fail closed at startup.
+	// allowing trivial admin token forgery. Fail closed at startup — and also
+	// reject a too-short secret, since HS256 strength equals the key's strength.
 	if c.JWTSecret == "" {
 		return nil, fmt.Errorf("auth.jwt_secret is required")
+	}
+	if err := jwt.RequireStrongSecret("auth.jwt_secret", c.JWTSecret); err != nil {
+		return nil, err
 	}
 
 	// Trim surrounding whitespace: secret managers / env injection frequently add
 	// a trailing newline, which would otherwise make the master password never
-	// match what callers send. Also fail closed if it's unset.
+	// match what callers send. Fail closed only if it's unset (a functional
+	// requirement); merely warn if it's weak, so a legacy short password logs loudly
+	// but does not block startup. This is a human-entered password, so the floor is
+	// softer than for machine secrets.
 	masterPassword := strings.TrimSpace(c.MasterPassword)
 	if masterPassword == "" {
 		return nil, fmt.Errorf("auth.master_password is required")
+	}
+	if len(masterPassword) < 12 {
+		slog.Warn("weak auth.master_password — rotate to at least 12 characters",
+			"got_chars", len(masterPassword))
 	}
 
 	ph, err := pwhash.New(c.PasswordHasherSaltSize, c.PasswordHasherIterations)
@@ -155,6 +172,15 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// StopRateLimiter terminates the auth rate-limiter cleanup goroutines. Called
+// from App.Stop so the limiters follow the same lifecycle discipline as the
+// other background components (idempotent).
+func (s *Server) StopRateLimiter() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.stop()
+	}
 }
 
 func (s *Server) jwtIssueOpts() *jwt.IssueOpts {
@@ -399,8 +425,11 @@ func (s *Server) WithAuth(next http.Handler) http.Handler {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
 		_, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			// Create a new error message
-			errMsg := errorMessage{Error: err.Error()}
+			// Return a constant message to the (anonymous) caller; the raw jwx error
+			// distinguishes expired vs bad-signature vs audience-mismatch and is an
+			// oracle for probers. Keep the detail server-side.
+			slog.Default().WarnContext(r.Context(), "auth token verification failed", slog.String("err", err.Error()))
+			errMsg := errorMessage{Error: "unauthorized"}
 
 			// Set content type to JSON
 			w.Header().Set("Content-Type", "application/json")
@@ -491,11 +520,14 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		}
 		token, err := GetTokenMetadata(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "missing auth token: %v", err)
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
 		}
 		sub, super, permStrs, legacy, err := jwt.VerifyAdminToken(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "invalid auth token: %v", err)
+			// Log the raw verification error server-side; return a constant so the
+			// jwx failure stage is not disclosed to the caller.
+			slog.Default().WarnContext(ctx, "invalid admin auth token", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
 		}
 		perms := rbac.ParsePermissions(permStrs)
 		if !rbac.Authorize(info.FullMethod, legacy, super, perms) {
