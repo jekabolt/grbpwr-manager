@@ -164,6 +164,41 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		})
 	}
 
+	outcome := nullStringFromPb("")
+	if o := strings.ToLower(strings.TrimSpace(pb.Outcome)); o != "" {
+		if !entity.ValidFittingOutcomes[entity.FittingOutcome(o)] {
+			return nil, fmt.Errorf("fitting outcome must be one of approved|new_round|dropped")
+		}
+		outcome = nullStringFromPb(o)
+	}
+	if pb.RoundNumber < 0 {
+		return nil, fmt.Errorf("fitting round_number must not be negative")
+	}
+
+	changeRequests := make([]entity.FittingChangeRequest, 0, len(pb.ChangeRequests))
+	for _, cr := range pb.ChangeRequests {
+		target := strings.ToLower(strings.TrimSpace(cr.Target))
+		if !entity.ValidFittingChangeTargets[target] {
+			return nil, fmt.Errorf("fitting change request target must be one of pattern|construction|material|grading|other")
+		}
+		note := strings.TrimSpace(cr.Note)
+		if note == "" {
+			return nil, fmt.Errorf("fitting change request note is required")
+		}
+		if len(note) > maxTaskText {
+			return nil, fmt.Errorf("fitting change request note must be at most %d characters", maxTaskText)
+		}
+		if cr.CalloutNumber < 0 {
+			return nil, fmt.Errorf("fitting change request callout_number must not be negative")
+		}
+		changeRequests = append(changeRequests, entity.FittingChangeRequest{
+			Target:        target,
+			Note:          note,
+			CalloutNumber: nullInt32FromPb(cr.CalloutNumber),
+			Resolved:      cr.Resolved,
+		})
+	}
+
 	// Normalize to a UTC calendar date so storage into the DATE column is
 	// deterministic regardless of the incoming timestamp's time-of-day.
 	// (Clients should send the fitting date at UTC midnight.)
@@ -171,18 +206,21 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	fittingDate := time.Date(ft.Year(), ft.Month(), ft.Day(), 0, 0, 0, 0, time.UTC)
 
 	return &entity.FittingInsert{
-		TechCardId:  nullInt32FromPb(pb.TechCardId),
-		ProductId:   nullInt32FromPb(pb.ProductId),
-		ModelId:     nullInt32FromPb(pb.ModelId),
-		FittingDate: fittingDate,
-		Comment:     nullStringFromPb(pb.Comment),
-		Status:      status,
-		Verdict:     verdict,
-		RecordedBy:  nullStringFromPb(pb.RecordedBy),
-		Sizes:       sizes,
-		MediaIds:    mediaIds,
-		Patterns:    patterns,
-		Callouts:    callouts,
+		TechCardId:     nullInt32FromPb(pb.TechCardId),
+		ProductId:      nullInt32FromPb(pb.ProductId),
+		ModelId:        nullInt32FromPb(pb.ModelId),
+		FittingDate:    fittingDate,
+		Comment:        nullStringFromPb(pb.Comment),
+		Status:         status,
+		Verdict:        verdict,
+		RecordedBy:     nullStringFromPb(pb.RecordedBy),
+		RoundNumber:    nullInt32FromPb(pb.RoundNumber),
+		Outcome:        outcome,
+		Sizes:          sizes,
+		MediaIds:       mediaIds,
+		Patterns:       patterns,
+		Callouts:       callouts,
+		ChangeRequests: changeRequests,
 	}, nil
 }
 
@@ -218,16 +256,34 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 			Comment:     pbStringFromNull(f.Comment),
 			Status:      fittingStatusEntityToPb[f.Status],
 			Verdict:     fittingVerdictEntityToPb[f.Verdict],
-			RecordedBy:  pbStringFromNull(f.RecordedBy),
-			Sizes:       sizes,
-			MediaIds:    mediaIds,
-			Patterns:    fittingPatternsToPb(f.Patterns),
-			Callouts:    fittingCalloutsToPb(f.Callouts),
+			RecordedBy:     pbStringFromNull(f.RecordedBy),
+			RoundNumber:    pbInt32FromNull(f.RoundNumber),
+			Outcome:        f.Outcome.String,
+			Sizes:          sizes,
+			MediaIds:       mediaIds,
+			Patterns:       fittingPatternsToPb(f.Patterns),
+			Callouts:       fittingCalloutsToPb(f.Callouts),
+			ChangeRequests: fittingChangeRequestsToPb(f.ChangeRequests),
 		},
 		Media:     media,
 		CreatedAt: timestamppb.New(f.CreatedAt),
 		UpdatedAt: timestamppb.New(f.UpdatedAt),
 	}
+}
+
+// fittingChangeRequestsToPb emits a fitting's structured change requests for display.
+func fittingChangeRequestsToPb(crs []entity.FittingChangeRequest) []*pb_common.FittingChangeRequest {
+	out := make([]*pb_common.FittingChangeRequest, 0, len(crs))
+	for _, c := range crs {
+		out = append(out, &pb_common.FittingChangeRequest{
+			Id:            int32(c.Id),
+			Target:        c.Target,
+			Note:          c.Note,
+			CalloutNumber: pbInt32FromNull(c.CalloutNumber),
+			Resolved:      c.Resolved,
+		})
+	}
+	return out
 }
 
 // fittingCalloutsToPb emits a fitting's photo callouts for display.

@@ -55,6 +55,28 @@ message FittingInsert {
   // wrong with the fit at a point on a specific photo (media_ids). Full-replace on
   // update, like sizes/media/patterns.
   repeated FittingCallout callouts = 12;
+  // This fitting's number in the tech card's try-on sequence (task 13). 0 = unset: the
+  // server auto-assigns the next number (max+1) per tech card on create when the fitting is
+  // anchored to a card. A non-zero value is honoured (manual override); unique per card.
+  int32 round_number = 13;
+  // Structured round outcome (distinct from the free verdict): approved | new_round | dropped.
+  // "" = undecided.
+  string outcome = 14;
+  // The structured "what to change" work list produced by this fitting. Full-replace on update,
+  // like callouts; resolved is toggled when a change is carried into the tech card.
+  repeated FittingChangeRequest change_requests = 15;
+}
+
+// FittingChangeRequest is one structured change produced by a fitting (task 13): the target area
+// to change, a note, an optional link to a photo callout pin, and a resolved flag (set when the
+// change has been carried into the tech card). The lightweight replacement for the removed POM
+// feedback loop — it records WHY the spec changed without the full point/grade machinery.
+message FittingChangeRequest {
+  int32 id = 1; // output-only, assigned on save
+  string target = 2; // pattern | construction | material | grading | other (required)
+  string note = 3; // what to change (required)
+  int32 callout_number = 4; // optional link to a fitting_callout pin (0 = none)
+  bool resolved = 5; // carried into the tech card
 }
 
 // FittingCallout is a numbered marker pinned to a fitting photo, noting a fit

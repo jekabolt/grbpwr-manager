@@ -568,3 +568,105 @@ func TestTechCardDevExpenseCRUD(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, labour.Id, list[0].Id)
 }
+
+// TestFittingRoundAndChangeRequests exercises task-13: round_number auto-assignment per tech
+// card, the structured outcome, and the full-replace change-request list (incl. resolving one).
+func TestFittingRoundAndChangeRequests(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	var techCardID int
+	var fittingIDs []int
+	defer func() {
+		for _, id := range fittingIDs {
+			_ = s.Fittings().DeleteFitting(ctx, id)
+		}
+		if techCardID != 0 {
+			_ = s.TechCards().DeleteTechCard(ctx, techCardID)
+		}
+	}()
+
+	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber:     "ECO-W4-FIT-1",
+		Name:            "n",
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+		SizeIds:         []int{4},
+	})
+	require.NoError(t, err)
+
+	tcRef := sql.NullInt32{Int32: int32(techCardID), Valid: true}
+	date := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	mkFitting := func() *entity.FittingInsert {
+		return &entity.FittingInsert{
+			TechCardId:  tcRef,
+			FittingDate: date,
+			Status:      entity.FittingPlanned,
+			Verdict:     entity.FittingPending,
+		}
+	}
+
+	// Round numbers auto-assign 1, 2 per tech card.
+	id1, err := s.Fittings().AddFitting(ctx, mkFitting())
+	require.NoError(t, err)
+	fittingIDs = append(fittingIDs, id1)
+	id2, err := s.Fittings().AddFitting(ctx, mkFitting())
+	require.NoError(t, err)
+	fittingIDs = append(fittingIDs, id2)
+
+	f1, err := s.Fittings().GetFittingById(ctx, id1)
+	require.NoError(t, err)
+	require.True(t, f1.RoundNumber.Valid && f1.RoundNumber.Int32 == 1, "first round = 1, got %+v", f1.RoundNumber)
+	f2, err := s.Fittings().GetFittingById(ctx, id2)
+	require.NoError(t, err)
+	require.True(t, f2.RoundNumber.Valid && f2.RoundNumber.Int32 == 2, "second round = 2, got %+v", f2.RoundNumber)
+
+	// A fitting with an outcome and a change request.
+	f3ins := mkFitting()
+	f3ins.Outcome = sql.NullString{String: "new_round", Valid: true}
+	f3ins.ChangeRequests = []entity.FittingChangeRequest{
+		{Target: "pattern", Note: "raise the hem 2cm", Resolved: false},
+		{Target: "construction", Note: "reinforce the shoulder seam", Resolved: false},
+	}
+	id3, err := s.Fittings().AddFitting(ctx, f3ins)
+	require.NoError(t, err)
+	fittingIDs = append(fittingIDs, id3)
+
+	f3, err := s.Fittings().GetFittingById(ctx, id3)
+	require.NoError(t, err)
+	require.True(t, f3.RoundNumber.Valid && f3.RoundNumber.Int32 == 3, "third round = 3, got %+v", f3.RoundNumber)
+	require.Equal(t, "new_round", f3.Outcome.String)
+	require.Len(t, f3.ChangeRequests, 2)
+	require.Equal(t, "pattern", f3.ChangeRequests[0].Target)
+	require.False(t, f3.ChangeRequests[0].Resolved)
+
+	// Resolve the first change request via a full-replace update (echo the fetched insert,
+	// toggling resolved). round_number is preserved because the update echoes it.
+	upd := f3.FittingInsert
+	upd.ChangeRequests[0].Resolved = true
+	require.NoError(t, s.Fittings().UpdateFitting(ctx, id3, &upd))
+
+	f3b, err := s.Fittings().GetFittingById(ctx, id3)
+	require.NoError(t, err)
+	require.True(t, f3b.RoundNumber.Valid && f3b.RoundNumber.Int32 == 3, "round preserved on update, got %+v", f3b.RoundNumber)
+	require.Len(t, f3b.ChangeRequests, 2)
+	require.True(t, f3b.ChangeRequests[0].Resolved, "first change request resolved")
+	require.False(t, f3b.ChangeRequests[1].Resolved, "second still open")
+
+	// A manual round_number is honoured (not overwritten by auto-assign).
+	manual := mkFitting()
+	manual.RoundNumber = sql.NullInt32{Int32: 99, Valid: true}
+	idM, err := s.Fittings().AddFitting(ctx, manual)
+	require.NoError(t, err)
+	fittingIDs = append(fittingIDs, idM)
+	fM, err := s.Fittings().GetFittingById(ctx, idM)
+	require.NoError(t, err)
+	require.True(t, fM.RoundNumber.Valid && fM.RoundNumber.Int32 == 99, "manual round honoured, got %+v", fM.RoundNumber)
+}

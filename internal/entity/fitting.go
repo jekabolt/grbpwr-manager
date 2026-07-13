@@ -68,22 +68,60 @@ type FittingCallout struct {
 	PosY    decimal.NullDecimal `db:"pos_y"`
 }
 
+// FittingOutcome is the structured result of a fitting round (distinct from the free Verdict):
+// what the team decided to DO next. Approved = the round passed; NewRound = another try-on is
+// needed; Dropped = the style/sample was abandoned. NULL = not yet decided.
+type FittingOutcome string
+
+const (
+	FittingOutcomeApproved FittingOutcome = "approved"
+	FittingOutcomeNewRound FittingOutcome = "new_round"
+	FittingOutcomeDropped  FittingOutcome = "dropped"
+)
+
+// ValidFittingOutcomes is the accepted outcome set.
+var ValidFittingOutcomes = map[FittingOutcome]bool{
+	FittingOutcomeApproved: true,
+	FittingOutcomeNewRound: true,
+	FittingOutcomeDropped:  true,
+}
+
+// ValidFittingChangeTargets is the accepted target set for a change request.
+var ValidFittingChangeTargets = map[string]bool{
+	"pattern": true, "construction": true, "material": true, "grading": true, "other": true,
+}
+
+// FittingChangeRequest is one structured "what to change" item produced by a fitting (task 13):
+// the target area (pattern / construction / material / grading / other), a free note, an optional
+// link to a photo callout pin, and a resolved flag (set when carried into the tech card). It is a
+// full-replace child of the fitting, like callouts.
+type FittingChangeRequest struct {
+	Id            int            `db:"id"`
+	Target        string         `db:"target"`
+	Note          string         `db:"note"`
+	CalloutNumber sql.NullInt32  `db:"callout_number"`
+	Resolved      bool           `db:"resolved"`
+}
+
 // FittingInsert is the writable payload for a fitting session. A fitting anchors
 // to a tech card (the style) and/or a specific product (the colour/SKU sample);
 // at least one of TechCardId / ProductId is set (enforced in the API layer).
 type FittingInsert struct {
-	TechCardId  sql.NullInt32    `db:"tech_card_id"`
-	ProductId   sql.NullInt32    `db:"product_id"`
-	ModelId     sql.NullInt32    `db:"model_id"`
-	FittingDate time.Time        `db:"fitting_date"`
-	Comment     sql.NullString   `db:"comment"`
-	Status      FittingStatus    `db:"status"`
-	Verdict     FittingVerdict   `db:"verdict"`
-	RecordedBy  sql.NullString   `db:"recorded_by"`
-	Sizes       []FittingSize    `db:"-"`
-	MediaIds    []int            `db:"-"`
-	Patterns    []FittingPattern `db:"-"`
-	Callouts    []FittingCallout `db:"-"`
+	TechCardId     sql.NullInt32          `db:"tech_card_id"`
+	ProductId      sql.NullInt32          `db:"product_id"`
+	ModelId        sql.NullInt32          `db:"model_id"`
+	FittingDate    time.Time              `db:"fitting_date"`
+	Comment        sql.NullString         `db:"comment"`
+	Status         FittingStatus          `db:"status"`
+	Verdict        FittingVerdict         `db:"verdict"`
+	RecordedBy     sql.NullString         `db:"recorded_by"`
+	RoundNumber    sql.NullInt32          `db:"round_number"` // # in the card's try-on sequence; auto-assigned when unset
+	Outcome        sql.NullString         `db:"outcome"`      // FittingOutcome; NULL = undecided
+	Sizes          []FittingSize          `db:"-"`
+	MediaIds       []int                  `db:"-"`
+	Patterns       []FittingPattern       `db:"-"`
+	Callouts       []FittingCallout       `db:"-"`
+	ChangeRequests []FittingChangeRequest `db:"-"`
 }
 
 // Fitting is a stored fitting session (fitting row + sizes + resolved media).
