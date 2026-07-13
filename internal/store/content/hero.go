@@ -148,9 +148,117 @@ func heroMediaEmpty(m entity.HeroMedia) bool {
 	return m.PortraitId == 0 && m.LandscapeId == 0
 }
 
+// mediaLoader batches and memoizes the media lookups a single hero rebuild needs.
+// It is primed once with every id the hero references (best effort — see
+// collectHeroMediaIds), collapsing what used to be an N+1 of per-id SELECTs inside
+// the SetHero transaction into one IN query. Any id not pre-loaded — including a
+// hero type collectHeroMediaIds doesn't know about — falls back to a single fetch,
+// so correctness never depends on the pre-collect being complete.
+type mediaLoader struct {
+	rep   dependency.Repository
+	cache map[int]entity.MediaFull
+}
+
+func newMediaLoader(rep dependency.Repository) *mediaLoader {
+	return &mediaLoader{rep: rep, cache: map[int]entity.MediaFull{}}
+}
+
+// prime batch-loads ids in one query. A failure is logged, not fatal: get falls
+// back to per-id fetches, so a batch error only loses the optimization.
+func (l *mediaLoader) prime(ctx context.Context, ids []int) {
+	if len(ids) == 0 {
+		return
+	}
+	got, err := l.rep.Media().GetMediaByIds(ctx, ids)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to batch-load hero media, falling back to per-id fetch",
+			slog.String("err", err.Error()))
+		return
+	}
+	for id, m := range got {
+		l.cache[id] = m
+	}
+}
+
+// get returns media by id from the primed cache, fetching (and caching) on a miss.
+func (l *mediaLoader) get(ctx context.Context, id int) (*entity.MediaFull, error) {
+	if m, ok := l.cache[id]; ok {
+		return &m, nil
+	}
+	m, err := l.rep.Media().GetMediaById(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	l.cache[id] = *m
+	return m, nil
+}
+
+// collectHeroMediaIds gathers, best effort, every media id a hero insert
+// references so mediaLoader can pre-load them in one query. It is a performance
+// optimization only: a type it doesn't cover simply falls back to per-id loading,
+// so keeping it in sync with new hero types is desirable but not required for
+// correctness.
+func collectHeroMediaIds(hfi entity.HeroFullInsert) []int {
+	seen := make(map[int]struct{})
+	var ids []int
+	add := func(vals ...int) {
+		for _, v := range vals {
+			if v == 0 {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			ids = append(ids, v)
+		}
+	}
+	addMedia := func(m entity.HeroMedia) { add(m.PortraitId, m.LandscapeId) }
+	addSingle := func(s entity.HeroSingleInsert) { addMedia(s.Media) }
+	addSingles := func(ss []entity.HeroSingleInsert) {
+		for i := range ss {
+			addMedia(ss[i].Media)
+		}
+	}
+
+	for _, e := range hfi.Entities {
+		switch e.Type {
+		case entity.HeroTypeSingle:
+			addSingle(e.Single)
+		case entity.HeroTypeDouble:
+			addSingle(e.Double.Left)
+			addSingle(e.Double.Right)
+		case entity.HeroTypeMain:
+			addMedia(e.Main.Media)
+		case entity.HeroTypeEmbed:
+			addMedia(e.Embed.Fallback)
+		case entity.HeroTypeDrop:
+			addMedia(e.Drop.Media)
+		case entity.HeroTypeSlideshow:
+			addSingles(e.Slideshow.Slides)
+		case entity.HeroTypeMosaic:
+			addSingles(e.Mosaic.Tiles)
+		case entity.HeroTypeSplit:
+			addSingle(e.Split.Media)
+		case entity.HeroTypeVideo:
+			add(e.Video.MediaId, e.Video.PosterMediaId)
+		case entity.HeroTypeProductSpotlight:
+			addMedia(e.ProductSpotlight.Media)
+		case entity.HeroTypeNewsletter:
+			addMedia(e.Newsletter.Media)
+		case entity.HeroTypeStatement:
+			addMedia(e.Statement.Media)
+		case entity.HeroTypeLookbook:
+			addSingles(e.Lookbook.Frames)
+		}
+	}
+	add(hfi.NavFeatured.Men.MediaId, hfi.NavFeatured.Women.MediaId)
+	return ids
+}
+
 // resolveHeroMedia turns a HeroMedia (ids) into a HeroMediaFull. A missing
 // portrait/landscape id falls back to the other, matching the prior behaviour.
-func resolveHeroMedia(ctx context.Context, rep dependency.Repository, m entity.HeroMedia) (entity.HeroMediaFull, error) {
+func resolveHeroMedia(ctx context.Context, l *mediaLoader, m entity.HeroMedia) (entity.HeroMediaFull, error) {
 	portraitId, landscapeId := m.PortraitId, m.LandscapeId
 	if portraitId == 0 {
 		portraitId = landscapeId
@@ -165,14 +273,14 @@ func resolveHeroMedia(ctx context.Context, rep dependency.Repository, m entity.H
 		Stroke:         m.Stroke,
 	}
 	if portraitId != 0 {
-		pm, err := rep.Media().GetMediaById(ctx, portraitId)
+		pm, err := l.get(ctx, portraitId)
 		if err != nil {
 			return full, fmt.Errorf("failed to get portrait media %d: %w", portraitId, err)
 		}
 		full.Portrait = *pm
 	}
 	if landscapeId != 0 {
-		lm, err := rep.Media().GetMediaById(ctx, landscapeId)
+		lm, err := l.get(ctx, landscapeId)
 		if err != nil {
 			return full, fmt.Errorf("failed to get landscape media %d: %w", landscapeId, err)
 		}
@@ -181,8 +289,8 @@ func resolveHeroMedia(ctx context.Context, rep dependency.Repository, m entity.H
 	return full, nil
 }
 
-func resolveHeroSingle(ctx context.Context, rep dependency.Repository, s entity.HeroSingleInsert) (entity.HeroSingleWithTranslations, error) {
-	media, err := resolveHeroMedia(ctx, rep, s.Media)
+func resolveHeroSingle(ctx context.Context, l *mediaLoader, s entity.HeroSingleInsert) (entity.HeroSingleWithTranslations, error) {
+	media, err := resolveHeroMedia(ctx, l, s.Media)
 	if err != nil {
 		return entity.HeroSingleWithTranslations{}, err
 	}
@@ -193,10 +301,10 @@ func resolveHeroSingle(ctx context.Context, rep dependency.Repository, s entity.
 	}, nil
 }
 
-func resolveHeroSingleSlice(ctx context.Context, rep dependency.Repository, in []entity.HeroSingleInsert) ([]entity.HeroSingleWithTranslations, error) {
+func resolveHeroSingleSlice(ctx context.Context, l *mediaLoader, in []entity.HeroSingleInsert) ([]entity.HeroSingleWithTranslations, error) {
 	out := make([]entity.HeroSingleWithTranslations, 0, len(in))
 	for i := range in {
-		s, err := resolveHeroSingle(ctx, rep, in[i])
+		s, err := resolveHeroSingle(ctx, l, in[i])
 		if err != nil {
 			return nil, err
 		}
@@ -217,6 +325,12 @@ func filterVisibleProducts(products []entity.Product) []entity.Product {
 }
 
 func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.HeroFullInsert) (*entity.HeroFullWithTranslations, error) {
+	// Batch-load every media the hero references in one query, then resolve blocks
+	// against the primed cache instead of a SELECT per media (the old N+1 inside
+	// the SetHero transaction). Unknown ids fall back to per-id fetches.
+	ml := newMediaLoader(rep)
+	ml.prime(ctx, collectHeroMediaIds(hfi))
+
 	entities := make([]entity.HeroEntityWithTranslations, 0, len(hfi.Entities))
 	for _, e := range hfi.Entities {
 		before := len(entities)
@@ -225,7 +339,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			if heroMediaEmpty(e.Single.Media) {
 				continue
 			}
-			single, err := resolveHeroSingle(ctx, rep, e.Single)
+			single, err := resolveHeroSingle(ctx, ml, e.Single)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve single hero, skipping", slog.String("err", err.Error()))
 				continue
@@ -236,12 +350,12 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			if heroMediaEmpty(e.Double.Left.Media) || heroMediaEmpty(e.Double.Right.Media) {
 				continue
 			}
-			left, err := resolveHeroSingle(ctx, rep, e.Double.Left)
+			left, err := resolveHeroSingle(ctx, ml, e.Double.Left)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve double hero left, skipping", slog.String("err", err.Error()))
 				continue
 			}
-			right, err := resolveHeroSingle(ctx, rep, e.Double.Right)
+			right, err := resolveHeroSingle(ctx, ml, e.Double.Right)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve double hero right, skipping", slog.String("err", err.Error()))
 				continue
@@ -256,7 +370,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			if heroMediaEmpty(e.Main.Media) {
 				continue
 			}
-			media, err := resolveHeroMedia(ctx, rep, e.Main.Media)
+			media, err := resolveHeroMedia(ctx, ml, e.Main.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve main hero, skipping", slog.String("err", err.Error()))
 				continue
@@ -337,7 +451,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeEmbed:
-			fallback, err := resolveHeroMedia(ctx, rep, e.Embed.Fallback)
+			fallback, err := resolveHeroMedia(ctx, ml, e.Embed.Fallback)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve embed fallback, skipping", slog.String("err", err.Error()))
 				continue
@@ -353,7 +467,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeDrop:
-			media, err := resolveHeroMedia(ctx, rep, e.Drop.Media)
+			media, err := resolveHeroMedia(ctx, ml, e.Drop.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve drop media, skipping", slog.String("err", err.Error()))
 				continue
@@ -422,7 +536,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeSlideshow:
-			slides, err := resolveHeroSingleSlice(ctx, rep, e.Slideshow.Slides)
+			slides, err := resolveHeroSingleSlice(ctx, ml, e.Slideshow.Slides)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve slideshow slides, skipping", slog.String("err", err.Error()))
 				continue
@@ -439,7 +553,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeMosaic:
-			tiles, err := resolveHeroSingleSlice(ctx, rep, e.Mosaic.Tiles)
+			tiles, err := resolveHeroSingleSlice(ctx, ml, e.Mosaic.Tiles)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve mosaic tiles, skipping", slog.String("err", err.Error()))
 				continue
@@ -456,7 +570,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeSplit:
-			media, err := resolveHeroSingle(ctx, rep, e.Split.Media)
+			media, err := resolveHeroSingle(ctx, ml, e.Split.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve split media, skipping", slog.String("err", err.Error()))
 				continue
@@ -484,7 +598,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 				slog.ErrorContext(ctx, "video hero has no media id, skipping")
 				continue
 			}
-			videoMedia, err := rep.Media().GetMediaById(ctx, e.Video.MediaId)
+			videoMedia, err := ml.get(ctx, e.Video.MediaId)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to get video media, skipping", slog.String("err", err.Error()))
 				continue
@@ -498,7 +612,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 				Translations: e.Video.Translations,
 			}
 			if e.Video.PosterMediaId != 0 {
-				poster, err := rep.Media().GetMediaById(ctx, e.Video.PosterMediaId)
+				poster, err := ml.get(ctx, e.Video.PosterMediaId)
 				if err != nil {
 					slog.ErrorContext(ctx, "failed to get video poster media", slog.String("err", err.Error()))
 				} else {
@@ -521,7 +635,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			if len(prds) == 0 {
 				continue
 			}
-			media, err := resolveHeroMedia(ctx, rep, e.ProductSpotlight.Media)
+			media, err := resolveHeroMedia(ctx, ml, e.ProductSpotlight.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve spotlight media, skipping", slog.String("err", err.Error()))
 				continue
@@ -537,7 +651,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeNewsletter:
-			media, err := resolveHeroMedia(ctx, rep, e.Newsletter.Media)
+			media, err := resolveHeroMedia(ctx, ml, e.Newsletter.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve newsletter media, skipping", slog.String("err", err.Error()))
 				continue
@@ -551,7 +665,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeStatement:
-			media, err := resolveHeroMedia(ctx, rep, e.Statement.Media)
+			media, err := resolveHeroMedia(ctx, ml, e.Statement.Media)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve statement media, skipping", slog.String("err", err.Error()))
 				continue
@@ -566,7 +680,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			})
 
 		case entity.HeroTypeLookbook:
-			frames, err := resolveHeroSingleSlice(ctx, rep, e.Lookbook.Frames)
+			frames, err := resolveHeroSingleSlice(ctx, ml, e.Lookbook.Frames)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to resolve lookbook frames, skipping", slog.String("err", err.Error()))
 				continue
@@ -609,7 +723,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 	}
 
 	if hfi.NavFeatured.Men.MediaId != 0 {
-		menMedia, err := rep.Media().GetMediaById(ctx, hfi.NavFeatured.Men.MediaId)
+		menMedia, err := ml.get(ctx, hfi.NavFeatured.Men.MediaId)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to get nav men media",
 				slog.String("err", err.Error()),
@@ -620,7 +734,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 	}
 
 	if hfi.NavFeatured.Women.MediaId != 0 {
-		womenMedia, err := rep.Media().GetMediaById(ctx, hfi.NavFeatured.Women.MediaId)
+		womenMedia, err := ml.get(ctx, hfi.NavFeatured.Women.MediaId)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to get nav women media",
 				slog.String("err", err.Error()),

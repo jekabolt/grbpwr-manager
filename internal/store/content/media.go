@@ -49,6 +49,25 @@ func (s *Store) GetMediaById(ctx context.Context, id int) (*entity.MediaFull, er
 	return &media, nil
 }
 
+// GetMediaByIds retrieves multiple media items in a single query, returned as a
+// map keyed by id. Ids with no matching row are simply absent from the map.
+// Used to batch-load hero media instead of issuing one SELECT per reference.
+func (s *Store) GetMediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error) {
+	if len(ids) == 0 {
+		return map[int]entity.MediaFull{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get media by ids: %w", err)
+	}
+	out := make(map[int]entity.MediaFull, len(rows))
+	for _, m := range rows {
+		out[m.Id] = m
+	}
+	return out, nil
+}
+
 // DeleteMediaById deletes a media item by its ID.
 func (s *Store) DeleteMediaById(ctx context.Context, id int) error {
 	query := `DELETE FROM media WHERE id = :id`

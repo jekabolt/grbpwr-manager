@@ -534,6 +534,7 @@ type (
 	Media interface {
 		AddMedia(ctx context.Context, media *entity.MediaItem) (int, error)
 		GetMediaById(ctx context.Context, id int) (*entity.MediaFull, error)
+		GetMediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
 	}
