@@ -40,10 +40,55 @@ type ProductionRunSize struct {
 	DefectQty   sql.NullInt64 `db:"defect_qty"`
 }
 
-// ProductionRunInsert is the writable payload for a run (header + size grid). PlannedUnitCost and
-// PlannedCurrency are server-snapshotted at plan time (from the linked tech_card_release or the
-// live card's computed costing) — they are set by the service layer, never taken from the client,
-// and are frozen once set so the run's plan does not drift when the card is edited afterwards.
+// ProductionRunCostKind is the article category of an actual production-run cost. It mirrors the
+// common.ProductionRunCostKind proto enum and is stored as its lowercase string.
+type ProductionRunCostKind string
+
+const (
+	ProductionRunCostMaterials ProductionRunCostKind = "materials"
+	ProductionRunCostCMT       ProductionRunCostKind = "cmt"
+	ProductionRunCostHardware  ProductionRunCostKind = "hardware"
+	ProductionRunCostPackaging ProductionRunCostKind = "packaging"
+	ProductionRunCostLogistics ProductionRunCostKind = "logistics"
+	ProductionRunCostDuty      ProductionRunCostKind = "duty"
+	ProductionRunCostOther     ProductionRunCostKind = "other"
+)
+
+// ValidProductionRunCostKinds is the set of accepted cost article kinds.
+var ValidProductionRunCostKinds = map[ProductionRunCostKind]bool{
+	ProductionRunCostMaterials: true,
+	ProductionRunCostCMT:       true,
+	ProductionRunCostHardware:  true,
+	ProductionRunCostPackaging: true,
+	ProductionRunCostLogistics: true,
+	ProductionRunCostDuty:      true,
+	ProductionRunCostOther:     true,
+}
+
+// IsValidProductionRunCostKind reports whether k is an accepted cost kind.
+func IsValidProductionRunCostKind(k ProductionRunCostKind) bool {
+	return ValidProductionRunCostKinds[k]
+}
+
+// ProductionRunCost is one actual cost article incurred for a run (phase 2). Amount is in
+// Currency; AmountBase is the base-currency equivalent (server-folded via the costing FX rates
+// when not supplied) so run totals and plan/fact are a plain SUM with no read-time FX.
+type ProductionRunCost struct {
+	Id          int                   `db:"id"`
+	RunId       int                   `db:"run_id"`
+	Kind        ProductionRunCostKind `db:"kind"`
+	Description sql.NullString        `db:"description"`
+	Amount      decimal.Decimal       `db:"amount"`
+	Currency    string                `db:"currency"`
+	AmountBase  decimal.NullDecimal   `db:"amount_base"`
+	IncurredAt  sql.NullTime          `db:"incurred_at"`
+}
+
+// ProductionRunInsert is the writable payload for a run (header + size grid + actual costs).
+// PlannedUnitCost and PlannedCurrency are server-snapshotted at plan time (from the linked
+// tech_card_release or the live card's computed costing) — they are set by the service layer,
+// never taken from the client, and are frozen once set so the run's plan does not drift when the
+// card is edited afterwards.
 type ProductionRunInsert struct {
 	TechCardId      int                 `db:"tech_card_id"`
 	ReleaseId       sql.NullInt64       `db:"release_id"`
@@ -54,6 +99,7 @@ type ProductionRunInsert struct {
 	PlannedCurrency sql.NullString      `db:"planned_currency"`
 	Notes           sql.NullString      `db:"notes"`
 	Sizes           []ProductionRunSize `db:"-"`
+	Costs           []ProductionRunCost `db:"-"`
 }
 
 // ProductionRun is a stored production run (production_run row + its size grid).

@@ -64,7 +64,10 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 		if err != nil {
 			return fmt.Errorf("failed to insert production run: %w", err)
 		}
-		return insertRunSizes(ctx, rep.DB(), id, r.Sizes)
+		if err := insertRunSizes(ctx, rep.DB(), id, r.Sizes); err != nil {
+			return err
+		}
+		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't create production run: %w", err)
@@ -90,11 +93,16 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if rows == 0 {
 			return sql.ErrNoRows
 		}
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM production_run_size WHERE run_id = :id`, map[string]any{"id": id}); err != nil {
-			return fmt.Errorf("failed to clear production run sizes: %w", err)
+		for _, tbl := range []string{"production_run_size", "production_run_cost"} {
+			if err := storeutil.ExecNamed(ctx, rep.DB(),
+				fmt.Sprintf(`DELETE FROM %s WHERE run_id = :id`, tbl), map[string]any{"id": id}); err != nil {
+				return fmt.Errorf("failed to clear %s: %w", tbl, err)
+			}
 		}
-		return insertRunSizes(ctx, rep.DB(), id, r.Sizes)
+		if err := insertRunSizes(ctx, rep.DB(), id, r.Sizes); err != nil {
+			return err
+		}
+		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -129,6 +137,11 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, err
 	}
 	run.Sizes = sizes
+	costs, err := s.runCosts(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	run.Costs = costs
 	return &run, nil
 }
 
@@ -165,6 +178,9 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 		return nil, 0, fmt.Errorf("can't list production runs: %w", err)
 	}
 	if err := s.attachSizes(ctx, runs); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCosts(ctx, runs); err != nil {
 		return nil, 0, err
 	}
 	return runs, total, nil
@@ -210,6 +226,66 @@ func (s *Store) attachSizes(ctx context.Context, runs []entity.ProductionRun) er
 		if i, ok := idx[r.RunID]; ok {
 			runs[i].Sizes = append(runs[i].Sizes, r.ProductionRunSize)
 		}
+	}
+	return nil
+}
+
+// runCosts loads one run's actual cost articles ordered by id (insertion order).
+func (s *Store) runCosts(ctx context.Context, runID int) ([]entity.ProductionRunCost, error) {
+	costs, err := storeutil.QueryListNamed[entity.ProductionRunCost](ctx, s.DB,
+		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at
+		 FROM production_run_cost WHERE run_id = :run_id ORDER BY id`,
+		map[string]any{"run_id": runID})
+	if err != nil {
+		return nil, fmt.Errorf("can't load production run costs: %w", err)
+	}
+	return costs, nil
+}
+
+// attachCosts loads the cost articles for a page of runs in one query and attaches them.
+func (s *Store) attachCosts(ctx context.Context, runs []entity.ProductionRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	ids := make([]int, len(runs))
+	idx := make(map[int]int, len(runs))
+	for i := range runs {
+		ids[i] = runs[i].Id
+		idx[runs[i].Id] = i
+	}
+	costs, err := storeutil.QueryListNamed[entity.ProductionRunCost](ctx, s.DB,
+		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at
+		 FROM production_run_cost WHERE run_id IN (:ids) ORDER BY run_id, id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load production run costs: %w", err)
+	}
+	for _, c := range costs {
+		if i, ok := idx[c.RunId]; ok {
+			runs[i].Costs = append(runs[i].Costs, c)
+		}
+	}
+	return nil
+}
+
+func insertRunCosts(ctx context.Context, db dependency.DB, runID int, costs []entity.ProductionRunCost) error {
+	if len(costs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(costs))
+	for _, c := range costs {
+		rows = append(rows, map[string]any{
+			"run_id":      runID,
+			"kind":        string(c.Kind),
+			"description": c.Description,
+			"amount":      c.Amount,
+			"currency":    c.Currency,
+			"amount_base": c.AmountBase,
+			"incurred_at": c.IncurredAt,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "production_run_cost", rows); err != nil {
+		return fmt.Errorf("failed to insert production run costs: %w", err)
 	}
 	return nil
 }

@@ -26,6 +26,9 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
 	}
+	if len(ins.Costs) > 0 {
+		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
+	}
 	id, err := s.repo.ProductionRuns().CreateProductionRun(ctx, ins)
 	if err != nil {
 		if s.repo.IsErrForeignKeyViolation(err) {
@@ -46,6 +49,9 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if len(ins.Costs) > 0 {
+		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
 	}
 	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

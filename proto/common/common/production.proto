@@ -28,6 +28,53 @@ message ProductionRunSize {
   optional int32 defect_qty = 4; // unset until the run is received
 }
 
+// ProductionRunCostKind is the article category of an actual production-run cost.
+enum ProductionRunCostKind {
+  PRODUCTION_RUN_COST_KIND_UNKNOWN = 0;
+  PRODUCTION_RUN_COST_KIND_MATERIALS = 1;
+  PRODUCTION_RUN_COST_KIND_CMT = 2;
+  PRODUCTION_RUN_COST_KIND_HARDWARE = 3;
+  PRODUCTION_RUN_COST_KIND_PACKAGING = 4;
+  PRODUCTION_RUN_COST_KIND_LOGISTICS = 5;
+  PRODUCTION_RUN_COST_KIND_DUTY = 6;
+  PRODUCTION_RUN_COST_KIND_OTHER = 7;
+}
+
+// ProductionRunCost is one actual cost article incurred for a run (phase 2). amount is in
+// `currency`; amount_base is the base-currency equivalent — server-folded via the costing FX
+// rates when left unset on write, or supplied manually — so run totals need no read-time FX.
+message ProductionRunCost {
+  ProductionRunCostKind kind = 1;
+  string description = 2;
+  google.type.Decimal amount = 3;
+  string currency = 4; // ISO 4217
+  google.type.Decimal amount_base = 5; // base-currency amount (server-folded when unset)
+  google.protobuf.Timestamp incurred_at = 6;
+}
+
+// ProductionRunCostByKind is the base-currency total of actual costs of one kind.
+message ProductionRunCostByKind {
+  ProductionRunCostKind kind = 1;
+  google.type.Decimal amount_base = 2;
+}
+
+// ProductionRunActuals is the computed-on-read plan/fact summary of a run: actual totals from the
+// cost articles + the phase-1 size grid, against the frozen planned unit cost.
+message ProductionRunActuals {
+  google.type.Decimal actual_total_base = 1; // Σ cost.amount_base
+  string base_currency = 2;
+  int32 planned_qty_total = 3;
+  int32 received_qty_total = 4;
+  int32 defect_qty_total = 5;
+  google.type.Decimal actual_unit_cost = 6; // actual_total_base / received_qty_total
+  google.type.Decimal defect_pct_actual = 7; // defect / (received + defect) × 100
+  repeated ProductionRunCostByKind by_kind = 8;
+  google.type.Decimal planned_total_base = 9; // planned_unit_cost × received_qty_total
+  google.type.Decimal unit_cost_variance = 10; // actual_unit_cost − planned_unit_cost
+  google.type.Decimal total_variance = 11; // actual_total_base − planned_total_base
+  bool has_base = 12; // false when some cost article could not be folded to base (total is partial)
+}
+
 // ProductionRunInsert is the writable payload for a run (header + size grid). planned_unit_cost /
 // planned_currency are NOT here — they are server-snapshotted at plan time (from the linked
 // tech_card_release or the live card's computed costing) and are read-only on write.
@@ -39,6 +86,7 @@ message ProductionRunInsert {
   google.protobuf.Timestamp received_at = 5;
   string notes = 6;
   repeated ProductionRunSize sizes = 7;
+  repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)
 }
 
 // ProductionRun is a stored run: the writable payload plus the server-owned identity, the frozen
@@ -50,4 +98,5 @@ message ProductionRun {
   string planned_currency = 4; // currency of planned_unit_cost
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+  ProductionRunActuals actuals = 7; // computed-on-read plan/fact summary
 }

@@ -107,7 +107,9 @@ func TestProductionRun(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	nd := func(v string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true} }
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 
 	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
@@ -127,6 +129,9 @@ func TestProductionRun(t *testing.T) {
 			{SizeId: 1, PlannedQty: 60},
 			{SizeId: 2, PlannedQty: 40},
 		},
+		Costs: []entity.ProductionRunCost{
+			{Kind: entity.ProductionRunCostMaterials, Amount: decimal.RequireFromString("500"), Currency: "EUR", AmountBase: nd("500")},
+		},
 	})
 	require.NoError(t, err)
 	require.Greater(t, runID, 0)
@@ -141,6 +146,10 @@ func TestProductionRun(t *testing.T) {
 	require.Equal(t, 1, got.Sizes[0].SizeId)
 	require.Equal(t, 60, got.Sizes[0].PlannedQty)
 	require.False(t, got.Sizes[0].ReceivedQty.Valid, "received unset until receipt")
+	require.Len(t, got.Costs, 1)
+	require.Equal(t, entity.ProductionRunCostMaterials, got.Costs[0].Kind)
+	require.True(t, got.Costs[0].Amount.Equal(decimal.RequireFromString("500")))
+	require.True(t, got.Costs[0].AmountBase.Decimal.Equal(decimal.RequireFromString("500")))
 
 	list, total, err := P.ListProductionRuns(ctx, 0, 0, entity.ProductionRunListFilter{TechCardId: tcID})
 	require.NoError(t, err)
@@ -164,6 +173,9 @@ func TestProductionRun(t *testing.T) {
 		Sizes: []entity.ProductionRunSize{
 			{SizeId: 1, PlannedQty: 60, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}, DefectQty: sql.NullInt64{Int64: 2, Valid: true}},
 		},
+		Costs: []entity.ProductionRunCost{
+			{Kind: entity.ProductionRunCostCMT, Amount: decimal.RequireFromString("400"), Currency: "EUR", AmountBase: nd("400")},
+		},
 	}))
 	got, err = P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
@@ -173,6 +185,8 @@ func TestProductionRun(t *testing.T) {
 	require.Len(t, got.Sizes, 1, "grid full-replaced")
 	require.EqualValues(t, 58, got.Sizes[0].ReceivedQty.Int64)
 	require.EqualValues(t, 2, got.Sizes[0].DefectQty.Int64)
+	require.Len(t, got.Costs, 1, "costs full-replaced")
+	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
 	// update of a missing run → ErrNoRows
 	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned})
@@ -211,7 +225,9 @@ func TestTechCardRelease(t *testing.T) {
 
 	T := s.TechCards()
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
-	nd := func(v string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true} }
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
 
 	// minimal parent card (header only — no size/media/product FKs to satisfy).
 	tcID, err := T.AddTechCard(ctx, &entity.TechCardInsert{
