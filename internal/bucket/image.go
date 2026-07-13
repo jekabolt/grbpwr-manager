@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"log/slog"
 	"math"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bbrks/go-blurhash"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -162,11 +164,15 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	})
 
 	if err := g.Wait(); err != nil {
+		// One or two variants may have uploaded before another failed; remove them so
+		// the partial upload doesn't orphan S3 objects with no DB row referencing them.
+		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to upload image variants: %w", err)
 	}
 
 	h, err := getBlurHash(thumbImg)
 	if err != nil {
+		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to get blurhash: %v", err)
 	}
 
@@ -183,6 +189,8 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		BlurHash:           sql.NullString{String: h, Valid: true},
 	})
 	if err != nil {
+		// All three objects are in S3 but no row references them: clean them up.
+		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to add media to db: %v", err)
 	}
 
@@ -195,6 +203,28 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 			Blurhash:   h,
 		},
 	}, nil
+}
+
+// cleanupUploadedVariants best-effort removes any variant objects that were
+// already uploaded when a later step (a sibling upload, blurhash, or the DB
+// insert) fails, so a partial upload does not orphan S3 objects. It uses a fresh
+// context because the errgroup context may already be cancelled.
+func (b *Bucket) cleanupUploadedVariants(variants ...*pb_common.MediaInfo) {
+	urls := make([]string, 0, len(variants))
+	for _, v := range variants {
+		if v != nil && v.MediaUrl != "" {
+			urls = append(urls, v.MediaUrl)
+		}
+	}
+	if len(urls) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := b.DeleteObjects(ctx, urls...); err != nil {
+		slog.Default().ErrorContext(ctx, "failed to clean up orphaned image variants after upload failure",
+			slog.String("err", err.Error()))
+	}
 }
 
 func clamp(v, lo, hi int) int {
