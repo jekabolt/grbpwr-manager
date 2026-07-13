@@ -241,6 +241,24 @@ var corsDevOrigins = []string{
 // they let any attacker-controlled *.vercel.app / *.github.io deployment make
 // credentialed cross-origin calls. Localhost dev origins are gated behind
 // allowDevOrigins (env-driven; off in prod) so they never widen the prod surface.
+// recoverMiddleware recovers panics in non-gRPC HTTP handlers, logs the stack via
+// slog, and returns 500 instead of letting net/http drop the connection silently.
+func recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Default().ErrorContext(r.Context(), "recovered panic in http handler",
+					slog.Any("panic", rec),
+					slog.String("path", r.URL.Path),
+					slog.String("stack", string(debug.Stack())),
+				)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Handler) http.Handler {
 	origins := make([]string, 0, len(allowedOrigins)+len(corsDevOrigins))
 
@@ -264,6 +282,11 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
 
 	r := chi.NewRouter()
+	// App-level panic recovery for the non-gRPC HTTP surface (webhooks, /statusz,
+	// swagger, fileserver, REST gateway). The gRPC interceptor chain covers only the
+	// gRPC path; without this a panic in a chi handler drops the connection with no
+	// slog stack and no clean 500. Placed at the root so it wraps every route.
+	r.Use(recoverMiddleware)
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
