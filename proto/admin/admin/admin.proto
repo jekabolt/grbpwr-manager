@@ -15,6 +15,7 @@ import "common/model.proto";
 import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
+import "common/production.proto";
 import "common/promo.proto";
 import "common/shipment.proto";
 import "common/support.proto";
@@ -636,6 +637,30 @@ service AdminService {
   }
   rpc GetTechCardRelease(GetTechCardReleaseRequest) returns (GetTechCardReleaseResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/release/{id}"};
+  }
+
+  // Production runs (партии, task 09): a batch produced from a tech card, with a plan snapshot
+  // and (later) actual costs for plan/fact analysis.
+  rpc CreateProductionRun(CreateProductionRunRequest) returns (CreateProductionRunResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs"
+      body: "*"
+    };
+  }
+  rpc UpdateProductionRun(UpdateProductionRunRequest) returns (UpdateProductionRunResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/production-runs/{id}"
+      body: "*"
+    };
+  }
+  rpc DeleteProductionRun(DeleteProductionRunRequest) returns (DeleteProductionRunResponse) {
+    option (google.api.http) = {delete: "/api/admin/production-runs/{id}"};
+  }
+  rpc GetProductionRun(GetProductionRunRequest) returns (GetProductionRunResponse) {
+    option (google.api.http) = {get: "/api/admin/production-runs/{id}"};
+  }
+  rpc ListProductionRuns(ListProductionRunsRequest) returns (ListProductionRunsResponse) {
+    option (google.api.http) = {get: "/api/admin/production-runs"};
   }
 
   // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
@@ -3222,6 +3247,48 @@ message GetTechCardReleaseResponse {
   // metadata rather than failing (hero-v2 degradation rule).
   common.TechCard snapshot = 2;
   string snapshot_error = 3;
+}
+
+// Production runs (task 09).
+message CreateProductionRunRequest {
+  common.ProductionRunInsert run = 1;
+}
+
+message CreateProductionRunResponse {
+  int32 id = 1;
+}
+
+message UpdateProductionRunRequest {
+  int32 id = 1;
+  common.ProductionRunInsert run = 2;
+}
+
+message UpdateProductionRunResponse {}
+
+message DeleteProductionRunRequest {
+  int32 id = 1;
+}
+
+message DeleteProductionRunResponse {}
+
+message GetProductionRunRequest {
+  int32 id = 1;
+}
+
+message GetProductionRunResponse {
+  common.ProductionRun run = 1;
+}
+
+message ListProductionRunsRequest {
+  int32 tech_card_id = 1; // 0 = all cards
+  string status = 2; // empty = all statuses
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListProductionRunsResponse {
+  repeated common.ProductionRun runs = 1;
+  int32 total = 2; // total matching runs, ignoring pagination
 }
 
 // ADMIN ACCOUNTS (RBAC)

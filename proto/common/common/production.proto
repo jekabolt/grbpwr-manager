@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// ProductionRunStatus is the lifecycle state of a production run (партия). A run is planned, then
+// started (in_progress), then received into stock, then closed; it can be cancelled from any
+// non-terminal state. Stored as its lowercase name in the DB.
+enum ProductionRunStatus {
+  PRODUCTION_RUN_STATUS_UNKNOWN = 0;
+  PRODUCTION_RUN_STATUS_PLANNED = 1;
+  PRODUCTION_RUN_STATUS_IN_PROGRESS = 2;
+  PRODUCTION_RUN_STATUS_RECEIVED = 3;
+  PRODUCTION_RUN_STATUS_CLOSED = 4;
+  PRODUCTION_RUN_STATUS_CANCELLED = 5;
+}
+
+// ProductionRunSize is one size line of a run: the planned quantity, and — once received — the
+// received and defective counts (unset until the batch is received) that drive plan/fact.
+message ProductionRunSize {
+  int32 size_id = 1; // FK size(id)
+  int32 planned_qty = 2;
+  optional int32 received_qty = 3; // unset until the run is received
+  optional int32 defect_qty = 4; // unset until the run is received
+}
+
+// ProductionRunInsert is the writable payload for a run (header + size grid). planned_unit_cost /
+// planned_currency are NOT here — they are server-snapshotted at plan time (from the linked
+// tech_card_release or the live card's computed costing) and are read-only on write.
+message ProductionRunInsert {
+  int32 tech_card_id = 1; // required
+  int32 release_id = 2; // optional tech_card_release to plan from (0 = none / plan from live card)
+  ProductionRunStatus status = 3; // required
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp received_at = 5;
+  string notes = 6;
+  repeated ProductionRunSize sizes = 7;
+}
+
+// ProductionRun is a stored run: the writable payload plus the server-owned identity, the frozen
+// plan snapshot, and timestamps.
+message ProductionRun {
+  int32 id = 1;
+  ProductionRunInsert run = 2;
+  google.type.Decimal planned_unit_cost = 3; // snapshot of the card/release unit cost at plan time
+  string planned_currency = 4; // currency of planned_unit_cost
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}

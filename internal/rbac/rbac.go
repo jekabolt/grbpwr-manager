@@ -36,6 +36,7 @@ const (
 	SectionModels      = "models"
 	SectionFittings    = "fittings"
 	SectionTechCards   = "tech_cards"
+	SectionProduction  = "production"
 	SectionTasks       = "tasks"
 	SectionSettings    = "settings"
 	SectionSupport     = "support"
@@ -66,6 +67,7 @@ var catalog = []SectionInfo{
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
+	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
 	{SectionSupport, "Support", "Support tickets and reviews."},
@@ -186,6 +188,12 @@ var methodRequirements = map[string]Requirement{
 	"ListMaterialPrices":   rd(SectionTechCards),
 	"ListTechCardReleases": rd(SectionTechCards),
 	"GetTechCardRelease":   rd(SectionTechCards),
+	// production runs (партии)
+	"CreateProductionRun": wr(SectionProduction),
+	"UpdateProductionRun": wr(SectionProduction),
+	"DeleteProductionRun": wr(SectionProduction),
+	"GetProductionRun":    rd(SectionProduction),
+	"ListProductionRuns":  rd(SectionProduction),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),

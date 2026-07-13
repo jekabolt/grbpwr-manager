@@ -425,6 +425,16 @@ type (
 		GetTechCardRelease(ctx context.Context, id int) (*entity.TechCardRelease, error)
 	}
 
+	// ProductionRuns is the production-run (партия) repository: the run header + per-size
+	// planned/received/defect grid, with the planned unit cost snapshotted at plan time.
+	ProductionRuns interface {
+		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert) error
+		DeleteProductionRun(ctx context.Context, id int) error
+		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
+		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -638,6 +648,7 @@ type (
 		Tasks() Tasks
 		Fulfillment() Fulfillment
 		TechCards() TechCards
+		ProductionRuns() ProductionRuns
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail

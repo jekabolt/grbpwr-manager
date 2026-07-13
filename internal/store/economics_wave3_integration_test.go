@@ -94,6 +94,99 @@ func TestMaterialCatalog(t *testing.T) {
 	require.True(t, containsMaterial(list, matID), "archived included when requested")
 }
 
+// TestProductionRun exercises the task-09 phase-1 production-run store against a real MySQL:
+// create with a plan snapshot + size grid, get, list (sizes attached), update (frozen plan cost,
+// full-replaced sizes, received/defect facts), and delete (grid cascades).
+func TestProductionRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	nd := func(v string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true} }
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber: "PRUN-001", Name: "Run Coat", Stage: entity.TechCardStageProto,
+		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
+	})
+	require.NoError(t, err)
+	defer func() { _ = s.TechCards().DeleteTechCard(ctx, tcID) }()
+
+	P := s.ProductionRuns()
+	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId:      tcID,
+		Status:          entity.ProductionRunPlanned,
+		PlannedUnitCost: nd("33.00"),
+		PlannedCurrency: ns("EUR"),
+		Sizes: []entity.ProductionRunSize{
+			{SizeId: 1, PlannedQty: 60},
+			{SizeId: 2, PlannedQty: 40},
+		},
+	})
+	require.NoError(t, err)
+	require.Greater(t, runID, 0)
+
+	got, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, tcID, got.TechCardId)
+	require.Equal(t, entity.ProductionRunPlanned, got.Status)
+	require.True(t, got.PlannedUnitCost.Decimal.Equal(decimal.RequireFromString("33.00")))
+	require.Equal(t, "EUR", got.PlannedCurrency.String)
+	require.Len(t, got.Sizes, 2)
+	require.Equal(t, 1, got.Sizes[0].SizeId)
+	require.Equal(t, 60, got.Sizes[0].PlannedQty)
+	require.False(t, got.Sizes[0].ReceivedQty.Valid, "received unset until receipt")
+
+	list, total, err := P.ListProductionRuns(ctx, 0, 0, entity.ProductionRunListFilter{TechCardId: tcID})
+	require.NoError(t, err)
+	require.Equal(t, 1, total)
+	require.Len(t, list, 1)
+	require.Len(t, list[0].Sizes, 2, "sizes attached to list rows")
+
+	// status filter that excludes the run returns nothing
+	_, total, err = P.ListProductionRuns(ctx, 0, 0, entity.ProductionRunListFilter{TechCardId: tcID, Status: entity.ProductionRunClosed})
+	require.NoError(t, err)
+	require.Equal(t, 0, total)
+
+	// update: advance status, record facts, full-replace the grid — the plan cost stays frozen.
+	require.NoError(t, P.UpdateProductionRun(ctx, runID, &entity.ProductionRunInsert{
+		TechCardId:      tcID,
+		Status:          entity.ProductionRunInProgress,
+		StartedAt:       sql.NullTime{Time: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), Valid: true},
+		PlannedUnitCost: nd("999.00"), // must be IGNORED by update (frozen at plan time)
+		PlannedCurrency: ns("USD"),
+		Notes:           ns("started"),
+		Sizes: []entity.ProductionRunSize{
+			{SizeId: 1, PlannedQty: 60, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}, DefectQty: sql.NullInt64{Int64: 2, Valid: true}},
+		},
+	}))
+	got, err = P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunInProgress, got.Status)
+	require.True(t, got.PlannedUnitCost.Decimal.Equal(decimal.RequireFromString("33.00")), "plan cost frozen, not overwritten by update")
+	require.Equal(t, "EUR", got.PlannedCurrency.String)
+	require.Len(t, got.Sizes, 1, "grid full-replaced")
+	require.EqualValues(t, 58, got.Sizes[0].ReceivedQty.Int64)
+	require.EqualValues(t, 2, got.Sizes[0].DefectQty.Int64)
+
+	// update of a missing run → ErrNoRows
+	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned})
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	// delete: run gone, grid cascades
+	require.NoError(t, P.DeleteProductionRun(ctx, runID))
+	_, err = P.GetProductionRun(ctx, runID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+	list, _, err = P.ListProductionRuns(ctx, 0, 0, entity.ProductionRunListFilter{TechCardId: tcID})
+	require.NoError(t, err)
+	require.Empty(t, list)
+}
+
 func containsMaterial(list []entity.MaterialWithPrice, id int) bool {
 	for _, m := range list {
 		if m.Id == id {

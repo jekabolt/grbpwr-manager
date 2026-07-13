@@ -1,0 +1,248 @@
+// Package productionrun implements production-run (партия) management: the run header, its
+// per-size planned/received/defect grid, and (later phases) actual costs and stock integration.
+// A run snapshots its planned unit cost at plan time so it stops tracking edits to the tech card.
+package productionrun
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+)
+
+// Pagination bounds for the list endpoint.
+const (
+	defaultPageLimit = 50
+	maxPageLimit     = 100
+)
+
+// TxFunc runs f within a transaction.
+type TxFunc func(ctx context.Context, f func(context.Context, dependency.Repository) error) error
+
+// Store implements dependency.ProductionRuns.
+type Store struct {
+	storeutil.Base
+	txFunc TxFunc
+}
+
+// New creates a new production-run store.
+func New(base storeutil.Base, txFunc TxFunc) *Store {
+	return &Store{Base: base, txFunc: txFunc}
+}
+
+const runColumns = `tech_card_id, release_id, status, started_at, received_at,
+	planned_unit_cost, planned_currency, notes`
+
+const runValues = `:tech_card_id, :release_id, :status, :started_at, :received_at,
+	:planned_unit_cost, :planned_currency, :notes`
+
+func runParams(r *entity.ProductionRunInsert) map[string]any {
+	return map[string]any{
+		"tech_card_id":      r.TechCardId,
+		"release_id":        r.ReleaseId,
+		"status":            string(r.Status),
+		"started_at":        r.StartedAt,
+		"received_at":       r.ReceivedAt,
+		"planned_unit_cost": r.PlannedUnitCost,
+		"planned_currency":  r.PlannedCurrency,
+		"notes":             r.Notes,
+	}
+}
+
+// CreateProductionRun inserts a run and its size grid, returning the new id. PlannedUnitCost/
+// PlannedCurrency are expected to be already snapshotted by the caller.
+func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error) {
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
+			fmt.Sprintf(`INSERT INTO production_run (%s) VALUES (%s)`, runColumns, runValues),
+			runParams(r))
+		if err != nil {
+			return fmt.Errorf("failed to insert production run: %w", err)
+		}
+		return insertRunSizes(ctx, rep.DB(), id, r.Sizes)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("can't create production run: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateProductionRun updates a run's header and full-replaces its size grid. The planned-cost
+// snapshot (planned_unit_cost/planned_currency) is intentionally NOT written here — it is frozen
+// at plan time. Returns sql.ErrNoRows when no run exists.
+func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		params := runParams(r)
+		params["id"] = id
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			UPDATE production_run SET
+				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
+				started_at = :started_at, received_at = :received_at, notes = :notes
+			WHERE id = :id`, params)
+		if err != nil {
+			return fmt.Errorf("failed to update production run: %w", err)
+		}
+		if rows == 0 {
+			return sql.ErrNoRows
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM production_run_size WHERE run_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear production run sizes: %w", err)
+		}
+		return insertRunSizes(ctx, rep.DB(), id, r.Sizes)
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return err
+		}
+		return fmt.Errorf("can't update production run: %w", err)
+	}
+	return nil
+}
+
+// DeleteProductionRun deletes a run by id (size grid cascades).
+func (s *Store) DeleteProductionRun(ctx context.Context, id int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB,
+		`DELETE FROM production_run WHERE id = :id`, map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("failed to delete production run: %w", err)
+	}
+	return nil
+}
+
+// GetProductionRun returns a run with its size grid, or sql.ErrNoRows when none exists.
+func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error) {
+	run, err := storeutil.QueryNamedOne[entity.ProductionRun](ctx, s.DB,
+		`SELECT * FROM production_run WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("can't get production run: %w", err)
+	}
+	sizes, err := s.runSizes(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	run.Sizes = sizes
+	return &run, nil
+}
+
+// ListProductionRuns returns runs (header + size grid) matching the filter, newest-first, with
+// the total count ignoring pagination.
+func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error) {
+	limit, offset = clampPagination(limit, offset)
+
+	params := map[string]any{}
+	where := ""
+	if filter.TechCardId > 0 {
+		where += " AND tech_card_id = :tech_card_id"
+		params["tech_card_id"] = filter.TechCardId
+	}
+	if filter.Status != "" {
+		where += " AND status = :status"
+		params["status"] = string(filter.Status)
+	}
+
+	total, err := storeutil.QueryCountNamed(ctx, s.DB,
+		fmt.Sprintf(`SELECT COUNT(*) FROM production_run WHERE 1=1%s`, where), params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't count production runs: %w", err)
+	}
+
+	params["limit"] = limit
+	params["offset"] = offset
+	runs, err := storeutil.QueryListNamed[entity.ProductionRun](ctx, s.DB, fmt.Sprintf(`
+		SELECT * FROM production_run
+		WHERE 1=1%s
+		ORDER BY id DESC
+		LIMIT :limit OFFSET :offset`, where), params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't list production runs: %w", err)
+	}
+	if err := s.attachSizes(ctx, runs); err != nil {
+		return nil, 0, err
+	}
+	return runs, total, nil
+}
+
+// runSizes loads one run's size grid ordered by size_id.
+func (s *Store) runSizes(ctx context.Context, runID int) ([]entity.ProductionRunSize, error) {
+	sizes, err := storeutil.QueryListNamed[entity.ProductionRunSize](ctx, s.DB,
+		`SELECT size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_size WHERE run_id = :run_id ORDER BY size_id`,
+		map[string]any{"run_id": runID})
+	if err != nil {
+		return nil, fmt.Errorf("can't load production run sizes: %w", err)
+	}
+	return sizes, nil
+}
+
+// sizeGridRow scans a size line together with its run_id for the batched list attach.
+type sizeGridRow struct {
+	RunID int `db:"run_id"`
+	entity.ProductionRunSize
+}
+
+// attachSizes loads the size grids for a page of runs in one query and attaches them.
+func (s *Store) attachSizes(ctx context.Context, runs []entity.ProductionRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	ids := make([]int, len(runs))
+	idx := make(map[int]int, len(runs))
+	for i := range runs {
+		ids[i] = runs[i].Id
+		idx[runs[i].Id] = i
+	}
+	rows, err := storeutil.QueryListNamed[sizeGridRow](ctx, s.DB,
+		`SELECT run_id, size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_size WHERE run_id IN (:ids) ORDER BY run_id, size_id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load production run sizes: %w", err)
+	}
+	for _, r := range rows {
+		if i, ok := idx[r.RunID]; ok {
+			runs[i].Sizes = append(runs[i].Sizes, r.ProductionRunSize)
+		}
+	}
+	return nil
+}
+
+func insertRunSizes(ctx context.Context, db dependency.DB, runID int, sizes []entity.ProductionRunSize) error {
+	if len(sizes) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(sizes))
+	for _, sz := range sizes {
+		rows = append(rows, map[string]any{
+			"run_id":       runID,
+			"size_id":      sz.SizeId,
+			"planned_qty":  sz.PlannedQty,
+			"received_qty": sz.ReceivedQty,
+			"defect_qty":   sz.DefectQty,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "production_run_size", rows); err != nil {
+		return fmt.Errorf("failed to insert production run sizes: %w", err)
+	}
+	return nil
+}
+
+func clampPagination(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = defaultPageLimit
+	}
+	if limit > maxPageLimit {
+		limit = maxPageLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
