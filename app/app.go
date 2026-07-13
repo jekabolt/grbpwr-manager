@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -64,6 +65,11 @@ type App struct {
 	stripeTest *stripe.Processor
 	c          *config.Config
 	done       chan struct{}
+	// stopping guards Stop so it runs exactly once, regardless of which path
+	// triggers it: an OS signal, the listener-crash bridge (see Start), or the
+	// boot-error cleanup in cmd/run.go. Without it, a second caller would panic
+	// on close(a.done) (double close).
+	stopping atomic.Bool
 }
 
 // New returns a new instance of App
@@ -335,6 +341,19 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Bridge an unexpected listener exit to a full shutdown. hs.Start is
+	// non-blocking; if the HTTP server later stops on its own (fatal serve error,
+	// a bind failure surfaced post-start), nothing else would notice and the
+	// process would hang with live workers and a dead API. Watch hs.Done() and
+	// tear the app down so Done() fires and cmd/run.go exits non-zero, letting the
+	// platform restart the instance. During a normal shutdown a.Stop already ran,
+	// so this call is a no-op via the stopping guard.
+	go func() {
+		<-a.hs.Done()
+		slog.Default().ErrorContext(context.Background(), "http server exited unexpectedly; shutting down")
+		a.Stop(context.Background())
+	}()
+
 	return nil
 }
 
@@ -342,6 +361,13 @@ func (a *App) Start(ctx context.Context) error {
 // Shutdown order: drain the API server first (so no new request reaches a worker
 // or the DB), then stop the workers, then close the database.
 func (a *App) Stop(ctx context.Context) {
+	// Idempotent: the signal handler, the listener-crash bridge (see Start), and
+	// the boot-error cleanup can all reach here. Only the first proceeds; the rest
+	// return immediately so close(a.done) runs exactly once.
+	if !a.stopping.CompareAndSwap(false, true) {
+		return
+	}
+
 	// Drain in-flight gRPC/REST requests and stop the listener before tearing
 	// anything down, so handlers don't race against stopped workers or a closed
 	// connection pool.

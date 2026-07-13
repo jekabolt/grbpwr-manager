@@ -44,9 +44,12 @@ func run(cmd *cobra.Command, args []string) error {
 		logger.With("signal", s.String()).Warn("signal received, exiting")
 		a.Stop(ctx)
 		logger.Info("application exited")
+		return nil
 	case <-a.Done():
-		logger.Error("application exited")
+		// Reached only when the app tore itself down without an OS signal — the
+		// HTTP listener exited unexpectedly and the crash bridge invoked Stop.
+		// Return an error so the process exits non-zero and the platform restarts it.
+		logger.Error("application exited unexpectedly")
+		return fmt.Errorf("application exited unexpectedly")
 	}
-
-	return nil
 }
