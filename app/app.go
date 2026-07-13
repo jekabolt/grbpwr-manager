@@ -63,8 +63,11 @@ type App struct {
 	// can be stopped on shutdown before the DB is closed.
 	stripeMain *stripe.Processor
 	stripeTest *stripe.Processor
-	c          *config.Config
-	done       chan struct{}
+	// adminS is retained so Stop can drain the admin server's in-flight async
+	// storefront revalidations (best-effort Vercel calls) at shutdown.
+	adminS *admin.Server
+	c      *config.Config
+	done   chan struct{}
 	// stopping guards Stop so it runs exactly once, regardless of which path
 	// triggers it: an OS signal, the listener-crash bridge (see Start), or the
 	// boot-error cleanup in cmd/run.go. Without it, a second caller would panic
@@ -282,6 +285,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, a.c.Security.HeroEmbedAllowedHosts)
+	a.adminS = adminS
 
 	var frontendS *frontend.Server
 	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
@@ -379,6 +383,16 @@ func (a *App) Stop(ctx context.Context) {
 			)
 		}
 		cancel()
+	}
+
+	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.
+	// Cancel and wait (bounded) for any in-flight ones so best-effort Vercel ISR
+	// calls don't keep retrying after shutdown. Independent of the DB close
+	// (RevalidateAll makes no DB calls), so ordering here is not load-bearing.
+	if a.adminS != nil {
+		revalStopCtx, revalStopCancel := context.WithTimeout(ctx, 10*time.Second)
+		a.adminS.StopRevalidation(revalStopCtx)
+		revalStopCancel()
 	}
 
 	// Stop workers before closing DB — avoids panics and error storms from workers

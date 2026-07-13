@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
@@ -37,6 +38,13 @@ type Server struct {
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
 	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
 	revalidateSem chan struct{}
+	// revalCtx is the server-scoped lifecycle context for async revalidations. It
+	// is cancelled by StopRevalidation (from App.Stop) so in-flight best-effort
+	// Vercel calls stop retrying at shutdown instead of outliving the process;
+	// revalWG tracks those goroutines so shutdown can wait for them (bounded).
+	revalCtx    context.Context
+	revalCancel context.CancelFunc
+	revalWG     sync.WaitGroup
 	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
 	// Empty means any https host is accepted (scheme/format validation still applies).
 	embedAllowedHosts []string
@@ -55,6 +63,7 @@ func New(
 	ph *pwhash.PasswordHasher,
 	embedAllowedHosts string,
 ) *Server {
+	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
 		repo:              r,
 		bucket:            b,
@@ -66,6 +75,8 @@ func New(
 		ga4mp:             ga4mpClient,
 		pwhash:            ph,
 		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
+		revalCtx:          revalCtx,
+		revalCancel:       revalCancel,
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 	}
 }
@@ -102,26 +113,50 @@ func clampPagination(limit, offset int) (int, int) {
 // admin writes during a Vercel slowdown queues on the semaphore rather than spawning
 // unbounded goroutines.
 //
-// TODO: the goroutine uses context.Background() so the in-flight revalidation survives
-// the request returning, but it also means these goroutines outlive process shutdown.
-// The admin Server has no cancellable lifecycle context to derive from; wiring one would
-// require changes in app/app.go (out of scope for this fix).
+// The goroutine derives from s.revalCtx (a server-scoped lifecycle context) rather
+// than the request context, so it survives the RPC returning but is still
+// cancellable: StopRevalidation cancels revalCtx and waits on revalWG at shutdown,
+// so best-effort Vercel calls stop retrying instead of outliving the process.
 func (s *Server) revalidateAsync(data *dto.RevalidationData) {
+	// Add before the goroutine starts so a concurrent StopRevalidation cannot
+	// Wait() past an un-registered goroutine.
+	s.revalWG.Add(1)
 	go func() {
-		ctx := context.Background()
+		defer s.revalWG.Done()
 		// Best-effort background side effect: a panic in the revalidation path must
 		// be logged with a stack and swallowed, never crash the whole process.
-		defer saferun.Recover(ctx, "admin-revalidate")
+		defer saferun.Recover(s.revalCtx, "admin-revalidate")
 		// Acquire a semaphore slot, queuing if maxConcurrentRevalidations are already
 		// in flight, so concurrency stays bounded.
 		s.revalidateSem <- struct{}{}
 		defer func() { <-s.revalidateSem }()
-		if err := s.re.RevalidateAll(ctx, data); err != nil {
-			slog.Default().ErrorContext(ctx, "async storefront revalidation failed",
+		if err := s.re.RevalidateAll(s.revalCtx, data); err != nil {
+			slog.Default().ErrorContext(s.revalCtx, "async storefront revalidation failed",
 				slog.String("err", err.Error()),
 			)
 		}
 	}()
+}
+
+// StopRevalidation cancels the server-scoped revalidation context and waits, bounded
+// by ctx, for in-flight async revalidations to return. App.Stop calls it after the
+// HTTP listener has drained — so no new revalidateAsync can be spawned — ensuring
+// best-effort Vercel ISR calls don't keep retrying after the process is meant to be
+// down. RevalidateAll touches no DB, so this is ordering-independent of the DB close.
+func (s *Server) StopRevalidation(ctx context.Context) {
+	if s.revalCancel != nil {
+		s.revalCancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		s.revalWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		slog.Default().WarnContext(ctx, "timed out waiting for in-flight admin revalidations to drain")
+	}
 }
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
