@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
@@ -365,6 +366,9 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	// Revalidate cache asynchronously - no need to block the response
 	go func() {
 		revalidateCtx := context.Background()
+		// Best-effort background side effect: a panic in the revalidation path must
+		// be logged with a stack and swallowed, never crash the whole process.
+		defer saferun.Recover(revalidateCtx, "order-revalidate")
 		if err := s.re.RevalidateAll(revalidateCtx, &dto.RevalidationData{
 			Products: pids,
 			Hero:     true,

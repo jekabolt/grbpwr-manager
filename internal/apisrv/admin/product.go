@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -375,8 +376,14 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 	// Check if stock transitioned from 0 to >0
 	newQuantityDecimal := decimal.NewFromInt(int64(newQuantity))
 	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
-		// Trigger waitlist notifications asynchronously
-		go s.notifyWaitlist(ctx, productId, sizeId)
+		// Trigger waitlist notifications asynchronously. This is a detached,
+		// best-effort side effect; a panic inside it (DB, DTO render, mail) must
+		// be logged with a stack and swallowed, never crash the single-process
+		// backend that also serves payments and webhooks.
+		go func() {
+			defer saferun.Recover(context.Background(), "notify-waitlist")
+			s.notifyWaitlist(ctx, productId, sizeId)
+		}()
 	}
 
 	s.revalidateAsync(&dto.RevalidationData{

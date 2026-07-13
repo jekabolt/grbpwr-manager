@@ -9,6 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -108,6 +109,9 @@ func clampPagination(limit, offset int) (int, int) {
 func (s *Server) revalidateAsync(data *dto.RevalidationData) {
 	go func() {
 		ctx := context.Background()
+		// Best-effort background side effect: a panic in the revalidation path must
+		// be logged with a stack and swallowed, never crash the whole process.
+		defer saferun.Recover(ctx, "admin-revalidate")
 		// Acquire a semaphore slot, queuing if maxConcurrentRevalidations are already
 		// in flight, so concurrency stays bounded.
 		s.revalidateSem <- struct{}{}
