@@ -1102,6 +1102,7 @@ func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
 		RefundRateWarnPct:    t.RefundRateWarnPct,
 		RateFloorN:           int32(t.RateFloorN),
 		ContributionTrustPct: t.ContributionTrustPct,
+		Ga4CoverageWarnPct:   t.GA4CoverageWarnPct,
 	}
 }
 
@@ -1114,6 +1115,7 @@ func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
 		RefundRateWarnPct:    s.RefundRateWarnPct,
 		RateFloorN:           int(s.RateFloorN),
 		ContributionTrustPct: s.ContributionTrustPct,
+		GA4CoverageWarnPct:   s.Ga4CoverageWarnPct,
 	}
 }
 
@@ -1143,10 +1145,12 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 		GrossMargin:        &decimal.Decimal{Value: d.GrossMargin.String()},
 		GrossMarginPct:     d.GrossMarginPct,
 		ContributionMargin: &decimal.Decimal{Value: d.ContributionMargin.String()},
-		CostCoveragePct:    d.CostCoveragePct,
-		Caveat:             d.Caveat,
-		UncostedProductIds: intsToInt32(d.UncostedProductIds),
-		TopByMargin:        productMetricsToPb(d.TopByMargin),
+		CostCoveragePct:     d.CostCoveragePct,
+		Caveat:              d.Caveat,
+		UncostedProductIds:  intsToInt32(d.UncostedProductIds),
+		Ga4Revenue:          &decimal.Decimal{Value: d.GA4Revenue.String()},
+		TrackingCoveragePct: d.TrackingCoveragePct,
+		TopByMargin:         productMetricsToPb(d.TopByMargin),
 		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
 		Clear:              ConvertSlowMoversToPb(d.Clear),
 		Drops:              ConvertSellThroughByDropToPb(d.Drops),

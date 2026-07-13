@@ -1414,6 +1414,11 @@ message GetDashboardResponse {
   repeated InventoryHealthRow reorder = 12; // SKUs flagged needs_reorder, most urgent first
   repeated SlowMoverRow clear = 13; // slow movers to clear
   repeated SellThroughByDropRow drops = 14; // drop sell-through
+  // GA4-vs-DB revenue reconciliation (task 20 step 1): how much of the period's real (DB)
+  // revenue the client-side GA4 tracking actually saw. A low figure means consent banners /
+  // ad-blockers / bot filtering are eating attribution, so read ROAS as ≈ shown / coverage.
+  google.type.Decimal ga4_revenue = 15; // GA4-reported revenue for the period (analytics cache; base currency)
+  double tracking_coverage_pct = 16; // 100 * ga4_revenue / DB gross revenue; 0 when unknown
 }
 
 // AlertSettings are the operator-tunable thresholds behind the dashboard alerts.
@@ -1422,6 +1427,7 @@ message AlertSettings {
   double refund_rate_warn_pct = 2; // warn when refund rate is at/above this
   int32 rate_floor_n = 3; // min orders before any rate-based alert fires (significance floor)
   double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
+  double ga4_coverage_warn_pct = 5; // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
 }
 
 message GetAlertSettingsRequest {}

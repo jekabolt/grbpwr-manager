@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -97,4 +99,93 @@ func TestSettledBaseLoyaltyReconcile(t *testing.T) {
 		require.True(t, fee.Equal(decimal.RequireFromString("3.20")),
 			"payment fee must be written for %s", uuid)
 	}
+}
+
+// TestGA4RevenueCoverageOnDashboard exercises the task-20 GA4-vs-DB reconciliation: GetDashboard
+// sums GA4-reported revenue from ga4_ecommerce_metrics over the period (inclusive DATE bounds,
+// excluding days on either side) and surfaces it as Dashboard.GA4Revenue. With no orders in the
+// window the DB gross revenue is 0, so coverage stays 0 — the coverage % / alert arithmetic is
+// covered by the metrics-package unit tests; this pins the SQL bounds and entity wiring.
+func TestGA4RevenueCoverageOnDashboard(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	// A distinctive future window; delete any pre-existing rows on these dates (UNIQUE(date))
+	// so the test is isolated on the shared DB, and clean them up afterwards.
+	dates := []string{"2027-02-28", "2027-03-01", "2027-03-02", "2027-03-05"}
+	for _, d := range dates {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM ga4_ecommerce_metrics WHERE date = ?", d)
+	}
+	defer func() {
+		for _, d := range dates {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM ga4_ecommerce_metrics WHERE date = ?", d)
+		}
+	}()
+	// In-window (2027-03-01..02): 300 + 200 = 500. Out-of-window on both sides must be excluded.
+	seed := []struct {
+		date string
+		rev  string
+	}{
+		{"2027-02-28", "888.00"}, // below DATE(from) → excluded
+		{"2027-03-01", "300.00"},
+		{"2027-03-02", "200.00"},
+		{"2027-03-05", "999.00"}, // above DATE(to) → excluded
+	}
+	for _, r := range seed {
+		_, err := testDB.ExecContext(ctx,
+			"INSERT INTO ga4_ecommerce_metrics (date, revenue) VALUES (?, ?)", r.date, r.rev)
+		require.NoError(t, err)
+	}
+
+	from := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2027, 3, 3, 0, 0, 0, 0, time.UTC) // DATE(to) = 2027-03-03, so 03-02 is included, 03-05 is not
+
+	d, err := s.Metrics().GetDashboard(ctx, from, to, 10)
+	require.NoError(t, err)
+	require.True(t, d.GA4Revenue.Equal(decimal.RequireFromString("500.00")),
+		"GA4 revenue should sum only the in-window days, got %s", d.GA4Revenue)
+	require.Zero(t, d.TrackingCoveragePct, "no orders in window → DB gross revenue 0 → coverage 0")
+}
+
+// TestAlertThresholdsGA4Key confirms the new GA4 coverage threshold (task 20) persists through
+// the alert_setting key-value table alongside the existing thresholds.
+func TestAlertThresholdsGA4Key(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	want := entity.AlertThresholds{
+		CoverageWarnPct:      65,
+		RefundRateWarnPct:    12,
+		RateFloorN:           25,
+		ContributionTrustPct: 55,
+		GA4CoverageWarnPct:   75,
+	}
+	require.NoError(t, s.Metrics().UpsertAlertThresholds(ctx, want))
+	defer func() {
+		// restore built-in defaults so a shared-DB neighbour test isn't perturbed.
+		_ = s.Metrics().UpsertAlertThresholds(ctx, entity.DefaultAlertThresholds())
+	}()
+
+	got, err := s.Metrics().GetAlertThresholds(ctx)
+	require.NoError(t, err)
+	require.Equal(t, want.GA4CoverageWarnPct, got.GA4CoverageWarnPct, "GA4 coverage threshold persisted")
+	require.Equal(t, want.ContributionTrustPct, got.ContributionTrustPct, "existing thresholds still persisted")
 }

@@ -50,6 +50,27 @@ func TestBuildDashboardAlerts_ContributionTrustGate(t *testing.T) {
 	assert.True(t, hasAlert(got, "low_cost_coverage"))
 }
 
+func TestBuildDashboardAlerts_GA4TrackingCoverage(t *testing.T) {
+	rev := decimal.NewFromInt(1000)
+	th := entity.DefaultAlertThresholds() // GA4CoverageWarnPct = 80, RateFloorN = 30
+
+	// GA4 saw 50% of DB revenue over enough orders: warn.
+	d := &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
+	assert.True(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
+
+	// Healthy coverage (95%): no alert.
+	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(950), TrackingCoveragePct: 95}
+	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
+
+	// Below the order floor: suppressed even at low coverage (too small a sample).
+	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
+	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 10, 0, rev), "low_ga4_tracking_coverage"))
+
+	// GA4 synced nothing (0 revenue → 0% coverage): treated as "not synced", not a 0% alarm.
+	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.Zero, TrackingCoveragePct: 0}
+	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
+}
+
 func TestBuildDashboardAlerts_UncostedAndReorder(t *testing.T) {
 	d := &entity.Dashboard{CostCoveragePct: 100, UncostedProductIds: []int{7, 8}}
 	got := buildDashboardAlerts(d, entity.DefaultAlertThresholds(), 0, 0, 3, decimal.NewFromInt(1000))

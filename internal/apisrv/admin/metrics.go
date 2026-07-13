@@ -896,6 +896,7 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	if t.CoverageWarnPct < 0 || t.CoverageWarnPct > 100 ||
 		t.RefundRateWarnPct < 0 || t.RefundRateWarnPct > 100 ||
 		t.ContributionTrustPct < 0 || t.ContributionTrustPct > 100 ||
+		t.GA4CoverageWarnPct < 0 || t.GA4CoverageWarnPct > 100 ||
 		t.RateFloorN < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "percentages must be within [0,100] and rate_floor_n >= 0")
 	}

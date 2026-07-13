@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
 
@@ -50,6 +51,10 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard gross revenue: %w", err)
 	}
+	ga4Rev, err := s.getGA4Revenue(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard ga4 revenue: %w", err)
+	}
 	revRefund, _, err := s.getRefundMetrics(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard refunds: %w", err)
@@ -87,11 +92,17 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 		GrossMargin:        grossMargin,
 		ContributionMargin: grossMargin.Sub(totalShip).Sub(fees).Round(2),
 		UncostedProductIds: uncosted,
+		GA4Revenue:         ga4Rev,
 		Clear:              slow,
 		Drops:              drops,
 	}
 	if costedRev.GreaterThan(decimal.Zero) {
 		d.GrossMarginPct = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	}
+	// GA4-vs-DB revenue coverage (task 20): what fraction of real (gross DB) revenue GA4 saw.
+	// Compared gross-to-gross so a shortfall reads as tracking loss, not a net/gross mismatch.
+	if grossRev.GreaterThan(decimal.Zero) {
+		d.TrackingCoveragePct = ga4Rev.Div(grossRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) {
 		d.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
@@ -135,6 +146,24 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	d.Alerts = buildDashboardAlerts(d, thresholds, refundRatePct, placedOrders, len(reorder), totalItemRev)
 
 	return d, nil
+}
+
+// getGA4Revenue sums the GA4-reported ecommerce revenue over the period from the
+// ga4_ecommerce_metrics cache (populated daily by the ga4sync worker; re-syncable — see the
+// analytics-cache note). Rows are keyed by calendar date, so the window is compared on DATE
+// bounds. COALESCE keeps an empty (not-yet-synced) window at zero rather than NULL.
+func (s *Store) getGA4Revenue(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		Revenue decimal.Decimal `db:"revenue"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(revenue), 0) AS revenue
+		FROM ga4_ecommerce_metrics
+		WHERE date >= DATE(:from) AND date <= DATE(:to)`,
+		map[string]any{"from": from, "to": to})
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("ga4 revenue: %w", err)
+	}
+	return row.Revenue, nil
 }
 
 // buildDashboardAlerts derives the server-side alert list from the headline figures using the
@@ -181,6 +210,19 @@ func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundR
 			Code:     "high_refund_rate",
 			Title:    "High refund rate",
 			Detail:   fmt.Sprintf("Refund rate is %.1f%% over %d orders.", refundRatePct, placedOrders),
+		})
+	}
+	// GA4 tracking-coverage alert (task 20): GA4 saw materially less revenue than the DB.
+	// Gated on the same significance floor and on GA4 having synced *some* revenue — a flat
+	// zero is treated as "not synced yet", not "0% coverage", so a fresh window doesn't cry wolf.
+	if placedOrders >= t.RateFloorN && d.GA4Revenue.IsPositive() &&
+		d.TrackingCoveragePct > 0 && d.TrackingCoveragePct < t.GA4CoverageWarnPct {
+		out = append(out, entity.DashboardAlert{
+			Severity: entity.AlertSeverityWarning,
+			Code:     "low_ga4_tracking_coverage",
+			Title:    "Low GA4 tracking coverage",
+			Detail: fmt.Sprintf("GA4 saw only %.0f%% of DB revenue this period — check tracking (consent, ad-blockers, bots). Read ROAS as ≈ shown / coverage.",
+				d.TrackingCoveragePct),
 		})
 	}
 	return out

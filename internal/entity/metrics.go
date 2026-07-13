@@ -665,6 +665,7 @@ type AlertThresholds struct {
 	RefundRateWarnPct    float64 // warn when refund rate is at/above this
 	RateFloorN           int     // min orders before any rate-based alert fires (significance floor)
 	ContributionTrustPct float64 // only trust the contribution-margin sign at/above this coverage
+	GA4CoverageWarnPct   float64 // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
 }
 
 // DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
@@ -674,6 +675,7 @@ func DefaultAlertThresholds() AlertThresholds {
 		RefundRateWarnPct:    10,
 		RateFloorN:           30,
 		ContributionTrustPct: 50,
+		GA4CoverageWarnPct:   80,
 	}
 }
 
@@ -697,7 +699,12 @@ type Dashboard struct {
 	CostCoveragePct    float64
 	Caveat             string
 	UncostedProductIds []int
-	Alerts             []DashboardAlert
+	// GA4Revenue is the GA4-reported revenue for the period (analytics cache), and
+	// TrackingCoveragePct is 100 * GA4Revenue / DB gross revenue — the share of real revenue
+	// the client-side tracking saw (task 20 step 1). 0 when DB revenue is 0 / unknown.
+	GA4Revenue          decimal.Decimal
+	TrackingCoveragePct float64
+	Alerts              []DashboardAlert
 	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
 	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
 	Clear              []SlowMoverRow       // slow movers to clear
