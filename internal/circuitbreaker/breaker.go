@@ -62,6 +62,7 @@ type CircuitBreaker struct {
 	failures        int
 	lastFailureTime time.Time
 	halfOpenRetries int
+	inFlightProbe   bool
 
 	onStateChange func(from, to State, reason string)
 }
@@ -109,15 +110,26 @@ func (cb *CircuitBreaker) beforeCall() error {
 	case StateOpen:
 		if time.Since(cb.lastFailureTime) > cb.config.OpenTimeout {
 			cb.transitionTo(StateHalfOpen, "open timeout expired, attempting recovery")
-			cb.halfOpenRetries = 0
+			// Count this transitioning probe (previously left at 0, so half-open
+			// admitted HalfOpenMaxRetries+1 probes) and mark a probe in flight.
+			cb.halfOpenRetries = 1
+			cb.inFlightProbe = true
 			return nil
 		}
 		return ErrCircuitOpen
 	case StateHalfOpen:
+		// Admit a single probe at a time. Concurrent probes made recovery
+		// order-dependent: one probe's success could close the circuit while
+		// another in-flight probe's failure then landed in the closed state and
+		// was silently absorbed. Serializing probes removes that race.
+		if cb.inFlightProbe {
+			return ErrTooManyRequests
+		}
 		if cb.halfOpenRetries >= cb.config.HalfOpenMaxRetries {
 			return ErrTooManyRequests
 		}
 		cb.halfOpenRetries++
+		cb.inFlightProbe = true
 		return nil
 	}
 	return nil
@@ -127,6 +139,9 @@ func (cb *CircuitBreaker) beforeCall() error {
 func (cb *CircuitBreaker) afterCall(err error) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
+	// The probe (if any) has completed; allow the next half-open probe to be admitted.
+	cb.inFlightProbe = false
 
 	if err == nil {
 		cb.onSuccess()
@@ -206,4 +221,5 @@ func (cb *CircuitBreaker) Reset() {
 	}
 	cb.failures = 0
 	cb.halfOpenRetries = 0
+	cb.inFlightProbe = false
 }
