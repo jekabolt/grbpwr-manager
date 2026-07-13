@@ -12,6 +12,10 @@ type Limiter struct {
 	counters map[string]*counter
 	window   time.Duration
 	max      int
+	// stop terminates the cleanup goroutine; stopOnce makes Stop idempotent and
+	// safe against a double close (mirrors stockreserve.Manager).
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 // counter holds the timestamps of requests currently inside the window for one
@@ -31,6 +35,7 @@ func NewLimiter(window time.Duration, max int) *Limiter {
 		counters: make(map[string]*counter),
 		window:   window,
 		max:      max,
+		stop:     make(chan struct{}),
 	}
 	go l.cleanup()
 	return l
@@ -93,22 +98,33 @@ func pruneBefore(ts []time.Time, cutoff time.Time) []time.Time {
 	return kept
 }
 
-// cleanup periodically prunes windows and removes keys that have gone idle.
+// cleanup periodically prunes windows and removes keys that have gone idle. It
+// exits when Stop closes l.stop.
 func (l *Limiter) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		l.mu.Lock()
-		cutoff := time.Now().UTC().Add(-l.window)
-		for key, c := range l.counters {
-			c.timestamps = pruneBefore(c.timestamps, cutoff)
-			if len(c.timestamps) == 0 {
-				delete(l.counters, key)
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-ticker.C:
+			l.mu.Lock()
+			cutoff := time.Now().UTC().Add(-l.window)
+			for key, c := range l.counters {
+				c.timestamps = pruneBefore(c.timestamps, cutoff)
+				if len(c.timestamps) == 0 {
+					delete(l.counters, key)
+				}
 			}
+			l.mu.Unlock()
 		}
-		l.mu.Unlock()
 	}
+}
+
+// Stop terminates the cleanup goroutine. Idempotent and safe to call concurrently.
+func (l *Limiter) Stop() {
+	l.stopOnce.Do(func() { close(l.stop) })
 }
 
 // MultiKeyLimiter manages multiple rate limiters for different types of operations
@@ -134,6 +150,16 @@ func NewMultiKeyLimiter() *MultiKeyLimiter {
 			"ip_subscribe":             NewLimiter(10*time.Minute, 10), // newsletter/waitlist subscribes per IP
 			"email_subscribe":          NewLimiter(10*time.Minute, 5),  // newsletter/waitlist subscribes per email
 		},
+	}
+}
+
+// Stop terminates the cleanup goroutines of every underlying limiter. Idempotent
+// (each Limiter.Stop is guarded), so it is safe to call from App.Stop.
+func (m *MultiKeyLimiter) Stop() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, l := range m.limiters {
+		l.Stop()
 	}
 }
 

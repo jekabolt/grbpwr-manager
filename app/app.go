@@ -66,8 +66,12 @@ type App struct {
 	// adminS is retained so Stop can drain the admin server's in-flight async
 	// storefront revalidations (best-effort Vercel calls) at shutdown.
 	adminS *admin.Server
-	c      *config.Config
-	done   chan struct{}
+	// frontendS/authS are retained so Stop can terminate their in-memory
+	// rate-limiter cleanup goroutines (lifecycle discipline; they are singletons).
+	frontendS *frontend.Server
+	authS     *auth.Server
+	c         *config.Config
+	done      chan struct{}
 	// stopping guards Stop so it runs exactly once, regardless of which path
 	// triggers it: an OS signal, the listener-crash bridge (see Start), or the
 	// boot-error cleanup in cmd/run.go. Without it, a second caller would panic
@@ -157,6 +161,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	a.authS = authS
 
 	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
 	if err != nil {
@@ -295,6 +300,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	a.frontendS = frontendS
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()
@@ -393,6 +399,16 @@ func (a *App) Stop(ctx context.Context) {
 		revalStopCtx, revalStopCancel := context.WithTimeout(ctx, 10*time.Second)
 		a.adminS.StopRevalidation(revalStopCtx)
 		revalStopCancel()
+	}
+
+	// Terminate the in-memory rate-limiter cleanup goroutines (frontend + auth).
+	// They are effectively singletons living the whole process, but stopping them
+	// keeps lifecycle discipline consistent with the other background components.
+	if a.frontendS != nil {
+		a.frontendS.StopRateLimiter()
+	}
+	if a.authS != nil {
+		a.authS.StopRateLimiter()
 	}
 
 	// Stop workers before closing DB — avoids panics and error storms from workers

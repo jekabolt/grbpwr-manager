@@ -79,6 +79,12 @@ func newAuthRateLimiter() *authRateLimiter {
 	}
 }
 
+// stop terminates the cleanup goroutines of both underlying limiters.
+func (l *authRateLimiter) stop() {
+	l.ip.Stop()
+	l.user.Stop()
+}
+
 // check applies the per-IP limit always and, when a username is supplied, the
 // tighter per-username limit. It returns a ResourceExhausted gRPC error so the
 // throttled response is distinct from a normal failed login at the transport
@@ -155,6 +161,15 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// StopRateLimiter terminates the auth rate-limiter cleanup goroutines. Called
+// from App.Stop so the limiters follow the same lifecycle discipline as the
+// other background components (idempotent).
+func (s *Server) StopRateLimiter() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.stop()
+	}
 }
 
 func (s *Server) jwtIssueOpts() *jwt.IssueOpts {

@@ -76,3 +76,12 @@ func New(
 		storefront:        sa,
 	}, nil
 }
+
+// StopRateLimiter terminates the frontend rate-limiter cleanup goroutines. Called
+// from App.Stop so the limiters follow the same lifecycle discipline as the other
+// background components (idempotent).
+func (s *Server) StopRateLimiter() {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Stop()
+	}
+}
