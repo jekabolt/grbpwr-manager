@@ -92,6 +92,27 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	}
 	econ.Production = dto.ComputeStyleProductionSummary(runs)
 
+	// Samples (NF-09): how many, and the warehouse material they consumed. Informational only — sample
+	// material is R&D spend, deliberately NOT folded into net_after_dev.
+	sampleSummary, err := s.repo.Metrics().GetStyleSampleSummary(ctx, tcID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "style economics: can't summarise samples", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't summarise samples")
+	}
+	econ.SamplesCount = int32(sampleSummary.Count)
+	econ.SamplesCostBase = &pb_decimal.Decimal{Value: sampleSummary.MaterialsCostBase.StringFixed(2)}
+
+	// Material actuals issued from the warehouse into the style's production runs (NF-09).
+	matFromStock, err := s.repo.Metrics().GetStyleMaterialsFromStock(ctx, tcID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "style economics: can't get materials from stock", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get materials from stock")
+	}
+	if econ.Production != nil {
+		econ.Production.MaterialsFromStockBase = &pb_decimal.Decimal{Value: matFromStock.Base.StringFixed(2)}
+	}
+	materialsUncosted := sampleSummary.HasUncosted || matFromStock.HasUncosted
+
 	// Bottom line: net_after_dev = gross_margin − dev_total. Contribution-style, NOT net profit
 	// (dev is a period R&D cost, deliberately never folded into unit COGS). Only computable when the
 	// style has product cost (else gross_margin is N/A). Caveats surface partial/absent data.
@@ -109,6 +130,9 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 		caveats = append(caveats, "no sales yet for this style — margin and net result unavailable")
 	} else {
 		caveats = append(caveats, "no product cost set for this style — margin and net result unavailable")
+	}
+	if materialsUncosted {
+		caveats = append(caveats, "some material issues have no unit cost — sample/production material figures understate")
 	}
 	econ.Caveat = strings.Join(caveats, "; ")
 

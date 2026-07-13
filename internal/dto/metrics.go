@@ -1098,11 +1098,12 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 // AlertThresholdsToPb / AlertThresholdsFromPb map the operator-tunable alert thresholds.
 func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
 	return &pb_admin.AlertSettings{
-		CoverageWarnPct:      t.CoverageWarnPct,
-		RefundRateWarnPct:    t.RefundRateWarnPct,
-		RateFloorN:           int32(t.RateFloorN),
-		ContributionTrustPct: t.ContributionTrustPct,
-		Ga4CoverageWarnPct:   t.GA4CoverageWarnPct,
+		CoverageWarnPct:        t.CoverageWarnPct,
+		RefundRateWarnPct:      t.RefundRateWarnPct,
+		RateFloorN:             int32(t.RateFloorN),
+		ContributionTrustPct:   t.ContributionTrustPct,
+		Ga4CoverageWarnPct:     t.GA4CoverageWarnPct,
+		ProductionRunStaleDays: int32(t.ProductionRunStaleDays),
 	}
 }
 
@@ -1111,11 +1112,12 @@ func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
 		return entity.DefaultAlertThresholds()
 	}
 	return entity.AlertThresholds{
-		CoverageWarnPct:      s.CoverageWarnPct,
-		RefundRateWarnPct:    s.RefundRateWarnPct,
-		RateFloorN:           int(s.RateFloorN),
-		ContributionTrustPct: s.ContributionTrustPct,
-		GA4CoverageWarnPct:   s.Ga4CoverageWarnPct,
+		CoverageWarnPct:        s.CoverageWarnPct,
+		RefundRateWarnPct:      s.RefundRateWarnPct,
+		RateFloorN:             int(s.RateFloorN),
+		ContributionTrustPct:   s.ContributionTrustPct,
+		GA4CoverageWarnPct:     s.Ga4CoverageWarnPct,
+		ProductionRunStaleDays: int(s.ProductionRunStaleDays),
 	}
 }
 
@@ -1139,12 +1141,12 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 		return nil
 	}
 	resp := &pb_admin.GetDashboardResponse{
-		Period:             timeRangeToPb(d.Period),
-		Revenue:            &decimal.Decimal{Value: d.Revenue.String()},
-		Orders:             int32(d.Orders),
-		GrossMargin:        &decimal.Decimal{Value: d.GrossMargin.String()},
-		GrossMarginPct:     d.GrossMarginPct,
-		ContributionMargin: &decimal.Decimal{Value: d.ContributionMargin.String()},
+		Period:              timeRangeToPb(d.Period),
+		Revenue:             &decimal.Decimal{Value: d.Revenue.String()},
+		Orders:              int32(d.Orders),
+		GrossMargin:         &decimal.Decimal{Value: d.GrossMargin.String()},
+		GrossMarginPct:      d.GrossMarginPct,
+		ContributionMargin:  &decimal.Decimal{Value: d.ContributionMargin.String()},
 		CostCoveragePct:     d.CostCoveragePct,
 		Caveat:              d.Caveat,
 		UncostedProductIds:  intsToInt32(d.UncostedProductIds),
@@ -1155,9 +1157,9 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 		MarketingSpend:      &decimal.Decimal{Value: d.MarketingSpend.String()},
 		OpexCaveat:          d.OpexCaveat,
 		TopByMargin:         productMetricsToPb(d.TopByMargin),
-		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
-		Clear:              ConvertSlowMoversToPb(d.Clear),
-		Drops:              ConvertSellThroughByDropToPb(d.Drops),
+		Reorder:             ConvertInventoryHealthToPb(d.Reorder),
+		Clear:               ConvertSlowMoversToPb(d.Clear),
+		Drops:               ConvertSellThroughByDropToPb(d.Drops),
 	}
 	if len(d.Alerts) > 0 {
 		resp.Alerts = make([]*pb_admin.DashboardAlert, len(d.Alerts))
@@ -1747,17 +1749,41 @@ func ConvertInventoryValuationToPb(v *entity.InventoryValuation) *pb_admin.Inven
 		return nil
 	}
 	return &pb_admin.InventoryValuation{
-		TotalStockValue:       &decimal.Decimal{Value: v.TotalStockValue.String()},
-		TotalOnHandUnits:      v.TotalOnHandUnits,
-		CostedOnHandUnits:     v.CostedOnHandUnits,
-		UncostedStockUnits:    v.UncostedStockUnits,
-		UncostedStockProducts: int32(v.UncostedStockProducts),
-		CoveragePct:           v.CoveragePct,
-		TopByValue:            convertInventoryValuationRows(v.TopByValue),
-		DeadStock:             convertInventoryValuationRows(v.DeadStock),
-		WriteOffsValue:        &decimal.Decimal{Value: v.WriteOffsValue.String()},
-		WriteOffsUnits:        v.WriteOffsUnits,
+		TotalStockValue:         &decimal.Decimal{Value: v.TotalStockValue.String()},
+		TotalOnHandUnits:        v.TotalOnHandUnits,
+		CostedOnHandUnits:       v.CostedOnHandUnits,
+		UncostedStockUnits:      v.UncostedStockUnits,
+		UncostedStockProducts:   int32(v.UncostedStockProducts),
+		CoveragePct:             v.CoveragePct,
+		TopByValue:              convertInventoryValuationRows(v.TopByValue),
+		DeadStock:               convertInventoryValuationRows(v.DeadStock),
+		WriteOffsValue:          &decimal.Decimal{Value: v.WriteOffsValue.String()},
+		WriteOffsUnits:          v.WriteOffsUnits,
+		RawMaterialsValue:       &decimal.Decimal{Value: v.RawMaterialsValue.String()},
+		RawMaterialsCount:       int32(v.RawMaterialsCount),
+		RawUncostedCount:        int32(v.RawUncostedCount),
+		WipValue:                &decimal.Decimal{Value: v.WipValue.String()},
+		WriteoffsMaterialsValue: &decimal.Decimal{Value: v.WriteOffsMaterialsValue.String()},
+		TopMaterialsByValue:     convertMaterialValuationRows(v.TopMaterialsByValue),
 	}
+}
+
+func convertMaterialValuationRows(list []entity.MaterialValuationRow) []*pb_admin.MaterialValuationRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.MaterialValuationRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.MaterialValuationRow{
+			MaterialId:      int32(r.MaterialId),
+			Name:            r.Name,
+			Unit:            r.Unit,
+			OnHand:          &decimal.Decimal{Value: r.OnHand.String()},
+			AvgUnitCostBase: &decimal.Decimal{Value: r.AvgUnitCostBase.String()},
+			Value:           &decimal.Decimal{Value: r.Value.String()},
+		}
+	}
+	return pb
 }
 
 func convertInventoryValuationRows(list []entity.InventoryValuationRow) []*pb_admin.InventoryValuationRow {

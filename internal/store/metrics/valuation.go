@@ -121,7 +121,100 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 	out.WriteOffsValue = writeOff.Value.Round(2)
 	out.WriteOffsUnits = writeOff.Units
 
+	if err := s.addMaterialValuation(ctx, out, from, to, limit); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// addMaterialValuation extends the valuation with the raw-material warehouse (NF-09): the frozen
+// cost of on-hand materials (moving-average, base EUR), work-in-progress (materials issued into
+// still-open production runs and not yet returned), and material write-offs in the period. Materials
+// with stock but no average are counted as uncosted (value unknown), never zero — same honesty rule
+// as products. WIP «graduates» into finished-goods cost at receive (cost_price includes materials,
+// NF-06), so it is not double-counted against TotalStockValue.
+func (s *Store) addMaterialValuation(ctx context.Context, out *entity.InventoryValuation, from, to time.Time, limit int) error {
+	raw, err := storeutil.QueryNamedOne[struct {
+		Value    decimal.Decimal `db:"value"`
+		Count    int             `db:"count_with_stock"`
+		Uncosted int             `db:"uncosted_count"`
+	}](ctx, s.DB, `
+		SELECT
+			COALESCE(SUM(CASE WHEN s.avg_unit_cost_base IS NOT NULL THEN s.on_hand * s.avg_unit_cost_base ELSE 0 END), 0) AS value,
+			CAST(COUNT(*) AS SIGNED) AS count_with_stock,
+			CAST(COALESCE(SUM(CASE WHEN s.avg_unit_cost_base IS NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS uncosted_count
+		FROM material m
+		JOIN material_stock s ON s.material_id = m.id
+		WHERE m.archived = FALSE AND s.on_hand > 0`, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("get material valuation: %w", err)
+	}
+	out.RawMaterialsValue = raw.Value.Round(2)
+	out.RawMaterialsCount = raw.Count
+	out.RawUncostedCount = raw.Uncosted
+
+	// Work-in-progress: net (issued − returned) value on movements whose run is still open. A NULL
+	// unit_cost_base (issued from uncosted stock) contributes 0 — a known undervaluation, acceptable
+	// for v1 and consistent with how uncosted stock is treated elsewhere.
+	wip, err := storeutil.QueryNamedOne[struct {
+		Value decimal.Decimal `db:"value"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(
+			CASE mv.movement_type
+				WHEN :issue  THEN mv.quantity * COALESCE(mv.unit_cost_base, 0)
+				WHEN :return THEN -mv.quantity * COALESCE(mv.unit_cost_base, 0)
+				ELSE 0 END), 0) AS value
+		FROM material_stock_movement mv
+		JOIN production_run pr ON pr.id = mv.production_run_id
+		WHERE pr.status IN (:planned, :inprogress)
+			AND mv.movement_type IN (:issue, :return)`, map[string]any{
+		"issue":      string(entity.MaterialMovementIssueProduction),
+		"return":     string(entity.MaterialMovementReturnProduction),
+		"planned":    string(entity.ProductionRunPlanned),
+		"inprogress": string(entity.ProductionRunInProgress),
+	})
+	if err != nil {
+		return fmt.Errorf("get material wip: %w", err)
+	}
+	out.WipValue = wip.Value.Round(2)
+
+	// Material write-offs (damage/loss/defect) in the period, valued at the frozen movement cost.
+	matWriteOff, err := storeutil.QueryNamedOne[struct {
+		Value decimal.Decimal `db:"value"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(mv.quantity * COALESCE(mv.unit_cost_base, 0)), 0) AS value
+		FROM material_stock_movement mv
+		WHERE mv.movement_type = :writeoff
+			AND COALESCE(mv.occurred_at, mv.created_at) >= :from
+			AND COALESCE(mv.occurred_at, mv.created_at) < :to`, map[string]any{
+		"writeoff": string(entity.MaterialMovementWriteoff),
+		"from":     from,
+		"to":       to,
+	})
+	if err != nil {
+		return fmt.Errorf("get material write-offs: %w", err)
+	}
+	out.WriteOffsMaterialsValue = matWriteOff.Value.Round(2)
+
+	limitClause := ""
+	params := map[string]any{}
+	if limit > 0 {
+		limitClause = " LIMIT :limit"
+		params["limit"] = limit
+	}
+	top, err := storeutil.QueryListNamed[entity.MaterialValuationRow](ctx, s.DB, `
+		SELECT m.id AS material_id, m.name AS name, COALESCE(m.unit, '') AS unit,
+			s.on_hand AS on_hand, s.avg_unit_cost_base AS avg_unit_cost_base,
+			ROUND(s.on_hand * s.avg_unit_cost_base, 2) AS value
+		FROM material m
+		JOIN material_stock s ON s.material_id = m.id
+		WHERE m.archived = FALSE AND s.on_hand > 0 AND s.avg_unit_cost_base IS NOT NULL
+		ORDER BY value DESC, m.name`+limitClause, params)
+	if err != nil {
+		return fmt.Errorf("get top materials by value: %w", err)
+	}
+	out.TopMaterialsByValue = top
+	return nil
 }
 
 // capRows returns the first limit rows (all when limit <= 0).

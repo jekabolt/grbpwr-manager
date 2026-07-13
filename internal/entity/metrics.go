@@ -661,21 +661,23 @@ const (
 // AlertThresholds are the operator-tunable thresholds behind the dashboard alerts, loaded
 // from the alert_setting table (with DefaultAlertThresholds as the fallback).
 type AlertThresholds struct {
-	CoverageWarnPct      float64 // warn when cost coverage (% of revenue with a cost) is below this
-	RefundRateWarnPct    float64 // warn when refund rate is at/above this
-	RateFloorN           int     // min orders before any rate-based alert fires (significance floor)
-	ContributionTrustPct float64 // only trust the contribution-margin sign at/above this coverage
-	GA4CoverageWarnPct   float64 // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
+	CoverageWarnPct        float64 // warn when cost coverage (% of revenue with a cost) is below this
+	RefundRateWarnPct      float64 // warn when refund rate is at/above this
+	RateFloorN             int     // min orders before any rate-based alert fires (significance floor)
+	ContributionTrustPct   float64 // only trust the contribution-margin sign at/above this coverage
+	GA4CoverageWarnPct     float64 // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
+	ProductionRunStaleDays int     // warn when an open production run is older than this many days (NF-09)
 }
 
 // DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
 func DefaultAlertThresholds() AlertThresholds {
 	return AlertThresholds{
-		CoverageWarnPct:      70,
-		RefundRateWarnPct:    10,
-		RateFloorN:           30,
-		ContributionTrustPct: 50,
-		GA4CoverageWarnPct:   80,
+		CoverageWarnPct:        70,
+		RefundRateWarnPct:      10,
+		RateFloorN:             30,
+		ContributionTrustPct:   50,
+		GA4CoverageWarnPct:     80,
+		ProductionRunStaleDays: 60,
 	}
 }
 
@@ -715,10 +717,10 @@ type Dashboard struct {
 	MarketingSpend  decimal.Decimal
 	OpexCaveat      string
 	Alerts          []DashboardAlert
-	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
-	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
-	Clear              []SlowMoverRow       // slow movers to clear
-	Drops              []SellThroughByDropRow
+	TopByMargin     []ProductMetric      // top revenue products re-ranked by gross margin €
+	Reorder         []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
+	Clear           []SlowMoverRow       // slow movers to clear
+	Drops           []SellThroughByDropRow
 }
 
 // --- Slow Movers ---
@@ -796,16 +798,52 @@ type InventoryValuationRow struct {
 // is valued at the CURRENT plan cost_price (v1 — the only cost available); products without a
 // cost are counted honestly as uncosted (value unknown), never as zero.
 type InventoryValuation struct {
-	TotalStockValue       decimal.Decimal // Σ cost_price × on_hand over COSTED products, base EUR
-	TotalOnHandUnits      int64           // Σ on_hand over ALL in-stock products
-	CostedOnHandUnits     int64           // on_hand of products that HAVE a cost
-	UncostedStockUnits    int64           // on_hand of products with NO cost (value unknown)
-	UncostedStockProducts int             // distinct in-stock products with no cost
-	CoveragePct           float64         // costed_on_hand_units / total_on_hand_units × 100
+	TotalStockValue       decimal.Decimal         // Σ cost_price × on_hand over COSTED products, base EUR
+	TotalOnHandUnits      int64                   // Σ on_hand over ALL in-stock products
+	CostedOnHandUnits     int64                   // on_hand of products that HAVE a cost
+	UncostedStockUnits    int64                   // on_hand of products with NO cost (value unknown)
+	UncostedStockProducts int                     // distinct in-stock products with no cost
+	CoveragePct           float64                 // costed_on_hand_units / total_on_hand_units × 100
 	TopByValue            []InventoryValuationRow // costed products ranked by frozen value
 	DeadStock             []InventoryValuationRow // costed, in-stock, unsold in window — by value
-	WriteOffsValue        decimal.Decimal // Σ |Δqty| × cost_price for damage/loss in the period
-	WriteOffsUnits        int64           // units written off (damage/loss) in the period
+	WriteOffsValue        decimal.Decimal         // Σ |Δqty| × cost_price for damage/loss in the period
+	WriteOffsUnits        int64                   // units written off (damage/loss) in the period
+
+	// Raw-material warehouse (NF-09 valuation v2). Materials are valued at their moving-average
+	// unit cost in base currency; materials with stock but no average are counted, not valued.
+	RawMaterialsValue       decimal.Decimal        // Σ on_hand × avg_unit_cost_base over costed materials with stock, base EUR
+	RawMaterialsCount       int                    // materials with on_hand > 0
+	RawUncostedCount        int                    // materials with stock but no average (value unknown)
+	WipValue                decimal.Decimal        // work-in-progress: materials issued into OPEN runs and not returned, base EUR
+	WriteOffsMaterialsValue decimal.Decimal        // material write-offs (damage/loss/defect) in the period, base EUR
+	TopMaterialsByValue     []MaterialValuationRow // costed in-stock materials ranked by frozen value
+}
+
+// StyleSampleSummary counts a style's samples and the warehouse-material cost they consumed
+// (NF-09, informational — sample materials are R&D spend, not folded into the style's sales net).
+// HasUncosted is set when a sample material issue had no unit cost, so the figure understates.
+type StyleSampleSummary struct {
+	Count             int             `db:"count"`
+	MaterialsCostBase decimal.Decimal `db:"materials_cost_base"`
+	HasUncosted       bool            `db:"has_uncosted"`
+}
+
+// StyleMaterialsFromStock is the net warehouse-material cost issued into a style's production runs
+// (NF-09), from the material ledger — the actuals side of production cost. HasUncosted flags issues
+// with no unit cost (the value understates).
+type StyleMaterialsFromStock struct {
+	Base        decimal.Decimal `db:"base"`
+	HasUncosted bool            `db:"has_uncosted"`
+}
+
+// MaterialValuationRow is one raw-material line in the warehouse money view (NF-09).
+type MaterialValuationRow struct {
+	MaterialId      int             `db:"material_id"`
+	Name            string          `db:"name"`
+	Unit            string          `db:"unit"`
+	OnHand          decimal.Decimal `db:"on_hand"`
+	AvgUnitCostBase decimal.Decimal `db:"avg_unit_cost_base"`
+	Value           decimal.Decimal `db:"value"`
 }
 
 // --- Return Analysis ---

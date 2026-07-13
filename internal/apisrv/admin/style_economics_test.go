@@ -55,6 +55,13 @@ func TestGetStyleEconomics(t *testing.T) {
 		}},
 	}, 1, nil)
 
+	mtr.EXPECT().GetStyleSampleSummary(mock.Anything, 7).Return(entity.StyleSampleSummary{
+		Count: 2, MaterialsCostBase: decimal.RequireFromString("15.00"),
+	}, nil)
+	mtr.EXPECT().GetStyleMaterialsFromStock(mock.Anything, 7).Return(entity.StyleMaterialsFromStock{
+		Base: decimal.RequireFromString("40.00"),
+	}, nil)
+
 	s := &Server{repo: repo}
 	resp, err := s.GetStyleEconomics(context.Background(), &pb_admin.GetStyleEconomicsRequest{TechCardId: 7})
 	require.NoError(t, err)
@@ -71,7 +78,11 @@ func TestGetStyleEconomics(t *testing.T) {
 	require.EqualValues(t, 1, e.Production.Runs)
 	require.EqualValues(t, 10, e.Production.PlannedQtyTotal)
 	require.EqualValues(t, 8, e.Production.ReceivedQtyTotal)
-	// net_after_dev = 180 − 50 = 130.
+	// NF-09 samples + materials-from-stock.
+	require.EqualValues(t, 2, e.SamplesCount)
+	require.Equal(t, "15.00", e.SamplesCostBase.GetValue())
+	require.Equal(t, "40.00", e.Production.MaterialsFromStockBase.GetValue())
+	// net_after_dev = 180 − 50 = 130 (samples material is informational, NOT subtracted).
 	require.NotNil(t, e.NetAfterDev)
 	require.True(t, decimal.RequireFromString(e.NetAfterDev.Value).Equal(decimal.NewFromInt(130)), "net after dev 130, got %s", e.NetAfterDev.Value)
 	require.Empty(t, e.Caveat, "no caveat when style has cost and dev fully converted")
@@ -100,6 +111,8 @@ func TestGetStyleEconomicsNoCost(t *testing.T) {
 	mtr.EXPECT().GetStyleMargin(mock.Anything, 9).Return(nil, nil)
 	fit.EXPECT().ListFittings(mock.Anything, 1, 0, entity.Descending, 0, 0, 9).Return(nil, 0, nil)
 	pr.EXPECT().ListProductionRuns(mock.Anything, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: 9}).Return(nil, 0, nil)
+	mtr.EXPECT().GetStyleSampleSummary(mock.Anything, 9).Return(entity.StyleSampleSummary{}, nil)
+	mtr.EXPECT().GetStyleMaterialsFromStock(mock.Anything, 9).Return(entity.StyleMaterialsFromStock{}, nil)
 
 	s := &Server{repo: repo}
 	resp, err := s.GetStyleEconomics(context.Background(), &pb_admin.GetStyleEconomicsRequest{TechCardId: 9})

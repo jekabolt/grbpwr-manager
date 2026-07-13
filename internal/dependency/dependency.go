@@ -346,6 +346,12 @@ type (
 		// GetStyleMargin returns the lifetime sales margin for one style (all its colourway SKUs) as a
 		// single MarginByStyleRow, or nil when the style has no sales. Sales anchor of GetStyleEconomics.
 		GetStyleMargin(ctx context.Context, techCardID int) (*entity.MarginByStyleRow, error)
+		// GetStyleSampleSummary returns a style's sample count and the warehouse-material cost they
+		// consumed (informational, not folded into the sales net) — NF-09 style economics.
+		GetStyleSampleSummary(ctx context.Context, techCardID int) (entity.StyleSampleSummary, error)
+		// GetStyleMaterialsFromStock returns the net warehouse-material cost issued into a style's
+		// production runs (base EUR) — the material actuals for the production summary (NF-09).
+		GetStyleMaterialsFromStock(ctx context.Context, techCardID int) (entity.StyleMaterialsFromStock, error)
 		// GetChannelRoasSettled attributes settled order revenue to marketing channels via the
 		// bq_order_channel map (order.ga_client_id → last non-direct UTM), returning per-channel settled
 		// revenue, order count and new-customer count over the period (task 20 step 2). Spend/ROAS/CAC

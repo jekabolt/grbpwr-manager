@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	alertKeyCoverageWarnPct      = "coverage_warn_pct"
-	alertKeyRefundRateWarnPct    = "refund_rate_warn_pct"
-	alertKeyRateFloorN           = "rate_floor_n"
-	alertKeyContributionTrustPct = "contribution_trust_pct"
-	alertKeyGA4CoverageWarnPct   = "ga4_coverage_warn_pct"
+	alertKeyCoverageWarnPct        = "coverage_warn_pct"
+	alertKeyRefundRateWarnPct      = "refund_rate_warn_pct"
+	alertKeyRateFloorN             = "rate_floor_n"
+	alertKeyContributionTrustPct   = "contribution_trust_pct"
+	alertKeyGA4CoverageWarnPct     = "ga4_coverage_warn_pct"
+	alertKeyProductionRunStaleDays = "production_run_stale_days"
 )
 
 // GetAlertThresholds loads the dashboard alert thresholds from alert_setting, falling back to
@@ -41,6 +42,8 @@ func (s *Store) GetAlertThresholds(ctx context.Context) (entity.AlertThresholds,
 			t.ContributionTrustPct = r.Value.InexactFloat64()
 		case alertKeyGA4CoverageWarnPct:
 			t.GA4CoverageWarnPct = r.Value.InexactFloat64()
+		case alertKeyProductionRunStaleDays:
+			t.ProductionRunStaleDays = int(r.Value.IntPart())
 		}
 	}
 	return t, nil
@@ -57,6 +60,7 @@ func (s *Store) UpsertAlertThresholds(ctx context.Context, t entity.AlertThresho
 		{alertKeyRateFloorN, decimal.NewFromInt(int64(t.RateFloorN))},
 		{alertKeyContributionTrustPct, decimal.NewFromFloat(t.ContributionTrustPct)},
 		{alertKeyGA4CoverageWarnPct, decimal.NewFromFloat(t.GA4CoverageWarnPct)},
+		{alertKeyProductionRunStaleDays, decimal.NewFromInt(int64(t.ProductionRunStaleDays))},
 	}
 	for _, v := range vals {
 		if err := storeutil.ExecNamed(ctx, s.DB, `

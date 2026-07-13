@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -165,10 +166,22 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if grossRev.GreaterThan(decimal.Zero) {
 		refundRatePct = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
-	d.Alerts = buildDashboardAlerts(d, thresholds, refundRatePct, placedOrders, len(reorder), totalItemRev)
+	lowStockNames, lowStockCount, err := s.getLowStockMaterials(ctx, dashboardLowStockNamesLimit)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard low material stock: %w", err)
+	}
+	staleRuns, err := s.getStaleOpenRunCount(ctx, thresholds.ProductionRunStaleDays)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard stale runs: %w", err)
+	}
+	d.Alerts = buildDashboardAlerts(d, thresholds, refundRatePct, placedOrders, len(reorder), totalItemRev,
+		lowStockNames, lowStockCount, staleRuns)
 
 	return d, nil
 }
+
+// dashboardLowStockNamesLimit caps how many material names the low_material_stock alert lists.
+const dashboardLowStockNamesLimit = 5
 
 // getGA4Revenue sums the GA4-reported ecommerce revenue over the period from the
 // ga4_ecommerce_metrics cache (populated daily by the ga4sync worker; re-syncable — see the
@@ -191,10 +204,54 @@ func (s *Store) getGA4Revenue(ctx context.Context, from, to time.Time) (decimal.
 	return row.Revenue, nil
 }
 
+// getLowStockMaterials returns the names of active materials whose on-hand is below their configured
+// minimum (NF-02), ordered by shortfall (most-below first) and capped at `limit`, plus the total
+// count of below-min materials (the count reflects all, not just the returned top-N). Materials with
+// no min_stock set are never low-stock. Feeds the low_material_stock dashboard alert (NF-09).
+func (s *Store) getLowStockMaterials(ctx context.Context, limit int) ([]string, int, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Name string `db:"name"`
+	}](ctx, s.DB, `
+		SELECT m.name
+		FROM material m
+		JOIN material_stock st ON st.material_id = m.id
+		WHERE m.archived = FALSE AND m.min_stock IS NOT NULL AND st.on_hand < m.min_stock
+		ORDER BY (m.min_stock - st.on_hand) DESC, m.name`, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get low stock materials: %w", err)
+	}
+	names := make([]string, 0, len(rows))
+	for i, r := range rows {
+		if limit > 0 && i >= limit {
+			break
+		}
+		names = append(names, r.Name)
+	}
+	return names, len(rows), nil
+}
+
+// getStaleOpenRunCount counts production runs still open (planned/in_progress) whose created_at is
+// older than staleDays — forgotten runs that keep their issued materials pinned in WIP (NF-09).
+// staleDays <= 0 disables the check.
+func (s *Store) getStaleOpenRunCount(ctx context.Context, staleDays int) (int, error) {
+	if staleDays <= 0 {
+		return 0, nil
+	}
+	cutoff := s.Now().AddDate(0, 0, -staleDays)
+	return storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM production_run
+		WHERE status IN (:planned, :inprogress) AND created_at < :cutoff`,
+		map[string]any{
+			"planned":    string(entity.ProductionRunPlanned),
+			"inprogress": string(entity.ProductionRunInProgress),
+			"cutoff":     cutoff,
+		})
+}
+
 // buildDashboardAlerts derives the server-side alert list from the headline figures using the
 // operator-tunable thresholds. Rate-based alerts (refund rate) are gated on t.RateFloorN so
 // they never fire on a statistically meaningless handful of orders.
-func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundRatePct float64, placedOrders, reorderCount int, totalItemRev decimal.Decimal) []entity.DashboardAlert {
+func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundRatePct float64, placedOrders, reorderCount int, totalItemRev decimal.Decimal, lowStockNames []string, lowStockCount, staleRunCount int) []entity.DashboardAlert {
 	var out []entity.DashboardAlert
 
 	if d.CostCoveragePct >= t.ContributionTrustPct && d.ContributionMargin.IsNegative() {
@@ -252,6 +309,30 @@ func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundR
 			Title:    "Low GA4 tracking coverage",
 			Detail: fmt.Sprintf("GA4 saw only %.0f%% of DB revenue this period — check tracking (consent, ad-blockers, bots). Read ROAS as ≈ shown / coverage.",
 				d.TrackingCoveragePct),
+		})
+	}
+	// Low material stock (NF-09): materials below their configured minimum. The alert names the
+	// most-below few; the full list is on the warehouse screen (ListMaterialStock, below-min filter).
+	if lowStockCount > 0 {
+		detail := fmt.Sprintf("%d material(s) below minimum stock.", lowStockCount)
+		if len(lowStockNames) > 0 {
+			detail = fmt.Sprintf("%d material(s) below minimum stock: %s.", lowStockCount, strings.Join(lowStockNames, ", "))
+		}
+		out = append(out, entity.DashboardAlert{
+			Severity: entity.AlertSeverityWarning,
+			Code:     "low_material_stock",
+			Title:    "Low material stock",
+			Detail:   detail,
+		})
+	}
+	// Stale open production runs (NF-09): planned/in_progress runs older than the threshold — likely
+	// forgotten, and their issued materials stay pinned in WIP, distorting the inventory valuation.
+	if staleRunCount > 0 {
+		out = append(out, entity.DashboardAlert{
+			Severity: entity.AlertSeverityWarning,
+			Code:     "stale_open_production_run",
+			Title:    "Stale production runs",
+			Detail:   fmt.Sprintf("%d production run(s) have been open longer than %d days.", staleRunCount, t.ProductionRunStaleDays),
 		})
 	}
 	return out

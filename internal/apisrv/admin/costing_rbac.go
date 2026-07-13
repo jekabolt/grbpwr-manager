@@ -212,12 +212,14 @@ func stripStyleEconomicsCosting(resp *pb_admin.GetStyleEconomicsResponse) {
 		return
 	}
 	e := resp.Economics
-	e.DevCost = nil     // whole R&D journal roll-up is money
-	e.NetAfterDev = nil // derived from margin
+	e.DevCost = nil         // whole R&D journal roll-up is money
+	e.NetAfterDev = nil     // derived from margin
+	e.SamplesCostBase = nil // NF-09: warehouse cost the samples consumed (samples_count is kept)
 	if e.Production != nil {
 		e.Production.PlannedCostBase = nil
 		e.Production.ActualCostBase = nil
 		e.Production.CostVariance = nil
+		e.Production.MaterialsFromStockBase = nil // NF-09 material actuals are cost data
 		e.Production.HasActuals = false
 	}
 	if e.Sales != nil {

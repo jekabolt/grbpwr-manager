@@ -1580,6 +1580,7 @@ message AlertSettings {
   int32 rate_floor_n = 3; // min orders before any rate-based alert fires (significance floor)
   double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
   double ga4_coverage_warn_pct = 5; // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
+  int32 production_run_stale_days = 6; // warn when an open production run is older than this many days (NF-09)
 }
 
 message GetAlertSettingsRequest {}
@@ -2872,6 +2873,7 @@ message StyleProductionSummary {
   google.type.Decimal actual_cost_base = 5; // Σ recorded actual production costs (base ccy)
   google.type.Decimal cost_variance = 6; // actual_cost_base − planned_cost_base (base ccy)
   bool has_actuals = 7; // at least one run has recorded actual costs
+  google.type.Decimal materials_from_stock_base = 8; // net warehouse material issued into the style's runs, base EUR (NF-09)
 }
 
 // StyleEconomics is the "style as a business case" card (task 15 part C): one tech card's lifetime
@@ -2889,6 +2891,8 @@ message StyleEconomics {
   // period R&D cost NOT folded into unit COGS), NOT net profit. Unset when the style has no cost.
   google.type.Decimal net_after_dev = 8;
   string caveat = 9; // e.g. no product cost, or dev cost has unconverted currency
+  int32 samples_count = 10; // number of samples made for the style (NF-09)
+  google.type.Decimal samples_cost_base = 11; // warehouse material the samples consumed, base EUR — informational, NOT in net_after_dev (NF-09)
 }
 
 message GetStyleEconomicsRequest {
@@ -2966,6 +2970,23 @@ message InventoryValuation {
   repeated InventoryValuationRow dead_stock = 8; // costed, in-stock, unsold in window — by value
   google.type.Decimal write_offs_value = 9; // Σ |Δqty| × cost_price for damage/loss in the period
   int64 write_offs_units = 10; // units written off (damage/loss) in the period
+  // Raw-material warehouse (NF-09). Materials valued at moving-average unit cost, base EUR.
+  google.type.Decimal raw_materials_value = 11; // Σ on_hand × avg_unit_cost_base over costed materials with stock
+  int32 raw_materials_count = 12; // materials with on_hand > 0
+  int32 raw_uncosted_count = 13; // materials with stock but no average (value unknown)
+  google.type.Decimal wip_value = 14; // work-in-progress: materials issued into OPEN runs and not returned
+  google.type.Decimal writeoffs_materials_value = 15; // material write-offs (damage/loss/defect) in the period
+  repeated MaterialValuationRow top_materials_by_value = 16; // costed in-stock materials ranked by frozen value
+}
+
+// MaterialValuationRow is one raw-material line in the warehouse money view (NF-09).
+message MaterialValuationRow {
+  int32 material_id = 1;
+  string name = 2;
+  string unit = 3;
+  google.type.Decimal on_hand = 4;
+  google.type.Decimal avg_unit_cost_base = 5; // moving-average unit cost, base EUR
+  google.type.Decimal value = 6; // on_hand × avg_unit_cost_base
 }
 
 // --- Analytics: Return Analysis ---
