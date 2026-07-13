@@ -22,10 +22,11 @@ func (s *Server) GetSupportTicketsPaged(ctx context.Context, req *pb_admin.GetSu
 		req.GetDateTo(),
 	)
 
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
 	tickets, totalCount, err := s.repo.Support().GetSupportTicketsPaged(
 		ctx,
-		int(req.Limit),
-		int(req.Offset),
+		limit,
+		offset,
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 		filters,
 	)

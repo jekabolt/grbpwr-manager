@@ -174,7 +174,8 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		}
 	}
 
-	prds, _, err := s.repo.Products().GetProductsPaged(ctx, int(req.Limit), int(req.Offset), sfs, of, fc, req.ShowHidden)
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
+	prds, _, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, req.ShowHidden)
 	if err != nil {
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
 			return nil, status.Error(codes.InvalidArgument, err.Error())

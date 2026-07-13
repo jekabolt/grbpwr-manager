@@ -120,7 +120,8 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 // ListObjects
 func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjectsPagedRequest) (*pb_admin.ListObjectsPagedResponse, error) {
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
-	list, err := s.repo.Media().ListMediaPaged(ctx, int(req.Limit), int(req.Offset), of)
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
+	list, err := s.repo.Media().ListMediaPaged(ctx, limit, offset, of)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list objects from bucket",
 			slog.String("err", err.Error()),

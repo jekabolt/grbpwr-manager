@@ -69,6 +69,27 @@ func New(
 	}
 }
 
+const (
+	adminListDefaultLimit = 50
+	adminListMaxLimit     = 1000
+)
+
+// clampPagination bounds a client-supplied limit/offset for admin list endpoints
+// so a huge limit can't force MySQL to materialize an entire (growing) table. The
+// max is generous for admin bulk views while still capping pathological requests.
+func clampPagination(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = adminListDefaultLimit
+	}
+	if limit > adminListMaxLimit {
+		limit = adminListMaxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
 // revalidateAsync triggers storefront ISR revalidation in the background. Revalidation
 // is a cache-freshness side effect, not part of the admin operation's success: blocking
 // the RPC on it — and returning codes.Internal when Vercel is briefly unreachable — made

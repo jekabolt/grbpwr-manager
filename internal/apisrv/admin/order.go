@@ -139,14 +139,15 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 		return nil, status.Errorf(codes.InvalidArgument, "payment method is invalid")
 	}
 
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
 	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
 		req.Email,
 		req.OrderUuid,
 		int(req.Status),
 		cache.GetPaymentMethodIdByPbId(req.PaymentMethod),
 		int(req.OrderId),
-		int(req.Limit),
-		int(req.Offset),
+		limit,
+		offset,
 		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
 	)
 	if err != nil {
