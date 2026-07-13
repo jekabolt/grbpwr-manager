@@ -60,24 +60,45 @@ const (
 // order for retry handling to work, the function should return Handler errors
 // unchanged, or wrap them using %w.
 func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
-	var err error
-	for attempt := 0; ; attempt++ {
-		var pst dependency.Repository
-		pst, err = ms.TxBegin(ctx)
+	// runAttempt executes a single transaction attempt. The rollback is deferred and
+	// guarded by a committed flag so it runs on every non-commit exit — crucially
+	// including a panic inside the callback. An inline rollback (the previous form)
+	// was skipped when f panicked, leaking the pooled connection together with its
+	// SERIALIZABLE row/gap locks until the context cancelled or ConnMaxLifetime
+	// recycled it; repeated panics could exhaust MaxOpenConns while the process, whose
+	// gRPC interceptor recovers the panic, still looked healthy. The deferred func does
+	// not recover, so the panic still propagates to that interceptor after rollback.
+	runAttempt := func() error {
+		pst, err := ms.TxBegin(ctx)
 		if err != nil {
 			return err
 		}
-		err = f(ctx, pst)
-		if err == nil {
-			if err = pst.TxCommit(ctx); err == nil {
-				return nil
+		committed := false
+		defer func() {
+			if committed {
+				return
 			}
+			if rbErr := pst.TxRollback(ctx); rbErr != nil {
+				slog.Default().ErrorContext(ctx, "transaction rollback failed",
+					slog.String("err", rbErr.Error()),
+				)
+			}
+		}()
+		if err = f(ctx, pst); err != nil {
+			return err
 		}
-		if rbErr := pst.TxRollback(ctx); rbErr != nil {
-			slog.Default().ErrorContext(ctx, "transaction rollback failed",
-				slog.String("err", rbErr.Error()),
-				slog.String("original_err", err.Error()),
-			)
+		if err = pst.TxCommit(ctx); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = runAttempt()
+		if err == nil {
+			return nil
 		}
 		// Non-retryable error: return immediately, no wasted retries.
 		if !ms.IsErrorRepeat(err) {
