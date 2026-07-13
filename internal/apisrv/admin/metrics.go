@@ -579,6 +579,12 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.RfmAnalysis = dto.ConvertRFMAnalysisToPb(items)
 	}
 
+	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
+	// Commerce, traffic and email metrics remain visible.
+	if read, _ := s.costingAccess(ctx); !read {
+		stripMetricsCosting(resp)
+	}
+
 	return resp, nil
 }
 
@@ -862,7 +868,13 @@ func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardReq
 		slog.Default().ErrorContext(ctx, "can't get dashboard", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't get dashboard")
 	}
-	return dto.ConvertDashboardToPb(d), nil
+	resp := dto.ConvertDashboardToPb(d)
+	// Redact margin figures for accounts without costing:read (task 19); revenue, order
+	// count, inventory action lists and alerts remain.
+	if read, _ := s.costingAccess(ctx); !read {
+		stripDashboardCosting(resp)
+	}
+	return resp, nil
 }
 
 // GetAlertSettings returns the operator-tunable dashboard alert thresholds.

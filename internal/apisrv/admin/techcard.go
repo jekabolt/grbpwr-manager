@@ -53,6 +53,9 @@ func (s *Server) validateCategoryLeaf(ctx context.Context, categoryId sql.NullIn
 
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && techCardInsertHasCostingData(req.TechCard) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set cost data (costing block or BOM prices)")
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
@@ -94,7 +97,11 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
-	return &pb_admin.GetTechCardResponse{TechCard: dto.ConvertEntityTechCardToPb(tc, s.costingFx(ctx))}, nil
+	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFx(ctx))
+	if read, _ := s.costingAccess(ctx); !read {
+		stripTechCardCosting(pbTc)
+	}
+	return &pb_admin.GetTechCardResponse{TechCard: pbTc}, nil
 }
 
 // UpdateTechCard updates a tech card, replacing its nested sections.
@@ -102,12 +109,20 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
+	_, canWriteCosting := s.costingAccess(ctx)
+	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
 		return nil, err
+	}
+	// A cost-stripped account's full-replace save must not blank the costing it never saw.
+	if !canWriteCosting {
+		s.preserveStoredCosting(ctx, int(req.Id), tc)
 	}
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -191,9 +206,14 @@ func (s *Server) ListTechCardReleases(ctx context.Context, req *pb_admin.ListTec
 		slog.Default().ErrorContext(ctx, "can't list tech card releases", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list tech card releases")
 	}
+	read, _ := s.costingAccess(ctx)
 	out := make([]*pb_common.TechCardReleaseMeta, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, dto.ConvertTechCardReleaseMetaToPb(r))
+		m := dto.ConvertTechCardReleaseMetaToPb(r)
+		if !read {
+			stripReleaseMetaCosting(m)
+		}
+		out = append(out, m)
 	}
 	return &pb_admin.ListTechCardReleasesResponse{Releases: out}, nil
 }
@@ -213,13 +233,21 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 		slog.Default().ErrorContext(ctx, "can't get tech card release", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get tech card release")
 	}
+	read, _ := s.costingAccess(ctx)
 	resp := &pb_admin.GetTechCardReleaseResponse{Release: dto.ConvertTechCardReleaseMetaToPb(rel.TechCardReleaseMeta)}
+	if !read {
+		stripReleaseMetaCosting(resp.Release)
+	}
 	var snap pb_common.TechCard
 	if err := protojson.Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
 		resp.SnapshotError = "stored snapshot is incompatible with the current schema: " + err.Error()
 		slog.Default().WarnContext(ctx, "tech card release snapshot won't parse",
 			slog.Int("release_id", int(req.Id)), slog.String("err", err.Error()))
 	} else {
+		// The frozen snapshot embeds the full costing block + BOM prices; redact them too.
+		if !read {
+			stripTechCardCosting(&snap)
+		}
 		resp.Snapshot = &snap
 	}
 	return resp, nil

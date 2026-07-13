@@ -3,6 +3,7 @@ package rbac
 import (
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
@@ -28,6 +29,38 @@ func TestEveryAdminMethodIsClassified(t *testing.T) {
 		default:
 			t.Errorf("admin method %s is neither mapped to a section nor allowlisted; "+
 				"add it to methodRequirements or allowlist in rbac.go", m.MethodName)
+		}
+	}
+}
+
+// TestCostingIsGrantableFieldShapingSection guards the task-19 costing section: it is a
+// valid, catalogued, round-trippable grant even though NO method maps to it (it redacts
+// response fields rather than gating whole RPCs). A regression that drops it from the
+// catalog would silently make every costing:* grant unparseable (fail closed → no access).
+func TestCostingIsGrantableFieldShapingSection(t *testing.T) {
+	if !ValidSection(SectionCosting) {
+		t.Fatalf("costing is not a valid section")
+	}
+	inCatalog := false
+	for _, s := range Sections() {
+		if s.Key == SectionCosting {
+			inCatalog = true
+		}
+	}
+	if !inCatalog {
+		t.Errorf("costing is missing from the grantable catalog")
+	}
+	// It is deliberately method-less: no RPC requires it (enforcement is field shaping).
+	for name, req := range methodRequirements {
+		if req.Section == SectionCosting {
+			t.Errorf("method %s maps to costing, but costing is a field-shaping section with no methods", name)
+		}
+	}
+	// A costing grant survives the JWT encode→parse round-trip at both access levels.
+	for _, lvl := range []entity.AccessLevel{entity.AccessRead, entity.AccessWrite} {
+		got := ParsePermissions(EncodePermissions([]entity.AdminPermission{{Section: SectionCosting, Access: lvl}}))
+		if have, ok := got[SectionCosting]; !ok || !have.Covers(lvl) {
+			t.Errorf("costing:%s did not round-trip through encode/parse (got %v, ok=%v)", lvl, have, ok)
 		}
 	}
 }

@@ -26,6 +26,10 @@ import (
 
 func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductRequest) (*pb_admin.UpsertProductResponse, error) {
 
+	if _, write := s.costingAccess(ctx); !write && productInsertHasCostPrice(req.GetProduct().GetProduct()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a product cost_price")
+	}
+
 	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
@@ -141,13 +145,16 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
 	}
 
-	// Confidential cost/provenance — admin surface only, on a field of the admin response.
+	// Confidential cost/provenance — admin surface only, on a field of the admin response,
+	// and further gated by costing:read (task 19): a scoped account without it gets no cost.
 	var costInfo *pb_admin.ProductCostInfo
-	if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
-		slog.Default().ErrorContext(ctx, "can't get product cost info",
-			slog.String("err", cerr.Error()))
-	} else {
-		costInfo = productCostInfoToPb(ci)
+	if read, _ := s.costingAccess(ctx); read {
+		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
+			slog.Default().ErrorContext(ctx, "can't get product cost info",
+				slog.String("err", cerr.Error()))
+		} else {
+			costInfo = productCostInfoToPb(ci)
+		}
 	}
 
 	return &pb_admin.GetProductByIDResponse{
@@ -162,6 +169,9 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 // card before seeding; otherwise the product's existing primary card is used. The card must
 // currently link the product and have a computable unit cost in the base currency.
 func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.SyncProductCostFromTechCardRequest) (*pb_admin.SyncProductCostFromTechCardResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a product cost from a tech card")
+	}
 	if req.ProductId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}

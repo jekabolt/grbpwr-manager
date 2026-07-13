@@ -64,7 +64,11 @@ func (s *Server) GetMaterial(ctx context.Context, req *pb_admin.GetMaterialReque
 		slog.Default().ErrorContext(ctx, "can't get material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get material")
 	}
-	return &pb_admin.GetMaterialResponse{Material: dto.ConvertEntityMaterialToPb(*m)}, nil
+	pbM := dto.ConvertEntityMaterialToPb(*m)
+	if read, _ := s.costingAccess(ctx); !read {
+		stripMaterialCosting(pbM) // material price is confidential cost (task 19)
+	}
+	return &pb_admin.GetMaterialResponse{Material: pbM}, nil
 }
 
 // ListMaterials returns catalog materials (with current price), optionally filtered by section.
@@ -74,15 +78,23 @@ func (s *Server) ListMaterials(ctx context.Context, req *pb_admin.ListMaterialsR
 		slog.Default().ErrorContext(ctx, "can't list materials", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list materials")
 	}
+	read, _ := s.costingAccess(ctx)
 	out := make([]*pb_common.Material, 0, len(materials))
 	for _, m := range materials {
-		out = append(out, dto.ConvertEntityMaterialToPb(m))
+		pbM := dto.ConvertEntityMaterialToPb(m)
+		if !read {
+			stripMaterialCosting(pbM)
+		}
+		out = append(out, pbM)
 	}
 	return &pb_admin.ListMaterialsResponse{Materials: out}, nil
 }
 
 // AddMaterialPrice appends a point to a material's price history.
 func (s *Server) AddMaterialPrice(ctx context.Context, req *pb_admin.AddMaterialPriceRequest) (*pb_admin.AddMaterialPriceResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a material price")
+	}
 	price, err := dto.ConvertPbMaterialPriceToEntity(req.GetPrice())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -98,6 +110,11 @@ func (s *Server) AddMaterialPrice(ctx context.Context, req *pb_admin.AddMaterial
 func (s *Server) ListMaterialPrices(ctx context.Context, req *pb_admin.ListMaterialPricesRequest) (*pb_admin.ListMaterialPricesResponse, error) {
 	if req.GetMaterialId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "material_id is required")
+	}
+	// The entire payload is confidential cost data; without costing:read there is nothing
+	// non-cost to return, so shape it to an empty history (task 19).
+	if read, _ := s.costingAccess(ctx); !read {
+		return &pb_admin.ListMaterialPricesResponse{}, nil
 	}
 	prices, err := s.repo.TechCards().ListMaterialPrices(ctx, int(req.GetMaterialId()))
 	if err != nil {

@@ -37,7 +37,16 @@ const (
 	SectionFittings    = "fittings"
 	SectionTechCards   = "tech_cards"
 	SectionProduction  = "production"
-	SectionTasks       = "tasks"
+	// SectionCosting is a FIELD-SHAPING section, not a method gate: no RPC is mapped
+	// to it in methodRequirements. Instead the admin service strips confidential cost
+	// fields (tech-card costing block + BOM purchase prices, product cost_price, margin/
+	// COGS on metrics, release unit cost) from responses when the account lacks
+	// costing:read, and rejects writes that set cost data without costing:write. A
+	// content manager can hold tech_cards:read for sketches/sizes without seeing money.
+	// This is the first "a permission redacts fields, not methods" precedent — future
+	// financial fields (materials, production runs, dev costs) should classify here too.
+	SectionCosting = "costing"
+	SectionTasks   = "tasks"
 	SectionSettings    = "settings"
 	SectionSupport     = "support"
 	SectionMembership  = "membership"
@@ -68,6 +77,7 @@ var catalog = []SectionInfo{
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
 	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
+	{SectionCosting, "Costing", "Confidential cost of goods: tech-card costing & BOM prices, product cost, margin/COGS analytics. Redacts fields, does not hide screens."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
 	{SectionSupport, "Support", "Support tickets and reviews."},
