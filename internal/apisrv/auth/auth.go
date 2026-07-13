@@ -115,17 +115,25 @@ type Config struct {
 func New(c *Config, ar dependency.Admin) (*Server, error) {
 
 	// An empty HS256 secret would validate any token signed with an empty key,
-	// allowing trivial admin token forgery. Fail closed at startup.
+	// allowing trivial admin token forgery. Fail closed at startup — and also
+	// reject a too-short secret, since HS256 strength equals the key's strength.
 	if c.JWTSecret == "" {
 		return nil, fmt.Errorf("auth.jwt_secret is required")
+	}
+	if err := jwt.RequireStrongSecret("auth.jwt_secret", c.JWTSecret); err != nil {
+		return nil, err
 	}
 
 	// Trim surrounding whitespace: secret managers / env injection frequently add
 	// a trailing newline, which would otherwise make the master password never
-	// match what callers send. Also fail closed if it's unset.
+	// match what callers send. Also fail closed if it's unset or too weak. This is
+	// a human-entered password, so the floor is softer than for machine secrets.
 	masterPassword := strings.TrimSpace(c.MasterPassword)
 	if masterPassword == "" {
 		return nil, fmt.Errorf("auth.master_password is required")
+	}
+	if len(masterPassword) < 12 {
+		return nil, fmt.Errorf("auth.master_password must be at least 12 characters (got %d)", len(masterPassword))
 	}
 
 	ph, err := pwhash.New(c.PasswordHasherSaltSize, c.PasswordHasherIterations)

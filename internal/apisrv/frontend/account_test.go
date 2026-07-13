@@ -19,8 +19,8 @@ import (
 
 const (
 	testStorefrontSecret  = "test-access-jwt-secret-32bytes!!"
-	testLoginPepper       = "test-login-pepper"
-	testRefreshPepper     = "test-refresh-pepper"
+	testLoginPepper       = "test-login-pepper-at-least-32-bytes!"
+	testRefreshPepper     = "test-refresh-pepper-at-least-32-bytes!"
 	testMagicLinkBaseURL  = "https://example.com/login"
 	testEmail             = "user@example.com"
 )
