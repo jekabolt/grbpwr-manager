@@ -35,7 +35,10 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	// SIGHUP is intentionally excluded: the service has no config hot-reload, so a
+	// stray hangup (controlling-terminal close, some process managers) must not be
+	// routed to a full shutdown. DO App Platform terminates instances with SIGTERM.
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case s := <-sigCh:
 		logger.With("signal", s.String()).Warn("signal received, exiting")
