@@ -60,8 +60,11 @@ type WebhookHandler struct {
 	wh     *svix.Webhook
 }
 
-// NewWebhookHandler creates a WebhookHandler. If secret is empty, signature
-// verification is skipped (development / unconfigured deployments).
+// NewWebhookHandler creates a WebhookHandler. If secret is empty the handler is
+// still built (so the list-unsubscribe route, which is authenticated by its own
+// per-address token, keeps working), but HandleResendEvent then fails closed on
+// every event — an unsigned body must never be trusted to mutate the suppression
+// list.
 func NewWebhookHandler(repo dependency.Repository, secret string) (*WebhookHandler, error) {
 	h := &WebhookHandler{repo: repo, secret: secret}
 	if secret != "" {
@@ -86,13 +89,22 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if h.wh != nil {
-		if err := h.wh.Verify(body, r.Header); err != nil {
-			slog.Default().WarnContext(ctx, "resend webhook: signature verification failed",
-				slog.String("err", err.Error()))
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
+	// Fail closed. This route is mounted without CORS or auth so it can accept
+	// POSTs from Resend; its only authentication is the Svix signature. With no
+	// configured secret we cannot verify it, so refuse the event rather than trust
+	// an unauthenticated body — otherwise anyone could POST a forged
+	// email.bounced/complained and permanently suppress a victim's address,
+	// blocking their transactional and login (OTP / magic-link) mail.
+	if h.wh == nil {
+		slog.Default().ErrorContext(ctx, "resend webhook: signing secret not configured, refusing event")
+		http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.wh.Verify(body, r.Header); err != nil {
+		slog.Default().WarnContext(ctx, "resend webhook: signature verification failed",
+			slog.String("err", err.Error()))
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	var event resendWebhookEvent

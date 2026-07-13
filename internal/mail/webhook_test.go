@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,13 +16,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testWebhookSecret is the canonical svix example signing secret (whsec_ + base64).
+// The handler now fails closed without a configured secret, so tests exercise the
+// real verified path by signing their payloads with this secret.
+const testWebhookSecret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+
 func newTestWebhookHandler(t *testing.T, mailMock *mocks.MockMail) *WebhookHandler {
 	t.Helper()
 	repoMock := mocks.NewMockRepository(t)
 	repoMock.On("Mail").Return(mailMock).Maybe()
-	h, err := NewWebhookHandler(repoMock, "")
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret)
 	require.NoError(t, err)
 	return h
+}
+
+// newSignedResendRequest builds a POST request whose body carries a valid svix
+// signature for h's secret, so it passes HandleResendEvent's verification.
+func newSignedResendRequest(t *testing.T, h *WebhookHandler, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	id := "msg_test"
+	ts := time.Now()
+	sig, err := h.wh.Sign(id, ts, []byte(body))
+	require.NoError(t, err)
+	req.Header.Set("svix-id", id)
+	req.Header.Set("svix-timestamp", strconv.FormatInt(ts.Unix(), 10))
+	req.Header.Set("svix-signature", sig)
+	return req
 }
 
 func TestParseEventDate(t *testing.T) {
@@ -52,6 +74,43 @@ func TestParseEventDate(t *testing.T) {
 	})
 }
 
+// TestHandleResendEvent_NoSecretFailsClosed verifies the handler refuses events
+// when no signing secret is configured (h.wh == nil): an unsigned body must never
+// be trusted to mutate the suppression list.
+func TestHandleResendEvent_NoSecretFailsClosed(t *testing.T) {
+	repoMock := mocks.NewMockRepository(t)
+	h, err := NewWebhookHandler(repoMock, "")
+	require.NoError(t, err)
+
+	body := `{"type":"email.bounced","data":{"to":["victim@example.com"]}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	h.HandleResendEvent(rr, req)
+
+	// No suppression must be attempted (repoMock has no expectations).
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+}
+
+// TestHandleResendEvent_BadSignatureRejected verifies a body that does not match
+// the configured secret's signature is rejected with 401 and not processed.
+func TestHandleResendEvent_BadSignatureRejected(t *testing.T) {
+	repoMock := mocks.NewMockRepository(t)
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret)
+	require.NoError(t, err)
+
+	body := `{"type":"email.bounced","data":{"to":["victim@example.com"]}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("svix-id", "msg_test")
+	req.Header.Set("svix-timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+	req.Header.Set("svix-signature", "v1,not-a-valid-signature")
+	rr := httptest.NewRecorder()
+
+	h.HandleResendEvent(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
 func TestHandleResendEvent_DeliveredIncrementsMetric(t *testing.T) {
 	mailMock := mocks.NewMockMail(t)
 	mailMock.On("IncrementEmailMetric", mock.Anything, "delivered", mock.AnythingOfType("time.Time")).
@@ -60,11 +119,9 @@ func TestHandleResendEvent_DeliveredIncrementsMetric(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.delivered","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
@@ -80,10 +137,9 @@ func TestHandleResendEvent_BouncedIncrementsBounceAndSuppresses(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.bounced","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
@@ -99,10 +155,9 @@ func TestHandleResendEvent_FailedIncrementsBounceAndSuppresses(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.failed","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
@@ -116,10 +171,9 @@ func TestHandleResendEvent_OpenedIncrementsMetric(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.opened","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
@@ -133,10 +187,9 @@ func TestHandleResendEvent_ClickedIncrementsMetric(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.clicked","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
@@ -149,10 +202,9 @@ func TestHandleResendEvent_DelayedNoMetric(t *testing.T) {
 	h := newTestWebhookHandler(t, mailMock)
 
 	body := `{"type":"email.delivery_delayed","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"abc123","to":["user@example.com"]}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 
-	h.HandleResendEvent(rr, req)
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
