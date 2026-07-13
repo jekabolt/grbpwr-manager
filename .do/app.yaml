@@ -356,13 +356,19 @@ ingress:
       - PATCH
       - DELETE
       - OPTIONS
+      # Must mirror the app-level HTTP_ALLOWED_ORIGINS allowlist exactly. The app's
+      # corsMiddleware deliberately dropped credentialed wildcards; the edge must
+      # not re-open them. No ^https://.*\.vercel\.app$ / ^https://[a-z0-9-]+\.github\.io$
+      # / localhost regexes here — those let any attacker-controlled *.vercel.app or
+      # *.github.io deployment pass edge CORS and short-circuit preflight before the
+      # strict app layer runs.
       allow_origins:
       - exact: https://grbpwr.com
       - exact: https://admin.grbpwr.com
       - exact: https://backend.grbpwr.com
-      - regex: ^http://localhost(:[0-9]+)?$
-      - regex: ^https://[a-z0-9-]+\.github\.io$
-      - regex: ^https://.*\.vercel\.app$
+      - exact: https://mikevelko.github.io
+      - exact: https://jekabolt.github.io
+      - exact: https://0101oak.github.io
       expose_headers:
       - Content-Length
       - X-Request-Id
