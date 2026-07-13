@@ -737,6 +737,12 @@ service AdminService {
       body: "*"
     };
   }
+  // GetProductionRunMaterialPlan estimates the fabric/notion requirement of a run from its lines'
+  // colourway norms × planned qty × (1 + wastage), against on-hand and already-issued stock (NF-06).
+  // It is a plan-estimate before the marker; the real consumption comes from stock issues.
+  rpc GetProductionRunMaterialPlan(GetProductionRunMaterialPlanRequest) returns (GetProductionRunMaterialPlanResponse) {
+    option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/material-plan"};
+  }
 
   // Material warehouse (new-flow NF-01): on-hand balance + moving-average valuation and an
   // append-only movement ledger per catalog material.
@@ -3640,6 +3646,27 @@ message ReceiveProductionRunRequest {
 
 message ReceiveProductionRunResponse {
   bool cost_price_updated = 1; // true when update_cost_price was requested and applied
+}
+
+message GetProductionRunMaterialPlanRequest {
+  int32 run_id = 1;
+}
+
+// MaterialPlanRow is the estimated requirement of one catalog material for a run, against stock.
+message MaterialPlanRow {
+  int32 material_id = 1;
+  string material_name = 2;
+  string unit = 3;
+  google.type.Decimal required = 4; // Σ over lines: norm(colourway,size) × planned_qty × (1 + wastage%)
+  google.type.Decimal on_hand = 5; // material_stock.on_hand (NF-01)
+  google.type.Decimal issued = 6; // net already issued to this run (issue_production − return_production)
+  google.type.Decimal shortage = 7; // max(0, required − issued − on_hand)
+  bool has_size_norms = 8; // false when some contributing norm was per-garment, not size-graded (rougher estimate)
+}
+
+message GetProductionRunMaterialPlanResponse {
+  repeated MaterialPlanRow rows = 1;
+  repeated string caveats = 2; // BOM lines without material_id, colourways without norms, lines without a product
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

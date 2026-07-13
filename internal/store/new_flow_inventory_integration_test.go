@@ -458,3 +458,80 @@ func TestTechCardPieces(t *testing.T) {
 	_, err = s.TechCards().AddTechCard(ctx, bad)
 	require.Error(t, err, "out-of-range colorway_index must fail")
 }
+
+// TestProductionRunMaterialFlow exercises NF-06 §6.3: material issued to a run loads onto the run
+// as movements (feeding materials-from-stock actuals) and blocks deletion of the run.
+func TestProductionRunMaterialFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
+
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Run Style", Stage: entity.TechCardStageProto,
+		StyleNumber:     sql.NullString{String: "NF-RUN-1", Valid: true},
+		TargetGender:    sql.NullString{String: "unisex", Valid: true},
+		MeasurementUnit: entity.TechCardUnitMm,
+		ApprovalState:   entity.TechCardApprovalDraft,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+
+	P := s.ProductionRuns()
+	// planning lines carry no product_id yet (colourways not published) — the FK allows NULL.
+	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}, {SizeId: 2, PlannedQty: 8}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+
+	matID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Run Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
+	})
+
+	// receive 100 @ 4 EUR (avg 4), issue 21 to the run, return 1.
+	_, err = s.MaterialStock().ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: matID, Quantity: decimal.NewFromInt(100), UnitCost: nd("4"), Currency: "EUR"})
+	require.NoError(t, err)
+	runRef := sql.NullInt32{Int32: int32(runID), Valid: true}
+	_, err = s.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: decimal.NewFromInt(21), ProductionRunId: runRef})
+	require.NoError(t, err)
+	_, err = s.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: decimal.NewFromInt(1), ProductionRunId: runRef, IsReturn: true})
+	require.NoError(t, err)
+
+	// the run now carries the two movements; net issued = 20 @ avg 4 → materials-from-stock 80.
+	got, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Len(t, got.MaterialMovements, 2)
+	var netIssued decimal.Decimal
+	for _, m := range got.MaterialMovements {
+		switch m.MovementType {
+		case entity.MaterialMovementIssueProduction:
+			netIssued = netIssued.Add(m.Quantity)
+		case entity.MaterialMovementReturnProduction:
+			netIssued = netIssued.Sub(m.Quantity)
+		}
+	}
+	require.True(t, netIssued.Equal(decimal.NewFromInt(20)), "21 issued − 1 returned")
+
+	// a run with stock movements cannot be deleted.
+	err = P.DeleteProductionRun(ctx, runID)
+	require.ErrorIs(t, err, entity.ErrProductionRunHasMovements)
+}

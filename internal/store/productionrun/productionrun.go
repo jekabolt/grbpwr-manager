@@ -184,6 +184,16 @@ func (s *Store) DeleteProductionRun(ctx context.Context, id int) error {
 	if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
 		return entity.ErrProductionRunReceivedImmutable
 	}
+	// Refuse if material was issued to the run — those movements are applied stock facts (the FK is
+	// ON DELETE SET NULL, so a delete would orphan them). Return the material first.
+	moved, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM material_stock_movement WHERE production_run_id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("failed to check production run material movements: %w", err)
+	}
+	if moved > 0 {
+		return entity.ErrProductionRunHasMovements
+	}
 	if err := storeutil.ExecNamed(ctx, s.DB,
 		`DELETE FROM production_run WHERE id = :id`, map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("failed to delete production run: %w", err)
@@ -211,7 +221,28 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, err
 	}
 	run.Costs = costs
+	movements, err := s.runMaterialMovements(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	run.MaterialMovements = movements
 	return &run, nil
+}
+
+// runMaterialMovements loads the material stock ledger rows booked to this run (issues/returns to
+// production), ordered by id. It feeds the run's materials-from-stock actual cost and the material
+// plan's issued column.
+func (s *Store) runMaterialMovements(ctx context.Context, runID int) ([]entity.MaterialMovement, error) {
+	mv, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
+		       unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id,
+		       lot, supplier_doc, reason, comment, admin_username, occurred_at, created_at
+		FROM material_stock_movement WHERE production_run_id = :run_id ORDER BY id`,
+		map[string]any{"run_id": runID})
+	if err != nil {
+		return nil, fmt.Errorf("can't load production run material movements: %w", err)
+	}
+	return mv, nil
 }
 
 // ListProductionRuns returns runs (header + size grid) matching the filter, newest-first, with

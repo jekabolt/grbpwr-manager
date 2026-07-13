@@ -279,25 +279,53 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 		}
 	}
 
-	totalBase := decimal.Zero
+	manualBase := decimal.Zero
 	hasBase := true
+	hasManualMaterials := false
 	byKind := make(map[entity.ProductionRunCostKind]decimal.Decimal)
 	for _, c := range r.Costs {
+		if c.Kind == entity.ProductionRunCostMaterials {
+			hasManualMaterials = true
+		}
 		if !c.AmountBase.Valid {
 			hasBase = false
 			continue
 		}
-		totalBase = totalBase.Add(c.AmountBase.Decimal)
+		manualBase = manualBase.Add(c.AmountBase.Decimal)
 		byKind[c.Kind] = byKind[c.Kind].Add(c.AmountBase.Decimal)
 	}
 
+	// Materials issued from the warehouse (NF-06): issues add cost, returns give it back. An issue
+	// with no frozen average is skipped and flagged (the figure then understates).
+	materialsFromStock := decimal.Zero
+	hasStockIssues, hasUncostedIssues := false, false
+	for _, m := range r.MaterialMovements {
+		switch m.MovementType {
+		case entity.MaterialMovementIssueProduction:
+			hasStockIssues = true
+			if m.UnitCostBase.Valid {
+				materialsFromStock = materialsFromStock.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
+			} else {
+				hasUncostedIssues = true
+			}
+		case entity.MaterialMovementReturnProduction:
+			if m.UnitCostBase.Valid {
+				materialsFromStock = materialsFromStock.Sub(m.Quantity.Mul(m.UnitCostBase.Decimal))
+			}
+		}
+	}
+	totalBase := manualBase.Add(materialsFromStock)
+
 	out := &pb_common.ProductionRunActuals{
-		ActualTotalBase:  pbDecimalFromDecimal(roundMoney(totalBase)),
-		BaseCurrency:     cache.GetBaseCurrency(),
-		PlannedQtyTotal:  int32(plannedQty),
-		ReceivedQtyTotal: int32(receivedQty),
-		DefectQtyTotal:   int32(defectQty),
-		HasBase:          hasBase,
+		ActualTotalBase:        pbDecimalFromDecimal(roundMoney(totalBase)),
+		BaseCurrency:           cache.GetBaseCurrency(),
+		PlannedQtyTotal:        int32(plannedQty),
+		ReceivedQtyTotal:       int32(receivedQty),
+		DefectQtyTotal:         int32(defectQty),
+		HasBase:                hasBase,
+		MaterialsFromStockBase: pbDecimalFromDecimal(roundMoney(materialsFromStock)),
+		MixedMaterialsSources:  hasStockIssues && hasManualMaterials,
+		HasUncostedIssues:      hasUncostedIssues,
 	}
 	for _, k := range productionRunCostKindOrder {
 		if amt, ok := byKind[k]; ok {
@@ -354,11 +382,12 @@ func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.Produ
 }
 
 // ProductionRunActualUnitCostBase returns the run's actual unit cost in the base currency, valid
-// only when it is trustworthy for setting cost_price: there is at least one cost article, EVERY
-// article folded to base (a partial total would understate cost), and some quantity was received.
-// It is the same figure as ProductionRunActuals.actual_unit_cost under those conditions.
+// only when it is trustworthy for setting cost_price: some quantity was received, at least one cost
+// source exists (a manual cost article and/or a stock issue), EVERY manual article folded to base,
+// and NO stock issue is uncosted (either would understate the cost). It is the same figure as
+// ProductionRunActuals.actual_unit_cost under those conditions (manual + materials-from-stock).
 func ProductionRunActualUnitCostBase(r *entity.ProductionRun) decimal.NullDecimal {
-	if r == nil || len(r.Costs) == 0 {
+	if r == nil {
 		return decimal.NullDecimal{}
 	}
 	var received int64
@@ -371,11 +400,30 @@ func ProductionRunActualUnitCostBase(r *entity.ProductionRun) decimal.NullDecima
 		return decimal.NullDecimal{}
 	}
 	total := decimal.Zero
+	haveManual := len(r.Costs) > 0
 	for _, c := range r.Costs {
 		if !c.AmountBase.Valid {
 			return decimal.NullDecimal{} // partial fold → not trustworthy for cost_price
 		}
 		total = total.Add(c.AmountBase.Decimal)
+	}
+	haveStock := false
+	for _, m := range r.MaterialMovements {
+		switch m.MovementType {
+		case entity.MaterialMovementIssueProduction:
+			haveStock = true
+			if !m.UnitCostBase.Valid {
+				return decimal.NullDecimal{} // an uncosted issue understates the total
+			}
+			total = total.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
+		case entity.MaterialMovementReturnProduction:
+			if m.UnitCostBase.Valid {
+				total = total.Sub(m.Quantity.Mul(m.UnitCostBase.Decimal))
+			}
+		}
+	}
+	if !haveManual && !haveStock {
+		return decimal.NullDecimal{} // no cost source at all
 	}
 	return decimal.NullDecimal{Decimal: roundMoney(total.Div(decimal.NewFromInt(received))), Valid: true}
 }

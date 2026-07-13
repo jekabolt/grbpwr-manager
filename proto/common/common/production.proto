@@ -77,6 +77,12 @@ message ProductionRunActuals {
   google.type.Decimal unit_cost_variance = 10; // actual_unit_cost − planned_unit_cost
   google.type.Decimal total_variance = 11; // actual_total_base − planned_total_base
   bool has_base = 12; // false when some cost article could not be folded to base (total is partial)
+  // materials issued from the warehouse (NF-06): Σ (issue_production − return_production) ×
+  // unit_cost_base. Folded INTO actual_total_base, so a run can cost its fabric either by hand
+  // (a kind=materials cost article) or from stock issues — or, with the caveat below, both.
+  google.type.Decimal materials_from_stock_base = 13;
+  bool mixed_materials_sources = 14; // both a manual kind=materials cost AND stock issues exist (possible double count)
+  bool has_uncosted_issues = 15; // some stock issue had no average cost, so materials_from_stock understates
 }
 
 // ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).

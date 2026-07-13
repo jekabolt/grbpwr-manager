@@ -25,6 +25,11 @@ var ErrProductionRunLineProductMissing = errors.New("a production run line with 
 // positive received quantity — there is nothing to book into stock.
 var ErrProductionRunNothingReceived = errors.New("production run has no received quantities")
 
+// ErrProductionRunHasMovements is returned by DeleteProductionRun when material has been issued to
+// (or returned from) the run: those stock movements are applied facts (the FK is ON DELETE SET
+// NULL, so a delete would orphan them from the run). Cancel the run instead of deleting it.
+var ErrProductionRunHasMovements = errors.New("production run has material movements; cancel it instead of deleting")
+
 // ProductionRunStatus is the lifecycle state of a production run (партия). It mirrors the
 // common.ProductionRunStatus proto enum and is stored as its lowercase string in the DB.
 type ProductionRunStatus string
@@ -128,12 +133,15 @@ type ProductionRunInsert struct {
 	Costs               []ProductionRunCost `db:"-"`
 }
 
-// ProductionRun is a stored production run (production_run row + its size grid).
+// ProductionRun is a stored production run (production_run row + its line grid). MaterialMovements
+// is the read-only ledger of material issued/returned to this run (NF-06), loaded on Get; it feeds
+// the materials-from-stock figure in the actuals and the "issued" column of the material plan.
 type ProductionRun struct {
 	Id int `db:"id"`
 	ProductionRunInsert
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	MaterialMovements []MaterialMovement `db:"-"`
+	CreatedAt         time.Time          `db:"created_at"`
+	UpdatedAt         time.Time          `db:"updated_at"`
 }
 
 // ProductionRunListFilter narrows ListProductionRuns. Zero-value fields mean "no filter".

@@ -78,7 +78,7 @@ func (s *Server) DeleteProductionRun(ctx context.Context, req *pb_admin.DeletePr
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
 		}
-		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) {
+		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) || errors.Is(err, entity.ErrProductionRunHasMovements) {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't delete production run", slog.String("err", err.Error()))
@@ -190,6 +190,54 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		return nil, status.Error(codes.Internal, "can't receive production run")
 	}
 	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPrice.Valid}, nil
+}
+
+// GetProductionRunMaterialPlan estimates the run's material requirement from its lines' colourway
+// norms against on-hand and already-issued stock (NF-06 §6.2). Read-only; writes nothing.
+func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin.GetProductionRunMaterialPlanRequest) (*pb_admin.GetProductionRunMaterialPlanResponse, error) {
+	if req.RunId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load production run for material plan", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load production run")
+	}
+	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "tech card not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load tech card for material plan", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load tech card")
+	}
+	// on-hand for every catalog material referenced by the card's BOM (a bounded, small set).
+	onHand := make(map[int]decimal.Decimal)
+	for i := range card.BomItems {
+		b := &card.BomItems[i]
+		if !b.MaterialId.Valid {
+			continue
+		}
+		mid := int(b.MaterialId.Int64)
+		if _, done := onHand[mid]; done {
+			continue
+		}
+		st, err := s.repo.MaterialStock().GetMaterialStock(ctx, mid)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				onHand[mid] = decimal.Zero // never received → no stock row yet
+				continue
+			}
+			slog.Default().ErrorContext(ctx, "can't load material stock for material plan", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load material stock")
+		}
+		onHand[mid] = st.OnHand
+	}
+	issued := dto.AggregateRunMaterialIssues(run.MaterialMovements)
+	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued), nil
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked

@@ -50,11 +50,11 @@ const (
 	// content manager can hold tech_cards:read for sketches/sizes without seeing money.
 	// This is the first "a permission redacts fields, not methods" precedent — future
 	// financial fields (materials, production runs, dev costs) should classify here too.
-	SectionCosting = "costing"
-	SectionTasks   = "tasks"
-	SectionSettings    = "settings"
-	SectionSupport     = "support"
-	SectionMembership  = "membership"
+	SectionCosting    = "costing"
+	SectionTasks      = "tasks"
+	SectionSettings   = "settings"
+	SectionSupport    = "support"
+	SectionMembership = "membership"
 	// SectionAccounts governs the account-management RPCs themselves. Only a
 	// super-admin or an account with accounts:write may create/edit accounts.
 	SectionAccounts = "accounts"
@@ -197,32 +197,33 @@ var methodRequirements = map[string]Requirement{
 	"GetSample":    rd(SectionFittings),
 	"ListSamples":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard":       wr(SectionTechCards),
-	"GetTechCard":          rd(SectionTechCards),
-	"UpdateTechCard":       wr(SectionTechCards),
-	"DeleteTechCard":       wr(SectionTechCards),
-	"ListTechCards":        rd(SectionTechCards),
-	"GetCostingFxRates":    rd(SectionTechCards),
-	"UpsertCostingFxRates": wr(SectionTechCards),
-	"CreateMaterial":       wr(SectionTechCards),
-	"UpdateMaterial":       wr(SectionTechCards),
-	"ArchiveMaterial":      wr(SectionTechCards),
-	"GetMaterial":          rd(SectionTechCards),
-	"ListMaterials":        rd(SectionTechCards),
-	"AddMaterialPrice":     wr(SectionTechCards),
-	"ListMaterialPrices":   rd(SectionTechCards),
+	"CreateTechCard":           wr(SectionTechCards),
+	"GetTechCard":              rd(SectionTechCards),
+	"UpdateTechCard":           wr(SectionTechCards),
+	"DeleteTechCard":           wr(SectionTechCards),
+	"ListTechCards":            rd(SectionTechCards),
+	"GetCostingFxRates":        rd(SectionTechCards),
+	"UpsertCostingFxRates":     wr(SectionTechCards),
+	"CreateMaterial":           wr(SectionTechCards),
+	"UpdateMaterial":           wr(SectionTechCards),
+	"ArchiveMaterial":          wr(SectionTechCards),
+	"GetMaterial":              rd(SectionTechCards),
+	"ListMaterials":            rd(SectionTechCards),
+	"AddMaterialPrice":         wr(SectionTechCards),
+	"ListMaterialPrices":       rd(SectionTechCards),
 	"ListTechCardReleases":     rd(SectionTechCards),
 	"GetTechCardRelease":       rd(SectionTechCards),
 	"AddTechCardDevExpense":    wr(SectionTechCards),
 	"DeleteTechCardDevExpense": wr(SectionTechCards),
 	"ListTechCardDevExpenses":  rd(SectionTechCards),
 	// production runs (партии)
-	"CreateProductionRun":  wr(SectionProduction),
-	"UpdateProductionRun":  wr(SectionProduction),
-	"DeleteProductionRun":  wr(SectionProduction),
-	"GetProductionRun":     rd(SectionProduction),
-	"ListProductionRuns":   rd(SectionProduction),
-	"ReceiveProductionRun": wr(SectionProduction),
+	"CreateProductionRun":          wr(SectionProduction),
+	"UpdateProductionRun":          wr(SectionProduction),
+	"DeleteProductionRun":          wr(SectionProduction),
+	"GetProductionRun":             rd(SectionProduction),
+	"ListProductionRuns":           rd(SectionProduction),
+	"ReceiveProductionRun":         wr(SectionProduction),
+	"GetProductionRunMaterialPlan": rd(SectionProduction),
 	// material warehouse (new-flow NF-01)
 	"ReceiveMaterialStock":  wr(SectionInventory),
 	"IssueMaterialStock":    wr(SectionInventory),
