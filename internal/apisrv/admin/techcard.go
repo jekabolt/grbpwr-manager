@@ -134,6 +134,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		if errors.Is(err, entity.ErrTechCardReleased) {
 			return nil, status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 		}
+		if errors.Is(err, entity.ErrTechCardPurposeLocked) {
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardPurposeLocked.Error())
+		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)
 		}

@@ -535,3 +535,80 @@ func TestProductionRunMaterialFlow(t *testing.T) {
 	err = P.DeleteProductionRun(ctx, runID)
 	require.ErrorIs(t, err, entity.ErrProductionRunHasMovements)
 }
+
+// TestAuxiliaryProductionRun exercises NF-07: an auxiliary card's run output is received into the
+// material warehouse (receipt_production moving the average + a production_run price point), not
+// into product stock; a second receive is refused.
+func TestAuxiliaryProductionRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	// output material the dust bag lands in (packaging section).
+	outMatID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Dust Bag Stock", Section: "packaging", Unit: sql.NullString{String: "pc", Valid: true}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", outMatID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", outMatID)
+	})
+
+	// auxiliary tech card that outputs into that material.
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Dust Bag", Stage: entity.TechCardStageProto,
+		StyleNumber:      sql.NullString{String: "NF-AUX-1", Valid: true},
+		TargetGender:     sql.NullString{String: "unisex", Valid: true},
+		MeasurementUnit:  entity.TechCardUnitMm,
+		ApprovalState:    entity.TechCardApprovalDraft,
+		Purpose:          entity.TechCardPurposeAuxiliary,
+		OutputMaterialId: sql.NullInt64{Int64: int64(outMatID), Valid: true},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+
+	// read-back: purpose + output material round-trip.
+	card, err := s.TechCards().GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.Equal(t, entity.TechCardPurposeAuxiliary, card.Purpose)
+	require.EqualValues(t, outMatID, card.OutputMaterialId.Int64)
+
+	// a run producing 100 units (one OS line, no product), receive into the material at unit cost 2.
+	P := s.ProductionRuns()
+	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 100, ReceivedQty: sql.NullInt64{Int64: 100, Valid: true}}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+
+	unitCost := decimal.NullDecimal{Decimal: decimal.NewFromInt(2), Valid: true}
+	require.NoError(t, P.ReceiveAuxiliaryProductionRun(ctx, runID, outMatID, decimal.NewFromInt(100), unitCost, "tester"))
+
+	// the material warehouse now holds 100 @ avg 2.
+	st, err := s.MaterialStock().GetMaterialStock(ctx, outMatID)
+	require.NoError(t, err)
+	require.True(t, st.OnHand.Equal(decimal.NewFromInt(100)), "on-hand 100, got %s", st.OnHand)
+	require.True(t, st.AvgUnitCostBase.Valid && st.AvgUnitCostBase.Decimal.Equal(decimal.NewFromInt(2)), "avg 2, got %v", st.AvgUnitCostBase)
+
+	// a production_run price point was appended (cost history of our own output).
+	prices, err := s.TechCards().ListMaterialPrices(ctx, outMatID)
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	require.Equal(t, entity.MaterialPriceSourceProductionRun, prices[0].Source)
+
+	// the run is received; a second receive is refused.
+	got, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunReceived, got.Status)
+	require.ErrorIs(t, P.ReceiveAuxiliaryProductionRun(ctx, runID, outMatID, decimal.NewFromInt(100), unitCost, "tester"), entity.ErrProductionRunAlreadyReceived)
+}

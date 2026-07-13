@@ -16,6 +16,11 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 // without first re-opening it to DRAFT (a released card is frozen for the factory).
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
+// ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
+// purpose (sellable↔auxiliary) after it already has production runs or linked products — the switch
+// would strand a batch's stock destination or a product link (NF-07).
+var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs or products")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string
@@ -42,6 +47,21 @@ var ValidTechCardStages = map[TechCardStage]bool{
 // IsValidTechCardStage reports whether s is an accepted stage.
 func IsValidTechCardStage(s TechCardStage) bool {
 	return ValidTechCardStages[s]
+}
+
+// TechCardPurpose is what a card produces: a sellable product or an auxiliary item (NF-07). It
+// mirrors the common.TechCardPurpose proto enum and is stored as a string in tech_card.purpose.
+type TechCardPurpose string
+
+const (
+	TechCardPurposeSellable  TechCardPurpose = "sellable"  // produces a catalog product (default)
+	TechCardPurposeAuxiliary TechCardPurpose = "auxiliary" // produces a packaging material (dust bag, shopper…)
+)
+
+// ValidTechCardPurposes is the set of accepted card purposes.
+var ValidTechCardPurposes = map[TechCardPurpose]bool{
+	TechCardPurposeSellable:  true,
+	TechCardPurposeAuxiliary: true,
 }
 
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
@@ -744,7 +764,12 @@ type TechCardPiece struct {
 // Details; the header carries no cost targets (pricing is on Costing).
 type TechCardInsert struct {
 	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
-	StyleNumber      sql.NullString          `db:"style_number"`
+	StyleNumber sql.NullString `db:"style_number"`
+	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
+	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
+	// warehouse, and it may not link products.
+	Purpose          TechCardPurpose         `db:"purpose"`
+	OutputMaterialId sql.NullInt64           `db:"output_material_id"` // material an auxiliary run receipts into
 	Name             string                  `db:"name"`
 	Brand            sql.NullString          `db:"brand"`
 	Season           sql.NullString          `db:"season"`

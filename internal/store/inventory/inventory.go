@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -139,94 +140,112 @@ func (s *Store) ReceiveMaterialStock(ctx context.Context, ins entity.MaterialRec
 	}
 	var out entity.MaterialMovement
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		db := rep.DB()
-		before, err := readStockForUpdate(ctx, db, ins.MaterialId)
-		if err != nil {
-			return err
-		}
-
-		// Resolve the receipt's base-currency unit cost.
-		var unitCostBase decimal.NullDecimal
-		currency := strings.ToUpper(strings.TrimSpace(ins.Currency))
-		if ins.FromProduction {
-			// The caller supplies the run's actual per-unit base cost directly.
-			unitCostBase = ins.UnitCost
-			currency = strings.ToUpper(cache.GetBaseCurrency())
-		} else if ins.UnitCost.Valid {
-			base, ok, err := toBase(ctx, rep, ins.UnitCost.Decimal, currency)
-			if err != nil {
-				return err
-			}
-			if ok {
-				unitCostBase = decimal.NullDecimal{Decimal: base, Valid: true}
-			}
-		}
-
-		newOnHand := before.OnHand.Add(ins.Quantity)
-		newAvg := before.Avg
-		if unitCostBase.Valid && newOnHand.GreaterThan(decimal.Zero) {
-			if before.Avg.Valid && before.OnHand.GreaterThan(decimal.Zero) {
-				total := before.OnHand.Mul(before.Avg.Decimal).Add(ins.Quantity.Mul(unitCostBase.Decimal))
-				newAvg = decimal.NullDecimal{Decimal: total.Div(newOnHand).Round(avgScale), Valid: true}
-			} else {
-				newAvg = decimal.NullDecimal{Decimal: unitCostBase.Decimal.Round(avgScale), Valid: true}
-			}
-		}
-
-		if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, newAvg); err != nil {
-			return err
-		}
-
-		mvType := entity.MaterialMovementReceipt
-		if ins.FromProduction {
-			mvType = entity.MaterialMovementReceiptProduction
-		}
-		m := entity.MaterialMovement{
-			MaterialId:      ins.MaterialId,
-			MovementType:    mvType,
-			Quantity:        ins.Quantity,
-			OnHandBefore:    before.OnHand,
-			OnHandAfter:     newOnHand,
-			UnitCost:        ins.UnitCost,
-			UnitCostBase:    unitCostBase,
-			ProductionRunId: ins.ProductionRunId,
-			Lot:             ins.Lot,
-			SupplierDoc:     ins.SupplierDoc,
-			Comment:         ins.Comment,
-			AdminUsername:   ins.AdminUsername,
-			OccurredAt:      ins.OccurredAt,
-		}
-		if currency != "" {
-			m.Currency = sql.NullString{String: currency, Valid: true}
-		}
-		if !unitCostBase.Valid && ins.UnitCost.Valid && !ins.FromProduction {
-			m.Comment = appendNote(m.Comment, "no FX rate — average not updated")
-		}
-		out, err = insertMovement(ctx, db, m)
-		if err != nil {
-			return err
-		}
-
-		// A purchase receipt with a price feeds the catalog price history.
-		if !ins.FromProduction && ins.UnitCost.Valid {
-			validFrom := s.Now()
-			if ins.OccurredAt.Valid {
-				validFrom = ins.OccurredAt.Time
-			}
-			if err := rep.TechCards().AddMaterialPrice(ctx, entity.MaterialPrice{
-				MaterialId: ins.MaterialId,
-				Price:      ins.UnitCost.Decimal,
-				Currency:   currency,
-				ValidFrom:  validFrom,
-				Source:     entity.MaterialPriceSourcePurchase,
-			}); err != nil {
-				return fmt.Errorf("append purchase price: %w", err)
-			}
-		}
-		return nil
+		var err error
+		out, err = ReceiveInTx(ctx, rep, ins, s.Now())
+		return err
 	})
 	if err != nil {
 		return entity.MaterialMovement{}, err
+	}
+	return out, nil
+}
+
+// ReceiveInTx performs a stock receipt WITHIN the caller's transaction (rep) — the moving-average
+// update, the movement row and the price-history point — and returns the inserted movement. It is
+// the shared core of ReceiveMaterialStock (which wraps it in its own tx) and of a production run's
+// auxiliary receive (NF-07), which must book the receipt in the SAME transaction that holds the run
+// row's FOR UPDATE lock: a nested transaction there would deadlock on the movement's FK back to
+// production_run. `now` is the fallback price-effective date when the receipt carries no date.
+func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.MaterialReceiptInsert, now time.Time) (entity.MaterialMovement, error) {
+	db := rep.DB()
+	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
+	if err != nil {
+		return entity.MaterialMovement{}, err
+	}
+
+	// Resolve the receipt's base-currency unit cost.
+	var unitCostBase decimal.NullDecimal
+	currency := strings.ToUpper(strings.TrimSpace(ins.Currency))
+	if ins.FromProduction {
+		// The caller supplies the run's actual per-unit base cost directly.
+		unitCostBase = ins.UnitCost
+		currency = strings.ToUpper(cache.GetBaseCurrency())
+	} else if ins.UnitCost.Valid {
+		base, ok, err := toBase(ctx, rep, ins.UnitCost.Decimal, currency)
+		if err != nil {
+			return entity.MaterialMovement{}, err
+		}
+		if ok {
+			unitCostBase = decimal.NullDecimal{Decimal: base, Valid: true}
+		}
+	}
+
+	newOnHand := before.OnHand.Add(ins.Quantity)
+	newAvg := before.Avg
+	if unitCostBase.Valid && newOnHand.GreaterThan(decimal.Zero) {
+		if before.Avg.Valid && before.OnHand.GreaterThan(decimal.Zero) {
+			total := before.OnHand.Mul(before.Avg.Decimal).Add(ins.Quantity.Mul(unitCostBase.Decimal))
+			newAvg = decimal.NullDecimal{Decimal: total.Div(newOnHand).Round(avgScale), Valid: true}
+		} else {
+			newAvg = decimal.NullDecimal{Decimal: unitCostBase.Decimal.Round(avgScale), Valid: true}
+		}
+	}
+
+	if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, newAvg); err != nil {
+		return entity.MaterialMovement{}, err
+	}
+
+	mvType := entity.MaterialMovementReceipt
+	if ins.FromProduction {
+		mvType = entity.MaterialMovementReceiptProduction
+	}
+	m := entity.MaterialMovement{
+		MaterialId:      ins.MaterialId,
+		MovementType:    mvType,
+		Quantity:        ins.Quantity,
+		OnHandBefore:    before.OnHand,
+		OnHandAfter:     newOnHand,
+		UnitCost:        ins.UnitCost,
+		UnitCostBase:    unitCostBase,
+		ProductionRunId: ins.ProductionRunId,
+		Lot:             ins.Lot,
+		SupplierDoc:     ins.SupplierDoc,
+		Comment:         ins.Comment,
+		AdminUsername:   ins.AdminUsername,
+		OccurredAt:      ins.OccurredAt,
+	}
+	if currency != "" {
+		m.Currency = sql.NullString{String: currency, Valid: true}
+	}
+	if !unitCostBase.Valid && ins.UnitCost.Valid && !ins.FromProduction {
+		m.Comment = appendNote(m.Comment, "no FX rate — average not updated")
+	}
+	out, err := insertMovement(ctx, db, m)
+	if err != nil {
+		return entity.MaterialMovement{}, err
+	}
+
+	// A receipt with a price feeds the catalog price history: a purchase point for a supplier
+	// receipt, a production_run point for our own auxiliary-run output (NF-07) — that keeps the
+	// dust-bag's cost history reflecting its real cost of production.
+	if ins.UnitCost.Valid {
+		validFrom := now
+		if ins.OccurredAt.Valid {
+			validFrom = ins.OccurredAt.Time
+		}
+		source := entity.MaterialPriceSourcePurchase
+		if ins.FromProduction {
+			source = entity.MaterialPriceSourceProductionRun
+		}
+		if err := rep.TechCards().AddMaterialPrice(ctx, entity.MaterialPrice{
+			MaterialId: ins.MaterialId,
+			Price:      ins.UnitCost.Decimal,
+			Currency:   currency,
+			ValidFrom:  validFrom,
+			Source:     source,
+		}); err != nil {
+			return entity.MaterialMovement{}, fmt.Errorf("append material price: %w", err)
+		}
 	}
 	return out, nil
 }
@@ -436,9 +455,9 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 // movements yet); min_stock is a catalog column (NF-02).
 type materialStockRow struct {
 	entity.Material
-	MinStock decimal.NullDecimal  `db:"min_stock"`
-	OnHand   decimal.NullDecimal  `db:"on_hand"`
-	Avg      decimal.NullDecimal  `db:"avg_unit_cost_base"`
+	MinStock decimal.NullDecimal `db:"min_stock"`
+	OnHand   decimal.NullDecimal `db:"on_hand"`
+	Avg      decimal.NullDecimal `db:"avg_unit_cost_base"`
 }
 
 // ListMaterialStock returns catalog materials joined with their stock balance, valuation and

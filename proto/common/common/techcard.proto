@@ -650,6 +650,12 @@ message TechCardInsert {
   // structural cut-pieces (детали кроя) + per-colourway fabric mapping (NF-05). Full-replace.
   repeated TechCardPiece pieces = 100;
 
+  // NF-07 auxiliary items. purpose is "sellable" (default/empty) or "auxiliary"; an auxiliary card
+  // produces a packaging material rather than a product, so it may not link products and its run
+  // output receipts into output_material_id (required before the first run; 0 = unset).
+  string purpose = 101;
+  int32 output_material_id = 102;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.

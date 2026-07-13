@@ -475,6 +475,10 @@ type (
 		// product's cost_price from the run's actual unit cost, and transitions the run to received —
 		// guarded against a double receipt.
 		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, username string, costPrice decimal.NullDecimal) error
+		// ReceiveAuxiliaryProductionRun receives an auxiliary run's output into the material warehouse
+		// (NF-07): it books a receipt_production of qty into outputMaterialID (moving the average by
+		// unitCostBase) and transitions the run to received — guarded against a double receipt.
+		ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, qty decimal.Decimal, unitCostBase decimal.NullDecimal, username string) error
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with

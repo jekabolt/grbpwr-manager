@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -162,6 +163,53 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			return err
 		}
 		return fmt.Errorf("can't receive production run: %w", err)
+	}
+	return nil
+}
+
+// ReceiveAuxiliaryProductionRun receives an AUXILIARY run's output into the material warehouse
+// (NF-07) and transitions it to `received`, in one transaction: it locks the run, refuses a repeat
+// receipt, books a receipt_production of qty into outputMaterialID (moving that material's average
+// by unitCostBase and appending a production_run price point), then stamps status/received_at.
+// unitCostBase may be invalid (the run's actuals had no base) — the receipt is then uncosted and
+// does not move the average. Returns entity.ErrProductionRunAlreadyReceived / sql.ErrNoRows.
+func (s *Store) ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, qty decimal.Decimal, unitCostBase decimal.NullDecimal, username string) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[struct {
+			Status string `db:"status"`
+		}](ctx, rep.DB(), `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("failed to load production run for auxiliary receive: %w", err)
+		}
+		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
+			return entity.ErrProductionRunAlreadyReceived
+		}
+		// Book the receipt in THIS transaction (not via ReceiveMaterialStock, which opens its own):
+		// the movement's FK back to production_run needs a shared lock on the run row we hold FOR
+		// UPDATE, so a separate transaction would deadlock. ReceiveInTx participates in rep's tx.
+		if _, err := inventory.ReceiveInTx(ctx, rep, entity.MaterialReceiptInsert{
+			MaterialId:      outputMaterialID,
+			Quantity:        qty,
+			UnitCost:        unitCostBase, // base-currency actual unit cost (or invalid → uncosted)
+			ProductionRunId: sql.NullInt32{Int32: int32(runID), Valid: true},
+			FromProduction:  true,
+			AdminUsername:   username,
+		}, s.Now()); err != nil {
+			return err
+		}
+		return storeutil.ExecNamed(ctx, rep.DB(), `
+			UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
+			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()})
+	})
+	if err != nil {
+		switch err {
+		case sql.ErrNoRows, entity.ErrProductionRunAlreadyReceived:
+			return err
+		}
+		return fmt.Errorf("can't receive auxiliary production run: %w", err)
 	}
 	return nil
 }

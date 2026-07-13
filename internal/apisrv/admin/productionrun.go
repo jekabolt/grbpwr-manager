@@ -147,6 +147,10 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		slog.Default().ErrorContext(ctx, "can't load tech card for receive", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
+	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
+	if card.Purpose == entity.TechCardPurposeAuxiliary {
+		return s.receiveAuxiliaryRun(ctx, run, card)
+	}
 	// group each line's received quantity by product → size. (run_id, product_id, size_id) is unique
 	// so no accumulation collisions; a received line without a product, or with a product not in the
 	// card, is a precondition failure.
@@ -190,6 +194,47 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		return nil, status.Error(codes.Internal, "can't receive production run")
 	}
 	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPrice.Valid}, nil
+}
+
+// receiveAuxiliaryRun receives an auxiliary card's run output into its output material (NF-07): the
+// finished item (dust bag, shopper) lands in the warehouse as a receipt_production whose unit cost
+// is the run's actual per-unit base cost, so the packaging's stock value reflects real production
+// cost. Auxiliary lines must not link products, and the card must have declared an output material.
+func (s *Server) receiveAuxiliaryRun(ctx context.Context, run *entity.ProductionRun, card *entity.TechCard) (*pb_admin.ReceiveProductionRunResponse, error) {
+	if !card.OutputMaterialId.Valid {
+		return nil, status.Error(codes.FailedPrecondition, "auxiliary card has no output material set; set it before receiving")
+	}
+	var total int64
+	for _, ln := range run.Lines {
+		if ln.ProductId.Valid {
+			return nil, status.Error(codes.InvalidArgument, "auxiliary run lines cannot link products")
+		}
+		if ln.ReceivedQty.Valid && ln.ReceivedQty.Int64 > 0 {
+			total += ln.ReceivedQty.Int64
+		}
+	}
+	if total == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
+	}
+	// per-unit base cost from the run actuals (manual costs + materials-from-stock); invalid when
+	// the actuals have no base — the receipt is then uncosted and the average is left unmoved.
+	unitCost := dto.ProductionRunActualUnitCostBase(run)
+	if err := s.repo.ProductionRuns().ReceiveAuxiliaryProductionRun(ctx, run.Id, int(card.OutputMaterialId.Int64),
+		decimal.NewFromInt(total), unitCost, authsrv.GetAdminUsername(ctx)); err != nil {
+		if errors.Is(err, entity.ErrProductionRunAlreadyReceived) {
+			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
+		}
+		slog.Default().ErrorContext(ctx, "can't receive auxiliary production run", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't receive auxiliary production run")
+	}
+	// no product cost_price for an auxiliary run (the material average moved instead).
+	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: false}, nil
 }
 
 // GetProductionRunMaterialPlan estimates the run's material requirement from its lines' colourway

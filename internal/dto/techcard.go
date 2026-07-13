@@ -280,6 +280,32 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	// (The primary-for-costing card is a separate, deterministic pointer: product.primary_tech_card_id.)
 	productIds = unionColorwayProductIds(productIds, pb.Colorways)
 
+	// NF-07 purpose: sellable (default) produces a product; auxiliary produces a packaging material.
+	// An auxiliary card must not link products (its output is stock, not a SKU); a sellable card must
+	// not carry an output material. output_material_id is only required before the first run (the
+	// service/receive path enforces that), not at save time — a card can be drafted first.
+	purpose := entity.TechCardPurposeSellable
+	if p := strings.ToLower(strings.TrimSpace(pb.Purpose)); p != "" {
+		purpose = entity.TechCardPurpose(p)
+		if !entity.ValidTechCardPurposes[purpose] {
+			return nil, fmt.Errorf("purpose must be one of sellable|auxiliary")
+		}
+	}
+	var outputMaterialId sql.NullInt64
+	if purpose == entity.TechCardPurposeAuxiliary {
+		if len(productIds) > 0 {
+			return nil, fmt.Errorf("an auxiliary card cannot link products (its output is a warehouse material, not a SKU)")
+		}
+		if pb.OutputMaterialId < 0 {
+			return nil, fmt.Errorf("output_material_id must not be negative")
+		}
+		if pb.OutputMaterialId > 0 {
+			outputMaterialId = sql.NullInt64{Int64: int64(pb.OutputMaterialId), Valid: true}
+		}
+	} else if pb.OutputMaterialId != 0 {
+		return nil, fmt.Errorf("output_material_id is only for auxiliary cards")
+	}
+
 	// base_sample_size_id, when set, must be part of the declared size range: the
 	// POM grade radiates from the base size, so a base outside the graded columns
 	// would leave the future measurement chart without an origin. An empty size
@@ -437,6 +463,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	return &entity.TechCardInsert{
 		StyleNumber:      nullStringFromPb(styleNumber),
+		Purpose:          purpose,
+		OutputMaterialId: outputMaterialId,
 		Name:             pb.Name,
 		Brand:            nullStringFromPb(pb.Brand),
 		Season:           nullStringFromPb(pb.Season),
@@ -622,6 +650,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:      tc.StyleNumber.String,
+			Purpose:          string(tc.Purpose),
+			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
 			Season:           pbStringFromNull(tc.Season),

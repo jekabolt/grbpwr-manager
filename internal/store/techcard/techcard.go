@@ -39,16 +39,24 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	measurement_unit, concept, notes`
+	measurement_unit, concept, notes, purpose, output_material_id`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:measurement_unit, :concept, :notes`
+	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
+	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
+	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
+	purpose := tc.Purpose
+	if purpose == "" {
+		purpose = entity.TechCardPurposeSellable
+	}
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
+		"purpose":             string(purpose),
+		"output_material_id":  tc.OutputMaterialId,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              tc.Season,
@@ -134,8 +142,9 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			ApprovalState string       `db:"approval_state"`
 			ApprovedAt    sql.NullTime `db:"approved_at"`
 			ReleasedAt    sql.NullTime `db:"released_at"`
+			Purpose       string       `db:"purpose"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return sql.ErrNoRows
@@ -154,6 +163,21 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
+		// NF-07: purpose is a one-way commitment once the card has runs or products — flipping
+		// sellable↔auxiliary afterwards would strand a batch's stock destination or a product link.
+		if cur.Purpose != string(tc.Purpose) {
+			var refs int
+			refs, err = storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id)
+				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)`,
+				map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("failed to check tech card purpose change: %w", err)
+			}
+			if refs > 0 {
+				return entity.ErrTechCardPurposeLocked
+			}
+		}
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
@@ -170,7 +194,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				version = :version, revision_date = :revision_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
-				measurement_unit = :measurement_unit, concept = :concept, notes = :notes
+				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
+					purpose = :purpose, output_material_id = :output_material_id
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
