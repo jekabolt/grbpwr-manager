@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
@@ -77,20 +76,16 @@ type Config struct {
 
 // LoadConfig loads the configuration from a file and/or environment variables.
 // Environment variables take precedence over config file values.
-// Env vars use underscores and uppercase, e.g., MYSQL_DSN, AUTH_JWT_SECRET
-// Nested config keys use double underscore, e.g., MYSQL__DSN for mysql.dsn
+// Env var names are the explicit allowlist in bindEnvVars (e.g. MYSQL_DSN,
+// AUTH_JWT_SECRET), matching the flat names used in .do/app.yaml.
 func LoadConfig(cfgFile string) (*Config, error) {
 	viper.SetConfigType("toml")
 
-	// Enable environment variable support
-	// Viper will automatically read env vars and override config file values
-	viper.AutomaticEnv()
-	// Replace dots and dashes with underscores in env var names
-	// e.g., mysql.dsn -> MYSQL__DSN, auth.jwt_secret -> AUTH__JWT_SECRET
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "__", "-", "__"))
-
-	// Bind common environment variables to config keys
-	// This allows using simpler env var names that match app.yaml
+	// bindEnvVars is the single source of truth for env-var names. viper.AutomaticEnv
+	// plus a "."->"__" key replacer previously ALSO exposed a second double-underscore
+	// spelling for every key (e.g. MYSQL__DSN beside MYSQL_DSN) that overrode TOML and
+	// was not in the allowlist — a silent footgun. Every key the app consumes is bound
+	// explicitly below, so AutomaticEnv is intentionally not used.
 	bindEnvVars()
 
 	// Try to read config file (optional - can work with env vars only)
@@ -229,8 +224,9 @@ const (
 // bindEnvVars binds environment variables to config keys
 // This allows using both nested keys (MYSQL__DSN) and flat keys (MYSQL_DSN)
 func bindEnvVars() {
-	// Security
-	viper.BindEnv("security.trust_proxy_hops", "SECURITY_TRUST_PROXY_HOPS")
+	// Security. TRUST_PROXY_HOPS is kept as a compatibility alias in this single bind
+	// rather than a second BindEnv call below.
+	viper.BindEnv("security.trust_proxy_hops", "SECURITY_TRUST_PROXY_HOPS", "TRUST_PROXY_HOPS")
 	viper.BindEnv("security.hero_embed_allowed_hosts", "SECURITY_HERO_EMBED_ALLOWED_HOSTS", "HERO_EMBED_ALLOWED_HOSTS")
 
 	// MySQL
@@ -308,9 +304,6 @@ func bindEnvVars() {
 
 	// Rates (base currency only; no exchange rates)
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")
-
-	// Security (trusted reverse-proxy hops for client-IP extraction)
-	viper.BindEnv("security.trust_proxy_hops", "TRUST_PROXY_HOPS")
 
 	// Stripe Payment
 	viper.BindEnv("stripe_payment.secret_key", "STRIPE_PAYMENT_SECRET_KEY")
