@@ -75,6 +75,17 @@ func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternR
 // DeleteFromBucket
 func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromBucketRequest) (*pb_admin.DeleteFromBucketResponse, error) {
 	resp := &pb_admin.DeleteFromBucketResponse{}
+
+	// Capture the media's object URLs before the row is gone so the backing S3
+	// objects can be removed afterwards; deleting only the row leaves orphaned,
+	// still-public CDN files (cost + data-leak). Best effort: a load failure only
+	// means we can't clean S3, not that we should block the delete.
+	media, mediaErr := s.repo.Media().GetMediaById(ctx, int(req.Id))
+	if mediaErr != nil {
+		slog.Default().WarnContext(ctx, "can't load media before delete; S3 objects may be orphaned",
+			slog.Int("id", int(req.Id)), slog.String("err", mediaErr.Error()))
+	}
+
 	err := s.repo.Media().DeleteMediaById(ctx, int(req.Id))
 	if err != nil {
 		if s.repo.IsErrForeignKeyViolation(err) {
@@ -85,6 +96,15 @@ func (s *Server) DeleteFromBucket(ctx context.Context, req *pb_admin.DeleteFromB
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "failed to delete media: %v", err)
+	}
+
+	// The row is gone; remove the S3 objects it referenced. Failures here only leak
+	// bytes (already de-referenced), so log and continue rather than fail the RPC.
+	if media != nil {
+		if delErr := s.bucket.DeleteObjects(ctx, media.FullSizeMediaURL, media.CompressedMediaURL, media.ThumbnailMediaURL); delErr != nil {
+			slog.Default().ErrorContext(ctx, "media row deleted but S3 objects may be orphaned",
+				slog.Int("id", int(req.Id)), slog.String("err", delErr.Error()))
+		}
 	}
 
 	err = s.repo.Hero().RefreshHero(ctx)

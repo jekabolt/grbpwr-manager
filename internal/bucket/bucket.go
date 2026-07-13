@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -63,6 +65,57 @@ func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
 
 func (b *Bucket) GetBaseFolder() string {
 	return b.BaseFolder
+}
+
+// objectKeyFromURL derives the S3 object key from a stored media URL. Stored URLs
+// come from getCDNURL (https://<subdomain>/<key>) or getOriginEndpoint
+// (https://<bucket>.<endpoint>/<key>); both carry the key in the path, so trimming
+// the leading slash yields the key.
+func objectKeyFromURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse media url %q: %w", rawURL, err)
+	}
+	key := strings.TrimPrefix(u.Path, "/")
+	if key == "" {
+		return "", fmt.Errorf("no object key in media url %q", rawURL)
+	}
+	return key, nil
+}
+
+// DeleteObjects best-effort removes the S3 objects behind the given media URLs.
+// Empty and duplicate URLs are skipped (a video row stores the same URL in all
+// three variant fields). It attempts every distinct key and returns the first
+// error, so a transient failure on one object does not skip the others.
+func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
+	seen := make(map[string]struct{}, len(urls))
+	var firstErr error
+	for _, raw := range urls {
+		if raw == "" {
+			continue
+		}
+		key, err := objectKeyFromURL(raw)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't derive object key from media url",
+				slog.String("url", raw), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if err := b.Client.RemoveObject(ctx, b.S3BucketName, key, minio.RemoveObjectOptions{}); err != nil {
+			slog.Default().ErrorContext(ctx, "can't remove object from bucket",
+				slog.String("key", key), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // GetMediaName generates a unique file name based on the current UTC timestamp with millisecond
