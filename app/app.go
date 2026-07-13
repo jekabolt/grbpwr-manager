@@ -132,6 +132,14 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return fmt.Errorf("cannot init bucket %v", err.Error())
 	}
+	// HEIC is optional: warn at boot if libheif can't be loaded so the gap is visible
+	// immediately, but do not fail startup — non-HEIC uploads and everything else
+	// still work.
+	if herr := bucket.HEICAvailable(); herr != nil {
+		slog.Default().WarnContext(ctx, "libheif unavailable; HEIC image uploads will fail (other uploads unaffected)",
+			slog.String("err", herr.Error()),
+		)
+	}
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
 	if err != nil {

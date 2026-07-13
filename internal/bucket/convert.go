@@ -94,7 +94,25 @@ func decodeHEIC(raw []byte) (img image.Image, err error) {
 			img, err = nil, fmt.Errorf("heic decode failed: %v", r)
 		}
 	}()
+	// Reject oversized images from the header before the full decode (see
+	// maxImagePixels). libheif reports dimensions without decoding the whole raster,
+	// so a small HEIC that would expand to a huge buffer is rejected cheaply.
+	cfg, cErr := heic.DecodeConfig(bytes.NewReader(raw))
+	if cErr != nil {
+		return nil, fmt.Errorf("can't read heic header: %w", cErr)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, fmt.Errorf("image too large: %dx%d exceeds %d-pixel limit", cfg.Width, cfg.Height, maxImagePixels)
+	}
 	return heic.Decode(bytes.NewReader(raw))
+}
+
+// HEICAvailable reports whether the native libheif required for HEIC uploads is
+// loadable at runtime. It is a thin wrapper over the dynamic loader so callers
+// (e.g. App.Start) can surface a boot-time warning instead of only discovering the
+// gap on the first HEIC upload.
+func HEICAvailable() error {
+	return heic.Dynamic()
 }
 
 // sniffImageType reports the actual content type of an image payload from its
