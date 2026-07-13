@@ -121,18 +121,26 @@ func (s *Store) GetStockChangeHistory(ctx context.Context, productId, sizeId *in
 		COALESCE(payout_base_amount, '') AS payout_base_amount,
 		COALESCE(payout_base_currency, '') AS payout_base_currency,
 		created_at ` + baseQuery + ` ` + orderBy
-	if limit > 0 {
-		dataQuery += ` LIMIT :limit OFFSET :offset`
-	} else {
-		delete(params, "limit")
-		delete(params, "offset")
+	// A non-positive or oversized limit is capped rather than dropped: this reads an
+	// append-only journal with no cleanup worker, so the "return all" path must never
+	// issue an unbounded SELECT.
+	if limit <= 0 || limit > stockHistoryHardCap {
+		limit = stockHistoryHardCap
 	}
+	params["limit"] = limit
+	dataQuery += ` LIMIT :limit OFFSET :offset`
 	changes, err := storeutil.QueryListNamed[entity.StockChange](ctx, s.DB, dataQuery, params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get stock change history: %w", err)
 	}
 	return changes, total, nil
 }
+
+// stockHistoryHardCap bounds the "return all" path of the stock-history readers.
+// product_stock_change_history is append-only with no cleanup worker, so an
+// uncapped SELECT would grow without bound; the cap sits well above any realistic
+// admin page size.
+const stockHistoryHardCap = 50000
 
 // GetStockChanges returns simplified stock changes for reporting API.
 func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
@@ -199,12 +207,14 @@ func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time,
 		ORDER BY psch.created_at ` + orderFactor.String() + `
 	`
 
-	if limit > 0 {
-		dataQuery += ` LIMIT :limit OFFSET :offset`
-	} else {
-		delete(params, "limit")
-		delete(params, "offset")
+	// A non-positive or oversized limit is capped rather than dropped: this reads an
+	// append-only journal with no cleanup worker, so the "return all" path must never
+	// issue an unbounded SELECT.
+	if limit <= 0 || limit > stockHistoryHardCap {
+		limit = stockHistoryHardCap
 	}
+	params["limit"] = limit
+	dataQuery += ` LIMIT :limit OFFSET :offset`
 
 	changes, err := storeutil.QueryListNamed[entity.StockChangeRow](ctx, s.DB, dataQuery, params)
 	if err != nil {
