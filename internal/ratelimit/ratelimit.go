@@ -14,9 +14,15 @@ type Limiter struct {
 	max      int
 }
 
+// counter holds the timestamps of requests currently inside the window for one
+// key. Entries older than the window are pruned on access, which makes this a
+// true sliding window. The previous form stored a single count + expiry and
+// reset both wholesale once the window elapsed (a fixed window), so a caller
+// could burst up to max at the end of one window and max again at the start of
+// the next — ~2*max in quick succession — undermining the sensitive auth/OTP
+// limits that document sliding-window behaviour.
 type counter struct {
-	count     int
-	expiresAt time.Time
+	timestamps []time.Time
 }
 
 // NewLimiter creates a new rate limiter with the specified window and max requests
@@ -37,20 +43,16 @@ func (l *Limiter) Allow(key string) bool {
 
 	now := time.Now().UTC()
 	c, exists := l.counters[key]
-
-	if !exists || now.After(c.expiresAt) {
-		l.counters[key] = &counter{
-			count:     1,
-			expiresAt: now.Add(l.window),
-		}
-		return true
+	if !exists {
+		c = &counter{}
+		l.counters[key] = c
 	}
+	c.timestamps = pruneBefore(c.timestamps, now.Add(-l.window))
 
-	if c.count >= l.max {
+	if len(c.timestamps) >= l.max {
 		return false
 	}
-
-	c.count++
+	c.timestamps = append(c.timestamps, now)
 	return true
 }
 
@@ -59,30 +61,49 @@ func (l *Limiter) GetRemaining(key string) int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	now := time.Now().UTC()
 	c, exists := l.counters[key]
-
-	if !exists || now.After(c.expiresAt) {
+	if !exists {
 		return l.max
 	}
 
-	remaining := l.max - c.count
+	// Count without mutating so this stays safe under the read lock.
+	cutoff := time.Now().UTC().Add(-l.window)
+	active := 0
+	for _, t := range c.timestamps {
+		if t.After(cutoff) {
+			active++
+		}
+	}
+	remaining := l.max - active
 	if remaining < 0 {
 		return 0
 	}
 	return remaining
 }
 
-// cleanup periodically removes expired counters
+// pruneBefore drops timestamps at or before cutoff, filtering in place. The
+// slice is appended in time order, so a single pass suffices.
+func pruneBefore(ts []time.Time, cutoff time.Time) []time.Time {
+	kept := ts[:0]
+	for _, t := range ts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// cleanup periodically prunes windows and removes keys that have gone idle.
 func (l *Limiter) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		l.mu.Lock()
-		now := time.Now().UTC()
+		cutoff := time.Now().UTC().Add(-l.window)
 		for key, c := range l.counters {
-			if now.After(c.expiresAt) {
+			c.timestamps = pruneBefore(c.timestamps, cutoff)
+			if len(c.timestamps) == 0 {
 				delete(l.counters, key)
 			}
 		}
