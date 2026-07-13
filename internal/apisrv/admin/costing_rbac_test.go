@@ -112,6 +112,10 @@ func TestStripDashboardCosting(t *testing.T) {
 		GrossMarginPct:     40,
 		ContributionMargin: dec("300.00"),
 		TopByMargin:        []*pb_admin.ProductMetric{{}},
+		OperatingResult:    dec("100.00"),
+		OpexTotal:          dec("150.00"),
+		MarketingSpend:     dec("50.00"),
+		OpexCaveat:         "no opex",
 	}
 	stripDashboardCosting(resp)
 	require.Equal(t, "1000.00", resp.Revenue.GetValue(), "revenue kept")
@@ -120,6 +124,10 @@ func TestStripDashboardCosting(t *testing.T) {
 	require.Zero(t, resp.GrossMarginPct, "gross margin pct redacted")
 	require.Nil(t, resp.ContributionMargin, "contribution margin redacted")
 	require.Nil(t, resp.TopByMargin, "top-by-margin redacted")
+	require.Nil(t, resp.OperatingResult, "operating result redacted")
+	require.Nil(t, resp.OpexTotal, "opex total redacted")
+	require.Nil(t, resp.MarketingSpend, "marketing spend redacted")
+	require.Empty(t, resp.OpexCaveat, "opex caveat redacted")
 }
 
 // TestCostingWriteDetectors pin the write-gate predicates.

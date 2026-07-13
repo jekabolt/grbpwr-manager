@@ -189,3 +189,69 @@ func TestAlertThresholdsGA4Key(t *testing.T) {
 	require.Equal(t, want.GA4CoverageWarnPct, got.GA4CoverageWarnPct, "GA4 coverage threshold persisted")
 	require.Equal(t, want.ContributionTrustPct, got.ContributionTrustPct, "existing thresholds still persisted")
 }
+
+// TestOpexOperatingResult exercises task 22: UpsertOpexEntries persists fixed costs, and
+// GetDashboard subtracts the day-pro-rated OPEX (and marketing spend) from the contribution
+// margin to form the operating result, flagging a missing-OPEX period with a caveat. Uses a
+// distinctive future window with no orders (contribution 0) so the result is exactly
+// −(opex + marketing) and the pro-rata is isolated.
+func TestOpexOperatingResult(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	// April 2027: a distinctive, order-free window. Clean the opex rows we own, then upsert.
+	aprStart := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
+	mayStart := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
+	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", aprStart.Format("2006-01-02"))
+	defer func() {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", aprStart.Format("2006-01-02"))
+	}()
+
+	require.NoError(t, s.Metrics().UpsertOpexEntries(ctx, []entity.OpexEntry{
+		{Month: aprStart, Category: "salaries", Amount: decimal.RequireFromString("1000.00")},
+		{Month: aprStart, Category: "rent", Amount: decimal.RequireFromString("500.00")},
+	}))
+	// Upsert on (month, category): re-writing salaries changes the amount, not the row count.
+	require.NoError(t, s.Metrics().UpsertOpexEntries(ctx, []entity.OpexEntry{
+		{Month: aprStart, Category: "salaries", Amount: decimal.RequireFromString("1200.00")},
+	}))
+	// April total = 1200 + 500 = 1700.
+
+	// Full April → OPEX fully attributed; no orders → contribution 0; operating result = −1700 − marketing.
+	full, err := s.Metrics().GetDashboard(ctx, aprStart, mayStart, 10)
+	require.NoError(t, err)
+	require.True(t, full.OpexTotal.Equal(decimal.RequireFromString("1700.00")),
+		"full-month OPEX should be the sum of categories, got %s", full.OpexTotal)
+	require.Empty(t, full.OpexCaveat, "OPEX present → no caveat")
+	wantFull := full.ContributionMargin.Sub(full.OpexTotal).Sub(full.MarketingSpend).Round(2)
+	require.True(t, full.OperatingResult.Equal(wantFull),
+		"operating result must be contribution − opex − marketing (%s), got %s", wantFull, full.OperatingResult)
+
+	// First half of April (15 of 30 days) → OPEX pro-rated to ~half.
+	aprMid := time.Date(2027, 4, 16, 0, 0, 0, 0, time.UTC)
+	half, err := s.Metrics().GetDashboard(ctx, aprStart, aprMid, 10)
+	require.NoError(t, err)
+	require.True(t, half.OpexTotal.Equal(decimal.RequireFromString("850.00")),
+		"half-month OPEX should be pro-rated to 15/30 of 1700 = 850, got %s", half.OpexTotal)
+
+	// A month with no OPEX recorded → caveat set, zero OPEX.
+	julStart := time.Date(2027, 7, 1, 0, 0, 0, 0, time.UTC)
+	augStart := time.Date(2027, 8, 1, 0, 0, 0, 0, time.UTC)
+	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", julStart.Format("2006-01-02"))
+	none, err := s.Metrics().GetDashboard(ctx, julStart, augStart, 10)
+	require.NoError(t, err)
+	require.True(t, none.OpexTotal.IsZero(), "no OPEX rows → zero total")
+	require.NotEmpty(t, none.OpexCaveat, "missing OPEX → caveat set")
+}

@@ -239,6 +239,15 @@ service AdminService {
     };
   }
 
+  // UpsertOpexEntries records the fixed-cost (OPEX) journal — one amount per month per category,
+  // base currency — feeding the dashboard operating result (task 22). Upserts on (month, category).
+  rpc UpsertOpexEntries(UpsertOpexEntriesRequest) returns (UpsertOpexEntriesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/upsert"
+      body: "*"
+    };
+  }
+
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
@@ -1405,7 +1414,10 @@ message GetDashboardResponse {
   int32 orders = 3; // net-revenue order count
   google.type.Decimal gross_margin = 4; // costed net revenue − COGS
   double gross_margin_pct = 5;
-  google.type.Decimal contribution_margin = 6; // gross_margin − shipping − payment_fees
+  // Contribution margin (gross_margin − shipping − payment_fees) = contribution to FIXED COSTS,
+  // NOT profit. Fixed costs (salaries, rent, software, marketing, …) are excluded here; see
+  // operating_result for the figure after them. Do not read "38% margin" as "38% profit" (task 22).
+  google.type.Decimal contribution_margin = 6;
   double cost_coverage_pct = 7; // % of product revenue with a cost set (trust gate for margins)
   string caveat = 8; // set when coverage is low, so margins are only partial
   repeated int32 uncosted_product_ids = 9; // products sold this period with no cost, ranked by revenue
@@ -1419,6 +1431,15 @@ message GetDashboardResponse {
   // ad-blockers / bot filtering are eating attribution, so read ROAS as ≈ shown / coverage.
   google.type.Decimal ga4_revenue = 15; // GA4-reported revenue for the period (analytics cache; base currency)
   double tracking_coverage_pct = 16; // 100 * ga4_revenue / DB gross revenue; 0 when unknown
+  // Operating result (task 22): the honest total under contribution — an EBITDA-ish approximation.
+  // operating_result = contribution_margin − opex_total − marketing_spend. opex_total is the
+  // day-pro-rated fixed-cost journal for the period; marketing_spend is channel_spend for the
+  // period (subtracted here, not in contribution). opex_caveat is set when no OPEX is recorded for
+  // the period, so the operating result is read as incomplete.
+  google.type.Decimal operating_result = 17;
+  google.type.Decimal opex_total = 18; // fixed costs (opex_entry) attributed to the period
+  google.type.Decimal marketing_spend = 19; // channel_spend for the period (base currency)
+  string opex_caveat = 20; // set when OPEX is missing for the period
 }
 
 // AlertSettings are the operator-tunable thresholds behind the dashboard alerts.
@@ -2935,6 +2956,20 @@ message UpsertChannelSpendRequest {
 }
 
 message UpsertChannelSpendResponse {}
+
+// OpexEntryInsert is one fixed-cost line: an amount for a category in a month, base currency (task 22).
+message OpexEntryInsert {
+  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month server-side
+  string category = 2; // salaries | rent | software | marketing_other | production_content | other
+  google.type.Decimal amount = 3; // base currency (EUR), >= 0
+  string note = 4;
+}
+
+message UpsertOpexEntriesRequest {
+  repeated OpexEntryInsert entries = 1;
+}
+
+message UpsertOpexEntriesResponse {}
 
 // ==================== Review Messages ====================
 

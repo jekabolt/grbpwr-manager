@@ -704,7 +704,17 @@ type Dashboard struct {
 	// the client-side tracking saw (task 20 step 1). 0 when DB revenue is 0 / unknown.
 	GA4Revenue          decimal.Decimal
 	TrackingCoveragePct float64
-	Alerts              []DashboardAlert
+	// Operating result (task 22): the "honest" total under the contribution margin.
+	// OperatingResult = ContributionMargin − OpexTotal − MarketingSpend. OpexTotal is the
+	// day-pro-rated fixed-cost journal for the period; MarketingSpend is channel_spend for the
+	// period (subtracted here, not in contribution — ad spend isn't variable per order, and this
+	// avoids double-counting with ROAS). OpexCaveat is set when no OPEX is recorded for the
+	// period's months, so the operating result is understood as incomplete (coverage honesty).
+	OperatingResult decimal.Decimal
+	OpexTotal       decimal.Decimal
+	MarketingSpend  decimal.Decimal
+	OpexCaveat      string
+	Alerts          []DashboardAlert
 	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
 	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
 	Clear              []SlowMoverRow       // slow movers to clear
@@ -1047,4 +1057,26 @@ type ChannelSpendRow struct {
 	UTMMedium   string          `db:"utm_medium"`
 	UTMCampaign string          `db:"utm_campaign"`
 	Spend       decimal.Decimal `db:"spend"`
+}
+
+// OpexEntry is one fixed-cost (OPEX) line: an amount for a category in a given month, base
+// currency (task 22). Feeds the dashboard operating result (contribution − OPEX − marketing).
+type OpexEntry struct {
+	Month    time.Time       `db:"month"` // first day of the month
+	Category string          `db:"category"`
+	Amount   decimal.Decimal `db:"amount"`
+	Note     sql.NullString  `db:"note"`
+}
+
+// ValidOpexCategories is the closed set of OPEX categories (validated in dto rather than a DB
+// CHECK, so the set can evolve without a migration). marketing spend is deliberately NOT here —
+// it lives in channel_spend and is subtracted separately, so ROAS and the operating result
+// don't double-count it.
+var ValidOpexCategories = map[string]struct{}{
+	"salaries":           {},
+	"rent":               {},
+	"software":           {},
+	"marketing_other":    {},
+	"production_content": {},
+	"other":              {},
 }

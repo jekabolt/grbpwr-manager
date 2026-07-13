@@ -1150,6 +1150,10 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 		UncostedProductIds:  intsToInt32(d.UncostedProductIds),
 		Ga4Revenue:          &decimal.Decimal{Value: d.GA4Revenue.String()},
 		TrackingCoveragePct: d.TrackingCoveragePct,
+		OperatingResult:     &decimal.Decimal{Value: d.OperatingResult.String()},
+		OpexTotal:           &decimal.Decimal{Value: d.OpexTotal.String()},
+		MarketingSpend:      &decimal.Decimal{Value: d.MarketingSpend.String()},
+		OpexCaveat:          d.OpexCaveat,
 		TopByMargin:         productMetricsToPb(d.TopByMargin),
 		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
 		Clear:              ConvertSlowMoversToPb(d.Clear),
@@ -1613,6 +1617,48 @@ func ConvertPbChannelSpendToEntity(list []*pb_admin.ChannelSpendInsert) ([]entit
 			UTMCampaign: sp.UtmCampaign,
 			Amount:      amount.Round(2),
 			Currency:    strings.ToUpper(sp.Currency),
+		})
+	}
+	return out, nil
+}
+
+// ConvertPbOpexEntriesToEntity validates and normalises OPEX journal lines (task 22): the month
+// is snapped to the first of its month, the category is checked against the closed set, and the
+// amount must be a non-negative base-currency figure.
+func ConvertPbOpexEntriesToEntity(list []*pb_admin.OpexEntryInsert) ([]entity.OpexEntry, error) {
+	out := make([]entity.OpexEntry, 0, len(list))
+	for _, e := range list {
+		if e == nil {
+			continue
+		}
+		m, err := time.Parse("2006-01-02", e.Month)
+		if err != nil {
+			return nil, fmt.Errorf("invalid opex month %q: %w", e.Month, err)
+		}
+		m = time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC) // first of the month
+		category := strings.TrimSpace(e.Category)
+		if _, ok := entity.ValidOpexCategories[category]; !ok {
+			return nil, fmt.Errorf("invalid opex category %q", category)
+		}
+		amount := shopspring.Zero
+		if e.Amount != nil && e.Amount.Value != "" {
+			amount, err = shopspring.NewFromString(e.Amount.Value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid opex amount %q: %w", e.Amount.Value, err)
+			}
+		}
+		if amount.IsNegative() {
+			return nil, fmt.Errorf("opex amount must be >= 0")
+		}
+		note := sql.NullString{}
+		if s := strings.TrimSpace(e.Note); s != "" {
+			note = sql.NullString{String: s, Valid: true}
+		}
+		out = append(out, entity.OpexEntry{
+			Month:    m,
+			Category: category,
+			Amount:   amount.Round(2),
+			Note:     note,
 		})
 	}
 	return out, nil

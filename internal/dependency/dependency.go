@@ -306,6 +306,9 @@ type (
 		// thresholds behind the dashboard alerts (alert_setting table).
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
 		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
+		// UpsertOpexEntries writes the fixed-cost (OPEX) journal used by the dashboard
+		// operating result (opex_entry table), upserting on (month, category).
+		UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) error
 		// ListVatRates / UpsertVatRates read and write the destination-country VAT rates
 		// (vat_rate table) used to compute net-of-VAT revenue.
 		ListVatRates(ctx context.Context) ([]entity.VatRate, error)

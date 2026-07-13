@@ -150,6 +150,7 @@ var methodRequirements = map[string]Requirement{
 	"GetDashboard":           rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
+	"UpsertOpexEntries":      wr(SectionAnalytics),
 	"GetAlertSettings":       rd(SectionAnalytics),
 	"UpsertAlertSettings":    wr(SectionAnalytics),
 	"GetVatRates":            rd(SectionAnalytics),

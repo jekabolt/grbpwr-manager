@@ -55,6 +55,14 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard ga4 revenue: %w", err)
 	}
+	opexTotal, hasOpex, err := s.getOpexForPeriod(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard opex: %w", err)
+	}
+	marketingSpend, err := s.getChannelSpendTotal(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard marketing spend: %w", err)
+	}
 	revRefund, _, err := s.getRefundMetrics(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard refunds: %w", err)
@@ -103,6 +111,15 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	// Compared gross-to-gross so a shortfall reads as tracking loss, not a net/gross mismatch.
 	if grossRev.GreaterThan(decimal.Zero) {
 		d.TrackingCoveragePct = ga4Rev.Div(grossRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	}
+	// Operating result (task 22): the honest total under contribution margin. Marketing spend is
+	// subtracted HERE (not in contribution — it isn't variable per order), which also avoids
+	// double-counting it against the ROAS report.
+	d.OpexTotal = opexTotal
+	d.MarketingSpend = marketingSpend
+	d.OperatingResult = d.ContributionMargin.Sub(opexTotal).Sub(marketingSpend).Round(2)
+	if !hasOpex {
+		d.OpexCaveat = "No OPEX recorded for this period — operating result excludes fixed costs and is incomplete."
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) {
 		d.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()

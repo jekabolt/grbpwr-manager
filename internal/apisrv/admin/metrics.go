@@ -838,6 +838,24 @@ func (s *Server) UpsertChannelSpend(ctx context.Context, req *pb_admin.UpsertCha
 	return &pb_admin.UpsertChannelSpendResponse{}, nil
 }
 
+// UpsertOpexEntries records the fixed-cost (OPEX) journal that feeds the dashboard operating
+// result (task 22). Month/category/amount are validated and normalised in dto; upsert is on
+// (month, category).
+func (s *Server) UpsertOpexEntries(ctx context.Context, req *pb_admin.UpsertOpexEntriesRequest) (*pb_admin.UpsertOpexEntriesResponse, error) {
+	rows, err := dto.ConvertPbOpexEntriesToEntity(req.GetEntries())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if len(rows) == 0 {
+		return &pb_admin.UpsertOpexEntriesResponse{}, nil
+	}
+	if err := s.repo.Metrics().UpsertOpexEntries(ctx, rows); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert opex entries", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert opex entries")
+	}
+	return &pb_admin.UpsertOpexEntriesResponse{}, nil
+}
+
 // channelKey joins the three UTM dimensions into a single map key (NUL-separated so empty
 // segments can't collide, e.g. "a|" vs "|a").
 func channelKey(source, medium, campaign string) string {

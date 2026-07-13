@@ -110,8 +110,10 @@ func stripMetricsCosting(resp *pb_admin.GetMetricsResponse) {
 	resp.InventoryValuation = nil
 }
 
-// stripDashboardCosting redacts the margin figures of the decision dashboard, keeping
-// revenue, order count, inventory action lists and alerts. Applied without costing:read.
+// stripDashboardCosting redacts the margin and operating-result figures of the decision
+// dashboard, keeping revenue, order count, inventory action lists and alerts. Applied without
+// costing:read. The operating result (and its OPEX / marketing components) are redacted too:
+// they're the profit line built from the confidential margins, so they must not leak here.
 func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	if resp == nil {
 		return
@@ -120,6 +122,10 @@ func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	resp.GrossMarginPct = 0
 	resp.ContributionMargin = nil
 	resp.TopByMargin = nil // products re-ranked by gross margin € — leaks relative margins
+	resp.OperatingResult = nil
+	resp.OpexTotal = nil
+	resp.MarketingSpend = nil
+	resp.OpexCaveat = ""
 }
 
 // techCardInsertHasCostingData reports whether a write payload carries confidential cost
