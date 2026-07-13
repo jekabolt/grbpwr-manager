@@ -213,6 +213,13 @@ envs:
 - key: STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION
   scope: RUN_TIME
   value: 15m
+# Stripe webhook signing secrets. Blank = the /api/webhooks/stripe endpoint is
+# not mounted (see stripe.NewWebhookHandler.Enabled), so there is no real-time
+# push confirmation of card payments — confirmation falls back to the in-process
+# monitor + lazy CheckForTransactions + the ordercleanup worker (correct, but up
+# to one ordercleanup tick of extra latency after a restart). To enable immediate
+# confirmation, register /api/webhooks/stripe in the Stripe dashboard and store
+# the live/test signing secrets here as encrypted SECRET values.
 - key: STRIPE_PAYMENT_WEBHOOK_SECRET
   scope: RUN_TIME
   type: SECRET

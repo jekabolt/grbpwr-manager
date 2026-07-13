@@ -322,9 +322,16 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.hs.SetWebhookHandler(webhookHandler)
 
-	// Stripe webhook: server-to-server payment confirmation (primary path; the
-	// in-process monitor and lazy CheckForTransactions remain fallbacks). Enabled
-	// only when a signing secret is configured for at least one processor.
+	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
+	// When a signing secret is configured for a processor it delivers the fastest
+	// (immediate push) confirmation, but it is not the sole mechanism: confirmation
+	// is always backstopped by the in-process payment monitor, lazy
+	// CheckForTransactions on order reads, and the ordercleanup safety-net worker.
+	// So a deployment with no webhook secret (the current prod config — the secrets
+	// in .do/app.yaml are blank) still confirms payments correctly, only with added
+	// latency after a restart (up to one ordercleanup tick). Mounted only when at
+	// least one processor has a signing secret; set the Stripe-dashboard signing
+	// secrets in .do/app.yaml to enable the immediate path.
 	var stripeProcs []*stripe.Processor
 	if p, ok := stripeMain.(*stripe.Processor); ok {
 		stripeProcs = append(stripeProcs, p)
