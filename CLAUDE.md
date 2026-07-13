@@ -86,6 +86,13 @@ must be safe against existing data (e.g. dedupe before adding a UNIQUE index —
 first via the feature→beta→master flow. Add a new migration as the next-numbered `NNNN_description.sql` file; do
 not edit already-applied migrations.
 
+New migrations must be **idempotent** so a mid-file failure (MySQL DDL auto-commits, so a rollback can't undo it —
+the schema is left half-applied with no `gorp_migrations` row, and the next boot re-runs the file from the top).
+Use `CREATE TABLE IF NOT EXISTS` (and symmetric `IF EXISTS` on drops), and never `DROP CHECK` an auto-generated
+`<table>_chk_<n>` name — those are positional and drift across schema history; name constraints explicitly and drop
+them by that stable name. Prefer several small migrations over one large destructive overhaul (see `0079`). The
+lint in `internal/store/migrationlint` enforces this for migrations numbered above its grandfathered baseline.
+
 ## Deployment & environments
 
 Two DigitalOcean App Platform apps, configured **purely via env vars** (no code branching):
