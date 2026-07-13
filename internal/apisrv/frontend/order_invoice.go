@@ -17,7 +17,8 @@ import (
 func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderInvoiceRequest) (*pb_frontend.GetOrderInvoiceResponse, error) {
 	// RATE LIMIT CHECK: this endpoint operates on req.OrderUuid alone and returns
 	// the payment client_secret, so without a limit the ORD-+7-char reference is
-	// brute-forceable over time. Key on client IP and on the order UUID itself.
+	// brute-forceable over time. Key on client IP only; the order UUID is unique
+	// per guess, so keying a limiter on it never fills (audit p04-03).
 	//
 	// TODO(security): close the IDOR. This endpoint has no ownership binding: the
 	// caller only proves knowledge of order_uuid, not that the order is theirs
@@ -29,7 +30,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 	// against the order's buyer email) plus coordinated frontend changes to pass
 	// it. Until then, rate limiting is the mitigation.
 	clientIP := middleware.GetClientIP(ctx)
-	if err := s.rateLimiter.CheckSupportTicket(clientIP, req.OrderUuid); err != nil {
+	if err := s.rateLimiter.CheckOrderInvoiceIP(clientIP); err != nil {
 		slog.Default().WarnContext(ctx, "rate limit exceeded for get order invoice",
 			slog.String("ip", clientIP),
 			slog.String("order_uuid", req.OrderUuid),
@@ -79,7 +80,8 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	// RATE LIMIT CHECK: this endpoint operates on req.OrderUuid alone and cancels
 	// payment monitoring / releases reserved stock, so without a limit the
 	// ORD-+7-char reference is brute-forceable into a denial-of-service against
-	// other buyers' pending orders. Key on client IP and on the order UUID itself.
+	// other buyers' pending orders. Key on client IP only; the order UUID is unique
+	// per guess, so keying a limiter on it never fills (audit p04-03).
 	//
 	// TODO(security): close the IDOR. Like GetOrderInvoice, this endpoint has no
 	// ownership binding — the caller only proves knowledge of order_uuid, not that
@@ -91,7 +93,7 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	// matched against the order's buyer email) plus coordinated frontend changes.
 	// Until then, rate limiting is the mitigation.
 	clientIP := middleware.GetClientIP(ctx)
-	if err := s.rateLimiter.CheckSupportTicket(clientIP, req.OrderUuid); err != nil {
+	if err := s.rateLimiter.CheckOrderInvoiceIP(clientIP); err != nil {
 		slog.Default().WarnContext(ctx, "rate limit exceeded for cancel order invoice",
 			slog.String("ip", clientIP),
 			slog.String("order_uuid", req.OrderUuid),

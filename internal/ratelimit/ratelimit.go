@@ -190,6 +190,22 @@ func (m *MultiKeyLimiter) CheckSupportTicket(ip, email string) error {
 	return nil
 }
 
+// CheckOrderInvoiceIP rate-limits per-IP access to the order-UUID-only endpoints
+// (invoice fetch/cancel, guest order lookup). It keys on IP only by design: the
+// order UUID is attacker-supplied and unique per guess, so keying a limiter on it
+// (as CheckSupportTicket(ip, orderUUID) did) lands every attempt in a fresh
+// never-filling bucket that offers no protection.
+func (m *MultiKeyLimiter) CheckOrderInvoiceIP(ip string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_support"].Allow(ip) {
+		return fmt.Errorf("too many requests from this IP address, please try again later")
+	}
+
+	return nil
+}
+
 // GetOrderLimits returns remaining order attempts for IP and email
 func (m *MultiKeyLimiter) GetOrderLimits(ip, email string) (ipRemaining, emailRemaining int) {
 	m.mu.RLock()
