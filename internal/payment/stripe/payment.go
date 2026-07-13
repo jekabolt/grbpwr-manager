@@ -589,6 +589,13 @@ func (p *Processor) StopAllMonitors(ctx context.Context) {
 		slog.Default().WarnContext(ctx, "timed out waiting for stripe payment monitors to stop",
 			slog.String("err", ctx.Err().Error()))
 	}
+
+	// Stop the pre-order session cleanup goroutine, which this processor owns and
+	// which otherwise leaks one ticker per shutdown. Stop is stopOnce-guarded, so
+	// this stays safe alongside StopAllMonitors being called more than once.
+	if p.preOrderStore != nil {
+		p.preOrderStore.Stop()
+	}
 }
 
 func (p *Processor) ExpirationDuration() time.Duration {
