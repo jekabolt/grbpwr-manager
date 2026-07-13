@@ -353,7 +353,12 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 // «Спецификация»). The per-colourway colour, placement and consumption live on
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
-	Id          int                 `db:"id"`
+	Id int `db:"id"`
+	// MaterialId optionally links this BOM line to a catalog material (task 10). The line still
+	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
+	// catalog entry later changes; the link only powers reverse lookups (which cards use a
+	// material) and admin-side pre-fill. NULL for free-text / legacy lines.
+	MaterialId  sql.NullInt64       `db:"material_id"`
 	Section     TechCardBomSection  `db:"section"`
 	Name        string              `db:"name"`
 	Supplier    sql.NullString      `db:"supplier"`

@@ -939,7 +939,13 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			direction = sql.NullString{String: string(d), Valid: true}
 		}
 
+		materialID := sql.NullInt64{}
+		if b.MaterialId != 0 {
+			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
+		}
+
 		out = append(out, entity.TechCardBomItem{
+			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
 			Supplier:        nullStringFromPb(b.Supplier),
@@ -1065,6 +1071,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
+			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,
 			Supplier:        pbStringFromNull(b.Supplier),

@@ -187,9 +187,42 @@ message TechCardBomItem {
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
   TechCardFabricDirection fabric_direction = 19; // nap / layout
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
+  // material_id optionally links this line to a catalog Material (task 10). The line keeps its
+  // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
+  int64 material_id = 23;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
+}
+
+// Material is a catalog material — shared nomenclature a tech-card BOM line can optionally link
+// to. Descriptive fields only; price lives in the append-only MaterialPrice history.
+message Material {
+  int64 id = 1;
+  string name = 2; // required
+  TechCardBomSection section = 3; // required; same enum as a BOM line
+  string supplier = 4;
+  string supplier_ref = 5;
+  string composition = 6;
+  string spec = 7; // ширина / плотность
+  string unit = 8;
+  google.type.Decimal fabric_width = 9; // usable width, cm
+  google.type.Decimal fabric_weight_gsm = 10; // weight, g/m²
+  bool archived = 11;
+  // latest_price is the current (latest-effective) price, if any (read-only; set via
+  // AddMaterialPrice). Absent when the material has no price history yet.
+  MaterialPrice latest_price = 12;
+}
+
+// MaterialPrice is one point in a material's append-only price history. Prices are in the
+// purchase currency (fold to base via costing FX rates).
+message MaterialPrice {
+  int64 material_id = 1;
+  google.type.Decimal price = 2;
+  string currency = 3; // ISO 4217
+  google.protobuf.Timestamp valid_from = 4; // the price applies from this date
+  string source = 5; // manual | production_run
+  string note = 6;
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM

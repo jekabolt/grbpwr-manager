@@ -104,6 +104,7 @@ func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		b := &items[i]
 		rows = append(rows, map[string]any{
 			"tech_card_id":      tcID,
+			"material_id":       b.MaterialId,
 			"section":           string(b.Section),
 			"name":              b.Name,
 			"supplier":          b.Supplier,
@@ -277,7 +278,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// BOM lines per card (the article catalog).
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
-		SELECT id, tech_card_id, section, name, supplier, supplier_ref, color, composition, spec,
+		SELECT id, tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec,
 		       unit, unit_price, currency, comment,
 		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent
 		FROM tech_card_bom_item

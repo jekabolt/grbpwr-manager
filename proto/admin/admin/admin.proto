@@ -595,6 +595,41 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/list"};
   }
 
+  // Material catalog (task 10): shared nomenclature for BOM lines + append-only price history.
+  rpc CreateMaterial(CreateMaterialRequest) returns (CreateMaterialResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/materials"
+      body: "*"
+    };
+  }
+  rpc UpdateMaterial(UpdateMaterialRequest) returns (UpdateMaterialResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/materials"
+      body: "*"
+    };
+  }
+  rpc ArchiveMaterial(ArchiveMaterialRequest) returns (ArchiveMaterialResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/materials/archive"
+      body: "*"
+    };
+  }
+  rpc GetMaterial(GetMaterialRequest) returns (GetMaterialResponse) {
+    option (google.api.http) = {get: "/api/admin/materials/{id}"};
+  }
+  rpc ListMaterials(ListMaterialsRequest) returns (ListMaterialsResponse) {
+    option (google.api.http) = {get: "/api/admin/materials"};
+  }
+  rpc AddMaterialPrice(AddMaterialPriceRequest) returns (AddMaterialPriceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/materials/price"
+      body: "*"
+    };
+  }
+  rpc ListMaterialPrices(ListMaterialPricesRequest) returns (ListMaterialPricesResponse) {
+    option (google.api.http) = {get: "/api/admin/materials/{material_id}/prices"};
+  }
+
   // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
   // costing into the base currency.
   rpc GetCostingFxRates(GetCostingFxRatesRequest) returns (GetCostingFxRatesResponse) {
@@ -3104,6 +3139,60 @@ message UpsertVatRatesRequest {
 }
 
 message UpsertVatRatesResponse {}
+
+// Material catalog (task 10). Create/Update send a common.Material; server-managed fields
+// (id on create, archived, latest_price) are ignored on write.
+message CreateMaterialRequest {
+  common.Material material = 1;
+}
+
+message CreateMaterialResponse {
+  int64 id = 1;
+}
+
+message UpdateMaterialRequest {
+  common.Material material = 1; // material.id selects the row
+}
+
+message UpdateMaterialResponse {}
+
+message ArchiveMaterialRequest {
+  int64 id = 1;
+  bool archived = 2;
+}
+
+message ArchiveMaterialResponse {}
+
+message GetMaterialRequest {
+  int64 id = 1;
+}
+
+message GetMaterialResponse {
+  common.Material material = 1;
+}
+
+message ListMaterialsRequest {
+  string section = 1; // empty = all sections
+  bool include_archived = 2;
+}
+
+message ListMaterialsResponse {
+  repeated common.Material materials = 1;
+}
+
+message AddMaterialPriceRequest {
+  common.MaterialPrice price = 1;
+}
+
+message AddMaterialPriceResponse {}
+
+message ListMaterialPricesRequest {
+  int64 material_id = 1;
+}
+
+message ListMaterialPricesResponse {
+  repeated common.MaterialPrice prices = 1;
+}
 
 // ADMIN ACCOUNTS (RBAC)
 

@@ -409,6 +409,15 @@ type (
 		ListCostingFxRates(ctx context.Context) ([]entity.CostingFxRate, error)
 		// UpsertCostingFxRates inserts/updates rates by (currency, valid_from). Empty is a no-op.
 		UpsertCostingFxRates(ctx context.Context, rates []entity.CostingFxRate) error
+		// Material catalog (task 10): shared nomenclature a BOM line can optionally link to,
+		// with an append-only price history.
+		CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error)
+		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error
+		ArchiveMaterial(ctx context.Context, id int, archived bool) error
+		GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPrice, error)
+		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
+		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
+		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
