@@ -658,6 +658,24 @@ type TechCardCosting struct {
 	Notes         sql.NullString      `db:"notes"`
 }
 
+// TechCardDevExpense is one row of a style's development (R&D) cost journal (task 14): a one-off
+// "spent Amount on Kind" record, not time-tracking. Amount is in Currency; AmountBase folds it to
+// the base currency (via costing FX or a manual override, unset when no rate). FittingId optionally
+// ties the cost to a try-on round (e.g. a sample built for that round). Development cost is a
+// period cost and is never seeded into product.cost_price.
+type TechCardDevExpense struct {
+	Id          int                 `db:"id"`
+	TechCardId  int                 `db:"tech_card_id"`
+	Kind        string              `db:"kind"` // sample|materials|labour|outsourcing|other
+	Description sql.NullString      `db:"description"`
+	Amount      decimal.Decimal     `db:"amount"`
+	Currency    string              `db:"currency"`
+	AmountBase  decimal.NullDecimal `db:"amount_base"`
+	FittingId   sql.NullInt32       `db:"fitting_id"`
+	IncurredAt  sql.NullTime        `db:"incurred_at"`
+	CreatedAt   time.Time           `db:"created_at"`
+}
+
 // CostBreakdown is the per-unit COGS decomposition in base currency (EUR): the cost articles
 // that (summed and grossed up by defect%) make the unit cost seeded into product.cost_price.
 // Snapshotted onto product.cost_breakdown JSON at seed time so COGS-of-sold analytics can

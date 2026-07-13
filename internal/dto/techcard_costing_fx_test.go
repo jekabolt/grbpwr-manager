@@ -97,3 +97,46 @@ func TestComputeTechCardCostBreakdownBase(t *testing.T) {
 		t.Fatalf("empty card breakdown: got ok=true, want false")
 	}
 }
+
+// TestComputeTechCardDevCostSummary checks the task-14 dev-cost roll-up: base total over foldable
+// rows, per-kind split, has_unconverted flag, and the amortized unit_cost_with_dev = production
+// unit cost + dev_total / Σ order_qty.
+func TestComputeTechCardDevCostSummary(t *testing.T) {
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
+	dec := decimal.RequireFromString
+
+	// EUR card: unit cost 16 (materials 3×2 + cmt 10), size run 100 units.
+	card := fxTestCard("EUR", "2", "10")
+	expenses := []entity.TechCardDevExpense{
+		{Kind: "sample", Amount: dec("100"), Currency: "EUR", AmountBase: nd("100")},
+		{Kind: "labour", Amount: dec("50"), Currency: "EUR", AmountBase: nd("50")},
+		{Kind: "materials", Amount: dec("30"), Currency: "USD"}, // no amount_base → unconverted
+	}
+	sum := ComputeTechCardDevCostSummary(card, expenses, CostingFx{Base: "EUR"})
+
+	if sum.TotalBase.Value != "150" {
+		t.Fatalf("total_base: got %s, want 150 (unconverted row excluded)", sum.TotalBase.Value)
+	}
+	if !sum.HasUnconverted {
+		t.Fatalf("has_unconverted: got false, want true (the USD row has no rate)")
+	}
+	if sum.OrderQty != 100 {
+		t.Fatalf("order_qty: got %d, want 100", sum.OrderQty)
+	}
+	// 16 + 150/100 = 17.5.
+	if sum.UnitCostWithDev == nil || sum.UnitCostWithDev.Value != "17.5" {
+		t.Fatalf("unit_cost_with_dev: got %v, want 17.5", sum.UnitCostWithDev)
+	}
+	byKind := map[string]string{}
+	for _, k := range sum.ByKind {
+		byKind[k.Kind] = k.AmountBase.Value
+	}
+	if byKind["sample"] != "100" || byKind["labour"] != "50" {
+		t.Fatalf("by_kind: got %v, want sample=100 labour=50", byKind)
+	}
+	if _, ok := byKind["materials"]; ok {
+		t.Fatalf("by_kind: unconverted materials row must not appear")
+	}
+}

@@ -186,8 +186,11 @@ var methodRequirements = map[string]Requirement{
 	"ListMaterials":        rd(SectionTechCards),
 	"AddMaterialPrice":     wr(SectionTechCards),
 	"ListMaterialPrices":   rd(SectionTechCards),
-	"ListTechCardReleases": rd(SectionTechCards),
-	"GetTechCardRelease":   rd(SectionTechCards),
+	"ListTechCardReleases":     rd(SectionTechCards),
+	"GetTechCardRelease":       rd(SectionTechCards),
+	"AddTechCardDevExpense":    wr(SectionTechCards),
+	"DeleteTechCardDevExpense": wr(SectionTechCards),
+	"ListTechCardDevExpenses":  rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

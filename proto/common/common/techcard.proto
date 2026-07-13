@@ -238,6 +238,52 @@ message TechCardReleaseMeta {
   google.protobuf.Timestamp created_at = 7;
 }
 
+// TechCardDevExpenseInsert is the writable payload for one development (R&D) cost row (task 14):
+// a one-off "spent Amount on Kind" record. amount_base is computed server-side (via costing FX);
+// clients do not send it.
+message TechCardDevExpenseInsert {
+  int32 tech_card_id = 1;
+  string kind = 2; // sample|materials|labour|outsourcing|other
+  string description = 3;
+  google.type.Decimal amount = 4;
+  string currency = 5; // ISO 4217
+  int32 fitting_id = 6; // 0 = not tied to a fitting round
+  google.protobuf.Timestamp incurred_at = 7; // date the cost was incurred (optional)
+}
+
+// TechCardDevExpense is one stored development-cost journal row. amount_base folds amount to base
+// (EUR) via costing FX (unset when the currency has no rate).
+message TechCardDevExpense {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  string kind = 3;
+  string description = 4;
+  google.type.Decimal amount = 5;
+  string currency = 6;
+  google.type.Decimal amount_base = 7; // base currency (EUR); unset if not foldable
+  int32 fitting_id = 8; // 0 = none
+  google.protobuf.Timestamp incurred_at = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+// TechCardDevCostByKind is the base-currency development spend for one kind.
+message TechCardDevCostByKind {
+  string kind = 1;
+  google.type.Decimal amount_base = 2;
+}
+
+// TechCardDevCostSummary is the computed roll-up of a style's development spend (output-only).
+message TechCardDevCostSummary {
+  google.type.Decimal total_base = 1; // Σ amount_base over foldable rows (EUR)
+  bool has_unconverted = 2; // some row lacked amount_base (missing FX rate) → total is partial
+  repeated TechCardDevCostByKind by_kind = 3; // Σ per kind
+  // Amortized informational figure: production unit_cost + total_base / Σ order_qty — how much
+  // development adds to each unit at the current size run. Unset when order_qty is 0 or the
+  // production unit cost is unavailable. NOT part of cost_price (development is a period cost).
+  google.type.Decimal unit_cost_with_dev = 4;
+  int32 order_qty = 5; // Σ size order_qty used for amortization
+}
+
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM
 // material — different sizes consume different amounts of fabric.
 message TechCardBomSizeConsumption {

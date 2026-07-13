@@ -639,6 +639,21 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/release/{id}"};
   }
 
+  // Development (R&D) cost journal (task 14): per-tech-card one-off costs (sample, labour, …)
+  // with a computed roll-up. A period cost — never seeded into product cost_price.
+  rpc AddTechCardDevExpense(AddTechCardDevExpenseRequest) returns (AddTechCardDevExpenseResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/dev-expense"
+      body: "*"
+    };
+  }
+  rpc DeleteTechCardDevExpense(DeleteTechCardDevExpenseRequest) returns (DeleteTechCardDevExpenseResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/dev-expense/{id}"};
+  }
+  rpc ListTechCardDevExpenses(ListTechCardDevExpensesRequest) returns (ListTechCardDevExpensesResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/dev-expenses"};
+  }
+
   // Production runs (партии, task 09): a batch produced from a tech card, with a plan snapshot
   // and (later) actual costs for plan/fact analysis.
   rpc CreateProductionRun(CreateProductionRunRequest) returns (CreateProductionRunResponse) {
@@ -3325,6 +3340,30 @@ message GetTechCardReleaseResponse {
   // metadata rather than failing (hero-v2 degradation rule).
   common.TechCard snapshot = 2;
   string snapshot_error = 3;
+}
+
+// Development cost journal (task 14).
+message AddTechCardDevExpenseRequest {
+  common.TechCardDevExpenseInsert expense = 1;
+}
+
+message AddTechCardDevExpenseResponse {
+  common.TechCardDevExpense expense = 1; // the stored row, incl. computed amount_base
+}
+
+message DeleteTechCardDevExpenseRequest {
+  int32 id = 1;
+}
+
+message DeleteTechCardDevExpenseResponse {}
+
+message ListTechCardDevExpensesRequest {
+  int32 tech_card_id = 1;
+}
+
+message ListTechCardDevExpensesResponse {
+  repeated common.TechCardDevExpense expenses = 1; // newest-first
+  common.TechCardDevCostSummary summary = 2; // computed roll-up (total, by-kind, amortized unit)
 }
 
 // Production runs (task 09).

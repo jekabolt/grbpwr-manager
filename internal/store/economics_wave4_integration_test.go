@@ -502,3 +502,69 @@ func TestSeedProductsCostBreakdownFromTechCard(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT cost_breakdown FROM product WHERE id = ?", prodID).Scan(&got))
 	require.False(t, got.Valid, "breakdown cleared to NULL, got %+v", got)
 }
+
+// TestTechCardDevExpenseCRUD covers the task-14 development-cost journal store methods: append
+// (returns the stored row with server-stamped created_at and folded amount_base), list
+// (newest-first), and delete a single row.
+func TestTechCardDevExpenseCRUD(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	var techCardID int
+	defer func() {
+		if techCardID != 0 {
+			_ = s.TechCards().DeleteTechCard(ctx, techCardID) // dev expenses cascade
+		}
+	}()
+
+	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber:     "ECO-W4-DEV-1",
+		Name:            "n",
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+		SizeIds:         []int{4},
+	})
+	require.NoError(t, err)
+
+	T := s.TechCards()
+	mk := func(kind, amount, base string) entity.TechCardDevExpense {
+		e := entity.TechCardDevExpense{
+			TechCardId: techCardID,
+			Kind:       kind,
+			Amount:     decimal.RequireFromString(amount),
+			Currency:   "EUR",
+		}
+		if base != "" {
+			e.AmountBase = decimal.NullDecimal{Decimal: decimal.RequireFromString(base), Valid: true}
+		}
+		return e
+	}
+
+	sample, err := T.AddTechCardDevExpense(ctx, mk("sample", "120.50", "120.50"))
+	require.NoError(t, err)
+	require.NotZero(t, sample.Id, "returned row has an id")
+	require.False(t, sample.CreatedAt.IsZero(), "created_at is server-stamped")
+	require.True(t, sample.AmountBase.Valid && sample.AmountBase.Decimal.Equal(decimal.RequireFromString("120.5")),
+		"amount_base persisted: %+v", sample.AmountBase)
+
+	labour, err := T.AddTechCardDevExpense(ctx, mk("labour", "60", "60"))
+	require.NoError(t, err)
+
+	list, err := T.ListTechCardDevExpenses(ctx, techCardID)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	// delete one → list shrinks to the other.
+	require.NoError(t, T.DeleteTechCardDevExpense(ctx, sample.Id))
+	list, err = T.ListTechCardDevExpenses(ctx, techCardID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, labour.Id, list[0].Id)
+}

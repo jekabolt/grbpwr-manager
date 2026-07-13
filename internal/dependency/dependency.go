@@ -444,6 +444,11 @@ type (
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
 		ListTechCardReleases(ctx context.Context, techCardID int) ([]entity.TechCardReleaseMeta, error)
 		GetTechCardRelease(ctx context.Context, id int) (*entity.TechCardRelease, error)
+		// Development (R&D) cost journal (task 14): append + delete + list rows at the tech-card
+		// level (NOT full-replace); a period cost, never seeded into product.cost_price.
+		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)
+		DeleteTechCardDevExpense(ctx context.Context, id int) error
+		ListTechCardDevExpenses(ctx context.Context, techCardID int) ([]entity.TechCardDevExpense, error)
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
