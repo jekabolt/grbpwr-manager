@@ -326,6 +326,14 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:jzOY1Ue7MdglYDBsGCRvXyG/Cmo5XeWU:zXemcpOYL2HdBTnaESqxD0/3Q43pF4losleb5N0s+21j/kMN6nj4iGZllJnSY01R/Ki4drR0mOXxQADwe2aLu6iNrrYMdt2fdYR+lsYKjRPhNIfKdS2OOD0gbUIYkcHKZdOd8GJSwOqAMLHtLgIG580P/y3z7AnE9YdgzwL0BV3LMBsd7cgyCT8cWfOGJVbADMVSdeQnZUOEdgEjj2U/m0BecAMb]
+# Path to the DO managed-MySQL CA baked into the image, matching beta. Registers
+# the tls=custom config so the DB connection fully verifies the server cert.
+# NOTE: for prod to actually verify like beta, the MYSQL_DSN secret must use
+# tls=custom (rotate it in the DO dashboard); if it currently uses tls=true /
+# skip-verify, this entry is harmless but does not upgrade verification on its own.
+- key: MYSQL_TLS_CA_PATH
+  scope: RUN_TIME
+  value: /etc/grbpwr-products-manager/certs/ca-certificate.crt
 features:
 - buildpack-stack=ubuntu-22
 ingress:
