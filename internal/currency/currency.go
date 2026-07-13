@@ -84,11 +84,21 @@ func Minimum(c string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// ValidateMinimum returns an error if price is below the currency minimum.
+// IsSupported reports whether the shop can charge in this currency. The set of
+// currencies with a configured Stripe minimum is the source of truth.
+func IsSupported(c string) bool {
+	_, ok := minimumAmounts[strings.ToUpper(c)]
+	return ok
+}
+
+// ValidateMinimum returns an error if the currency is not one the shop supports,
+// or if price is below its minimum. It fails closed: an unknown currency used to
+// return nil here (Minimum -> 0 -> "no minimum"), silently bypassing the
+// Stripe-minimum guard for any code outside the supported set.
 func ValidateMinimum(price decimal.Decimal, c string) error {
-	min := Minimum(c)
-	if min.IsZero() {
-		return nil
+	min, ok := minimumAmounts[strings.ToUpper(c)]
+	if !ok {
+		return fmt.Errorf("unsupported currency %q", c)
 	}
 	if price.LessThan(min) {
 		return fmt.Errorf("%s price %s is below minimum %s", c, price.String(), min.String())
