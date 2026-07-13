@@ -423,7 +423,11 @@ func (a *App) Stop(ctx context.Context) {
 	if a.bqc != nil {
 		a.bqc.Close()
 	}
-	a.db.Close()
+	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
+	// failed before store.New assigned a.db.
+	if a.db != nil {
+		a.db.Close()
+	}
 	close(a.done)
 }
 

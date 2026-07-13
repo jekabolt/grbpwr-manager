@@ -31,6 +31,11 @@ func run(cmd *cobra.Command, args []string) error {
 	app.SetCommitHash(commitHash)
 	a := app.New(cfg)
 	if err := a.Start(ctx); err != nil {
+		// Start wires resources incrementally (DB, mailer, workers, HTTP). On a
+		// mid-sequence failure the already-started pieces — worker goroutines, a
+		// live DB pool, Stripe monitors — would otherwise leak until process exit.
+		// Stop is idempotent and partial-init safe, so tear down what came up.
+		a.Stop(ctx)
 		return fmt.Errorf("cannot start the application %v", err.Error())
 	}
 
