@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"strings"
 
+	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
@@ -19,9 +21,13 @@ import (
 // same place and shape used for logged-in accounts — and keeps the legacy
 // subscriber list in sync for promo sends.
 func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.SubscribeNewsletterRequest) (*pb_frontend.SubscribeNewsletterResponse, error) {
-	email := strings.TrimSpace(req.Email)
-	if email == "" {
-		return nil, status.Error(codes.InvalidArgument, "email is required")
+	email := normalizeEmail(req.Email)
+	if email == "" || !v.IsEmail(email) {
+		return nil, status.Error(codes.InvalidArgument, "valid email is required")
+	}
+	ip := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckSubscribe(ip, email); err != nil {
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
 
 	// shopping preference (all/men/women) is required by the form.
@@ -79,9 +85,13 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 // sends no flags, so it opts out completely). A confirmation email is sent when
 // the newsletter opt-in is turned off.
 func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.UnsubscribeNewsletterRequest) (*pb_frontend.UnsubscribeNewsletterResponse, error) {
-	email := strings.TrimSpace(req.Email)
-	if email == "" {
-		return nil, status.Error(codes.InvalidArgument, "email is required")
+	email := normalizeEmail(req.Email)
+	if email == "" || !v.IsEmail(email) {
+		return nil, status.Error(codes.InvalidArgument, "valid email is required")
+	}
+	ip := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckSubscribe(ip, email); err != nil {
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
 
 	// Which channels to turn off. No flags set => unsubscribe from everything.

@@ -131,6 +131,8 @@ func NewMultiKeyLimiter() *MultiKeyLimiter {
 			"ip_account_verify":        NewLimiter(10*time.Minute, 30), // verify / refresh per IP
 			"email_account_verify":     NewLimiter(10*time.Minute, 10), // OTP verify per email (anti distributed guess)
 			"challenge_account_verify": NewLimiter(10*time.Minute, 10), // magic token verify per token hash
+			"ip_subscribe":             NewLimiter(10*time.Minute, 10), // newsletter/waitlist subscribes per IP
+			"email_subscribe":          NewLimiter(10*time.Minute, 5),  // newsletter/waitlist subscribes per email
 		},
 	}
 }
@@ -185,6 +187,23 @@ func (m *MultiKeyLimiter) CheckSupportTicket(ip, email string) error {
 
 	if email != "" && !m.limiters["email_support"].Allow(email) {
 		return fmt.Errorf("too many support tickets from this email address, please try again later")
+	}
+
+	return nil
+}
+
+// CheckSubscribe rate-limits the public newsletter/waitlist endpoints, which are
+// unauthenticated yet create rows (storefront_account, subscriber, waitlist) and
+// can send mail to the supplied address.
+func (m *MultiKeyLimiter) CheckSubscribe(ip, email string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.limiters["ip_subscribe"].Allow(ip) {
+		return fmt.Errorf("too many subscription requests from this IP address, please try again later")
+	}
+	if email != "" && !m.limiters["email_subscribe"].Allow(email) {
+		return fmt.Errorf("too many subscription requests for this email, please try again later")
 	}
 
 	return nil
