@@ -241,6 +241,23 @@ var corsDevOrigins = []string{
 // they let any attacker-controlled *.vercel.app / *.github.io deployment make
 // credentialed cross-origin calls. Localhost dev origins are gated behind
 // allowDevOrigins (env-driven; off in prod) so they never widen the prod surface.
+// maxJSONBodyBytes caps frontend/auth JSON request bodies. The grpc-gateway
+// marshaler buffers the whole body into memory before the loopback gRPC hop, so an
+// unbounded body is a memory-exhaustion / JSON-bomb vector. Admin is capped higher
+// (grpcMaxRecvMsgSize) because it carries base64 media uploads.
+const maxJSONBodyBytes = 4 << 20 // 4 MB
+
+// limitBody caps the request body via http.MaxBytesReader, so an oversized body is
+// rejected instead of being fully buffered by the JSON gateway.
+func limitBody(max int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, max)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // recoverMiddleware recovers panics in non-gRPC HTTP handlers, logs the stack via
 // slog, and returns 500 instead of letting net/http drop the connection silently.
 func recoverMiddleware(next http.Handler) http.Handler {
@@ -391,9 +408,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
 		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
-		r.Mount("/admin", auth.WithAuth(adminHandler))
-		r.Mount("/frontend", frontendHandler)
-		r.Mount("/auth", authHandler)
+		// Admin carries base64 media uploads, so it gets the larger gRPC-recv cap;
+		// frontend/auth JSON is bounded tightly.
+		r.With(limitBody(grpcMaxRecvMsgSize)).Mount("/admin", auth.WithAuth(adminHandler))
+		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
+		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
 	})
 
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.
