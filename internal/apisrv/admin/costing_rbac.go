@@ -172,6 +172,29 @@ func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
+// stripStyleEconomicsCosting redacts confidential cost/margin from a style-economics card for an
+// account without costing:read (task 19): the dev-cost roll-up, production costs, the net result,
+// and the cost/margin fields on the sales row. Identity, revenue, units, colourway count, fitting
+// rounds and production quantities remain — the non-cost half of the business case still shows.
+func stripStyleEconomicsCosting(resp *pb_admin.GetStyleEconomicsResponse) {
+	if resp == nil || resp.Economics == nil {
+		return
+	}
+	e := resp.Economics
+	e.DevCost = nil     // whole R&D journal roll-up is money
+	e.NetAfterDev = nil // derived from margin
+	if e.Production != nil {
+		e.Production.PlannedCostBase = nil
+		e.Production.ActualCostBase = nil
+		e.Production.CostVariance = nil
+		e.Production.HasActuals = false
+	}
+	if e.Sales != nil {
+		// Clears unit_cost/revenue_cost/gross_margin/gross_margin_pct; keeps revenue/units/has_cost.
+		redactCostingFieldsDeep(e.Sales.ProtoReflect())
+	}
+}
+
 // techCardInsertHasCostingData reports whether a write payload carries confidential cost
 // input: a costing block, or a BOM line with a purchase price. Used to reject a write
 // from an account without costing:write instead of silently accepting cost changes.

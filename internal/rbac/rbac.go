@@ -148,6 +148,7 @@ var methodRequirements = map[string]Requirement{
 	// analytics
 	"GetMetrics":             rd(SectionAnalytics),
 	"GetDashboard":           rd(SectionAnalytics),
+	"GetStyleEconomics":      rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
 	"UpsertOpexEntries":      wr(SectionAnalytics),

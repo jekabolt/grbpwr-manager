@@ -210,6 +210,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/dashboard"};
   }
 
+  // GetStyleEconomics returns a single "style as a business case" card for one tech card: its
+  // lifetime sales margin (all colourway SKUs), the R&D development-cost roll-up, the number of
+  // fitting rounds, and a plan/fact production summary — one place tying a style's revenue to the
+  // money spent developing and making it. Cost/margin fields are costing:read-gated.
+  rpc GetStyleEconomics(GetStyleEconomicsRequest) returns (GetStyleEconomicsResponse) {
+    option (google.api.http) = {get: "/api/admin/metrics/style-economics"};
+  }
+
   // Reads the operator-tunable thresholds behind the dashboard alerts.
   rpc GetAlertSettings(GetAlertSettingsRequest) returns (GetAlertSettingsResponse) {
     option (google.api.http) = {get: "/api/admin/dashboard/alert-settings"};
@@ -2685,6 +2693,44 @@ message MarginByStyleRow {
   google.type.Decimal gross_margin = 9; // revenue − revenue_cost
   double gross_margin_pct = 10; // gross_margin / revenue × 100
   bool has_cost = 11;
+}
+
+// StyleProductionSummary aggregates the plan-vs-fact of a style's production runs (task 09) into
+// one overview. planned_cost_base is Σ(planned_unit_cost × planned_qty) over the runs; actual is
+// the Σ of recorded actual cost articles. A style with no runs is all-zero (has_actuals=false).
+message StyleProductionSummary {
+  int32 runs = 1; // production runs recorded for the style
+  int32 planned_qty_total = 2; // Σ planned units across runs
+  int32 received_qty_total = 3; // Σ received units across runs
+  google.type.Decimal planned_cost_base = 4; // Σ planned_unit_cost × planned_qty (base ccy)
+  google.type.Decimal actual_cost_base = 5; // Σ recorded actual production costs (base ccy)
+  google.type.Decimal cost_variance = 6; // actual_cost_base − planned_cost_base (base ccy)
+  bool has_actuals = 7; // at least one run has recorded actual costs
+}
+
+// StyleEconomics is the "style as a business case" card (task 15 part C): one tech card's lifetime
+// sales tied to the money spent developing and producing it. Cost/margin fields (sales.*_cost /
+// *_margin, dev_cost, production costs, net_after_dev) are stripped without costing:read.
+message StyleEconomics {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  MarginByStyleRow sales = 4; // lifetime sales margin over all the style's colourway SKUs
+  common.TechCardDevCostSummary dev_cost = 5; // R&D development-cost journal roll-up (task 14)
+  int32 fitting_rounds = 6; // number of fitting rounds recorded for the style (task 13)
+  StyleProductionSummary production = 7; // plan/fact across the style's production runs (task 09)
+  // net_after_dev = sales.gross_margin − dev_cost.total_base. A contribution-style figure (dev is a
+  // period R&D cost NOT folded into unit COGS), NOT net profit. Unset when the style has no cost.
+  google.type.Decimal net_after_dev = 8;
+  string caveat = 9; // e.g. no product cost, or dev cost has unconverted currency
+}
+
+message GetStyleEconomicsRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetStyleEconomicsResponse {
+  StyleEconomics economics = 1;
 }
 
 // --- Analytics: COGS structure (task 15) ---

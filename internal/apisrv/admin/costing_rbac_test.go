@@ -171,6 +171,51 @@ func TestStripDashboardCosting(t *testing.T) {
 	require.Empty(t, resp.OpexCaveat, "opex caveat redacted")
 }
 
+// TestStripStyleEconomicsCosting redacts cost/margin from a style-economics card while identity,
+// revenue, units, fitting rounds and production quantities survive.
+func TestStripStyleEconomicsCosting(t *testing.T) {
+	resp := &pb_admin.GetStyleEconomicsResponse{
+		Economics: &pb_admin.StyleEconomics{
+			TechCardId:    7,
+			StyleNumber:   "S-1",
+			Name:          "coat",
+			FittingRounds: 3,
+			Sales: &pb_admin.MarginByStyleRow{
+				Name: "coat", Revenue: dec("200.00"), UnitsSold: 2, ColorwayCount: 2,
+				UnitCost: dec("10.00"), RevenueCost: dec("20.00"), GrossMargin: dec("180.00"), GrossMarginPct: 90, HasCost: true,
+			},
+			DevCost:     &pb_common.TechCardDevCostSummary{TotalBase: dec("50.00")},
+			Production:  &pb_admin.StyleProductionSummary{Runs: 2, PlannedQtyTotal: 30, ReceivedQtyTotal: 8, PlannedCostBase: dec("300.00"), ActualCostBase: dec("330.00"), CostVariance: dec("30.00"), HasActuals: true},
+			NetAfterDev: dec("130.00"),
+		},
+	}
+	stripStyleEconomicsCosting(resp)
+	e := resp.Economics
+	// Non-cost kept.
+	require.Equal(t, int32(7), e.TechCardId)
+	require.Equal(t, "coat", e.Name)
+	require.EqualValues(t, 3, e.FittingRounds)
+	require.Equal(t, "200.00", e.Sales.Revenue.GetValue(), "sales revenue kept")
+	require.EqualValues(t, 2, e.Sales.UnitsSold, "units kept")
+	require.EqualValues(t, 2, e.Sales.ColorwayCount, "colourway count kept")
+	require.NotNil(t, e.Production, "production overview kept")
+	require.EqualValues(t, 30, e.Production.PlannedQtyTotal, "planned qty kept")
+	require.EqualValues(t, 8, e.Production.ReceivedQtyTotal, "received qty kept")
+	// Cost/margin redacted.
+	require.Nil(t, e.DevCost, "dev cost redacted")
+	require.Nil(t, e.NetAfterDev, "net result redacted")
+	require.Nil(t, e.Sales.UnitCost, "sales unit_cost redacted")
+	require.Nil(t, e.Sales.GrossMargin, "sales gross_margin redacted")
+	require.Zero(t, e.Sales.GrossMarginPct, "sales gross_margin_pct redacted")
+	require.Nil(t, e.Production.PlannedCostBase, "production planned cost redacted")
+	require.Nil(t, e.Production.ActualCostBase, "production actual cost redacted")
+	require.Nil(t, e.Production.CostVariance, "production variance redacted")
+	require.False(t, e.Production.HasActuals, "production has_actuals cleared")
+
+	stripStyleEconomicsCosting(nil)                                   // no panic
+	stripStyleEconomicsCosting(&pb_admin.GetStyleEconomicsResponse{}) // no panic on nil economics
+}
+
 // TestCostingWriteDetectors pin the write-gate predicates.
 func TestCostingWriteDetectors(t *testing.T) {
 	require.False(t, techCardInsertHasCostingData(nil))

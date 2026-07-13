@@ -326,6 +326,9 @@ type (
 		// GetMarginByStyle rolls the per-SKU margin breakdown up to the style (tech card) via
 		// product.primary_tech_card_id; products with no primary card fall into a "no style" row.
 		GetMarginByStyle(ctx context.Context, from, to time.Time, limit int) ([]entity.MarginByStyleRow, error)
+		// GetStyleMargin returns the lifetime sales margin for one style (all its colourway SKUs) as a
+		// single MarginByStyleRow, or nil when the style has no sales. Sales anchor of GetStyleEconomics.
+		GetStyleMargin(ctx context.Context, techCardID int) (*entity.MarginByStyleRow, error)
 		// GetCogsStructure decomposes the cost of goods sold in the period into its components
 		// (materials / cmt / … / unattributed) from each product's cost_breakdown snapshot.
 		GetCogsStructure(ctx context.Context, from, to time.Time) ([]entity.CogsStructureRow, error)

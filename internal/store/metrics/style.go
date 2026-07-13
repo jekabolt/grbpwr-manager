@@ -74,6 +74,68 @@ func (s *Store) GetMarginByStyle(ctx context.Context, from, to time.Time, limit 
 	return result, nil
 }
 
+// styleLifetimeFrom/To bound the "lifetime" window for a single-style economics view: wide enough
+// to cover every real order while staying comfortably inside MySQL's DATETIME range. Kept as
+// package vars (not Date() calls) so they're computed once, not per request.
+var (
+	styleLifetimeFrom = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	styleLifetimeTo   = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
+// GetStyleMargin returns the LIFETIME sales margin for a single style (all colourway SKUs whose
+// primary_tech_card_id is techCardID), as one MarginByStyleRow, using the same apportionment as
+// GetMarginByStyle (net-of-VAT, per-line refund, settled-vs-list scaling) and the same costed-subset
+// margin. It is the sales anchor of GetStyleEconomics (task 15 part C). Returns nil when the style
+// has no sales yet (the caller supplies identity from the tech card).
+func (s *Store) GetStyleMargin(ctx context.Context, techCardID int) (*entity.MarginByStyleRow, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT
+			COALESCE(p.primary_tech_card_id, 0) AS tech_card_id,
+			COALESCE(tc.style_number, '') AS style_number,
+			COALESCE(tc.name, '') AS name,
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
+			SUM(oi.quantity) AS units_sold,
+			COUNT(DISTINCT oi.product_id) AS colorway_count,
+			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+		FROM order_item oi
+		JOIN product p ON p.id = oi.product_id
+		LEFT JOIN tech_card tc ON tc.id = p.primary_tech_card_id
+		JOIN order_factors ofac ON ofac.order_id = oi.order_id
+		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+		WHERE p.primary_tech_card_id = :techCardId
+		GROUP BY COALESCE(p.primary_tech_card_id, 0), tc.style_number, tc.name
+	`, orderFactorsCTE, itemAdjExpr, itemAdjExpr, costAdjExpr)
+
+	rows, err := storeutil.QueryListNamed[struct {
+		entity.MarginByStyleRow
+		CostedRevenueRaw decimal.Decimal     `db:"costed_revenue"`
+		UnitCostRaw      decimal.NullDecimal `db:"unit_cost"`
+		RevenueCostRaw   decimal.Decimal     `db:"revenue_cost"`
+	}](ctx, s.DB, query, map[string]any{
+		"baseCurrency": baseCurrency,
+		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
+		"from":         styleLifetimeFrom,
+		"to":           styleLifetimeTo,
+		"techCardId":   techCardID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get style margin: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	r := rows[0]
+	row := r.MarginByStyleRow
+	rm := computeRowMargin(r.CostedRevenueRaw, r.UnitCostRaw, r.RevenueCostRaw)
+	row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
+	row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
+	return &row, nil
+}
+
 // cogsStructureRaw is the single aggregate row of the COGS-structure query: each cost article
 // summed over the period in base currency, plus the unattributed remainder.
 type cogsStructureRaw struct {

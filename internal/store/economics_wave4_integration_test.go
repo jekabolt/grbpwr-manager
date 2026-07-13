@@ -272,6 +272,23 @@ func TestMarginByStyleAndCogsStructure(t *testing.T) {
 	require.Equal(t, int64(1), noStyle.UnitsSold)
 	require.True(t, noStyle.Revenue.Equal(decimal.NewFromInt(50)), "no-style revenue 50, got %s", noStyle.Revenue)
 
+	// --- Part C: GetStyleMargin (lifetime single-style; anchor of GetStyleEconomics) ---
+	one, err := s.Metrics().GetStyleMargin(ctx, techCardID)
+	require.NoError(t, err)
+	require.NotNil(t, one, "the coat style has sales")
+	require.Equal(t, techCardID, one.TechCardID)
+	require.Equal(t, "ECO-W4-STYLE-1", one.StyleNumber)
+	require.Equal(t, int64(2), one.UnitsSold, "two coat units, lifetime")
+	require.Equal(t, 2, one.ColorwayCount)
+	require.True(t, one.Revenue.Equal(decimal.NewFromInt(200)), "style revenue 200, got %s", one.Revenue)
+	require.True(t, one.RevenueCost.Equal(decimal.NewFromInt(20)), "style COGS 20, got %s", one.RevenueCost)
+	require.True(t, one.GrossMargin.Equal(decimal.NewFromInt(180)), "gross margin 180, got %s", one.GrossMargin)
+	require.True(t, one.HasCost)
+	// A tech card with no sales returns nil (the handler fills identity from the card).
+	none, err := s.Metrics().GetStyleMargin(ctx, 999999)
+	require.NoError(t, err)
+	require.Nil(t, none)
+
 	// --- Part B: GetCogsStructure ---
 	comps, err := s.Metrics().GetCogsStructure(ctx, from, to)
 	require.NoError(t, err)
