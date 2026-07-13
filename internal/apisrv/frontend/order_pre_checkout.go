@@ -265,8 +265,21 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 			continue
 		}
 
-		// Calculate available stock (total - reservations, excluding current session)
-		availableStock := s.reservationMgr.GetAvailableStock(currentStock, item.ProductId, item.SizeId, sessionID)
+		// Atomically compute availability (total minus other sessions' active
+		// reservations) and reserve for this session under a single lock — closing
+		// the read-then-reserve TOCTOU where two carts could both claim the last
+		// unit in the in-memory map. availableStock still drives the out-of-stock /
+		// quantity-reduced adjustments; a returned error is a best-effort
+		// abuse-limit signal and does not invalidate availableStock.
+		availableStock, rerr := s.reservationMgr.ReserveIfAvailable(ctx, currentStock, sessionID, item.ProductId, item.SizeId, item.Quantity)
+		if rerr != nil {
+			slog.Default().WarnContext(ctx, "failed to reserve stock",
+				slog.String("session_id", sessionID),
+				slog.Int("product_id", item.ProductId),
+				slog.Int("size_id", item.SizeId),
+				slog.String("err", rerr.Error()),
+			)
+		}
 
 		if availableStock.LessThanOrEqual(decimal.Zero) {
 			// No stock available after accounting for reservations
@@ -290,16 +303,6 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 				Reason:            entity.AdjustmentReasonQuantityReduced,
 			})
 			item.Quantity = availableStock
-		}
-
-		// Reserve the stock for this session
-		if err := s.reservationMgr.Reserve(ctx, sessionID, item.ProductId, item.SizeId, item.Quantity); err != nil {
-			slog.Default().WarnContext(ctx, "failed to reserve stock",
-				slog.String("session_id", sessionID),
-				slog.Int("product_id", item.ProductId),
-				slog.Int("size_id", item.SizeId),
-				slog.String("err", err.Error()),
-			)
 		}
 
 		adjustedItems = append(adjustedItems, item)
