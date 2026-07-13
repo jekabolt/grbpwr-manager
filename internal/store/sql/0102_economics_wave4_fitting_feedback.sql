@@ -22,7 +22,7 @@ ALTER TABLE fitting
 -- The structured "what to change" work list produced by a fitting. Resolved when the change has
 -- been carried into the tech card (a manual toggle). callout_number optionally ties a request to
 -- a numbered photo pin (fitting_callout), so a marked fit problem maps to a concrete change.
-CREATE TABLE fitting_change_request (
+CREATE TABLE IF NOT EXISTS fitting_change_request (
   id INT PRIMARY KEY AUTO_INCREMENT,
   fitting_id INT NOT NULL,
   target VARCHAR(16) NOT NULL

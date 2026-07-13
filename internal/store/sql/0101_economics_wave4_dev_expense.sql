@@ -12,7 +12,7 @@
 -- fitting keeps the expense. Development cost is a PERIOD cost and is deliberately NOT seeded
 -- into product.cost_price: gross margin's COGS must stay production-only (else it double-counts
 -- against a future contribution P&L). The amortized unit_cost_with_dev is computed on read only.
-CREATE TABLE tech_card_dev_expense (
+CREATE TABLE IF NOT EXISTS tech_card_dev_expense (
   id INT PRIMARY KEY AUTO_INCREMENT,
   tech_card_id INT NOT NULL,
   kind VARCHAR(16) NOT NULL

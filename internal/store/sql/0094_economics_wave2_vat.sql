@@ -10,7 +10,7 @@
 -- country (the rate in force); valid_from is informational. Operators manage it via the
 -- UpsertVatRates admin RPC. A destination absent from this table is treated as 0% (export /
 -- non-EU) by both the order-time snapshot and the backfill.
-CREATE TABLE vat_rate (
+CREATE TABLE IF NOT EXISTS vat_rate (
   country_code CHAR(2) NOT NULL PRIMARY KEY COMMENT 'ISO 3166-1 alpha-2 destination country, uppercase',
   rate_pct DECIMAL(5, 2) NOT NULL COMMENT 'standard VAT rate %, e.g. 21.00'
     CHECK (rate_pct >= 0 AND rate_pct < 100),

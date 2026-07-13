@@ -7,7 +7,7 @@
 -- their own snapshot fields, so a tech card stays a self-contained document that does not drift
 -- when the catalog is edited. Free-text (unlinked) lines keep working — no forced backfill.
 
-CREATE TABLE material (
+CREATE TABLE IF NOT EXISTS material (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(255) NOT NULL,
   section VARCHAR(24) NOT NULL
@@ -29,7 +29,7 @@ CREATE TABLE material (
   INDEX idx_material_archived (archived)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT 'Shared material catalog for tech-card BOM lines';
 
-CREATE TABLE material_price (
+CREATE TABLE IF NOT EXISTS material_price (
   material_id INT NOT NULL,
   price DECIMAL(12, 4) NOT NULL CHECK (price >= 0),
   currency CHAR(3) NOT NULL COMMENT 'ISO 4217, uppercase (fold to base via costing_fx_rate)',

@@ -12,7 +12,7 @@
 -- channel_spend (191 is the utf8mb4 index-safe length; a real GA client_id like
 -- "1363967413.1772796350" is ~21 chars). `date` is the session date of the last non-direct touch,
 -- present so the shared retention purge (DELETE ... WHERE date < cutoff) can drop stale mappings.
-CREATE TABLE bq_order_channel (
+CREATE TABLE IF NOT EXISTS bq_order_channel (
     client_id VARCHAR(191) NOT NULL,
     date DATE NOT NULL,
     utm_source VARCHAR(191) NOT NULL DEFAULT '',

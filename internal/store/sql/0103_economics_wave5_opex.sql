@@ -4,7 +4,7 @@
 -- operating result under the contribution margin — making clear that contribution is NOT
 -- profit (task 22). One amount per month per category, in the base currency (EUR). This is a
 -- management order-of-magnitude aid, deliberately NOT double-entry accounting.
-CREATE TABLE opex_entry (
+CREATE TABLE IF NOT EXISTS opex_entry (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     month      DATE NOT NULL,                        -- first day of the month the cost belongs to
     category   VARCHAR(32) NOT NULL,                 -- salaries|rent|software|marketing_other|production_content|other (validated in dto)

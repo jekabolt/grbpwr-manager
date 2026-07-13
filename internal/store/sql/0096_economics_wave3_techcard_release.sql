@@ -10,7 +10,7 @@
 -- error), it never crashes. Production runs (task 09) reference a release; disputes and cost audits
 -- read the frozen spec.
 
-CREATE TABLE tech_card_release (
+CREATE TABLE IF NOT EXISTS tech_card_release (
   id INT PRIMARY KEY AUTO_INCREMENT,
   tech_card_id INT NOT NULL,
   version VARCHAR(32) NULL COMMENT 'tech_card.version at release time',

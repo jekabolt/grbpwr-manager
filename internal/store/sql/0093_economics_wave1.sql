@@ -71,7 +71,7 @@ UPDATE product p
 -- and such products fell out of margin analytics entirely. This table holds a rarely-changed,
 -- operator-entered rate per currency (how many base-currency units one unit is worth), letting
 -- the costing fold every currency into a base (*_base) unit cost that the seed can use.
-CREATE TABLE costing_fx_rate (
+CREATE TABLE IF NOT EXISTS costing_fx_rate (
   currency CHAR(3) NOT NULL COMMENT 'ISO 4217, uppercase',
   rate_to_base DECIMAL(18, 8) NOT NULL COMMENT 'how many base-currency units 1 of this currency is worth'
     CHECK (rate_to_base > 0),

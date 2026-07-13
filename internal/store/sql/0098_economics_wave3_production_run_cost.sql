@@ -7,7 +7,7 @@
 -- totals and plan/fact are a plain SUM with no read-time FX. actual_unit_cost, defect_pct_actual
 -- and the plan/fact deltas are computed on read from these rows + the phase-1 size grid.
 
-CREATE TABLE production_run_cost (
+CREATE TABLE IF NOT EXISTS production_run_cost (
   id INT PRIMARY KEY AUTO_INCREMENT,
   run_id INT NOT NULL,
   kind VARCHAR(16) NOT NULL

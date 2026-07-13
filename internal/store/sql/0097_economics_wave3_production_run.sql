@@ -8,7 +8,7 @@
 -- edited. A run may reference an immutable tech_card_release (task 11) as its frozen plan source.
 -- Phase 2 (actual costs) and phase 3 (stock/cost integration) follow in later migrations.
 
-CREATE TABLE production_run (
+CREATE TABLE IF NOT EXISTS production_run (
   id INT PRIMARY KEY AUTO_INCREMENT,
   tech_card_id INT NOT NULL,
   release_id INT NULL COMMENT 'optional tech_card_release this run was planned from (task 11)',
@@ -27,7 +27,7 @@ CREATE TABLE production_run (
   INDEX idx_prun_status (status)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT 'Production run (партия): a batch produced from a tech card';
 
-CREATE TABLE production_run_size (
+CREATE TABLE IF NOT EXISTS production_run_size (
   run_id INT NOT NULL,
   size_id INT NOT NULL,
   planned_qty INT NOT NULL DEFAULT 0 CHECK (planned_qty >= 0),
