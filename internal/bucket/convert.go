@@ -145,6 +145,21 @@ func sniffISOBMFF(b []byte) ContentType {
 	return contentTypeHEIF
 }
 
+// sniffVideoType reports the container type of a video payload from its magic
+// bytes, or "" if unrecognized. WebM (Matroska/EBML) starts with 0x1A45DFA3;
+// MP4/ISO-BMFF carries the "ftyp" box at bytes 4:8. Mirrors sniffImageType so the
+// video path validates bytes instead of trusting the client-declared content type.
+func sniffVideoType(b []byte) ContentType {
+	switch {
+	case len(b) >= 4 && b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		return contentTypeWEBM
+	case len(b) >= 12 && string(b[4:8]) == "ftyp":
+		return contentTypeMP4
+	default:
+		return ""
+	}
+}
+
 func encodeWEBP(w io.Writer, img image.Image, quality int) error {
 	options, err := encoder.NewLossyEncoderOptions(encoder.PresetPhoto, float32(quality))
 	if err != nil {

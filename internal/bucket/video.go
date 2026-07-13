@@ -21,6 +21,11 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 	if !allowedVideoTypes[ct] {
 		return nil, fmt.Errorf("unsupported video content type: %s, allowed: video/mp4, video/webm", contentType)
 	}
+	// Validate the actual bytes against the declared type instead of trusting the
+	// client, matching the image (sniffImageType) and pattern (isPDF) paths.
+	if sniffed := sniffVideoType(mp4Data); sniffed != ct {
+		return nil, fmt.Errorf("video bytes do not match declared content type %s", ct)
+	}
 
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
