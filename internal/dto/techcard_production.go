@@ -755,6 +755,67 @@ func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDec
 	return decimal.NullDecimal{Decimal: v, Valid: true}, pb.Currency
 }
 
+// ComputeTechCardCostBreakdownBase decomposes a tech card's per-garment cost into base-currency
+// (EUR) components — the same articles ComputeTechCardUnitCost rolls into one number — so the
+// seed can snapshot them onto product.cost_breakdown for COGS-structure analytics. Components
+// are the primary colourway's materials plus each manual cost article, each folded to base via
+// the FX rates; defect_pct is carried raw (unit cost = (Σ components) × (1 + defect_pct/100)).
+// Returns ok=false when there is no costing, no colourway, or any component currency lacks an FX
+// rate — i.e. exactly when ComputeTechCardUnitCost's base rollup is unset — so cost_breakdown is
+// written iff cost_price is seeded from a base-convertible cost, and the two never disagree.
+func ComputeTechCardCostBreakdownBase(tc *entity.TechCard, fx CostingFx) (entity.CostBreakdown, bool) {
+	if tc == nil || tc.Costing == nil || len(tc.Colorways) == 0 {
+		return entity.CostBreakdown{}, false
+	}
+	c := tc.Costing
+	costingCcy := ""
+	if c.Currency.Valid {
+		costingCcy = c.Currency.String
+	}
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	totalOrderQty := 0
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+		if q.OrderQty > 0 {
+			totalOrderQty += q.OrderQty
+		}
+	}
+	// Primary colourway (index 0) materials, folded to base — the root rollup's basis.
+	cc := colorwayCost(&tc.Colorways[0], tc.BomItems, costingCcy, orderQtyBySize, totalOrderQty, fx)
+	if !cc.baseConvertible {
+		return entity.CostBreakdown{}, false
+	}
+	// Each manual article is in the costing currency; fold individually. An absent (invalid)
+	// article contributes 0 and never blocks convertibility.
+	fold := func(d decimal.NullDecimal) (decimal.Decimal, bool) {
+		if !d.Valid {
+			return decimal.Zero, true
+		}
+		return fx.toBase(d.Decimal, costingCcy)
+	}
+	cmt, ok1 := fold(c.CmtCost)
+	hw, ok2 := fold(c.HardwareCost)
+	pkg, ok3 := fold(c.PackagingCost)
+	logi, ok4 := fold(c.LogisticsCost)
+	ovh, ok5 := fold(c.OverheadCost)
+	if !(ok1 && ok2 && ok3 && ok4 && ok5) {
+		return entity.CostBreakdown{}, false
+	}
+	defect := decimal.Zero
+	if c.DefectPercent.Valid {
+		defect = c.DefectPercent.Decimal
+	}
+	return entity.CostBreakdown{
+		Materials: roundMoney(cc.materialsPerUnitBase),
+		Cmt:       roundMoney(cmt),
+		Hardware:  roundMoney(hw),
+		Packaging: roundMoney(pkg),
+		Logistics: roundMoney(logi),
+		Overhead:  roundMoney(ovh),
+		DefectPct: defect,
+	}, true
+}
+
 // colorwayCostResult holds one colourway's computed PER-GARMENT material cost.
 type colorwayCostResult struct {
 	materialsTotal   []*pb_common.TechCardCostLine // per-unit material cost grouped by article currency

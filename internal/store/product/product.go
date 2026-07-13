@@ -484,6 +484,22 @@ func (s *Store) SeedProductsCostPriceFromTechCard(ctx context.Context, techCardI
 		map[string]any{"tc": techCardID, "cost": cost})
 }
 
+// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON (base
+// currency) onto every product whose PRIMARY card is techCardID, whose cost is not manually
+// set, and which the card currently links — the SAME target set and predicate as
+// SeedProductsCostPriceFromTechCard, so cost_price and cost_breakdown never drift. A NULL
+// breakdown clears any stale decomposition (e.g. the cost is still base-seedable but its
+// components are no longer convertible). Returns the number of products updated.
+func (s *Store) SeedProductsCostBreakdownFromTechCard(ctx context.Context, techCardID int, breakdown sql.NullString) (int64, error) {
+	return storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE product p
+		JOIN tech_card_product tcp ON tcp.product_id = p.id AND tcp.tech_card_id = :tc
+		SET p.cost_breakdown = :breakdown
+		WHERE p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')`,
+		map[string]any{"tc": techCardID, "breakdown": breakdown})
+}
+
 // ForceSetProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced
 // cost of a single product, overriding any manual value. Used by the explicit
 // SyncProductCostFromTechCard admin action.

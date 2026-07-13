@@ -1646,3 +1646,47 @@ func ConvertRFMAnalysisToPb(rows []entity.RFMSegmentRow) []*pb_admin.RFMSegmentR
 	}
 	return result
 }
+
+// ConvertMarginByStyleToPb maps per-style margin rows to proto, emitting the margin fields only
+// when the style's sold SKUs have a cost (else left unset so the client shows N/A, not 100%).
+func ConvertMarginByStyleToPb(list []entity.MarginByStyleRow) []*pb_admin.MarginByStyleRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.MarginByStyleRow, len(list))
+	for i, r := range list {
+		row := &pb_admin.MarginByStyleRow{
+			TechCardId:    int32(r.TechCardID),
+			StyleNumber:   r.StyleNumber,
+			Name:          r.Name,
+			Revenue:       &decimal.Decimal{Value: r.Revenue.String()},
+			UnitsSold:     r.UnitsSold,
+			ColorwayCount: int32(r.ColorwayCount),
+			HasCost:       r.HasCost,
+		}
+		if r.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: r.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: r.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
+			row.GrossMarginPct = r.GrossMarginPct
+		}
+		pb[i] = row
+	}
+	return pb
+}
+
+// ConvertCogsStructureToPb maps the COGS component rows to proto.
+func ConvertCogsStructureToPb(list []entity.CogsStructureRow) []*pb_admin.CogsStructureRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CogsStructureRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CogsStructureRow{
+			Component: r.Component,
+			Amount:    &decimal.Decimal{Value: r.Amount.String()},
+			Pct:       r.Pct,
+		}
+	}
+	return pb
+}

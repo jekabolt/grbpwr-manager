@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -136,4 +137,237 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	// subquery / has_line_refunds column must resolve there too. Just assert it executes.
 	_, err = s.Metrics().GetProductTrend(ctx, placed.Add(-24*time.Hour), placed.Add(24*time.Hour), 100)
 	require.NoError(t, err, "product trend (dual order_factors CTE) must run with per-line refund ratio")
+}
+
+// TestMarginByStyleAndCogsStructure exercises task-15 Part A (GetMarginByStyle) and Part B
+// (GetCogsStructure). One style (tech card) has two colourway SKUs that both sold; a third
+// product has no style. GetMarginByStyle must collapse the two colourways into one style row
+// (colorway_count=2, summed revenue/cost) and put the third in the tech_card_id=0 "no style"
+// row. GetCogsStructure must split each coat line's COGS by its cost_breakdown proportions
+// (materials 6 / cmt 4 of a 10 unit ⇒ 60/40) and bucket the breakdown-less t-shirt as
+// "unattributed", with the components summing to the total COGS.
+func TestMarginByStyleAndCogsStructure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	var mediaID, coatBlackID, coatWhiteID, tshirtID, sizeID, statusID, techCardID int
+	var orderID int64
+	defer func() {
+		if orderID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM order_item WHERE order_id = ?", orderID)
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", orderID)
+		}
+		if techCardID != 0 {
+			_ = s.TechCards().DeleteTechCard(ctx, techCardID)
+		}
+		for _, pid := range []int{coatBlackID, coatWhiteID, tshirtID} {
+			if pid != 0 {
+				_, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", pid)
+			}
+		}
+		if mediaID != 0 {
+			_ = s.Media().DeleteMediaById(ctx, mediaID)
+		}
+	}()
+
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT id FROM order_status WHERE name = ?", string(entity.Confirmed)).Scan(&statusID))
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&sizeID))
+
+	mediaID, err = s.Media().AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
+		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
+		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+	})
+	require.NoError(t, err)
+
+	mkProduct := func(sku string) int {
+		res, err := testDB.ExecContext(ctx, `INSERT INTO product
+			(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
+			VALUES (?, 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, sku, mediaID)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return int(id)
+	}
+	coatBlackID = mkProduct("ECO-W4-COAT-BLK")
+	coatWhiteID = mkProduct("ECO-W4-COAT-WHT")
+	tshirtID = mkProduct("ECO-W4-STYLE-TSHIRT")
+
+	// A style (tech card) linking the two coat colourways; set as their primary card.
+	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber:     "ECO-W4-STYLE-1",
+		Name:            "The Coat",
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+		SizeIds:         []int{sizeID},
+		ProductIds:      []int{coatBlackID, coatWhiteID},
+	})
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE product SET primary_tech_card_id = ? WHERE id IN (?, ?)", techCardID, coatBlackID, coatWhiteID)
+	require.NoError(t, err)
+
+	// cost_breakdown snapshot on the coats: materials 6 + cmt 4 = unit 10. The t-shirt has none.
+	cb := `{"materials":6,"cmt":4,"hardware":0,"packaging":0,"logistics":0,"overhead":0,"defect_pct":0}`
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE product SET cost_breakdown = ? WHERE id IN (?, ?)", cb, coatBlackID, coatWhiteID)
+	require.NoError(t, err)
+
+	// A confirmed order placed in a tight, unique window. total_settled_base == items_base_total
+	// (250) so the apportion factor is 1; VAT 0; no refund/promo/shipment.
+	placed := time.Date(2026, 2, 11, 12, 0, 0, 0, time.UTC)
+	res, err := testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, refunded_amount, total_settled_base, placed)
+		VALUES ('ECO-W4-STYLE-0001', ?, 'EUR', 250, 0, 250, ?)`, statusID, placed)
+	require.NoError(t, err)
+	orderID, err = res.LastInsertId()
+	require.NoError(t, err)
+
+	// coat lines €100 list / €10 cost; t-shirt €50 list / €20 cost.
+	mkItem := func(prodID int, price, cost int) {
+		_, err := testDB.ExecContext(ctx, `INSERT INTO order_item
+			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id)
+			VALUES (?, ?, ?, ?, ?, 0, 1, ?)`, orderID, prodID, price, price, cost, sizeID)
+		require.NoError(t, err)
+	}
+	mkItem(coatBlackID, 100, 10)
+	mkItem(coatWhiteID, 100, 10)
+	mkItem(tshirtID, 50, 20)
+
+	from, to := placed.Add(-24*time.Hour), placed.Add(24*time.Hour)
+
+	// --- Part A: GetMarginByStyle ---
+	styles, err := s.Metrics().GetMarginByStyle(ctx, from, to, 100)
+	require.NoError(t, err)
+	byStyle := map[int]entity.MarginByStyleRow{}
+	for _, r := range styles {
+		byStyle[r.TechCardID] = r
+	}
+	style, ok := byStyle[techCardID]
+	require.True(t, ok, "the coat style row must be present")
+	require.Equal(t, "ECO-W4-STYLE-1", style.StyleNumber)
+	require.Equal(t, "The Coat", style.Name)
+	require.Equal(t, int64(2), style.UnitsSold, "two coat units")
+	require.Equal(t, 2, style.ColorwayCount, "two distinct colourway SKUs")
+	require.True(t, style.Revenue.Equal(decimal.NewFromInt(200)), "style revenue 100+100, got %s", style.Revenue)
+	require.True(t, style.RevenueCost.Equal(decimal.NewFromInt(20)), "style COGS 10+10, got %s", style.RevenueCost)
+	require.True(t, style.HasCost)
+
+	noStyle, ok := byStyle[0]
+	require.True(t, ok, "the no-style (t-shirt) row must be present")
+	require.Equal(t, int64(1), noStyle.UnitsSold)
+	require.True(t, noStyle.Revenue.Equal(decimal.NewFromInt(50)), "no-style revenue 50, got %s", noStyle.Revenue)
+
+	// --- Part B: GetCogsStructure ---
+	comps, err := s.Metrics().GetCogsStructure(ctx, from, to)
+	require.NoError(t, err)
+	byComp := map[string]decimal.Decimal{}
+	total := decimal.Zero
+	for _, c := range comps {
+		byComp[c.Component] = c.Amount
+		total = total.Add(c.Amount)
+	}
+	// Two coat lines: each €10 COGS split 6/10 materials, 4/10 cmt ⇒ materials 12, cmt 8.
+	require.True(t, byComp["materials"].Equal(decimal.NewFromInt(12)), "materials 12, got %s", byComp["materials"])
+	require.True(t, byComp["cmt"].Equal(decimal.NewFromInt(8)), "cmt 8, got %s", byComp["cmt"])
+	// The breakdown-less t-shirt line (€20 COGS) is unattributed.
+	require.True(t, byComp["unattributed"].Equal(decimal.NewFromInt(20)), "unattributed 20, got %s", byComp["unattributed"])
+	// Components sum to the total COGS (12 + 8 + 20).
+	require.True(t, total.Equal(decimal.NewFromInt(40)), "total COGS 40, got %s", total)
+}
+
+// TestSeedProductsCostBreakdownFromTechCard covers the task-15 store write: the breakdown JSON
+// is written onto a product whose primary card is this one and whose cost is not manual (same
+// predicate as the cost_price seed), a manual cost is never touched, and a NULL clears a stale
+// breakdown.
+func TestSeedProductsCostBreakdownFromTechCard(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	var mediaID, prodID, techCardID int
+	defer func() {
+		if techCardID != 0 {
+			_ = s.TechCards().DeleteTechCard(ctx, techCardID)
+		}
+		if prodID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", prodID)
+		}
+		if mediaID != 0 {
+			_ = s.Media().DeleteMediaById(ctx, mediaID)
+		}
+	}()
+
+	mediaID, err = s.Media().AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
+		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
+		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+	})
+	require.NoError(t, err)
+	res, err := testDB.ExecContext(ctx, `INSERT INTO product
+		(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
+		VALUES ('ECO-W4-SEED-BD', 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, mediaID)
+	require.NoError(t, err)
+	pid64, err := res.LastInsertId()
+	require.NoError(t, err)
+	prodID = int(pid64)
+
+	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber:     "ECO-W4-SEED-1",
+		Name:            "n",
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+		SizeIds:         []int{4},
+		ProductIds:      []int{prodID},
+	})
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET primary_tech_card_id = ? WHERE id = ?", techCardID, prodID)
+	require.NoError(t, err)
+
+	P := s.Products()
+	cb := sql.NullString{String: `{"materials":6,"cmt":4,"hardware":0,"packaging":0,"logistics":0,"overhead":0,"defect_pct":0}`, Valid: true}
+
+	// non-manual primary product gets the breakdown.
+	n, err := P.SeedProductsCostBreakdownFromTechCard(ctx, techCardID, cb)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+	var got sql.NullString
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT cost_breakdown FROM product WHERE id = ?", prodID).Scan(&got))
+	require.True(t, got.Valid && len(got.String) > 0, "breakdown written: %+v", got)
+
+	// a manual cost is never touched.
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET cost_price_source='manual' WHERE id = ?", prodID)
+	require.NoError(t, err)
+	n, err = P.SeedProductsCostBreakdownFromTechCard(ctx, techCardID, sql.NullString{})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n, "manual cost breakdown not cleared by seed")
+
+	// back to tech_card source: a NULL clears the stale breakdown.
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET cost_price_source='tech_card' WHERE id = ?", prodID)
+	require.NoError(t, err)
+	n, err = P.SeedProductsCostBreakdownFromTechCard(ctx, techCardID, sql.NullString{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT cost_breakdown FROM product WHERE id = ?", prodID).Scan(&got))
+	require.False(t, got.Valid, "breakdown cleared to NULL, got %+v", got)
 }

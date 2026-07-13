@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -264,6 +265,24 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 	}
 	slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
 		slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", n))
+
+	// Snapshot the COGS decomposition (task 15) onto the same products, so the COGS-structure
+	// report can attribute a period's cost to materials vs CMT vs …. Best-effort and non-fatal:
+	// a NULL breakdown (not base-convertible) clears any stale one, keeping it in sync with
+	// cost_price. Uses the same FX as the unit-cost fold above.
+	breakdownJSON := sql.NullString{}
+	if bd, ok := dto.ComputeTechCardCostBreakdownBase(card, s.costingFx(ctx)); ok {
+		if b, err := json.Marshal(bd); err == nil {
+			breakdownJSON = sql.NullString{String: string(b), Valid: true}
+		} else {
+			slog.Default().ErrorContext(ctx, "can't marshal cost breakdown",
+				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		}
+	}
+	if _, err := s.repo.Products().SeedProductsCostBreakdownFromTechCard(ctx, techCardID, breakdownJSON); err != nil {
+		slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+	}
 }
 
 // costingFx loads the effective manual FX rates and pairs them with the base currency, so the

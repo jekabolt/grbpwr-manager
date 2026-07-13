@@ -36,6 +36,10 @@ type (
 		// product whose primary card is techCardID (and cost is not manual, and the card links
 		// it), never overwriting a manual cost. Returns the number of products updated.
 		SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error)
+		// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON onto the
+		// same (primary, non-manual) products as SeedProductsCostPriceFromTechCard, so cost_price and
+		// cost_breakdown stay in sync; a NULL breakdown clears any stale one. Returns rows updated.
+		SeedProductsCostBreakdownFromTechCard(ctx context.Context, techCardID int, breakdown sql.NullString) (int64, error)
 		// ForceSetProductCostPriceFromTechCard writes cost as the tech-card-sourced cost of one
 		// product, overriding any manual value (explicit SyncProductCostFromTechCard action).
 		ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error
@@ -316,6 +320,12 @@ type (
 		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
 		// GetRFMAnalysis returns RFM (Recency, Frequency, Monetary) customer segmentation.
 		GetRFMAnalysis(ctx context.Context, from, to time.Time) ([]entity.RFMSegmentRow, error)
+		// GetMarginByStyle rolls the per-SKU margin breakdown up to the style (tech card) via
+		// product.primary_tech_card_id; products with no primary card fall into a "no style" row.
+		GetMarginByStyle(ctx context.Context, from, to time.Time, limit int) ([]entity.MarginByStyleRow, error)
+		// GetCogsStructure decomposes the cost of goods sold in the period into its components
+		// (materials / cmt / … / unattributed) from each product's cost_breakdown snapshot.
+		GetCogsStructure(ctx context.Context, from, to time.Time) ([]entity.CogsStructureRow, error)
 	}
 
 	Support interface {

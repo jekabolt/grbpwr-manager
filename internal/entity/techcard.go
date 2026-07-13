@@ -658,6 +658,22 @@ type TechCardCosting struct {
 	Notes         sql.NullString      `db:"notes"`
 }
 
+// CostBreakdown is the per-unit COGS decomposition in base currency (EUR): the cost articles
+// that (summed and grossed up by defect%) make the unit cost seeded into product.cost_price.
+// Snapshotted onto product.cost_breakdown JSON at seed time so COGS-of-sold analytics can
+// attribute a period's cost of goods to materials vs CMT vs packaging etc. The component
+// amounts are pre-defect (raw); defect_pct is carried alongside. A manual cost_price (no card)
+// leaves cost_breakdown NULL, which the structure report honestly reports as unattributed.
+type CostBreakdown struct {
+	Materials decimal.Decimal `json:"materials"`
+	Cmt       decimal.Decimal `json:"cmt"`
+	Hardware  decimal.Decimal `json:"hardware"`
+	Packaging decimal.Decimal `json:"packaging"`
+	Logistics decimal.Decimal `json:"logistics"`
+	Overhead  decimal.Decimal `json:"overhead"`
+	DefectPct decimal.Decimal `json:"defect_pct"`
+}
+
 // CostingFxRate is a manual FX rate used to fold a multi-currency tech-card costing into the
 // base currency. RateToBase is how many base-currency units one unit of Currency is worth; the
 // latest ValidFrom on or before today is the effective rate.

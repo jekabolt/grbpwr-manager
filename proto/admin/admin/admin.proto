@@ -1290,6 +1290,8 @@ enum MetricsSection {
   METRICS_SECTION_CUSTOMER_SEGMENTATION = 43;
   METRICS_SECTION_RFM = 44;
   METRICS_SECTION_SELL_THROUGH_BY_DROP = 45;
+  METRICS_SECTION_MARGIN_BY_STYLE = 46; // task 15: margin rolled up to tech-card style
+  METRICS_SECTION_COGS_STRUCTURE = 47; // task 15: cost-of-goods-sold component structure
 }
 
 message GetMetricsRequest {
@@ -1349,6 +1351,8 @@ message GetMetricsResponse {
   repeated CustomerSegmentRow customer_segments = 46;
   repeated RFMSegmentRow rfm_analysis = 47;
   repeated SellThroughByDropRow sell_through_by_drop = 48;
+  repeated MarginByStyleRow margin_by_style = 49; // task 15
+  repeated CogsStructureRow cogs_structure = 50; // task 15
 }
 
 // --- Dashboard (decision-grade summary) ---
@@ -2616,6 +2620,39 @@ message SlowMoverRow {
   google.type.Decimal gross_margin = 11; // revenue − revenue_cost
   double gross_margin_pct = 12; // gross_margin / revenue × 100
   bool has_cost = 13;
+}
+
+// --- Analytics: Margin by Style (task 15) ---
+
+// MarginByStyleRow rolls the per-SKU margin breakdown up to the STYLE (tech card) a product's
+// primary_tech_card_id points at, so a style with several colourway SKUs is ONE row instead of
+// many. tech_card_id = 0 is the "no style" bucket (products without a primary card). Revenue
+// and COGS use the same order_factors apportionment as the product breakdowns; margins are N/A
+// (has_cost=false) when the sold SKUs carry no cost.
+message MarginByStyleRow {
+  int32 tech_card_id = 1; // 0 = products with no primary style
+  string style_number = 2;
+  string name = 3;
+  google.type.Decimal revenue = 4; // net revenue (refund/FX/discount/VAT-adjusted)
+  int64 units_sold = 5;
+  int32 colorway_count = 6; // distinct products (SKUs) that sold under this style
+  google.type.Decimal unit_cost = 7; // representative per-unit COGS (MAX over the style's SKUs)
+  google.type.Decimal revenue_cost = 8; // Σ(cost × net qty), refund-adjusted
+  google.type.Decimal gross_margin = 9; // revenue − revenue_cost
+  double gross_margin_pct = 10; // gross_margin / revenue × 100
+  bool has_cost = 11;
+}
+
+// --- Analytics: COGS structure (task 15) ---
+
+// CogsStructureRow is one component of the cost of goods SOLD in the period, attributed from
+// each product's cost_breakdown snapshot. The actual line COGS is split by the breakdown's
+// component proportions, so components sum to the reported COGS; sold units with no breakdown
+// (manual cost / pre-feature) collect in the "unattributed" component so coverage is visible.
+message CogsStructureRow {
+  string component = 1; // materials|cmt|hardware|packaging|logistics|overhead|unattributed
+  google.type.Decimal amount = 2; // base-currency (EUR) Σ over the period, refund-adjusted
+  double pct = 3; // share of total COGS
 }
 
 // --- Analytics: Return Analysis ---

@@ -724,6 +724,42 @@ type SlowMoverRow struct {
 	GrossMarginPct float64         `db:"-"`
 }
 
+// --- Margin by Style (task 15) ---
+
+// MarginByStyleRow rolls per-SKU sales up to the STYLE (tech card) a product's
+// primary_tech_card_id points at, so a style with several colourway SKUs is ONE row instead
+// of many uncorrelated ones. Products with no primary tech card collapse into a single
+// "no style" row (TechCardID = 0), the same uncosted-honesty as products without a cost.
+// Margin fields mirror ProductMetric (N/A when the sold SKUs carry no cost).
+type MarginByStyleRow struct {
+	TechCardID    int             `db:"tech_card_id"` // 0 = products with no primary style
+	StyleNumber   string          `db:"style_number"`
+	Name          string          `db:"name"`
+	Revenue       decimal.Decimal `db:"revenue"`
+	UnitsSold     int64           `db:"units_sold"`
+	ColorwayCount int             `db:"colorway_count"` // distinct products that sold under this style
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
+}
+
+// --- COGS structure (task 15) ---
+
+// CogsStructureRow is one component of the cost of goods SOLD in a period, attributed from
+// each product's cost_breakdown snapshot (materials / cmt / hardware / packaging / logistics
+// / overhead). The actual line COGS (cost_price_at_sale × net qty) is split by the breakdown's
+// component proportions, so the components always sum to the reported COGS; sold units whose
+// product has no breakdown (manual cost, or seeded before the column existed) collect in a
+// single "unattributed" component so coverage stays honest.
+type CogsStructureRow struct {
+	Component string          `db:"component"` // materials|cmt|hardware|packaging|logistics|overhead|unattributed
+	Amount    decimal.Decimal `db:"amount"`    // base-currency (EUR) Σ over the period, refund-adjusted
+	Pct       float64         `db:"-"`         // share of total COGS, filled in Go
+}
+
 // --- Return Analysis ---
 
 // ReturnByProductRow holds return rate by product with refund reason breakdown for horizontal stacked bar chart.

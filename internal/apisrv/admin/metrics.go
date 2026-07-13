@@ -350,6 +350,24 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.SellThroughByDrop = dto.ConvertSellThroughByDropToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_MARGIN_BY_STYLE) {
+		items, err := s.repo.Metrics().GetMarginByStyle(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get margin by style", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get margin by style")
+		}
+		resp.MarginByStyle = dto.ConvertMarginByStyleToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_COGS_STRUCTURE) {
+		items, err := s.repo.Metrics().GetCogsStructure(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get cogs structure", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get cogs structure")
+		}
+		resp.CogsStructure = dto.ConvertCogsStructureToPb(items)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
 		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
 		if err != nil {
