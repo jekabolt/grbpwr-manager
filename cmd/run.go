@@ -40,9 +40,13 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	// SIGHUP is intentionally excluded: the service has no config hot-reload, so a
-	// stray hangup (controlling-terminal close, some process managers) must not be
-	// routed to a full shutdown. DO App Platform terminates instances with SIGTERM.
+	// The service has no config hot-reload, so a stray SIGHUP (controlling-terminal
+	// close, some process managers) must be a genuine no-op. It has to be ignored
+	// *explicitly*: merely leaving it out of signal.Notify reverts it to the OS default
+	// disposition, which for SIGHUP is to terminate the process abruptly — no graceful
+	// drain, worse than the shutdown we're trying to avoid. DO App Platform terminates
+	// instances with SIGTERM, which we do handle below.
+	signal.Ignore(syscall.SIGHUP)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case s := <-sigCh:
