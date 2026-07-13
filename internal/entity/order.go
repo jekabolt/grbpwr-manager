@@ -66,12 +66,18 @@ type Order struct {
 	// refunded_amount (and the Stripe charge) twice.
 	ShippingRefunded bool           `db:"shipping_refunded"`
 	GAClientID       sql.NullString `db:"ga_client_id"`
-	// TotalPriceEUR is the order total converted to EUR at order time, used for
-	// loyalty qualifying-spend accumulation. NULL when it could not be derived.
+	// TotalPriceEUR is the order total converted to EUR at ORDER time (order-time FX,
+	// gross of any refund), used ONLY for loyalty qualifying-spend accumulation. It is a
+	// spend snapshot for tier accrual, NOT a financial figure — do not use it in revenue/
+	// margin metrics; those read TotalSettledBase (the settled fact). NULL when it could
+	// not be derived. On payment capture it is reconciled toward TotalSettledBase when the
+	// two agree within a small tolerance (see UpdateSettledBaseAndFee); a larger gap is
+	// left as-is and logged, since rewriting qualifying spend would silently move tiers.
 	TotalPriceEUR decimal.NullDecimal `db:"total_price_eur"`
 	// TotalSettledBase is the actual amount Stripe settled for this order, converted
 	// to the base currency (EUR) at Stripe's FX rate. It is the authoritative
-	// base-currency revenue figure. NULL when not captured (pre-feature, non-Stripe,
+	// base-currency revenue figure — the one metrics must use (TotalPriceEUR is a loyalty
+	// snapshot, not a settlement). NULL when not captured (pre-feature, non-Stripe,
 	// or unpaid), in which case metrics fall back to the product_price reconstruction.
 	TotalSettledBase decimal.NullDecimal `db:"total_settled_base"`
 	// VatRatePct is the destination-country VAT rate (percent) resolved from the

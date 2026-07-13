@@ -99,6 +99,21 @@ Branch flow: feature → `beta` (auto-deploys beta) → verify → merge to `mas
 (`grbpwr.com` / `admin.grbpwr.com` and their `beta.` / `admin.beta.` counterparts) are separate Vercel
 projects, not in this repo. See `git log` and project memory for the full beta bring-up details.
 
+## Two EUR figures on an order (do not confuse them)
+
+`customer_order` carries two independently-derived EUR amounts — pick the right one:
+
+- **`total_price_eur`** — a *loyalty* qualifying-spend snapshot, computed at order time by
+  reconstructing from EUR catalogue prices (`internal/store/order/eur_snapshot.go`). It exists to
+  accrue tiers immediately, for every payment method. **Never use it in revenue/margin metrics.**
+- **`total_settled_base`** — the *actual* Stripe settlement in EUR at the payment FX rate (captured
+  in `UpdateSettledBaseAndFee`). This is the **authoritative revenue figure** metrics must read.
+
+They diverge (FX spread, rounding, promos). At capture `UpdateSettledBaseAndFee` collapses the
+loyalty snapshot onto the settled fact when they agree within `settledEURReconcileTolerance` (2%);
+a larger gap is left untouched and logged (rewriting qualifying spend would silently move tiers).
+Historical rows are never revisited.
+
 ## Conventions
 
 - Structured logging via `log/slog` (JSON handler); pass `ctx` and use `slog.String("err", err.Error())`.
