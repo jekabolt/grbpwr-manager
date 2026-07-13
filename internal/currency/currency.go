@@ -15,6 +15,15 @@ var zeroDecimalCurrencies = map[string]bool{
 	"VUV": true, "XAF": true, "XOF": true, "XPF": true,
 }
 
+// Three-decimal currencies per ISO 4217 (minor unit = 1/1000): the smallest unit
+// is a thousandth, so charging them requires x1000, not x100. None are currently
+// configured for the shop, but deriving the factor from the exponent keeps the
+// minor-unit conversion correct-by-construction if one is ever added.
+var threeDecimalCurrencies = map[string]bool{
+	"BHD": true, "IQD": true, "JOD": true, "KWD": true,
+	"LYD": true, "OMR": true, "TND": true,
+}
+
 // Minimum charge amounts per currency (Stripe minimums for payment processing)
 var minimumAmounts = map[string]decimal.Decimal{
 	"EUR": decimal.NewFromFloat(0.50),
@@ -52,10 +61,14 @@ func IsZeroDecimal(c string) bool {
 
 // DecimalPlaces returns the number of decimal places for the currency.
 func DecimalPlaces(c string) int32 {
-	if IsZeroDecimal(c) {
+	switch {
+	case IsZeroDecimal(c):
 		return 0
+	case threeDecimalCurrencies[strings.ToUpper(c)]:
+		return 3
+	default:
+		return 2
 	}
-	return 2
 }
 
 // Round rounds amount to the appropriate precision for the currency.
