@@ -269,6 +269,9 @@ type TechCardColorwayUsage struct {
 	Pantone      sql.NullString      `db:"pantone"`
 	Consumption  decimal.NullDecimal `db:"consumption"` // per-garment rate (measured materials)
 	Quantity     decimal.NullDecimal `db:"quantity"`    // count (countable trims)
+	// PieceIndex is an optional 0-based arrow into TechCardInsert.Pieces saying which cut-piece
+	// this consumption norm is about; NULL = the whole garment (informational, NF-05).
+	PieceIndex sql.NullInt32 `db:"piece_index"`
 	// SizeConsumptions is the per-size material rate (in-memory; persisted to
 	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
 	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
@@ -704,6 +707,38 @@ type CostingFxRate struct {
 	ValidFrom  time.Time       `db:"valid_from"`
 }
 
+// ValidTechCardGrainlines is the accepted долевая set (mirrors the DB CHECK on tech_card_piece).
+var ValidTechCardGrainlines = map[string]bool{
+	"lengthwise": true, "crosswise": true, "bias": true, "any": true,
+}
+
+// TechCardPieceMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE colourway.
+// ColorwayIndex is positional into the card's colourways (full-replace recreates colourway ids, so
+// the store resolves index↔id at the transaction boundary). BOM refs are positional into bom_items,
+// consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
+type TechCardPieceMaterial struct {
+	Id                 int            `db:"id"`
+	ColorwayIndex      int            `db:"-"`                     // 0-based index into the card's colorways
+	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
+	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
+	Note               sql.NullString `db:"note"`
+}
+
+// TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many
+// per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused (клеевая).
+// Materials picks, per colourway, which BOM fabric it is cut from. Full-replace child of the card.
+type TechCardPiece struct {
+	Id               int                     `db:"id"`
+	Name             string                  `db:"name"`
+	PiecesPerGarment int                     `db:"pieces_per_garment"`
+	Mirrored         bool                    `db:"mirrored"`
+	Grainline        string                  `db:"grainline"`
+	Fused            bool                    `db:"fused"`
+	CalloutNumber    sql.NullInt32           `db:"callout_number"`
+	Note             sql.NullString          `db:"note"`
+	Materials        []TechCardPieceMaterial `db:"-"`
+}
+
 // TechCardInsert is the writable payload for a tech card (header + child sections).
 // Child slices are full replacements on update. The construction description lives in
 // Details; the header carries no cost targets (pricing is on Costing).
@@ -752,6 +787,7 @@ type TechCardInsert struct {
 	SizeQuantities []TechCardSizeQuantity `db:"-"`
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
+	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

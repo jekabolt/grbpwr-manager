@@ -363,7 +363,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	colorways, err := parseTechCardColorways(pb.Colorways, productIds, len(bomItems), sizeIds)
+	colorways, err := parseTechCardColorways(pb.Colorways, productIds, len(bomItems), sizeIds, len(pb.Pieces))
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +381,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		calloutNumbers[c.Number] = true
 	}
 	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems))
+	if err != nil {
+		return nil, err
+	}
+	// Cut-pieces (NF-05): colorway_index range-checked against colourways, bom refs against the
+	// BOM, callout_number against the sketch callouts — all in this same full-replace payload.
+	pieces, err := parseTechCardPieces(pb.Pieces, len(pb.Colorways), len(bomItems), calloutNumbers)
 	if err != nil {
 		return nil, err
 	}
@@ -470,6 +476,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		SizeQuantities:   sizeQuantities,
 		Signoffs:         signoffs,
 		Patterns:         patterns,
+		Pieces:           pieces,
 	}, nil
 }
 
@@ -655,6 +662,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
 			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
 			Patterns:         techCardPatternsToPb(tc.Patterns),
+			Pieces:           techCardPiecesToPb(tc.Pieces),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -772,7 +780,7 @@ func unionColorwayProductIds(productIds []int, colorways []*pb_common.TechCardCo
 	return productIds
 }
 
-func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int) ([]entity.TechCardColorway, error) {
+func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int, pieceCount int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
 	// Non-empty codes must be unique within the card (DB enforces
 	// uniq_tech_card_colorway_code); dedupe here so a collision fails as a precise
@@ -826,7 +834,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
 			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
 		}
-		usages, err := parseTechCardColorwayUsages(c.Usages, bomItemCount, sizeIds)
+		usages, err := parseTechCardColorwayUsages(c.Usages, bomItemCount, sizeIds, pieceCount)
 		if err != nil {
 			return nil, err
 		}
@@ -854,7 +862,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 // parseTechCardColorwayUsages parses one colourway's material recipe. A usage's
 // bom_item_index (when set) must point at a submitted BOM line; placement is normalised
 // (trim+lower) so the construction resolver can match operation.placement to it (plan §3).
-func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItemCount int, sizeIds []int) ([]entity.TechCardColorwayUsage, error) {
+func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItemCount int, sizeIds []int, pieceCount int) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for _, u := range pbs {
 		var bomItemIndex sql.NullInt32
@@ -864,6 +872,14 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 				return nil, fmt.Errorf("usage bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
 			}
 			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		}
+		var pieceIndex sql.NullInt32
+		if u.PieceIndex != nil {
+			idx := *u.PieceIndex
+			if idx < 0 || int(idx) >= pieceCount {
+				return nil, fmt.Errorf("usage piece_index %d out of range (have %d pieces)", idx, pieceCount)
+			}
+			pieceIndex = sql.NullInt32{Int32: idx, Valid: true}
 		}
 		if len(u.Placement) > maxVarchar255 {
 			return nil, fmt.Errorf("usage placement must be at most %d characters", maxVarchar255)
@@ -896,10 +912,105 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 			Pantone:          nullStringFromPb(u.Pantone),
 			Consumption:      consumption,
 			Quantity:         quantity,
+			PieceIndex:       pieceIndex,
 			SizeConsumptions: sizeConsumptions,
 		})
 	}
 	return out, nil
+}
+
+// parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
+// mapping references colourways positionally (colorway_index) and the BOM positionally
+// (bom_item_index / fusing_bom_item_index); callout_number, when set, must be a submitted callout.
+// All indices are range-checked against the same full-replace payload.
+func parseTechCardPieces(pbs []*pb_common.TechCardPiece, colorwayCount, bomItemCount int, calloutNumbers map[int]bool) ([]entity.TechCardPiece, error) {
+	if len(pbs) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.TechCardPiece, 0, len(pbs))
+	for _, p := range pbs {
+		if p.Name == "" {
+			return nil, fmt.Errorf("piece name is required")
+		}
+		if len(p.Name) > maxVarchar255 {
+			return nil, fmt.Errorf("piece name must be at most %d characters", maxVarchar255)
+		}
+		if len(p.Note) > maxVarchar255 {
+			return nil, fmt.Errorf("piece note must be at most %d characters", maxVarchar255)
+		}
+		perGarment := int(p.PiecesPerGarment)
+		if perGarment <= 0 {
+			perGarment = 1
+		}
+		grainline := strings.ToLower(strings.TrimSpace(p.Grainline))
+		if grainline == "" {
+			grainline = "lengthwise"
+		}
+		if !entity.ValidTechCardGrainlines[grainline] {
+			return nil, fmt.Errorf("piece %q grainline must be one of lengthwise|crosswise|bias|any", p.Name)
+		}
+		var calloutNumber sql.NullInt32
+		if p.CalloutNumber != nil {
+			n := *p.CalloutNumber
+			if !calloutNumbers[int(n)] {
+				return nil, fmt.Errorf("piece %q callout_number %d does not match any callout", p.Name, n)
+			}
+			calloutNumber = sql.NullInt32{Int32: n, Valid: true}
+		}
+
+		materials := make([]entity.TechCardPieceMaterial, 0, len(p.Materials))
+		seenColorway := make(map[int32]bool, len(p.Materials))
+		for _, m := range p.Materials {
+			if m.ColorwayIndex < 0 || int(m.ColorwayIndex) >= colorwayCount {
+				return nil, fmt.Errorf("piece %q colorway_index %d out of range (have %d colorways)", p.Name, m.ColorwayIndex, colorwayCount)
+			}
+			if seenColorway[m.ColorwayIndex] {
+				return nil, fmt.Errorf("piece %q has duplicate colorway_index %d", p.Name, m.ColorwayIndex)
+			}
+			seenColorway[m.ColorwayIndex] = true
+			bomIdx, err := pieceBomRef(m.BomItemIndex, bomItemCount, "bom_item_index", p.Name)
+			if err != nil {
+				return nil, err
+			}
+			fusingIdx, err := pieceBomRef(m.FusingBomItemIndex, bomItemCount, "fusing_bom_item_index", p.Name)
+			if err != nil {
+				return nil, err
+			}
+			if len(m.Note) > maxVarchar255 {
+				return nil, fmt.Errorf("piece %q material note must be at most %d characters", p.Name, maxVarchar255)
+			}
+			materials = append(materials, entity.TechCardPieceMaterial{
+				ColorwayIndex:      int(m.ColorwayIndex),
+				BomItemIndex:       bomIdx,
+				FusingBomItemIndex: fusingIdx,
+				Note:               nullStringFromPb(m.Note),
+			})
+		}
+
+		out = append(out, entity.TechCardPiece{
+			Name:             p.Name,
+			PiecesPerGarment: perGarment,
+			Mirrored:         p.Mirrored,
+			Grainline:        grainline,
+			Fused:            p.Fused,
+			CalloutNumber:    calloutNumber,
+			Note:             nullStringFromPb(p.Note),
+			Materials:        materials,
+		})
+	}
+	return out, nil
+}
+
+// pieceBomRef range-checks an optional positional BOM reference on a piece material.
+func pieceBomRef(v *int32, bomItemCount int, field, pieceName string) (sql.NullInt32, error) {
+	if v == nil {
+		return sql.NullInt32{}, nil
+	}
+	idx := *v
+	if idx < 0 || int(idx) >= bomItemCount {
+		return sql.NullInt32{}, fmt.Errorf("piece %q %s %d out of range (have %d bom_items)", pieceName, field, idx, bomItemCount)
+	}
+	return sql.NullInt32{Int32: idx, Valid: true}, nil
 }
 
 func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardBomItem, error) {
@@ -1070,6 +1181,11 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			v := u.BomItemIndex.Int32
 			bomItemIndex = &v
 		}
+		var pieceIndex *int32
+		if u.PieceIndex.Valid {
+			v := u.PieceIndex.Int32
+			pieceIndex = &v
+		}
 		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
 		for _, sc := range u.SizeConsumptions {
 			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
@@ -1085,8 +1201,56 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			Consumption:      pbDecimalFromNull(u.Consumption),
 			Quantity:         pbDecimalFromNull(u.Quantity),
 			SizeConsumptions: sizeCons,
+			PieceIndex:       pieceIndex,
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+		})
+	}
+	return out
+}
+
+// techCardPiecesToPb emits the structural cut-pieces (+ per-colourway fabric mapping) for display.
+func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiece {
+	if len(pieces) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardPiece, 0, len(pieces))
+	for i := range pieces {
+		p := &pieces[i]
+		var calloutNumber *int32
+		if p.CalloutNumber.Valid {
+			v := p.CalloutNumber.Int32
+			calloutNumber = &v
+		}
+		materials := make([]*pb_common.TechCardPieceColorwayMaterial, 0, len(p.Materials))
+		for j := range p.Materials {
+			m := &p.Materials[j]
+			var bomIdx *int32
+			if m.BomItemIndex.Valid {
+				v := m.BomItemIndex.Int32
+				bomIdx = &v
+			}
+			var fusingIdx *int32
+			if m.FusingBomItemIndex.Valid {
+				v := m.FusingBomItemIndex.Int32
+				fusingIdx = &v
+			}
+			materials = append(materials, &pb_common.TechCardPieceColorwayMaterial{
+				ColorwayIndex:      int32(m.ColorwayIndex),
+				BomItemIndex:       bomIdx,
+				FusingBomItemIndex: fusingIdx,
+				Note:               pbStringFromNull(m.Note),
+			})
+		}
+		out = append(out, &pb_common.TechCardPiece{
+			Name:             p.Name,
+			PiecesPerGarment: int32(p.PiecesPerGarment),
+			Mirrored:         p.Mirrored,
+			Grainline:        p.Grainline,
+			Fused:            p.Fused,
+			CalloutNumber:    calloutNumber,
+			Note:             pbStringFromNull(p.Note),
+			Materials:        materials,
 		})
 	}
 	return out

@@ -190,7 +190,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_bom_item", "tech_card_colorway",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-			"tech_card_size_pattern",
+			"tech_card_size_pattern", "tech_card_piece",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -312,6 +312,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
+		return err
+	}
+	// Cut-pieces (NF-05): must run AFTER colourways so their per-colourway fabric mapping can
+	// resolve positional colorway_index → the freshly-inserted colorway_id (same tx).
+	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
 		return err
 	}
 	// production (Phase 3)

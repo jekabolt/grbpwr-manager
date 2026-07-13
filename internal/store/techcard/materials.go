@@ -60,8 +60,8 @@ func insertTechCardColorwayUsages(ctx context.Context, db dependency.DB, cwID in
 		u := &usages[j]
 		usageID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_colorway_usage
-				(colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, display_order)
-			VALUES (:colorway_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :display_order)`,
+				(colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index, display_order)
+			VALUES (:colorway_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_index, :display_order)`,
 			map[string]any{
 				"colorway_id":    cwID,
 				"bom_item_index": u.BomItemIndex,
@@ -70,6 +70,7 @@ func insertTechCardColorwayUsages(ctx context.Context, db dependency.DB, cwID in
 				"pantone":        u.Pantone,
 				"consumption":    u.Consumption,
 				"quantity":       u.Quantity,
+				"piece_index":    u.PieceIndex,
 				"display_order":  j,
 			})
 		if err != nil {
@@ -87,6 +88,70 @@ func insertTechCardColorwayUsages(ctx context.Context, db dependency.DB, cwID in
 			}
 			if err := storeutil.BulkInsert(ctx, db, "tech_card_colorway_usage_consumption", rows); err != nil {
 				return fmt.Errorf("failed to insert tech card colorway usage consumption: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// insertTechCardPieces inserts the structural cut-pieces and, for each, its per-colourway fabric
+// mapping (NF-05). It runs AFTER insertTechCardColorways in the child flow, so it re-queries the
+// freshly-inserted colourways (in display order, same tx) to resolve each material's positional
+// colorway_index into a real colorway_id — colourways are full-replace, so ids are recreated.
+func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece) error {
+	if len(pieces) == 0 {
+		return nil
+	}
+	// index → colorway_id, in the same insertion (display) order as insertTechCardColorways used.
+	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
+		SELECT id FROM tech_card_colorway WHERE tech_card_id = :id ORDER BY display_order, id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load colorway ids for pieces: %w", err)
+	}
+	cwIDByIndex := make([]int, len(cwRows))
+	for i, r := range cwRows {
+		cwIDByIndex[i] = r.Id
+	}
+
+	for i := range pieces {
+		p := &pieces[i]
+		pieceID, err := storeutil.ExecNamedLastId(ctx, db, `
+			INSERT INTO tech_card_piece
+				(tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note, display_order)
+			VALUES (:tech_card_id, :name, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :note, :display_order)`,
+			map[string]any{
+				"tech_card_id":       tcID,
+				"name":               p.Name,
+				"pieces_per_garment": p.PiecesPerGarment,
+				"mirrored":           p.Mirrored,
+				"grainline":          p.Grainline,
+				"fused":              p.Fused,
+				"callout_number":     p.CalloutNumber,
+				"note":               p.Note,
+				"display_order":      i,
+			})
+		if err != nil {
+			return fmt.Errorf("failed to insert tech card piece: %w", err)
+		}
+		for j := range p.Materials {
+			m := &p.Materials[j]
+			if m.ColorwayIndex < 0 || m.ColorwayIndex >= len(cwIDByIndex) {
+				return fmt.Errorf("tech card piece %q: colorway_index %d out of range (have %d colorways)", p.Name, m.ColorwayIndex, len(cwIDByIndex))
+			}
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT INTO tech_card_piece_material
+					(piece_id, colorway_id, bom_item_index, fusing_bom_item_index, note, display_order)
+				VALUES (:piece_id, :colorway_id, :bom_item_index, :fusing_bom_item_index, :note, :display_order)`,
+				map[string]any{
+					"piece_id":              pieceID,
+					"colorway_id":           cwIDByIndex[m.ColorwayIndex],
+					"bom_item_index":        m.BomItemIndex,
+					"fusing_bom_item_index": m.FusingBomItemIndex,
+					"note":                  m.Note,
+					"display_order":         j,
+				}); err != nil {
+				return fmt.Errorf("failed to insert tech card piece material: %w", err)
 			}
 		}
 	}
@@ -195,6 +260,23 @@ type techCardDetailMediaRow struct {
 	MediaID  int `db:"media_id"`
 }
 
+type techCardPieceRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardPiece
+}
+
+type techCardPieceMaterialRow struct {
+	PieceID    int `db:"piece_id"`
+	ColorwayID int `db:"colorway_id"`
+	entity.TechCardPieceMaterial
+}
+
+// techCardPieceColorwayIDRow carries a colourway id when resolving positional colorway_index →
+// colorway_id at insert time.
+type techCardPieceColorwayIDRow struct {
+	Id int `db:"id"`
+}
+
 // enrichMaterials loads colourways (+ their usages and per-size usage consumption), BOM
 // lines (the article catalog) and construction-description details (+ media) for each card.
 func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) error {
@@ -223,19 +305,23 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	for _, r := range cwRows {
 		colorwaysByCard[r.TechCardID] = append(colorwaysByCard[r.TechCardID], r.TechCardColorway)
 	}
-	// Index colourways by id to attach usages; collect ids for the usage query.
+	// Index colourways by id to attach usages; collect ids for the usage query. colorwayIDToIndex
+	// maps a colorway_id back to its 0-based position in the card (colourways are loaded in display
+	// order) — pieces reference colourways positionally, so this resolves colorway_id → index.
 	colorwayByID := make(map[int]*entity.TechCardColorway, len(cwRows))
+	colorwayIDToIndex := make(map[int]int, len(cwRows))
 	colorwayIDs := make([]int, 0, len(cwRows))
 	for card := range colorwaysByCard {
 		cws := colorwaysByCard[card]
 		for i := range cws {
 			colorwayByID[cws[i].Id] = &cws[i]
+			colorwayIDToIndex[cws[i].Id] = i
 			colorwayIDs = append(colorwayIDs, cws[i].Id)
 		}
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_index, placement, color, pantone, consumption, quantity
+			SELECT id, colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
@@ -330,11 +416,55 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 
+	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
+	// colorway_id is resolved back to its positional colorway_index via colorwayIDToIndex.
+	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
+		SELECT id, tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note
+		FROM tech_card_piece
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card pieces: %w", err)
+	}
+	piecesByCard := make(map[int][]entity.TechCardPiece, len(ids))
+	for _, r := range pieceRows {
+		piecesByCard[r.TechCardID] = append(piecesByCard[r.TechCardID], r.TechCardPiece)
+	}
+	pieceByID := make(map[int]*entity.TechCardPiece, len(pieceRows))
+	pieceIDs := make([]int, 0, len(pieceRows))
+	for card := range piecesByCard {
+		ps := piecesByCard[card]
+		for i := range ps {
+			pieceByID[ps[i].Id] = &ps[i]
+			pieceIDs = append(pieceIDs, ps[i].Id)
+		}
+	}
+	if len(pieceIDs) > 0 {
+		pmRows, err := storeutil.QueryListNamed[techCardPieceMaterialRow](ctx, s.DB, `
+			SELECT id, piece_id, colorway_id, bom_item_index, fusing_bom_item_index, note
+			FROM tech_card_piece_material
+			WHERE piece_id IN (:ids)
+			ORDER BY piece_id, display_order, id`, map[string]any{"ids": pieceIDs})
+		if err != nil {
+			return fmt.Errorf("can't load tech card piece materials: %w", err)
+		}
+		for _, r := range pmRows {
+			p, ok := pieceByID[r.PieceID]
+			if !ok {
+				continue
+			}
+			m := r.TechCardPieceMaterial
+			m.ColorwayIndex = colorwayIDToIndex[r.ColorwayID]
+			p.Materials = append(p.Materials, m)
+		}
+	}
+
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].Colorways = colorwaysByCard[id]
 		cards[i].BomItems = bomByCard[id]
 		cards[i].Details = detailsByCard[id]
+		cards[i].Pieces = piecesByCard[id]
 	}
 	return nil
 }

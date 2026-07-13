@@ -33,8 +33,12 @@ func TestMaterialWarehouse(t *testing.T) {
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
 	dec := func(i int64) decimal.Decimal { return decimal.NewFromInt(i) }
-	nd := func(str string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(str), Valid: true} }
-	date := func(d string) sql.NullTime { return sql.NullTime{Time: time.Date(2026, 1, atoiDay(d), 0, 0, 0, 0, time.UTC), Valid: true} }
+	nd := func(str string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(str), Valid: true}
+	}
+	date := func(d string) sql.NullTime {
+		return sql.NullTime{Time: time.Date(2026, 1, atoiDay(d), 0, 0, 0, 0, time.UTC), Valid: true}
+	}
 
 	// USD → 0.9 EUR so a foreign-currency receipt folds to base.
 	require.NoError(t, s.TechCards().UpsertCostingFxRates(ctx, []entity.CostingFxRate{
@@ -52,6 +56,20 @@ func TestMaterialWarehouse(t *testing.T) {
 		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
 		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID) // cascades stock + price
 	})
+
+	// a tech card + sample so issue_sample movements satisfy the sample_id FK (added in 0108).
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Warehouse Style", Stage: entity.TechCardStageProto,
+		StyleNumber:     sql.NullString{String: "NF-WH-1", Valid: true},
+		TargetGender:    sql.NullString{String: "unisex", Valid: true},
+		MeasurementUnit: entity.TechCardUnitMm,
+		ApprovalState:   entity.TechCardApprovalDraft,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) }) // cascades sample
+	smID, err := s.Samples().AddSample(ctx, &entity.SampleInsert{TechCardId: tcID, Purpose: "proto", Status: "planned", FabricSource: "sample"})
+	require.NoError(t, err)
+	sampleRef := sql.NullInt32{Int32: int32(smID), Valid: true}
 
 	ms := s.MaterialStock()
 	get := func() *entity.MaterialStock {
@@ -83,14 +101,14 @@ func TestMaterialWarehouse(t *testing.T) {
 	}
 
 	// 3) issue 5 to a sample → on-hand 15, avg unchanged; the movement freezes the average as its cost.
-	mv, err := ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(5), SampleId: sql.NullInt32{Int32: 1, Valid: true}})
+	mv, err := ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(5), SampleId: sampleRef})
 	require.NoError(t, err)
 	require.Equal(t, entity.MaterialMovementIssueSample, mv.MovementType)
 	require.True(t, mv.UnitCostBase.Valid && mv.UnitCostBase.Decimal.Equal(dec(15)), "issue cost = frozen avg 15, got %v", mv.UnitCostBase)
 	require.True(t, get().OnHand.Equal(dec(15)))
 
 	// 4) issue more than on-hand → guarded.
-	_, err = ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(100), SampleId: sql.NullInt32{Int32: 1, Valid: true}})
+	_, err = ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(100), SampleId: sampleRef})
 	require.ErrorIs(t, err, entity.ErrInsufficientMaterialStock)
 	require.True(t, get().OnHand.Equal(dec(15)), "guarded issue left on-hand unchanged")
 
@@ -109,7 +127,7 @@ func TestMaterialWarehouse(t *testing.T) {
 	require.True(t, get().OnHand.Equal(dec(20)))
 
 	// 7) return 2 from the sample → on-hand 22.
-	_, err = ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(2), SampleId: sql.NullInt32{Int32: 1, Valid: true}, IsReturn: true})
+	_, err = ms.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: matID, Quantity: dec(2), SampleId: sampleRef, IsReturn: true})
 	require.NoError(t, err)
 	require.True(t, get().OnHand.Equal(dec(22)))
 
@@ -344,4 +362,99 @@ func TestSampleCost(t *testing.T) {
 // date; avoids strconv import noise in the table above.
 func atoiDay(d string) int {
 	return int(d[0]-'0')*10 + int(d[1]-'0')
+}
+
+// TestTechCardPieces exercises new-flow NF-05: structural cut-pieces + the per-colourway fabric
+// matrix round-trip through AddTechCard/GetTechCard, the positional colorway_index resolution
+// surviving a full-replace colourway reorder, and the store-level bounds guard.
+func TestTechCardPieces(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	ni := func(i int32) sql.NullInt32 { return sql.NullInt32{Int32: i, Valid: true} }
+	unit := sql.NullString{String: "m", Valid: true}
+
+	// colorwayNames lets the piece assertions verify the colorway_index → colorway mapping.
+	build := func(styleNum string, colorwayNames []string) *entity.TechCardInsert {
+		cws := make([]entity.TechCardColorway, len(colorwayNames))
+		for i, n := range colorwayNames {
+			cws[i] = entity.TechCardColorway{Name: n, LabDipStatus: entity.LabDipPending}
+		}
+		return &entity.TechCardInsert{
+			Name: "NF Pieces Style", Stage: entity.TechCardStageProto,
+			StyleNumber:     sql.NullString{String: styleNum, Valid: true},
+			TargetGender:    sql.NullString{String: "unisex", Valid: true},
+			MeasurementUnit: entity.TechCardUnitMm,
+			ApprovalState:   entity.TechCardApprovalDraft,
+			BomItems: []entity.TechCardBomItem{
+				{Section: "fabric", Name: "Main fabric", Unit: unit},
+				{Section: "interlining", Name: "Fusing", Unit: unit},
+			},
+			Colorways: cws,
+			Pieces: []entity.TechCardPiece{
+				{Name: "Front", PiecesPerGarment: 1, Grainline: "lengthwise", Materials: []entity.TechCardPieceMaterial{
+					{ColorwayIndex: 0, BomItemIndex: ni(0)},
+					{ColorwayIndex: 1, BomItemIndex: ni(0)},
+				}},
+				{Name: "Collar", PiecesPerGarment: 2, Mirrored: true, Grainline: "bias", Fused: true, Materials: []entity.TechCardPieceMaterial{
+					{ColorwayIndex: 0, BomItemIndex: ni(0), FusingBomItemIndex: ni(1)},
+				}},
+			},
+		}
+	}
+
+	tcID, err := s.TechCards().AddTechCard(ctx, build("NF-PC-1", []string{"Black", "Navy"}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+
+	// round-trip: pieces come back in order with their per-colourway fabric mapping.
+	card, err := s.TechCards().GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.Len(t, card.Pieces, 2)
+
+	front := card.Pieces[0]
+	require.Equal(t, "Front", front.Name)
+	require.Equal(t, 1, front.PiecesPerGarment)
+	require.Len(t, front.Materials, 2)
+	require.Equal(t, 0, front.Materials[0].ColorwayIndex)
+	require.Equal(t, 1, front.Materials[1].ColorwayIndex)
+	require.True(t, front.Materials[0].BomItemIndex.Valid && front.Materials[0].BomItemIndex.Int32 == 0)
+
+	collar := card.Pieces[1]
+	require.Equal(t, "Collar", collar.Name)
+	require.True(t, collar.Mirrored && collar.Fused)
+	require.Equal(t, "bias", collar.Grainline)
+	require.Len(t, collar.Materials, 1)
+	require.True(t, collar.Materials[0].FusingBomItemIndex.Valid && collar.Materials[0].FusingBomItemIndex.Int32 == 1)
+
+	// full-replace with colourways REORDERED (Navy first). The piece materials still target the
+	// same positional colorway_index, so after reorder Front[0] now maps to Navy — the store must
+	// re-resolve index → the freshly-inserted colorway_id, never leak the old ids.
+	require.NoError(t, s.TechCards().UpdateTechCard(ctx, tcID, build("NF-PC-1", []string{"Navy", "Black"}), card.LockVersion))
+	card2, err := s.TechCards().GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.Len(t, card2.Pieces, 2)
+	require.Equal(t, "Navy", card2.Colorways[0].Name)
+	require.Equal(t, 0, card2.Pieces[0].Materials[0].ColorwayIndex, "index preserved through reorder")
+	// the piece_material row must point at the NEW colorway_id (Navy is now index 0); a stale id
+	// would either FK-fail the update or resolve to a wrong/absent index here.
+	require.Equal(t, 1, card2.Pieces[0].Materials[1].ColorwayIndex)
+
+	// store-level guard: an out-of-range colorway_index is rejected (defence in depth under dto).
+	bad := build("NF-PC-2", []string{"Black", "Navy"})
+	bad.Pieces[0].Materials[0].ColorwayIndex = 5
+	_, err = s.TechCards().AddTechCard(ctx, bad)
+	require.Error(t, err, "out-of-range colorway_index must fail")
 }
