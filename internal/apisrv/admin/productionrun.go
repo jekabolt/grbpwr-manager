@@ -122,11 +122,13 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 	return &pb_admin.ListProductionRunsResponse{Runs: out, Total: int32(total)}, nil
 }
 
-// ReceiveProductionRun receives a run into a linked product's stock and transitions it to
-// `received`, optionally setting the product's cost_price from the run's actual unit cost.
+// ReceiveProductionRun receives a multi-colourway run into stock and transitions it to `received`,
+// optionally seeding each received product's cost_price from the run's actual unit cost. The run is
+// multi-product now: every line's received_qty is booked into that line's own product. Each such
+// product must be linked to the run's tech card and at least one line must carry a received qty.
 func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.ReceiveProductionRunRequest) (*pb_admin.ReceiveProductionRunResponse, error) {
-	if req.RunId <= 0 || req.ProductId <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "run_id and product_id are required")
+	if req.RunId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
 	if err != nil {
@@ -139,31 +141,42 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	if run.Status == entity.ProductionRunReceived || run.Status == entity.ProductionRunClosed {
 		return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
 	}
-	// product must be linked to the run's tech card.
+	// every received product must be linked to the run's tech card.
 	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't load tech card for receive", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
-	if !slices.Contains(card.ProductIds, int(req.ProductId)) {
-		return nil, status.Error(codes.InvalidArgument, "product_id is not linked to the run's tech card")
-	}
-	// per-size received quantities to add to stock.
-	perSize := make(map[int]int)
-	for _, sz := range run.Sizes {
-		if sz.ReceivedQty.Valid && sz.ReceivedQty.Int64 > 0 {
-			perSize[sz.SizeId] = int(sz.ReceivedQty.Int64)
+	// group each line's received quantity by product → size. (run_id, product_id, size_id) is unique
+	// so no accumulation collisions; a received line without a product, or with a product not in the
+	// card, is a precondition failure.
+	perProduct := make(map[int]map[int]int)
+	for _, ln := range run.Lines {
+		if !ln.ReceivedQty.Valid || ln.ReceivedQty.Int64 <= 0 {
+			continue
 		}
+		if !ln.ProductId.Valid {
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrProductionRunLineProductMissing.Error())
+		}
+		pid := int(ln.ProductId.Int32)
+		if !slices.Contains(card.ProductIds, pid) {
+			return nil, status.Error(codes.InvalidArgument, "a received line's product is not linked to the run's tech card")
+		}
+		if perProduct[pid] == nil {
+			perProduct[pid] = make(map[int]int)
+		}
+		perProduct[pid][ln.SizeId] = int(ln.ReceivedQty.Int64)
 	}
-	if len(perSize) == 0 {
-		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the size grid first")
+	if len(perProduct) == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
 	}
-	// optional cost_price update from the run's (base-currency) actual unit cost.
+	// optional cost_price update from the run's (base-currency) actual unit cost — one style-level
+	// figure applied to every received product.
 	var costPrice decimal.NullDecimal
 	if req.UpdateCostPrice {
 		costPrice = dto.ProductionRunActualUnitCostBase(run)
 	}
-	if err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), int(req.ProductId), perSize, authsrv.GetAdminUsername(ctx), costPrice); err != nil {
+	if err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), perProduct, authsrv.GetAdminUsername(ctx), costPrice); err != nil {
 		if errors.Is(err, entity.ErrProductionRunAlreadyReceived) {
 			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
 		}

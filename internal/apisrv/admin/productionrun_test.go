@@ -44,7 +44,7 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 			TechCardId: 7,
 			ReleaseId:  5,
 			Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Sizes:      []*pb_common.ProductionRunSize{{SizeId: 1, PlannedQty: 50}},
+			Lines:      []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 50}},
 		},
 	})
 	require.NoError(t, err)
@@ -93,62 +93,73 @@ func receiveMocks(t *testing.T, run *entity.ProductionRun, card *entity.TechCard
 	return repo, pr, tc
 }
 
-// ReceiveProductionRun increments stock, sets cost_price when asked, and passes the per-size
-// received map + base actual unit cost to the store.
+// ReceiveProductionRun books each line's received qty into its product, sets cost_price when asked,
+// and passes the product→size→qty map + base actual unit cost to the store.
 func TestReceiveProductionRunHappyPath(t *testing.T) {
 	run := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{
 		TechCardId: 7, Status: entity.ProductionRunInProgress,
-		Sizes: []entity.ProductionRunSize{
-			{SizeId: 1, PlannedQty: 60, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}},
-			{SizeId: 2, PlannedQty: 40, ReceivedQty: sql.NullInt64{Int64: 40, Valid: true}},
+		Lines: []entity.ProductionRunLine{
+			{ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 1, PlannedQty: 60, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}},
+			{ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 2, PlannedQty: 40, ReceivedQty: sql.NullInt64{Int64: 40, Valid: true}},
+			{ProductId: sql.NullInt32{Int32: 66, Valid: true}, SizeId: 1, PlannedQty: 20, ReceivedQty: sql.NullInt64{Int64: 20, Valid: true}},
 		},
 		Costs: []entity.ProductionRunCost{
-			{Kind: entity.ProductionRunCostMaterials, Amount: decimal.RequireFromString("980"), Currency: "EUR", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("980"), Valid: true}},
+			{Kind: entity.ProductionRunCostMaterials, Amount: decimal.RequireFromString("1180"), Currency: "EUR", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("1180"), Valid: true}},
 		},
 	}}
 	card := &entity.TechCard{Id: 7}
-	card.ProductIds = []int{55}
+	card.ProductIds = []int{55, 66}
 
 	repo, pr, _ := receiveMocks(t, run, card)
-	var gotPerSize map[int]int
+	var gotPerProduct map[int]map[int]int
 	var gotCost decimal.NullDecimal
-	pr.EXPECT().ReceiveProductionRun(mock.Anything, 4, 55, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, _, _ int, perSize map[int]int, _ string, cost decimal.NullDecimal) error {
-			gotPerSize, gotCost = perSize, cost
+	pr.EXPECT().ReceiveProductionRun(mock.Anything, 4, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _ int, perProduct map[int]map[int]int, _ string, cost decimal.NullDecimal) error {
+			gotPerProduct, gotCost = perProduct, cost
 			return nil
 		})
 
 	s := &Server{repo: repo}
-	resp, err := s.ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, ProductId: 55, UpdateCostPrice: true})
+	resp, err := s.ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, UpdateCostPrice: true})
 	require.NoError(t, err)
 	require.True(t, resp.CostPriceUpdated)
-	require.Equal(t, map[int]int{1: 58, 2: 40}, gotPerSize)
+	// each colour-model booked into its own product; 118 units received total across both.
+	require.Equal(t, map[int]map[int]int{55: {1: 58, 2: 40}, 66: {1: 20}}, gotPerProduct)
 	require.True(t, gotCost.Valid)
-	require.True(t, gotCost.Decimal.Equal(decimal.RequireFromString("10")), "980 / 98 received")
+	require.True(t, gotCost.Decimal.Equal(decimal.RequireFromString("10")), "1180 / 118 received")
 }
 
 func TestReceiveProductionRunGuards(t *testing.T) {
 	card := &entity.TechCard{Id: 7}
 	card.ProductIds = []int{55}
-	recvSizes := []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}}
+	recvLines := func(pid int32) []entity.ProductionRunLine {
+		return []entity.ProductionRunLine{{ProductId: sql.NullInt32{Int32: pid, Valid: true}, SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}}
+	}
 
 	// already received → FailedPrecondition (no store receive call)
-	run1 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunReceived, Sizes: recvSizes}}
+	run1 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunReceived, Lines: recvLines(55)}}
 	repo1, _, _ := receiveMocks(t, run1, card)
-	_, err := (&Server{repo: repo1}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, ProductId: 55})
+	_, err := (&Server{repo: repo1}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	// product not linked to the card → InvalidArgument
-	run2 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunInProgress, Sizes: recvSizes}}
+	// a received line's product not linked to the card → InvalidArgument
+	run2 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunInProgress, Lines: recvLines(999)}}
 	repo2, _, _ := receiveMocks(t, run2, card)
-	_, err = (&Server{repo: repo2}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, ProductId: 999})
+	_, err = (&Server{repo: repo2}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 
-	// no received quantities → FailedPrecondition
+	// a received line with no product → FailedPrecondition
 	run3 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunInProgress,
-		Sizes: []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10}}}}
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}}}}
 	repo3, _, _ := receiveMocks(t, run3, card)
-	_, err = (&Server{repo: repo3}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, ProductId: 55})
+	_, err = (&Server{repo: repo3}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	// no received quantities at all → FailedPrecondition
+	run4 := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 1, PlannedQty: 10}}}}
+	repo4, _, _ := receiveMocks(t, run4, card)
+	_, err = (&Server{repo: repo4}).ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 

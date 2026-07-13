@@ -74,7 +74,17 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 	if len(pb.Notes) > maxVarchar1024 {
 		return nil, fmt.Errorf("notes must be at most %d characters", maxVarchar1024)
 	}
-	sizes, err := convertPbProductionRunSizes(pb.Sizes)
+	if len(pb.MarkerNotes) > maxVarchar1024 {
+		return nil, fmt.Errorf("marker_notes must be at most %d characters", maxVarchar1024)
+	}
+	markerEff, err := nullDecimalFromPb(pb.MarkerEfficiencyPct)
+	if err != nil {
+		return nil, fmt.Errorf("marker_efficiency_pct: %w", err)
+	}
+	if markerEff.Valid && (markerEff.Decimal.IsNegative() || markerEff.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return nil, fmt.Errorf("marker_efficiency_pct must be between 0 and 100")
+	}
+	lines, err := convertPbProductionRunLines(pb.Lines)
 	if err != nil {
 		return nil, err
 	}
@@ -83,14 +93,16 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		return nil, err
 	}
 	return &entity.ProductionRunInsert{
-		TechCardId: int(pb.TechCardId),
-		ReleaseId:  nullInt64FromPb(int64(pb.ReleaseId)),
-		Status:     status,
-		StartedAt:  nullTimeFromPbTimestamp(pb.StartedAt),
-		ReceivedAt: nullTimeFromPbTimestamp(pb.ReceivedAt),
-		Notes:      nullStringFromPb(pb.Notes),
-		Sizes:      sizes,
-		Costs:      costs,
+		TechCardId:          int(pb.TechCardId),
+		ReleaseId:           nullInt64FromPb(int64(pb.ReleaseId)),
+		Status:              status,
+		StartedAt:           nullTimeFromPbTimestamp(pb.StartedAt),
+		ReceivedAt:          nullTimeFromPbTimestamp(pb.ReceivedAt),
+		MarkerEfficiencyPct: markerEff,
+		MarkerNotes:         nullStringFromPb(pb.MarkerNotes),
+		Notes:               nullStringFromPb(pb.Notes),
+		Lines:               lines,
+		Costs:               costs,
 	}, nil
 }
 
@@ -155,38 +167,53 @@ func FoldProductionRunCostsToBase(costs []entity.ProductionRunCost, fx CostingFx
 	}
 }
 
-func convertPbProductionRunSizes(pbs []*pb_common.ProductionRunSize) ([]entity.ProductionRunSize, error) {
+func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.ProductionRunLine, error) {
 	if len(pbs) == 0 {
 		return nil, nil
 	}
-	seen := make(map[int]struct{}, len(pbs))
-	out := make([]entity.ProductionRunSize, 0, len(pbs))
-	for _, sz := range pbs {
-		if sz == nil {
+	// A (product_id, size_id) pair must be unique — product_id 0 (unset) collapses to one planning
+	// bucket per size, matching the DB uniq_prl (NULLs there are distinct, but a duplicate NULL+size
+	// on the API is a client mistake worth rejecting early).
+	type key struct{ product, size int }
+	seen := make(map[key]struct{}, len(pbs))
+	out := make([]entity.ProductionRunLine, 0, len(pbs))
+	for _, ln := range pbs {
+		if ln == nil {
 			continue
 		}
-		if sz.SizeId <= 0 {
-			return nil, fmt.Errorf("production run size: size_id is required")
+		if ln.SizeId <= 0 {
+			return nil, fmt.Errorf("production run line: size_id is required")
 		}
-		if _, dup := seen[int(sz.SizeId)]; dup {
-			return nil, fmt.Errorf("production run size: duplicate size_id %d", sz.SizeId)
+		if ln.ProductId < 0 {
+			return nil, fmt.Errorf("production run line: product_id must not be negative")
 		}
-		seen[int(sz.SizeId)] = struct{}{}
-		if sz.PlannedQty < 0 {
-			return nil, fmt.Errorf("production run size: planned_qty must be non-negative")
+		k := key{product: int(ln.ProductId), size: int(ln.SizeId)}
+		if _, dup := seen[k]; dup {
+			return nil, fmt.Errorf("production run line: duplicate product_id %d / size_id %d", ln.ProductId, ln.SizeId)
 		}
-		e := entity.ProductionRunSize{SizeId: int(sz.SizeId), PlannedQty: int(sz.PlannedQty)}
-		if sz.ReceivedQty != nil {
-			if *sz.ReceivedQty < 0 {
-				return nil, fmt.Errorf("production run size: received_qty must be non-negative")
+		seen[k] = struct{}{}
+		if ln.PlannedQty < 0 {
+			return nil, fmt.Errorf("production run line: planned_qty must be non-negative")
+		}
+		e := entity.ProductionRunLine{SizeId: int(ln.SizeId), PlannedQty: int(ln.PlannedQty)}
+		if ln.ProductId > 0 {
+			e.ProductId = sql.NullInt32{Int32: ln.ProductId, Valid: true}
+		}
+		if ln.ReceivedQty != nil {
+			if *ln.ReceivedQty < 0 {
+				return nil, fmt.Errorf("production run line: received_qty must be non-negative")
 			}
-			e.ReceivedQty = sql.NullInt64{Int64: int64(*sz.ReceivedQty), Valid: true}
+			e.ReceivedQty = sql.NullInt64{Int64: int64(*ln.ReceivedQty), Valid: true}
 		}
-		if sz.DefectQty != nil {
-			if *sz.DefectQty < 0 {
-				return nil, fmt.Errorf("production run size: defect_qty must be non-negative")
+		if ln.DefectQty != nil {
+			if *ln.DefectQty < 0 {
+				return nil, fmt.Errorf("production run line: defect_qty must be non-negative")
 			}
-			e.DefectQty = sql.NullInt64{Int64: int64(*sz.DefectQty), Valid: true}
+			e.DefectQty = sql.NullInt64{Int64: int64(*ln.DefectQty), Valid: true}
+		}
+		// A received quantity needs a product to book it into — guard early with a clear message.
+		if e.ReceivedQty.Valid && e.ReceivedQty.Int64 > 0 && !e.ProductId.Valid {
+			return nil, fmt.Errorf("production run line for size_id %d has a received quantity but no product_id", ln.SizeId)
 		}
 		out = append(out, e)
 	}
@@ -201,14 +228,16 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 	return &pb_common.ProductionRun{
 		Id: int32(r.Id),
 		Run: &pb_common.ProductionRunInsert{
-			TechCardId: int32(r.TechCardId),
-			ReleaseId:  int32(r.ReleaseId.Int64),
-			Status:     productionRunStatusEntityToPb[r.Status],
-			StartedAt:  pbTimestampFromNullTime(r.StartedAt),
-			ReceivedAt: pbTimestampFromNullTime(r.ReceivedAt),
-			Notes:      pbStringFromNull(r.Notes),
-			Sizes:      productionRunSizesToPb(r.Sizes),
-			Costs:      productionRunCostsToPb(r.Costs),
+			TechCardId:          int32(r.TechCardId),
+			ReleaseId:           int32(r.ReleaseId.Int64),
+			Status:              productionRunStatusEntityToPb[r.Status],
+			StartedAt:           pbTimestampFromNullTime(r.StartedAt),
+			ReceivedAt:          pbTimestampFromNullTime(r.ReceivedAt),
+			MarkerEfficiencyPct: pbDecimalFromNull(r.MarkerEfficiencyPct),
+			MarkerNotes:         pbStringFromNull(r.MarkerNotes),
+			Notes:               pbStringFromNull(r.Notes),
+			Lines:               productionRunLinesToPb(r.Lines),
+			Costs:               productionRunCostsToPb(r.Costs),
 		},
 		PlannedUnitCost: pbDecimalFromNull(r.PlannedUnitCost),
 		PlannedCurrency: pbStringFromNull(r.PlannedCurrency),
@@ -234,18 +263,19 @@ func productionRunCostsToPb(costs []entity.ProductionRunCost) []*pb_common.Produ
 }
 
 // computeProductionRunActuals derives the plan/fact summary from a run's cost articles and its
-// size grid. Base amounts come from cost.AmountBase (already folded on write); a cost with no
-// base leaves has_base=false so the caller knows the total is partial. Ratios are guarded against
-// division by zero and only emitted when their inputs are present.
+// colour-model × size lines. Base amounts come from cost.AmountBase (already folded on write); a
+// cost with no base leaves has_base=false so the caller knows the total is partial. Quantities are
+// summed across ALL lines (every colourway of the batch). Ratios are guarded against division by
+// zero and only emitted when their inputs are present.
 func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionRunActuals {
 	var plannedQty, receivedQty, defectQty int64
-	for _, sz := range r.Sizes {
-		plannedQty += int64(sz.PlannedQty)
-		if sz.ReceivedQty.Valid {
-			receivedQty += sz.ReceivedQty.Int64
+	for _, ln := range r.Lines {
+		plannedQty += int64(ln.PlannedQty)
+		if ln.ReceivedQty.Valid {
+			receivedQty += ln.ReceivedQty.Int64
 		}
-		if sz.DefectQty.Valid {
-			defectQty += sz.DefectQty.Int64
+		if ln.DefectQty.Valid {
+			defectQty += ln.DefectQty.Int64
 		}
 	}
 
@@ -303,16 +333,19 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 	return out
 }
 
-func productionRunSizesToPb(sizes []entity.ProductionRunSize) []*pb_common.ProductionRunSize {
-	out := make([]*pb_common.ProductionRunSize, 0, len(sizes))
-	for _, sz := range sizes {
-		pb := &pb_common.ProductionRunSize{SizeId: int32(sz.SizeId), PlannedQty: int32(sz.PlannedQty)}
-		if sz.ReceivedQty.Valid {
-			v := int32(sz.ReceivedQty.Int64)
+func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.ProductionRunLine {
+	out := make([]*pb_common.ProductionRunLine, 0, len(lines))
+	for _, ln := range lines {
+		pb := &pb_common.ProductionRunLine{SizeId: int32(ln.SizeId), PlannedQty: int32(ln.PlannedQty)}
+		if ln.ProductId.Valid {
+			pb.ProductId = ln.ProductId.Int32
+		}
+		if ln.ReceivedQty.Valid {
+			v := int32(ln.ReceivedQty.Int64)
 			pb.ReceivedQty = &v
 		}
-		if sz.DefectQty.Valid {
-			v := int32(sz.DefectQty.Int64)
+		if ln.DefectQty.Valid {
+			v := int32(ln.DefectQty.Int64)
 			pb.DefectQty = &v
 		}
 		out = append(out, pb)
@@ -329,9 +362,9 @@ func ProductionRunActualUnitCostBase(r *entity.ProductionRun) decimal.NullDecima
 		return decimal.NullDecimal{}
 	}
 	var received int64
-	for _, sz := range r.Sizes {
-		if sz.ReceivedQty.Valid {
-			received += sz.ReceivedQty.Int64
+	for _, ln := range r.Lines {
+		if ln.ReceivedQty.Valid {
+			received += ln.ReceivedQty.Int64
 		}
 	}
 	if received == 0 {

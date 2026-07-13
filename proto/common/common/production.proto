@@ -19,13 +19,17 @@ enum ProductionRunStatus {
   PRODUCTION_RUN_STATUS_CANCELLED = 5;
 }
 
-// ProductionRunSize is one size line of a run: the planned quantity, and — once received — the
-// received and defective counts (unset until the batch is received) that drive plan/fact.
-message ProductionRunSize {
-  int32 size_id = 1; // FK size(id)
-  int32 planned_qty = 2;
-  optional int32 received_qty = 3; // unset until the run is received
-  optional int32 defect_qty = 4; // unset until the run is received
+// ProductionRunLine is one colour-model × size line of a run: which product (colourway) at which
+// size, the planned quantity, and — once received — the received and defective counts (unset until
+// received) that drive plan/fact. product_id may be 0 while planning (the colourway may not be
+// published as a product yet), but every line with a received_qty > 0 must carry it at receive
+// time. Replaces the flat ProductionRunSize grid so one marker yields several colour-models (NF-06).
+message ProductionRunLine {
+  int32 product_id = 1; // FK product(id); 0 = unset (planning only)
+  int32 size_id = 2; // FK size(id)
+  int32 planned_qty = 3;
+  optional int32 received_qty = 4; // unset until the run is received
+  optional int32 defect_qty = 5; // unset until the run is received
 }
 
 // ProductionRunCostKind is the article category of an actual production-run cost.
@@ -75,9 +79,9 @@ message ProductionRunActuals {
   bool has_base = 12; // false when some cost article could not be folded to base (total is partial)
 }
 
-// ProductionRunInsert is the writable payload for a run (header + size grid). planned_unit_cost /
-// planned_currency are NOT here — they are server-snapshotted at plan time (from the linked
-// tech_card_release or the live card's computed costing) and are read-only on write.
+// ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).
+// planned_unit_cost / planned_currency are NOT here — they are server-snapshotted at plan time
+// (from the linked tech_card_release or the live card's computed costing) and are read-only on write.
 message ProductionRunInsert {
   int32 tech_card_id = 1; // required
   int32 release_id = 2; // optional tech_card_release to plan from (0 = none / plan from live card)
@@ -85,8 +89,11 @@ message ProductionRunInsert {
   google.protobuf.Timestamp started_at = 4;
   google.protobuf.Timestamp received_at = 5;
   string notes = 6;
-  repeated ProductionRunSize sizes = 7;
+  repeated ProductionRunLine lines = 9; // colour-model × size grid (NF-06, replaces sizes)
   repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)
+  google.type.Decimal marker_efficiency_pct = 10; // % fabric utilisation from the nesting software (NF-06)
+  string marker_notes = 11; // free marker / раскладка parameters
+  reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
 }
 
 // ProductionRun is a stored run: the writable payload plus the server-owned identity, the frozen

@@ -50,7 +50,7 @@ func TestGetStyleEconomics(t *testing.T) {
 	pr.EXPECT().ListProductionRuns(mock.Anything, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: 7}).Return([]entity.ProductionRun{
 		{ProductionRunInsert: entity.ProductionRunInsert{
 			PlannedUnitCost: decimal.NullDecimal{Decimal: decimal.RequireFromString("3.00"), Valid: true},
-			Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 8, Valid: true}}},
+			Lines:           []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 8, Valid: true}}},
 			Costs:           []entity.ProductionRunCost{{Kind: "cmt", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("25.00"), Valid: true}}},
 		}},
 	}, 1, nil)

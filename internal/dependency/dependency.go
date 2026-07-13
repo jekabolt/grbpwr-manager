@@ -470,10 +470,11 @@ type (
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
-		// ReceiveProductionRun receives a run into a product's stock (phase 3), optionally sets the
+		// ReceiveProductionRun receives a multi-colourway run into stock (NF-06): perProduct maps each
+		// product_id → (size_id → qty); it increments every product's stock, optionally seeds each
 		// product's cost_price from the run's actual unit cost, and transitions the run to received —
 		// guarded against a double receipt.
-		ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error
+		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, username string, costPrice decimal.NullDecimal) error
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with

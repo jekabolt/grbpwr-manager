@@ -3631,8 +3631,11 @@ message ListProductionRunsResponse {
 
 message ReceiveProductionRunRequest {
   int32 run_id = 1;
-  int32 product_id = 2; // must be a product linked to the run's tech card
-  bool update_cost_price = 3; // also set the product's cost_price from the run's actual unit cost
+  // NF-06: the run is multi-colourway, so receive no longer takes a product_id — every line's
+  // received_qty is booked into that line's own product. Each product must be linked to the run's
+  // tech card, and at least one line must carry a received quantity.
+  bool update_cost_price = 3; // also set every received product's cost_price from the run's actual unit cost
+  reserved 2; // was product_id (single-product receive; replaced by per-line products)
 }
 
 message ReceiveProductionRunResponse {

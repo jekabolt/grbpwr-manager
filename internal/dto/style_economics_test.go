@@ -21,7 +21,7 @@ func TestComputeStyleProductionSummary(t *testing.T) {
 		{
 			ProductionRunInsert: entity.ProductionRunInsert{
 				PlannedUnitCost: nd("3.00"),
-				Sizes: []entity.ProductionRunSize{
+				Lines: []entity.ProductionRunLine{
 					{SizeId: 1, PlannedQty: 5, ReceivedQty: sql.NullInt64{Int64: 5, Valid: true}},
 					{SizeId: 2, PlannedQty: 5, ReceivedQty: sql.NullInt64{Int64: 3, Valid: true}},
 				},
@@ -34,7 +34,7 @@ func TestComputeStyleProductionSummary(t *testing.T) {
 			ProductionRunInsert: entity.ProductionRunInsert{
 				// no frozen plan cost → contributes qty but no planned €
 				PlannedUnitCost: decimal.NullDecimal{},
-				Sizes: []entity.ProductionRunSize{
+				Lines: []entity.ProductionRunLine{
 					{SizeId: 1, PlannedQty: 20},
 				},
 				Costs: []entity.ProductionRunCost{
@@ -72,7 +72,7 @@ func TestComputeStyleProductionSummaryNoPlan(t *testing.T) {
 		{
 			ProductionRunInsert: entity.ProductionRunInsert{
 				PlannedUnitCost: decimal.NullDecimal{}, // no plan
-				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 4}},
+				Lines:           []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 4}},
 				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("40.00")}},
 			},
 		},
@@ -92,14 +92,14 @@ func TestComputeStyleProductionSummaryCancelledExcluded(t *testing.T) {
 			ProductionRunInsert: entity.ProductionRunInsert{
 				Status:          entity.ProductionRunCancelled,
 				PlannedUnitCost: nd("9.00"),
-				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 100}},
+				Lines:           []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 100}},
 				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("500.00")}},
 			},
 		},
 		{
 			ProductionRunInsert: entity.ProductionRunInsert{
 				PlannedUnitCost: nd("2.00"),
-				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
+				Lines:           []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
 				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("25.00")}},
 			},
 		},

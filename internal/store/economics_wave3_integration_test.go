@@ -125,7 +125,7 @@ func TestProductionRun(t *testing.T) {
 		Status:          entity.ProductionRunPlanned,
 		PlannedUnitCost: nd("33.00"),
 		PlannedCurrency: ns("EUR"),
-		Sizes: []entity.ProductionRunSize{
+		Lines: []entity.ProductionRunLine{
 			{SizeId: 1, PlannedQty: 60},
 			{SizeId: 2, PlannedQty: 40},
 		},
@@ -142,10 +142,10 @@ func TestProductionRun(t *testing.T) {
 	require.Equal(t, entity.ProductionRunPlanned, got.Status)
 	require.True(t, got.PlannedUnitCost.Decimal.Equal(decimal.RequireFromString("33.00")))
 	require.Equal(t, "EUR", got.PlannedCurrency.String)
-	require.Len(t, got.Sizes, 2)
-	require.Equal(t, 1, got.Sizes[0].SizeId)
-	require.Equal(t, 60, got.Sizes[0].PlannedQty)
-	require.False(t, got.Sizes[0].ReceivedQty.Valid, "received unset until receipt")
+	require.Len(t, got.Lines, 2)
+	require.Equal(t, 1, got.Lines[0].SizeId)
+	require.Equal(t, 60, got.Lines[0].PlannedQty)
+	require.False(t, got.Lines[0].ReceivedQty.Valid, "received unset until receipt")
 	require.Len(t, got.Costs, 1)
 	require.Equal(t, entity.ProductionRunCostMaterials, got.Costs[0].Kind)
 	require.True(t, got.Costs[0].Amount.Equal(decimal.RequireFromString("500")))
@@ -155,7 +155,7 @@ func TestProductionRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, total)
 	require.Len(t, list, 1)
-	require.Len(t, list[0].Sizes, 2, "sizes attached to list rows")
+	require.Len(t, list[0].Lines, 2, "sizes attached to list rows")
 
 	// status filter that excludes the run returns nothing
 	_, total, err = P.ListProductionRuns(ctx, 0, 0, entity.ProductionRunListFilter{TechCardId: tcID, Status: entity.ProductionRunClosed})
@@ -170,7 +170,7 @@ func TestProductionRun(t *testing.T) {
 		PlannedUnitCost: nd("999.00"), // must be IGNORED by update (frozen at plan time)
 		PlannedCurrency: ns("USD"),
 		Notes:           ns("started"),
-		Sizes: []entity.ProductionRunSize{
+		Lines: []entity.ProductionRunLine{
 			{SizeId: 1, PlannedQty: 60, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}, DefectQty: sql.NullInt64{Int64: 2, Valid: true}},
 		},
 		Costs: []entity.ProductionRunCost{
@@ -182,9 +182,9 @@ func TestProductionRun(t *testing.T) {
 	require.Equal(t, entity.ProductionRunInProgress, got.Status)
 	require.True(t, got.PlannedUnitCost.Decimal.Equal(decimal.RequireFromString("33.00")), "plan cost frozen, not overwritten by update")
 	require.Equal(t, "EUR", got.PlannedCurrency.String)
-	require.Len(t, got.Sizes, 1, "grid full-replaced")
-	require.EqualValues(t, 58, got.Sizes[0].ReceivedQty.Int64)
-	require.EqualValues(t, 2, got.Sizes[0].DefectQty.Int64)
+	require.Len(t, got.Lines, 1, "grid full-replaced")
+	require.EqualValues(t, 58, got.Lines[0].ReceivedQty.Int64)
+	require.EqualValues(t, 2, got.Lines[0].DefectQty.Int64)
 	require.Len(t, got.Costs, 1, "costs full-replaced")
 	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
@@ -224,24 +224,24 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	P := s.ProductionRuns()
 	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
-		Sizes: []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
 	})
 	require.NoError(t, err)
 	defer func() { _ = P.DeleteProductionRun(ctx, runID) }()
 
-	// receive with empty perSize + no cost-price only exercises the guard + status transition.
-	require.NoError(t, P.ReceiveProductionRun(ctx, runID, 0, map[int]int{}, "tester", decimal.NullDecimal{}))
+	// receive with empty perProduct + no cost-price only exercises the guard + status transition.
+	require.NoError(t, P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, "tester", decimal.NullDecimal{}))
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunReceived, got.Status)
 	require.True(t, got.ReceivedAt.Valid, "received_at stamped")
 
 	// a second receive is refused (guards double-counting)
-	err = P.ReceiveProductionRun(ctx, runID, 0, map[int]int{}, "tester", decimal.NullDecimal{})
+	err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, "tester", decimal.NullDecimal{})
 	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 
 	// receiving a missing run → ErrNoRows
-	err = P.ReceiveProductionRun(ctx, 0, 0, map[int]int{}, "tester", decimal.NullDecimal{})
+	err = P.ReceiveProductionRun(ctx, 0, map[int]map[int]int{}, "tester", decimal.NullDecimal{})
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// task.production_run_id typed link round-trips (FK to the run).

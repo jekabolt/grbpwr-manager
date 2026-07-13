@@ -13,6 +13,7 @@ import (
 func d(v string) decimal.Decimal       { return decimal.RequireFromString(v) }
 func nd2(v string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: d(v), Valid: true} }
 func ni(v int64) sql.NullInt64         { return sql.NullInt64{Int64: v, Valid: true} }
+func ni32(v int32) sql.NullInt32       { return sql.NullInt32{Int32: v, Valid: true} }
 
 // FoldProductionRunCostsToBase fills unset amount_base by FX, preserves a manual base, and leaves
 // an unfoldable currency unset.
@@ -37,9 +38,9 @@ func TestComputeProductionRunActuals(t *testing.T) {
 	run := &entity.ProductionRun{
 		ProductionRunInsert: entity.ProductionRunInsert{
 			PlannedUnitCost: nd2("10.00"),
-			Sizes: []entity.ProductionRunSize{
-				{SizeId: 1, PlannedQty: 60, ReceivedQty: ni(54), DefectQty: ni(6)},
-				{SizeId: 2, PlannedQty: 40, ReceivedQty: ni(36), DefectQty: ni(4)},
+			Lines: []entity.ProductionRunLine{
+				{ProductId: ni32(11), SizeId: 1, PlannedQty: 60, ReceivedQty: ni(54), DefectQty: ni(6)},
+				{ProductId: ni32(11), SizeId: 2, PlannedQty: 40, ReceivedQty: ni(36), DefectQty: ni(4)},
 			},
 			Costs: []entity.ProductionRunCost{
 				{Kind: entity.ProductionRunCostMaterials, Amount: d("500"), Currency: "EUR", AmountBase: nd2("500")},
@@ -67,7 +68,7 @@ func TestComputeProductionRunActuals(t *testing.T) {
 // A cost that could not be folded to base flags has_base=false and is excluded from the total.
 func TestComputeProductionRunActualsPartialBase(t *testing.T) {
 	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
-		Sizes: []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: ni(10)}},
+		Lines: []entity.ProductionRunLine{{ProductId: ni32(11), SizeId: 1, PlannedQty: 10, ReceivedQty: ni(10)}},
 		Costs: []entity.ProductionRunCost{
 			{Kind: entity.ProductionRunCostMaterials, Amount: d("100"), Currency: "EUR", AmountBase: nd2("100")},
 			{Kind: entity.ProductionRunCostDuty, Amount: d("30"), Currency: "GBP"}, // unfoldable → no base
@@ -82,21 +83,21 @@ func TestComputeProductionRunActualsPartialBase(t *testing.T) {
 // ProductionRunActualUnitCostBase is valid only with costs present, all folded to base, and some
 // received quantity — the trustworthy figure for setting cost_price.
 func TestProductionRunActualUnitCostBase(t *testing.T) {
-	base := func(costs []entity.ProductionRunCost, sizes []entity.ProductionRunSize) decimal.NullDecimal {
-		return ProductionRunActualUnitCostBase(&entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{Costs: costs, Sizes: sizes}})
+	base := func(costs []entity.ProductionRunCost, lines []entity.ProductionRunLine) decimal.NullDecimal {
+		return ProductionRunActualUnitCostBase(&entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{Costs: costs, Lines: lines}})
 	}
 	okCosts := []entity.ProductionRunCost{
 		{Kind: entity.ProductionRunCostMaterials, AmountBase: nd2("500")},
 		{Kind: entity.ProductionRunCostCMT, AmountBase: nd2("400")},
 	}
-	recv := []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 90, ReceivedQty: ni(90)}}
+	recv := []entity.ProductionRunLine{{ProductId: ni32(11), SizeId: 1, PlannedQty: 90, ReceivedQty: ni(90)}}
 
 	v := base(okCosts, recv)
 	require.True(t, v.Valid)
 	require.True(t, v.Decimal.Equal(d("10")), "900 / 90")
 
 	require.False(t, base(nil, recv).Valid, "no costs → invalid")
-	require.False(t, base(okCosts, []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 90}}).Valid, "0 received → invalid")
+	require.False(t, base(okCosts, []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 90}}).Valid, "0 received → invalid")
 
 	partial := []entity.ProductionRunCost{
 		{Kind: entity.ProductionRunCostMaterials, AmountBase: nd2("500")},
@@ -113,9 +114,9 @@ func TestConvertPbProductionRunInsertToEntity(t *testing.T) {
 		ReleaseId:  3,
 		Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS,
 		Notes:      "batch A",
-		Sizes: []*pb_common.ProductionRunSize{
-			{SizeId: 1, PlannedQty: 60, ReceivedQty: &rq, DefectQty: &dq},
-			{SizeId: 2, PlannedQty: 40}, // received/defect unset
+		Lines: []*pb_common.ProductionRunLine{
+			{ProductId: 11, SizeId: 1, PlannedQty: 60, ReceivedQty: &rq, DefectQty: &dq},
+			{ProductId: 11, SizeId: 2, PlannedQty: 40}, // received/defect unset
 		},
 	})
 	require.NoError(t, err)
@@ -124,10 +125,11 @@ func TestConvertPbProductionRunInsertToEntity(t *testing.T) {
 	require.EqualValues(t, 3, e.ReleaseId.Int64)
 	require.Equal(t, entity.ProductionRunInProgress, e.Status)
 	require.False(t, e.PlannedUnitCost.Valid, "plan cost is never taken from the client")
-	require.Len(t, e.Sizes, 2)
-	require.True(t, e.Sizes[0].ReceivedQty.Valid)
-	require.EqualValues(t, 58, e.Sizes[0].ReceivedQty.Int64)
-	require.False(t, e.Sizes[1].ReceivedQty.Valid, "unset received stays NULL")
+	require.Len(t, e.Lines, 2)
+	require.True(t, e.Lines[0].ReceivedQty.Valid)
+	require.EqualValues(t, 58, e.Lines[0].ReceivedQty.Int64)
+	require.EqualValues(t, 11, e.Lines[0].ProductId.Int32)
+	require.False(t, e.Lines[1].ReceivedQty.Valid, "unset received stays NULL")
 
 	// round-trip back to pb preserves presence
 	run := &entity.ProductionRun{Id: 9, ProductionRunInsert: *e}
@@ -135,20 +137,24 @@ func TestConvertPbProductionRunInsertToEntity(t *testing.T) {
 	require.Equal(t, int32(9), pb.Id)
 	require.Equal(t, pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS, pb.Run.Status)
 	require.EqualValues(t, 3, pb.Run.ReleaseId)
-	require.Len(t, pb.Run.Sizes, 2)
-	require.NotNil(t, pb.Run.Sizes[0].ReceivedQty)
-	require.EqualValues(t, 58, *pb.Run.Sizes[0].ReceivedQty)
-	require.Nil(t, pb.Run.Sizes[1].ReceivedQty, "unset received stays absent")
+	require.Len(t, pb.Run.Lines, 2)
+	require.NotNil(t, pb.Run.Lines[0].ReceivedQty)
+	require.EqualValues(t, 58, *pb.Run.Lines[0].ReceivedQty)
+	require.EqualValues(t, 11, pb.Run.Lines[0].ProductId)
+	require.Nil(t, pb.Run.Lines[1].ReceivedQty, "unset received stays absent")
 }
 
 func TestConvertPbProductionRunInsertValidation(t *testing.T) {
+	rq := int32(5)
 	cases := map[string]*pb_common.ProductionRunInsert{
 		"missing tech_card_id": {Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED},
 		"unknown status":       {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_UNKNOWN},
-		"duplicate size": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Sizes: []*pb_common.ProductionRunSize{{SizeId: 1, PlannedQty: 1}, {SizeId: 1, PlannedQty: 2}}},
+		"duplicate product/size": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{ProductId: 11, SizeId: 1, PlannedQty: 1}, {ProductId: 11, SizeId: 1, PlannedQty: 2}}},
 		"zero size_id": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Sizes: []*pb_common.ProductionRunSize{{SizeId: 0, PlannedQty: 1}}},
+			Lines: []*pb_common.ProductionRunLine{{SizeId: 0, PlannedQty: 1}}},
+		"received without product": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 5, ReceivedQty: &rq}}},
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

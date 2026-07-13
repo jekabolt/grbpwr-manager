@@ -23,10 +23,10 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun) *pb_admin.StyleP
 		}
 		runs32++
 		var runPlannedQty int64
-		for _, sz := range r.Sizes {
-			runPlannedQty += int64(sz.PlannedQty)
-			if sz.ReceivedQty.Valid {
-				receivedQty += sz.ReceivedQty.Int64
+		for _, ln := range r.Lines {
+			runPlannedQty += int64(ln.PlannedQty)
+			if ln.ReceivedQty.Valid {
+				receivedQty += ln.ReceivedQty.Int64
 			}
 		}
 		plannedQty += runPlannedQty

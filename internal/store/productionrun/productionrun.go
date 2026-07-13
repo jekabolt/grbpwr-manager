@@ -35,21 +35,23 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 const runColumns = `tech_card_id, release_id, status, started_at, received_at,
-	planned_unit_cost, planned_currency, notes`
+	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, notes`
 
 const runValues = `:tech_card_id, :release_id, :status, :started_at, :received_at,
-	:planned_unit_cost, :planned_currency, :notes`
+	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :notes`
 
 func runParams(r *entity.ProductionRunInsert) map[string]any {
 	return map[string]any{
-		"tech_card_id":      r.TechCardId,
-		"release_id":        r.ReleaseId,
-		"status":            string(r.Status),
-		"started_at":        r.StartedAt,
-		"received_at":       r.ReceivedAt,
-		"planned_unit_cost": r.PlannedUnitCost,
-		"planned_currency":  r.PlannedCurrency,
-		"notes":             r.Notes,
+		"tech_card_id":          r.TechCardId,
+		"release_id":            r.ReleaseId,
+		"status":                string(r.Status),
+		"started_at":            r.StartedAt,
+		"received_at":           r.ReceivedAt,
+		"planned_unit_cost":     r.PlannedUnitCost,
+		"planned_currency":      r.PlannedCurrency,
+		"marker_efficiency_pct": r.MarkerEfficiencyPct,
+		"marker_notes":          r.MarkerNotes,
+		"notes":                 r.Notes,
 	}
 }
 
@@ -65,7 +67,7 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 		if err != nil {
 			return fmt.Errorf("failed to insert production run: %w", err)
 		}
-		if err := insertRunSizes(ctx, rep.DB(), id, r.Sizes); err != nil {
+		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
 		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
@@ -94,13 +96,13 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if rows == 0 {
 			return sql.ErrNoRows
 		}
-		for _, tbl := range []string{"production_run_size", "production_run_cost"} {
+		for _, tbl := range []string{"production_run_line", "production_run_cost"} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE run_id = :id`, tbl), map[string]any{"id": id}); err != nil {
 				return fmt.Errorf("failed to clear %s: %w", tbl, err)
 			}
 		}
-		if err := insertRunSizes(ctx, rep.DB(), id, r.Sizes); err != nil {
+		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
 		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
@@ -114,13 +116,16 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 	return nil
 }
 
-// ReceiveProductionRun receives a run into a product's stock and transitions it to `received`, in
-// one transaction: it locks the run and refuses if it is already received/closed (guarding against
-// a double count), increments the product's per-size stock from perSize (production_received
-// source), optionally sets the product's cost_price from the run's actual unit cost, then stamps
-// status/received_at. Returns entity.ErrProductionRunAlreadyReceived on a repeat receipt and
-// sql.ErrNoRows when the run does not exist.
-func (s *Store) ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error {
+// ReceiveProductionRun receives a multi-colourway run into stock and transitions it to `received`,
+// in one transaction: it locks the run and refuses if it is already received/closed (guarding
+// against a double count), then for each product in perProduct increments that product's per-size
+// stock (production_received source) and — when costPrice is set — seeds that product's cost_price
+// from the run's actual unit cost (one style-level figure applied to every colour-model of the
+// batch; colourways are not costed apart in v1). Finally it stamps status/received_at. perProduct
+// maps product_id → (size_id → qty), already validated by the caller (every product ∈ the card's
+// products, at least one positive qty). Returns entity.ErrProductionRunAlreadyReceived on a repeat
+// receipt and sql.ErrNoRows when the run does not exist.
+func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, username string, costPrice decimal.NullDecimal) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status string `db:"status"`
@@ -134,14 +139,17 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID, productID int, 
 		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
 			return entity.ErrProductionRunAlreadyReceived
 		}
-		if len(perSize) > 0 {
+		for productID, perSize := range perProduct {
+			if len(perSize) == 0 {
+				continue
+			}
 			if err := rep.Products().ReceiveProductionStock(ctx, productID, perSize, runID, username); err != nil {
 				return err
 			}
-		}
-		if costPrice.Valid {
-			if err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal); err != nil {
-				return err
+			if costPrice.Valid {
+				if err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal); err != nil {
+					return err
+				}
 			}
 		}
 		return storeutil.ExecNamed(ctx, rep.DB(), `
@@ -193,11 +201,11 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		}
 		return nil, fmt.Errorf("can't get production run: %w", err)
 	}
-	sizes, err := s.runSizes(ctx, id)
+	lines, err := s.runLines(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	run.Sizes = sizes
+	run.Lines = lines
 	costs, err := s.runCosts(ctx, id)
 	if err != nil {
 		return nil, err
@@ -238,7 +246,7 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list production runs: %w", err)
 	}
-	if err := s.attachSizes(ctx, runs); err != nil {
+	if err := s.attachLines(ctx, runs); err != nil {
 		return nil, 0, err
 	}
 	if err := s.attachCosts(ctx, runs); err != nil {
@@ -247,26 +255,27 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 	return runs, total, nil
 }
 
-// runSizes loads one run's size grid ordered by size_id.
-func (s *Store) runSizes(ctx context.Context, runID int) ([]entity.ProductionRunSize, error) {
-	sizes, err := storeutil.QueryListNamed[entity.ProductionRunSize](ctx, s.DB,
-		`SELECT size_id, planned_qty, received_qty, defect_qty
-		 FROM production_run_size WHERE run_id = :run_id ORDER BY size_id`,
+// runLines loads one run's colour-model × size lines, ordered by product then size (NULL product
+// first, so planning lines lead) for a stable display.
+func (s *Store) runLines(ctx context.Context, runID int) ([]entity.ProductionRunLine, error) {
+	lines, err := storeutil.QueryListNamed[entity.ProductionRunLine](ctx, s.DB,
+		`SELECT id, product_id, size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_line WHERE run_id = :run_id ORDER BY product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"run_id": runID})
 	if err != nil {
-		return nil, fmt.Errorf("can't load production run sizes: %w", err)
+		return nil, fmt.Errorf("can't load production run lines: %w", err)
 	}
-	return sizes, nil
+	return lines, nil
 }
 
-// sizeGridRow scans a size line together with its run_id for the batched list attach.
-type sizeGridRow struct {
+// lineRow scans a run line together with its run_id for the batched list attach.
+type lineRow struct {
 	RunID int `db:"run_id"`
-	entity.ProductionRunSize
+	entity.ProductionRunLine
 }
 
-// attachSizes loads the size grids for a page of runs in one query and attaches them.
-func (s *Store) attachSizes(ctx context.Context, runs []entity.ProductionRun) error {
+// attachLines loads the lines for a page of runs in one query and attaches them.
+func (s *Store) attachLines(ctx context.Context, runs []entity.ProductionRun) error {
 	if len(runs) == 0 {
 		return nil
 	}
@@ -276,16 +285,16 @@ func (s *Store) attachSizes(ctx context.Context, runs []entity.ProductionRun) er
 		ids[i] = runs[i].Id
 		idx[runs[i].Id] = i
 	}
-	rows, err := storeutil.QueryListNamed[sizeGridRow](ctx, s.DB,
-		`SELECT run_id, size_id, planned_qty, received_qty, defect_qty
-		 FROM production_run_size WHERE run_id IN (:ids) ORDER BY run_id, size_id`,
+	rows, err := storeutil.QueryListNamed[lineRow](ctx, s.DB,
+		`SELECT run_id, id, product_id, size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_line WHERE run_id IN (:ids) ORDER BY run_id, product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"ids": ids})
 	if err != nil {
-		return fmt.Errorf("can't load production run sizes: %w", err)
+		return fmt.Errorf("can't load production run lines: %w", err)
 	}
 	for _, r := range rows {
 		if i, ok := idx[r.RunID]; ok {
-			runs[i].Sizes = append(runs[i].Sizes, r.ProductionRunSize)
+			runs[i].Lines = append(runs[i].Lines, r.ProductionRunLine)
 		}
 	}
 	return nil
@@ -351,22 +360,23 @@ func insertRunCosts(ctx context.Context, db dependency.DB, runID int, costs []en
 	return nil
 }
 
-func insertRunSizes(ctx context.Context, db dependency.DB, runID int, sizes []entity.ProductionRunSize) error {
-	if len(sizes) == 0 {
+func insertRunLines(ctx context.Context, db dependency.DB, runID int, lines []entity.ProductionRunLine) error {
+	if len(lines) == 0 {
 		return nil
 	}
-	rows := make([]map[string]any, 0, len(sizes))
-	for _, sz := range sizes {
+	rows := make([]map[string]any, 0, len(lines))
+	for _, ln := range lines {
 		rows = append(rows, map[string]any{
 			"run_id":       runID,
-			"size_id":      sz.SizeId,
-			"planned_qty":  sz.PlannedQty,
-			"received_qty": sz.ReceivedQty,
-			"defect_qty":   sz.DefectQty,
+			"product_id":   ln.ProductId,
+			"size_id":      ln.SizeId,
+			"planned_qty":  ln.PlannedQty,
+			"received_qty": ln.ReceivedQty,
+			"defect_qty":   ln.DefectQty,
 		})
 	}
-	if err := storeutil.BulkInsert(ctx, db, "production_run_size", rows); err != nil {
-		return fmt.Errorf("failed to insert production run sizes: %w", err)
+	if err := storeutil.BulkInsert(ctx, db, "production_run_line", rows); err != nil {
+		return fmt.Errorf("failed to insert production run lines: %w", err)
 	}
 	return nil
 }
