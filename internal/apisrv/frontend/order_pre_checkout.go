@@ -212,6 +212,20 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 }
 
 func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.ValidateOrderByUUIDRequest) (*pb_frontend.ValidateOrderByUUIDResponse, error) {
+	// The order reference is a guessable ~36-bit token ("ORD-" + 7 base36 chars),
+	// and this endpoint is unauthenticated with no email/token binding. Rate-limit
+	// per IP (keyed on IP only — keying on the attacker-supplied UUID would put
+	// every guess in a fresh never-filling bucket) to make brute-force enumeration
+	// impractical, matching GetOrderInvoice / CancelOrderInvoice.
+	clientIP := middleware.GetClientIP(ctx)
+	if err := s.rateLimiter.CheckOrderInvoiceIP(clientIP); err != nil {
+		slog.Default().WarnContext(ctx, "rate limit exceeded for validate order by uuid",
+			slog.String("ip", clientIP),
+			slog.String("order_uuid", req.OrderUuid),
+		)
+		return nil, status.Errorf(codes.ResourceExhausted, "rate limit exceeded, please try again later")
+	}
+
 	orderFull, err := s.repo.Order().ValidateOrderByUUID(ctx, req.OrderUuid)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't validate order by uuid",
@@ -227,6 +241,16 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 		)
 		return nil, status.Errorf(codes.Internal, "can't convert entity order to pb common order")
 	}
+
+	// This endpoint validates item availability/stock/price before checkout; it is
+	// not an order-detail view. Strip buyer PII (name, email, phone, billing and
+	// shipping addresses) so that hitting a valid reference — even past the rate
+	// limit — yields no personal data. Owner-scoped order detail lives behind
+	// GetOrderByUUIDAndEmail (email match).
+	of.Buyer = nil
+	of.Billing = nil
+	of.Shipping = nil
+
 	return &pb_frontend.ValidateOrderByUUIDResponse{
 		Order: of,
 	}, nil
