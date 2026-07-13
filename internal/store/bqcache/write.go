@@ -65,6 +65,30 @@ func (s *WriteStore) SaveBQFunnelAnalysis(ctx context.Context, rows []entity.Dai
 	return nil
 }
 
+// SaveBQOrderChannel upserts the client_id→channel attribution map (task 20 step 2). Keyed on
+// client_id (the table PK), so a client's newest non-direct touch replaces the prior mapping; the
+// other columns are refreshed on conflict. Empty input is a no-op.
+func (s *WriteStore) SaveBQOrderChannel(ctx context.Context, rows []entity.OrderChannelRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	cols := []string{"client_id", "date", "utm_source", "utm_medium", "utm_campaign"}
+	updateCols := []string{"date", "utm_source", "utm_medium", "utm_campaign"}
+	args := make([][]any, 0, len(rows))
+	for _, r := range rows {
+		if r.ClientID == "" {
+			continue
+		}
+		args = append(args, []any{
+			r.ClientID, r.Date.Format("2006-01-02"), r.UTMSource, r.UTMMedium, r.UTMCampaign,
+		})
+	}
+	if err := storeutil.BulkUpsert(ctx, s.DB, "bq_order_channel", cols, updateCols, args); err != nil {
+		return fmt.Errorf("save bq order channel: %w", err)
+	}
+	return nil
+}
+
 func (s *WriteStore) SaveBQOOSImpact(ctx context.Context, rows []entity.OOSImpactMetric) error {
 	if len(rows) == 0 {
 		return nil

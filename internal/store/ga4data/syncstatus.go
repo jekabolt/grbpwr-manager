@@ -191,6 +191,7 @@ func (s *SyncStatusStore) DeleteOldAnalyticsData(ctx context.Context, olderThan 
 		"bq_newsletter",
 		"bq_abandoned_cart",
 		"bq_campaign_attribution",
+		"bq_order_channel",
 	}
 
 	cutoff := olderThan.Format("2006-01-02")

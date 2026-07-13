@@ -329,6 +329,11 @@ type (
 		// GetStyleMargin returns the lifetime sales margin for one style (all its colourway SKUs) as a
 		// single MarginByStyleRow, or nil when the style has no sales. Sales anchor of GetStyleEconomics.
 		GetStyleMargin(ctx context.Context, techCardID int) (*entity.MarginByStyleRow, error)
+		// GetChannelRoasSettled attributes settled order revenue to marketing channels via the
+		// bq_order_channel map (order.ga_client_id → last non-direct UTM), returning per-channel settled
+		// revenue, order count and new-customer count over the period (task 20 step 2). Spend/ROAS/CAC
+		// are layered on by the caller from channel_spend.
+		GetChannelRoasSettled(ctx context.Context, from, to time.Time) ([]entity.ChannelSettledRow, error)
 		// GetCogsStructure decomposes the cost of goods sold in the period into its components
 		// (materials / cmt / … / unattributed) from each product's cost_breakdown snapshot.
 		GetCogsStructure(ctx context.Context, from, to time.Time) ([]entity.CogsStructureRow, error)
@@ -497,6 +502,9 @@ type (
 		GetNewsletterSignups(ctx context.Context, startDate, endDate time.Time) ([]entity.NewsletterMetricRow, error)
 		GetAbandonedCart(ctx context.Context, startDate, endDate time.Time) ([]entity.AbandonedCartRow, error)
 		GetCampaignAttribution(ctx context.Context, startDate, endDate time.Time) ([]entity.CampaignAttributionRow, error)
+		// GetOrderChannelMap maps each GA4 client_id to its last non-direct UTM channel, for
+		// server-side settled-revenue attribution (task 20 step 2).
+		GetOrderChannelMap(ctx context.Context, startDate, endDate time.Time) ([]entity.OrderChannelRow, error)
 		GetTimeOnPage(ctx context.Context, startDate, endDate time.Time) ([]entity.TimeOnPageRow, error)
 		GetProductZoom(ctx context.Context, startDate, endDate time.Time) ([]entity.ProductZoomRow, error)
 		GetImageSwipes(ctx context.Context, startDate, endDate time.Time) ([]entity.ImageSwipeRow, error)
@@ -584,6 +592,9 @@ type (
 		SaveBQNewsletter(ctx context.Context, rows []entity.NewsletterMetricRow) error
 		SaveBQAbandonedCart(ctx context.Context, rows []entity.AbandonedCartRow) error
 		SaveBQCampaignAttribution(ctx context.Context, rows []entity.CampaignAttributionRow) error
+		// SaveBQOrderChannel upserts the client_id→channel attribution map (task 20 step 2), keyed on
+		// client_id so a client's latest non-direct touch replaces the prior one.
+		SaveBQOrderChannel(ctx context.Context, rows []entity.OrderChannelRow) error
 		SaveBQTimeOnPage(ctx context.Context, rows []entity.TimeOnPageRow) error
 		SaveBQProductZoom(ctx context.Context, rows []entity.ProductZoomRow) error
 		SaveBQImageSwipes(ctx context.Context, rows []entity.ImageSwipeRow) error

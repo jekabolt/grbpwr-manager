@@ -218,6 +218,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics/style-economics"};
   }
 
+  // GetChannelRoasSettled returns per-channel ROAS/CAC computed from the AUTHORITATIVE settled order
+  // revenue (task 20 step 2), attributing orders to channels server-side via the bq_order_channel map
+  // (order.ga_client_id → last non-direct UTM). Unlike the GA4-revenue campaign attribution, the
+  // numerator is real settled base revenue and CAC is per-channel. Read alongside GetMetrics'
+  // GA4-based attribution for upper-funnel context.
+  rpc GetChannelRoasSettled(GetChannelRoasSettledRequest) returns (GetChannelRoasSettledResponse) {
+    option (google.api.http) = {get: "/api/admin/metrics/channel-roas-settled"};
+  }
+
   // Reads the operator-tunable thresholds behind the dashboard alerts.
   rpc GetAlertSettings(GetAlertSettingsRequest) returns (GetAlertSettingsResponse) {
     option (google.api.http) = {get: "/api/admin/dashboard/alert-settings"};
@@ -2731,6 +2740,33 @@ message GetStyleEconomicsRequest {
 
 message GetStyleEconomicsResponse {
   StyleEconomics economics = 1;
+}
+
+// ChannelSettledRoasRow is one marketing channel's settled-revenue economics over a period (task 20
+// step 2): settled base revenue attributed to the channel via server-side last-non-direct click,
+// order and first-time-customer counts, and — when operator spend exists for the channel — spend,
+// ROAS (settled_revenue / spend) and CAC (spend / new_customers).
+message ChannelSettledRoasRow {
+  string utm_source = 1;
+  string utm_medium = 2;
+  string utm_campaign = 3;
+  google.type.Decimal settled_revenue = 4; // base-currency settled revenue attributed to the channel
+  int64 orders = 5;
+  int64 new_customers = 6; // distinct first-time customers acquired via the channel in the period
+  google.type.Decimal spend = 7; // operator-entered channel_spend (base ccy); unset when none
+  double roas = 8; // settled_revenue / spend; 0 when spend is absent
+  double cac = 9; // spend / new_customers; 0 when spend absent or no new customers
+  bool has_spend = 10; // whether channel_spend was found for this channel (else roas/cac are N/A)
+}
+
+message GetChannelRoasSettledRequest {
+  string period = 1; // e.g. 7d, 30d, 90d, today, WTD, MTD, QTD, YTD (same grammar as GetDashboard)
+  google.protobuf.Timestamp end_at = 2;
+}
+
+message GetChannelRoasSettledResponse {
+  repeated ChannelSettledRoasRow rows = 1;
+  string base_currency = 2;
 }
 
 // --- Analytics: COGS structure (task 15) ---

@@ -1059,6 +1059,29 @@ type ChannelSpendRow struct {
 	Spend       decimal.Decimal `db:"spend"`
 }
 
+// OrderChannelRow maps a GA4 client_id (= customer_order.ga_client_id) to its last non-direct UTM
+// channel (task 20 step 2). Produced by the BQ precompute, cached in bq_order_channel, and joined to
+// orders for server-side, settled-revenue attribution. Date is the session date of that last touch.
+type OrderChannelRow struct {
+	ClientID    string    `db:"client_id"`
+	Date        time.Time `db:"date"`
+	UTMSource   string    `db:"utm_source"`
+	UTMMedium   string    `db:"utm_medium"`
+	UTMCampaign string    `db:"utm_campaign"`
+}
+
+// ChannelSettledRow is one channel's SETTLED-revenue attribution over a period (task 20 step 2):
+// orders whose GA client_id maps to this UTM triple, their settled base revenue, and how many were
+// placed by first-time customers. Spend/ROAS/CAC are layered on in the handler from channel_spend.
+type ChannelSettledRow struct {
+	UTMSource      string          `db:"utm_source"`
+	UTMMedium      string          `db:"utm_medium"`
+	UTMCampaign    string          `db:"utm_campaign"`
+	SettledRevenue decimal.Decimal `db:"settled_revenue"`
+	Orders         int64           `db:"orders"`
+	NewCustomers   int64           `db:"new_customers"`
+}
+
 // OpexEntry is one fixed-cost (OPEX) line: an amount for a category in a given month, base
 // currency (task 22). Feeds the dashboard operating result (contribution − OPEX − marketing).
 type OpexEntry struct {
