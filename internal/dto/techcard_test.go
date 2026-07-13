@@ -573,3 +573,30 @@ func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 		t.Errorf("list item mismatch: %+v", li)
 	}
 }
+
+// TestColorwayProductAutoSeed covers task 17: a colourway whose product_id is not yet in the
+// card's product_ids is auto-unioned into product_ids (rather than rejected), keeping
+// tech_card_product a superset of every colourway's annotated product. Already-listed and unset
+// (0) colourway products don't add duplicates.
+func TestColorwayProductAutoSeed(t *testing.T) {
+	card := &pb_common.TechCardInsert{
+		StyleNumber:     "ST-AUTOSEED",
+		Name:            "n",
+		Stage:           pb_common.TechCardStage_TECH_CARD_STAGE_PROTO,
+		ApprovalState:   pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
+		MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+		ProductIds:      []int32{100},
+		Colorways: []*pb_common.TechCardColorway{
+			{Name: "Black", ProductId: 100}, // already listed
+			{Name: "White", ProductId: 200}, // NOT listed → auto-seeded
+			{Name: "Sample"},                // product_id 0 → ignored
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(card)
+	if err != nil {
+		t.Fatalf("unexpected error (auto-seed should not reject): %v", err)
+	}
+	if len(got.ProductIds) != 2 || got.ProductIds[0] != 100 || got.ProductIds[1] != 200 {
+		t.Fatalf("product_ids should be [100 200] after auto-seed, got %v", got.ProductIds)
+	}
+}

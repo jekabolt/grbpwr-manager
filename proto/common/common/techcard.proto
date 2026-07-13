@@ -121,7 +121,7 @@ message TechCardColorway {
   string code = 1; // short colourway code, e.g. BLK
   string name = 2; // colourway name (required)
   TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
-  int32 product_id = 4; // FK product(id); 0 = not yet published
+  int32 product_id = 4; // FK product(id); 0 = not yet published. Auto-added to the card's product_ids on save (annotation ⊆ the canon tech_card_product list)
   string comment = 5;
   string pantone = 6; // headline Pantone code
   string pantone_system = 7; // TCX|TPX|TPG|C|U (Pantone book)
@@ -577,7 +577,7 @@ message TechCardInsert {
 
   // children (full-replace on update)
   repeated int32 size_ids = 30; // size range / grade (FK size(id))
-  repeated int32 product_ids = 31; // linked catalog products (FK product(id))
+  repeated int32 product_ids = 31; // linked catalog products (FK product(id)); the CANON product↔style link every consumer reads (cost seed, GetMarginByStyle). Colourway product_ids are auto-unioned in on save
   // Sketch media split into two INDEPENDENT lists (replaces the single `media = 32`):
   //   moodboard_media — mood / inspiration / reference / fabric-swatch photos (design intent)
   //   technical_media — flat sketches used in construction (front / back / detail / lining / preview)

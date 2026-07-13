@@ -263,6 +263,13 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	// tech_card_product (product_ids) is the CANON product↔style link — every external consumer
+	// (cost_price seed, GetMarginByStyle, ListTechCards-by-product) reads it, never colorway
+	// product_id. A colourway's product_id is an annotation obliged to be a subset. Rather than
+	// reject a colourway whose product isn't yet listed (the old write-time 400), auto-seed it:
+	// union colourway product_ids into product_ids so the link stays in sync with no manual step.
+	// (The primary-for-costing card is a separate, deterministic pointer: product.primary_tech_card_id.)
+	productIds = unionColorwayProductIds(productIds, pb.Colorways)
 
 	// base_sample_size_id, when set, must be part of the declared size range: the
 	// POM grade radiates from the base size, so a base outside the graded columns
@@ -737,6 +744,25 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 
 // --- materials (Phase 2): parse pb -> entity ---
 
+// unionColorwayProductIds appends any positive colourway product_id not already in productIds,
+// preserving order (existing ids first, new ones in colourway order). This keeps tech_card_product
+// (the canon) a superset of every colourway's annotated product, so linking a colour to a product
+// never needs a separate edit to the product list. Deduplicates against the existing set.
+func unionColorwayProductIds(productIds []int, colorways []*pb_common.TechCardColorway) []int {
+	seen := make(map[int]bool, len(productIds))
+	for _, id := range productIds {
+		seen[id] = true
+	}
+	for _, c := range colorways {
+		if c == nil || c.ProductId <= 0 || seen[int(c.ProductId)] {
+			continue
+		}
+		seen[int(c.ProductId)] = true
+		productIds = append(productIds, int(c.ProductId))
+	}
+	return productIds
+}
+
 func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
 	// Non-empty codes must be unique within the card (DB enforces
@@ -762,10 +788,10 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 		if c.ProductId < 0 {
 			return nil, fmt.Errorf("colorway product_id must not be negative")
 		}
-		// Soft consistency: a colourway's published product must be one of the tech
-		// card's linked products (tech_card_product), so a colourway cannot point at
-		// a product outside the card. tech_card_product stays the catalog-SKU list;
-		// this only keeps the two in sync at write time.
+		// Invariant (post-auto-seed): a colourway's product must be in the card's product_ids.
+		// unionColorwayProductIds already folded every colourway product into product_ids before
+		// this parse, so this never fires on a normal payload — it is a defensive guard that the
+		// annotation ⊆ canon invariant holds.
 		if c.ProductId > 0 && !slices.Contains(productIds, int(c.ProductId)) {
 			return nil, fmt.Errorf("colorway product_id %d must be one of the tech card's product_ids", c.ProductId)
 		}
