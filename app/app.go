@@ -313,7 +313,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Set up Resend webhook handler (bounce/complaint suppression + list-unsubscribe)
-	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret)
+	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret, a.c.Mailer.UnsubscribePepper)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create webhook handler",
 			slog.String("err", err.Error()),

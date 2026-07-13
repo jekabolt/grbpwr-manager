@@ -14,7 +14,16 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 )
+
+// unsubscribeTokenValue is the canonical value HMAC'd (with the configured pepper)
+// to derive a recipient's one-click unsubscribe token. Kept in one place so the
+// mail sender (link generation) and the webhook handler (verification) never
+// disagree.
+func unsubscribeTokenValue(email string) string {
+	return "unsub:" + email
+}
 
 // resendEventType represents the type field in a Resend webhook payload.
 type resendEventType string
@@ -58,6 +67,10 @@ type WebhookHandler struct {
 	repo   dependency.Repository
 	secret string
 	wh     *svix.Webhook
+	// unsubPepper keys the HMAC that authenticates one-click list-unsubscribe
+	// links. Empty means the unsubscribe endpoint fails closed (no token can be
+	// verified).
+	unsubPepper string
 }
 
 // NewWebhookHandler creates a WebhookHandler. If secret is empty the handler is
@@ -65,8 +78,8 @@ type WebhookHandler struct {
 // per-address token, keeps working), but HandleResendEvent then fails closed on
 // every event — an unsigned body must never be trusted to mutate the suppression
 // list.
-func NewWebhookHandler(repo dependency.Repository, secret string) (*WebhookHandler, error) {
-	h := &WebhookHandler{repo: repo, secret: secret}
+func NewWebhookHandler(repo dependency.Repository, secret, unsubPepper string) (*WebhookHandler, error) {
+	h := &WebhookHandler{repo: repo, secret: secret, unsubPepper: unsubPepper}
 	if secret != "" {
 		wh, err := svix.NewWebhook(secret)
 		if err != nil {
@@ -219,10 +232,20 @@ func (h *WebhookHandler) incrementMetric(ctx context.Context, metricType string,
 	}
 }
 
-// HandleListUnsubscribe processes POST /api/webhooks/list-unsubscribe/{email_b64}.
+// HandleListUnsubscribe processes POST /api/webhooks/list-unsubscribe/{email_b64}/{token}.
 // Email clients POST List-Unsubscribe=One-Click to this endpoint for one-click unsubscribe.
+// The token is a per-recipient HMAC(email) keyed by the server pepper; it is verified in
+// constant time so a guessable address alone cannot unsubscribe an arbitrary recipient.
 func (h *WebhookHandler) HandleListUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Fail closed: without a pepper the token cannot be verified, so this
+	// state-changing endpoint must not accept unauthenticated input.
+	if h.unsubPepper == "" {
+		slog.Default().ErrorContext(ctx, "list-unsubscribe: pepper not configured, refusing request")
+		http.Error(w, "unsubscribe not configured", http.StatusServiceUnavailable)
+		return
+	}
 
 	emailB64 := r.PathValue("email_b64")
 	if emailB64 == "" {
@@ -245,6 +268,15 @@ func (h *WebhookHandler) HandleListUnsubscribe(w http.ResponseWriter, r *http.Re
 			slog.String("email", email),
 			slog.String("err", err.Error()))
 		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the per-recipient token before mutating anything.
+	want := tokenhash.Hash(h.unsubPepper, unsubscribeTokenValue(email))
+	if !tokenhash.Equal(want, r.PathValue("token")) {
+		slog.Default().WarnContext(ctx, "list-unsubscribe: invalid token",
+			slog.String("email", email))
+		http.Error(w, "invalid token", http.StatusForbidden)
 		return
 	}
 

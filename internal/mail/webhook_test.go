@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -21,11 +23,14 @@ import (
 // real verified path by signing their payloads with this secret.
 const testWebhookSecret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
 
+// testUnsubPepper keys the per-recipient list-unsubscribe token in tests.
+const testUnsubPepper = "test-unsubscribe-pepper-value"
+
 func newTestWebhookHandler(t *testing.T, mailMock *mocks.MockMail) *WebhookHandler {
 	t.Helper()
 	repoMock := mocks.NewMockRepository(t)
 	repoMock.On("Mail").Return(mailMock).Maybe()
-	h, err := NewWebhookHandler(repoMock, testWebhookSecret)
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret, testUnsubPepper)
 	require.NoError(t, err)
 	return h
 }
@@ -79,7 +84,7 @@ func TestParseEventDate(t *testing.T) {
 // be trusted to mutate the suppression list.
 func TestHandleResendEvent_NoSecretFailsClosed(t *testing.T) {
 	repoMock := mocks.NewMockRepository(t)
-	h, err := NewWebhookHandler(repoMock, "")
+	h, err := NewWebhookHandler(repoMock, "", testUnsubPepper)
 	require.NoError(t, err)
 
 	body := `{"type":"email.bounced","data":{"to":["victim@example.com"]}}`
@@ -96,7 +101,7 @@ func TestHandleResendEvent_NoSecretFailsClosed(t *testing.T) {
 // the configured secret's signature is rejected with 401 and not processed.
 func TestHandleResendEvent_BadSignatureRejected(t *testing.T) {
 	repoMock := mocks.NewMockRepository(t)
-	h, err := NewWebhookHandler(repoMock, testWebhookSecret)
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret, testUnsubPepper)
 	require.NoError(t, err)
 
 	body := `{"type":"email.bounced","data":{"to":["victim@example.com"]}}`
@@ -109,6 +114,68 @@ func TestHandleResendEvent_BadSignatureRejected(t *testing.T) {
 	h.HandleResendEvent(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+// TestHandleListUnsubscribe_ValidToken verifies a correct per-recipient token
+// unsubscribes the address.
+func TestHandleListUnsubscribe_ValidToken(t *testing.T) {
+	email := "user@example.com"
+	subMock := mocks.NewMockSubscribers(t)
+	subMock.On("UpsertSubscription", mock.Anything, email, false).Return(true, nil).Once()
+	repoMock := mocks.NewMockRepository(t)
+	repoMock.On("Subscribers").Return(subMock).Maybe()
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret, testUnsubPepper)
+	require.NoError(t, err)
+
+	emailB64 := base64.StdEncoding.EncodeToString([]byte(email))
+	token := tokenhash.Hash(testUnsubPepper, unsubscribeTokenValue(email))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.SetPathValue("email_b64", emailB64)
+	req.SetPathValue("token", token)
+	rr := httptest.NewRecorder()
+
+	h.HandleListUnsubscribe(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	subMock.AssertExpectations(t)
+}
+
+// TestHandleListUnsubscribe_InvalidToken verifies a wrong token is rejected with
+// 403 and no subscription change is attempted.
+func TestHandleListUnsubscribe_InvalidToken(t *testing.T) {
+	email := "user@example.com"
+	repoMock := mocks.NewMockRepository(t) // no Subscribers() expectation: must not be called
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret, testUnsubPepper)
+	require.NoError(t, err)
+
+	emailB64 := base64.StdEncoding.EncodeToString([]byte(email))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.SetPathValue("email_b64", emailB64)
+	req.SetPathValue("token", "deadbeef")
+	rr := httptest.NewRecorder()
+
+	h.HandleListUnsubscribe(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+// TestHandleListUnsubscribe_NoPepperFailsClosed verifies the endpoint refuses
+// requests when no pepper is configured.
+func TestHandleListUnsubscribe_NoPepperFailsClosed(t *testing.T) {
+	repoMock := mocks.NewMockRepository(t)
+	h, err := NewWebhookHandler(repoMock, testWebhookSecret, "")
+	require.NoError(t, err)
+
+	email := "user@example.com"
+	emailB64 := base64.StdEncoding.EncodeToString([]byte(email))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.SetPathValue("email_b64", emailB64)
+	req.SetPathValue("token", "anything")
+	rr := httptest.NewRecorder()
+
+	h.HandleListUnsubscribe(rr, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 }
 
 func TestHandleResendEvent_DeliveredIncrementsMetric(t *testing.T) {

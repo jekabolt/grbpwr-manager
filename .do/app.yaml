@@ -168,6 +168,11 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:LGACthmLZ9j7dxcDNHm0Qb5TCzq1c2Ry:tOJ+iArxiTSu120LFts+Ndv03UyvjS1JRPUgEElDM/HvzsCzq5om5cbu3K6yxyQasQ3opcxq]
+# MAILER_UNSUBSCRIBE_PEPPER keys the per-recipient one-click List-Unsubscribe
+# token. Set it as a SECRET in the DO dashboard with a strong random value (it will
+# be stored encrypted as EV[...]). It is intentionally NOT committed with a value:
+# a placeholder would be a publicly-known pepper. Until set, the app fails closed —
+# no List-Unsubscribe header is emitted and the unsubscribe endpoint returns 503.
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m

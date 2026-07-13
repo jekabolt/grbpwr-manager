@@ -427,7 +427,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.
 	if s.webhookHandler != nil {
 		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
-		r.Post("/api/webhooks/list-unsubscribe/{email_b64}", s.webhookHandler.HandleListUnsubscribe)
+		r.Post("/api/webhooks/list-unsubscribe/{email_b64}/{token}", s.webhookHandler.HandleListUnsubscribe)
 	}
 	if s.stripeWebhookHandler != nil {
 		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)
