@@ -105,6 +105,8 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 		if dev != nil && dev.HasUnconverted {
 			caveats = append(caveats, "some development costs have no FX rate and are excluded from the total")
 		}
+	} else if salesRow == nil {
+		caveats = append(caveats, "no sales yet for this style — margin and net result unavailable")
 	} else {
 		caveats = append(caveats, "no product cost set for this style — margin and net result unavailable")
 	}

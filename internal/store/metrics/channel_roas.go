@@ -18,8 +18,11 @@ import (
 // '(direct)'. Also counts distinct FIRST-TIME customers per channel (first order by buyer email lands
 // in the period), which the caller turns into per-channel CAC. Only net-revenue statuses count.
 //
-// Revenue basis is gross-incl-VAT settled (what the customer paid) — the natural ROAS numerator —
-// NOT the net-of-VAT headline; ROAS conventionally sits on the amount that actually came in.
+// Revenue basis is gross-incl-VAT settled NET OF REFUNDS (what the customer actually paid, minus any
+// refunded portion) — the natural ROAS numerator, NOT the net-of-VAT headline; ROAS conventionally
+// sits on the amount that came in. The refund proration `(total_price − refunded_amount)/total_price`
+// mirrors getCoreSalesMetrics so a partially-refunded order does not inflate a channel's revenue, and
+// the report total reconciles with the dashboard settled figure.
 func (s *Store) GetChannelRoasSettled(ctx context.Context, from, to time.Time) ([]entity.ChannelSettledRow, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `
@@ -30,7 +33,7 @@ func (s *Store) GetChannelRoasSettled(ctx context.Context, from, to time.Time) (
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0)
 						* (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
 						+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END
-				) AS settled_base
+				) * (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS settled_base
 			FROM customer_order co
 			JOIN buyer b ON b.order_id = co.id
 			LEFT JOIN order_item oi ON oi.order_id = co.id
@@ -40,8 +43,7 @@ func (s *Store) GetChannelRoasSettled(ctx context.Context, from, to time.Time) (
 			LEFT JOIN promo_code pc ON pc.id = co.promo_id
 			WHERE co.placed >= :from AND co.placed < :to
 				AND co.order_status_id IN (:statusIds)
-				AND co.ga_client_id IS NOT NULL AND co.ga_client_id <> ''
-			GROUP BY co.id, co.ga_client_id, b.email, co.total_settled_base
+			GROUP BY co.id, co.ga_client_id, b.email, co.total_settled_base, co.total_price, co.refunded_amount
 		),
 		first_order AS (
 			SELECT b.email, MIN(co.placed) AS first_placed

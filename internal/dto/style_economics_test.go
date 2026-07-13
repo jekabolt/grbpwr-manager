@@ -64,3 +64,51 @@ func TestComputeStyleProductionSummaryEmpty(t *testing.T) {
 	require.True(t, decimal.RequireFromString(got.ActualCostBase.Value).IsZero())
 	require.False(t, got.HasActuals)
 }
+
+// TestComputeStyleProductionSummaryNoPlan: a run with recorded actuals but no frozen plan must NOT
+// emit a variance (actual − 0 would read as a fabricated 100% overrun); CostVariance stays nil.
+func TestComputeStyleProductionSummaryNoPlan(t *testing.T) {
+	runs := []entity.ProductionRun{
+		{
+			ProductionRunInsert: entity.ProductionRunInsert{
+				PlannedUnitCost: decimal.NullDecimal{}, // no plan
+				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 4}},
+				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("40.00")}},
+			},
+		},
+	}
+	got := ComputeStyleProductionSummary(runs)
+	require.True(t, decimal.RequireFromString(got.ActualCostBase.Value).Equal(decimal.NewFromInt(40)))
+	require.True(t, decimal.RequireFromString(got.PlannedCostBase.Value).IsZero())
+	require.Nil(t, got.CostVariance, "no plan → no variance (not a fabricated overrun)")
+	require.True(t, got.HasActuals)
+}
+
+// TestComputeStyleProductionSummaryCancelledExcluded: a cancelled run is abandoned production and must
+// not inflate run count, planned qty/cost, or actuals.
+func TestComputeStyleProductionSummaryCancelledExcluded(t *testing.T) {
+	runs := []entity.ProductionRun{
+		{
+			ProductionRunInsert: entity.ProductionRunInsert{
+				Status:          entity.ProductionRunCancelled,
+				PlannedUnitCost: nd("9.00"),
+				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 100}},
+				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("500.00")}},
+			},
+		},
+		{
+			ProductionRunInsert: entity.ProductionRunInsert{
+				PlannedUnitCost: nd("2.00"),
+				Sizes:           []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
+				Costs:           []entity.ProductionRunCost{{Kind: entity.ProductionRunCostKind("cmt"), AmountBase: nd("25.00")}},
+			},
+		},
+	}
+	got := ComputeStyleProductionSummary(runs)
+	require.EqualValues(t, 1, got.Runs, "cancelled run excluded")
+	require.EqualValues(t, 10, got.PlannedQtyTotal)
+	require.EqualValues(t, 10, got.ReceivedQtyTotal)
+	require.True(t, decimal.RequireFromString(got.PlannedCostBase.Value).Equal(decimal.NewFromInt(20)), "2 × 10, cancelled 9×100 excluded")
+	require.True(t, decimal.RequireFromString(got.ActualCostBase.Value).Equal(decimal.NewFromInt(25)), "cancelled 500 excluded")
+	require.True(t, decimal.RequireFromString(got.CostVariance.Value).Equal(decimal.NewFromInt(5)), "25 − 20")
+}

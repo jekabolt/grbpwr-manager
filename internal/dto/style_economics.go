@@ -12,12 +12,16 @@ import (
 // actual cost articles that folded to base. has_actuals is true once any run recorded an actual
 // cost. A style with no runs is all-zero (runs=0, has_actuals=false).
 func ComputeStyleProductionSummary(runs []entity.ProductionRun) *pb_admin.StyleProductionSummary {
-	out := &pb_admin.StyleProductionSummary{Runs: int32(len(runs))}
-	var plannedQty, receivedQty int64
+	out := &pb_admin.StyleProductionSummary{}
+	var runs32, plannedQty, receivedQty int64
 	planned, actual := decimal.Zero, decimal.Zero
-	hasActuals := false
+	hasActuals, hasPlan := false, false
 	for i := range runs {
 		r := &runs[i]
+		if r.Status == entity.ProductionRunCancelled {
+			continue // an abandoned run is not planned or actual production — don't inflate totals
+		}
+		runs32++
 		var runPlannedQty int64
 		for _, sz := range r.Sizes {
 			runPlannedQty += int64(sz.PlannedQty)
@@ -27,6 +31,7 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun) *pb_admin.StyleP
 		}
 		plannedQty += runPlannedQty
 		if r.PlannedUnitCost.Valid {
+			hasPlan = true
 			planned = planned.Add(r.PlannedUnitCost.Decimal.Mul(decimal.NewFromInt(runPlannedQty)))
 		}
 		for _, c := range r.Costs {
@@ -36,11 +41,18 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun) *pb_admin.StyleP
 			}
 		}
 	}
+	out.Runs = int32(runs32)
 	out.PlannedQtyTotal = int32(plannedQty)
 	out.ReceivedQtyTotal = int32(receivedQty)
 	out.PlannedCostBase = pbDecimalFromDecimal(roundMoney(planned))
 	out.ActualCostBase = pbDecimalFromDecimal(roundMoney(actual))
-	out.CostVariance = pbDecimalFromDecimal(roundMoney(actual.Sub(planned)))
+	// Variance only when there is a frozen plan to compare against; otherwise actual−0 would read as
+	// a fabricated 100% overrun (mirrors computeProductionRunActuals, which gates on PlannedUnitCost).
+	// Left unset (nil) when no run carries a planned unit cost. Note: planned uses planned_qty (full
+	// planned spend), so during an in-progress run actual < planned is expected, not a saving.
+	if hasPlan {
+		out.CostVariance = pbDecimalFromDecimal(roundMoney(actual.Sub(planned)))
+	}
 	out.HasActuals = hasActuals
 	return out
 }
