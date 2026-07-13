@@ -208,7 +208,7 @@ func TestMarginByStyleAndCogsStructure(t *testing.T) {
 
 	// A style (tech card) linking the two coat colourways; set as their primary card.
 	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "ECO-W4-STYLE-1",
+		StyleNumber:     sql.NullString{String: "ECO-W4-STYLE-1", Valid: true},
 		Name:            "The Coat",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,
@@ -480,7 +480,7 @@ func TestSeedProductsCostBreakdownFromTechCard(t *testing.T) {
 	prodID = int(pid64)
 
 	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "ECO-W4-SEED-1",
+		StyleNumber:     sql.NullString{String: "ECO-W4-SEED-1", Valid: true},
 		Name:            "n",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,
@@ -541,7 +541,7 @@ func TestTechCardDevExpenseCRUD(t *testing.T) {
 	}()
 
 	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "ECO-W4-DEV-1",
+		StyleNumber:     sql.NullString{String: "ECO-W4-DEV-1", Valid: true},
 		Name:            "n",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,
@@ -610,7 +610,7 @@ func TestFittingRoundAndChangeRequests(t *testing.T) {
 	}()
 
 	techCardID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "ECO-W4-FIT-1",
+		StyleNumber:     sql.NullString{String: "ECO-W4-FIT-1", Valid: true},
 		Name:            "n",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,

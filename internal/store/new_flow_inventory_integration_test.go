@@ -202,6 +202,54 @@ func TestMaterialCatalogV2(t *testing.T) {
 	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}))
 }
 
+// TestTechCardIdeaStage exercises new-flow NF-03 at the store level: an `idea` draft persists with
+// a NULL style_number, round-trips as stage=idea, and two drafts share a season (the
+// UNIQUE(style_number, season) key permits multiple NULLs).
+func TestTechCardIdeaStage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	draft := func(name string) *entity.TechCardInsert {
+		return &entity.TechCardInsert{
+			// no StyleNumber (NULL) — an idea draft
+			Name:            name,
+			Season:          sql.NullString{String: "NF-IDEA-SEASON", Valid: true},
+			Stage:           entity.TechCardStageIdea,
+			ApprovalState:   entity.TechCardApprovalDraft,
+			TargetGender:    sql.NullString{String: "unisex", Valid: true},
+			MeasurementUnit: entity.TechCardUnitMm,
+		}
+	}
+
+	id1, err := s.TechCards().AddTechCard(ctx, draft("NF Idea One"))
+	require.NoError(t, err, "idea draft without a style number must persist")
+	id2, err := s.TechCards().AddTechCard(ctx, draft("NF Idea Two"))
+	require.NoError(t, err, "a second idea draft in the same season must coexist (NULL style_number)")
+	t.Cleanup(func() {
+		for _, id := range []int{id1, id2} {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", id)
+		}
+	})
+
+	got, err := s.TechCards().GetTechCardById(ctx, id1)
+	require.NoError(t, err)
+	require.Equal(t, entity.TechCardStageIdea, got.Stage)
+	require.False(t, got.StyleNumber.Valid, "idea draft style_number is NULL")
+	require.Equal(t, "NF Idea One", got.Name)
+}
+
 // atoiDay converts a 2-char day string ("01".."31") to its int day for building a deterministic
 // date; avoids strconv import noise in the table above.
 func atoiDay(d string) int {

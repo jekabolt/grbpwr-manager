@@ -113,7 +113,7 @@ func TestProductionRun(t *testing.T) {
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 
 	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber: "PRUN-001", Name: "Run Coat", Stage: entity.TechCardStageProto,
+		StyleNumber: sql.NullString{String: "PRUN-001", Valid: true}, Name: "Run Coat", Stage: entity.TechCardStageProto,
 		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
 	})
 	require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	defer s.Close()
 
 	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber: "PRUN-RCV", Name: "Recv Coat", Stage: entity.TechCardStageProto,
+		StyleNumber: sql.NullString{String: "PRUN-RCV", Valid: true}, Name: "Recv Coat", Stage: entity.TechCardStageProto,
 		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
 	})
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ func TestTechCardRelease(t *testing.T) {
 
 	// minimal parent card (header only — no size/media/product FKs to satisfy).
 	tcID, err := T.AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "REL-001",
+		StyleNumber:     sql.NullString{String: "REL-001", Valid: true},
 		Name:            "Release Coat",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,

@@ -42,7 +42,7 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 
 	econ := &pb_admin.StyleEconomics{
 		TechCardId:  int32(tcID),
-		StyleNumber: card.StyleNumber,
+		StyleNumber: card.StyleNumber.String,
 		Name:        card.Name,
 	}
 
@@ -62,7 +62,7 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 		grossMargin = salesRow.GrossMargin
 		hasCost = salesRow.HasCost
 	} else {
-		econ.Sales = &pb_admin.MarginByStyleRow{TechCardId: int32(tcID), StyleNumber: card.StyleNumber, Name: card.Name}
+		econ.Sales = &pb_admin.MarginByStyleRow{TechCardId: int32(tcID), StyleNumber: card.StyleNumber.String, Name: card.Name}
 	}
 
 	// Development (R&D) journal roll-up.

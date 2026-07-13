@@ -118,7 +118,7 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 
 	// ---- tech card: media split (moodboard/technical) + costing without pricing columns ----
 	tcID, err = s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-		StyleNumber:     "IT-001",
+		StyleNumber:     sql.NullString{String: "IT-001", Valid: true},
 		Name:            "Coat",
 		Stage:           entity.TechCardStageProto,
 		ApprovalState:   entity.TechCardApprovalDraft,

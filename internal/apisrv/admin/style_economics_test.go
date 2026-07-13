@@ -30,7 +30,7 @@ func TestGetStyleEconomics(t *testing.T) {
 	repo.EXPECT().ProductionRuns().Return(pr)
 
 	card := &entity.TechCard{Id: 7}
-	card.StyleNumber = "S-1"
+	card.StyleNumber = sql.NullString{String: "S-1", Valid: true}
 	card.Name = "The Coat"
 	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(card, nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)
@@ -91,7 +91,7 @@ func TestGetStyleEconomicsNoCost(t *testing.T) {
 	repo.EXPECT().ProductionRuns().Return(pr)
 
 	card := &entity.TechCard{Id: 9}
-	card.StyleNumber = "S-9"
+	card.StyleNumber = sql.NullString{String: "S-9", Valid: true}
 	card.Name = "Uncosted"
 	tc.EXPECT().GetTechCardById(mock.Anything, 9).Return(card, nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)

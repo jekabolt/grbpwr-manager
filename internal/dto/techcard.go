@@ -31,6 +31,7 @@ const (
 )
 
 var techCardStagePbToEntity = map[pb_common.TechCardStage]entity.TechCardStage{
+	pb_common.TechCardStage_TECH_CARD_STAGE_IDEA:  entity.TechCardStageIdea,
 	pb_common.TechCardStage_TECH_CARD_STAGE_PROTO: entity.TechCardStageProto,
 	pb_common.TechCardStage_TECH_CARD_STAGE_FIT:   entity.TechCardStageFit,
 	pb_common.TechCardStage_TECH_CARD_STAGE_SMS:   entity.TechCardStageSMS,
@@ -190,9 +191,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if pb == nil {
 		return nil, fmt.Errorf("tech card insert is nil")
 	}
-	if pb.StyleNumber == "" {
-		return nil, fmt.Errorf("style_number is required")
-	}
 	if pb.Name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
@@ -225,6 +223,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		}
 		stage = s
 	}
+	// style_number is optional for an `idea` draft (NF-03) but required to start sampling — every
+	// stage from proto onward. This gates both create and update (both pass through here).
+	styleNumber := strings.TrimSpace(pb.StyleNumber)
+	if stage != entity.TechCardStageIdea && styleNumber == "" {
+		return nil, fmt.Errorf("style_number is required from the proto stage onward")
+	}
 
 	approvalState := entity.TechCardApprovalDraft
 	if pb.ApprovalState != pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_UNKNOWN {
@@ -233,6 +237,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, fmt.Errorf("unknown tech card approval state: %v", pb.ApprovalState)
 		}
 		approvalState = a
+	}
+	// An `idea` draft cannot be approved or released — advance it to a real stage first (NF-03).
+	if stage == entity.TechCardStageIdea &&
+		(approvalState == entity.TechCardApprovalApproved || approvalState == entity.TechCardApprovalReleased) {
+		return nil, fmt.Errorf("an idea draft cannot be approved or released; advance the stage first")
 	}
 
 	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
@@ -421,7 +430,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	return &entity.TechCardInsert{
-		StyleNumber:      pb.StyleNumber,
+		StyleNumber:      nullStringFromPb(styleNumber),
 		Name:             pb.Name,
 		Brand:            nullStringFromPb(pb.Brand),
 		Season:           nullStringFromPb(pb.Season),
@@ -605,7 +614,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		CreatedAt:   timestamppb.New(tc.CreatedAt),
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
-			StyleNumber:      tc.StyleNumber,
+			StyleNumber:      tc.StyleNumber.String,
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
 			Season:           pbStringFromNull(tc.Season),
@@ -687,7 +696,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 	}
 	return &pb_common.TechCardListItem{
 		Id:            int32(tc.Id),
-		StyleNumber:   tc.StyleNumber,
+		StyleNumber:   tc.StyleNumber.String,
 		Name:          tc.Name,
 		Brand:         pbStringFromNull(tc.Brand),
 		Stage:         pbTechCardStage(tc.Stage),

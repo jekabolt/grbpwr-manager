@@ -64,7 +64,7 @@ func TestEconomicsWave1CostProvenance(t *testing.T) {
 
 	mkCard := func(style string) int {
 		id, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
-			StyleNumber:     style,
+			StyleNumber:     sql.NullString{String: style, Valid: true},
 			Name:            "n",
 			Stage:           entity.TechCardStageProto,
 			ApprovalState:   entity.TechCardApprovalDraft,

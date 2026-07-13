@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.StyleNumber != "ST-001" || got.Name != "Field Jacket" {
+	if got.StyleNumber.String != "ST-001" || got.Name != "Field Jacket" {
 		t.Errorf("identity mismatch: %+v", got)
 	}
 	if got.Stage != entity.TechCardStageFit {
@@ -118,6 +119,29 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		t.Errorf("base size with empty size range should be allowed: %v", err)
 	}
 
+	// NF-03: an `idea` draft may omit style_number (stored NULL); from proto onward it is required.
+	idea, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Just an idea", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+	})
+	if err != nil {
+		t.Fatalf("idea draft without style_number should be allowed: %v", err)
+	}
+	if idea.Stage != entity.TechCardStageIdea || idea.StyleNumber.Valid {
+		t.Errorf("idea draft: stage=%v style_number=%+v (want idea + NULL)", idea.Stage, idea.StyleNumber)
+	}
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Now sampling", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_PROTO,
+	}); err == nil {
+		t.Error("proto stage without style_number must be rejected")
+	}
+	// an idea draft cannot be released.
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Premature", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+		ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
+	}); err == nil {
+		t.Error("releasing an idea draft must be rejected")
+	}
+
 	// invalid cases.
 	bad := map[string]*pb_common.TechCardInsert{
 		"nil":               nil,
@@ -151,7 +175,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id: 9,
 		TechCardInsert: entity.TechCardInsert{
-			StyleNumber:     "ST-001",
+			StyleNumber:     sql.NullString{String: "ST-001", Valid: true},
 			Name:            "Field Jacket",
 			Stage:           entity.TechCardStageProd,
 			ApprovalState:   entity.TechCardApprovalReleased,
@@ -564,7 +588,7 @@ func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id:             5,
-		TechCardInsert: entity.TechCardInsert{StyleNumber: "ST-003", Name: "Pants", Stage: entity.TechCardStagePP},
+		TechCardInsert: entity.TechCardInsert{StyleNumber: sql.NullString{String: "ST-003", Valid: true}, Name: "Pants", Stage: entity.TechCardStagePP},
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}

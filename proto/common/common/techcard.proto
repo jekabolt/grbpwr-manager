@@ -18,6 +18,7 @@ enum TechCardStage {
   TECH_CARD_STAGE_SMS = 3;
   TECH_CARD_STAGE_PP = 4;
   TECH_CARD_STAGE_PROD = 5;
+  TECH_CARD_STAGE_IDEA = 6; // draft: moodboard/concept before a style number (new-flow NF-03)
 }
 
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to

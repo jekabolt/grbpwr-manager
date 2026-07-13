@@ -21,6 +21,7 @@ var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open 
 type TechCardStage string
 
 const (
+	TechCardStageIdea  TechCardStage = "idea"  // draft: moodboard/concept before a style number (NF-03)
 	TechCardStageProto TechCardStage = "proto" // prototype
 	TechCardStageFit   TechCardStage = "fit"   // fit sample
 	TechCardStageSMS   TechCardStage = "sms"   // salesman sample
@@ -30,6 +31,7 @@ const (
 
 // ValidTechCardStages is the set of accepted tech-card stages.
 var ValidTechCardStages = map[TechCardStage]bool{
+	TechCardStageIdea:  true,
 	TechCardStageProto: true,
 	TechCardStageFit:   true,
 	TechCardStageSMS:   true,
@@ -705,7 +707,8 @@ type CostingFxRate struct {
 // Child slices are full replacements on update. The construction description lives in
 // Details; the header carries no cost targets (pricing is on Costing).
 type TechCardInsert struct {
-	StyleNumber      string                  `db:"style_number"`
+	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
+	StyleNumber      sql.NullString          `db:"style_number"`
 	Name             string                  `db:"name"`
 	Brand            sql.NullString          `db:"brand"`
 	Season           sql.NullString          `db:"season"`
