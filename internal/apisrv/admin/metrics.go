@@ -368,6 +368,15 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.CogsStructure = dto.ConvertCogsStructureToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_INVENTORY_VALUATION) {
+		v, err := s.repo.Metrics().GetInventoryValuation(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get inventory valuation", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get inventory valuation")
+		}
+		resp.InventoryValuation = dto.ConvertInventoryValuationToPb(v)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
 		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
 		if err != nil {

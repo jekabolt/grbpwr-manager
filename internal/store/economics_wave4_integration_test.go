@@ -290,6 +290,137 @@ func TestMarginByStyleAndCogsStructure(t *testing.T) {
 	require.True(t, total.Equal(decimal.NewFromInt(40)), "total COGS 40, got %s", total)
 }
 
+// TestInventoryValuation exercises task-16 GetInventoryValuation: stock valued at cost_price,
+// dead stock (in stock but unsold in the window), uncosted-stock honesty, and damage/loss
+// write-offs. Product A (cost 10, 5 on hand) sells in the window; B (cost 20, 3 on hand) does
+// not → dead stock; C (no cost, 4 on hand) is uncosted. A damage write-off of 2 units of A is
+// booked in the window. Assertions target the specific products so leftover DB stock can't
+// break them; the windowed write-off total is asserted exactly.
+func TestInventoryValuation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	var mediaID, prodA, prodB, prodC, sizeID, statusID int
+	var orderID int64
+	defer func() {
+		if orderID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM order_item WHERE order_id = ?", orderID)
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", orderID)
+		}
+		for _, pid := range []int{prodA, prodB, prodC} {
+			if pid != 0 {
+				// product_size + product_stock_change_history cascade on product delete.
+				_, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", pid)
+			}
+		}
+		if mediaID != 0 {
+			_ = s.Media().DeleteMediaById(ctx, mediaID)
+		}
+	}()
+
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT id FROM order_status WHERE name = ?", string(entity.Confirmed)).Scan(&statusID))
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&sizeID))
+
+	mediaID, err = s.Media().AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
+		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
+		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+	})
+	require.NoError(t, err)
+
+	mkProduct := func(sku string, cost string, onHand int) int {
+		res, err := testDB.ExecContext(ctx, `INSERT INTO product
+			(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
+			VALUES (?, 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, sku, mediaID)
+		require.NoError(t, err)
+		id64, err := res.LastInsertId()
+		require.NoError(t, err)
+		id := int(id64)
+		if cost != "" {
+			_, err = testDB.ExecContext(ctx, "UPDATE product SET cost_price = ? WHERE id = ?", cost, id)
+			require.NoError(t, err)
+		}
+		_, err = testDB.ExecContext(ctx,
+			"INSERT INTO product_size (product_id, size_id, quantity) VALUES (?, ?, ?)", id, sizeID, onHand)
+		require.NoError(t, err)
+		return id
+	}
+	prodA = mkProduct("ECO-W4-INV-A", "10", 5) // costed, sells → not dead
+	prodB = mkProduct("ECO-W4-INV-B", "20", 3) // costed, no sale → dead stock
+	prodC = mkProduct("ECO-W4-INV-C", "", 4)   // uncosted
+
+	// Window: sale of A + the write-off both fall inside it; B has no sale.
+	winStart := time.Date(2026, 2, 12, 0, 0, 0, 0, time.UTC)
+	from, to := winStart, winStart.Add(24*time.Hour)
+	placed := winStart.Add(12 * time.Hour)
+
+	res, err := testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, refunded_amount, total_settled_base, placed)
+		VALUES ('ECO-W4-INV-0001', ?, 'EUR', 30, 0, 30, ?)`, statusID, placed)
+	require.NoError(t, err)
+	orderID, err = res.LastInsertId()
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
+		(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id)
+		VALUES (?, ?, 30, 30, 10, 0, 1, ?)`, orderID, prodA, sizeID)
+	require.NoError(t, err)
+
+	// Damage write-off: 2 units of A removed in the window.
+	_, err = testDB.ExecContext(ctx, `INSERT INTO product_stock_change_history
+		(product_id, size_id, quantity_delta, quantity_after, source, reason, created_at)
+		VALUES (?, ?, -2, 3, 'manual_adjustment', 'damage', ?)`, prodA, sizeID, placed)
+	require.NoError(t, err)
+
+	v, err := s.Metrics().GetInventoryValuation(ctx, from, to, 10000)
+	require.NoError(t, err)
+
+	byID := map[int]entity.InventoryValuationRow{}
+	for _, r := range v.TopByValue {
+		byID[r.ProductID] = r
+	}
+	// A and B appear in top-by-value with their frozen value; C (uncosted) does not.
+	rowA, okA := byID[prodA]
+	require.True(t, okA, "A in top-by-value")
+	require.True(t, rowA.Value.Equal(decimal.NewFromInt(50)), "A value 10×5=50, got %s", rowA.Value)
+	require.Equal(t, int64(1), rowA.SoldUnits, "A sold 1 in window")
+	rowB, okB := byID[prodB]
+	require.True(t, okB, "B in top-by-value")
+	require.True(t, rowB.Value.Equal(decimal.NewFromInt(60)), "B value 20×3=60, got %s", rowB.Value)
+	_, okC := byID[prodC]
+	require.False(t, okC, "uncosted C is not valued")
+
+	// Dead stock contains B (unsold) but not A (sold in window).
+	deadIDs := map[int]bool{}
+	for _, r := range v.DeadStock {
+		deadIDs[r.ProductID] = true
+	}
+	require.True(t, deadIDs[prodB], "B is dead stock (unsold, in stock)")
+	require.False(t, deadIDs[prodA], "A sold in window → not dead")
+
+	// Totals include our contributions (>= because the shared test DB may hold other stock).
+	require.True(t, v.TotalStockValue.GreaterThanOrEqual(decimal.NewFromInt(110)),
+		"total value ≥ 50+60, got %s", v.TotalStockValue)
+	require.GreaterOrEqual(t, v.UncostedStockUnits, int64(4), "C's 4 uncosted units counted")
+	require.GreaterOrEqual(t, v.UncostedStockProducts, 1)
+
+	// Write-offs are windowed → exactly our one damage row: 2 units × cost 10 = 20.
+	require.True(t, v.WriteOffsValue.Equal(decimal.NewFromInt(20)), "write-off value 20, got %s", v.WriteOffsValue)
+	require.Equal(t, int64(2), v.WriteOffsUnits)
+}
+
 // TestSeedProductsCostBreakdownFromTechCard covers the task-15 store write: the breakdown JSON
 // is written onto a product whose primary card is this one and whose cost is not manual (same
 // predicate as the cost_price seed), a manual cost is never touched, and a NULL clears a stale

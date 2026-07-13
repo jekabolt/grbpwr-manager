@@ -760,6 +760,37 @@ type CogsStructureRow struct {
 	Pct       float64         `db:"-"`         // share of total COGS, filled in Go
 }
 
+// --- Inventory valuation (task 16) ---
+
+// InventoryValuationRow is one product's frozen stock value: on-hand units × current per-unit
+// cost. SoldUnits is the product's net units sold in the reporting window (0 ⇒ dead stock — it
+// is sitting in the warehouse as unsold cost).
+type InventoryValuationRow struct {
+	ProductID   int             `db:"product_id"`
+	ProductName string          `db:"product_name"`
+	OnHand      int64           `db:"on_hand"`
+	UnitCost    decimal.Decimal `db:"-"`
+	Value       decimal.Decimal `db:"-"`
+	SoldUnits   int64           `db:"-"`
+}
+
+// InventoryValuation is the money view of the warehouse: how much cost is frozen in stock, how
+// much of it is dead (unsold in the window), and how much was written off in the period. Stock
+// is valued at the CURRENT plan cost_price (v1 — the only cost available); products without a
+// cost are counted honestly as uncosted (value unknown), never as zero.
+type InventoryValuation struct {
+	TotalStockValue       decimal.Decimal // Σ cost_price × on_hand over COSTED products, base EUR
+	TotalOnHandUnits      int64           // Σ on_hand over ALL in-stock products
+	CostedOnHandUnits     int64           // on_hand of products that HAVE a cost
+	UncostedStockUnits    int64           // on_hand of products with NO cost (value unknown)
+	UncostedStockProducts int             // distinct in-stock products with no cost
+	CoveragePct           float64         // costed_on_hand_units / total_on_hand_units × 100
+	TopByValue            []InventoryValuationRow // costed products ranked by frozen value
+	DeadStock             []InventoryValuationRow // costed, in-stock, unsold in window — by value
+	WriteOffsValue        decimal.Decimal // Σ |Δqty| × cost_price for damage/loss in the period
+	WriteOffsUnits        int64           // units written off (damage/loss) in the period
+}
+
 // --- Return Analysis ---
 
 // ReturnByProductRow holds return rate by product with refund reason breakdown for horizontal stacked bar chart.

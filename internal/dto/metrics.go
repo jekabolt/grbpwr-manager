@@ -1690,3 +1690,40 @@ func ConvertCogsStructureToPb(list []entity.CogsStructureRow) []*pb_admin.CogsSt
 	}
 	return pb
 }
+
+// ConvertInventoryValuationToPb maps the inventory-valuation summary to proto.
+func ConvertInventoryValuationToPb(v *entity.InventoryValuation) *pb_admin.InventoryValuation {
+	if v == nil {
+		return nil
+	}
+	return &pb_admin.InventoryValuation{
+		TotalStockValue:       &decimal.Decimal{Value: v.TotalStockValue.String()},
+		TotalOnHandUnits:      v.TotalOnHandUnits,
+		CostedOnHandUnits:     v.CostedOnHandUnits,
+		UncostedStockUnits:    v.UncostedStockUnits,
+		UncostedStockProducts: int32(v.UncostedStockProducts),
+		CoveragePct:           v.CoveragePct,
+		TopByValue:            convertInventoryValuationRows(v.TopByValue),
+		DeadStock:             convertInventoryValuationRows(v.DeadStock),
+		WriteOffsValue:        &decimal.Decimal{Value: v.WriteOffsValue.String()},
+		WriteOffsUnits:        v.WriteOffsUnits,
+	}
+}
+
+func convertInventoryValuationRows(list []entity.InventoryValuationRow) []*pb_admin.InventoryValuationRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.InventoryValuationRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.InventoryValuationRow{
+			ProductId:   int32(r.ProductID),
+			ProductName: r.ProductName,
+			OnHand:      r.OnHand,
+			UnitCost:    &decimal.Decimal{Value: r.UnitCost.String()},
+			Value:       &decimal.Decimal{Value: r.Value.String()},
+			SoldUnits:   r.SoldUnits,
+		}
+	}
+	return pb
+}

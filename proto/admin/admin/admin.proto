@@ -1292,6 +1292,7 @@ enum MetricsSection {
   METRICS_SECTION_SELL_THROUGH_BY_DROP = 45;
   METRICS_SECTION_MARGIN_BY_STYLE = 46; // task 15: margin rolled up to tech-card style
   METRICS_SECTION_COGS_STRUCTURE = 47; // task 15: cost-of-goods-sold component structure
+  METRICS_SECTION_INVENTORY_VALUATION = 48; // task 16: cost frozen in stock + dead stock + write-offs
 }
 
 message GetMetricsRequest {
@@ -1353,6 +1354,7 @@ message GetMetricsResponse {
   repeated SellThroughByDropRow sell_through_by_drop = 48;
   repeated MarginByStyleRow margin_by_style = 49; // task 15
   repeated CogsStructureRow cogs_structure = 50; // task 15
+  InventoryValuation inventory_valuation = 51; // task 16
 }
 
 // --- Dashboard (decision-grade summary) ---
@@ -2653,6 +2655,36 @@ message CogsStructureRow {
   string component = 1; // materials|cmt|hardware|packaging|logistics|overhead|unattributed
   google.type.Decimal amount = 2; // base-currency (EUR) Σ over the period, refund-adjusted
   double pct = 3; // share of total COGS
+}
+
+// --- Analytics: Inventory valuation (task 16) ---
+
+// InventoryValuationRow is one product's frozen stock value: on-hand units × current per-unit
+// cost. sold_units is the product's net units sold in the window (0 ⇒ dead stock).
+message InventoryValuationRow {
+  int32 product_id = 1;
+  string product_name = 2;
+  int64 on_hand = 3;
+  google.type.Decimal unit_cost = 4; // current plan cost_price (base currency)
+  google.type.Decimal value = 5; // on_hand × unit_cost
+  int64 sold_units = 6; // net units sold in the window (0 = dead stock)
+}
+
+// InventoryValuation is the money view of the warehouse: cost frozen in stock, how much is dead
+// (unsold in the window), and damage/loss write-offs in the period. Stock is valued at the
+// current plan cost_price (v1); products without a cost are counted as uncosted (value unknown),
+// never as zero, so coverage is honest.
+message InventoryValuation {
+  google.type.Decimal total_stock_value = 1; // Σ cost_price × on_hand over costed products, base EUR
+  int64 total_on_hand_units = 2; // Σ on_hand over all in-stock products
+  int64 costed_on_hand_units = 3; // on_hand of products that have a cost
+  int64 uncosted_stock_units = 4; // on_hand of products with no cost (value unknown)
+  int32 uncosted_stock_products = 5; // distinct in-stock products with no cost
+  double coverage_pct = 6; // costed_on_hand_units / total_on_hand_units × 100
+  repeated InventoryValuationRow top_by_value = 7; // costed products ranked by frozen value
+  repeated InventoryValuationRow dead_stock = 8; // costed, in-stock, unsold in window — by value
+  google.type.Decimal write_offs_value = 9; // Σ |Δqty| × cost_price for damage/loss in the period
+  int64 write_offs_units = 10; // units written off (damage/loss) in the period
 }
 
 // --- Analytics: Return Analysis ---

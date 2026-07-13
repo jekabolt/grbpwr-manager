@@ -326,6 +326,10 @@ type (
 		// GetCogsStructure decomposes the cost of goods sold in the period into its components
 		// (materials / cmt / … / unattributed) from each product's cost_breakdown snapshot.
 		GetCogsStructure(ctx context.Context, from, to time.Time) ([]entity.CogsStructureRow, error)
+		// GetInventoryValuation is the money view of the warehouse: cost frozen in stock, dead
+		// stock (unsold in the window), and damage/loss write-offs in the period, valued at the
+		// current plan cost_price with uncosted stock counted honestly.
+		GetInventoryValuation(ctx context.Context, from, to time.Time, limit int) (*entity.InventoryValuation, error)
 	}
 
 	Support interface {
