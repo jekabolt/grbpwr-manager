@@ -49,6 +49,19 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	if err != nil {
 		return nil, fmt.Errorf("material fabric_weight_gsm: %w", err)
 	}
+	if len(pb.Code) > maxVarchar64 {
+		return nil, fmt.Errorf("material code must be at most %d characters", maxVarchar64)
+	}
+	if len(pb.Color) > maxVarchar64 || len(pb.Pantone) > maxVarchar32 {
+		return nil, fmt.Errorf("material color/pantone too long")
+	}
+	minStock, err := nullDecimalFromPb(pb.MinStock)
+	if err != nil {
+		return nil, fmt.Errorf("material min_stock: %w", err)
+	}
+	if minStock.Valid && minStock.Decimal.IsNegative() {
+		return nil, fmt.Errorf("material min_stock must be non-negative")
+	}
 	return &entity.MaterialInsert{
 		Name:            name,
 		Section:         string(section),
@@ -59,6 +72,11 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		Unit:            nullStringFromPb(pb.Unit),
 		FabricWidth:     fabricWidth,
 		FabricWeightGsm: fabricGsm,
+		Code:            nullStringFromPb(pb.Code),
+		Color:           nullStringFromPb(pb.Color),
+		Pantone:         nullStringFromPb(pb.Pantone),
+		MinStock:        minStock,
+		Notes:           nullStringFromPb(pb.Notes),
 	}, nil
 }
 
@@ -76,6 +94,11 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		FabricWidth:     pbDecimalFromNull(m.FabricWidth),
 		FabricWeightGsm: pbDecimalFromNull(m.FabricWeightGsm),
 		Archived:        m.Archived,
+		Code:            pbStringFromNull(m.Code),
+		Color:           pbStringFromNull(m.Color),
+		Pantone:         pbStringFromNull(m.Pantone),
+		MinStock:        pbDecimalFromNull(m.MinStock),
+		Notes:           pbStringFromNull(m.Notes),
 	}
 	if m.LatestPrice != nil {
 		out.LatestPrice = ConvertEntityMaterialPriceToPb(*m.LatestPrice)

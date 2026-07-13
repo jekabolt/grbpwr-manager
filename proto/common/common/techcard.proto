@@ -212,6 +212,12 @@ message Material {
   // latest_price is the current (latest-effective) price, if any (read-only; set via
   // AddMaterialPrice). Absent when the material has no price history yet.
   MaterialPrice latest_price = 12;
+  // Warehouse catalog fields (new-flow NF-02).
+  string code = 13; // internal article code (ours), unique among non-archived materials
+  string color = 14; // colour of the purchased article
+  string pantone = 15;
+  google.type.Decimal min_stock = 16; // low-stock alert threshold, in `unit`
+  string notes = 17;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

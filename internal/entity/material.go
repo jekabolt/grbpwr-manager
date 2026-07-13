@@ -20,6 +20,12 @@ type MaterialInsert struct {
 	Unit            sql.NullString      `db:"unit" valid:"-"`
 	FabricWidth     decimal.NullDecimal `db:"fabric_width" valid:"-"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm" valid:"-"`
+	// Warehouse catalog fields (NF-02).
+	Code     sql.NullString      `db:"code" valid:"-"`      // internal article code (ours), unique among non-archived
+	Color    sql.NullString      `db:"color" valid:"-"`     // colour of the purchased article
+	Pantone  sql.NullString      `db:"pantone" valid:"-"`   // pantone reference
+	MinStock decimal.NullDecimal `db:"min_stock" valid:"-"` // low-stock alert threshold, in Unit
+	Notes    sql.NullString      `db:"notes" valid:"-"`
 }
 
 // Material is a catalog material with its lifecycle columns.

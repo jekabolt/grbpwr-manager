@@ -9,6 +9,7 @@ import "common/filter.proto";
 import "common/fitting.proto";
 import "common/fulfillment.proto";
 import "common/hero.proto";
+import "common/inventory.proto";
 import "common/language.proto";
 import "common/media.proto";
 import "common/model.proto";
@@ -711,6 +712,36 @@ service AdminService {
       post: "/api/admin/production-runs/{run_id}/receive"
       body: "*"
     };
+  }
+
+  // Material warehouse (new-flow NF-01): on-hand balance + moving-average valuation and an
+  // append-only movement ledger per catalog material.
+  rpc ReceiveMaterialStock(ReceiveMaterialStockRequest) returns (ReceiveMaterialStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/receive"
+      body: "*"
+    };
+  }
+  rpc IssueMaterialStock(IssueMaterialStockRequest) returns (IssueMaterialStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/issue"
+      body: "*"
+    };
+  }
+  rpc AdjustMaterialStock(AdjustMaterialStockRequest) returns (AdjustMaterialStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/adjust"
+      body: "*"
+    };
+  }
+  rpc GetMaterialStock(GetMaterialStockRequest) returns (GetMaterialStockResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory/{material_id}"};
+  }
+  rpc ListMaterialStock(ListMaterialStockRequest) returns (ListMaterialStockResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory"};
+  }
+  rpc ListMaterialMovements(ListMaterialMovementsRequest) returns (ListMaterialMovementsResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory/movements"};
   }
 
   // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
@@ -3539,6 +3570,83 @@ message ReceiveProductionRunRequest {
 
 message ReceiveProductionRunResponse {
   bool cost_price_updated = 1; // true when update_cost_price was requested and applied
+}
+
+// MATERIAL WAREHOUSE (new-flow NF-01)
+
+message ReceiveMaterialStockRequest {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2; // in the material's unit, > 0
+  google.type.Decimal unit_cost = 3; // price per unit in `currency`; empty = uncosted receipt (average unchanged). Setting a cost requires costing:write.
+  string currency = 4; // ISO 4217
+  string lot = 5; // supplier lot / roll (free text, not tracked by lot in v1)
+  string supplier_doc = 6;
+  string occurred_at = 7; // YYYY-MM-DD; defaults to today
+  string comment = 8;
+}
+
+message ReceiveMaterialStockResponse {
+  common.MaterialMovement movement = 1;
+}
+
+message IssueMaterialStockRequest {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2; // > 0
+  // exactly one target must be set (> 0)
+  int32 production_run_id = 3;
+  int32 sample_id = 4;
+  bool is_return = 5; // true → return_* instead of issue_*
+  string occurred_at = 6; // YYYY-MM-DD
+  string comment = 7;
+}
+
+message IssueMaterialStockResponse {
+  common.MaterialMovement movement = 1;
+}
+
+message AdjustMaterialStockRequest {
+  int32 material_id = 1;
+  string mode = 2; // set | adjust | writeoff
+  google.type.Decimal quantity = 3; // set/writeoff: non-negative magnitude; adjust: signed delta
+  string reason = 4; // stock_count | damage | loss | found | correction | packaging | other
+  string comment = 5;
+}
+
+message AdjustMaterialStockResponse {
+  common.MaterialMovement movement = 1;
+}
+
+message GetMaterialStockRequest {
+  int32 material_id = 1;
+}
+
+message GetMaterialStockResponse {
+  common.MaterialStock stock = 1;
+}
+
+message ListMaterialStockRequest {
+  string section = 1;
+  string q = 2; // matches name / code / supplier_ref
+  bool with_stock_only = 3;
+  bool below_min_only = 4;
+}
+
+message ListMaterialStockResponse {
+  repeated common.MaterialStockRow rows = 1;
+}
+
+message ListMaterialMovementsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  int32 material_id = 3;
+  int32 production_run_id = 4;
+  int32 sample_id = 5;
+  common.MaterialMovementType movement_type = 6;
+}
+
+message ListMaterialMovementsResponse {
+  repeated common.MaterialMovement movements = 1;
+  int32 total = 2;
 }
 
 // ADMIN ACCOUNTS (RBAC)

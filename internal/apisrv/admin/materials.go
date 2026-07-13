@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -19,6 +21,9 @@ func (s *Server) CreateMaterial(ctx context.Context, req *pb_admin.CreateMateria
 	}
 	id, err := s.repo.TechCards().CreateMaterial(ctx, ins)
 	if err != nil {
+		if errors.Is(err, entity.ErrMaterialCodeTaken) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't create material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't create material")
 	}
@@ -36,6 +41,9 @@ func (s *Server) UpdateMaterial(ctx context.Context, req *pb_admin.UpdateMateria
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.repo.TechCards().UpdateMaterial(ctx, int(m.Id), ins); err != nil {
+		if errors.Is(err, entity.ErrMaterialCodeTaken) || errors.Is(err, entity.ErrMaterialUnitLocked) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't update material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update material")
 	}

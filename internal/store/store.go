@@ -26,6 +26,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fulfillment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/language"
 	"github.com/jekabolt/grbpwr-manager/internal/store/membership"
 	"github.com/jekabolt/grbpwr-manager/internal/store/metrics"
@@ -111,6 +112,7 @@ type MYSQLStore struct {
 	fulfillmentStore   *fulfillment.Store
 	techCardStore      *techcard.Store
 	productionRunStore *productionrun.Store
+	materialStockStore *inventory.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -377,6 +379,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.fulfillmentStore = fulfillment.New(base, ms.Tx)
 	ms.techCardStore = techcard.New(base, ms.Tx)
 	ms.productionRunStore = productionrun.New(base, ms.Tx)
+	ms.materialStockStore = inventory.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -403,6 +406,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.fulfillmentStore = fulfillment.New(base, outerTx)
 	txStore.techCardStore = techcard.New(base, outerTx)
 	txStore.productionRunStore = productionrun.New(base, outerTx)
+	txStore.materialStockStore = inventory.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -474,6 +478,7 @@ func (ms *MYSQLStore) Tasks() dependency.Tasks                   { return ms.tas
 func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.fulfillmentStore }
 func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
 func (ms *MYSQLStore) ProductionRuns() dependency.ProductionRuns { return ms.productionRunStore }
+func (ms *MYSQLStore) MaterialStock() dependency.MaterialStock   { return ms.materialStockStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }

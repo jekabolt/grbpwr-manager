@@ -476,6 +476,18 @@ type (
 		ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error
 	}
 
+	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
+	// moving-average unit cost per catalog material, and the append-only movement ledger. Distinct
+	// from Inventory (which is the finished-goods valuation metrics of task 16).
+	MaterialStock interface {
+		ReceiveMaterialStock(ctx context.Context, ins entity.MaterialReceiptInsert) (entity.MaterialMovement, error)
+		IssueMaterialStock(ctx context.Context, ins entity.MaterialIssueInsert) (entity.MaterialMovement, error)
+		AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error)
+		GetMaterialStock(ctx context.Context, materialID int) (*entity.MaterialStock, error)
+		ListMaterialStock(ctx context.Context, filter entity.MaterialStockFilter) ([]entity.MaterialStockRow, error)
+		ListMaterialMovements(ctx context.Context, limit, offset int, filter entity.MaterialMovementFilter) ([]entity.MaterialMovement, int, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -697,6 +709,7 @@ type (
 		Fulfillment() Fulfillment
 		TechCards() TechCards
 		ProductionRuns() ProductionRuns
+		MaterialStock() MaterialStock
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail

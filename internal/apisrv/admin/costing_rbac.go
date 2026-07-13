@@ -88,6 +88,37 @@ func stripMaterialCosting(m *pb_common.Material) {
 	m.LatestPrice = nil
 }
 
+// stripMaterialMovementCosting clears the confidential money on a stock-ledger row (unit costs +
+// currency). Quantities and on-hand balances stay — a warehouse role sees "how many metres" but
+// not "at what value" (new-flow NF-01). Safe on nil.
+func stripMaterialMovementCosting(m *pb_common.MaterialMovement) {
+	if m == nil {
+		return
+	}
+	m.UnitCost = nil
+	m.UnitCostBase = nil
+	m.Currency = ""
+}
+
+// stripMaterialStockCosting clears the moving-average cost on a stock balance, keeping on-hand.
+func stripMaterialStockCosting(st *pb_common.MaterialStock) {
+	if st == nil {
+		return
+	}
+	st.AvgUnitCostBase = nil
+}
+
+// stripMaterialStockRowCosting clears the valuation on a warehouse list row (average, stock value,
+// and the nested material's confidential price), keeping quantity, min-stock and the low-stock flag.
+func stripMaterialStockRowCosting(r *pb_common.MaterialStockRow) {
+	if r == nil {
+		return
+	}
+	r.AvgUnitCostBase = nil
+	r.StockValueBase = nil
+	stripMaterialCosting(r.Material)
+}
+
 // stripReleaseMetaCosting clears the planned unit cost on a release header. Safe on nil.
 func stripReleaseMetaCosting(m *pb_common.TechCardReleaseMeta) {
 	if m == nil {

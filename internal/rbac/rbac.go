@@ -37,6 +37,11 @@ const (
 	SectionFittings    = "fittings"
 	SectionTechCards   = "tech_cards"
 	SectionProduction  = "production"
+	// SectionInventory governs the material warehouse (new-flow NF-01): on-hand stock, receipts,
+	// issues, adjustments and the movement ledger. Quantities are gated by this section; the money
+	// on those responses (unit costs, valuation) is additionally gated by SectionCosting — a
+	// warehouse role can hold inventory:read for balances without seeing their value.
+	SectionInventory = "inventory"
 	// SectionCosting is a FIELD-SHAPING section, not a method gate: no RPC is mapped
 	// to it in methodRequirements. Instead the admin service strips confidential cost
 	// fields (tech-card costing block + BOM purchase prices, product cost_price, margin/
@@ -77,6 +82,7 @@ var catalog = []SectionInfo{
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
 	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
+	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
 	{SectionCosting, "Costing", "Confidential cost of goods: tech-card costing & BOM prices, product cost, margin/COGS analytics. Redacts fields, does not hide screens."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
@@ -211,6 +217,13 @@ var methodRequirements = map[string]Requirement{
 	"GetProductionRun":     rd(SectionProduction),
 	"ListProductionRuns":   rd(SectionProduction),
 	"ReceiveProductionRun": wr(SectionProduction),
+	// material warehouse (new-flow NF-01)
+	"ReceiveMaterialStock":  wr(SectionInventory),
+	"IssueMaterialStock":    wr(SectionInventory),
+	"AdjustMaterialStock":   wr(SectionInventory),
+	"GetMaterialStock":      rd(SectionInventory),
+	"ListMaterialStock":     rd(SectionInventory),
+	"ListMaterialMovements": rd(SectionInventory),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),
