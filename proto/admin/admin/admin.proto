@@ -267,6 +267,59 @@ service AdminService {
     };
   }
 
+  // UpsertOpexLines writes OPEX line items (NF-08) — each with its own currency (folded to base) and
+  // a label — upserting on (month, category, label). Requires costing:write.
+  rpc UpsertOpexLines(UpsertOpexLinesRequest) returns (UpsertOpexLinesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/lines/upsert"
+      body: "*"
+    };
+  }
+
+  // DeleteOpexLine removes one OPEX line by id. Requires costing:write.
+  rpc DeleteOpexLine(DeleteOpexLineRequest) returns (DeleteOpexLineResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/lines/delete"
+      body: "*"
+    };
+  }
+
+  // ListOpexLines returns OPEX lines within an inclusive month range, optional category. Requires
+  // costing:read (returns empty otherwise — the figures are confidential cost data).
+  rpc ListOpexLines(ListOpexLinesRequest) returns (ListOpexLinesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/lines/list"
+      body: "*"
+    };
+  }
+
+  // UpsertOpexRecurring inserts (id==0) or updates a recurring OPEX template (salary, subscription,
+  // rent) materialised into monthly lines by a worker. Requires costing:write.
+  rpc UpsertOpexRecurring(UpsertOpexRecurringRequest) returns (UpsertOpexRecurringResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/recurring/upsert"
+      body: "*"
+    };
+  }
+
+  // ArchiveOpexRecurring stops a recurring template from materialising further months. Requires
+  // costing:write.
+  rpc ArchiveOpexRecurring(ArchiveOpexRecurringRequest) returns (ArchiveOpexRecurringResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/recurring/archive"
+      body: "*"
+    };
+  }
+
+  // ListOpexRecurring returns recurring OPEX templates (active-only unless include_archived).
+  // Requires costing:read (returns empty otherwise).
+  rpc ListOpexRecurring(ListOpexRecurringRequest) returns (ListOpexRecurringResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/metrics/opex/recurring/list"
+      body: "*"
+    };
+  }
+
   // Cancels an order
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse) {
     option (google.api.http) = {
@@ -3156,6 +3209,96 @@ message UpsertOpexEntriesRequest {
 }
 
 message UpsertOpexEntriesResponse {}
+
+// OpexLineInsert is one operating-expense line item (NF-08). Amount is in `currency`; it is folded
+// to the base currency server-side via the manual costing FX rates (left uncosted, and excluded
+// from the operating result, when the currency has no rate).
+message OpexLineInsert {
+  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month
+  string category = 2; // salaries | rent | software | marketing_other | production_content | other | taxes | bank_fees | professional_services | logistics_office
+  string label = 3; // free text distinguishing lines within a month × category (e.g. «Adobe CC», «швея Мария»)
+  google.type.Decimal amount = 4; // in `currency`, >= 0
+  string currency = 5; // ISO 4217; defaults to the base currency when empty
+  string note = 6;
+}
+
+// OpexLine is a stored OPEX line item.
+message OpexLine {
+  int32 id = 1;
+  string month = 2;
+  string category = 3;
+  string label = 4;
+  google.type.Decimal amount = 5; // in `currency`
+  string currency = 6;
+  google.type.Decimal amount_base = 7; // base currency; zero when uncosted (see `costed`)
+  bool costed = 8; // false = the currency had no FX rate for the month; excluded from the operating result
+  int32 recurring_id = 9; // 0 = manual line; else the recurring template it was materialised from
+  string note = 10;
+}
+
+message UpsertOpexLinesRequest {
+  repeated OpexLineInsert lines = 1;
+}
+
+message UpsertOpexLinesResponse {}
+
+message DeleteOpexLineRequest {
+  int32 id = 1;
+}
+
+message DeleteOpexLineResponse {}
+
+message ListOpexLinesRequest {
+  string month_from = 1; // inclusive, any date in the month, YYYY-MM-DD
+  string month_to = 2; // inclusive
+  string category = 3; // empty = any
+}
+
+message ListOpexLinesResponse {
+  repeated OpexLine lines = 1;
+}
+
+// OpexRecurringInsert is a recurring fixed-cost template (salary, subscription, rent) that a worker
+// materialises into a monthly OpexLine from active_from to min(current month, active_to).
+message OpexRecurringInsert {
+  string label = 1;
+  string category = 2;
+  google.type.Decimal amount = 3; // in `currency`, >= 0
+  string currency = 4; // ISO 4217; defaults to the base currency when empty
+  string active_from = 5; // any date in the first active month, YYYY-MM-DD; normalised to the 1st
+  string active_to = 6; // empty = open-ended; else any date in the last active month
+  string note = 7;
+}
+
+// OpexRecurring is a stored recurring OPEX template.
+message OpexRecurring {
+  int32 id = 1;
+  OpexRecurringInsert recurring = 2;
+  bool archived = 3;
+}
+
+message UpsertOpexRecurringRequest {
+  OpexRecurringInsert recurring = 1;
+  int32 id = 2; // 0 = insert a new template; else update the template with this id
+}
+
+message UpsertOpexRecurringResponse {
+  int32 id = 1;
+}
+
+message ArchiveOpexRecurringRequest {
+  int32 id = 1;
+}
+
+message ArchiveOpexRecurringResponse {}
+
+message ListOpexRecurringRequest {
+  bool include_archived = 1;
+}
+
+message ListOpexRecurringResponse {
+  repeated OpexRecurring recurring = 1;
+}
 
 // ==================== Review Messages ====================
 

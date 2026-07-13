@@ -307,8 +307,25 @@ type (
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
 		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
 		// UpsertOpexEntries writes the fixed-cost (OPEX) journal used by the dashboard
-		// operating result (opex_entry table), upserting on (month, category).
+		// operating result (opex_entry table), upserting on (month, category). NF-08: it also
+		// mirrors each aggregate into opex_line as an '(aggregate)' base-currency line.
 		UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) error
+		// UpsertOpexLines writes OPEX line items (opex_line, NF-08), upserting on
+		// (month, category, label). AmountBase is folded to base currency by the caller.
+		UpsertOpexLines(ctx context.Context, rows []entity.OpexLineInsert) error
+		// DeleteOpexLine removes one OPEX line by id.
+		DeleteOpexLine(ctx context.Context, id int) error
+		// ListOpexLines returns OPEX lines within the (inclusive) month bounds, optional category.
+		ListOpexLines(ctx context.Context, f entity.OpexLineFilter) ([]entity.OpexLine, error)
+		// UpsertOpexRecurring inserts (id==0) or updates a recurring OPEX template, returning its id.
+		UpsertOpexRecurring(ctx context.Context, ins entity.OpexRecurringInsert, id int) (int, error)
+		// ArchiveOpexRecurring stops a template from materialising further months.
+		ArchiveOpexRecurring(ctx context.Context, id int) error
+		// ListOpexRecurring returns recurring templates (active-only unless includeArchived).
+		ListOpexRecurring(ctx context.Context, includeArchived bool) ([]entity.OpexRecurring, error)
+		// MaterializeOpexRecurring books each active template into monthly opex_lines up to `upTo`,
+		// folding amounts to base with `rates`; INSERT-only and idempotent. Returns lines created.
+		MaterializeOpexRecurring(ctx context.Context, upTo time.Time, rates map[string]decimal.Decimal) (int, error)
 		// ListVatRates / UpsertVatRates read and write the destination-country VAT rates
 		// (vat_rate table) used to compute net-of-VAT revenue.
 		ListVatRates(ctx context.Context) ([]entity.VatRate, error)

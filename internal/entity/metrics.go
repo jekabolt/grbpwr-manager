@@ -1101,5 +1101,10 @@ var ValidOpexCategories = map[string]struct{}{
 	"software":           {},
 	"marketing_other":    {},
 	"production_content": {},
-	"other":              {},
+	// NF-08 additions (the set is dto-validated, so it extends without a migration):
+	"taxes":                 {},
+	"bank_fees":             {},
+	"professional_services": {}, // accountant / lawyer
+	"logistics_office":      {}, // office/ops logistics (not order shipping)
+	"other":                 {},
 }

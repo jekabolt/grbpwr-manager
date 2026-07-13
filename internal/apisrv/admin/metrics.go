@@ -856,6 +856,109 @@ func (s *Server) UpsertOpexEntries(ctx context.Context, req *pb_admin.UpsertOpex
 	return &pb_admin.UpsertOpexEntriesResponse{}, nil
 }
 
+// UpsertOpexLines writes OPEX line items (NF-08), folding each amount into base currency via the
+// costing FX before storage. OPEX figures are confidential cost data, so — like dev expenses — the
+// detailed line API is gated by costing:write on top of the analytics section (the legacy aggregate
+// UpsertOpexEntries stays analytics-only for backward compatibility).
+func (s *Server) UpsertOpexLines(ctx context.Context, req *pb_admin.UpsertOpexLinesRequest) (*pb_admin.UpsertOpexLinesResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit OPEX lines")
+	}
+	lines, err := dto.ConvertPbOpexLinesToEntity(req.GetLines())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if len(lines) == 0 {
+		return &pb_admin.UpsertOpexLinesResponse{}, nil
+	}
+	dto.FoldOpexLinesToBase(lines, s.costingFx(ctx))
+	if err := s.repo.Metrics().UpsertOpexLines(ctx, lines); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert opex lines", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert opex lines")
+	}
+	return &pb_admin.UpsertOpexLinesResponse{}, nil
+}
+
+// DeleteOpexLine removes one OPEX line by id.
+func (s *Server) DeleteOpexLine(ctx context.Context, req *pb_admin.DeleteOpexLineRequest) (*pb_admin.DeleteOpexLineResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to delete an OPEX line")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().DeleteOpexLine(ctx, int(req.GetId())); err != nil {
+		slog.Default().ErrorContext(ctx, "can't delete opex line", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't delete opex line")
+	}
+	return &pb_admin.DeleteOpexLineResponse{}, nil
+}
+
+// ListOpexLines returns OPEX lines in a month range. The amounts are confidential cost data, so
+// without costing:read there is nothing non-cost to return — shape it to an empty response, like
+// ListTechCardDevExpenses.
+func (s *Server) ListOpexLines(ctx context.Context, req *pb_admin.ListOpexLinesRequest) (*pb_admin.ListOpexLinesResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return &pb_admin.ListOpexLinesResponse{}, nil
+	}
+	filter, err := dto.ConvertOpexLineFilter(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	lines, err := s.repo.Metrics().ListOpexLines(ctx, filter)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list opex lines", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list opex lines")
+	}
+	return &pb_admin.ListOpexLinesResponse{Lines: dto.OpexLinesToPb(lines)}, nil
+}
+
+// UpsertOpexRecurring inserts (id==0) or updates a recurring OPEX template.
+func (s *Server) UpsertOpexRecurring(ctx context.Context, req *pb_admin.UpsertOpexRecurringRequest) (*pb_admin.UpsertOpexRecurringResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit recurring OPEX")
+	}
+	ins, err := dto.ConvertPbOpexRecurringToEntity(req.GetRecurring())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	id, err := s.repo.Metrics().UpsertOpexRecurring(ctx, ins, int(req.GetId()))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert opex recurring")
+	}
+	return &pb_admin.UpsertOpexRecurringResponse{Id: int32(id)}, nil
+}
+
+// ArchiveOpexRecurring stops a recurring template from materialising further months.
+func (s *Server) ArchiveOpexRecurring(ctx context.Context, req *pb_admin.ArchiveOpexRecurringRequest) (*pb_admin.ArchiveOpexRecurringResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to archive recurring OPEX")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().ArchiveOpexRecurring(ctx, int(req.GetId())); err != nil {
+		slog.Default().ErrorContext(ctx, "can't archive opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't archive opex recurring")
+	}
+	return &pb_admin.ArchiveOpexRecurringResponse{}, nil
+}
+
+// ListOpexRecurring returns recurring OPEX templates (active-only unless include_archived). Gated
+// like ListOpexLines — empty response without costing:read.
+func (s *Server) ListOpexRecurring(ctx context.Context, req *pb_admin.ListOpexRecurringRequest) (*pb_admin.ListOpexRecurringResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return &pb_admin.ListOpexRecurringResponse{}, nil
+	}
+	list, err := s.repo.Metrics().ListOpexRecurring(ctx, req.GetIncludeArchived())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list opex recurring")
+	}
+	return &pb_admin.ListOpexRecurringResponse{Recurring: dto.OpexRecurringListToPb(list)}, nil
+}
+
 // channelKey joins the three UTM dimensions into a single map key (NUL-separated so empty
 // segments can't collide, e.g. "a|" vs "|a").
 func channelKey(source, medium, campaign string) string {

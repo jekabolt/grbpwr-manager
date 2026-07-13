@@ -122,9 +122,9 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	d.MarketingSpend = marketingSpend
 	d.OperatingResult = d.ContributionMargin.Sub(opexTotal).Sub(marketingSpend).Round(2)
 	if !opexComplete {
-		// Covers both "no OPEX at all" and "some months in the period recorded, others missing" —
-		// either way the missing months' fixed costs are absent, so the result is understated.
-		d.OpexCaveat = "OPEX is missing for one or more months in this period — operating result excludes those fixed costs and is incomplete."
+		// Covers "no OPEX at all", "some months recorded, others missing", and "a line whose currency
+		// had no FX rate (uncosted, excluded from the total)" — any of these understates fixed costs.
+		d.OpexCaveat = "OPEX is missing or uncosted for one or more months in this period — operating result excludes those fixed costs and is incomplete."
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) {
 		d.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()

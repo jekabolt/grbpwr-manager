@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
@@ -54,6 +55,7 @@ type App struct {
 	oc   *ordercleanup.Worker
 	sc   *storefrontcleanup.Worker
 	tm   *tiermanagement.Worker
+	om   *opexmaterialize.Worker
 	sr   *stripereconcile.Worker
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
@@ -131,6 +133,14 @@ func (a *App) Start(ctx context.Context) error {
 	a.tm = tiermanagement.New(&a.c.TierManagement, a.db, a.ma)
 	if err = a.tm.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start tier management worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	a.om = opexmaterialize.New(&a.c.OpexMaterialize, a.db)
+	if err = a.om.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start opex materialize worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -432,6 +442,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.tm != nil {
 		_ = a.tm.Stop()
 	}
+	if a.om != nil {
+		_ = a.om.Stop()
+	}
 	if a.sr != nil {
 		_ = a.sr.Stop()
 	}
@@ -502,6 +515,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.tm != nil {
 		addWorker(a.tm)
+	}
+	if a.om != nil {
+		addWorker(a.om)
 	}
 	if a.sr != nil {
 		addWorker(a.sr)

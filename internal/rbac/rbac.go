@@ -159,10 +159,20 @@ var methodRequirements = map[string]Requirement{
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
 	"UpsertOpexEntries":      wr(SectionAnalytics),
-	"GetAlertSettings":       rd(SectionAnalytics),
-	"UpsertAlertSettings":    wr(SectionAnalytics),
-	"GetVatRates":            rd(SectionAnalytics),
-	"UpsertVatRates":         wr(SectionAnalytics),
+	// OPEX v2 detailed line/recurring APIs (NF-08). Classified under analytics like the legacy
+	// aggregate; the handlers additionally gate on costing:* (writes → PermissionDenied, reads →
+	// empty) because the figures are confidential cost data. SectionCosting itself is field-shaping
+	// only and is never a method requirement, so it can't appear here.
+	"UpsertOpexLines":      wr(SectionAnalytics),
+	"DeleteOpexLine":       wr(SectionAnalytics),
+	"ListOpexLines":        rd(SectionAnalytics),
+	"UpsertOpexRecurring":  wr(SectionAnalytics),
+	"ArchiveOpexRecurring": wr(SectionAnalytics),
+	"ListOpexRecurring":    rd(SectionAnalytics),
+	"GetAlertSettings":     rd(SectionAnalytics),
+	"UpsertAlertSettings":  wr(SectionAnalytics),
+	"GetVatRates":          rd(SectionAnalytics),
+	"UpsertVatRates":       wr(SectionAnalytics),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
