@@ -399,8 +399,11 @@ func (s *Server) WithAuth(next http.Handler) http.Handler {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
 		_, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			// Create a new error message
-			errMsg := errorMessage{Error: err.Error()}
+			// Return a constant message to the (anonymous) caller; the raw jwx error
+			// distinguishes expired vs bad-signature vs audience-mismatch and is an
+			// oracle for probers. Keep the detail server-side.
+			slog.Default().WarnContext(r.Context(), "auth token verification failed", slog.String("err", err.Error()))
+			errMsg := errorMessage{Error: "unauthorized"}
 
 			// Set content type to JSON
 			w.Header().Set("Content-Type", "application/json")
@@ -491,11 +494,14 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 		}
 		token, err := GetTokenMetadata(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "missing auth token: %v", err)
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
 		}
 		sub, super, permStrs, legacy, err := jwt.VerifyAdminToken(s.JwtAuth, token, s.jwtExpectations)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "invalid auth token: %v", err)
+			// Log the raw verification error server-side; return a constant so the
+			// jwx failure stage is not disclosed to the caller.
+			slog.Default().WarnContext(ctx, "invalid admin auth token", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
 		}
 		perms := rbac.ParsePermissions(permStrs)
 		if !rbac.Authorize(info.FullMethod, legacy, super, perms) {
