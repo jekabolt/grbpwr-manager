@@ -286,14 +286,23 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 		origins = append(origins, corsDevOrigins...)
 	}
 
-	return cors.Handler(cors.Options{
+	opts := cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Requested-With", "Accept", "Grpc-Metadata-Authorization", "Origin"},
 		ExposedHeaders:   []string{"Content-Length", "X-Request-Id"},
 		AllowCredentials: true,
 		MaxAge:           3600,
-	})
+	}
+	if len(origins) == 0 {
+		// Fail closed. go-chi treats an empty AllowedOrigins as "allow all", which
+		// with AllowCredentials=true degrades a strict credentialed allowlist to
+		// allow-all when HTTP_ALLOWED_ORIGINS is empty/typo'd and dev origins are off.
+		// Reject every cross-origin request instead.
+		opts.AllowedOrigins = nil
+		opts.AllowOriginFunc = func(_ *http.Request, _ string) bool { return false }
+	}
+	return cors.Handler(opts)
 }
 
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
