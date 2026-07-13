@@ -126,14 +126,17 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 
 	// Trim surrounding whitespace: secret managers / env injection frequently add
 	// a trailing newline, which would otherwise make the master password never
-	// match what callers send. Also fail closed if it's unset or too weak. This is
-	// a human-entered password, so the floor is softer than for machine secrets.
+	// match what callers send. Fail closed only if it's unset (a functional
+	// requirement); merely warn if it's weak, so a legacy short password logs loudly
+	// but does not block startup. This is a human-entered password, so the floor is
+	// softer than for machine secrets.
 	masterPassword := strings.TrimSpace(c.MasterPassword)
 	if masterPassword == "" {
 		return nil, fmt.Errorf("auth.master_password is required")
 	}
 	if len(masterPassword) < 12 {
-		return nil, fmt.Errorf("auth.master_password must be at least 12 characters (got %d)", len(masterPassword))
+		slog.Warn("weak auth.master_password — rotate to at least 12 characters",
+			"got_chars", len(masterPassword))
 	}
 
 	ph, err := pwhash.New(c.PasswordHasherSaltSize, c.PasswordHasherIterations)
