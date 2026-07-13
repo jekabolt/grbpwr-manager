@@ -244,8 +244,17 @@ var corsDevOrigins = []string{
 // maxJSONBodyBytes caps frontend/auth JSON request bodies. The grpc-gateway
 // marshaler buffers the whole body into memory before the loopback gRPC hop, so an
 // unbounded body is a memory-exhaustion / JSON-bomb vector. Admin is capped higher
-// (grpcMaxRecvMsgSize) because it carries base64 media uploads.
+// (maxAdminJSONBodyBytes) because it carries base64 media uploads.
 const maxJSONBodyBytes = 4 << 20 // 4 MB
+
+// maxAdminJSONBodyBytes caps admin REST/JSON request bodies. Admin media uploads carry
+// raw bytes base64-encoded in the JSON body (proto `bytes` over grpc-gateway), which
+// inflates the largest raw payload — video, maxVideoPayloadBytes = 50 MiB — by ~4/3 to
+// ~66.7 MiB on the wire. The cap must therefore sit above that expanded size, so it is
+// deliberately larger than grpcMaxRecvMsgSize (which bounds the post-base64-decode gRPC
+// hop, not the JSON body). Reusing grpcMaxRecvMsgSize here would silently reject any
+// video over ~37.5 MiB (= 50 MiB × 3/4) before it reached the handler.
+const maxAdminJSONBodyBytes = 72 << 20 // 72 MiB (base64 of a 50 MiB video ≈ 66.7 MiB + JSON envelope)
 
 // limitBody caps the request body via http.MaxBytesReader, so an oversized body is
 // rejected instead of being fully buffered by the JSON gateway.
@@ -417,9 +426,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
 		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
-		// Admin carries base64 media uploads, so it gets the larger gRPC-recv cap;
-		// frontend/auth JSON is bounded tightly.
-		r.With(limitBody(grpcMaxRecvMsgSize)).Mount("/admin", auth.WithAuth(adminHandler))
+		// Admin carries base64-encoded media uploads, so it gets a cap sized for the
+		// base64-expanded video payload (see maxAdminJSONBodyBytes); frontend/auth JSON
+		// is bounded tightly.
+		r.With(limitBody(maxAdminJSONBodyBytes)).Mount("/admin", auth.WithAuth(adminHandler))
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
 	})
