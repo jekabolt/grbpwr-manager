@@ -23,8 +23,18 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
 // caller-declared content type, because browsers routinely upload HEIC photos
 // (e.g. from Apple devices) mislabeled as image/jpeg. declared is used only to
 // enrich error messages.
+// maxImagePixels bounds the decoded raster size. It is checked from the image
+// header (DecodeConfig) BEFORE the full decode, so a small but highly-compressed
+// payload that expands to a huge raster (a decompression bomb) is rejected before
+// allocating hundreds of MB. ~40 MP is generous for a storefront master image.
+const maxImagePixels = 40_000_000
+
 func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
-	switch ct := sniffImageType(raw); ct {
+	ct := sniffImageType(raw)
+	if err := checkImagePixelBudget(ct, raw); err != nil {
+		return nil, err
+	}
+	switch ct {
 	case contentTypeJPEG:
 		return jpeg.Decode(bytes.NewReader(raw))
 	case contentTypePNG:
@@ -38,6 +48,33 @@ func decodeImage(raw []byte, declared ContentType) (image.Image, error) {
 	default:
 		return nil, fmt.Errorf("unsupported image format %q (declared %q); supported formats: JPEG, PNG, WebP, HEIC", ct, declared)
 	}
+}
+
+// checkImagePixelBudget reads only the image header (cheap, no full raster) and
+// rejects images whose pixel count exceeds maxImagePixels. HEIC has no header
+// config path here and is bounded separately (see decodeHEIC).
+func checkImagePixelBudget(ct ContentType, raw []byte) error {
+	var (
+		cfg image.Config
+		err error
+	)
+	switch ct {
+	case contentTypeJPEG:
+		cfg, err = jpeg.DecodeConfig(bytes.NewReader(raw))
+	case contentTypePNG:
+		cfg, err = png.DecodeConfig(bytes.NewReader(raw))
+	case contentTypeWEBP:
+		cfg, err = webp.DecodeConfig(bytes.NewReader(raw))
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("can't read image header: %w", err)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return fmt.Errorf("image too large: %dx%d exceeds %d-pixel limit", cfg.Width, cfg.Height, maxImagePixels)
+	}
+	return nil
 }
 
 // decodeHEIC decodes a HEIC payload via native libheif, loaded at runtime by
