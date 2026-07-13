@@ -28,6 +28,7 @@ func (s *Store) GetMarginByStyle(ctx context.Context, from, to time.Time, limit 
 			COALESCE(tc.style_number, '') AS style_number,
 			COALESCE(tc.name, '') AS name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
 			SUM(oi.quantity) AS units_sold,
 			COUNT(DISTINCT oi.product_id) AS colorway_count,
 			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
@@ -40,12 +41,13 @@ func (s *Store) GetMarginByStyle(ctx context.Context, from, to time.Time, limit 
 		GROUP BY COALESCE(p.primary_tech_card_id, 0), tc.style_number, tc.name
 		ORDER BY revenue DESC
 		LIMIT :limit
-	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
+	`, orderFactorsCTE, itemAdjExpr, itemAdjExpr, costAdjExpr)
 
 	rows, err := storeutil.QueryListNamed[struct {
 		entity.MarginByStyleRow
-		UnitCostRaw    decimal.NullDecimal `db:"unit_cost"`
-		RevenueCostRaw decimal.Decimal     `db:"revenue_cost"`
+		CostedRevenueRaw decimal.Decimal     `db:"costed_revenue"`
+		UnitCostRaw      decimal.NullDecimal `db:"unit_cost"`
+		RevenueCostRaw   decimal.Decimal     `db:"revenue_cost"`
 	}](ctx, s.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
@@ -59,7 +61,12 @@ func (s *Store) GetMarginByStyle(ctx context.Context, from, to time.Time, limit 
 	result := make([]entity.MarginByStyleRow, len(rows))
 	for i, r := range rows {
 		row := r.MarginByStyleRow
-		rm := computeRowMargin(row.Revenue, r.UnitCostRaw, r.RevenueCostRaw)
+		// Margin is computed over the COSTED SUBSET (costed_revenue − revenue_cost), not the full
+		// style revenue: a style that mixes costed and uncosted colourways would otherwise credit
+		// the uncosted SKUs' revenue as pure profit and overstate margin. row.Revenue keeps the full
+		// style revenue for display; only the margin math uses the costed base. Same pattern as
+		// GetSellThroughByDrop.
+		rm := computeRowMargin(r.CostedRevenueRaw, r.UnitCostRaw, r.RevenueCostRaw)
 		row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
 		row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
 		result[i] = row

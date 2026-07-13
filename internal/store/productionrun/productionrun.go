@@ -158,8 +158,24 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID, productID int, 
 	return nil
 }
 
-// DeleteProductionRun deletes a run by id (size grid cascades).
+// DeleteProductionRun deletes a run by id (size grid cascades). It refuses to delete a run that has
+// already been received/closed: that run's stock increment and any cost_price it seeded are applied
+// facts, and dropping the run would orphan them. Returns entity.ErrProductionRunReceivedImmutable in
+// that case and sql.ErrNoRows when the run does not exist. Load-then-guard is sufficient here
+// (admin-only, low concurrency; a received run never transitions back to deletable).
 func (s *Store) DeleteProductionRun(ctx context.Context, id int) error {
+	cur, err := storeutil.QueryNamedOne[struct {
+		Status string `db:"status"`
+	}](ctx, s.DB, `SELECT status FROM production_run WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
+		return fmt.Errorf("failed to load production run for delete: %w", err)
+	}
+	if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
+		return entity.ErrProductionRunReceivedImmutable
+	}
 	if err := storeutil.ExecNamed(ctx, s.DB,
 		`DELETE FROM production_run WHERE id = :id`, map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("failed to delete production run: %w", err)

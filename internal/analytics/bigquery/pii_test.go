@@ -19,6 +19,8 @@ func TestScrubPIIEmails(t *testing.T) {
 			"https://grbpwr.com/u/[email]/orders"},
 		{"plus-addressing", "https://grbpwr.com/x?e=a.b+tag@sub.domain.com",
 			"https://grbpwr.com/x?e=[email]"},
+		{"url-encoded at sign", "https://grbpwr.com/checkout?email=jane.doe%40example.com&step=2",
+			"https://grbpwr.com/checkout?email=[email]&step=2"},
 		{"two emails", "?a=one@x.com&b=two@y.org",
 			"?a=[email]&b=[email]"},
 		{"no email untouched", "https://grbpwr.com/products/coat?color=black",

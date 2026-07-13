@@ -55,19 +55,30 @@ func TestBuildDashboardAlerts_GA4TrackingCoverage(t *testing.T) {
 	th := entity.DefaultAlertThresholds() // GA4CoverageWarnPct = 80, RateFloorN = 30
 
 	// GA4 saw 50% of DB revenue over enough orders: warn.
-	d := &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
+	d := &entity.Dashboard{CostCoveragePct: 100, Revenue: rev, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
 	assert.True(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
 
 	// Healthy coverage (95%): no alert.
-	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(950), TrackingCoveragePct: 95}
+	d = &entity.Dashboard{CostCoveragePct: 100, Revenue: rev, GA4Revenue: decimal.NewFromInt(950), TrackingCoveragePct: 95}
 	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
 
 	// Below the order floor: suppressed even at low coverage (too small a sample).
-	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
+	d = &entity.Dashboard{CostCoveragePct: 100, Revenue: rev, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 50}
 	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 10, 0, rev), "low_ga4_tracking_coverage"))
 
 	// GA4 synced nothing (0 revenue → 0% coverage): treated as "not synced", not a 0% alarm.
-	d = &entity.Dashboard{CostCoveragePct: 100, GA4Revenue: decimal.Zero, TrackingCoveragePct: 0}
+	d = &entity.Dashboard{CostCoveragePct: 100, Revenue: rev, GA4Revenue: decimal.Zero, TrackingCoveragePct: 0}
+	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
+
+	// Near-total tracking loss: GA4 synced a positive but tiny amount, so coverage rounds to 0.00.
+	// This is the WORST case and MUST alarm (regression guard: an earlier `coverage > 0` gate wrongly
+	// suppressed it).
+	d = &entity.Dashboard{CostCoveragePct: 100, Revenue: rev, GA4Revenue: decimal.NewFromInt(1), TrackingCoveragePct: 0}
+	assert.True(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
+
+	// DB revenue is zero (coverage denominator zero → TrackingCoveragePct never computed): a positive
+	// GA4 figure must NOT trigger a spurious "0% coverage" alarm.
+	d = &entity.Dashboard{CostCoveragePct: 100, Revenue: decimal.Zero, GA4Revenue: decimal.NewFromInt(500), TrackingCoveragePct: 0}
 	assert.False(t, hasAlert(buildDashboardAlerts(d, th, 0, 50, 0, rev), "low_ga4_tracking_coverage"))
 }
 

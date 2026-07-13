@@ -75,6 +75,12 @@ func (s *Server) DeleteProductionRun(ctx context.Context, req *pb_admin.DeletePr
 		return nil, status.Error(codes.InvalidArgument, "production run id is required")
 	}
 	if err := s.repo.ProductionRuns().DeleteProductionRun(ctx, int(req.Id)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't delete production run", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete production run")
 	}

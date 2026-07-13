@@ -27,7 +27,7 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 		limit = 10
 	}
 
-	rev, _, _, orders, _, err := s.getCoreSalesMetrics(ctx, from, to)
+	rev, grossInclVat, _, orders, _, err := s.getCoreSalesMetrics(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard core sales: %w", err)
 	}
@@ -55,7 +55,7 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard ga4 revenue: %w", err)
 	}
-	opexTotal, hasOpex, err := s.getOpexForPeriod(ctx, from, to)
+	opexTotal, opexComplete, err := s.getOpexForPeriod(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard opex: %w", err)
 	}
@@ -107,10 +107,13 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if costedRev.GreaterThan(decimal.Zero) {
 		d.GrossMarginPct = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
 	}
-	// GA4-vs-DB revenue coverage (task 20): what fraction of real (gross DB) revenue GA4 saw.
-	// Compared gross-to-gross so a shortfall reads as tracking loss, not a net/gross mismatch.
-	if grossRev.GreaterThan(decimal.Zero) {
-		d.TrackingCoveragePct = ga4Rev.Div(grossRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	// GA4-vs-DB revenue coverage (task 20): what fraction of real DB revenue GA4 saw. The
+	// denominator must be LIKE-FOR-LIKE with GA4's purchase `value` = what the customer actually
+	// paid (order.totalPrice): post-discount, shipping- AND VAT-inclusive. That is grossInclVat —
+	// NOT the pre-discount list-price grossRev (which would understate coverage on any discounted
+	// order) and NOT the net-of-VAT headline revenue (which would understate it by the VAT rate).
+	if grossInclVat.GreaterThan(decimal.Zero) {
+		d.TrackingCoveragePct = ga4Rev.Div(grossInclVat).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
 	}
 	// Operating result (task 22): the honest total under contribution margin. Marketing spend is
 	// subtracted HERE (not in contribution — it isn't variable per order), which also avoids
@@ -118,8 +121,10 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	d.OpexTotal = opexTotal
 	d.MarketingSpend = marketingSpend
 	d.OperatingResult = d.ContributionMargin.Sub(opexTotal).Sub(marketingSpend).Round(2)
-	if !hasOpex {
-		d.OpexCaveat = "No OPEX recorded for this period — operating result excludes fixed costs and is incomplete."
+	if !opexComplete {
+		// Covers both "no OPEX at all" and "some months in the period recorded, others missing" —
+		// either way the missing months' fixed costs are absent, so the result is understated.
+		d.OpexCaveat = "OPEX is missing for one or more months in this period — operating result excludes those fixed costs and is incomplete."
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) {
 		d.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
@@ -167,15 +172,18 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 
 // getGA4Revenue sums the GA4-reported ecommerce revenue over the period from the
 // ga4_ecommerce_metrics cache (populated daily by the ga4sync worker; re-syncable — see the
-// analytics-cache note). Rows are keyed by calendar date, so the window is compared on DATE
-// bounds. COALESCE keeps an empty (not-yet-synced) window at zero rather than NULL.
+// analytics-cache note). Rows are keyed by calendar date (whole-day buckets); a day [d, d+1) is
+// counted iff it OVERLAPS the half-open request window [from, to) — matching the DB revenue
+// interval (`placed >= from AND placed < to`). The old `date <= DATE(:to)` counted the boundary
+// day the DB excludes, inflating coverage by a full day on a midnight-aligned `to`. COALESCE keeps
+// an empty (not-yet-synced) window at zero rather than NULL.
 func (s *Store) getGA4Revenue(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
 	row, err := storeutil.QueryNamedOne[struct {
 		Revenue decimal.Decimal `db:"revenue"`
 	}](ctx, s.DB, `
 		SELECT COALESCE(SUM(revenue), 0) AS revenue
 		FROM ga4_ecommerce_metrics
-		WHERE date >= DATE(:from) AND date <= DATE(:to)`,
+		WHERE date < :to AND date + INTERVAL 1 DAY > :from`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("ga4 revenue: %w", err)
@@ -230,10 +238,14 @@ func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundR
 		})
 	}
 	// GA4 tracking-coverage alert (task 20): GA4 saw materially less revenue than the DB.
-	// Gated on the same significance floor and on GA4 having synced *some* revenue — a flat
-	// zero is treated as "not synced yet", not "0% coverage", so a fresh window doesn't cry wolf.
-	if placedOrders >= t.RateFloorN && d.GA4Revenue.IsPositive() &&
-		d.TrackingCoveragePct > 0 && d.TrackingCoveragePct < t.GA4CoverageWarnPct {
+	// Gated on the significance floor, on GA4 having synced *some* revenue (a flat zero is "not
+	// synced yet", not "0% coverage", so a fresh window doesn't cry wolf), and on the DB actually
+	// having revenue (a zero denominator leaves coverage at 0 spuriously). We deliberately do NOT
+	// also require TrackingCoveragePct > 0: a positive-but-tiny GA4 figure rounds coverage to 0.00,
+	// which is the WORST case (near-total tracking loss) and must still alarm — the old > 0 guard
+	// silently suppressed exactly that.
+	if placedOrders >= t.RateFloorN && d.GA4Revenue.IsPositive() && d.Revenue.IsPositive() &&
+		d.TrackingCoveragePct < t.GA4CoverageWarnPct {
 		out = append(out, entity.DashboardAlert{
 			Severity: entity.AlertSeverityWarning,
 			Code:     "low_ga4_tracking_coverage",

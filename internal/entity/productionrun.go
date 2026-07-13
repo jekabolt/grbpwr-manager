@@ -12,6 +12,11 @@ import (
 // been received (or closed) — receiving again would double-count stock.
 var ErrProductionRunAlreadyReceived = errors.New("production run has already been received")
 
+// ErrProductionRunReceivedImmutable is returned by DeleteProductionRun when the run has already
+// been received (or closed): its stock increment and any cost_price it seeded are already applied,
+// so deleting the run would orphan those side effects. Cancel/adjust the run instead of deleting.
+var ErrProductionRunReceivedImmutable = errors.New("a received production run cannot be deleted")
+
 // ProductionRunStatus is the lifecycle state of a production run (партия). It mirrors the
 // common.ProductionRunStatus proto enum and is stored as its lowercase string in the DB.
 type ProductionRunStatus string

@@ -88,12 +88,27 @@ func TestStripReleaseMetaCosting(t *testing.T) {
 func TestStripMetricsCosting(t *testing.T) {
 	resp := &pb_admin.GetMetricsResponse{
 		Business: &pb_admin.BusinessMetrics{
-			Commerce: &pb_admin.CommerceCoreMetrics{},
-			Margin:   &pb_admin.MarginMetrics{},
+			Commerce: &pb_admin.CommerceCoreMetrics{
+				// ProductMetric carries cost/margin AND non-cost (revenue) — mixed row, nested deep.
+				TopProductsByRevenue: []*pb_admin.ProductMetric{
+					{ProductName: "coat", Value: dec("500.00"), UnitCost: dec("40.00"), GrossMargin: dec("100.00"), GrossMarginPct: 20},
+				},
+			},
+			Margin: &pb_admin.MarginMetrics{},
 		},
 		MarginByStyle:      []*pb_admin.MarginByStyleRow{{}},
 		CogsStructure:      []*pb_admin.CogsStructureRow{{}},
 		InventoryValuation: &pb_admin.InventoryValuation{},
+		// Mixed reports that the old flat strip MISSED — must keep revenue/units, redact cost/margin.
+		RevenuePareto: []*pb_admin.RevenueParetoRow{
+			{ProductName: "p", Revenue: dec("500.00"), UnitCost: dec("40.00"), RevenueCost: dec("200.00"), GrossMargin: dec("300.00"), GrossMarginPct: 60},
+		},
+		SlowMovers: []*pb_admin.SlowMoverRow{
+			{ProductName: "s", Revenue: dec("50.00"), UnitCost: dec("10.00"), GrossMargin: dec("20.00"), GrossMarginPct: 40},
+		},
+		SellThroughByDrop: []*pb_admin.SellThroughByDropRow{
+			{Collection: "SS27", Revenue: dec("300.00"), GrossMargin: dec("70.00"), GrossMarginPct: 35},
+		},
 	}
 	stripMetricsCosting(resp)
 	require.NotNil(t, resp.Business.Commerce, "commerce kept")
@@ -101,6 +116,32 @@ func TestStripMetricsCosting(t *testing.T) {
 	require.Nil(t, resp.MarginByStyle, "margin-by-style redacted")
 	require.Nil(t, resp.CogsStructure, "cogs structure redacted")
 	require.Nil(t, resp.InventoryValuation, "inventory valuation redacted")
+
+	// Mixed reports: cost/margin fields cleared, non-cost fields kept (the HIGH leak the review found).
+	tp := resp.Business.Commerce.TopProductsByRevenue[0]
+	require.Equal(t, "coat", tp.ProductName, "product name kept")
+	require.Equal(t, "500.00", tp.Value.GetValue(), "revenue kept")
+	require.Nil(t, tp.UnitCost, "top-product unit_cost redacted")
+	require.Nil(t, tp.GrossMargin, "top-product gross_margin redacted")
+	require.Zero(t, tp.GrossMarginPct, "top-product gross_margin_pct redacted")
+
+	rp := resp.RevenuePareto[0]
+	require.Equal(t, "500.00", rp.Revenue.GetValue(), "pareto revenue kept")
+	require.Nil(t, rp.UnitCost, "pareto unit_cost redacted")
+	require.Nil(t, rp.RevenueCost, "pareto revenue_cost redacted")
+	require.Nil(t, rp.GrossMargin, "pareto gross_margin redacted")
+	require.Zero(t, rp.GrossMarginPct, "pareto gross_margin_pct redacted")
+
+	sm := resp.SlowMovers[0]
+	require.Equal(t, "50.00", sm.Revenue.GetValue(), "slow-mover revenue kept")
+	require.Nil(t, sm.UnitCost, "slow-mover unit_cost redacted")
+	require.Nil(t, sm.GrossMargin, "slow-mover gross_margin redacted")
+
+	sd := resp.SellThroughByDrop[0]
+	require.Equal(t, "SS27", sd.Collection, "drop label kept")
+	require.Equal(t, "300.00", sd.Revenue.GetValue(), "sell-through revenue kept")
+	require.Nil(t, sd.GrossMargin, "sell-through gross_margin redacted")
+	require.Zero(t, sd.GrossMarginPct, "sell-through gross_margin_pct redacted")
 }
 
 // TestStripDashboardCosting redacts margins while revenue/orders survive.

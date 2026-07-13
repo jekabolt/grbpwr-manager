@@ -34,33 +34,38 @@ func (s *Store) UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) 
 }
 
 // getOpexForPeriod returns the OPEX attributable to [from, to), day-pro-rated per month, and
-// whether any OPEX was recorded for the period's months (false → the dashboard flags the
-// operating result as incomplete). OPEX is stored per calendar month; a period that covers only
-// part of a month is charged that month's share by day overlap, so a rolling 30-day window that
-// straddles two months gets the right fraction of each.
+// whether the period is FULLY covered — i.e. every calendar month the period overlaps has at least
+// one OPEX entry. `complete=false` (no OPEX at all, OR some months recorded but others missing)
+// makes the dashboard flag the operating result as incomplete: a period straddling two months with
+// only one month entered would otherwise silently treat the missing month's fixed costs as zero and
+// look complete. OPEX is stored per calendar month; a period covering only part of a month is
+// charged that month's share by day overlap, so a rolling 30-day window across two months gets the
+// right fraction of each. All month arithmetic is in UTC so the month-floor filter matches the
+// overlap math (a from.Location()-based floor could exclude a month the UTC overlap wants).
 func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (decimal.Decimal, bool, error) {
-	// The earliest month that can overlap [from, to) is the month containing `from`.
-	monthFloor := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, from.Location())
+	fromUTC, toUTC := from.UTC(), to.UTC()
+	// The earliest month that can overlap [from, to) is the month containing `from` (UTC).
+	monthFloor := time.Date(fromUTC.Year(), fromUTC.Month(), 1, 0, 0, 0, 0, time.UTC)
 	rows, err := storeutil.QueryListNamed[struct {
 		Month  time.Time       `db:"month"`
 		Amount decimal.Decimal `db:"amount"`
 	}](ctx, s.DB, `
 		SELECT month, amount FROM opex_entry
 		WHERE month >= :monthFloor AND month < :to`,
-		map[string]any{"monthFloor": monthFloor.Format("2006-01-02"), "to": to})
+		map[string]any{"monthFloor": monthFloor.Format("2006-01-02"), "to": toUTC})
 	if err != nil {
 		return decimal.Zero, false, fmt.Errorf("get opex for period: %w", err)
 	}
-	if len(rows) == 0 {
-		return decimal.Zero, false, nil
-	}
 
+	monthKey := func(t time.Time) string { return fmt.Sprintf("%04d-%02d", t.Year(), int(t.Month())) }
+	present := make(map[string]bool, len(rows))
 	total := decimal.Zero
 	for _, r := range rows {
+		present[monthKey(r.Month)] = true
 		monthStart := time.Date(r.Month.Year(), r.Month.Month(), 1, 0, 0, 0, 0, time.UTC)
 		monthEnd := monthStart.AddDate(0, 1, 0)
-		ovStart := maxTime(monthStart, from.UTC())
-		ovEnd := minTime(monthEnd, to.UTC())
+		ovStart := maxTime(monthStart, fromUTC)
+		ovEnd := minTime(monthEnd, toUTC)
 		if !ovEnd.After(ovStart) {
 			continue
 		}
@@ -69,7 +74,17 @@ func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (decim
 		frac := ovDays / daysInMonth // 0..1
 		total = total.Add(r.Amount.Mul(decimal.NewFromFloat(frac)))
 	}
-	return total.Round(2), true, nil
+
+	// Complete iff every month the period overlaps (monthFloor .. the month containing to-ε) has an
+	// entry. Iterating month starts while < to enumerates exactly those overlapping months.
+	complete := true
+	for m := monthFloor; m.Before(toUTC); m = m.AddDate(0, 1, 0) {
+		if !present[monthKey(m)] {
+			complete = false
+			break
+		}
+	}
+	return total.Round(2), complete, nil
 }
 
 // getChannelSpendTotal sums marketing spend (channel_spend, base currency) over the period,

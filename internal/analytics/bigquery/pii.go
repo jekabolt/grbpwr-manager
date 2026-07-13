@@ -14,8 +14,10 @@ import (
 // SQL emitted by scrubbedPageLocationSQL share the SAME pattern and behave identically — the Go
 // test is a faithful check of the query's redaction.
 
-// piiEmailPattern matches an email address embedded anywhere in a string (path or query).
-const piiEmailPattern = `[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`
+// piiEmailPattern matches an email address embedded anywhere in a string (path or query),
+// including the common URL-encoded form where the `@` is percent-escaped to `%40` (e.g.
+// `?email=user%40example.com`) — the most frequent real leak, missed by a literal-`@` pattern.
+const piiEmailPattern = `[A-Za-z0-9._%+\-]+(?:@|%40)[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`
 
 // piiRedaction is the placeholder that replaces a redacted email.
 const piiRedaction = "[email]"

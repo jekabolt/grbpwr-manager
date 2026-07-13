@@ -12,6 +12,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Costing (task 19) is confidential: purchase prices, CMT/overhead, and the margins
@@ -96,36 +97,79 @@ func stripReleaseMetaCosting(m *pb_common.TechCardReleaseMeta) {
 	m.Currency = ""
 }
 
-// stripMetricsCosting redacts the cost/margin sections of a GetMetrics response, leaving
-// commerce, traffic and email intact. Applied when the caller lacks costing:read.
+// costingRedactedFieldNames are proto field names carrying confidential COGS/margin. They are
+// cleared RECURSIVELY from GetMetrics/GetDashboard responses — a denylist, not a hand-maintained
+// per-report list, because the flat strip missed several reports that also carry these fields
+// (revenue pareto, slow movers, sell-through-by-drop, commerce top-products), and any future
+// report with one of these fields is now redacted automatically. Scoped to the metrics/dashboard
+// responses, where these names are ALWAYS confidential (production-run `unit_cost`, which shares a
+// name but is gated by the production section, is handled separately). `has_cost` (a provenance
+// bool) and shipping costs (`avg/total_shipping_cost`, not COGS) are deliberately NOT listed.
+var costingRedactedFieldNames = map[string]bool{
+	"unit_cost":           true,
+	"revenue_cost":        true,
+	"gross_margin":        true,
+	"gross_margin_pct":    true,
+	"contribution_margin": true,
+	"operating_result":    true,
+	"opex_total":          true,
+	"marketing_spend":     true,
+	"opex_caveat":         true,
+}
+
+// redactCostingFieldsDeep clears every confidential cost/margin field (by name) anywhere in the
+// message tree, leaving all non-cost fields (revenue, units, sell-through, has_cost, …) intact.
+func redactCostingFieldsDeep(m protoreflect.Message) {
+	if m == nil || !m.IsValid() {
+		return
+	}
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		if costingRedactedFieldNames[string(fd.Name())] {
+			m.Clear(fd)
+			return true
+		}
+		switch {
+		case fd.IsMap():
+			// no confidential maps in these responses
+		case fd.IsList() && fd.Kind() == protoreflect.MessageKind:
+			l := v.List()
+			for i := 0; i < l.Len(); i++ {
+				redactCostingFieldsDeep(l.Get(i).Message())
+			}
+		case fd.Kind() == protoreflect.MessageKind:
+			redactCostingFieldsDeep(v.Message())
+		}
+		return true
+	})
+}
+
+// stripMetricsCosting redacts the cost/margin content of a GetMetrics response, leaving commerce,
+// traffic and email intact. Applied when the caller lacks costing:read.
 func stripMetricsCosting(resp *pb_admin.GetMetricsResponse) {
 	if resp == nil {
 		return
 	}
+	// Nil the cost-CENTRIC reports whole: they exist only to show cost/margin, so even their
+	// presence and row ordering (e.g. styles ranked by margin) leaks. Field-level redaction below
+	// handles the MIXED reports (revenue pareto, slow movers, top products, …) that also carry
+	// useful non-cost data worth keeping.
 	if resp.Business != nil {
-		resp.Business.Margin = nil // COGS/margin sub-message; commerce/traffic/email stay
+		resp.Business.Margin = nil
 	}
 	resp.MarginByStyle = nil
 	resp.CogsStructure = nil
 	resp.InventoryValuation = nil
+	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
-// stripDashboardCosting redacts the margin and operating-result figures of the decision
-// dashboard, keeping revenue, order count, inventory action lists and alerts. Applied without
-// costing:read. The operating result (and its OPEX / marketing components) are redacted too:
-// they're the profit line built from the confidential margins, so they must not leak here.
+// stripDashboardCosting redacts the margin and operating-result figures of the decision dashboard,
+// keeping revenue, order count, inventory action lists and alerts. Applied without costing:read.
 func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	if resp == nil {
 		return
 	}
-	resp.GrossMargin = nil
-	resp.GrossMarginPct = 0
-	resp.ContributionMargin = nil
-	resp.TopByMargin = nil // products re-ranked by gross margin € — leaks relative margins
-	resp.OperatingResult = nil
-	resp.OpexTotal = nil
-	resp.MarketingSpend = nil
-	resp.OpexCaveat = ""
+	resp.TopByMargin = nil // products ranked by gross margin € — the ordering itself leaks
+	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
 // techCardInsertHasCostingData reports whether a write payload carries confidential cost
@@ -181,15 +225,24 @@ func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, inco
 		unit decimal.NullDecimal
 		cur  sql.NullString
 	}
-	byKey := make(map[string]bomPrice, len(stored.BomItems))
+	// Natural keys are not guaranteed unique (a card may carry two lines with the same
+	// section+name+supplier_ref — e.g. the same fabric in two colours). Keep a FIFO queue per key
+	// and consume it in order so N stored lines feed N incoming lines with that key, instead of a
+	// last-wins map that would stamp every colliding line with a single price.
+	byKey := make(map[string][]bomPrice, len(stored.BomItems))
 	for _, b := range stored.BomItems {
-		byKey[bomNaturalKey(b)] = bomPrice{b.UnitPrice, b.Currency}
+		k := bomNaturalKey(b)
+		byKey[k] = append(byKey[k], bomPrice{b.UnitPrice, b.Currency})
 	}
 	for i := range incoming.BomItems {
-		if p, ok := byKey[bomNaturalKey(incoming.BomItems[i])]; ok {
-			incoming.BomItems[i].UnitPrice = p.unit
-			incoming.BomItems[i].Currency = p.cur
+		k := bomNaturalKey(incoming.BomItems[i])
+		q := byKey[k]
+		if len(q) == 0 {
+			continue // a genuinely new line (or more duplicates than stored) simply has no price
 		}
+		incoming.BomItems[i].UnitPrice = q[0].unit
+		incoming.BomItems[i].Currency = q[0].cur
+		byKey[k] = q[1:]
 	}
 }
 
