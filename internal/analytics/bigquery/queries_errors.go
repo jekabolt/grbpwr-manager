@@ -117,24 +117,23 @@ func (c *Client) getExceptions(
 	if err != nil {
 		return nil, fmt.Errorf("GetExceptions: %w", err)
 	}
-	// page_location is typically a full URL (https://domain.com/path?query).
-	// For checkout filtering, storing the full URL allows substring matching on "/checkout".
-	// If more precise path extraction is needed, uncomment the REGEXP_EXTRACT line below.
+	// page_location is typically a full URL (https://domain.com/path?query). We keep the full URL
+	// (so "/checkout" substring matching still works) but scrub any embedded email to '[email]'
+	// before grouping, so leaked PII never lands in the bq_* cache (task 21). See scrubbedPageLocationSQL.
 	sql := fmt.Sprintf(`
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), '/') AS page_path,
-			-- For path-only extraction: REGEXP_EXTRACT(page_location, r'https?://[^/]+(/[^?]*)') AS page_path,
+			%[1]s AS page_path,
 			COUNT(*) AS exception_count,
 			IFNULL(
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'description'),
 				''
 			) AS description
-		FROM %s
-		WHERE %s
+		FROM %[2]s
+		WHERE %[3]s
 			AND event_name = 'exception'
 		GROUP BY event_date, page_path, description
-	`, src, c.dateFilterSQL(startDate, endDate))
+	`, scrubbedPageLocationSQL(), src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -200,16 +199,18 @@ func (c *Client) get404Pages(
 	if err != nil {
 		return nil, fmt.Errorf("Get404Pages: %w", err)
 	}
+	// 404 URLs are exactly where a leaked email in the query string tends to surface; scrub it to
+	// '[email]' before grouping so bq_not_found_pages never stores PII (task 21).
 	sql := fmt.Sprintf(`
 		SELECT
 			DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-			IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location'), '/') AS page_path,
+			%[1]s AS page_path,
 			COUNT(*) AS hit_count
-		FROM %s
-		WHERE %s
+		FROM %[2]s
+		WHERE %[3]s
 			AND event_name = 'page_not_found'
 		GROUP BY event_date, page_path
-	`, src, c.dateFilterSQL(startDate, endDate))
+	`, scrubbedPageLocationSQL(), src, c.dateFilterSQL(startDate, endDate))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
