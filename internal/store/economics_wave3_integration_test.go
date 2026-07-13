@@ -201,6 +201,62 @@ func TestProductionRun(t *testing.T) {
 	require.Empty(t, list)
 }
 
+// TestProductionRunReceiveGuardAndTaskLink covers the phase-3 receive guard/transition (the stock
+// increment itself needs a full product and is covered by the handler test) and the task
+// production_run_id typed link round-trip.
+func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber: "PRUN-RCV", Name: "Recv Coat", Stage: entity.TechCardStageProto,
+		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
+	})
+	require.NoError(t, err)
+	defer func() { _ = s.TechCards().DeleteTechCard(ctx, tcID) }()
+
+	P := s.ProductionRuns()
+	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Sizes: []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
+	})
+	require.NoError(t, err)
+	defer func() { _ = P.DeleteProductionRun(ctx, runID) }()
+
+	// receive with empty perSize + no cost-price only exercises the guard + status transition.
+	require.NoError(t, P.ReceiveProductionRun(ctx, runID, 0, map[int]int{}, "tester", decimal.NullDecimal{}))
+	got, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunReceived, got.Status)
+	require.True(t, got.ReceivedAt.Valid, "received_at stamped")
+
+	// a second receive is refused (guards double-counting)
+	err = P.ReceiveProductionRun(ctx, runID, 0, map[int]int{}, "tester", decimal.NullDecimal{})
+	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
+
+	// receiving a missing run → ErrNoRows
+	err = P.ReceiveProductionRun(ctx, 0, 0, map[int]int{}, "tester", decimal.NullDecimal{})
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	// task.production_run_id typed link round-trips (FK to the run).
+	taskID, err := s.Tasks().AddTask(ctx, &entity.Task{
+		TaskInsert: entity.TaskInsert{Title: "cut batch", Priority: entity.TaskPriorityUnknown, ProductionRunId: sql.NullInt32{Int32: int32(runID), Valid: true}},
+		Board:      entity.TaskBoardProduction, Status: entity.TaskStatusTodo, CreatedBy: "tester",
+	})
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM task WHERE id = ?", taskID) }()
+	task, err := s.Tasks().GetTaskById(ctx, taskID)
+	require.NoError(t, err)
+	require.True(t, task.ProductionRunId.Valid)
+	require.EqualValues(t, runID, task.ProductionRunId.Int32)
+}
+
 func containsMaterial(list []entity.MaterialWithPrice, id int) bool {
 	for _, m := range list {
 		if m.Id == id {

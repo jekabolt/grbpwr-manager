@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // Pagination bounds for the list endpoint.
@@ -109,6 +110,50 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 			return err
 		}
 		return fmt.Errorf("can't update production run: %w", err)
+	}
+	return nil
+}
+
+// ReceiveProductionRun receives a run into a product's stock and transitions it to `received`, in
+// one transaction: it locks the run and refuses if it is already received/closed (guarding against
+// a double count), increments the product's per-size stock from perSize (production_received
+// source), optionally sets the product's cost_price from the run's actual unit cost, then stamps
+// status/received_at. Returns entity.ErrProductionRunAlreadyReceived on a repeat receipt and
+// sql.ErrNoRows when the run does not exist.
+func (s *Store) ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[struct {
+			Status string `db:"status"`
+		}](ctx, rep.DB(), `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("failed to load production run for receive: %w", err)
+		}
+		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
+			return entity.ErrProductionRunAlreadyReceived
+		}
+		if len(perSize) > 0 {
+			if err := rep.Products().ReceiveProductionStock(ctx, productID, perSize, runID, username); err != nil {
+				return err
+			}
+		}
+		if costPrice.Valid {
+			if err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal); err != nil {
+				return err
+			}
+		}
+		return storeutil.ExecNamed(ctx, rep.DB(), `
+			UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
+			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()})
+	})
+	if err != nil {
+		switch err {
+		case sql.ErrNoRows, entity.ErrProductionRunAlreadyReceived:
+			return err
+		}
+		return fmt.Errorf("can't receive production run: %w", err)
 	}
 	return nil
 }

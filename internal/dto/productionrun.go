@@ -320,6 +320,33 @@ func productionRunSizesToPb(sizes []entity.ProductionRunSize) []*pb_common.Produ
 	return out
 }
 
+// ProductionRunActualUnitCostBase returns the run's actual unit cost in the base currency, valid
+// only when it is trustworthy for setting cost_price: there is at least one cost article, EVERY
+// article folded to base (a partial total would understate cost), and some quantity was received.
+// It is the same figure as ProductionRunActuals.actual_unit_cost under those conditions.
+func ProductionRunActualUnitCostBase(r *entity.ProductionRun) decimal.NullDecimal {
+	if r == nil || len(r.Costs) == 0 {
+		return decimal.NullDecimal{}
+	}
+	var received int64
+	for _, sz := range r.Sizes {
+		if sz.ReceivedQty.Valid {
+			received += sz.ReceivedQty.Int64
+		}
+	}
+	if received == 0 {
+		return decimal.NullDecimal{}
+	}
+	total := decimal.Zero
+	for _, c := range r.Costs {
+		if !c.AmountBase.Valid {
+			return decimal.NullDecimal{} // partial fold → not trustworthy for cost_price
+		}
+		total = total.Add(c.AmountBase.Decimal)
+	}
+	return decimal.NullDecimal{Decimal: roundMoney(total.Div(decimal.NewFromInt(received))), Valid: true}
+}
+
 // NormalizeProductionRunStatusFilter validates an optional status filter string, returning the
 // entity status ("" for no filter). It rejects an unknown non-empty value.
 func NormalizeProductionRunStatusFilter(s string) (entity.ProductionRunStatus, error) {

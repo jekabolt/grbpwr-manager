@@ -314,6 +314,8 @@ const (
 	StockChangeSourceOrderCustom      StockChangeSource = "order_custom"
 	StockChangeSourceOrderReturned    StockChangeSource = "order_returned"
 	StockChangeSourceOrderCancelled   StockChangeSource = "order_cancelled"
+	// StockChangeSourceProductionReceived is stock added by receiving a production run (task 09).
+	StockChangeSourceProductionReceived StockChangeSource = "production_received"
 )
 
 // StockChangeReason represents the reason for a stock change.

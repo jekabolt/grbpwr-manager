@@ -79,6 +79,32 @@ func TestComputeProductionRunActualsPartialBase(t *testing.T) {
 	require.Len(t, a.ByKind, 1)
 }
 
+// ProductionRunActualUnitCostBase is valid only with costs present, all folded to base, and some
+// received quantity — the trustworthy figure for setting cost_price.
+func TestProductionRunActualUnitCostBase(t *testing.T) {
+	base := func(costs []entity.ProductionRunCost, sizes []entity.ProductionRunSize) decimal.NullDecimal {
+		return ProductionRunActualUnitCostBase(&entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{Costs: costs, Sizes: sizes}})
+	}
+	okCosts := []entity.ProductionRunCost{
+		{Kind: entity.ProductionRunCostMaterials, AmountBase: nd2("500")},
+		{Kind: entity.ProductionRunCostCMT, AmountBase: nd2("400")},
+	}
+	recv := []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 90, ReceivedQty: ni(90)}}
+
+	v := base(okCosts, recv)
+	require.True(t, v.Valid)
+	require.True(t, v.Decimal.Equal(d("10")), "900 / 90")
+
+	require.False(t, base(nil, recv).Valid, "no costs → invalid")
+	require.False(t, base(okCosts, []entity.ProductionRunSize{{SizeId: 1, PlannedQty: 90}}).Valid, "0 received → invalid")
+
+	partial := []entity.ProductionRunCost{
+		{Kind: entity.ProductionRunCostMaterials, AmountBase: nd2("500")},
+		{Kind: entity.ProductionRunCostDuty}, // AmountBase unset → not foldable
+	}
+	require.False(t, base(partial, recv).Valid, "partial fold → invalid")
+}
+
 func TestConvertPbProductionRunInsertToEntity(t *testing.T) {
 	rq := int32(58)
 	dq := int32(2)

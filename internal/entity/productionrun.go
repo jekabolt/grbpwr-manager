@@ -2,10 +2,15 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// ErrProductionRunAlreadyReceived is returned by ReceiveProductionRun when the run has already
+// been received (or closed) — receiving again would double-count stock.
+var ErrProductionRunAlreadyReceived = errors.New("production run has already been received")
 
 // ProductionRunStatus is the lifecycle state of a production run (партия). It mirrors the
 // common.ProductionRunStatus proto enum and is stored as its lowercase string in the DB.

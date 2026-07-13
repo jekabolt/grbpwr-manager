@@ -39,6 +39,13 @@ type (
 		// ForceSetProductCostPriceFromTechCard writes cost as the tech-card-sourced cost of one
 		// product, overriding any manual value (explicit SyncProductCostFromTechCard action).
 		ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error
+		// ReceiveProductionStock increments a product's per-size stock from a production run's
+		// received quantities, recording each change with the production_received source. Runs on
+		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
+		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error
+		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
+		// cost_price of a product, recording provenance (source + run id + timestamp).
+		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
@@ -433,6 +440,10 @@ type (
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
+		// ReceiveProductionRun receives a run into a product's stock (phase 3), optionally sets the
+		// product's cost_price from the run's actual unit cost, and transitions the run to received —
+		// guarded against a double receipt.
+		ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.

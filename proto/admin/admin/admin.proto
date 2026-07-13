@@ -662,6 +662,15 @@ service AdminService {
   rpc ListProductionRuns(ListProductionRunsRequest) returns (ListProductionRunsResponse) {
     option (google.api.http) = {get: "/api/admin/production-runs"};
   }
+  // ReceiveProductionRun receives a run into a linked product's stock (by received_qty per size),
+  // transitions the run to `received`, and optionally sets the product's cost_price from the run's
+  // actual unit cost. It is guarded against a double receipt.
+  rpc ReceiveProductionRun(ReceiveProductionRunRequest) returns (ReceiveProductionRunResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/{run_id}/receive"
+      body: "*"
+    };
+  }
 
   // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
   // costing into the base currency.
@@ -3289,6 +3298,16 @@ message ListProductionRunsRequest {
 message ListProductionRunsResponse {
   repeated common.ProductionRun runs = 1;
   int32 total = 2; // total matching runs, ignoring pagination
+}
+
+message ReceiveProductionRunRequest {
+  int32 run_id = 1;
+  int32 product_id = 2; // must be a product linked to the run's tech card
+  bool update_cost_price = 3; // also set the product's cost_price from the run's actual unit cost
+}
+
+message ReceiveProductionRunResponse {
+  bool cost_price_updated = 1; // true when update_cost_price was requested and applied
 }
 
 // ADMIN ACCOUNTS (RBAC)

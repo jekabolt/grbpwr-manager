@@ -51,8 +51,8 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, started_at)
-			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId,
+			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, started_at)
+			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId,
 				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
@@ -96,7 +96,8 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 				product_id = :productId,
 				order_uuid = :orderUuid,
 				archive_id = :archiveId,
-				fitting_id = :fittingId
+				fitting_id = :fittingId,
+				production_run_id = :productionRunId
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update task: %w", err)
 		}
@@ -494,17 +495,18 @@ func clampPagination(limit, offset int) (int, int) {
 
 func taskContentParams(t *entity.TaskInsert) map[string]any {
 	return map[string]any{
-		"title":       t.Title,
-		"description": t.Description,
-		"assignee":    t.Assignee,
-		"priority":    string(t.Priority),
-		"dueDate":     t.DueDate,
-		"startDate":   t.StartDate,
-		"techCardId":  t.TechCardId,
-		"productId":   t.ProductId,
-		"orderUuid":   t.OrderUuid,
-		"archiveId":   t.ArchiveId,
-		"fittingId":   t.FittingId,
+		"title":           t.Title,
+		"description":     t.Description,
+		"assignee":        t.Assignee,
+		"priority":        string(t.Priority),
+		"dueDate":         t.DueDate,
+		"startDate":       t.StartDate,
+		"techCardId":      t.TechCardId,
+		"productId":       t.ProductId,
+		"orderUuid":       t.OrderUuid,
+		"archiveId":       t.ArchiveId,
+		"fittingId":       t.FittingId,
+		"productionRunId": t.ProductionRunId,
 	}
 }
 

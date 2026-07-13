@@ -189,11 +189,12 @@ var methodRequirements = map[string]Requirement{
 	"ListTechCardReleases": rd(SectionTechCards),
 	"GetTechCardRelease":   rd(SectionTechCards),
 	// production runs (партии)
-	"CreateProductionRun": wr(SectionProduction),
-	"UpdateProductionRun": wr(SectionProduction),
-	"DeleteProductionRun": wr(SectionProduction),
-	"GetProductionRun":    rd(SectionProduction),
-	"ListProductionRuns":  rd(SectionProduction),
+	"CreateProductionRun":  wr(SectionProduction),
+	"UpdateProductionRun":  wr(SectionProduction),
+	"DeleteProductionRun":  wr(SectionProduction),
+	"GetProductionRun":     rd(SectionProduction),
+	"ListProductionRuns":   rd(SectionProduction),
+	"ReceiveProductionRun": wr(SectionProduction),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),

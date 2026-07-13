@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"slices"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -111,6 +114,63 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 		out = append(out, dto.ConvertEntityProductionRunToPb(&runs[i]))
 	}
 	return &pb_admin.ListProductionRunsResponse{Runs: out, Total: int32(total)}, nil
+}
+
+// ReceiveProductionRun receives a run into a linked product's stock and transitions it to
+// `received`, optionally setting the product's cost_price from the run's actual unit cost.
+func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.ReceiveProductionRunRequest) (*pb_admin.ReceiveProductionRunResponse, error) {
+	if req.RunId <= 0 || req.ProductId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "run_id and product_id are required")
+	}
+	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load production run for receive", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load production run")
+	}
+	if run.Status == entity.ProductionRunReceived || run.Status == entity.ProductionRunClosed {
+		return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
+	}
+	// product must be linked to the run's tech card.
+	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load tech card for receive", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load tech card")
+	}
+	if !slices.Contains(card.ProductIds, int(req.ProductId)) {
+		return nil, status.Error(codes.InvalidArgument, "product_id is not linked to the run's tech card")
+	}
+	// per-size received quantities to add to stock.
+	perSize := make(map[int]int)
+	for _, sz := range run.Sizes {
+		if sz.ReceivedQty.Valid && sz.ReceivedQty.Int64 > 0 {
+			perSize[sz.SizeId] = int(sz.ReceivedQty.Int64)
+		}
+	}
+	if len(perSize) == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the size grid first")
+	}
+	// optional cost_price update from the run's (base-currency) actual unit cost.
+	var costPrice decimal.NullDecimal
+	if req.UpdateCostPrice {
+		costPrice = dto.ProductionRunActualUnitCostBase(run)
+	}
+	if err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), int(req.ProductId), perSize, authsrv.GetAdminUsername(ctx), costPrice); err != nil {
+		if errors.Is(err, entity.ErrProductionRunAlreadyReceived) {
+			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
+		}
+		slog.Default().ErrorContext(ctx, "can't receive production run", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't receive production run")
+	}
+	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPrice.Valid}, nil
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked
