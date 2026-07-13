@@ -630,6 +630,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/materials/{material_id}/prices"};
   }
 
+  // Tech-card release snapshots (task 11): the immutable frozen spec + planned cost per release.
+  rpc ListTechCardReleases(ListTechCardReleasesRequest) returns (ListTechCardReleasesResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/releases"};
+  }
+  rpc GetTechCardRelease(GetTechCardReleaseRequest) returns (GetTechCardReleaseResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/release/{id}"};
+  }
+
   // GetCostingFxRates returns the manual FX rates used to fold multi-currency tech-card
   // costing into the base currency.
   rpc GetCostingFxRates(GetCostingFxRatesRequest) returns (GetCostingFxRatesResponse) {
@@ -3192,6 +3200,28 @@ message ListMaterialPricesRequest {
 
 message ListMaterialPricesResponse {
   repeated common.MaterialPrice prices = 1;
+}
+
+// Tech-card release snapshots (task 11).
+message ListTechCardReleasesRequest {
+  int32 tech_card_id = 1;
+}
+
+message ListTechCardReleasesResponse {
+  repeated common.TechCardReleaseMeta releases = 1; // newest-first, metadata only
+}
+
+message GetTechCardReleaseRequest {
+  int32 id = 1; // tech_card_release.id
+}
+
+message GetTechCardReleaseResponse {
+  common.TechCardReleaseMeta release = 1;
+  // snapshot is the frozen contract TechCard parsed from the stored blob. Absent (with
+  // snapshot_error set) when the stored blob is incompatible — the call still returns the
+  // metadata rather than failing (hero-v2 degradation rule).
+  common.TechCard snapshot = 2;
+  string snapshot_error = 3;
 }
 
 // ADMIN ACCOUNTS (RBAC)

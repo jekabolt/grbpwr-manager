@@ -737,3 +737,25 @@ type TechCard struct {
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 }
+
+// TechCardReleaseMeta is the header of an immutable release snapshot (task 11) without the
+// JSON blob — used for listing a card's releases. UnitCost/Currency are the base-currency
+// planned unit cost frozen at release time (NULL when it could not be folded to base).
+type TechCardReleaseMeta struct {
+	Id         int                 `db:"id"`
+	TechCardId int                 `db:"tech_card_id"`
+	Version    sql.NullString      `db:"version"`
+	ReleasedBy sql.NullString      `db:"released_by"`
+	UnitCost   decimal.NullDecimal `db:"unit_cost"`
+	Currency   sql.NullString      `db:"currency"`
+	CreatedAt  time.Time           `db:"created_at"`
+}
+
+// TechCardRelease is a full release snapshot: the metadata plus the raw proto-JSON blob of the
+// enriched contract TechCard as it stood at release. The blob is opaque to the store; callers
+// parse it (and degrade gracefully on an incompatible blob, hero-v2 style). On write, Id and
+// CreatedAt are DB-generated.
+type TechCardRelease struct {
+	TechCardReleaseMeta
+	Snapshot string `db:"snapshot"`
+}

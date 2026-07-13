@@ -102,3 +102,80 @@ func containsMaterial(list []entity.MaterialWithPrice, id int) bool {
 	}
 	return false
 }
+
+// TestTechCardRelease exercises the task-11 immutable release snapshot store methods against a
+// real MySQL: save (blob + metadata), list newest-first, get-by-id (blob round-trips), a second
+// release episode, a missing-id read, and ON DELETE CASCADE when the parent card is removed.
+func TestTechCardRelease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	T := s.TechCards()
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+	nd := func(v string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true} }
+
+	// minimal parent card (header only — no size/media/product FKs to satisfy).
+	tcID, err := T.AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber:     "REL-001",
+		Name:            "Release Coat",
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+	})
+	require.NoError(t, err)
+	defer func() { _ = T.DeleteTechCard(ctx, tcID) }()
+
+	blob1 := `{"id":1,"name":"Release Coat v1"}`
+	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{
+			TechCardId: tcID, Version: ns("1.0"), ReleasedBy: ns("alice"),
+			UnitCost: nd("12.34"), Currency: ns("EUR"),
+		},
+		Snapshot: blob1,
+	}))
+
+	list, err := T.ListTechCardReleases(ctx, tcID)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "1.0", list[0].Version.String)
+	require.Equal(t, "alice", list[0].ReleasedBy.String)
+	require.True(t, list[0].UnitCost.Decimal.Equal(decimal.RequireFromString("12.34")))
+	require.Equal(t, "EUR", list[0].Currency.String)
+	require.False(t, list[0].CreatedAt.IsZero(), "created_at is DB-stamped")
+
+	got, err := T.GetTechCardRelease(ctx, list[0].Id)
+	require.NoError(t, err)
+	require.JSONEq(t, blob1, got.Snapshot, "blob round-trips verbatim")
+	require.Equal(t, tcID, got.TechCardId)
+
+	// second release episode (re-open → re-release): newest-first, both retained.
+	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{
+			TechCardId: tcID, Version: ns("2.0"), ReleasedBy: ns("bob"),
+		},
+		Snapshot: `{"id":1,"name":"Release Coat v2"}`,
+	}))
+	list, err = T.ListTechCardReleases(ctx, tcID)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, "2.0", list[0].Version.String, "newest-first")
+	require.False(t, list[0].UnitCost.Valid, "v2.0 was released without a foldable unit cost")
+	require.Equal(t, "1.0", list[1].Version.String)
+	require.True(t, list[1].UnitCost.Valid, "v1.0 kept its frozen unit cost")
+
+	// missing id → sql.ErrNoRows (so the handler can map to NotFound).
+	_, err = T.GetTechCardRelease(ctx, 0)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	// ON DELETE CASCADE: removing the card drops its releases.
+	require.NoError(t, T.DeleteTechCard(ctx, tcID))
+	list, err = T.ListTechCardReleases(ctx, tcID)
+	require.NoError(t, err)
+	require.Empty(t, list, "releases cascade with the parent card")
+}

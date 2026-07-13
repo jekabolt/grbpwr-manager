@@ -225,6 +225,19 @@ message MaterialPrice {
   string note = 6;
 }
 
+// TechCardReleaseMeta is the header of an immutable release snapshot (task 11) without the
+// JSON blob — the frozen spec + planned unit cost captured when a card entered `released`.
+// The full snapshot (a proto-JSON contract TechCard) is fetched via GetTechCardRelease.
+message TechCardReleaseMeta {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  string version = 3; // tech_card.version at release time
+  string released_by = 4; // acting admin username at release time
+  google.type.Decimal unit_cost = 5; // base-currency planned unit cost, if foldable
+  string currency = 6; // currency of unit_cost
+  google.protobuf.Timestamp created_at = 7;
+}
+
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM
 // material — different sizes consume different amounts of fabric.
 message TechCardBomSizeConsumption {

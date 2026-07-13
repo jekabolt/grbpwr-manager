@@ -418,6 +418,11 @@ type (
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
 		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
 		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
+		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
+		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
+		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
+		ListTechCardReleases(ctx context.Context, techCardID int) ([]entity.TechCardReleaseMeta, error)
+		GetTechCardRelease(ctx context.Context, id int) (*entity.TechCardRelease, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.

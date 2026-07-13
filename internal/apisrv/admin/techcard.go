@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -17,6 +18,7 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -72,6 +74,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
 	s.seedProductCostsFromTechCard(ctx, id)
+	s.snapshotReleaseIfReleased(ctx, id)
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
 }
 
@@ -127,7 +130,98 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, status.Errorf(codes.Internal, "can't update tech card")
 	}
 	s.seedProductCostsFromTechCard(ctx, int(req.Id))
+	s.snapshotReleaseIfReleased(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
+}
+
+// snapshotReleaseIfReleased captures an immutable release snapshot (task 11) when a card is in
+// the `released` state after a successful save. Because a released card is frozen — the store
+// rejects any non-draft edit — a successful save that ends in `released` is always a genuine
+// release transition (an already-released card can only move to draft), so this fires exactly
+// once per release episode. The snapshot is the enriched read-model as proto-JSON plus the
+// computed base-currency unit cost. It is best-effort: the release itself already committed, and
+// the frozen content means an identical snapshot can be regenerated on a later re-release — so a
+// failure here is logged, never surfaced as a failed release.
+func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) {
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "release snapshot: can't reload tech card",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
+	}
+	if card == nil || card.ApprovalState != entity.TechCardApprovalReleased {
+		return
+	}
+	fx := s.costingFx(ctx)
+	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(card, fx))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "release snapshot: can't marshal snapshot",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
+	}
+	unit, currency := dto.ComputeTechCardUnitCost(card, fx)
+	username := authsrv.GetAdminUsername(ctx)
+	rel := entity.TechCardRelease{
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{
+			TechCardId: techCardID,
+			Version:    card.Version,
+			ReleasedBy: sql.NullString{String: username, Valid: username != ""},
+			UnitCost:   unit,
+			Currency:   sql.NullString{String: currency, Valid: unit.Valid && currency != ""},
+		},
+		Snapshot: string(blob),
+	}
+	if err := s.repo.TechCards().SaveTechCardRelease(ctx, rel); err != nil {
+		slog.Default().ErrorContext(ctx, "release snapshot: can't save (card is released; a later re-release will re-snapshot)",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
+	}
+	slog.Default().InfoContext(ctx, "captured tech card release snapshot",
+		slog.Int("tech_card_id", techCardID), slog.String("version", card.Version.String))
+}
+
+// ListTechCardReleases returns a card's release history (newest-first, metadata only).
+func (s *Server) ListTechCardReleases(ctx context.Context, req *pb_admin.ListTechCardReleasesRequest) (*pb_admin.ListTechCardReleasesResponse, error) {
+	if req.TechCardId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
+	}
+	rows, err := s.repo.TechCards().ListTechCardReleases(ctx, int(req.TechCardId))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list tech card releases", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list tech card releases")
+	}
+	out := make([]*pb_common.TechCardReleaseMeta, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, dto.ConvertTechCardReleaseMetaToPb(r))
+	}
+	return &pb_admin.ListTechCardReleasesResponse{Releases: out}, nil
+}
+
+// GetTechCardRelease returns a single release: its metadata plus the frozen contract TechCard
+// parsed from the stored blob. An incompatible/corrupt blob degrades to metadata + snapshot_error
+// rather than a 500 (hero-v2 rule), so old releases stay readable as the contract evolves.
+func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCardReleaseRequest) (*pb_admin.GetTechCardReleaseResponse, error) {
+	if req.Id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "release id is required")
+	}
+	rel, err := s.repo.TechCards().GetTechCardRelease(ctx, int(req.Id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "tech card release not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get tech card release", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get tech card release")
+	}
+	resp := &pb_admin.GetTechCardReleaseResponse{Release: dto.ConvertTechCardReleaseMetaToPb(rel.TechCardReleaseMeta)}
+	var snap pb_common.TechCard
+	if err := protojson.Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
+		resp.SnapshotError = "stored snapshot is incompatible with the current schema: " + err.Error()
+		slog.Default().WarnContext(ctx, "tech card release snapshot won't parse",
+			slog.Int("release_id", int(req.Id)), slog.String("err", err.Error()))
+	} else {
+		resp.Snapshot = &snap
+	}
+	return resp, nil
 }
 
 // seedProductCostsFromTechCard best-effort propagates a saved tech card's computed unit

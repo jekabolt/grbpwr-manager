@@ -184,6 +184,8 @@ var methodRequirements = map[string]Requirement{
 	"ListMaterials":        rd(SectionTechCards),
 	"AddMaterialPrice":     wr(SectionTechCards),
 	"ListMaterialPrices":   rd(SectionTechCards),
+	"ListTechCardReleases": rd(SectionTechCards),
+	"GetTechCardRelease":   rd(SectionTechCards),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),
