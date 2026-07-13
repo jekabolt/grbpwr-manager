@@ -256,6 +256,7 @@ message TechCardDevExpenseInsert {
   string currency = 5; // ISO 4217
   int32 fitting_id = 6; // 0 = not tied to a fitting round
   google.protobuf.Timestamp incurred_at = 7; // date the cost was incurred (optional)
+  int32 sample_id = 8; // 0 = not tied to a sample (new-flow NF-04)
 }
 
 // TechCardDevExpense is one stored development-cost journal row. amount_base folds amount to base
@@ -271,6 +272,7 @@ message TechCardDevExpense {
   int32 fitting_id = 8; // 0 = none
   google.protobuf.Timestamp incurred_at = 9;
   google.protobuf.Timestamp created_at = 10;
+  int32 sample_id = 11; // 0 = none (new-flow NF-04)
 }
 
 // TechCardDevCostByKind is the base-currency development spend for one kind.

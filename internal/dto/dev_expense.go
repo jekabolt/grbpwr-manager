@@ -54,6 +54,9 @@ func ConvertPbDevExpenseInsertToEntity(in *pb_common.TechCardDevExpenseInsert) (
 	if in.FittingId > 0 {
 		e.FittingId = sql.NullInt32{Int32: in.FittingId, Valid: true}
 	}
+	if in.SampleId > 0 {
+		e.SampleId = sql.NullInt32{Int32: in.SampleId, Valid: true}
+	}
 	return e, nil
 }
 
@@ -83,6 +86,9 @@ func ConvertEntityDevExpenseToPb(e entity.TechCardDevExpense) *pb_common.TechCar
 	}
 	if e.FittingId.Valid {
 		out.FittingId = e.FittingId.Int32
+	}
+	if e.SampleId.Valid {
+		out.SampleId = e.SampleId.Int32
 	}
 	if e.IncurredAt.Valid {
 		out.IncurredAt = timestamppb.New(e.IncurredAt.Time)

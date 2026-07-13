@@ -75,6 +75,7 @@ message TaskInsert {
   int32 archive_id = 11; // drop / timeline being prepared; GetArchiveByID
   int32 fitting_id = 12; // примерка — try-on session this card is about; GetFitting
   int32 production_run_id = 14; // партия — production run this card is about; GetProductionRun
+  int32 sample_id = 15; // сэмпл — sample this card is about; GetSample (new-flow NF-04)
 
   // Planned start (when work SHOULD begin), the manual counterpart of due_date.
   // The ACTUAL start (when the card first entered IN_PROGRESS) is the

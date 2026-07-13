@@ -674,6 +674,7 @@ type TechCardDevExpense struct {
 	Currency    string              `db:"currency"`
 	AmountBase  decimal.NullDecimal `db:"amount_base"`
 	FittingId   sql.NullInt32       `db:"fitting_id"`
+	SampleId    sql.NullInt32       `db:"sample_id"` // optional link to a sample (NF-04)
 	IncurredAt  sql.NullTime        `db:"incurred_at"`
 	CreatedAt   time.Time           `db:"created_at"`
 }

@@ -250,6 +250,96 @@ func TestTechCardIdeaStage(t *testing.T) {
 	require.Equal(t, "NF Idea One", got.Name)
 }
 
+// TestSampleCost exercises new-flow NF-04: a sample gets an auto per-card number, its cost is
+// composed from material issues (NF-01) plus dev-expense rows tied to it, and it cannot be deleted
+// while it has material movements.
+func TestSampleCost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	// a tech card to hang the sample off.
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Sample Style", Stage: entity.TechCardStageProto,
+		StyleNumber:     sql.NullString{String: "NF-SMP-1", Valid: true},
+		TargetGender:    sql.NullString{String: "unisex", Valid: true},
+		MeasurementUnit: entity.TechCardUnitMm,
+		ApprovalState:   entity.TechCardApprovalDraft,
+	})
+	require.NoError(t, err)
+
+	// a material with stock at avg 10.
+	matID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Sample Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
+	require.NoError(t, err)
+	_, err = s.MaterialStock().ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{
+		MaterialId: matID, Quantity: decimal.NewFromInt(20), UnitCost: decimal.NullDecimal{Decimal: decimal.NewFromInt(10), Valid: true}, Currency: "EUR",
+	})
+	require.NoError(t, err)
+
+	// the sample (number auto-assigned).
+	smID, err := s.Samples().AddSample(ctx, &entity.SampleInsert{
+		TechCardId: tcID, Purpose: entity.SamplePurposeProto, Status: entity.SampleStatusInSewing,
+		FabricSource: entity.SampleFabricSample, SizeId: sql.NullInt32{Int32: 1, Valid: true},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card_dev_expense WHERE tech_card_id = ?", tcID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM sample WHERE tech_card_id = ?", tcID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID)
+	})
+
+	sm, err := s.Samples().GetSampleById(ctx, smID)
+	require.NoError(t, err)
+	require.Equal(t, 1, sm.Number, "first sample of the card is number 1")
+
+	// issue 2.5 m to the sample → materials cost 2.5 × 10 = 25.
+	_, err = s.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{
+		MaterialId: matID, Quantity: decimal.RequireFromString("2.5"), SampleId: sql.NullInt32{Int32: int32(smID), Valid: true},
+	})
+	require.NoError(t, err)
+
+	// a manual dev-expense of 20 (base) tied to the sample.
+	_, err = s.TechCards().AddTechCardDevExpense(ctx, entity.TechCardDevExpense{
+		TechCardId: tcID, Kind: "labour", Amount: decimal.NewFromInt(20), Currency: "EUR",
+		AmountBase: decimal.NullDecimal{Decimal: decimal.NewFromInt(20), Valid: true},
+		SampleId:   sql.NullInt32{Int32: int32(smID), Valid: true},
+	})
+	require.NoError(t, err)
+
+	sm, err = s.Samples().GetSampleById(ctx, smID)
+	require.NoError(t, err)
+	require.NotNil(t, sm.Cost)
+	require.True(t, sm.Cost.MaterialsBase.Equal(decimal.NewFromInt(25)), "materials 2.5×10=25, got %s", sm.Cost.MaterialsBase)
+	require.True(t, sm.Cost.ManualBase.Equal(decimal.NewFromInt(20)), "manual 20, got %s", sm.Cost.ManualBase)
+	require.True(t, sm.Cost.TotalBase.Equal(decimal.NewFromInt(45)), "total 45, got %s", sm.Cost.TotalBase)
+	require.False(t, sm.Cost.HasUncosted)
+
+	// a returned 0.5 m reduces the materials cost by 0.5×10=5 → 20.
+	_, err = s.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{
+		MaterialId: matID, Quantity: decimal.RequireFromString("0.5"), SampleId: sql.NullInt32{Int32: int32(smID), Valid: true}, IsReturn: true,
+	})
+	require.NoError(t, err)
+	sm, err = s.Samples().GetSampleById(ctx, smID)
+	require.NoError(t, err)
+	require.True(t, sm.Cost.MaterialsBase.Equal(decimal.NewFromInt(20)), "materials after return 25−5=20, got %s", sm.Cost.MaterialsBase)
+
+	// the sample cannot be deleted while it has material movements.
+	require.ErrorIs(t, s.Samples().DeleteSample(ctx, smID), entity.ErrSampleHasMovements)
+}
+
 // atoiDay converts a 2-char day string ("01".."31") to its int day for building a deterministic
 // date; avoids strconv import noise in the table above.
 func atoiDay(d string) int {

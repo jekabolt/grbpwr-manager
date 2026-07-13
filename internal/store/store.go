@@ -35,6 +35,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/productionrun"
 	"github.com/jekabolt/grbpwr-manager/internal/store/promo"
+	"github.com/jekabolt/grbpwr-manager/internal/store/sample"
 	"github.com/jekabolt/grbpwr-manager/internal/store/settings"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
@@ -113,6 +114,7 @@ type MYSQLStore struct {
 	techCardStore      *techcard.Store
 	productionRunStore *productionrun.Store
 	materialStockStore *inventory.Store
+	sampleStore        *sample.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -380,6 +382,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.techCardStore = techcard.New(base, ms.Tx)
 	ms.productionRunStore = productionrun.New(base, ms.Tx)
 	ms.materialStockStore = inventory.New(base, ms.Tx)
+	ms.sampleStore = sample.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -407,6 +410,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.techCardStore = techcard.New(base, outerTx)
 	txStore.productionRunStore = productionrun.New(base, outerTx)
 	txStore.materialStockStore = inventory.New(base, outerTx)
+	txStore.sampleStore = sample.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -479,6 +483,7 @@ func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.ful
 func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
 func (ms *MYSQLStore) ProductionRuns() dependency.ProductionRuns { return ms.productionRunStore }
 func (ms *MYSQLStore) MaterialStock() dependency.MaterialStock   { return ms.materialStockStore }
+func (ms *MYSQLStore) Samples() dependency.Samples               { return ms.sampleStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }

@@ -82,6 +82,7 @@ type TaskInsert struct {
 	ArchiveId       sql.NullInt32  `db:"archive_id"`
 	FittingId       sql.NullInt32  `db:"fitting_id"`
 	ProductionRunId sql.NullInt32  `db:"production_run_id"`
+	SampleId        sql.NullInt32  `db:"sample_id"`
 	Labels          []string       `db:"-"`
 	MediaIds        []int          `db:"-"`
 }

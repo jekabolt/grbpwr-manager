@@ -18,6 +18,7 @@ import "common/payment.proto";
 import "common/product.proto";
 import "common/production.proto";
 import "common/promo.proto";
+import "common/sample.proto";
 import "common/shipment.proto";
 import "common/support.proto";
 import "common/task.proto";
@@ -397,6 +398,29 @@ service AdminService {
   // is not shadowed by GET /fitting/{id}.
   rpc ListFittings(ListFittingsRequest) returns (ListFittingsResponse) {
     option (google.api.http) = {get: "/api/admin/fitting/list"};
+  }
+
+  // SAMPLES (new-flow NF-04): sewn prototypes of a style, with a composed cost.
+  rpc AddSample(AddSampleRequest) returns (AddSampleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/sample/add"
+      body: "*"
+    };
+  }
+  rpc UpdateSample(UpdateSampleRequest) returns (UpdateSampleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/sample/update"
+      body: "*"
+    };
+  }
+  rpc DeleteSample(DeleteSampleRequest) returns (DeleteSampleResponse) {
+    option (google.api.http) = {delete: "/api/admin/sample/{id}"};
+  }
+  rpc GetSample(GetSampleRequest) returns (GetSampleResponse) {
+    option (google.api.http) = {get: "/api/admin/sample/{id}"};
+  }
+  rpc ListSamples(ListSamplesRequest) returns (ListSamplesResponse) {
+    option (google.api.http) = {get: "/api/admin/sample/list"};
   }
 
   // TASK MANAGER
@@ -1999,6 +2023,49 @@ message DeleteFittingRequest {
 }
 
 message DeleteFittingResponse {}
+
+// SAMPLES (new-flow NF-04)
+
+message AddSampleRequest {
+  common.SampleInsert sample = 1;
+}
+
+message AddSampleResponse {
+  int32 id = 1;
+}
+
+message UpdateSampleRequest {
+  int32 id = 1;
+  common.SampleInsert sample = 2;
+}
+
+message UpdateSampleResponse {}
+
+message DeleteSampleRequest {
+  int32 id = 1;
+}
+
+message DeleteSampleResponse {}
+
+message GetSampleRequest {
+  int32 id = 1;
+}
+
+message GetSampleResponse {
+  common.Sample sample = 1;
+}
+
+message ListSamplesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+  int32 tech_card_id = 4; // required
+}
+
+message ListSamplesResponse {
+  repeated common.Sample samples = 1;
+  int32 total = 2;
+}
 
 // TASK MANAGER
 

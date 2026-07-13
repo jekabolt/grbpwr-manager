@@ -476,6 +476,16 @@ type (
 		ReceiveProductionRun(ctx context.Context, runID, productID int, perSize map[int]int, username string, costPrice decimal.NullDecimal) error
 	}
 
+	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
+	// a cost composed on read from material issues + the dev-expense journal.
+	Samples interface {
+		AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error)
+		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error
+		DeleteSample(ctx context.Context, id int) error
+		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
+		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int) ([]entity.Sample, int, error)
+	}
+
 	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
 	// moving-average unit cost per catalog material, and the append-only movement ledger. Distinct
 	// from Inventory (which is the finished-goods valuation metrics of task 16).
@@ -710,6 +720,7 @@ type (
 		TechCards() TechCards
 		ProductionRuns() ProductionRuns
 		MaterialStock() MaterialStock
+		Samples() Samples
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail

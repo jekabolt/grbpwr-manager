@@ -51,8 +51,8 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		}
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO fitting (tech_card_id, product_id, model_id, fitting_date, comment, status, verdict, recorded_by, round_number, outcome)
-			VALUES (:techCardId, :productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy, :roundNumber, :outcome)`,
+			INSERT INTO fitting (tech_card_id, product_id, model_id, fitting_date, comment, status, verdict, recorded_by, round_number, outcome, sample_id)
+			VALUES (:techCardId, :productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy, :roundNumber, :outcome, :sampleId)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert fitting: %w", err)
@@ -105,6 +105,7 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 				recorded_by = :recordedBy,
 				round_number = :roundNumber,
 				outcome = :outcome
+				, sample_id = :sampleId
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update fitting: %w", err)
 		}
@@ -298,6 +299,7 @@ func fittingParams(f *entity.FittingInsert) map[string]any {
 		"recordedBy":  f.RecordedBy,
 		"roundNumber": f.RoundNumber,
 		"outcome":     f.Outcome,
+		"sampleId":    f.SampleId,
 	}
 }
 

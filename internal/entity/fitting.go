@@ -117,6 +117,7 @@ type FittingInsert struct {
 	RecordedBy     sql.NullString         `db:"recorded_by"`
 	RoundNumber    sql.NullInt32          `db:"round_number"` // # in the card's try-on sequence; auto-assigned when unset
 	Outcome        sql.NullString         `db:"outcome"`      // FittingOutcome; NULL = undecided
+	SampleId       sql.NullInt32          `db:"sample_id"`    // the sample this fitting tried on (NF-04)
 	Sizes          []FittingSize          `db:"-"`
 	MediaIds       []int                  `db:"-"`
 	Patterns       []FittingPattern       `db:"-"`

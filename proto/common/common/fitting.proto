@@ -65,6 +65,7 @@ message FittingInsert {
   // The structured "what to change" work list produced by this fitting. Full-replace on update,
   // like callouts; resolved is toggled when a change is carried into the tech card.
   repeated FittingChangeRequest change_requests = 15;
+  int32 sample_id = 16; // 0 = unset; the sample this fitting tried on (new-flow NF-04)
 }
 
 // FittingChangeRequest is one structured change produced by a fitting (task 13): the target area
