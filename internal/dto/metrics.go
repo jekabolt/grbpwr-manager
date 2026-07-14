@@ -63,6 +63,7 @@ func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMe
 		UniqueCustomers:      metricWithComparisonToPb(m.UniqueCustomers),
 		PeakDay:              peakDayToPb(m.PeakDay),
 		DiscountRatePct:      metricWithComparisonToPb(m.DiscountRatePct, true), // lower is better
+		NewVsReturning:       newVsReturningSplitToPb(m.NewVsReturning),
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
 		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
@@ -475,6 +476,23 @@ func peakDayToPb(p *entity.PeakDay) *pb_admin.PeakDay {
 		Date:    timestamppb.New(p.Date),
 		Revenue: &decimal.Decimal{Value: p.Revenue.String()},
 		Orders:  int32(p.Orders),
+	}
+}
+
+func newVsReturningSplitToPb(s *entity.NewVsReturningSplit) *pb_admin.NewVsReturningSplit {
+	if s == nil {
+		return nil
+	}
+	return &pb_admin.NewVsReturningSplit{
+		NewOrders:             metricWithComparisonToPb(s.NewOrders),
+		NewRevenue:            metricWithComparisonToPb(s.NewRevenue),
+		NewAov:                metricWithComparisonToPb(s.NewAOV),
+		ReturningOrders:       metricWithComparisonToPb(s.ReturningOrders),
+		ReturningRevenue:      metricWithComparisonToPb(s.ReturningRevenue),
+		ReturningAov:          metricWithComparisonToPb(s.ReturningAOV),
+		NewRevenueSharePct:    s.NewRevenueSharePct,
+		NewRevenueByDay:       timeSeriesToPb(s.NewRevenueByDay),
+		ReturningRevenueByDay: timeSeriesToPb(s.ReturningByDay),
 	}
 }
 

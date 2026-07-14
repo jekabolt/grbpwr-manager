@@ -113,6 +113,8 @@ type BusinessMetrics struct {
 	// UniqueCustomers is the count of distinct buyer emails with a net-revenue order in the
 	// period (the "покупатели" KPI) — distinct from NewCustomers (first-ever order in period).
 	UniqueCustomers MetricWithComparison
+	// NewVsReturning splits revenue / orders / AOV by new vs returning buyers (nil until assembled).
+	NewVsReturning  *NewVsReturningSplit
 	CLVDistribution CLVStats
 
 	// Shipping / logistics metrics
@@ -273,6 +275,21 @@ type PeakDay struct {
 	Date    time.Time
 	Revenue decimal.Decimal // net revenue (base currency) on that day
 	Orders  int             // net-revenue orders placed that day
+}
+
+// NewVsReturningSplit splits a period's net revenue, orders and AOV by whether the buyer's
+// first-ever order (any status) falls in the period. new+returning revenue reconciles with
+// headline Revenue. Daily series carry revenue in Value and order count in Count.
+type NewVsReturningSplit struct {
+	NewOrders          MetricWithComparison
+	NewRevenue         MetricWithComparison
+	NewAOV             MetricWithComparison
+	ReturningOrders    MetricWithComparison
+	ReturningRevenue   MetricWithComparison
+	ReturningAOV       MetricWithComparison
+	NewRevenueSharePct float64
+	NewRevenueByDay    []TimeSeriesPoint
+	ReturningByDay     []TimeSeriesPoint
 }
 
 type CrossSellPair struct {

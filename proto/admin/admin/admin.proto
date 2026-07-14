@@ -1701,6 +1701,10 @@ message CommerceCoreMetrics {
   // away as product-sale + promo discounts (a margin-erosion factor). lower_is_better. Numerator
   // and denominator differ slightly in refunded-order treatment; see caveat.
   MetricWithComparison discount_rate_pct = 59;
+  // new_vs_returning: revenue / orders / AOV split by whether the buyer's first-ever order (any
+  // status) falls in the period. Complements the existing new/returning_customers_by_day COUNT
+  // series with money. new+returning revenue reconciles with headline revenue.
+  NewVsReturningSplit new_vs_returning = 60;
   MetricWithComparison new_subscribers = 13;
   MetricWithComparison new_customers = 14;
   MetricWithComparison repeat_customers_rate = 15;
@@ -1754,6 +1758,21 @@ message PeakDay {
   google.protobuf.Timestamp date = 1;
   google.type.Decimal revenue = 2; // net revenue (base currency) on that day
   int32 orders = 3; // net-revenue orders placed that day
+}
+
+// NewVsReturningSplit breaks the period's net revenue, orders and AOV into new vs returning
+// customers. "New" = the buyer's first-ever order (any status) falls in the period; a customer's
+// second order in the same period is still counted new (matching the new_customers_by_day series).
+message NewVsReturningSplit {
+  MetricWithComparison new_orders = 1;
+  MetricWithComparison new_revenue = 2; // net revenue (base currency)
+  MetricWithComparison new_aov = 3;
+  MetricWithComparison returning_orders = 4;
+  MetricWithComparison returning_revenue = 5; // net revenue (base currency)
+  MetricWithComparison returning_aov = 6;
+  double new_revenue_share_pct = 7; // new_revenue / (new+returning) × 100
+  repeated TimeSeriesPoint new_revenue_by_day = 8; // value=EUR revenue, count=orders
+  repeated TimeSeriesPoint returning_revenue_by_day = 9;
 }
 
 // MarginMetrics is the DB-trusted COGS / margin view (from product.cost_price), computed over

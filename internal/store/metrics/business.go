@@ -53,6 +53,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		estPaymentFees                           decimal.Decimal
 		uniqueCustomers, cUniqueCustomers        int
 		peakDay                                  *entity.PeakDay
+		nvr, cNvr                                newVsReturningRevenueResult
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -132,12 +133,22 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		}
 		return nil
 	})
+	g.Go(func() error {
+		var err error
+		nvr, err = s.getNewVsReturningRevenue(gctx, period.From, period.To, dateExpr)
+		return err
+	})
 
 	// Core sales (compare)
 	if hasCompare {
 		g.Go(func() error {
 			var err error
 			cUniqueCustomers, err = s.getUniqueCustomersCount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
+		g.Go(func() error {
+			var err error
+			cNvr, err = s.getNewVsReturningRevenue(gctx, comparePeriod.From, comparePeriod.To, dateExpr)
 			return err
 		})
 		g.Go(func() error {
@@ -952,6 +963,48 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.NewCustomers.CompareValue = ptr(decimal.NewFromInt(int64(totalNewCustomersCompare)))
 		m.NewCustomers.ChangePct = changePctInt(totalNewCustomers, totalNewCustomersCompare)
 	}
+
+	// New-vs-returning revenue split (task 02). new+returning revenue reconciles with headline
+	// Revenue; a customer's second in-period order still counts new (matches the count series).
+	split := &entity.NewVsReturningSplit{
+		NewOrders:        entity.MetricWithComparison{Value: decimal.NewFromInt(int64(nvr.newOrders))},
+		NewRevenue:       entity.MetricWithComparison{Value: nvr.newRevenue},
+		ReturningOrders:  entity.MetricWithComparison{Value: decimal.NewFromInt(int64(nvr.retOrders))},
+		ReturningRevenue: entity.MetricWithComparison{Value: nvr.retRevenue},
+		NewRevenueByDay:  fillTimeSeriesGaps(nvr.newByDay, period.From, period.To, granularity),
+		ReturningByDay:   fillTimeSeriesGaps(nvr.retByDay, period.From, period.To, granularity),
+	}
+	if nvr.newOrders > 0 {
+		split.NewAOV.Value = nvr.newRevenue.Div(decimal.NewFromInt(int64(nvr.newOrders))).Round(2)
+	}
+	if nvr.retOrders > 0 {
+		split.ReturningAOV.Value = nvr.retRevenue.Div(decimal.NewFromInt(int64(nvr.retOrders))).Round(2)
+	}
+	if total := nvr.newRevenue.Add(nvr.retRevenue); total.GreaterThan(decimal.Zero) {
+		split.NewRevenueSharePct = nvr.newRevenue.Div(total).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	}
+	if hasCompare {
+		split.NewOrders.CompareValue = ptr(decimal.NewFromInt(int64(cNvr.newOrders)))
+		split.NewOrders.ChangePct = changePctInt(nvr.newOrders, cNvr.newOrders)
+		split.NewRevenue.CompareValue = ptr(cNvr.newRevenue)
+		split.NewRevenue.ChangePct = changePct(nvr.newRevenue, cNvr.newRevenue)
+		split.ReturningOrders.CompareValue = ptr(decimal.NewFromInt(int64(cNvr.retOrders)))
+		split.ReturningOrders.ChangePct = changePctInt(nvr.retOrders, cNvr.retOrders)
+		split.ReturningRevenue.CompareValue = ptr(cNvr.retRevenue)
+		split.ReturningRevenue.ChangePct = changePct(nvr.retRevenue, cNvr.retRevenue)
+		var cNewAOV, cRetAOV decimal.Decimal
+		if cNvr.newOrders > 0 {
+			cNewAOV = cNvr.newRevenue.Div(decimal.NewFromInt(int64(cNvr.newOrders))).Round(2)
+		}
+		if cNvr.retOrders > 0 {
+			cRetAOV = cNvr.retRevenue.Div(decimal.NewFromInt(int64(cNvr.retOrders))).Round(2)
+		}
+		split.NewAOV.CompareValue = &cNewAOV
+		split.NewAOV.ChangePct = changePct(split.NewAOV.Value, cNewAOV)
+		split.ReturningAOV.CompareValue = &cRetAOV
+		split.ReturningAOV.ChangePct = changePct(split.ReturningAOV.Value, cRetAOV)
+	}
+	m.NewVsReturning = split
 
 	return m, nil
 }

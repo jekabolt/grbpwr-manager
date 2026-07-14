@@ -361,6 +361,87 @@ func (s *Store) getNewVsReturningCustomersByPeriod(ctx context.Context, from, to
 	return newCustomers, returningCustomers, nil
 }
 
+type newVsReturningRevenueResult struct {
+	newOrders, retOrders   int
+	newRevenue, retRevenue decimal.Decimal
+	newByDay, retByDay     []entity.TimeSeriesPoint
+}
+
+// getNewVsReturningRevenue splits net revenue and order counts by whether the buyer's first-ever
+// order (across ALL statuses — same rule as getNewVsReturningCustomersByPeriod, so a cancelled
+// early order still marks the buyer returning) falls in [from, to). Returns aggregate totals plus
+// per-bucket daily revenue series (Value=EUR, Count=orders). Revenue uses the same net-of-VAT /
+// refund-prorated basis as headline revenue, so new+returning reconciles with commerce revenue.
+func (s *Store) getNewVsReturningRevenue(ctx context.Context, from, to time.Time, dateExpr string) (newVsReturningRevenueResult, error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	bucketExpr := strings.ReplaceAll(dateExpr, "co.placed", "ob.placed")
+	query := fmt.Sprintf(`
+		WITH first_order AS (
+			SELECT b.email, MIN(co.placed) AS first_placed
+			FROM customer_order co
+			JOIN buyer b ON co.id = b.order_id
+			GROUP BY b.email
+		),
+		order_base AS (
+			SELECT ob.id, ob.placed, ob.email,
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0)
+					* 100.0 / (100 + ob.vat_rate_pct) AS revenue_base
+			FROM (
+				SELECT co.id, co.placed, b.email,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
+					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
+				FROM customer_order co
+				JOIN buyer b ON co.id = b.order_id
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (:statusIds)
+				GROUP BY co.id, co.placed, b.email, co.total_price, co.refunded_amount, co.total_settled_base, co.vat_rate_pct
+			) ob
+		)
+		SELECT CASE WHEN fo.first_placed >= :from THEN 1 ELSE 0 END AS is_new,
+			%s AS d,
+			COUNT(*) AS orders,
+			COALESCE(SUM(ob.revenue_base), 0) AS revenue
+		FROM order_base ob
+		JOIN first_order fo ON fo.email = ob.email
+		GROUP BY is_new, %s
+		ORDER BY d
+	`, bucketExpr, bucketExpr)
+	rows, err := storeutil.QueryListNamed[struct {
+		IsNew   int             `db:"is_new"`
+		D       time.Time       `db:"d"`
+		Orders  int             `db:"orders"`
+		Revenue decimal.Decimal `db:"revenue"`
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	if err != nil {
+		return newVsReturningRevenueResult{}, err
+	}
+	var res newVsReturningRevenueResult
+	for _, r := range rows {
+		pt := entity.TimeSeriesPoint{Date: r.D, Value: r.Revenue.Round(2), Count: r.Orders}
+		if r.IsNew == 1 {
+			res.newOrders += r.Orders
+			res.newRevenue = res.newRevenue.Add(r.Revenue)
+			res.newByDay = append(res.newByDay, pt)
+		} else {
+			res.retOrders += r.Orders
+			res.retRevenue = res.retRevenue.Add(r.Revenue)
+			res.retByDay = append(res.retByDay, pt)
+		}
+	}
+	res.newRevenue = res.newRevenue.Round(2)
+	res.retRevenue = res.retRevenue.Round(2)
+	return res, nil
+}
+
 func (s *Store) getShippedByPeriod(ctx context.Context, from, to time.Time, dateExpr string) ([]entity.TimeSeriesPoint, error) {
 	query := fmt.Sprintf(`
 		SELECT %s AS d, COUNT(*) AS cnt
