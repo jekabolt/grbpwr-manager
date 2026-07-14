@@ -228,8 +228,11 @@ func buildCustoms(items []entity.OrderItemParcel, currency string) (*entity.Labe
 	var missing []int32
 	out := &entity.LabelCustoms{Purpose: "merchandise"}
 	for _, it := range items {
-		if !it.HSCode.Valid || strings.TrimSpace(it.HSCode.String) == "" ||
-			!it.CountryOfOrigin.Valid || strings.TrimSpace(it.CountryOfOrigin.String) == "" {
+		// country_of_origin is the core product field (free-text manufacture country, e.g. a name or
+		// code); resolve it to the ISO-2 Sendcloud requires. A missing HS code or an unresolvable
+		// origin flags the product as lacking customs data.
+		originISO2, originOK := entity.ResolveCountryISO2(it.CountryOfOrigin.String)
+		if !it.HSCode.Valid || strings.TrimSpace(it.HSCode.String) == "" || !originOK {
 			missing = append(missing, int32(it.ProductId))
 			continue
 		}
@@ -252,12 +255,12 @@ func buildCustoms(items []entity.OrderItemParcel, currency string) (*entity.Labe
 			PriceCurrency: currency,
 			WeightGrams:   weightGrams,
 			HSCode:        strings.TrimSpace(it.HSCode.String),
-			OriginISO2:    strings.ToUpper(strings.TrimSpace(it.CountryOfOrigin.String)),
+			OriginISO2:    originISO2,
 			SKU:           it.SKU,
 		})
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("international shipment requires customs data (HS code + country of origin) on products %v", missing)
+		return nil, fmt.Errorf("international shipment requires customs data (HS code + resolvable country of origin) on products %v", missing)
 	}
 	return out, nil
 }

@@ -1377,10 +1377,13 @@ message UpdateProductSizeStockRequest {
 
 message UpdateProductSizeStockResponse {}
 
-// ProductCustoms is a product's international-shipping customs data. country_of_origin is ISO-2.
+// ProductCustoms is a product's international-shipping customs data. hs_code and
+// customs_description are the customs-only fields set by SetProductCustoms. country_of_origin is the
+// existing core product field (free-text manufacture country) returned read-only for display and
+// reused as the Sendcloud origin_country — SetProductCustoms ignores it (edit it on the product form).
 message ProductCustoms {
   string hs_code = 1;
-  string country_of_origin = 2; // ISO 3166-1 alpha-2 (Sendcloud origin_country)
+  string country_of_origin = 2; // read-only; core product field, resolved to ISO-2 at label time
   string customs_description = 3;
 }
 
