@@ -214,11 +214,19 @@ type wireAnnounceResponse struct {
 	Errors []wireAPIError `json:"errors"`
 }
 
+// wireAPIError is a Sendcloud v3 error object (JSON:API-ish). Validation errors carry the offending
+// field in source.pointer (e.g. "/to_address/postal_code"); surfacing it turns an opaque "Enter a
+// valid zip code" into an actionable "which address's zip".
 type wireAPIError struct {
+	Status  string `json:"status"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Title   string `json:"title"`
 	Detail  string `json:"detail"`
+	Source  struct {
+		Pointer   string `json:"pointer"`
+		Parameter string `json:"parameter"`
+	} `json:"source"`
 }
 
 type wireOptionsRequest struct {
@@ -318,7 +326,7 @@ func (c *Client) GetShippingOptions(ctx context.Context, req entity.OptionsReque
 		}
 	}
 	if statusCode < 200 || statusCode >= 300 {
-		return nil, fmt.Errorf("shippinglabel: fetch shipping options failed: http=%d %s", statusCode, firstErr(env.Errors))
+		return nil, carrierErr("fetch shipping options", statusCode, env.Errors)
 	}
 	out := make([]entity.ShippingOption, 0, len(env.Data))
 	for _, o := range env.Data {
@@ -405,7 +413,7 @@ func (c *Client) CreateLabel(ctx context.Context, req entity.LabelRequest) (*ent
 		}
 	}
 	if statusCode < 200 || statusCode >= 300 {
-		return nil, fmt.Errorf("shippinglabel: announce shipment failed: http=%d %s", statusCode, firstErr(env.Errors))
+		return nil, carrierErr("announce shipment", statusCode, env.Errors)
 	}
 	if len(env.Data.Parcels) == 0 {
 		return nil, fmt.Errorf("shippinglabel: announce returned no parcels")
@@ -499,7 +507,7 @@ func (c *Client) VoidLabel(ctx context.Context, carrierShipmentID string) error 
 			Errors []wireAPIError `json:"errors"`
 		}
 		_ = json.Unmarshal(raw, &env)
-		return fmt.Errorf("shippinglabel: cancel parcel failed: http=%d %s", statusCode, firstErr(env.Errors))
+		return carrierErr("cancel parcel", statusCode, env.Errors)
 	}
 	return nil
 }
@@ -540,7 +548,7 @@ func (c *Client) SchedulePickup(ctx context.Context, req entity.PickupRequest) (
 		}
 	}
 	if statusCode < 200 || statusCode >= 300 {
-		return nil, fmt.Errorf("shippinglabel: schedule pickup failed: http=%d %s", statusCode, firstErr(env.Errors))
+		return nil, carrierErr("schedule pickup", statusCode, env.Errors)
 	}
 	id := env.Data.ID.String()
 	if id == "" || id == "0" {
@@ -623,18 +631,39 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// firstErr renders a Sendcloud error envelope for logging. It joins ALL returned errors (validation
-// responses often carry several at once — surfacing only the first hides the others, e.g. a bad
-// weight unit masked behind a bad dimensions unit).
+// firstErr renders a Sendcloud error envelope for logging/surfacing. It joins ALL returned errors
+// (validation responses often carry several at once — surfacing only the first hides the others,
+// e.g. a bad weight unit masked behind a bad dimensions unit) and includes each error's field
+// pointer when present (so "Enter a valid zip code" reads "field=/to_address/postal_code ...").
 func firstErr(errs []wireAPIError) string {
 	if len(errs) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(errs))
 	for _, e := range errs {
-		parts = append(parts, fmt.Sprintf("code=%q %s", e.Code, firstNonEmpty(e.Detail, e.Message, e.Title)))
+		msg := firstNonEmpty(e.Detail, e.Message, e.Title)
+		if field := firstNonEmpty(e.Source.Pointer, e.Source.Parameter); field != "" {
+			parts = append(parts, fmt.Sprintf("code=%q field=%s %s", e.Code, field, msg))
+		} else {
+			parts = append(parts, fmt.Sprintf("code=%q %s", e.Code, msg))
+		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+// carrierErr classifies a non-2xx Sendcloud response. A 4xx is the carrier rejecting our request
+// (bad address/zip, missing customs, no shipping rules) — actionable by the operator, so it becomes
+// a typed CarrierValidationError the handler maps to FailedPrecondition. A 5xx/other is transient or
+// our bug and stays a plain error (generic 500 to the client).
+func carrierErr(op string, statusCode int, errs []wireAPIError) error {
+	detail := firstErr(errs)
+	if statusCode >= 400 && statusCode < 500 {
+		if detail == "" {
+			detail = fmt.Sprintf("carrier rejected the request (http=%d)", statusCode)
+		}
+		return &entity.CarrierValidationError{Detail: detail}
+	}
+	return fmt.Errorf("shippinglabel: %s failed: http=%d %s", op, statusCode, detail)
 }
 
 // Disabled is a no-op LabelProvider used when Sendcloud is not configured. Every method returns

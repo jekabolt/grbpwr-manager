@@ -137,6 +137,12 @@ func (s *Server) GenerateShippingLabel(ctx context.Context, req *pb_admin.Genera
 		if errors.Is(err, entity.ErrLabelsDisabled) {
 			return nil, status.Error(codes.FailedPrecondition, "shipping labels are not configured")
 		}
+		var ve *entity.CarrierValidationError
+		if errors.As(err, &ve) {
+			slog.Default().WarnContext(ctx, "carrier rejected shipping label",
+				slog.String("order_uuid", req.OrderUuid), slog.String("err", ve.Error()))
+			return nil, status.Errorf(codes.FailedPrecondition, "carrier rejected the shipment: %s", ve.Error())
+		}
 		slog.Default().ErrorContext(ctx, "carrier label creation failed",
 			slog.String("order_uuid", req.OrderUuid), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't generate shipping label")
@@ -297,6 +303,12 @@ func (s *Server) GetShippingOptions(ctx context.Context, req *pb_admin.GetShippi
 	if err != nil {
 		if errors.Is(err, entity.ErrLabelsDisabled) {
 			return nil, status.Error(codes.FailedPrecondition, "shipping labels are not configured")
+		}
+		var ve *entity.CarrierValidationError
+		if errors.As(err, &ve) {
+			slog.Default().WarnContext(ctx, "carrier rejected shipping options",
+				slog.String("order_uuid", req.OrderUuid), slog.String("err", ve.Error()))
+			return nil, status.Errorf(codes.FailedPrecondition, "carrier rejected the request: %s", ve.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't get shipping options", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get shipping options")
