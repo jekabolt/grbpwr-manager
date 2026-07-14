@@ -345,6 +345,8 @@ type (
 		GetPeriodOrderCount(ctx context.Context, from, to time.Time) (int, error)
 		// GetRevenueByCountry returns revenue breakdown by country with share % and AOV.
 		GetRevenueByCountry(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error)
+		// GetCountryEconomics returns per-country profitability (margin, contribution, profit/order, LTV).
+		GetCountryEconomics(ctx context.Context, from, to time.Time) ([]entity.CountryEconomicsRow, error)
 		// GetCustomerSegmentation returns AOV-based customer segmentation (high/medium/low tiers).
 		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
 		// GetOrderValueBands buckets net-revenue orders into fixed order-value bands (upsell view).

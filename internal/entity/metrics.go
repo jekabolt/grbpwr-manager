@@ -237,6 +237,28 @@ type RegionMetric struct {
 	Count  int
 }
 
+// CountryEconomicsRow is per-country profitability (analytics-v2 task 08): margin and its inputs,
+// contribution, profit per order and average customer LTV. Revenue/Orders reconcile with the
+// by_country breakdown (same shipping-address attribution). Margin covers only items with a cost
+// snapshot, so CostCoveragePct/Orders gate its trust. Money fields except Revenue/TotalDiscount/LtvAvg
+// are confidential cost data (stripped without costing:read).
+type CountryEconomicsRow struct {
+	Country            string
+	Revenue            decimal.Decimal
+	Orders             int
+	RevenueCost        decimal.Decimal
+	GrossMargin        decimal.Decimal
+	GrossMarginPct     float64
+	CostCoveragePct    float64
+	ShippingCost       decimal.Decimal
+	PaymentFees        decimal.Decimal
+	ContributionMargin decimal.Decimal
+	ProfitPerOrder     decimal.Decimal
+	TotalDiscount      decimal.Decimal
+	LtvAvg             decimal.Decimal
+	LtvSample          int
+}
+
 // CurrencyMetric aggregates revenue by order currency
 type CurrencyMetric struct {
 	Currency string

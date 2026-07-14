@@ -153,6 +153,12 @@ var costingRedactedFieldNames = map[string]bool{
 	"blended_cac":               true,
 	"ltv_cac_ratio":             true,
 	"fulfilment_cost_per_order": true,
+	// analytics-v2 task 08: per-country cost/margin. `revenue_cost`, `gross_margin`,
+	// `gross_margin_pct`, `contribution_margin` are already covered above; add the two names unique to
+	// the country row. `shipping_cost` stays visible (precedent: avg/total_shipping_cost are logistics,
+	// not COGS) and `ltv_avg` is revenue-side.
+	"profit_per_order": true,
+	"payment_fees":     true,
 }
 
 // redactCostingFieldsDeep clears every confidential cost/margin field (by name) anywhere in the

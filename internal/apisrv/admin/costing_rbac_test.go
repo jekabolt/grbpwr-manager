@@ -204,6 +204,50 @@ func TestStripMetricsCostingProfitability(t *testing.T) {
 	require.Equal(t, "spend manual", p.Caveat, "caveat kept")
 }
 
+// TestStripMetricsCostingGeographyEconomics verifies the analytics-v2 task-08 per-country economics
+// rows are cost-stripped by field NAME: COGS/margin/contribution/fees/profit-per-order go, while the
+// revenue-side figures (revenue, orders, discount, ltv_avg, cost coverage, shipping) survive.
+func TestStripMetricsCostingGeographyEconomics(t *testing.T) {
+	resp := &pb_admin.GetMetricsResponse{
+		Geography: &pb_admin.GeographySection{
+			EconomicsByCountry: []*pb_admin.CountryEconomicsRow{{
+				Country:            "DE",
+				Revenue:            dec("500.00"),
+				Orders:             4,
+				RevenueCost:        dec("200.00"),
+				GrossMargin:        dec("300.00"),
+				GrossMarginPct:     60,
+				CostCoveragePct:    100,
+				ShippingCost:       dec("20.00"),
+				PaymentFees:        dec("15.00"),
+				ContributionMargin: dec("265.00"),
+				ProfitPerOrder:     dec("66.25"),
+				TotalDiscount:      dec("30.00"),
+				LtvAvg:             dec("250.00"),
+				LtvSample:          3,
+			}},
+		},
+	}
+	stripMetricsCosting(resp)
+	r := resp.Geography.EconomicsByCountry[0]
+	// cost-derived → redacted
+	require.Nil(t, r.RevenueCost, "revenue_cost redacted")
+	require.Nil(t, r.GrossMargin, "gross_margin redacted")
+	require.Zero(t, r.GrossMarginPct, "gross_margin_pct redacted")
+	require.Nil(t, r.ContributionMargin, "contribution_margin redacted")
+	require.Nil(t, r.PaymentFees, "payment_fees redacted")
+	require.Nil(t, r.ProfitPerOrder, "profit_per_order redacted")
+	// revenue-side / logistics → kept
+	require.Equal(t, "DE", r.Country, "country kept")
+	require.Equal(t, "500.00", r.Revenue.GetValue(), "revenue kept")
+	require.Equal(t, int32(4), r.Orders, "orders kept")
+	require.Equal(t, 100.0, r.CostCoveragePct, "cost_coverage_pct kept")
+	require.Equal(t, "20.00", r.ShippingCost.GetValue(), "shipping_cost kept (logistics, not COGS)")
+	require.Equal(t, "30.00", r.TotalDiscount.GetValue(), "total_discount kept")
+	require.Equal(t, "250.00", r.LtvAvg.GetValue(), "ltv_avg kept (revenue-side)")
+	require.Equal(t, int32(3), r.LtvSample, "ltv_sample kept")
+}
+
 // TestStripDashboardCosting redacts margins while revenue/orders survive.
 func TestStripDashboardCosting(t *testing.T) {
 	resp := &pb_admin.GetDashboardResponse{

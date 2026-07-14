@@ -679,11 +679,41 @@ func geographySessionMetricsToPb(list []entity.GeographySessionMetric) []*pb_adm
 }
 
 // ConvertGeographyToPb converts geography metrics and session data to protobuf GeographySection.
-func ConvertGeographyToPb(byCountry []entity.GeographyMetric, sessions []entity.GeographySessionMetric) *pb_admin.GeographySection {
+func ConvertGeographyToPb(byCountry []entity.GeographyMetric, sessions []entity.GeographySessionMetric, economics []entity.CountryEconomicsRow) *pb_admin.GeographySection {
 	return &pb_admin.GeographySection{
-		ByCountry:         geographyMetricsToPb(byCountry),
-		SessionsByCountry: geographySessionMetricsToPb(sessions),
+		ByCountry:          geographyMetricsToPb(byCountry),
+		SessionsByCountry:  geographySessionMetricsToPb(sessions),
+		EconomicsByCountry: countryEconomicsToPb(economics),
 	}
+}
+
+// countryEconomicsToPb maps the per-country profitability rows (analytics-v2 task 08) to the wire. The
+// costing-strip later blanks the confidential cost/margin fields by name for accounts without
+// costing:read; revenue, orders, total_discount and ltv_avg (revenue-side) stay visible.
+func countryEconomicsToPb(list []entity.CountryEconomicsRow) []*pb_admin.CountryEconomicsRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CountryEconomicsRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CountryEconomicsRow{
+			Country:            r.Country,
+			Revenue:            &decimal.Decimal{Value: r.Revenue.String()},
+			Orders:             int32(r.Orders),
+			RevenueCost:        &decimal.Decimal{Value: r.RevenueCost.String()},
+			GrossMargin:        &decimal.Decimal{Value: r.GrossMargin.String()},
+			GrossMarginPct:     r.GrossMarginPct,
+			CostCoveragePct:    r.CostCoveragePct,
+			ShippingCost:       &decimal.Decimal{Value: r.ShippingCost.String()},
+			PaymentFees:        &decimal.Decimal{Value: r.PaymentFees.String()},
+			ContributionMargin: &decimal.Decimal{Value: r.ContributionMargin.String()},
+			ProfitPerOrder:     &decimal.Decimal{Value: r.ProfitPerOrder.String()},
+			TotalDiscount:      &decimal.Decimal{Value: r.TotalDiscount.String()},
+			LtvAvg:             &decimal.Decimal{Value: r.LtvAvg.String()},
+			LtvSample:          int32(r.LtvSample),
+		}
+	}
+	return pb
 }
 
 // --- BQ Analytics DTO converters ---

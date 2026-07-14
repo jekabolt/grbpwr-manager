@@ -1970,6 +1970,30 @@ message RegionMetric {
 message GeographySection {
   repeated GeographyMetric by_country = 1;
   repeated GeographySessionMetric sessions_by_country = 2;
+  repeated CountryEconomicsRow economics_by_country = 3; // analytics-v2 task 08: per-country profitability
+}
+
+// CountryEconomicsRow is per-country profitability (analytics-v2 task 08): margin and its inputs,
+// contribution, profit per order, and average customer LTV. Revenue/orders reconcile with
+// by_country (same shipping-address attribution). Margin is over items that HAVE a cost snapshot, so
+// gate on cost_coverage_pct and orders — a 2-order country can show 80% margin. gross_margin,
+// revenue_cost, contribution_margin, payment_fees and profit_per_order are confidential cost data
+// (stripped without costing:read); revenue, orders, discount and ltv_avg (revenue-side) stay visible.
+message CountryEconomicsRow {
+  string country = 1; // ISO-2, as stored in address.country
+  google.type.Decimal revenue = 2; // net revenue (base currency) — ties out with by_country.value
+  int32 orders = 3;
+  google.type.Decimal revenue_cost = 4; // COGS: Σ(cost snapshot × qty × refund-adjust) over costed items
+  google.type.Decimal gross_margin = 5; // costed revenue − COGS
+  double gross_margin_pct = 6; // gross_margin / costed revenue × 100
+  double cost_coverage_pct = 7; // % of this country's product revenue that has a cost set
+  google.type.Decimal shipping_cost = 8; // actual carrier cost → tariff fallback, incl. return leg
+  google.type.Decimal payment_fees = 9; // captured Stripe fee (customer_order.payment_fee)
+  google.type.Decimal contribution_margin = 10; // gross_margin − shipping − payment fees
+  google.type.Decimal profit_per_order = 11; // contribution_margin / orders
+  google.type.Decimal total_discount = 12; // product-sale + promo-code discount (base currency)
+  google.type.Decimal ltv_avg = 13; // avg lifetime customer value of customers who ordered here this period
+  int32 ltv_sample = 14; // number of customers behind ltv_avg
 }
 
 message CurrencyMetric {

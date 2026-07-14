@@ -487,7 +487,12 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get geography sessions by country", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
 		}
-		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions)
+		economics, err := s.repo.Metrics().GetCountryEconomics(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get geography economics by country", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+		}
+		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions, economics)
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_ADD_TO_CART_RATE) {
