@@ -29,6 +29,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 
 	var (
 		rev, cRev                                decimal.Decimal
+		grossInclVat, cGrossInclVat              decimal.Decimal
+		vatAmount, cVatAmount                    decimal.Decimal
 		orders, cOrders                          int
 		placedOrders, cPlacedOrders              int
 		aov, cAov                                decimal.Decimal
@@ -48,6 +50,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		cogs, cCogs                              decimal.Decimal
 		totalItemRev                             decimal.Decimal
 		paymentFees, cPaymentFees                decimal.Decimal
+		estPaymentFees                           decimal.Decimal
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -64,7 +67,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	// Core sales (period)
 	g.Go(func() error {
 		var err error
-		rev, orders, aov, err = s.getCoreSalesMetrics(gctx, period.From, period.To)
+		rev, grossInclVat, vatAmount, orders, aov, err = s.getCoreSalesMetrics(gctx, period.From, period.To)
 		return err
 	})
 	g.Go(func() error {
@@ -109,7 +112,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	})
 	g.Go(func() error {
 		var err error
-		paymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
+		paymentFees, estPaymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
 		return err
 	})
 
@@ -117,7 +120,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if hasCompare {
 		g.Go(func() error {
 			var err error
-			cRev, cOrders, cAov, err = s.getCoreSalesMetrics(gctx, comparePeriod.From, comparePeriod.To)
+			cRev, cGrossInclVat, cVatAmount, cOrders, cAov, err = s.getCoreSalesMetrics(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 		g.Go(func() error {
@@ -162,7 +165,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		})
 		g.Go(func() error {
 			var err error
-			cPaymentFees, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
+			cPaymentFees, _, err = s.getPaymentFees(gctx, comparePeriod.From, comparePeriod.To)
 			return err
 		})
 	}
@@ -622,6 +625,11 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	// Derived values from core sales
 	totalDiscount := productSaleDiscount.Add(promoCodeDiscount)
 	m.Revenue.Value = rev
+	m.RevenueInclVat.Value = grossInclVat
+	m.VatAmount.Value = vatAmount
+	if vatAmount.GreaterThan(decimal.Zero) {
+		m.Revenue.Caveat = fmt.Sprintf("Net of %s VAT (destination-country rate, prices are VAT-inclusive); RevenueInclVat is the gross-of-VAT figure. All margins use net revenue.", vatAmount.StringFixed(2))
+	}
 	m.OrdersCount.Value = decimal.NewFromInt(int64(orders))
 	m.TotalPlacedOrders.Value = decimal.NewFromInt(int64(placedOrders))
 	m.AvgOrderValue.Value = aov
@@ -677,7 +685,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.GrossMargin.Caveat = note
 		m.GrossMarginPct.Caveat = note
 	}
-	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and Stripe payment fees; meaningful when cost coverage is high."
+	m.ContributionMargin.Caveat = "Gross margin minus total shipping cost and payment fees; meaningful when cost coverage is high."
+	if estPaymentFees.GreaterThan(decimal.Zero) {
+		m.PaymentFees.Caveat = fmt.Sprintf("Includes %s in estimated fees for orders without a captured Stripe fee (per payment-method fee model).", estPaymentFees.StringFixed(2))
+	}
 
 	// GA4 aggregate metrics (totalSessions etc. computed above)
 	m.Sessions.Value = decimal.NewFromInt(int64(totalSessions))
@@ -728,6 +739,10 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	if hasCompare {
 		cTotalDiscount := cProductSaleDiscount.Add(cPromoCodeDiscount)
 		m.Revenue.CompareValue = &cRev
+		m.RevenueInclVat.CompareValue = &cGrossInclVat
+		m.RevenueInclVat.ChangePct = changePct(grossInclVat, cGrossInclVat)
+		m.VatAmount.CompareValue = &cVatAmount
+		m.VatAmount.ChangePct = changePct(vatAmount, cVatAmount)
 		m.OrdersCount.CompareValue = ptr(decimal.NewFromInt(int64(cOrders)))
 		m.TotalPlacedOrders.CompareValue = ptr(decimal.NewFromInt(int64(cPlacedOrders)))
 		m.TotalPlacedOrders.ChangePct = changePctInt(placedOrders, cPlacedOrders)

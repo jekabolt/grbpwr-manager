@@ -39,20 +39,22 @@ var (
 		pb_common.SeasonEnum_SEASON_ENUM_RC: entity.SeasonRC,
 	}
 	stockChangeSourceToProto = map[string]pb_common.StockChangeSource{
-		string(entity.StockChangeSourceAdminNewProduct):  pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT,
-		string(entity.StockChangeSourceManualAdjustment): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
-		string(entity.StockChangeSourceOrderPaid):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID,
-		string(entity.StockChangeSourceOrderCustom):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM,
-		string(entity.StockChangeSourceOrderReturned):    pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED,
-		string(entity.StockChangeSourceOrderCancelled):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
+		string(entity.StockChangeSourceAdminNewProduct):    pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT,
+		string(entity.StockChangeSourceManualAdjustment):   pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT,
+		string(entity.StockChangeSourceOrderPaid):          pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID,
+		string(entity.StockChangeSourceOrderCustom):        pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM,
+		string(entity.StockChangeSourceOrderReturned):      pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED,
+		string(entity.StockChangeSourceOrderCancelled):     pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED,
+		string(entity.StockChangeSourceProductionReceived): pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_PRODUCTION_RECEIVED,
 	}
 	stockChangeSourceToEntity = map[pb_common.StockChangeSource]string{
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT: string(entity.StockChangeSourceAdminNewProduct),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT: string(entity.StockChangeSourceManualAdjustment),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID:        string(entity.StockChangeSourceOrderPaid),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM:      string(entity.StockChangeSourceOrderCustom),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED:    string(entity.StockChangeSourceOrderReturned),
-		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:   string(entity.StockChangeSourceOrderCancelled),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ADMIN_NEW_PRODUCT:   string(entity.StockChangeSourceAdminNewProduct),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_MANUAL_ADJUSTMENT:   string(entity.StockChangeSourceManualAdjustment),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_PAID:          string(entity.StockChangeSourceOrderPaid),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CUSTOM:        string(entity.StockChangeSourceOrderCustom),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_RETURNED:      string(entity.StockChangeSourceOrderReturned),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_ORDER_CANCELLED:     string(entity.StockChangeSourceOrderCancelled),
+		pb_common.StockChangeSource_STOCK_CHANGE_SOURCE_PRODUCTION_RECEIVED: string(entity.StockChangeSourceProductionReceived),
 	}
 	stockChangeReasonToProto = map[string]pb_common.StockChangeReason{
 		string(entity.StockChangeReasonInitialStock):    pb_common.StockChangeReason_STOCK_CHANGE_REASON_INITIAL_STOCK,

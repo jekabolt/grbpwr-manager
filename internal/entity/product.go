@@ -210,6 +210,17 @@ type ProductDisplay struct {
 	SecondaryThumbnail *MediaFull  `valid:"-"`
 }
 
+// ProductCostInfo carries the confidential COGS fields of a product for the admin surface
+// only (never the storefront). Source is "manual" | "tech_card" | "" (unset); the tech-card
+// ids are 0 when absent.
+type ProductCostInfo struct {
+	CostPrice           decimal.NullDecimal `db:"cost_price"`
+	CostPriceSource     sql.NullString      `db:"cost_price_source"`
+	CostPriceTechCardID sql.NullInt32       `db:"cost_price_tech_card_id"`
+	CostPriceUpdatedAt  sql.NullTime        `db:"cost_price_updated_at"`
+	PrimaryTechCardID   sql.NullInt32       `db:"primary_tech_card_id"`
+}
+
 type ProductMeasurementUpdate struct {
 	SizeId            int             `db:"size_id"`
 	MeasurementNameId int             `db:"measurement_name_id"`
@@ -303,6 +314,8 @@ const (
 	StockChangeSourceOrderCustom      StockChangeSource = "order_custom"
 	StockChangeSourceOrderReturned    StockChangeSource = "order_returned"
 	StockChangeSourceOrderCancelled   StockChangeSource = "order_cancelled"
+	// StockChangeSourceProductionReceived is stock added by receiving a production run (task 09).
+	StockChangeSourceProductionReceived StockChangeSource = "production_received"
 )
 
 // StockChangeReason represents the reason for a stock change.

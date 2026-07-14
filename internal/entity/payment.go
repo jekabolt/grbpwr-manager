@@ -55,4 +55,8 @@ type PaymentMethod struct {
 	Id      int               `db:"id"`
 	Name    PaymentMethodName `db:"name"`
 	Allowed bool              `db:"allowed"`
+	// FeePct + FeeFixed model the processing fee of this method, used to ESTIMATE the fee of an
+	// order that has no captured Stripe fee (bank-invoice / cash / non-EUR-settled / legacy).
+	FeePct   decimal.Decimal `db:"fee_pct"`
+	FeeFixed decimal.Decimal `db:"fee_fixed"`
 }

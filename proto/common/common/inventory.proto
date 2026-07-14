@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package common;
+
+import "common/techcard.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// MaterialMovementType is the kind of a material-stock movement (new-flow NF-01). quantity is
+// always non-negative; the type (with on_hand before/after) encodes the direction.
+enum MaterialMovementType {
+  MATERIAL_MOVEMENT_TYPE_UNKNOWN = 0;
+  MATERIAL_MOVEMENT_TYPE_RECEIPT = 1; // purchase-in
+  MATERIAL_MOVEMENT_TYPE_RECEIPT_PRODUCTION = 2; // our own auxiliary run lands in stock (NF-07)
+  MATERIAL_MOVEMENT_TYPE_ISSUE_PRODUCTION = 3; // issued into a production run
+  MATERIAL_MOVEMENT_TYPE_ISSUE_SAMPLE = 4; // issued to a sample
+  MATERIAL_MOVEMENT_TYPE_RETURN_PRODUCTION = 5; // unused remainder returned from a run
+  MATERIAL_MOVEMENT_TYPE_RETURN_SAMPLE = 6; // returned from a sample
+  MATERIAL_MOVEMENT_TYPE_ADJUSTMENT = 7; // stock count (set/adjust)
+  MATERIAL_MOVEMENT_TYPE_WRITEOFF = 8; // damage/loss/defect
+}
+
+// MaterialStock is a material's maintained on-hand balance and moving-average unit cost. The cost
+// fields are confidential (stripped for accounts without costing:read).
+message MaterialStock {
+  int32 material_id = 1;
+  google.type.Decimal on_hand = 2;
+  google.type.Decimal avg_unit_cost_base = 3; // costing:read only
+  string base_currency = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// MaterialMovement is one row of the append-only stock ledger. unit_cost* fields are confidential.
+message MaterialMovement {
+  int32 id = 1;
+  int32 material_id = 2;
+  MaterialMovementType movement_type = 3;
+  google.type.Decimal quantity = 4;
+  google.type.Decimal on_hand_before = 5;
+  google.type.Decimal on_hand_after = 6;
+  google.type.Decimal unit_cost = 7; // costing:read only
+  string currency = 8; // costing:read only
+  google.type.Decimal unit_cost_base = 9; // costing:read only
+  int32 production_run_id = 10; // 0 = none
+  int32 sample_id = 11; // 0 = none
+  int32 tech_card_id = 12; // owning style, denormalised from the run/sample at issue time (0 = none); filter movements by style. Derived, not an independent issue target.
+  string lot = 13;
+  string supplier_doc = 14;
+  string reason = 15;
+  string comment = 16;
+  string admin_username = 17;
+  google.protobuf.Timestamp occurred_at = 18;
+  google.protobuf.Timestamp created_at = 19;
+  int32 product_id = 20; // colour-model an issue to a run was cut for (gap-07 v2 C); 0 = shared/unattributed
+  int32 lot_id = 21; // structured lot (roll / dye-lot) this movement received into or drew from (gap-07 v2 D); 0 = none
+}
+
+// MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code
+// with a running remaining quantity, for traceability and colour matching. unit_cost is
+// informational only — valuation stays moving-average; a lot is NOT a FIFO costing basis.
+message MaterialLot {
+  int32 id = 1;
+  int32 material_id = 2;
+  string lot_code = 3; // supplier dye-lot / roll number
+  string supplier_doc = 4;
+  google.type.Decimal received_qty = 5; // total received into this lot
+  google.type.Decimal remaining_qty = 6; // still available to issue from this lot
+  google.type.Decimal unit_cost = 7; // informational, purchase currency (costing:read); NOT a valuation basis
+  string currency = 8;
+  google.protobuf.Timestamp received_at = 9;
+  string note = 10;
+  bool archived = 11;
+}
+
+// MaterialStockRow is a catalog material joined with its stock balance, valuation and low-stock
+// flag — one row of the warehouse list. Money fields are confidential.
+message MaterialStockRow {
+  Material material = 1;
+  google.type.Decimal on_hand = 2;
+  google.type.Decimal avg_unit_cost_base = 3; // costing:read only
+  google.type.Decimal stock_value_base = 4; // costing:read only
+  google.type.Decimal min_stock = 5;
+  bool below_min_stock = 6;
+  string base_currency = 7;
+}

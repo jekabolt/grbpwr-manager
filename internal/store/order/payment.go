@@ -196,14 +196,36 @@ func (s *Store) UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string
 	return nil
 }
 
+// settledEURReconcileTolerance is the relative gap within which the order-time loyalty
+// snapshot (total_price_eur) is collapsed onto the settled fact (total_settled_base) at
+// capture. Within tolerance the two EUR figures are "the same number seen twice" (order-time
+// vs settlement FX rounding), so we pin qualifying spend to the amount actually paid. Beyond
+// it we leave the snapshot and log an anomaly — silently rewriting qualifying spend could
+// move a customer's loyalty tier, which must never be a side effect of payment capture.
+var settledEURReconcileTolerance = decimal.RequireFromString("0.02") // 2%
+
 // UpdateSettledBaseAndFee records the actual Stripe-settled amount and the Stripe processing
 // fee for an order, both converted to the base currency (EUR) from the charge's balance
 // transaction. Captured together, once, at payment confirmation.
+//
+// It also reconciles the loyalty snapshot: total_price_eur (order-time estimate) is pulled onto
+// total_settled_base (the settled fact) when they agree within settledEURReconcileTolerance, so
+// the two EUR figures stop diverging on paid orders. A larger gap is left untouched and logged
+// (see the tolerance doc). Historical rows are never revisited — this runs once, at capture.
 func (s *Store) UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error {
+	reconcile := s.shouldReconcileLoyaltyEUR(ctx, orderUUID, settledBase)
+
+	// total_price_eur is only rewritten when within tolerance; otherwise it keeps its
+	// order-time value (the anomaly is logged in shouldReconcileLoyaltyEUR).
+	setPriceEUR := ""
+	if reconcile {
+		setPriceEUR = ", total_price_eur = :settledBase"
+	}
+
 	query := `
 	UPDATE customer_order
 	SET total_settled_base = :settledBase,
-	    payment_fee = :paymentFee
+	    payment_fee = :paymentFee` + setPriceEUR + `
 	WHERE uuid = :orderUUID`
 
 	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
@@ -215,6 +237,42 @@ func (s *Store) UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, s
 		return fmt.Errorf("can't update settled base and fee: %w", err)
 	}
 	return nil
+}
+
+// shouldReconcileLoyaltyEUR reports whether the order's loyalty snapshot (total_price_eur)
+// should be collapsed onto the settled base at capture. It returns true only when a snapshot
+// exists and sits within settledEURReconcileTolerance of settledBase. A missing snapshot, a
+// non-positive settled amount, or a read error yields false (leave the snapshot alone); a gap
+// beyond tolerance yields false and is logged as an anomaly worth a look.
+func (s *Store) shouldReconcileLoyaltyEUR(ctx context.Context, orderUUID string, settledBase decimal.Decimal) bool {
+	if !settledBase.IsPositive() {
+		return false
+	}
+
+	row, err := storeutil.QueryNamedOne[struct {
+		TotalPriceEUR decimal.NullDecimal `db:"total_price_eur"`
+	}](ctx, s.DB, `SELECT total_price_eur FROM customer_order WHERE uuid = :orderUUID`,
+		map[string]any{"orderUUID": orderUUID})
+	if err != nil {
+		// Non-fatal: the reconcile is best-effort. Skip it and let the settled/fee write proceed.
+		slog.WarnContext(ctx, "can't read total_price_eur for loyalty reconcile; leaving snapshot",
+			slog.String("order_uuid", orderUUID), slog.String("err", err.Error()))
+		return false
+	}
+	if !row.TotalPriceEUR.Valid {
+		return false
+	}
+
+	gap := row.TotalPriceEUR.Decimal.Sub(settledBase).Abs().Div(settledBase)
+	if gap.GreaterThan(settledEURReconcileTolerance) {
+		slog.WarnContext(ctx, "loyalty EUR snapshot diverges from settled base beyond tolerance; leaving qualifying spend as-is",
+			slog.String("order_uuid", orderUUID),
+			slog.String("total_price_eur", row.TotalPriceEUR.Decimal.String()),
+			slog.String("total_settled_base", settledBase.String()),
+			slog.String("gap", gap.StringFixed(4)))
+		return false
+	}
+	return true
 }
 
 // GetPaymentByOrderUUID retrieves a payment by the order UUID.

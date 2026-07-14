@@ -657,6 +657,15 @@ func (w *Worker) runBQPrecompute(ctx context.Context, startDate, endDate time.Ti
 			}
 			return w.bqCache.SaveBQOOSImpact(ctx, rows)
 		}},
+		{"bq_order_channel", func() error {
+			// Server-side order→channel attribution map (task 20 step 2): client_id → last
+			// non-direct UTM, upserted by client_id so a returning client's newer touch wins.
+			rows, err := w.bqClient.GetOrderChannelMap(ctx, startDate, endDate)
+			if err != nil {
+				return fmt.Errorf("fetch order channel map: %w", err)
+			}
+			return w.bqCache.SaveBQOrderChannel(ctx, rows)
+		}},
 		{"bq_payment_failures", func() error {
 			rows, err := w.bqClient.GetPaymentFailures(ctx, startDate, endDate)
 			if err != nil {

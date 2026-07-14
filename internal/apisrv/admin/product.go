@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	v "github.com/asaskevich/govalidator"
@@ -18,11 +19,17 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"golang.org/x/exp/slices"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductRequest) (*pb_admin.UpsertProductResponse, error) {
+
+	if _, write := s.costingAccess(ctx); !write && productInsertHasCostPrice(req.GetProduct().GetProduct()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a product cost_price")
+	}
 
 	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
 	if err != nil {
@@ -139,10 +146,111 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
 	}
 
+	// Confidential cost/provenance — admin surface only, on a field of the admin response,
+	// and further gated by costing:read (task 19): a scoped account without it gets no cost.
+	var costInfo *pb_admin.ProductCostInfo
+	if read, _ := s.costingAccess(ctx); read {
+		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
+			slog.Default().ErrorContext(ctx, "can't get product cost info",
+				slog.String("err", cerr.Error()))
+		} else {
+			costInfo = productCostInfoToPb(ci)
+		}
+	}
+
 	return &pb_admin.GetProductByIDResponse{
-		Product: pbPrd,
+		Product:  pbPrd,
+		CostInfo: costInfo,
 	}, nil
 
+}
+
+// SyncProductCostFromTechCard forces a product's cost_price to be (re)seeded from a tech
+// card, overriding any manual value. tech_card_id (when > 0) repoints the product's primary
+// card before seeding; otherwise the product's existing primary card is used. The card must
+// currently link the product and have a computable unit cost in the base currency.
+func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.SyncProductCostFromTechCardRequest) (*pb_admin.SyncProductCostFromTechCardResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a product cost from a tech card")
+	}
+	if req.ProductId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	}
+	ci, err := s.repo.Products().GetProductCostInfo(ctx, int(req.ProductId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "product not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get product cost info", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get product")
+	}
+
+	techCardID := int(req.TechCardId)
+	if techCardID <= 0 {
+		if !ci.PrimaryTechCardID.Valid {
+			return nil, status.Error(codes.InvalidArgument, "product has no primary tech card; pass tech_card_id")
+		}
+		techCardID = int(ci.PrimaryTechCardID.Int32)
+	}
+
+	linked, err := s.repo.Products().IsProductLinkedToTechCard(ctx, int(req.ProductId), techCardID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't check product-tech-card link", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't verify tech card link")
+	}
+	if !linked {
+		return nil, status.Error(codes.InvalidArgument, "tech card does not link this product")
+	}
+
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	if err != nil || card == nil {
+		return nil, status.Error(codes.NotFound, "tech card not found")
+	}
+	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
+	if !unit.Valid {
+		return nil, status.Error(codes.FailedPrecondition,
+			"tech card has no base-currency unit cost — check the costing and its FX rates")
+	}
+	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"tech card unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
+	}
+
+	// Repoint the primary card only when an explicit, different card was requested.
+	if int(req.TechCardId) > 0 && (!ci.PrimaryTechCardID.Valid || int(ci.PrimaryTechCardID.Int32) != techCardID) {
+		if err := s.repo.Products().SetPrimaryTechCard(ctx, int(req.ProductId), techCardID); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set primary tech card", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't set primary tech card")
+		}
+	}
+	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, int(req.ProductId), techCardID, unit.Decimal); err != nil {
+		slog.Default().ErrorContext(ctx, "can't sync product cost from tech card", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't sync product cost")
+	}
+	return &pb_admin.SyncProductCostFromTechCardResponse{
+		CostPrice:  &pb_decimal.Decimal{Value: unit.Decimal.String()},
+		Currency:   currency,
+		TechCardId: int32(techCardID),
+	}, nil
+}
+
+// productCostInfoToPb converts the confidential product cost fields to their admin proto form.
+func productCostInfoToPb(ci *entity.ProductCostInfo) *pb_admin.ProductCostInfo {
+	if ci == nil {
+		return nil
+	}
+	out := &pb_admin.ProductCostInfo{
+		CostPriceSource:     ci.CostPriceSource.String,
+		CostPriceTechCardId: ci.CostPriceTechCardID.Int32,
+		PrimaryTechCardId:   ci.PrimaryTechCardID.Int32,
+	}
+	if ci.CostPrice.Valid {
+		out.CostPrice = &pb_decimal.Decimal{Value: ci.CostPrice.Decimal.String()}
+	}
+	if ci.CostPriceUpdatedAt.Valid {
+		out.CostPriceUpdatedAt = timestamppb.New(ci.CostPriceUpdatedAt.Time)
+	}
+	return out
 }
 
 func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProductsPagedRequest) (*pb_admin.GetProductsPagedResponse, error) {

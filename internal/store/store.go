@@ -26,13 +26,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fulfillment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/language"
 	"github.com/jekabolt/grbpwr-manager/internal/store/membership"
 	"github.com/jekabolt/grbpwr-manager/internal/store/metrics"
 	"github.com/jekabolt/grbpwr-manager/internal/store/model"
 	"github.com/jekabolt/grbpwr-manager/internal/store/order"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
+	"github.com/jekabolt/grbpwr-manager/internal/store/productionrun"
 	"github.com/jekabolt/grbpwr-manager/internal/store/promo"
+	"github.com/jekabolt/grbpwr-manager/internal/store/sample"
 	"github.com/jekabolt/grbpwr-manager/internal/store/settings"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
@@ -89,26 +92,29 @@ type MYSQLStore struct {
 	close context.CancelFunc
 
 	// Sub-stores (composed for transaction propagation)
-	productStore     *product.Store
-	orderStore       *order.Store
-	bqcache          *bqcache.Store
-	ga4              *ga4data.Store
-	syncStatus       *ga4data.SyncStatusStore
-	metrics          *metrics.Store
-	content          *content.Store
-	settingsStore    *settings.Store
-	comm             *communication.Store
-	supportStore     *support.Store
-	adminStore       *admin.Store
-	promoStore       *promo.Store
-	langStore        *language.Store
-	accountStore     *account.Store
-	membershipStore  *membership.Store
-	modelStore       *model.Store
-	fittingStore     *fitting.Store
-	taskStore        *task.Store
-	fulfillmentStore *fulfillment.Store
-	techCardStore    *techcard.Store
+	productStore       *product.Store
+	orderStore         *order.Store
+	bqcache            *bqcache.Store
+	ga4                *ga4data.Store
+	syncStatus         *ga4data.SyncStatusStore
+	metrics            *metrics.Store
+	content            *content.Store
+	settingsStore      *settings.Store
+	comm               *communication.Store
+	supportStore       *support.Store
+	adminStore         *admin.Store
+	promoStore         *promo.Store
+	langStore          *language.Store
+	accountStore       *account.Store
+	membershipStore    *membership.Store
+	modelStore         *model.Store
+	fittingStore       *fitting.Store
+	taskStore          *task.Store
+	fulfillmentStore   *fulfillment.Store
+	techCardStore      *techcard.Store
+	productionRunStore *productionrun.Store
+	materialStockStore *inventory.Store
+	sampleStore        *sample.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -374,6 +380,9 @@ func initSubStores(ms *MYSQLStore) {
 	ms.taskStore = task.New(base, ms.Tx)
 	ms.fulfillmentStore = fulfillment.New(base, ms.Tx)
 	ms.techCardStore = techcard.New(base, ms.Tx)
+	ms.productionRunStore = productionrun.New(base, ms.Tx)
+	ms.materialStockStore = inventory.New(base, ms.Tx)
+	ms.sampleStore = sample.New(base, ms.Tx)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -399,6 +408,9 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.taskStore = task.New(base, outerTx)
 	txStore.fulfillmentStore = fulfillment.New(base, outerTx)
 	txStore.techCardStore = techcard.New(base, outerTx)
+	txStore.productionRunStore = productionrun.New(base, outerTx)
+	txStore.materialStockStore = inventory.New(base, outerTx)
+	txStore.sampleStore = sample.New(base, outerTx)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -443,32 +455,35 @@ func (ms *MYSQLStore) Ping(ctx context.Context) error {
 
 // ========== Repository Accessor Methods ==========
 
-func (ms *MYSQLStore) Products() dependency.Products          { return ms.productStore }
-func (ms *MYSQLStore) Order() dependency.Order                { return ms.orderStore }
-func (ms *MYSQLStore) BQCache() dependency.BQCacheStore       { return ms.bqcache }
-func (ms *MYSQLStore) GA4Data() dependency.GA4DataStore       { return ms.ga4 }
-func (ms *MYSQLStore) SyncStatus() dependency.SyncStatusStore { return ms.syncStatus }
-func (ms *MYSQLStore) Metrics() dependency.Metrics            { return ms.metrics }
-func (ms *MYSQLStore) Retention() dependency.Retention        { return ms.metrics }
-func (ms *MYSQLStore) Inventory() dependency.Inventory        { return ms.metrics }
-func (ms *MYSQLStore) Analytics() dependency.Analytics        { return ms.metrics }
-func (ms *MYSQLStore) Hero() dependency.Hero                  { return ms.content }
-func (ms *MYSQLStore) Archive() dependency.Archive            { return ms.content }
-func (ms *MYSQLStore) Media() dependency.Media                { return ms.content }
-func (ms *MYSQLStore) Settings() dependency.Settings          { return ms.settingsStore }
-func (ms *MYSQLStore) Cache() dependency.Cache                { return ms.settingsStore }
-func (ms *MYSQLStore) Mail() dependency.Mail                  { return ms.comm }
-func (ms *MYSQLStore) Subscribers() dependency.Subscribers    { return ms.comm }
-func (ms *MYSQLStore) Support() dependency.Support            { return ms.supportStore }
-func (ms *MYSQLStore) Admin() dependency.Admin                { return ms.adminStore }
-func (ms *MYSQLStore) Promo() dependency.Promo                { return ms.promoStore }
-func (ms *MYSQLStore) Language() dependency.Language          { return ms.langStore }
-func (ms *MYSQLStore) Membership() dependency.Membership      { return ms.membershipStore }
-func (ms *MYSQLStore) Models() dependency.Models              { return ms.modelStore }
-func (ms *MYSQLStore) Fittings() dependency.Fittings          { return ms.fittingStore }
-func (ms *MYSQLStore) Tasks() dependency.Tasks                { return ms.taskStore }
-func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment    { return ms.fulfillmentStore }
-func (ms *MYSQLStore) TechCards() dependency.TechCards        { return ms.techCardStore }
+func (ms *MYSQLStore) Products() dependency.Products             { return ms.productStore }
+func (ms *MYSQLStore) Order() dependency.Order                   { return ms.orderStore }
+func (ms *MYSQLStore) BQCache() dependency.BQCacheStore          { return ms.bqcache }
+func (ms *MYSQLStore) GA4Data() dependency.GA4DataStore          { return ms.ga4 }
+func (ms *MYSQLStore) SyncStatus() dependency.SyncStatusStore    { return ms.syncStatus }
+func (ms *MYSQLStore) Metrics() dependency.Metrics               { return ms.metrics }
+func (ms *MYSQLStore) Retention() dependency.Retention           { return ms.metrics }
+func (ms *MYSQLStore) Inventory() dependency.Inventory           { return ms.metrics }
+func (ms *MYSQLStore) Analytics() dependency.Analytics           { return ms.metrics }
+func (ms *MYSQLStore) Hero() dependency.Hero                     { return ms.content }
+func (ms *MYSQLStore) Archive() dependency.Archive               { return ms.content }
+func (ms *MYSQLStore) Media() dependency.Media                   { return ms.content }
+func (ms *MYSQLStore) Settings() dependency.Settings             { return ms.settingsStore }
+func (ms *MYSQLStore) Cache() dependency.Cache                   { return ms.settingsStore }
+func (ms *MYSQLStore) Mail() dependency.Mail                     { return ms.comm }
+func (ms *MYSQLStore) Subscribers() dependency.Subscribers       { return ms.comm }
+func (ms *MYSQLStore) Support() dependency.Support               { return ms.supportStore }
+func (ms *MYSQLStore) Admin() dependency.Admin                   { return ms.adminStore }
+func (ms *MYSQLStore) Promo() dependency.Promo                   { return ms.promoStore }
+func (ms *MYSQLStore) Language() dependency.Language             { return ms.langStore }
+func (ms *MYSQLStore) Membership() dependency.Membership         { return ms.membershipStore }
+func (ms *MYSQLStore) Models() dependency.Models                 { return ms.modelStore }
+func (ms *MYSQLStore) Fittings() dependency.Fittings             { return ms.fittingStore }
+func (ms *MYSQLStore) Tasks() dependency.Tasks                   { return ms.taskStore }
+func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.fulfillmentStore }
+func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
+func (ms *MYSQLStore) ProductionRuns() dependency.ProductionRuns { return ms.productionRunStore }
+func (ms *MYSQLStore) MaterialStock() dependency.MaterialStock   { return ms.materialStockStore }
+func (ms *MYSQLStore) Samples() dependency.Samples               { return ms.sampleStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore
 }

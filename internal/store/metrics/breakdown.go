@@ -35,15 +35,17 @@ func (s *Store) getRevenueByPaymentMethod(ctx context.Context, from, to time.Tim
 	query := `
 		WITH order_base AS (
 			SELECT ob.id,
-				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0)
+					* 100.0 / (100 + ob.vat_rate_pct) AS revenue_base
 			FROM (
 				SELECT co.id,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
+					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -52,7 +54,7 @@ func (s *Store) getRevenueByPaymentMethod(ctx context.Context, from, to time.Tim
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
 				AND co.order_status_id IN (:statusIds)
-				GROUP BY co.id, co.total_price, co.refunded_amount
+				GROUP BY co.id, co.total_price, co.refunded_amount, co.vat_rate_pct
 			) ob
 		)
 		SELECT COALESCE(p.payment_method_type, pm.name) AS payment_method,
@@ -84,15 +86,17 @@ func (s *Store) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([
 	query := `
 		WITH order_base AS (
 			SELECT ob.id, ob.currency,
-				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0)
+					* 100.0 / (100 + ob.vat_rate_pct) AS revenue_base
 			FROM (
 				SELECT co.id, co.currency,
-					COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
 					COALESCE(MAX(pc.discount), 0) AS discount,
 					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
-					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
+					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
+					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -101,7 +105,7 @@ func (s *Store) getRevenueByCurrency(ctx context.Context, from, to time.Time) ([
 				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
 				AND co.order_status_id IN (:statusIds)
-				GROUP BY co.id, co.currency, co.total_price, co.refunded_amount
+				GROUP BY co.id, co.currency, co.total_price, co.refunded_amount, co.vat_rate_pct
 			) ob
 		)
 		SELECT currency,
@@ -132,10 +136,10 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 		WITH %s
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt,
-			MAX(p.cost_price) AS unit_cost,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -175,9 +179,9 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 		SELECT oi.product_id, p.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			SUM(oi.quantity) AS cnt,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
-			MAX(p.cost_price) AS unit_cost,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
+			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -216,7 +220,7 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 		WITH %s
 		SELECT p.top_category_id AS category_id, c.name AS category_name,
 			c.name AS category_display_name,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id

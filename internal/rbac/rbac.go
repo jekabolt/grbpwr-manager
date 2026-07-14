@@ -21,21 +21,36 @@ const MethodPrefix = "/admin.AdminService/"
 // Section keys. These strings are stored verbatim in the admin_permission table
 // and embedded in JWT claims, so they must stay stable.
 const (
-	SectionProducts   = "products"
-	SectionPromo      = "promo"
-	SectionOrders     = "orders"
+	SectionProducts = "products"
+	SectionPromo    = "promo"
+	SectionOrders   = "orders"
 	// SectionFulfillment governs the orders-fulfillment board: assign/notes/
 	// checklist annotations and the ship/deliver transitions. It is separate from
 	// SectionOrders so a warehouse role can fulfill orders without the broader
 	// orders:write (which also grants refunds and cancellations).
 	SectionFulfillment = "fulfillment"
-	SectionAnalytics  = "analytics"
-	SectionContent    = "content"
-	SectionHero       = "hero"
-	SectionArchive    = "archive"
-	SectionModels     = "models"
-	SectionFittings   = "fittings"
-	SectionTechCards  = "tech_cards"
+	SectionAnalytics   = "analytics"
+	SectionContent     = "content"
+	SectionHero        = "hero"
+	SectionArchive     = "archive"
+	SectionModels      = "models"
+	SectionFittings    = "fittings"
+	SectionTechCards   = "tech_cards"
+	SectionProduction  = "production"
+	// SectionInventory governs the material warehouse (new-flow NF-01): on-hand stock, receipts,
+	// issues, adjustments and the movement ledger. Quantities are gated by this section; the money
+	// on those responses (unit costs, valuation) is additionally gated by SectionCosting — a
+	// warehouse role can hold inventory:read for balances without seeing their value.
+	SectionInventory = "inventory"
+	// SectionCosting is a FIELD-SHAPING section, not a method gate: no RPC is mapped
+	// to it in methodRequirements. Instead the admin service strips confidential cost
+	// fields (tech-card costing block + BOM purchase prices, product cost_price, margin/
+	// COGS on metrics, release unit cost) from responses when the account lacks
+	// costing:read, and rejects writes that set cost data without costing:write. A
+	// content manager can hold tech_cards:read for sketches/sizes without seeing money.
+	// This is the first "a permission redacts fields, not methods" precedent — future
+	// financial fields (materials, production runs, dev costs) should classify here too.
+	SectionCosting    = "costing"
 	SectionTasks      = "tasks"
 	SectionSettings   = "settings"
 	SectionSupport    = "support"
@@ -66,6 +81,9 @@ var catalog = []SectionInfo{
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
+	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
+	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
+	{SectionCosting, "Costing", "Confidential cost of goods: tech-card costing & BOM prices, product cost, margin/COGS analytics. Redacts fields, does not hide screens."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
 	{SectionSupport, "Support", "Support tickets and reviews."},
@@ -110,34 +128,56 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// products
-	"UpsertProduct":          wr(SectionProducts),
-	"GetProductsPaged":       rd(SectionProducts),
-	"GetProductByID":         rd(SectionProducts),
-	"DeleteProductByID":      wr(SectionProducts),
-	"UpdateProductSizeStock": wr(SectionProducts),
-	"ListStockChangeHistory": rd(SectionProducts),
-	"ListStockChanges":       rd(SectionProducts),
+	"UpsertProduct":               wr(SectionProducts),
+	"GetProductsPaged":            rd(SectionProducts),
+	"GetProductByID":              rd(SectionProducts),
+	"DeleteProductByID":           wr(SectionProducts),
+	"UpdateProductSizeStock":      wr(SectionProducts),
+	"SyncProductCostFromTechCard": wr(SectionProducts),
+	"ListStockChangeHistory":      rd(SectionProducts),
+	"ListStockChanges":            rd(SectionProducts),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
 	"DeletePromoCode":  wr(SectionPromo),
 	"DisablePromoCode": wr(SectionPromo),
 	// orders
-	"GetOrderByUUID":    rd(SectionOrders),
-	"ListOrders":        rd(SectionOrders),
-	"SetTrackingNumber": wr(SectionOrders),
-	"RefundOrder":       wr(SectionOrders),
-	"DeliveredOrder":    wr(SectionOrders),
-	"CancelOrder":       wr(SectionOrders),
-	"AddOrderComment":   wr(SectionOrders),
-	"CreateCustomOrder": wr(SectionOrders),
+	"GetOrderByUUID":        rd(SectionOrders),
+	"ListOrders":            rd(SectionOrders),
+	"SetTrackingNumber":     wr(SectionOrders),
+	"SetShipmentActualCost": wr(SectionOrders),
+	"RefundOrder":           wr(SectionOrders),
+	"DeliveredOrder":        wr(SectionOrders),
+	"CancelOrder":           wr(SectionOrders),
+	"AddOrderComment":       wr(SectionOrders),
+	"CreateCustomOrder":     wr(SectionOrders),
 	// analytics
 	"GetMetrics":             rd(SectionAnalytics),
 	"GetDashboard":           rd(SectionAnalytics),
+	"GetStyleEconomics":      rd(SectionAnalytics),
+	"GetChannelRoasSettled":  rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
-	"GetAlertSettings":       rd(SectionAnalytics),
-	"UpsertAlertSettings":    wr(SectionAnalytics),
+	"UpsertOpexEntries":      wr(SectionAnalytics),
+	// OPEX v2 detailed line/recurring APIs (NF-08). Classified under analytics like the legacy
+	// aggregate; the handlers additionally gate on costing:* (writes → PermissionDenied, reads →
+	// empty) because the figures are confidential cost data. SectionCosting itself is field-shaping
+	// only and is never a method requirement, so it can't appear here.
+	"UpsertOpexLines":      wr(SectionAnalytics),
+	"DeleteOpexLine":       wr(SectionAnalytics),
+	"ListOpexLines":        rd(SectionAnalytics),
+	"UpsertOpexRecurring":  wr(SectionAnalytics),
+	"ArchiveOpexRecurring": wr(SectionAnalytics),
+	"ListOpexRecurring":    rd(SectionAnalytics),
+	// Employee registry (gap-07 v2 A) — salary journal's people. Same analytics + costing:* gating
+	// as recurring OPEX (the registry carries a default_monthly_cost, confidential cost data).
+	"UpsertEmployee":  wr(SectionAnalytics),
+	"ArchiveEmployee": wr(SectionAnalytics),
+	"ListEmployees":   rd(SectionAnalytics),
+	"GetAlertSettings":     rd(SectionAnalytics),
+	"UpsertAlertSettings":  wr(SectionAnalytics),
+	"GetVatRates":          rd(SectionAnalytics),
+	"UpsertVatRates":       wr(SectionAnalytics),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
@@ -165,12 +205,53 @@ var methodRequirements = map[string]Requirement{
 	"UpdateFitting": wr(SectionFittings),
 	"DeleteFitting": wr(SectionFittings),
 	"ListFittings":  rd(SectionFittings),
+	// samples (new-flow NF-04) — part of the fitting/try-on cycle
+	"AddSample":    wr(SectionFittings),
+	"UpdateSample": wr(SectionFittings),
+	"DeleteSample": wr(SectionFittings),
+	"GetSample":    rd(SectionFittings),
+	"ListSamples":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard": wr(SectionTechCards),
-	"GetTechCard":    rd(SectionTechCards),
-	"UpdateTechCard": wr(SectionTechCards),
-	"DeleteTechCard": wr(SectionTechCards),
-	"ListTechCards":  rd(SectionTechCards),
+	"CreateTechCard":           wr(SectionTechCards),
+	"GetTechCard":              rd(SectionTechCards),
+	"UpdateTechCard":           wr(SectionTechCards),
+	"DeleteTechCard":           wr(SectionTechCards),
+	"ListTechCards":            rd(SectionTechCards),
+	"GetStylePipeline":         rd(SectionTechCards),
+	"GetCostingFxRates":        rd(SectionTechCards),
+	"UpsertCostingFxRates":     wr(SectionTechCards),
+	"CreateMaterial":           wr(SectionTechCards),
+	"UpdateMaterial":           wr(SectionTechCards),
+	"ArchiveMaterial":          wr(SectionTechCards),
+	"GetMaterial":              rd(SectionTechCards),
+	"ListMaterials":            rd(SectionTechCards),
+	"AddMaterialPrice":         wr(SectionTechCards),
+	"ListMaterialPrices":       rd(SectionTechCards),
+	"ListTechCardReleases":     rd(SectionTechCards),
+	"GetTechCardRelease":       rd(SectionTechCards),
+	"AddTechCardDevExpense":    wr(SectionTechCards),
+	"DeleteTechCardDevExpense": wr(SectionTechCards),
+	"ListTechCardDevExpenses":  rd(SectionTechCards),
+	// production runs (партии)
+	"CreateProductionRun":          wr(SectionProduction),
+	"UpdateProductionRun":          wr(SectionProduction),
+	"DeleteProductionRun":          wr(SectionProduction),
+	"GetProductionRun":             rd(SectionProduction),
+	"ListProductionRuns":           rd(SectionProduction),
+	"ReceiveProductionRun":         wr(SectionProduction),
+	"GetProductionRunMaterialPlan": rd(SectionProduction),
+	// material warehouse (new-flow NF-01)
+	"ReceiveMaterialStock":  wr(SectionInventory),
+	"IssueMaterialStock":    wr(SectionInventory),
+	"AdjustMaterialStock":   wr(SectionInventory),
+	"GetMaterialStock":      rd(SectionInventory),
+	"ListMaterialStock":     rd(SectionInventory),
+	"ListMaterialMovements": rd(SectionInventory),
+	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
+	"UpsertPackagingBom": wr(SectionInventory),
+	"ListPackagingBom":   rd(SectionInventory),
+	// structured lots / rolls (gap-07 v2 D)
+	"ListMaterialLots": rd(SectionInventory),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),
@@ -197,10 +278,11 @@ var methodRequirements = map[string]Requirement{
 	"ShipFulfillmentOrder":            wr(SectionFulfillment),
 	"MarkFulfillmentDelivered":        wr(SectionFulfillment),
 	// settings
-	"UpdateSettings":        wr(SectionSettings),
-	"AddShipmentCarrier":    wr(SectionSettings),
-	"UpdateShipmentCarrier": wr(SectionSettings),
-	"DeleteShipmentCarrier": wr(SectionSettings),
+	"UpdateSettings":          wr(SectionSettings),
+	"UpsertPaymentMethodFees": wr(SectionSettings),
+	"AddShipmentCarrier":      wr(SectionSettings),
+	"UpdateShipmentCarrier":   wr(SectionSettings),
+	"DeleteShipmentCarrier":   wr(SectionSettings),
 	// support
 	"GetSupportTicketById":         rd(SectionSupport),
 	"GetSupportTicketByCaseNumber": rd(SectionSupport),

@@ -18,6 +18,7 @@ enum TechCardStage {
   TECH_CARD_STAGE_SMS = 3;
   TECH_CARD_STAGE_PP = 4;
   TECH_CARD_STAGE_PROD = 5;
+  TECH_CARD_STAGE_IDEA = 6; // draft: moodboard/concept before a style number (new-flow NF-03)
 }
 
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
@@ -121,7 +122,7 @@ message TechCardColorway {
   string code = 1; // short colourway code, e.g. BLK
   string name = 2; // colourway name (required)
   TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
-  int32 product_id = 4; // FK product(id); 0 = not yet published
+  int32 product_id = 4; // FK product(id); 0 = not yet published. Auto-added to the card's product_ids on save (annotation ⊆ the canon tech_card_product list)
   string comment = 5;
   string pantone = 6; // headline Pantone code
   string pantone_system = 7; // TCX|TPX|TPG|C|U (Pantone book)
@@ -136,6 +137,11 @@ message TechCardColorway {
   // garment part, in what colour, at what consumption. Per-colourway divergence lives here.
   repeated TechCardColorwayUsage usages = 16;
   reserved 15; // was `materials` (OUTPUT-ONLY); usages + bom_items resolve it now
+  // OUTPUT-ONLY stable row id (B-10): set on Get/List so a sample can be linked to a colourway
+  // (Sample.colorway_id). Ignored on write — a card save full-replaces colourways with fresh ids
+  // (the server re-points existing sample links by colourway identity, case-folded code+name), so
+  // re-read the card and use a fresh id right before linking a sample.
+  int32 id = 17;
 }
 
 // TechCardColorwayUsage is one material use inside a colourway: which catalog article
@@ -156,6 +162,9 @@ message TechCardColorwayUsage {
   repeated TechCardBomSizeConsumption size_consumptions = 7; // per-size rate; size_id ∈ TechCardInsert.size_ids
   google.type.Decimal line_total = 8; // OUTPUT-ONLY (per-garment)
   google.type.Decimal size_run_total = 9; // OUTPUT-ONLY (whole run)
+  // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this
+  // consumption norm is about; unset = whole garment (informational, NF-05).
+  optional int32 piece_index = 10;
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
@@ -187,9 +196,109 @@ message TechCardBomItem {
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
   TechCardFabricDirection fabric_direction = 19; // nap / layout
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
+  // material_id optionally links this line to a catalog Material (task 10). The line keeps its
+  // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
+  int64 material_id = 23;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
+}
+
+// Material is a catalog material — shared nomenclature a tech-card BOM line can optionally link
+// to. Descriptive fields only; price lives in the append-only MaterialPrice history.
+message Material {
+  int64 id = 1;
+  string name = 2; // required
+  TechCardBomSection section = 3; // required; same enum as a BOM line
+  string supplier = 4;
+  string supplier_ref = 5;
+  string composition = 6;
+  string spec = 7; // ширина / плотность
+  string unit = 8;
+  google.type.Decimal fabric_width = 9; // usable width, cm
+  google.type.Decimal fabric_weight_gsm = 10; // weight, g/m²
+  bool archived = 11;
+  // latest_price is the current (latest-effective) price, if any (read-only; set via
+  // AddMaterialPrice). Absent when the material has no price history yet.
+  MaterialPrice latest_price = 12;
+  // Warehouse catalog fields (new-flow NF-02).
+  string code = 13; // internal article code (ours), unique among non-archived materials
+  string color = 14; // colour of the purchased article
+  string pantone = 15;
+  google.type.Decimal min_stock = 16; // low-stock alert threshold, in `unit`
+  string notes = 17;
+}
+
+// MaterialPrice is one point in a material's append-only price history. Prices are in the
+// purchase currency (fold to base via costing FX rates).
+message MaterialPrice {
+  int64 material_id = 1;
+  google.type.Decimal price = 2;
+  string currency = 3; // ISO 4217
+  google.protobuf.Timestamp valid_from = 4; // the price applies from this date
+  string source = 5; // manual | production_run
+  string note = 6;
+}
+
+// TechCardReleaseMeta is the header of an immutable release snapshot (task 11) without the
+// JSON blob — the frozen spec + planned unit cost captured when a card entered `released`.
+// The full snapshot (a proto-JSON contract TechCard) is fetched via GetTechCardRelease.
+message TechCardReleaseMeta {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  string version = 3; // tech_card.version at release time
+  string released_by = 4; // acting admin username at release time
+  google.type.Decimal unit_cost = 5; // base-currency planned unit cost, if foldable
+  string currency = 6; // currency of unit_cost
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// TechCardDevExpenseInsert is the writable payload for one development (R&D) cost row (task 14):
+// a one-off "spent Amount on Kind" record. amount_base is computed server-side (via costing FX);
+// clients do not send it.
+message TechCardDevExpenseInsert {
+  int32 tech_card_id = 1;
+  string kind = 2; // sample|materials|labour|outsourcing|other
+  string description = 3;
+  google.type.Decimal amount = 4;
+  string currency = 5; // ISO 4217
+  int32 fitting_id = 6; // 0 = not tied to a fitting round
+  google.protobuf.Timestamp incurred_at = 7; // date the cost was incurred (optional)
+  int32 sample_id = 8; // 0 = not tied to a sample (new-flow NF-04)
+}
+
+// TechCardDevExpense is one stored development-cost journal row. amount_base folds amount to base
+// (EUR) via costing FX (unset when the currency has no rate).
+message TechCardDevExpense {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  string kind = 3;
+  string description = 4;
+  google.type.Decimal amount = 5;
+  string currency = 6;
+  google.type.Decimal amount_base = 7; // base currency (EUR); unset if not foldable
+  int32 fitting_id = 8; // 0 = none
+  google.protobuf.Timestamp incurred_at = 9;
+  google.protobuf.Timestamp created_at = 10;
+  int32 sample_id = 11; // 0 = none (new-flow NF-04)
+}
+
+// TechCardDevCostByKind is the base-currency development spend for one kind.
+message TechCardDevCostByKind {
+  string kind = 1;
+  google.type.Decimal amount_base = 2;
+}
+
+// TechCardDevCostSummary is the computed roll-up of a style's development spend (output-only).
+message TechCardDevCostSummary {
+  google.type.Decimal total_base = 1; // Σ amount_base over foldable rows (EUR)
+  bool has_unconverted = 2; // some row lacked amount_base (missing FX rate) → total is partial
+  repeated TechCardDevCostByKind by_kind = 3; // Σ per kind
+  // Amortized informational figure: production unit_cost + total_base / Σ order_qty — how much
+  // development adds to each unit at the current size run. Unset when order_qty is 0 or the
+  // production unit cost is unavailable. NOT part of cost_price (development is a period cost).
+  google.type.Decimal unit_cost_with_dev = 4;
+  int32 order_qty = 5; // Σ size order_qty used for amortization
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM
@@ -411,6 +520,14 @@ message TechCardCosting {
   google.type.Decimal total_sam = 16; // Σ operation time_norm (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 
+  // OUTPUT-ONLY base-currency rollup. The unit/order cost of the primary colourway folded into
+  // the base currency via the manual costing FX rates. Set ONLY when every currency involved
+  // has a rate — this is the figure the product-cost seed uses, so a non-base costing can seed
+  // cost_price too. Absent when a needed rate is missing (then has_unconverted_currencies).
+  google.type.Decimal unit_cost_base = 23; // unit_cost converted to base_currency
+  google.type.Decimal order_cost_base = 24; // unit_cost_base × order_qty
+  string base_currency = 25; // the base currency the *_base figures are in
+
   reserved 7, 8, 9; // pricing removed (markup_multiplier, wholesale_price, retail_price — moved to product)
   reserved 13, 14, 17; // was materials_cost, total_cost, labour_cost (superseded / removed)
 }
@@ -448,9 +565,37 @@ message TechCardSignoff {
   string note = 5;
 }
 
+// TechCardPieceColorwayMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE
+// colourway. colorway_index is positional into TechCardInsert.colorways (full-replace recreates
+// colourway ids, so the link is by position — mirrors bom_item_index / operation refs). The BOM
+// refs are positional into TechCardInsert.bom_items.
+message TechCardPieceColorwayMaterial {
+  int32 colorway_index = 1; // 0-based index into TechCardInsert.colorways
+  optional int32 bom_item_index = 2; // 0-based index into TechCardInsert.bom_items (the fabric)
+  optional int32 fusing_bom_item_index = 3; // 0-based index into bom_items (the fusing / клеевая), if any
+  string note = 4;
+}
+
+// TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
+// how many per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused
+// (клеевая). materials picks, per colourway, which BOM fabric it is cut from. Full-replace child.
+message TechCardPiece {
+  string name = 1; // «полочка», «спинка», «обтачка горловины»…
+  int32 pieces_per_garment = 2; // how many times cut per garment (default 1)
+  bool mirrored = 3; // paired / mirror piece
+  string grainline = 4; // долевая: lengthwise|crosswise|bias|any
+  bool fused = 5; // клеевая (fused with interlining)
+  optional int32 callout_number = 6; // link to a sketch callout pin (like operations)
+  string note = 7;
+  repeated TechCardPieceColorwayMaterial materials = 8; // per-colourway fabric mapping
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
-  string style_number = 1; // Артикул (required)
+  // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
+  // is by definition pre-article (NF-03/B-2). Moving a card out of IDEA without a real style
+  // number is rejected with InvalidArgument.
+  string style_number = 1;
   string name = 2; // Название изделия (required)
   string brand = 3;
   string season = 4;
@@ -477,18 +622,28 @@ message TechCardInsert {
 
   // children (full-replace on update)
   repeated int32 size_ids = 30; // size range / grade (FK size(id))
-  repeated int32 product_ids = 31; // linked catalog products (FK product(id))
+  repeated int32 product_ids = 31; // linked catalog products (FK product(id)); the CANON product↔style link every consumer reads (cost seed, GetMarginByStyle). Colourway product_ids are auto-unioned in on save
   // Sketch media split into two INDEPENDENT lists (replaces the single `media = 32`):
   //   moodboard_media — mood / inspiration / reference / fabric-swatch photos (design intent)
   //   technical_media — flat sketches used in construction (front / back / detail / lining / preview)
   // Construction consumes ONLY technical_media. Each item's `kind` sub-classifies within its
-  // list. Both are full-replace on update; callouts pin onto technical_media by media_id.
+  // list. Both are full-replace on update. A callout pins onto ANY media_id on the card — moodboard
+  // OR technical (the backend does not restrict the category), so at the idea stage a callout can pin
+  // onto a moodboard/reference image before any technical sketch exists.
   repeated TechCardMediaItem moodboard_media = 55;
   repeated TechCardMediaItem technical_media = 56;
-  repeated TechCardCallout callouts = 33; // sketch callouts (pin onto technical_media)
+  repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
   repeated TechCardRevision revisions = 34; // revision log
 
   // materials (Phase 2): bill of materials (article catalog) and colourways (recipes).
+  // CONTRACT (nf05-01): downstream references into bom_items and colorways are POSITIONAL, by index,
+  // and every write is a full replace (there are no stable ids to reference across a save). So when a
+  // BOM line or colourway is removed or reordered, the client MUST renumber all downstream indices in
+  // the SAME payload — colorway usages' bom_item_index, operations' bom_item_index, and pieces'
+  // colorway_index / bom_item_index / fusing_bom_item_index. An index left pointing at a shifted row
+  // silently maps a detail to the wrong material/colourway (data that goes to the factory); an
+  // out-of-range index is rejected, but an in-range-but-wrong one is not. The server range-checks but
+  // cannot detect a wrong-but-valid index.
   repeated TechCardBomItem bom_items = 40;
   repeated TechCardColorway colorways = 41;
 
@@ -509,6 +664,15 @@ message TechCardInsert {
 
   // construction-description aspects with reference images (replaces the flat strings).
   repeated TechCardDetail details = 54;
+
+  // structural cut-pieces (детали кроя) + per-colourway fabric mapping (NF-05). Full-replace.
+  repeated TechCardPiece pieces = 100;
+
+  // NF-07 auxiliary items. purpose is "sellable" (default/empty) or "auxiliary"; an auxiliary card
+  // produces a packaging material rather than a product, so it may not link products and its run
+  // output receipts into output_material_id (required before the first run; 0 = unset).
+  string purpose = 101;
+  int32 output_material_id = 102;
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
@@ -543,4 +707,8 @@ message TechCardListItem {
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
   int32 lock_version = 12; // optimistic-lock token, so a list→edit needs no extra GET
+  // Thumbnail URL for a grid/gallery view (idea gallery). For an IDEA card it is the first
+  // moodboard image; otherwise the PREVIEW-kind sketch (falling back to the first technical, then any
+  // media). Empty when the card has no media. Resolved server-side to avoid an N+1 GetTechCard.
+  string preview_url = 13;
 }

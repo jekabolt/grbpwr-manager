@@ -70,19 +70,21 @@ var ValidTaskPriorities = map[TaskPriority]bool{
 // TaskInsert is the writable CONTENT of a task. Placement (board/status/position)
 // and server-stamped fields (id, created_by, timestamps) live on Task, not here.
 type TaskInsert struct {
-	Title       string         `db:"title"`
-	Description sql.NullString `db:"description"`
-	Assignee    string         `db:"assignee"`
-	Priority    TaskPriority   `db:"priority"`
-	DueDate     sql.NullTime   `db:"due_date"`
-	StartDate   sql.NullTime   `db:"start_date"` // planned start (manual); actual start is Task.StartedAt
-	TechCardId  sql.NullInt32  `db:"tech_card_id"`
-	ProductId   sql.NullInt32  `db:"product_id"`
-	OrderUuid   sql.NullString `db:"order_uuid"`
-	ArchiveId   sql.NullInt32  `db:"archive_id"`
-	FittingId   sql.NullInt32  `db:"fitting_id"`
-	Labels      []string       `db:"-"`
-	MediaIds    []int          `db:"-"`
+	Title           string         `db:"title"`
+	Description     sql.NullString `db:"description"`
+	Assignee        string         `db:"assignee"`
+	Priority        TaskPriority   `db:"priority"`
+	DueDate         sql.NullTime   `db:"due_date"`
+	StartDate       sql.NullTime   `db:"start_date"` // planned start (manual); actual start is Task.StartedAt
+	TechCardId      sql.NullInt32  `db:"tech_card_id"`
+	ProductId       sql.NullInt32  `db:"product_id"`
+	OrderUuid       sql.NullString `db:"order_uuid"`
+	ArchiveId       sql.NullInt32  `db:"archive_id"`
+	FittingId       sql.NullInt32  `db:"fitting_id"`
+	ProductionRunId sql.NullInt32  `db:"production_run_id"`
+	SampleId        sql.NullInt32  `db:"sample_id"`
+	Labels          []string       `db:"-"`
+	MediaIds        []int          `db:"-"`
 }
 
 // Task is a stored kanban card: content (TaskInsert) + placement + resolved media

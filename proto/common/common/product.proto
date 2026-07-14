@@ -191,6 +191,7 @@ enum StockChangeSource {
   STOCK_CHANGE_SOURCE_ORDER_CUSTOM = 4;
   STOCK_CHANGE_SOURCE_ORDER_RETURNED = 5;
   STOCK_CHANGE_SOURCE_ORDER_CANCELLED = 6;
+  STOCK_CHANGE_SOURCE_PRODUCTION_RECEIVED = 7; // stock added by receiving a production run (task 09)
 }
 
 enum StockChangeReason {

@@ -248,6 +248,18 @@ func (s *Store) SetPaymentIsProd(ctx context.Context, isProd bool) error {
 }
 
 // SetPaymentMethodAllowance updates the allowed status of a payment method.
+// SetPaymentMethodFees sets a payment method's estimated processing-fee model (percent +
+// fixed), used to estimate the fee of orders without a captured Stripe fee. Metrics read
+// payment_method directly, so no cache refresh is needed.
+func (s *Store) SetPaymentMethodFees(ctx context.Context, paymentMethod entity.PaymentMethodName, feePct, feeFixed decimal.Decimal) error {
+	if err := storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE payment_method SET fee_pct = :pct, fee_fixed = :fixed WHERE name = :method`,
+		map[string]any{"method": paymentMethod, "pct": feePct, "fixed": feeFixed}); err != nil {
+		return fmt.Errorf("failed to set payment method fees: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		query := `UPDATE payment_method SET allowed = :allowed WHERE name = :method`

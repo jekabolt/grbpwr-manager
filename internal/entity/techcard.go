@@ -16,11 +16,17 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 // without first re-opening it to DRAFT (a released card is frozen for the factory).
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
+// ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
+// purpose (sellable↔auxiliary) after it already has production runs or linked products — the switch
+// would strand a batch's stock destination or a product link (NF-07).
+var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs or products")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string
 
 const (
+	TechCardStageIdea  TechCardStage = "idea"  // draft: moodboard/concept before a style number (NF-03)
 	TechCardStageProto TechCardStage = "proto" // prototype
 	TechCardStageFit   TechCardStage = "fit"   // fit sample
 	TechCardStageSMS   TechCardStage = "sms"   // salesman sample
@@ -30,6 +36,7 @@ const (
 
 // ValidTechCardStages is the set of accepted tech-card stages.
 var ValidTechCardStages = map[TechCardStage]bool{
+	TechCardStageIdea:  true,
 	TechCardStageProto: true,
 	TechCardStageFit:   true,
 	TechCardStageSMS:   true,
@@ -40,6 +47,21 @@ var ValidTechCardStages = map[TechCardStage]bool{
 // IsValidTechCardStage reports whether s is an accepted stage.
 func IsValidTechCardStage(s TechCardStage) bool {
 	return ValidTechCardStages[s]
+}
+
+// TechCardPurpose is what a card produces: a sellable product or an auxiliary item (NF-07). It
+// mirrors the common.TechCardPurpose proto enum and is stored as a string in tech_card.purpose.
+type TechCardPurpose string
+
+const (
+	TechCardPurposeSellable  TechCardPurpose = "sellable"  // produces a catalog product (default)
+	TechCardPurposeAuxiliary TechCardPurpose = "auxiliary" // produces a packaging material (dust bag, shopper…)
+)
+
+// ValidTechCardPurposes is the set of accepted card purposes.
+var ValidTechCardPurposes = map[TechCardPurpose]bool{
+	TechCardPurposeSellable:  true,
+	TechCardPurposeAuxiliary: true,
 }
 
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
@@ -267,6 +289,9 @@ type TechCardColorwayUsage struct {
 	Pantone      sql.NullString      `db:"pantone"`
 	Consumption  decimal.NullDecimal `db:"consumption"` // per-garment rate (measured materials)
 	Quantity     decimal.NullDecimal `db:"quantity"`    // count (countable trims)
+	// PieceIndex is an optional 0-based arrow into TechCardInsert.Pieces saying which cut-piece
+	// this consumption norm is about; NULL = the whole garment (informational, NF-05).
+	PieceIndex sql.NullInt32 `db:"piece_index"`
 	// SizeConsumptions is the per-size material rate (in-memory; persisted to
 	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
 	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
@@ -353,18 +378,23 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 // «Спецификация»). The per-colourway colour, placement and consumption live on
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
-	Id          int                `db:"id"`
-	Section     TechCardBomSection `db:"section"`
-	Name        string             `db:"name"`
-	Supplier    sql.NullString     `db:"supplier"`
-	SupplierRef sql.NullString     `db:"supplier_ref"`
-	Color       sql.NullString     `db:"color"` // base/reference colour (per-colourway colour is on the usage)
-	Composition sql.NullString     `db:"composition"`
-	Spec        sql.NullString     `db:"spec"`
-	Unit        sql.NullString     `db:"unit"`
+	Id int `db:"id"`
+	// MaterialId optionally links this BOM line to a catalog material (task 10). The line still
+	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
+	// catalog entry later changes; the link only powers reverse lookups (which cards use a
+	// material) and admin-side pre-fill. NULL for free-text / legacy lines.
+	MaterialId  sql.NullInt64       `db:"material_id"`
+	Section     TechCardBomSection  `db:"section"`
+	Name        string              `db:"name"`
+	Supplier    sql.NullString      `db:"supplier"`
+	SupplierRef sql.NullString      `db:"supplier_ref"`
+	Color       sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	Composition sql.NullString      `db:"composition"`
+	Spec        sql.NullString      `db:"spec"`
+	Unit        sql.NullString      `db:"unit"`
 	UnitPrice   decimal.NullDecimal `db:"unit_price"`
-	Currency    sql.NullString     `db:"currency"`
-	Comment     sql.NullString     `db:"comment"`
+	Currency    sql.NullString      `db:"currency"`
+	Comment     sql.NullString      `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
@@ -653,11 +683,93 @@ type TechCardCosting struct {
 	Notes         sql.NullString      `db:"notes"`
 }
 
+// TechCardDevExpense is one row of a style's development (R&D) cost journal (task 14): a one-off
+// "spent Amount on Kind" record, not time-tracking. Amount is in Currency; AmountBase folds it to
+// the base currency (via costing FX or a manual override, unset when no rate). FittingId optionally
+// ties the cost to a try-on round (e.g. a sample built for that round). Development cost is a
+// period cost and is never seeded into product.cost_price.
+type TechCardDevExpense struct {
+	Id          int                 `db:"id"`
+	TechCardId  int                 `db:"tech_card_id"`
+	Kind        string              `db:"kind"` // sample|materials|labour|outsourcing|other
+	Description sql.NullString      `db:"description"`
+	Amount      decimal.Decimal     `db:"amount"`
+	Currency    string              `db:"currency"`
+	AmountBase  decimal.NullDecimal `db:"amount_base"`
+	FittingId   sql.NullInt32       `db:"fitting_id"`
+	SampleId    sql.NullInt32       `db:"sample_id"` // optional link to a sample (NF-04)
+	IncurredAt  sql.NullTime        `db:"incurred_at"`
+	CreatedAt   time.Time           `db:"created_at"`
+}
+
+// CostBreakdown is the per-unit COGS decomposition in base currency (EUR): the cost articles
+// that (summed and grossed up by defect%) make the unit cost seeded into product.cost_price.
+// Snapshotted onto product.cost_breakdown JSON at seed time so COGS-of-sold analytics can
+// attribute a period's cost of goods to materials vs CMT vs packaging etc. The component
+// amounts are pre-defect (raw); defect_pct is carried alongside. A manual cost_price (no card)
+// leaves cost_breakdown NULL, which the structure report honestly reports as unattributed.
+type CostBreakdown struct {
+	Materials decimal.Decimal `json:"materials"`
+	Cmt       decimal.Decimal `json:"cmt"`
+	Hardware  decimal.Decimal `json:"hardware"`
+	Packaging decimal.Decimal `json:"packaging"`
+	Logistics decimal.Decimal `json:"logistics"`
+	Overhead  decimal.Decimal `json:"overhead"`
+	DefectPct decimal.Decimal `json:"defect_pct"`
+}
+
+// CostingFxRate is a manual FX rate used to fold a multi-currency tech-card costing into the
+// base currency. RateToBase is how many base-currency units one unit of Currency is worth; the
+// latest ValidFrom on or before today is the effective rate.
+type CostingFxRate struct {
+	Currency   string          `db:"currency"`
+	RateToBase decimal.Decimal `db:"rate_to_base"`
+	ValidFrom  time.Time       `db:"valid_from"`
+}
+
+// ValidTechCardGrainlines is the accepted долевая set (mirrors the DB CHECK on tech_card_piece).
+var ValidTechCardGrainlines = map[string]bool{
+	"lengthwise": true, "crosswise": true, "bias": true, "any": true,
+}
+
+// TechCardPieceMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE colourway.
+// ColorwayIndex is positional into the card's colourways (full-replace recreates colourway ids, so
+// the store resolves index↔id at the transaction boundary). BOM refs are positional into bom_items,
+// consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
+type TechCardPieceMaterial struct {
+	Id                 int            `db:"id"`
+	ColorwayIndex      int            `db:"-"`                     // 0-based index into the card's colorways
+	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
+	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
+	Note               sql.NullString `db:"note"`
+}
+
+// TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many
+// per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused (клеевая).
+// Materials picks, per colourway, which BOM fabric it is cut from. Full-replace child of the card.
+type TechCardPiece struct {
+	Id               int                     `db:"id"`
+	Name             string                  `db:"name"`
+	PiecesPerGarment int                     `db:"pieces_per_garment"`
+	Mirrored         bool                    `db:"mirrored"`
+	Grainline        string                  `db:"grainline"`
+	Fused            bool                    `db:"fused"`
+	CalloutNumber    sql.NullInt32           `db:"callout_number"`
+	Note             sql.NullString          `db:"note"`
+	Materials        []TechCardPieceMaterial `db:"-"`
+}
+
 // TechCardInsert is the writable payload for a tech card (header + child sections).
 // Child slices are full replacements on update. The construction description lives in
 // Details; the header carries no cost targets (pricing is on Costing).
 type TechCardInsert struct {
-	StyleNumber      string                  `db:"style_number"`
+	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
+	StyleNumber sql.NullString `db:"style_number"`
+	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
+	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
+	// warehouse, and it may not link products.
+	Purpose          TechCardPurpose         `db:"purpose"`
+	OutputMaterialId sql.NullInt64           `db:"output_material_id"` // material an auxiliary run receipts into
 	Name             string                  `db:"name"`
 	Brand            sql.NullString          `db:"brand"`
 	Season           sql.NullString          `db:"season"`
@@ -700,6 +812,7 @@ type TechCardInsert struct {
 	SizeQuantities []TechCardSizeQuantity `db:"-"`
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
+	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
@@ -722,4 +835,38 @@ type TechCard struct {
 	UpdatedAt time.Time `db:"updated_at"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
+	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
+	// IDEA card, else the PREVIEW-kind sketch (fallback first technical, then any). Populated only by
+	// ListTechCards; empty elsewhere.
+	PreviewURL string `db:"-"`
+}
+
+// StylePipelineColumn is one lifecycle-stage column of the development board (gap-01): the stage,
+// the total number of cards in it, and a few light preview cards (most-recently-updated first).
+type StylePipelineColumn struct {
+	Stage TechCardStage
+	Count int
+	Cards []TechCard
+}
+
+// TechCardReleaseMeta is the header of an immutable release snapshot (task 11) without the
+// JSON blob — used for listing a card's releases. UnitCost/Currency are the base-currency
+// planned unit cost frozen at release time (NULL when it could not be folded to base).
+type TechCardReleaseMeta struct {
+	Id         int                 `db:"id"`
+	TechCardId int                 `db:"tech_card_id"`
+	Version    sql.NullString      `db:"version"`
+	ReleasedBy sql.NullString      `db:"released_by"`
+	UnitCost   decimal.NullDecimal `db:"unit_cost"`
+	Currency   sql.NullString      `db:"currency"`
+	CreatedAt  time.Time           `db:"created_at"`
+}
+
+// TechCardRelease is a full release snapshot: the metadata plus the raw proto-JSON blob of the
+// enriched contract TechCard as it stood at release. The blob is opaque to the store; callers
+// parse it (and degrade gracefully on an incompatible blob, hero-v2 style). On write, Id and
+// CreatedAt are DB-generated.
+type TechCardRelease struct {
+	TechCardReleaseMeta
+	Snapshot string `db:"snapshot"`
 }

@@ -149,9 +149,11 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			SELECT
 				oi.product_id,
 				SUM(oi.quantity) AS units_sold,
-				COALESCE(SUM(pp_base.price * oi.quantity), 0) AS revenue
+				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS revenue,
+				COALESCE(SUM(COALESCE(oi.cost_price_at_sale, p2.cost_price) * oi.quantity), 0) AS sold_cost
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
+			JOIN product p2 ON p2.id = oi.product_id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			WHERE co.order_status_id IN (%s)
 			GROUP BY oi.product_id
@@ -168,7 +170,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			COALESCE(SUM(st.units_remaining), 0) AS units_remaining,
 			COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0) AS units_bought,
 			COALESCE(SUM(s.revenue), 0) AS revenue,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN p.cost_price * COALESCE(s.units_sold, 0) ELSE 0 END), 0) AS revenue_cost,
+			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN COALESCE(s.sold_cost, 0) ELSE 0 END), 0) AS revenue_cost,
 			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL THEN COALESCE(s.revenue, 0) ELSE 0 END), 0) AS costed_revenue,
 			CASE
 				WHEN COALESCE(SUM(s.units_sold), 0) + COALESCE(SUM(st.units_remaining), 0) > 0

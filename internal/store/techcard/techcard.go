@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -39,16 +40,24 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	measurement_unit, concept, notes`
+	measurement_unit, concept, notes, purpose, output_material_id`
 
 const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:measurement_unit, :concept, :notes`
+	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
+	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
+	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
+	purpose := tc.Purpose
+	if purpose == "" {
+		purpose = entity.TechCardPurposeSellable
+	}
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
+		"purpose":             string(purpose),
+		"output_material_id":  tc.OutputMaterialId,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              tc.Season,
@@ -134,8 +143,9 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			ApprovalState string       `db:"approval_state"`
 			ApprovedAt    sql.NullTime `db:"approved_at"`
 			ReleasedAt    sql.NullTime `db:"released_at"`
+			Purpose       string       `db:"purpose"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return sql.ErrNoRows
@@ -154,6 +164,21 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
+		// NF-07: purpose is a one-way commitment once the card has runs or products — flipping
+		// sellable↔auxiliary afterwards would strand a batch's stock destination or a product link.
+		if cur.Purpose != string(tc.Purpose) {
+			var refs int
+			refs, err = storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id)
+				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)`,
+				map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("failed to check tech card purpose change: %w", err)
+			}
+			if refs > 0 {
+				return entity.ErrTechCardPurposeLocked
+			}
+		}
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
@@ -170,7 +195,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				version = :version, revision_date = :revision_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				designer = :designer, constructor = :constructor, technologist = :technologist,
-				measurement_unit = :measurement_unit, concept = :concept, notes = :notes
+				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
+					purpose = :purpose, output_material_id = :output_material_id
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
@@ -179,6 +205,14 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// under us — make the WHERE guard load-bearing, not just the in-Go check.
 		if rows == 0 {
 			return entity.ErrTechCardConflict
+		}
+
+		// Samples reference colourways by FK with ON DELETE SET NULL, and the full-replace below deletes
+		// and re-inserts colourways with fresh ids — which would silently null every sample's colour-
+		// model link. Capture the links by colourway identity now so they can be restored afterwards.
+		sampleColorwayLinks, err := captureSampleColorwayLinks(ctx, rep.DB(), id)
+		if err != nil {
+			return err
 		}
 
 		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade
@@ -190,7 +224,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_bom_item", "tech_card_colorway",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-			"tech_card_size_pattern",
+			"tech_card_size_pattern", "tech_card_piece",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -198,7 +232,10 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				return fmt.Errorf("failed to clear %s: %w", table, err)
 			}
 		}
-		return insertTechCardChildren(ctx, rep.DB(), id, tc)
+		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+			return err
+		}
+		return relinkSamplesToColorways(ctx, rep.DB(), id, sampleColorwayLinks)
 	})
 	if err != nil {
 		switch err {
@@ -210,11 +247,86 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 	return nil
 }
 
-// DeleteTechCard deletes a tech card by id (child sections cascade).
+// DeleteTechCard deletes a tech card by id (child sections cascade). It refuses when any of the
+// card's samples has material stock movements: the sample rows cascade (ON DELETE CASCADE) and would
+// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04).
+// The check and the delete run in one transaction so a concurrent issue cannot slip between them.
 func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
-	if err := storeutil.ExecNamed(ctx, s.DB,
-		`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
-		return fmt.Errorf("failed to delete tech card: %w", err)
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM material_stock_movement m
+			JOIN sample s ON s.id = m.sample_id WHERE s.tech_card_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("check tech card sample movements: %w", err)
+		}
+		if n > 0 {
+			return entity.ErrSampleHasMovements
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to delete tech card: %w", err)
+		}
+		return nil
+	})
+}
+
+// colorwayIdentityKey builds a stable key for a colourway across a full-replace (case-folded code +
+// name), so a sample's colour-model link can be matched to the freshly-reinserted colourway.
+func colorwayIdentityKey(code sql.NullString, name string) string {
+	return strings.ToLower(strings.TrimSpace(code.String)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
+}
+
+// captureSampleColorwayLinks returns sample_id → colourway identity key for a card's samples that
+// currently reference a colourway (empty when none), so UpdateTechCard's full-replace of colourways
+// does not silently drop the sample→colour-model link.
+func captureSampleColorwayLinks(ctx context.Context, db dependency.DB, tcID int) (map[int]string, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		SampleId int            `db:"sample_id"`
+		Code     sql.NullString `db:"code"`
+		Name     string         `db:"name"`
+	}](ctx, db, `
+		SELECT s.id AS sample_id, c.code AS code, c.name AS name
+		FROM sample s JOIN tech_card_colorway c ON c.id = s.colorway_id
+		WHERE s.tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return nil, fmt.Errorf("capture sample colorway links: %w", err)
+	}
+	out := make(map[int]string, len(rows))
+	for _, r := range rows {
+		out[r.SampleId] = colorwayIdentityKey(r.Code, r.Name)
+	}
+	return out, nil
+}
+
+// relinkSamplesToColorways restores sample→colourway links captured before a full-replace by matching
+// each sample's old colourway identity to a freshly-inserted colourway; an unmatched (removed or
+// renamed) colourway leaves the link NULL, which is the honest result — that colour no longer exists.
+func relinkSamplesToColorways(ctx context.Context, db dependency.DB, tcID int, links map[int]string) error {
+	if len(links) == 0 {
+		return nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		Id   int            `db:"id"`
+		Code sql.NullString `db:"code"`
+		Name string         `db:"name"`
+	}](ctx, db, `SELECT id, code, name FROM tech_card_colorway WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load reinserted colorways: %w", err)
+	}
+	keyToID := make(map[string]int, len(rows))
+	for _, r := range rows {
+		keyToID[colorwayIdentityKey(r.Code, r.Name)] = r.Id
+	}
+	for sampleID, key := range links {
+		var cw any // NULL when the colourway no longer exists
+		if id, ok := keyToID[key]; ok {
+			cw = id
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE sample SET colorway_id = :cw WHERE id = :id`,
+			map[string]any{"cw": cw, "id": sampleID}); err != nil {
+			return fmt.Errorf("relink sample %d colorway: %w", sampleID, err)
+		}
 	}
 	return nil
 }
@@ -281,7 +393,136 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list tech cards: %w", err)
 	}
+
+	// Resolve a preview thumbnail per card for grid/gallery views (B-9). One batched media query for
+	// the whole page (not N+1); a failure to load media degrades to an empty preview, not a list error.
+	ids := make([]int, len(cards))
+	for i := range cards {
+		ids[i] = cards[i].Id
+	}
+	if _, full, mErr := s.mediaByTechCardIds(ctx, ids); mErr != nil {
+		slog.Default().WarnContext(ctx, "can't resolve tech card list previews; previews omitted",
+			slog.String("err", mErr.Error()))
+	} else {
+		for i := range cards {
+			cards[i].PreviewURL = pickTechCardPreviewURL(cards[i].Stage, full[cards[i].Id])
+		}
+	}
 	return cards, total, nil
+}
+
+// pickTechCardPreviewURL chooses the thumbnail URL for a list/gallery card (B-9). `media` is ordered
+// by display_order. For an IDEA card the mood/reference image best represents it (a technical sketch
+// may not exist yet); otherwise the flat PREVIEW sketch is preferred. Falls back down a chain so any
+// media beats none, and returns "" when the card has no media.
+func pickTechCardPreviewURL(stage entity.TechCardStage, media []entity.TechCardMediaFull) string {
+	if len(media) == 0 {
+		return ""
+	}
+	var firstMoodboard, firstTechnical, previewKind string
+	for i := range media {
+		url := media[i].Media.ThumbnailMediaURL
+		if url == "" {
+			url = media[i].Media.CompressedMediaURL
+		}
+		if url == "" {
+			continue
+		}
+		switch media[i].Category {
+		case entity.TechCardMediaCategoryMoodboard:
+			if firstMoodboard == "" {
+				firstMoodboard = url
+			}
+		case entity.TechCardMediaCategoryTechnical:
+			if firstTechnical == "" {
+				firstTechnical = url
+			}
+			if previewKind == "" && media[i].Kind == entity.TechCardMediaPreview {
+				previewKind = url
+			}
+		}
+	}
+	if stage == entity.TechCardStageIdea {
+		if firstMoodboard != "" {
+			return firstMoodboard
+		}
+		if previewKind != "" {
+			return previewKind
+		}
+		return firstTechnical
+	}
+	if previewKind != "" {
+		return previewKind
+	}
+	if firstTechnical != "" {
+		return firstTechnical
+	}
+	return firstMoodboard
+}
+
+// defaultPipelineCardsPerStage is how many light cards each pipeline column returns when the caller
+// doesn't specify (gap-01).
+const defaultPipelineCardsPerStage = 8
+
+// stylePipelineOrder is the lifecycle order of the development-board columns.
+var stylePipelineOrder = []entity.TechCardStage{
+	entity.TechCardStageIdea, entity.TechCardStageProto, entity.TechCardStageFit,
+	entity.TechCardStageSMS, entity.TechCardStagePP, entity.TechCardStageProd,
+}
+
+// GetStylePipeline returns the development board (gap-01): one column per lifecycle stage in order,
+// each with its full card count and up to cardsPerStage most-recently-updated light cards (with a
+// resolved preview thumbnail). DB scale is small, so this is one grouped count query plus one small
+// query per stage — no window functions needed — and a single batched media resolve for previews.
+func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error) {
+	if cardsPerStage <= 0 {
+		cardsPerStage = defaultPipelineCardsPerStage
+	}
+	if cardsPerStage > maxPageLimit {
+		cardsPerStage = maxPageLimit
+	}
+
+	countRows, err := storeutil.QueryListNamed[struct {
+		Stage string `db:"stage"`
+		C     int    `db:"c"`
+	}](ctx, s.DB, `SELECT stage, COUNT(*) AS c FROM tech_card GROUP BY stage`, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't count tech cards by stage: %w", err)
+	}
+	counts := make(map[string]int, len(countRows))
+	for _, r := range countRows {
+		counts[r.Stage] = r.C
+	}
+
+	cols := make([]entity.StylePipelineColumn, 0, len(stylePipelineOrder))
+	var previewIDs []int
+	for _, st := range stylePipelineOrder {
+		cards, err := storeutil.QueryListNamed[entity.TechCard](ctx, s.DB, `
+			SELECT * FROM tech_card WHERE stage = :stage
+			ORDER BY updated_at DESC, id DESC LIMIT :n`,
+			map[string]any{"stage": string(st), "n": cardsPerStage})
+		if err != nil {
+			return nil, fmt.Errorf("can't list %s tech cards: %w", st, err)
+		}
+		cols = append(cols, entity.StylePipelineColumn{Stage: st, Count: counts[string(st)], Cards: cards})
+		for i := range cards {
+			previewIDs = append(previewIDs, cards[i].Id)
+		}
+	}
+
+	// Resolve preview thumbnails for every card on the board in one batched query (degrade to no
+	// preview on failure, don't fail the board).
+	if _, full, mErr := s.mediaByTechCardIds(ctx, previewIDs); mErr != nil {
+		slog.Default().WarnContext(ctx, "can't resolve pipeline previews; previews omitted",
+			slog.String("err", mErr.Error()))
+	} else {
+		for ci := range cols {
+			for i := range cols[ci].Cards {
+				cols[ci].Cards[i].PreviewURL = pickTechCardPreviewURL(cols[ci].Cards[i].Stage, full[cols[ci].Cards[i].Id])
+			}
+		}
+	}
+	return cols, nil
 }
 
 // insertTechCardChildren inserts the size range, product links, sketch media,
@@ -312,6 +553,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
+		return err
+	}
+	// Cut-pieces (NF-05): must run AFTER colourways so their per-colourway fabric mapping can
+	// resolve positional colorway_index → the freshly-inserted colorway_id (same tx).
+	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
 		return err
 	}
 	// production (Phase 3)

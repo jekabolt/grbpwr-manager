@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -14,8 +16,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest) (*pb_admin.GetMetricsResponse, error) {
@@ -348,6 +352,33 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.SellThroughByDrop = dto.ConvertSellThroughByDropToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_MARGIN_BY_STYLE) {
+		items, err := s.repo.Metrics().GetMarginByStyle(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get margin by style", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get margin by style")
+		}
+		resp.MarginByStyle = dto.ConvertMarginByStyleToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_COGS_STRUCTURE) {
+		items, err := s.repo.Metrics().GetCogsStructure(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get cogs structure", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get cogs structure")
+		}
+		resp.CogsStructure = dto.ConvertCogsStructureToPb(items)
+	}
+
+	if want(pb_admin.MetricsSection_METRICS_SECTION_INVENTORY_VALUATION) {
+		v, err := s.repo.Metrics().GetInventoryValuation(ctx, from, to, limit)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get inventory valuation", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get inventory valuation")
+		}
+		resp.InventoryValuation = dto.ConvertInventoryValuationToPb(v)
+	}
+
 	if want(pb_admin.MetricsSection_METRICS_SECTION_RETURN_ANALYSIS) {
 		byProduct, err := s.repo.Metrics().GetReturnByProduct(ctx, from, to, limit)
 		if err != nil {
@@ -548,6 +579,12 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			return nil, status.Errorf(codes.Internal, "can't get RFM analysis")
 		}
 		resp.RfmAnalysis = dto.ConvertRFMAnalysisToPb(items)
+	}
+
+	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
+	// Commerce, traffic and email metrics remain visible.
+	if read, _ := s.costingAccess(ctx); !read {
+		stripMetricsCosting(resp)
 	}
 
 	return resp, nil
@@ -803,6 +840,187 @@ func (s *Server) UpsertChannelSpend(ctx context.Context, req *pb_admin.UpsertCha
 	return &pb_admin.UpsertChannelSpendResponse{}, nil
 }
 
+// UpsertOpexEntries records the fixed-cost (OPEX) journal that feeds the dashboard operating
+// result (task 22). Month/category/amount are validated and normalised in dto; upsert is on
+// (month, category).
+func (s *Server) UpsertOpexEntries(ctx context.Context, req *pb_admin.UpsertOpexEntriesRequest) (*pb_admin.UpsertOpexEntriesResponse, error) {
+	rows, err := dto.ConvertPbOpexEntriesToEntity(req.GetEntries())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if len(rows) == 0 {
+		return &pb_admin.UpsertOpexEntriesResponse{}, nil
+	}
+	if err := s.repo.Metrics().UpsertOpexEntries(ctx, rows); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert opex entries", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't upsert opex entries")
+	}
+	return &pb_admin.UpsertOpexEntriesResponse{}, nil
+}
+
+// UpsertOpexLines writes OPEX line items (NF-08), folding each amount into base currency via the
+// costing FX before storage. OPEX figures are confidential cost data, so — like dev expenses — the
+// detailed line API is gated by costing:write on top of the analytics section (the legacy aggregate
+// UpsertOpexEntries stays analytics-only for backward compatibility).
+func (s *Server) UpsertOpexLines(ctx context.Context, req *pb_admin.UpsertOpexLinesRequest) (*pb_admin.UpsertOpexLinesResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit OPEX lines")
+	}
+	lines, err := dto.ConvertPbOpexLinesToEntity(req.GetLines())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if len(lines) == 0 {
+		return &pb_admin.UpsertOpexLinesResponse{}, nil
+	}
+	dto.FoldOpexLinesToBase(lines, s.costingFx(ctx))
+	if err := s.repo.Metrics().UpsertOpexLines(ctx, lines); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert opex lines", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert opex lines")
+	}
+	return &pb_admin.UpsertOpexLinesResponse{}, nil
+}
+
+// DeleteOpexLine removes one OPEX line by id.
+func (s *Server) DeleteOpexLine(ctx context.Context, req *pb_admin.DeleteOpexLineRequest) (*pb_admin.DeleteOpexLineResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to delete an OPEX line")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().DeleteOpexLine(ctx, int(req.GetId())); err != nil {
+		if errors.Is(err, entity.ErrOpexLineMaterialised) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		slog.Default().ErrorContext(ctx, "can't delete opex line", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't delete opex line")
+	}
+	return &pb_admin.DeleteOpexLineResponse{}, nil
+}
+
+// ListOpexLines returns OPEX lines in a month range. The whole response is confidential cost data,
+// so without costing:read it is denied outright (PermissionDenied) rather than shaped to an empty
+// success — an empty journal is indistinguishable from "no costs entered" and would bait an
+// analytics-only operator into re-entering data that only fails on write (nf08-06).
+func (s *Server) ListOpexLines(ctx context.Context, req *pb_admin.ListOpexLinesRequest) (*pb_admin.ListOpexLinesResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view OPEX lines")
+	}
+	filter, err := dto.ConvertOpexLineFilter(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	lines, err := s.repo.Metrics().ListOpexLines(ctx, filter)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list opex lines", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list opex lines")
+	}
+	return &pb_admin.ListOpexLinesResponse{Lines: dto.OpexLinesToPb(lines)}, nil
+}
+
+// UpsertOpexRecurring inserts (id==0) or updates a recurring OPEX template.
+func (s *Server) UpsertOpexRecurring(ctx context.Context, req *pb_admin.UpsertOpexRecurringRequest) (*pb_admin.UpsertOpexRecurringResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit recurring OPEX")
+	}
+	ins, err := dto.ConvertPbOpexRecurringToEntity(req.GetRecurring())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	id, err := s.repo.Metrics().UpsertOpexRecurring(ctx, ins, int(req.GetId()))
+	if err != nil {
+		// a bogus employee_id fails the fk_opex_rec_employee FK — a caller-fixable input (g25-10).
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, "employee_id does not reference an existing employee")
+		}
+		slog.Default().ErrorContext(ctx, "can't upsert opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert opex recurring")
+	}
+	return &pb_admin.UpsertOpexRecurringResponse{Id: int32(id)}, nil
+}
+
+// ArchiveOpexRecurring stops a recurring template from materialising further months.
+func (s *Server) ArchiveOpexRecurring(ctx context.Context, req *pb_admin.ArchiveOpexRecurringRequest) (*pb_admin.ArchiveOpexRecurringResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to archive recurring OPEX")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().ArchiveOpexRecurring(ctx, int(req.GetId())); err != nil {
+		slog.Default().ErrorContext(ctx, "can't archive opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't archive opex recurring")
+	}
+	return &pb_admin.ArchiveOpexRecurringResponse{}, nil
+}
+
+// ListOpexRecurring returns recurring OPEX templates (active-only unless include_archived). Gated
+// like ListOpexLines — PermissionDenied without costing:read (nf08-06).
+func (s *Server) ListOpexRecurring(ctx context.Context, req *pb_admin.ListOpexRecurringRequest) (*pb_admin.ListOpexRecurringResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view recurring OPEX")
+	}
+	list, err := s.repo.Metrics().ListOpexRecurring(ctx, req.GetIncludeArchived())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list opex recurring", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list opex recurring")
+	}
+	return &pb_admin.ListOpexRecurringResponse{Recurring: dto.OpexRecurringListToPb(list)}, nil
+}
+
+// UpsertEmployee inserts (id==0) or updates an employee-registry row (gap-07 v2 A). Gated on
+// costing:write like recurring OPEX — salary registry data is confidential.
+func (s *Server) UpsertEmployee(ctx context.Context, req *pb_admin.UpsertEmployeeRequest) (*pb_admin.UpsertEmployeeResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit the employee registry")
+	}
+	ins, err := dto.ConvertPbEmployeeToEntity(req.GetEmployee())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	id, err := s.repo.Metrics().UpsertEmployee(ctx, ins, int(req.GetId()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "employee not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't upsert employee", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert employee")
+	}
+	return &pb_admin.UpsertEmployeeResponse{Id: int32(id)}, nil
+}
+
+// ArchiveEmployee soft-archives an employee; linked recurring templates keep their employee_id.
+func (s *Server) ArchiveEmployee(ctx context.Context, req *pb_admin.ArchiveEmployeeRequest) (*pb_admin.ArchiveEmployeeResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to archive an employee")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().ArchiveEmployee(ctx, int(req.GetId())); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "employee not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't archive employee", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't archive employee")
+	}
+	return &pb_admin.ArchiveEmployeeResponse{}, nil
+}
+
+// ListEmployees returns registry rows (active-only unless include_archived). Gated on costing:read.
+func (s *Server) ListEmployees(ctx context.Context, req *pb_admin.ListEmployeesRequest) (*pb_admin.ListEmployeesResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view the employee registry")
+	}
+	list, err := s.repo.Metrics().ListEmployees(ctx, req.GetIncludeArchived())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list employees", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list employees")
+	}
+	return &pb_admin.ListEmployeesResponse{Employees: dto.EmployeeListToPb(list)}, nil
+}
+
 // channelKey joins the three UTM dimensions into a single map key (NUL-separated so empty
 // segments can't collide, e.g. "a|" vs "|a").
 func channelKey(source, medium, campaign string) string {
@@ -833,7 +1051,13 @@ func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardReq
 		slog.Default().ErrorContext(ctx, "can't get dashboard", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't get dashboard")
 	}
-	return dto.ConvertDashboardToPb(d), nil
+	resp := dto.ConvertDashboardToPb(d)
+	// Redact margin figures for accounts without costing:read (task 19); revenue, order
+	// count, inventory action lists and alerts remain.
+	if read, _ := s.costingAccess(ctx); !read {
+		stripDashboardCosting(resp)
+	}
+	return resp, nil
 }
 
 // GetAlertSettings returns the operator-tunable dashboard alert thresholds.
@@ -855,8 +1079,15 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	if t.CoverageWarnPct < 0 || t.CoverageWarnPct > 100 ||
 		t.RefundRateWarnPct < 0 || t.RefundRateWarnPct > 100 ||
 		t.ContributionTrustPct < 0 || t.ContributionTrustPct > 100 ||
+		t.GA4CoverageWarnPct < 0 || t.GA4CoverageWarnPct > 100 ||
 		t.RateFloorN < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "percentages must be within [0,100] and rate_floor_n >= 0")
+	}
+	// A negative stale-days would silently disable the stale-open-run alert (GetStaleOpenRunCount
+	// treats <= 0 as "off") while GetAlertSettings still reports the stored value as configured —
+	// reject it so the setting can't be quietly turned off (nf09-06). 0 means "disabled" explicitly.
+	if t.ProductionRunStaleDays < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "production_run_stale_days must be >= 0 (0 disables the alert)")
 	}
 	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
@@ -894,4 +1125,55 @@ func (s *Server) enrichCampaignSpend(ctx context.Context, from, to time.Time, ro
 		}
 	}
 	return nil
+}
+
+// GetVatRates returns the configured destination-country VAT rates for the admin management
+// surface (net-of-VAT revenue configuration).
+func (s *Server) GetVatRates(ctx context.Context, _ *pb_admin.GetVatRatesRequest) (*pb_admin.GetVatRatesResponse, error) {
+	rates, err := s.repo.Metrics().ListVatRates(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list vat rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list vat rates")
+	}
+	out := make([]*pb_admin.VatRate, 0, len(rates))
+	for _, r := range rates {
+		out = append(out, &pb_admin.VatRate{
+			CountryCode: r.CountryCode,
+			RatePct:     &pb_decimal.Decimal{Value: r.RatePct.String()},
+			ValidFrom:   timestamppb.New(r.ValidFrom),
+		})
+	}
+	return &pb_admin.GetVatRatesResponse{Rates: out}, nil
+}
+
+// UpsertVatRates inserts or updates the standard VAT rate per destination country (ISO alpha-2).
+// Rates must be in [0, 100); a country absent from the table is treated as 0% (export).
+func (s *Server) UpsertVatRates(ctx context.Context, req *pb_admin.UpsertVatRatesRequest) (*pb_admin.UpsertVatRatesResponse, error) {
+	if req == nil || len(req.Rates) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one vat rate is required")
+	}
+	ents := make([]entity.VatRate, 0, len(req.Rates))
+	for _, r := range req.Rates {
+		cc := strings.ToUpper(strings.TrimSpace(r.CountryCode))
+		if len(cc) != 2 {
+			return nil, status.Errorf(codes.InvalidArgument, "country_code must be a 2-letter ISO code, got %q", r.CountryCode)
+		}
+		if r.RatePct == nil {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_pct is required for %s", cc)
+		}
+		rate, err := decimal.NewFromString(r.RatePct.Value)
+		if err != nil || rate.IsNegative() || rate.GreaterThanOrEqual(decimal.NewFromInt(100)) {
+			return nil, status.Errorf(codes.InvalidArgument, "rate_pct for %s must be a number in [0, 100)", cc)
+		}
+		vr := entity.VatRate{CountryCode: cc, RatePct: rate}
+		if r.ValidFrom != nil {
+			vr.ValidFrom = r.ValidFrom.AsTime().UTC()
+		}
+		ents = append(ents, vr)
+	}
+	if err := s.repo.Metrics().UpsertVatRates(ctx, ents); err != nil {
+		slog.Default().ErrorContext(ctx, "can't upsert vat rates", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert vat rates")
+	}
+	return &pb_admin.UpsertVatRatesResponse{}, nil
 }
