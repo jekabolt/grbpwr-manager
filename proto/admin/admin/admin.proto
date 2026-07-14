@@ -1410,6 +1410,9 @@ message GetOrderByUUIDRequest {
 
 message GetOrderByUUIDResponse {
   common.OrderFull order = 1;
+  // stripe_details holds admin-only settlement/Stripe metadata (EUR received, fee,
+  // FX rate, card, dashboard link) not present on the customer-facing order.
+  common.OrderStripeDetails stripe_details = 2;
 }
 
 message SetTrackingNumberRequest {
@@ -2304,6 +2307,9 @@ message GetFulfillmentCardRequest {
 message GetFulfillmentCardResponse {
   common.OrderFull order = 1; // full order detail
   common.FulfillmentAnnotation annotation = 2; // assignee / notes / checklist
+  // stripe_details holds admin-only settlement/Stripe metadata (EUR received, fee,
+  // FX rate, card, dashboard link) not present on the customer-facing order.
+  common.OrderStripeDetails stripe_details = 3;
 }
 
 message SetFulfillmentAssigneeRequest {

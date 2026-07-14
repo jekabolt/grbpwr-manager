@@ -2,7 +2,6 @@ package stripe
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,11 +127,8 @@ func (p *Processor) confirmPaymentFromWebhook(ctx context.Context, pi *stripe.Pa
 		return fmt.Errorf("can't get payment for order %s: %w", orderUUID, err)
 	}
 
-	// Capture the payment method sub-type (apple_pay, klarna, ...) when available.
-	if piExpanded, expErr := p.getPaymentIntentWithExpand(payment.ClientSecret.String, []string{"payment_method"}); expErr == nil && piExpanded.PaymentMethod != nil {
-		payment.PaymentInsert.PaymentMethodType = sql.NullString{String: string(piExpanded.PaymentMethod.Type), Valid: true}
-	}
-
+	// The payment method type, card, receipt and settled amount are captured from the charge
+	// in capturePaymentDetails (via updateOrderAsPaid), shared by every confirmation path.
 	received := AmountFromSmallestUnit(pi.AmountReceived, string(pi.Currency))
 	if err := p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment, received); err != nil {
 		// Underpaid: order stays AwaitingPayment (flagged for review). Acknowledge

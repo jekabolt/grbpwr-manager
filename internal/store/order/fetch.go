@@ -315,7 +315,13 @@ func paymentsByOrderIds(ctx context.Context, db dependency.DB, orderIds []int) (
 		payment.is_transaction_done,
 		payment.created_at,
 		payment.modified_at,
-		payment.expired_at
+		payment.expired_at,
+		payment.payment_method_type,
+		payment.card_brand,
+		payment.card_last4,
+		payment.receipt_url,
+		payment.stripe_exchange_rate,
+		payment.stripe_risk_level
 	FROM payment
 	JOIN customer_order ON payment.order_id = customer_order.id
 	WHERE customer_order.id IN (:orderIds)`
