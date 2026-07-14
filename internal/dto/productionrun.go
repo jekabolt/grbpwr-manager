@@ -345,6 +345,7 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 		Actuals:         computeProductionRunActuals(r),
+		LockVersion:     int32(r.LockVersion),
 	}
 }
 

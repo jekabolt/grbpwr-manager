@@ -157,4 +157,8 @@ message ProductionRun {
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
   ProductionRunActuals actuals = 7; // computed-on-read plan/fact summary
+  // Optimistic-lock token, bumped on every UpdateProductionRun. Echo into
+  // UpdateProductionRunRequest.expected_lock_version so a list→edit needs no extra GET (mirrors
+  // TechCard.lock_version).
+  int32 lock_version = 8;
 }

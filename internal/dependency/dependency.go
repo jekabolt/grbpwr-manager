@@ -501,7 +501,7 @@ type (
 	// planned/received/defect grid, with the planned unit cost snapshotted at plan time.
 	ProductionRuns interface {
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
-		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert) error
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)

@@ -3882,6 +3882,10 @@ message CreateProductionRunResponse {
 message UpdateProductionRunRequest {
   int32 id = 1;
   common.ProductionRunInsert run = 2;
+  // Optimistic-lock guard from GetProductionRun/list. >0 enforces the lock: a mismatch means the run
+  // changed under the editor -> Aborted (reload and retry). 0 keeps the legacy last-write-wins
+  // behaviour, so pre-existing clients are unaffected (#9).
+  int32 expected_lock_version = 3;
 }
 
 message UpdateProductionRunResponse {}
@@ -3905,6 +3909,10 @@ message ListProductionRunsRequest {
   string status = 2; // empty = all statuses
   int32 limit = 3;
   int32 offset = 4;
+  // >0: return only "stale" runs — still open (planned/in_progress) and created more than N days ago
+  // (the same rule as the stale_open_production_run dashboard alert). Server-side so the attention
+  // filter/strip does not client-scan the two status pages (#10). 0 = no staleness filter.
+  int32 stale_days = 5;
 }
 
 message ListProductionRunsResponse {

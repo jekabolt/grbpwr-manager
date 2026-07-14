@@ -96,12 +96,13 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 // Existence is established by the FOR UPDATE read (not by rows-affected, which is 0 for a no-op
 // header edit and would spuriously read as NotFound — the receive-v2 flow only touches line rows).
 // Returns sql.ErrNoRows when no run exists.
-func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert) error {
+func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
-			Status     string `db:"status"`
-			TechCardId int    `db:"tech_card_id"`
-		}](ctx, rep.DB(), `SELECT status, tech_card_id FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": id})
+			Status      string `db:"status"`
+			TechCardId  int    `db:"tech_card_id"`
+			LockVersion int    `db:"lock_version"`
+		}](ctx, rep.DB(), `SELECT status, tech_card_id, lock_version FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": id})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return sql.ErrNoRows
@@ -113,6 +114,14 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		}
 		if r.Status == entity.ProductionRunReceived {
 			return entity.ErrProductionRunReceiveViaUpdate
+		}
+		// Optimistic lock (#9): a positive expected version that no longer matches means the run was
+		// edited concurrently — reject rather than clobber the other writer's full-replace. 0 opts out
+		// (legacy last-write-wins), so pre-existing clients are unaffected. The FOR UPDATE read above
+		// serialises this against a concurrent update, so the in-Go check is authoritative; the WHERE
+		// guard on the UPDATE is belt-and-suspenders (mirrors UpdateTechCard).
+		if expectedLockVersion > 0 && cur.LockVersion != expectedLockVersion {
+			return entity.ErrProductionRunConflict
 		}
 		// The run's style is fixed at creation: the planned-cost snapshot, the movements' denormalised
 		// tech_card_id and the style roll-ups are all anchored to it (g25-13).
@@ -130,13 +139,25 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		}
 		params := runParams(r)
 		params["id"] = id
-		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+		params["expected_lock_version"] = expectedLockVersion
+		lockGuard := ""
+		if expectedLockVersion > 0 {
+			lockGuard = " AND lock_version = :expected_lock_version"
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE production_run SET
+				lock_version = lock_version + 1,
 				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
 				started_at = :started_at, received_at = :received_at,
 				marker_efficiency_pct = :marker_efficiency_pct, marker_notes = :marker_notes, notes = :notes
-			WHERE id = :id`, params); err != nil {
+			WHERE id = :id`+lockGuard, params)
+		if err != nil {
 			return fmt.Errorf("failed to update production run: %w", err)
+		}
+		// The row provably exists (loaded above). With the lock guard present, 0 rows means the version
+		// moved under us — make the WHERE guard load-bearing, not just the in-Go check.
+		if expectedLockVersion > 0 && rows == 0 {
+			return entity.ErrProductionRunConflict
 		}
 		for _, tbl := range []string{"production_run_line", "production_run_cost", "production_run_marker"} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
@@ -156,7 +177,7 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		switch err {
 		case sql.ErrNoRows, entity.ErrProductionRunReceivedImmutable,
 			entity.ErrProductionRunReceiveViaUpdate, entity.ErrProductionRunHasOpenIssues,
-			entity.ErrProductionRunCardChange:
+			entity.ErrProductionRunCardChange, entity.ErrProductionRunConflict:
 			return err
 		}
 		return fmt.Errorf("can't update production run: %w", err)
@@ -495,6 +516,15 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 	if filter.Status != "" {
 		where += " AND status = :status"
 		params["status"] = string(filter.Status)
+	}
+	// Stale attention filter (#10): still-open runs older than N days — the same rule as the
+	// stale_open_production_run dashboard alert (GetStaleOpenRunCount). Combined with an explicit
+	// status filter it just intersects (e.g. status=received + stale_days>0 yields nothing).
+	if filter.StaleDays > 0 {
+		where += " AND status IN (:staleOpenPlanned, :staleOpenInProgress) AND created_at < :staleCutoff"
+		params["staleOpenPlanned"] = string(entity.ProductionRunPlanned)
+		params["staleOpenInProgress"] = string(entity.ProductionRunInProgress)
+		params["staleCutoff"] = s.Now().AddDate(0, 0, -filter.StaleDays)
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,

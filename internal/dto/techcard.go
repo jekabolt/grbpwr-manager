@@ -749,6 +749,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 		LockVersion:   int32(tc.LockVersion),
 		PreviewUrl:    tc.PreviewURL,
+		Purpose:       string(tc.Purpose),
 	}
 }
 

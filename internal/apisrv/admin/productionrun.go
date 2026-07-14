@@ -62,9 +62,14 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if len(ins.Costs) > 0 {
 		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
 	}
-	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins); err != nil {
+	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		// A stale expected_lock_version means a concurrent edit — Aborted tells the client to reload and
+		// retry (mirrors UpdateTechCard) (#9).
+		if errors.Is(err, entity.ErrProductionRunConflict) {
+			return nil, status.Error(codes.Aborted, "production run was modified concurrently; reload and retry")
 		}
 		// A received/closed run is immutable; receive must go through ReceiveProductionRun; moving an
 		// open run to cancelled/closed while material is still issued to it would strand that stock
@@ -126,7 +131,7 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	runs, total, err := s.repo.ProductionRuns().ListProductionRuns(ctx, int(req.Limit), int(req.Offset),
-		entity.ProductionRunListFilter{TechCardId: int(req.TechCardId), Status: st})
+		entity.ProductionRunListFilter{TechCardId: int(req.TechCardId), Status: st, StaleDays: int(req.StaleDays)})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list production runs")

@@ -674,13 +674,17 @@ func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id:             5,
-		TechCardInsert: entity.TechCardInsert{StyleNumber: sql.NullString{String: "ST-003", Valid: true}, Name: "Pants", Stage: entity.TechCardStagePP},
+		TechCardInsert: entity.TechCardInsert{StyleNumber: sql.NullString{String: "ST-003", Valid: true}, Name: "Pants", Stage: entity.TechCardStagePP, Purpose: entity.TechCardPurposeAuxiliary},
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
 	li := ConvertEntityTechCardToListItemPb(tc)
 	if li.Id != 5 || li.StyleNumber != "ST-003" || li.Stage != pb_common.TechCardStage_TECH_CARD_STAGE_PP {
 		t.Errorf("list item mismatch: %+v", li)
+	}
+	// #8: purpose is surfaced on the light card so a board can badge auxiliary cards without an N+1 GetTechCard.
+	if li.Purpose != "auxiliary" {
+		t.Errorf("list item purpose = %q, want auxiliary", li.Purpose)
 	}
 }
 
