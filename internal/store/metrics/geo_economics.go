@@ -180,10 +180,12 @@ type countryLtvAgg struct {
 
 // getCountryLTV is the average lifetime customer value per country. A customer is placed in the country
 // of their LATEST order (deterministic and explainable, unlike a mode); their lifetime value is the sum
-// of ALL their net-revenue orders (all-time, same gross-inclusive basis as getCLVStats — consistent
-// with the LTV on the profitability tab). Only customers who ordered IN the period are averaged, so the
-// requested window actually shapes the figure. Small countries will have a tiny ltv_sample — the caller
-// surfaces it so the UI can grey a noisy average.
+// of ALL their net-revenue orders (all-time, gross-of-VAT customer spend — the lifetime-value convention,
+// intentionally NOT the net-of-VAT period revenue used for the revenue/AOV columns on this tab). Only
+// customers who ordered IN the period are averaged, so the window shapes WHICH customers count, but each
+// customer's value is their full history. It is therefore a DIFFERENT quantity from the profitability
+// tab's period-realized LTV (getCLVStats, in-period revenue per customer) and the two will not reconcile.
+// Small countries will have a tiny ltv_sample — the caller surfaces it so the UI can grey a noisy average.
 func (s *Store) getCountryLTV(ctx context.Context, from, to time.Time) (map[string]countryLtvAgg, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `

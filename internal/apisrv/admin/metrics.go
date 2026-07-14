@@ -512,9 +512,12 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get geography demand by country", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
 		}
-		// Conversion needs GA4 sessions, whose cache only covers a rolling ~90-day window; suppress it
-		// (window not OK) for longer periods rather than show an understated rate.
-		demand := mergeCountryDemand(demandBase, sessions, to.Sub(from) <= ga4CacheWindow)
+		// Conversion needs GA4 sessions, whose cache only covers a rolling ~90-day window ending near
+		// today; suppress it (window not OK) unless the period is BOTH short enough AND recent enough. A
+		// span check alone let a backdated ≤90-day period through even though its older days predate the
+		// cache (no sessions there → conversion overstated). Gate on the period START being in-window too.
+		ga4WindowOK := to.Sub(from) <= ga4CacheWindow && !from.Before(time.Now().UTC().Add(-ga4CacheWindow))
+		demand := mergeCountryDemand(demandBase, sessions, ga4WindowOK)
 		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions, economics, logistics, demand)
 	}
 

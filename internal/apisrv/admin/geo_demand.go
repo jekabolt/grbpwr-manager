@@ -2,6 +2,8 @@ package admin
 
 import (
 	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -43,12 +45,35 @@ func mergeCountryDemand(base []entity.CountryDemandRow, sessions []entity.Geogra
 
 	rows := make([]entity.CountryDemandRow, len(base))
 	copy(rows, base)
+	// address.country is ISO-2 but not guaranteed upper-case; normalise to match the upper-case ISO
+	// keys CountryNameToISO2 returns, so sessions attribute even to a lower-cased address row.
+	matched := make(map[string]bool, len(rows))
 	for i := range rows {
-		rows[i].Sessions = bySessionISO[rows[i].Country]
+		iso := strings.ToUpper(strings.TrimSpace(rows[i].Country))
+		matched[iso] = true
+		rows[i].Sessions = bySessionISO[iso]
 		if rows[i].Sessions > 0 {
 			rows[i].ConversionRatePct = round2f(float64(rows[i].Orders) / float64(rows[i].Sessions) * 100)
 		}
 		rows[i].Caveat = demandCaveat(ga4WindowOK, rows[i].Sessions)
+	}
+	// Countries with GA4 sessions that DID map to a valid ISO-2 but had zero net-revenue orders in the
+	// period: surface them (orders=0, 0% conversion) so a high-traffic non-converting market is visible
+	// instead of dropped — the same reasoning behind the (unmatched) row, applied to mapped-but-orderless
+	// traffic. Sorted for deterministic output.
+	orderless := make([]string, 0)
+	for iso := range bySessionISO {
+		if !matched[iso] {
+			orderless = append(orderless, iso)
+		}
+	}
+	sort.Strings(orderless)
+	for _, iso := range orderless {
+		rows = append(rows, entity.CountryDemandRow{
+			Country:  iso,
+			Sessions: bySessionISO[iso],
+			Caveat:   demandCaveat(ga4WindowOK, bySessionISO[iso]),
+		})
 	}
 	if unmatched > 0 {
 		rows = append(rows, entity.CountryDemandRow{

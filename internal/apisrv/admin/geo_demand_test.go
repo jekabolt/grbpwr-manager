@@ -20,6 +20,7 @@ func TestMergeCountryDemand(t *testing.T) {
 	sessions := []entity.GeographySessionMetric{
 		{Country: "Germany", Sessions: 100},
 		{Country: "United States", Sessions: 200},
+		{Country: "Italy", Sessions: 50},       // maps to IT but has NO orders → orderless-but-trafficked
 		{Country: "Nowhereland", Sessions: 7}, // no ISO mapping → unmatched
 		{Country: "Atlantis", Sessions: 0},     // zero sessions ignored
 	}
@@ -49,6 +50,15 @@ func TestMergeCountryDemand(t *testing.T) {
 	require.True(t, ok, "an unmatched-name bucket is emitted")
 	require.Equal(t, 7, um.Sessions, "Nowhereland sessions land in (unmatched)")
 	require.Zero(t, um.Orders)
+
+	// M1: a country that mapped to a valid ISO-2 but had zero orders must still surface (its 0%
+	// conversion is exactly the signal the tab exists for), not be silently dropped.
+	it, ok := byC["IT"]
+	require.True(t, ok, "Italy has GA4 sessions but no orders — must still appear as a row")
+	require.Equal(t, 50, it.Sessions, "Italy sessions attributed to IT")
+	require.Zero(t, it.Orders, "IT had no orders in the period")
+	require.Zero(t, it.ConversionRatePct, "0 orders / 50 sessions = 0% conversion, not dropped")
+	require.Contains(t, it.Caveat, "directional", "orderless-but-trafficked row still carries the conversion caveat")
 }
 
 // TestMergeCountryDemandWindowExceeded suppresses conversion when the period is longer than the GA4
