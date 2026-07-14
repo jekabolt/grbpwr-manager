@@ -16,6 +16,7 @@ const (
 	OrderCancelled       templateName = "order_cancelled.gohtml"
 	OrderConfirmed       templateName = "order_confirmed.gohtml"
 	OrderShipped         templateName = "order_shipped.gohtml"
+	OrderDelivered       templateName = "order_delivered.gohtml"
 	OrderRefundInitiated templateName = "refund_initiated.gohtml"
 	OrderPendingReturn   templateName = "pending_return.gohtml"
 	PromoCode            templateName = "promo_code.gohtml"
@@ -39,6 +40,7 @@ var templateSubjects = map[templateName]string{
 	OrderCancelled:       "Your order has been cancelled",
 	OrderConfirmed:       "Your order has been confirmed",
 	OrderShipped:         "Your order has been shipped",
+	OrderDelivered:       "Your order has been delivered",
 	OrderRefundInitiated: "Your refund has been initiated",
 	OrderPendingReturn:   "Your return has been requested",
 	PromoCode:            "Your promo code",
@@ -162,6 +164,37 @@ func (m *Mailer) SendOrderShipped(ctx context.Context, rep dependency.Repository
 	}
 
 	return m.sendWithInsert(ctx, rep, ser)
+}
+
+// SendOrderDelivered sends an order delivered email (with a link to leave a review). Sent only on
+// a real delivery — the manual admin path, the AfterShip signal (webhook/reconcile) — never by the
+// timer safety net.
+func (m *Mailer) SendOrderDelivered(ctx context.Context, rep dependency.Repository, to string, deliveryDetails *dto.OrderDelivered) error {
+	if deliveryDetails.OrderUUID == "" {
+		return fmt.Errorf("incomplete delivery details: %+v", deliveryDetails)
+	}
+
+	ser, err := m.buildSendMailRequest(to, OrderDelivered, deliveryDetails)
+	if err != nil {
+		return fmt.Errorf("can't build send mail request for order delivered: %w", err)
+	}
+
+	return m.sendWithInsert(ctx, rep, ser)
+}
+
+// SendOrderDeliveredForUUID loads the order and sends the delivered email. Shared by the
+// delivery-sync worker (real AfterShip signal) and the AfterShip webhook so the DTO build + review
+// link live in one place. The caller is responsible for only invoking it when the order actually
+// transitioned to delivered (so it fires at most once per order).
+func SendOrderDeliveredForUUID(ctx context.Context, rep dependency.Repository, mailer dependency.Mailer, orderUUID string) error {
+	of, err := rep.Order().GetOrderFullByUUID(ctx, orderUUID)
+	if err != nil {
+		return fmt.Errorf("get order for delivered email: %w", err)
+	}
+	if of.Buyer.Email == "" {
+		return fmt.Errorf("order %s has no buyer email", orderUUID)
+	}
+	return mailer.SendOrderDelivered(ctx, rep, of.Buyer.Email, dto.OrderFullToOrderDelivered(of))
 }
 
 // SendRefundInitiated sends a refund initiated email.

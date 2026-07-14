@@ -153,16 +153,22 @@ type StripeWebhookHandler interface {
 	HandleStripeEvent(w http.ResponseWriter, r *http.Request)
 }
 
+// AftershipWebhookHandler handles inbound AfterShip tracking webhook events (signature-verified).
+type AftershipWebhookHandler interface {
+	HandleAftershipEvent(w http.ResponseWriter, r *http.Request)
+}
+
 // Server is the http server
 type Server struct {
-	hs                   *http.Server
-	gs                   *grpc.Server
-	c                    *Config
-	done                 chan struct{}
-	healthChecker        HealthChecker
-	webhookHandler       WebhookHandler
-	stripeWebhookHandler StripeWebhookHandler
-	healthRegistry       *health.Registry
+	hs                      *http.Server
+	gs                      *grpc.Server
+	c                       *Config
+	done                    chan struct{}
+	healthChecker           HealthChecker
+	webhookHandler          WebhookHandler
+	stripeWebhookHandler    StripeWebhookHandler
+	aftershipWebhookHandler AftershipWebhookHandler
+	healthRegistry          *health.Registry
 }
 
 // New creates a new server
@@ -186,6 +192,11 @@ func (s *Server) SetWebhookHandler(h WebhookHandler) {
 // SetStripeWebhookHandler registers the handler for Stripe webhook events.
 func (s *Server) SetStripeWebhookHandler(h StripeWebhookHandler) {
 	s.stripeWebhookHandler = h
+}
+
+// SetAftershipWebhookHandler registers the handler for AfterShip tracking webhook events.
+func (s *Server) SetAftershipWebhookHandler(h AftershipWebhookHandler) {
+	s.aftershipWebhookHandler = h
 }
 
 // SetHealthRegistry registers the operational-state registry surfaced by the
@@ -441,6 +452,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	}
 	if s.stripeWebhookHandler != nil {
 		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)
+	}
+	if s.aftershipWebhookHandler != nil {
+		r.Post("/api/webhooks/aftership", s.aftershipWebhookHandler.HandleAftershipEvent)
 	}
 
 	r.Mount("/", http.FileServer(http.FS(fs)))

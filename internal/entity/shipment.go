@@ -127,6 +127,37 @@ type ShipmentCarrierInsert struct {
 	Allowed              bool           `db:"allowed"`
 	Description          string         `db:"description"`
 	ExpectedDeliveryTime sql.NullString `db:"expected_delivery_time"`
+	// AftershipSlug is the AfterShip courier slug used to register and poll this carrier's
+	// trackings. Empty/NULL = the carrier has no tracking API, so its orders are auto-delivered
+	// only by the timer safety net (AutoDeliverAfterHours), never by a real AfterShip signal.
+	AftershipSlug sql.NullString `db:"aftership_slug"`
+	// AutoDeliverAfterHours is the safety-net window: hours after shipment.shipping_date after
+	// which an order is silently marked delivered (no customer email) when no real Delivered
+	// signal arrived. 0 = use the delivery-sync worker's configured default.
+	AutoDeliverAfterHours int `db:"auto_deliver_after_hours"`
+}
+
+// Trackable reports whether this carrier has an AfterShip courier slug configured, i.e. its
+// shipments can be registered with and polled from AfterShip for a real delivery signal.
+func (sc *ShipmentCarrier) Trackable() bool {
+	return sc.AftershipSlug.Valid && strings.TrimSpace(sc.AftershipSlug.String) != ""
+}
+
+// Slug returns the trimmed AfterShip courier slug (empty when the carrier is not trackable).
+func (sc *ShipmentCarrier) Slug() string {
+	if !sc.AftershipSlug.Valid {
+		return ""
+	}
+	return strings.TrimSpace(sc.AftershipSlug.String)
+}
+
+// AutoDeliverAfter returns the timer safety-net window as a duration, falling back to def when
+// the carrier has no explicit positive override.
+func (sc *ShipmentCarrier) AutoDeliverAfter(def time.Duration) time.Duration {
+	if sc.AutoDeliverAfterHours > 0 {
+		return time.Duration(sc.AutoDeliverAfterHours) * time.Hour
+	}
+	return def
 }
 
 // PriceDecimal returns the price for the specified currency (currency-aware rounding)
@@ -180,4 +211,30 @@ type Shipment struct {
 // CostDecimal returns shipment cost with currency-aware rounding
 func (s *Shipment) CostDecimal(c string) decimal.Decimal {
 	return currency.Round(s.Cost, c)
+}
+
+// TrackingStatus is the normalized delivery state of a shipment as reported by the tracking
+// provider (AfterShip), decoupled from the provider's raw checkpoint vocabulary.
+type TrackingStatus struct {
+	// Found is false when the provider has no tracking for the (slug, number) yet — the caller
+	// should register it. Delivered/Tag are only meaningful when Found is true.
+	Found bool
+	// Delivered is true when the normalized status tag is "Delivered" (which the provider also
+	// reports for pickup-point / locker collection).
+	Delivered bool
+	// Tag is the provider's normalized status tag (e.g. "InTransit", "OutForDelivery",
+	// "Delivered", "Exception"), kept for logging and diagnostics.
+	Tag string
+}
+
+// ShipmentToAutoDeliver is a shipped order the delivery-sync worker evaluates for auto-delivery.
+// ShippingDate is guaranteed non-NULL by the query (populated from the auto-delivery release
+// onward), so historical orders are never surfaced here. CarrierId resolves the AfterShip slug
+// and timer window via cache.GetShipmentCarrierById.
+type ShipmentToAutoDeliver struct {
+	OrderId      int            `db:"order_id"`
+	OrderUUID    string         `db:"order_uuid"`
+	CarrierId    int            `db:"carrier_id"`
+	TrackingCode sql.NullString `db:"tracking_code"`
+	ShippingDate time.Time      `db:"shipping_date"`
 }

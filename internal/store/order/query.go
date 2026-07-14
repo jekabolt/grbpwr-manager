@@ -207,6 +207,49 @@ func (s *Store) GetExpiredAwaitingPaymentOrders(ctx context.Context, now time.Ti
 	return orders, nil
 }
 
+// GetShippedOrdersForDeliverySync returns orders in Shipped whose shipment has a shipping_date,
+// for the delivery-sync worker to evaluate (AfterShip poll + timer safety net). Orders shipped
+// before shipping_date was populated (i.e. before the auto-delivery release) are excluded, so no
+// historical order is retroactively auto-delivered.
+func (s *Store) GetShippedOrdersForDeliverySync(ctx context.Context) ([]entity.ShipmentToAutoDeliver, error) {
+	query := `
+    SELECT co.id AS order_id, co.uuid AS order_uuid, sh.carrier_id, sh.tracking_code, sh.shipping_date
+    FROM customer_order co
+    JOIN shipment sh ON sh.order_id = co.id
+    WHERE co.order_status_id = :status AND sh.shipping_date IS NOT NULL
+    `
+	rows, err := storeutil.QueryListNamed[entity.ShipmentToAutoDeliver](ctx, s.DB, query, map[string]any{
+		"status": cache.OrderStatusShipped.Status.Id,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []entity.ShipmentToAutoDeliver{}, nil
+		}
+		return nil, fmt.Errorf("can't get shipped orders for delivery sync: %w", err)
+	}
+	return rows, nil
+}
+
+// GetOrderUUIDByTrackingCode returns the UUID of the order whose shipment carries the given
+// tracking code. Used by the AfterShip webhook to resolve a delivery event to an order. Returns
+// sql.ErrNoRows when no shipment matches.
+func (s *Store) GetOrderUUIDByTrackingCode(ctx context.Context, trackingCode string) (string, error) {
+	type uuidRow struct {
+		UUID string `db:"uuid"`
+	}
+	r, err := storeutil.QueryNamedOne[uuidRow](ctx, s.DB, `
+		SELECT co.uuid
+		FROM customer_order co
+		JOIN shipment sh ON sh.order_id = co.id
+		WHERE sh.tracking_code = :trackingCode
+		ORDER BY co.id DESC
+		LIMIT 1`, map[string]any{"trackingCode": trackingCode})
+	if err != nil {
+		return "", fmt.Errorf("can't get order by tracking code: %w", err)
+	}
+	return r.UUID, nil
+}
+
 // AddOrderComment adds a comment to an order.
 func (s *Store) AddOrderComment(ctx context.Context, orderUUID string, comment string) error {
 	_, err := getOrderByUUID(ctx, s.DB, orderUUID)
