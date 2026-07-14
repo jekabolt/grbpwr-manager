@@ -61,6 +61,11 @@ var ErrProductionRunConcurrentModification = errors.New("production run changed 
 // movement journal keeps the old one (g25-13). Create a new run for the other style instead.
 var ErrProductionRunCardChange = errors.New("a production run cannot move to another tech card; create a new run")
 
+// ErrProductionRunConflict is returned by UpdateProductionRun when the caller passed a positive
+// expected_lock_version that no longer matches the stored one — the run was edited concurrently
+// between the read and the save. The caller should reload and retry (mirrors ErrTechCardConflict).
+var ErrProductionRunConflict = errors.New("production run was modified concurrently; reload and retry")
+
 // ProductionRunStatus is the lifecycle state of a production run (партия). It mirrors the
 // common.ProductionRunStatus proto enum and is stored as its lowercase string in the DB.
 type ProductionRunStatus string
@@ -220,12 +225,16 @@ type ProductionRun struct {
 	MaterialMovements []MaterialMovement `db:"-"`
 	CreatedAt         time.Time          `db:"created_at"`
 	UpdatedAt         time.Time          `db:"updated_at"`
+	LockVersion       int                `db:"lock_version"` // optimistic-lock token, bumped on every update (#9)
 }
 
 // ProductionRunListFilter narrows ListProductionRuns. Zero-value fields mean "no filter".
 type ProductionRunListFilter struct {
 	TechCardId int                 // only runs of this tech card
 	Status     ProductionRunStatus // only runs in this status
+	// StaleDays > 0 restricts the result to "stale" runs — still open (planned/in_progress) and
+	// created more than StaleDays days ago, matching the stale_open_production_run dashboard alert (#10).
+	StaleDays int
 }
 
 // NetReceivedQty sums received quantities across all lines.
