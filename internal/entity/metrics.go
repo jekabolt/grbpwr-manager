@@ -277,6 +277,22 @@ type PeakDay struct {
 	Orders  int             // net-revenue orders placed that day
 }
 
+// RevenueForecast projects net revenue for the calendar month containing the period end, blending a
+// day-of-week run-rate with a seasonal ratio-to-date when prior-year data exists. DB-only.
+type RevenueForecast struct {
+	Month              time.Time
+	MtdActual          decimal.Decimal
+	Forecast           decimal.Decimal
+	ForecastLow        decimal.Decimal
+	ForecastHigh       decimal.Decimal
+	RunRate            decimal.Decimal
+	Method             string
+	ElapsedDays        int
+	RemainingDays      int
+	LastYearMonthTotal decimal.Decimal
+	Caveat             string
+}
+
 // DeliverySection reports fulfilment speed for orders placed in the period (placed-cohort).
 // Delivered-based figures are gated by DeliveredCoveragePct/DeliveredSample because the delivered
 // status is operator-flipped and may be missing.

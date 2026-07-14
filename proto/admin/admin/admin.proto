@@ -1499,6 +1499,7 @@ enum MetricsSection {
   METRICS_SECTION_INVENTORY_VALUATION = 48; // task 16: cost frozen in stock + dead stock + write-offs
   METRICS_SECTION_ORDER_VALUE_BANDS = 49; // analytics-v2 task 03: order-value distribution (upsell)
   METRICS_SECTION_DELIVERY = 50; // analytics-v2 task 04: fulfilment durations + on-time rate
+  METRICS_SECTION_FORECAST = 51; // analytics-v2 task 06: month revenue forecast
 }
 
 message GetMetricsRequest {
@@ -1563,6 +1564,24 @@ message GetMetricsResponse {
   InventoryValuation inventory_valuation = 51; // task 16
   repeated OrderValueBandRow order_value_bands = 52; // analytics-v2 task 03
   DeliverySection delivery = 53; // analytics-v2 task 04
+  RevenueForecast revenue_forecast = 54; // analytics-v2 task 06
+}
+
+// RevenueForecast projects net revenue for the calendar month containing the period end. It blends a
+// day-of-week run-rate (trailing 8 weeks) with a seasonal ratio-to-date from last year when that data
+// exists. DB-only (no GA4). Directional at this data scale — read the low/high band, not the point.
+message RevenueForecast {
+  google.protobuf.Timestamp month = 1; // first day of the forecast month
+  google.type.Decimal mtd_actual = 2; // net revenue so far this month
+  google.type.Decimal forecast = 3; // projected full-month net revenue (blend)
+  google.type.Decimal forecast_low = 4; // ~80% interval lower bound
+  google.type.Decimal forecast_high = 5;
+  google.type.Decimal run_rate = 6; // naive mtd/elapsed × days_in_month, for eyeballing
+  string method = 7; // "dow" | "dow+seasonal" | "closed" | "run_rate"
+  int32 elapsed_days = 8;
+  int32 remaining_days = 9;
+  google.type.Decimal last_year_month_total = 10; // 0 when no prior-year data
+  string caveat = 11;
 }
 
 // DeliverySection reports fulfilment speed for orders PLACED in the period (a placed-cohort, so the

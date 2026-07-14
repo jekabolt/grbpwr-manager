@@ -409,6 +409,23 @@ func categoryMetricsToPb(list []entity.CategoryMetric) []*pb_admin.CategoryMetri
 	return pb
 }
 
+// ConvertRevenueForecastToPb maps the month revenue forecast (analytics-v2 task 06) to the wire.
+func ConvertRevenueForecastToPb(f entity.RevenueForecast) *pb_admin.RevenueForecast {
+	return &pb_admin.RevenueForecast{
+		Month:              timestamppb.New(f.Month),
+		MtdActual:          &decimal.Decimal{Value: f.MtdActual.String()},
+		Forecast:           &decimal.Decimal{Value: f.Forecast.String()},
+		ForecastLow:        &decimal.Decimal{Value: f.ForecastLow.String()},
+		ForecastHigh:       &decimal.Decimal{Value: f.ForecastHigh.String()},
+		RunRate:            &decimal.Decimal{Value: f.RunRate.String()},
+		Method:             f.Method,
+		ElapsedDays:        int32(f.ElapsedDays),
+		RemainingDays:      int32(f.RemainingDays),
+		LastYearMonthTotal: &decimal.Decimal{Value: f.LastYearMonthTotal.String()},
+		Caveat:             f.Caveat,
+	}
+}
+
 // ConvertDeliverySectionToPb maps the fulfilment-speed section (analytics-v2 task 04) to the wire.
 func ConvertDeliverySectionToPb(d entity.DeliverySection) *pb_admin.DeliverySection {
 	return &pb_admin.DeliverySection{

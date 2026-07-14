@@ -597,6 +597,15 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.Delivery = dto.ConvertDeliverySectionToPb(d)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_FORECAST) {
+		// Anchored to the calendar month of the period end (to), not the requested range.
+		fc, err := s.repo.Metrics().GetRevenueForecast(ctx, to)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't get revenue forecast")
+		}
+		resp.RevenueForecast = dto.ConvertRevenueForecastToPb(fc)
+	}
+
 	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
 	// Commerce, traffic and email metrics remain visible.
 	if read, _ := s.costingAccess(ctx); !read {

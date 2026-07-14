@@ -351,6 +351,8 @@ type (
 		GetOrderValueBands(ctx context.Context, from, to time.Time) ([]entity.OrderValueBandRow, error)
 		// GetDeliveryMetrics reports fulfilment durations + on-time rate for orders placed in the period.
 		GetDeliveryMetrics(ctx context.Context, from, to time.Time) (entity.DeliverySection, error)
+		// GetRevenueForecast projects net revenue for the calendar month containing asOf (DB-only).
+		GetRevenueForecast(ctx context.Context, asOf time.Time) (entity.RevenueForecast, error)
 		// GetRFMAnalysis returns RFM (Recency, Frequency, Monetary) customer segmentation.
 		GetRFMAnalysis(ctx context.Context, from, to time.Time) ([]entity.RFMSegmentRow, error)
 		// GetMarginByStyle rolls the per-SKU margin breakdown up to the style (tech card) via
