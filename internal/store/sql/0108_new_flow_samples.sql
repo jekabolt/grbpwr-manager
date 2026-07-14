@@ -34,31 +34,45 @@ CREATE TABLE IF NOT EXISTS sample (
 -- fitting.sample_id
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fitting' AND COLUMN_NAME = 'sample_id');
 SET @sql := IF(@need, 'ALTER TABLE fitting ADD COLUMN sample_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fitting' AND CONSTRAINT_NAME = 'fk_fitting_sample');
 SET @sql := IF(@need, 'ALTER TABLE fitting ADD CONSTRAINT fk_fitting_sample FOREIGN KEY (sample_id) REFERENCES sample(id) ON DELETE SET NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_dev_expense.sample_id
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_dev_expense' AND COLUMN_NAME = 'sample_id');
 SET @sql := IF(@need, 'ALTER TABLE tech_card_dev_expense ADD COLUMN sample_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_dev_expense' AND CONSTRAINT_NAME = 'fk_dev_expense_sample');
 SET @sql := IF(@need, 'ALTER TABLE tech_card_dev_expense ADD CONSTRAINT fk_dev_expense_sample FOREIGN KEY (sample_id) REFERENCES sample(id) ON DELETE SET NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- task.sample_id (deep-link, continuing the tech_card/product/order/archive/fitting/production_run row)
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND COLUMN_NAME = 'sample_id');
 SET @sql := IF(@need, 'ALTER TABLE task ADD COLUMN sample_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND CONSTRAINT_NAME = 'fk_task_sample');
 SET @sql := IF(@need, 'ALTER TABLE task ADD CONSTRAINT fk_task_sample FOREIGN KEY (sample_id) REFERENCES sample(id) ON DELETE SET NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- material_stock_movement.sample_id FK (the column was created in 0105 without an FK; sample exists now)
 SET @need := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement' AND CONSTRAINT_NAME = 'fk_msm_sample');
 SET @sql := IF(@need, 'ALTER TABLE material_stock_movement ADD CONSTRAINT fk_msm_sample FOREIGN KEY (sample_id) REFERENCES sample(id) ON DELETE SET NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

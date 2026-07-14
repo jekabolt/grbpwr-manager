@@ -31,7 +31,9 @@ SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
 SET @sql := IF(@need_col,
     'ALTER TABLE opex_recurring ADD COLUMN employee_id INT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_recurring'
@@ -40,7 +42,9 @@ SET @sql := IF(@need_fk,
     'ALTER TABLE opex_recurring
         ADD CONSTRAINT fk_opex_rec_employee FOREIGN KEY (employee_id) REFERENCES employee(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 
@@ -51,7 +55,9 @@ SET @has_fk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
 SET @sql := IF(@has_fk,
     'ALTER TABLE opex_recurring DROP FOREIGN KEY fk_opex_rec_employee',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 DROP TABLE IF EXISTS employee;
 SELECT 1;
