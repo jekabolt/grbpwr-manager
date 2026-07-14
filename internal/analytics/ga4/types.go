@@ -47,17 +47,6 @@ type EcommerceMetrics struct {
 	ItemsViewed int
 }
 
-// RevenueSourceMetrics represents revenue attribution by source/medium/campaign.
-type RevenueSourceMetrics struct {
-	Date      time.Time
-	Source    string
-	Medium    string
-	Campaign  string
-	Sessions  int
-	Revenue   decimal.Decimal
-	Purchases int
-}
-
 // ProductConversionMetrics represents per-product conversion funnel data.
 type ProductConversionMetrics struct {
 	Date        time.Time

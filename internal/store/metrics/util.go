@@ -148,8 +148,8 @@ var ga4APISyncTypes = map[string]bool{
 	"product_page_metrics": true,
 	"country_metrics":      true,
 	"ecommerce":            true,
-	"revenue_by_source":    true,
-	"product_conversion":   true,
+	// revenue_by_source removed (analytics-v2 task 11); product_conversion is written under "ecommerce".
+	"product_conversion": true,
 }
 
 // buildDataFreshness computes per-source staleness from ga4_sync_status rows.

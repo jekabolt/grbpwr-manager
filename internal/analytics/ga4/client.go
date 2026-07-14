@@ -518,49 +518,49 @@ func (c *Client) CircuitBreakerState() circuitbreaker.State {
 	return c.circuitBreaker.State()
 }
 
-// GetEcommerceBatch runs 3 ecommerce reports in a single batched API call.
+// GetEcommerceBatch runs the ecommerce reports in a single batched API call.
 // Handles pagination per-report individually to avoid dropping rows > 10,000.
+// The revenue-by-source report was dropped (analytics-v2 task 11): ga4_revenue_by_source had no
+// readers — attribution lives in bq_campaign_attribution + settled ROAS — so fetching it only burned
+// GA4 quota.
 func (c *Client) GetEcommerceBatch(
 	ctx context.Context,
 	startDate, endDate time.Time,
-) ([]EcommerceMetrics, []RevenueSourceMetrics, []ProductConversionMetrics, error) {
+) ([]EcommerceMetrics, []ProductConversionMetrics, error) {
 	if !c.enabled {
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 
 	var ecomRes []EcommerceMetrics
-	var revRes []RevenueSourceMetrics
 	var prodRes []ProductConversionMetrics
 
 	err := c.circuitBreaker.Call(ctx, func(ctx context.Context) error {
-		ecom, rev, prod, err := c.getEcommerceBatch(ctx, startDate, endDate)
+		ecom, prod, err := c.getEcommerceBatch(ctx, startDate, endDate)
 		if err != nil {
 			return err
 		}
 		ecomRes = ecom
-		revRes = rev
 		prodRes = prod
 		return nil
 	})
-	return ecomRes, revRes, prodRes, err
+	return ecomRes, prodRes, err
 }
 
 func (c *Client) getEcommerceBatch(
 	ctx context.Context,
 	startDate, endDate time.Time,
-) ([]EcommerceMetrics, []RevenueSourceMetrics, []ProductConversionMetrics, error) {
+) ([]EcommerceMetrics, []ProductConversionMetrics, error) {
 	var ecomRes []EcommerceMetrics
-	var revRes []RevenueSourceMetrics
 	var prodRes []ProductConversionMetrics
 
 	const limit = int64(10000)
-	var offset0, offset1, offset2 int64
-	more0, more1, more2 := true, true, true
+	var offset0, offset2 int64
+	more0, more2 := true, true
 
 	sd := startDate.Format("2006-01-02")
 	ed := endDate.Format("2006-01-02")
 
-	for more0 || more1 || more2 {
+	for more0 || more2 {
 		var requests []*analyticsdata.RunReportRequest
 
 		if more0 {
@@ -576,24 +576,6 @@ func (c *Client) getEcommerceBatch(
 				},
 				Limit:  limit,
 				Offset: offset0,
-			})
-		}
-		if more1 {
-			requests = append(requests, &analyticsdata.RunReportRequest{
-				DateRanges: []*analyticsdata.DateRange{{StartDate: sd, EndDate: ed}},
-				Dimensions: []*analyticsdata.Dimension{
-					{Name: "date"},
-					{Name: "sessionSource"},
-					{Name: "sessionMedium"},
-					{Name: "sessionCampaignName"},
-				},
-				Metrics: []*analyticsdata.Metric{
-					{Name: "sessions"},
-					{Name: "purchaseRevenue"},
-					{Name: "ecommercePurchases"},
-				},
-				Limit:  limit,
-				Offset: offset1,
 			})
 		}
 		if more2 {
@@ -622,11 +604,11 @@ func (c *Client) getEcommerceBatch(
 			"properties/"+c.propertyID, req,
 		).Context(ctx).Do()
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("BatchRunReports failed: %w", err)
+			return nil, nil, fmt.Errorf("BatchRunReports failed: %w", err)
 		}
 
 		if len(resp.Reports) != len(requests) {
-			return nil, nil, nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"unexpected report count: got %d, want %d",
 				len(resp.Reports), len(requests),
 			)
@@ -664,41 +646,6 @@ func (c *Client) getEcommerceBatch(
 			reqIdx++
 		}
 
-		if more1 {
-			r := resp.Reports[reqIdx]
-			for _, row := range r.Rows {
-				if len(row.DimensionValues) < 4 || len(row.MetricValues) < 3 {
-					continue
-				}
-				date, err := time.Parse("20060102", row.DimensionValues[0].Value)
-				if err != nil {
-					slog.Default().WarnContext(ctx, "ga4: skipping rev row with bad date",
-						slog.String("value", row.DimensionValues[0].Value),
-						slog.String("err", err.Error()))
-					continue
-				}
-				campaign := row.DimensionValues[3].Value
-				if campaign == "(not set)" {
-					campaign = ""
-				}
-				revRes = append(revRes, RevenueSourceMetrics{
-					Date:      date,
-					Source:    row.DimensionValues[1].Value,
-					Medium:    row.DimensionValues[2].Value,
-					Campaign:  campaign,
-					Sessions:  parseInt(row.MetricValues[0].Value),
-					Revenue:   parseDecimal(row.MetricValues[1].Value),
-					Purchases: parseInt(row.MetricValues[2].Value),
-				})
-			}
-			if int64(len(r.Rows)) < limit {
-				more1 = false
-			} else {
-				offset1 += limit
-			}
-			reqIdx++
-		}
-
 		if more2 {
 			r := resp.Reports[reqIdx]
 			for _, row := range r.Rows {
@@ -730,5 +677,5 @@ func (c *Client) getEcommerceBatch(
 		}
 	}
 
-	return ecomRes, revRes, prodRes, nil
+	return ecomRes, prodRes, nil
 }

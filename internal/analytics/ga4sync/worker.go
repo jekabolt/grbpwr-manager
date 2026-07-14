@@ -43,8 +43,8 @@ const healthTickTimeout = 30 * time.Second
 
 // ga4APISyncTypes are the GA4 Data API sub-syncs whose success high-water-marks gate
 // the API tier's fetch window. These are exactly the types that receive a success=1
-// status write (revenue_by_source/product_conversion are saved together with and gated
-// by "ecommerce"; the bq_* cache types sync on a separate cadence and are excluded).
+// status write (product_conversion is saved together with and gated by "ecommerce";
+// the bq_* cache types sync on a separate cadence and are excluded).
 var ga4APISyncTypes = []string{"daily_metrics", "product_page_metrics", "country_metrics", "ecommerce"}
 
 // Config holds configuration for the GA4 sync worker.
@@ -302,7 +302,7 @@ func (w *Worker) logHealthStatus(ctx context.Context) {
 		for _, s := range statuses {
 			isGA4 := s.SyncType == "daily_metrics" || s.SyncType == "product_page_metrics" ||
 				s.SyncType == "country_metrics" || s.SyncType == "ecommerce" ||
-				s.SyncType == "revenue_by_source" || s.SyncType == "product_conversion"
+				s.SyncType == "product_conversion"
 
 			if s.Success {
 				if isGA4 && s.LastSyncAt.After(ga4LastOK) {
@@ -585,9 +585,12 @@ func (w *Worker) syncCountryMetrics(ctx context.Context, startDate, endDate time
 	return nil
 }
 
-// syncEcommerce fetches GA4 ecommerce batch data and saves the 3 ecommerce tables.
+// syncEcommerce fetches GA4 ecommerce batch data and saves the ecommerce tables. The dead
+// revenue-by-source report was removed (analytics-v2 task 11); product_conversion is still written but
+// has no readers yet — it is the only per-product view→cart→purchase funnel source, a candidate to wire
+// into a product-conversion view rather than drop.
 func (w *Worker) syncEcommerce(ctx context.Context, startDate, endDate time.Time) error {
-	ecom, revSrc, prodConv, err := w.ga4Client.GetEcommerceBatch(ctx, startDate, endDate)
+	ecom, prodConv, err := w.ga4Client.GetEcommerceBatch(ctx, startDate, endDate)
 	if err != nil {
 		w.recordSyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
 		return fmt.Errorf("fetch ecommerce batch: %w", err)
@@ -597,19 +600,15 @@ func (w *Worker) syncEcommerce(ctx context.Context, startDate, endDate time.Time
 		w.recordSyncStatus(ctx, "ecommerce", endDate, false, 0, err.Error())
 		return fmt.Errorf("save ecommerce metrics: %w", err)
 	}
-	if err := w.ga4Data.SaveGA4RevenueBySource(ctx, revSrc); err != nil {
-		w.recordSyncStatus(ctx, "revenue_by_source", endDate, false, 0, err.Error())
-		return fmt.Errorf("save revenue by source: %w", err)
-	}
 	if err := w.ga4Data.SaveGA4ProductConversion(ctx, prodConv); err != nil {
 		w.recordSyncStatus(ctx, "product_conversion", endDate, false, 0, err.Error())
 		return fmt.Errorf("save product conversion: %w", err)
 	}
 
-	total := len(ecom) + len(revSrc) + len(prodConv)
+	total := len(ecom) + len(prodConv)
 	w.recordSyncStatus(ctx, "ecommerce", endDate, true, total, "")
 	slog.Default().InfoContext(ctx, "synced ecommerce metrics",
-		slog.Int("ecom", len(ecom)), slog.Int("rev_src", len(revSrc)), slog.Int("prod_conv", len(prodConv)))
+		slog.Int("ecom", len(ecom)), slog.Int("prod_conv", len(prodConv)))
 	return nil
 }
 

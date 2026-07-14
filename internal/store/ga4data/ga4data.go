@@ -110,27 +110,13 @@ func (s *Store) SaveGA4EcommerceMetrics(ctx context.Context, metrics []ga4.Ecomm
 	return nil
 }
 
-// SaveGA4RevenueBySource saves or updates GA4 revenue by source metrics.
-func (s *Store) SaveGA4RevenueBySource(ctx context.Context, metrics []ga4.RevenueSourceMetrics) error {
-	if len(metrics) == 0 {
-		return nil
-	}
-	cols := []string{"date", "source", "medium", "campaign", "sessions", "revenue", "purchases"}
-	updCols := []string{"sessions", "revenue", "purchases"}
-	args := make([][]any, 0, len(metrics))
-	for _, m := range metrics {
-		args = append(args, []any{
-			m.Date.Format("2006-01-02"),
-			m.Source, m.Medium, m.Campaign, m.Sessions, m.Revenue.String(), m.Purchases,
-		})
-	}
-	if err := storeutil.BulkUpsert(ctx, s.DB, "ga4_revenue_by_source", cols, updCols, args); err != nil {
-		return fmt.Errorf("save ga4 revenue by source: %w", err)
-	}
-	return nil
-}
-
 // SaveGA4ProductConversion saves or updates GA4 product conversion metrics.
+//
+// TOMBSTONE (analytics-v2 task 11): ga4_product_conversion currently has NO readers. Unlike the
+// removed ga4_revenue_by_source (whose attribution was duplicated by bq_campaign_attribution +
+// settled ROAS), this is the ONLY per-product view→cart→purchase funnel we collect (the BQ
+// bq_add_to_cart_rate covers only view→cart), so it is kept as a candidate to wire into a
+// product-conversion view rather than dropped. Revisit next wave: either surface it or stop writing it.
 func (s *Store) SaveGA4ProductConversion(ctx context.Context, metrics []ga4.ProductConversionMetrics) error {
 	if len(metrics) == 0 {
 		return nil

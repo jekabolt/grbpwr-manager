@@ -614,7 +614,6 @@ type (
 		SaveGA4ProductPageMetrics(ctx context.Context, metrics []ga4.ProductPageMetrics) error
 		SaveGA4CountryMetrics(ctx context.Context, metrics []ga4.CountryMetrics) error
 		SaveGA4EcommerceMetrics(ctx context.Context, metrics []ga4.EcommerceMetrics) error
-		SaveGA4RevenueBySource(ctx context.Context, metrics []ga4.RevenueSourceMetrics) error
 		SaveGA4ProductConversion(ctx context.Context, metrics []ga4.ProductConversionMetrics) error
 		GetGA4DailyMetrics(ctx context.Context, from, to time.Time) ([]ga4.DailyMetrics, error)
 		GetGA4ProductPageMetrics(ctx context.Context, from, to time.Time, limit int) ([]entity.ProductViewMetric, error)
