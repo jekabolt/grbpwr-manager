@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/config"
+	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -21,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
+	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
@@ -53,6 +55,7 @@ type App struct {
 	b    dependency.FileStore
 	ma   dependency.Mailer
 	oc   *ordercleanup.Worker
+	dsw  *deliverysync.Worker
 	sc   *storefrontcleanup.Worker
 	tm   *tiermanagement.Worker
 	om   *opexmaterialize.Worker
@@ -238,6 +241,18 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// AfterShip tracker for the real delivery signal; a disabled no-op when no API key is
+	// configured (delivery then falls back entirely to the per-carrier timer safety net). The
+	// same tracker instance is shared with the webhook handler below.
+	tracker := aftership.New(&a.c.AfterShip)
+	a.dsw = deliverysync.New(&a.c.DeliverySync, a.db, tracker, a.ma)
+	if err = a.dsw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start delivery sync worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
 	// Revalidation (Vercel ISR) is a non-critical, best-effort cache-freshness
 	// side effect. If its client can't be constructed, log and continue with a
 	// no-op revalidator instead of crash-looping the whole process — the
@@ -360,6 +375,17 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Default().InfoContext(ctx, "stripe webhook handler disabled (no signing secret configured)")
 	}
 
+	// AfterShip webhook: OPTIONAL real-time delivery confirmation. Mounted only when a signing
+	// secret is configured; the delivery-sync worker's AfterShip poll reconciles anything the
+	// webhook misses, and the per-carrier timer is the final safety net — so a blank secret still
+	// auto-delivers, just without the immediate push.
+	if aftershipWebhook := aftership.NewWebhookHandler(a.c.AfterShip.WebhookSecret, a.db, a.ma); aftershipWebhook.Enabled() {
+		a.hs.SetAftershipWebhookHandler(aftershipWebhook)
+		slog.Default().InfoContext(ctx, "aftership webhook handler enabled")
+	} else {
+		slog.Default().InfoContext(ctx, "aftership webhook handler disabled (no signing secret configured)")
+	}
+
 	// Operational status registry for the admin-gated GET /statusz endpoint.
 	// Each worker implements health.Reporter (records last-success at the end of a
 	// clean tick); the store provides DB pool stats; the GA4/BQ clients expose
@@ -440,6 +466,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.oc != nil {
 		_ = a.oc.Stop()
 	}
+	if a.dsw != nil {
+		_ = a.dsw.Stop()
+	}
 	if a.sc != nil {
 		_ = a.sc.Stop()
 	}
@@ -513,6 +542,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.oc != nil {
 		addWorker(a.oc)
+	}
+	if a.dsw != nil {
+		addWorker(a.dsw)
 	}
 	if a.sc != nil {
 		addWorker(a.sc)

@@ -57,14 +57,16 @@ func (s *Store) SetShipmentCarrierAllowance(ctx context.Context, carrier string,
 func (s *Store) AddShipmentCarrier(ctx context.Context, carrier *entity.ShipmentCarrierInsert, prices map[string]decimal.Decimal, allowedRegions []string) (int, error) {
 	var carrierId int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `INSERT INTO shipment_carrier (carrier, tracking_url, allowed, description, expected_delivery_time)
-			VALUES (:carrier, :trackingUrl, :allowed, :description, :expectedDeliveryTime)`
+		query := `INSERT INTO shipment_carrier (carrier, tracking_url, allowed, description, expected_delivery_time, aftership_slug, auto_deliver_after_hours)
+			VALUES (:carrier, :trackingUrl, :allowed, :description, :expectedDeliveryTime, :aftershipSlug, :autoDeliverAfterHours)`
 		id, err := storeutil.ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
-			"carrier":              carrier.Carrier,
-			"trackingUrl":          carrier.TrackingURL,
-			"allowed":              carrier.Allowed,
-			"description":          carrier.Description,
-			"expectedDeliveryTime": carrier.ExpectedDeliveryTime,
+			"carrier":               carrier.Carrier,
+			"trackingUrl":           carrier.TrackingURL,
+			"allowed":               carrier.Allowed,
+			"description":           carrier.Description,
+			"expectedDeliveryTime":  carrier.ExpectedDeliveryTime,
+			"aftershipSlug":         carrier.AftershipSlug,
+			"autoDeliverAfterHours": carrier.AutoDeliverAfterHours,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to insert shipment carrier: %w", err)
@@ -111,14 +113,16 @@ func (s *Store) AddShipmentCarrier(ctx context.Context, carrier *entity.Shipment
 // UpdateShipmentCarrier updates an existing shipment carrier, replacing prices and regions.
 func (s *Store) UpdateShipmentCarrier(ctx context.Context, id int, carrier *entity.ShipmentCarrierInsert, prices map[string]decimal.Decimal, allowedRegions []string) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		query := `UPDATE shipment_carrier SET carrier = :carrier, tracking_url = :trackingUrl, allowed = :allowed, description = :description, expected_delivery_time = :expectedDeliveryTime WHERE id = :id`
+		query := `UPDATE shipment_carrier SET carrier = :carrier, tracking_url = :trackingUrl, allowed = :allowed, description = :description, expected_delivery_time = :expectedDeliveryTime, aftership_slug = :aftershipSlug, auto_deliver_after_hours = :autoDeliverAfterHours WHERE id = :id`
 		if err := storeutil.ExecNamed(ctx, rep.DB(), query, map[string]any{
-			"id":                   id,
-			"carrier":              carrier.Carrier,
-			"trackingUrl":          carrier.TrackingURL,
-			"allowed":              carrier.Allowed,
-			"description":          carrier.Description,
-			"expectedDeliveryTime": carrier.ExpectedDeliveryTime,
+			"id":                    id,
+			"carrier":               carrier.Carrier,
+			"trackingUrl":           carrier.TrackingURL,
+			"allowed":               carrier.Allowed,
+			"description":           carrier.Description,
+			"expectedDeliveryTime":  carrier.ExpectedDeliveryTime,
+			"aftershipSlug":         carrier.AftershipSlug,
+			"autoDeliverAfterHours": carrier.AutoDeliverAfterHours,
 		}); err != nil {
 			return fmt.Errorf("failed to update shipment carrier: %w", err)
 		}
@@ -456,7 +460,7 @@ func getComplimentaryShippingPrices(ctx context.Context, db dependency.DB) (map[
 
 // getShipmentCarriers fetches all shipment carriers with prices and regions.
 func getShipmentCarriers(ctx context.Context, db dependency.DB) ([]entity.ShipmentCarrier, error) {
-	query := `SELECT id, carrier, tracking_url, allowed, description, expected_delivery_time FROM shipment_carrier`
+	query := `SELECT id, carrier, tracking_url, allowed, description, expected_delivery_time, aftership_slug, auto_deliver_after_hours FROM shipment_carrier`
 	shipmentCarriers, err := storeutil.QueryListNamed[entity.ShipmentCarrier](ctx, db, query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("can't get ShipmentCarrier by id: %w", err)

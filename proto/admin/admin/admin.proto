@@ -2420,6 +2420,8 @@ message AddShipmentCarrierRequest {
   string description = 5;
   repeated common.ShippingRegion allowed_regions = 6; // empty = global
   bool allowed = 7;
+  string aftership_slug = 8; // AfterShip courier slug (empty = no tracking API; timer-only auto-deliver)
+  int32 auto_deliver_after_hours = 9; // timer safety-net window in hours (0 = server default)
 }
 
 message AddShipmentCarrierResponse {
@@ -2435,6 +2437,8 @@ message UpdateShipmentCarrierRequest {
   string description = 6;
   repeated common.ShippingRegion allowed_regions = 7;
   bool allowed = 8;
+  string aftership_slug = 9; // AfterShip courier slug (empty = no tracking API; timer-only auto-deliver)
+  int32 auto_deliver_after_hours = 10; // timer safety-net window in hours (0 = server default)
 }
 
 message UpdateShipmentCarrierResponse {}

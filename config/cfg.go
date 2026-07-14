@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4mp"
@@ -12,6 +13,7 @@ import (
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
@@ -61,6 +63,8 @@ type Config struct {
 	Bucket            bucket.Config            `mapstructure:"bucket"`
 	Mailer            mail.Config              `mapstructure:"mailer"`
 	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
+	DeliverySync      deliverysync.Config      `mapstructure:"delivery_sync"`
+	AfterShip         aftership.Config         `mapstructure:"aftership"`
 	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
@@ -297,6 +301,14 @@ func bindEnvVars() {
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")
 	viper.BindEnv("order_cleanup.placed_threshold", "ORDER_CLEANUP_PLACED_THRESHOLD")
+
+	// Delivery sync (shipped -> delivered via AfterShip poll + per-carrier timer safety net)
+	viper.BindEnv("delivery_sync.worker_interval", "DELIVERY_SYNC_WORKER_INTERVAL")
+	viper.BindEnv("delivery_sync.fallback_default", "DELIVERY_SYNC_FALLBACK_DEFAULT")
+
+	// AfterShip tracking (real delivery signal)
+	viper.BindEnv("aftership.api_key", "AFTERSHIP_API_KEY")
+	viper.BindEnv("aftership.webhook_secret", "AFTERSHIP_WEBHOOK_SECRET")
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
