@@ -259,6 +259,16 @@ type ShipmentToAutoDeliver struct {
 // are configured, so callers can surface a clear "labels not configured" state.
 var ErrLabelsDisabled = fmt.Errorf("shipping label provider is disabled (no api keys configured)")
 
+// CarrierValidationError wraps a 4xx validation rejection from the carrier (e.g. an invalid
+// destination postal code, or missing HS code). Detail is the carrier's own human-facing message,
+// which is safe operational data (a field name + reason, not customer PII) — the handler surfaces it
+// to the operator as FailedPrecondition so a bad address can be fixed, rather than a generic 500.
+type CarrierValidationError struct {
+	Detail string
+}
+
+func (e *CarrierValidationError) Error() string { return e.Detail }
+
 // LabelAddress is one endpoint of a shipping label. CountryISO2 is an ISO 3166-1 alpha-2 code
 // (Sendcloud requires alpha-2). Residential is informational (Sendcloud has no address type).
 type LabelAddress struct {
