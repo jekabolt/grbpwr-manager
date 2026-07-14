@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // ga4CacheWindow is how much history GA4's cache holds. A metrics period longer than this has
@@ -72,3 +73,33 @@ func demandCaveat(ga4WindowOK bool, sessions int) string {
 }
 
 func round2f(x float64) float64 { return math.Round(x*100) / 100 }
+
+// applyGeographyGrowth fills each current-period country row's compare value/count and period-over-
+// period revenue growth (task 10) from the compare-period breakdown, so the frontend gets a ready
+// growth rate instead of dividing decimal strings itself. A country absent from the compare period, or
+// with zero compare-period revenue, keeps ChangePct 0 and no CompareValue — the frontend reads
+// compare_count == 0 as a genuinely new country (infinite growth), not a flat one. Mutates current in
+// place; a no-op without a compare period. Pure (no I/O) so it is unit-tested directly.
+func applyGeographyGrowth(current, compare []entity.GeographyMetric) {
+	if len(compare) == 0 {
+		return
+	}
+	byCountry := make(map[string]entity.GeographyMetric, len(compare))
+	for _, c := range compare {
+		byCountry[c.Country] = c
+	}
+	for i := range current {
+		c, ok := byCountry[current[i].Country]
+		if !ok {
+			continue
+		}
+		cv := c.Value
+		current[i].CompareValue = &cv
+		cc := c.Count
+		current[i].CompareCount = &cc
+		if c.Value.GreaterThan(decimal.Zero) {
+			current[i].ChangePct = current[i].Value.Sub(c.Value).Div(c.Value).
+				Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+		}
+	}
+}

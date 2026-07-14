@@ -315,6 +315,7 @@ func geographyMetricsToPb(list []entity.GeographyMetric) []*pb_admin.GeographyMe
 		if g.AvgOrderValue != nil {
 			pb[i].AvgOrderValue = &decimal.Decimal{Value: g.AvgOrderValue.String()}
 		}
+		pb[i].ChangePct = g.ChangePct
 	}
 	return pb
 }

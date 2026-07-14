@@ -482,6 +482,16 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get geography revenue by country", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
 		}
+		// Growth rate per country (task 10): with a compare period, fold in the prior-period revenue so
+		// each row carries a server-computed change_pct (and a "new country" signal via compare_count 0).
+		if !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero() {
+			cmp, err := s.repo.Metrics().GetRevenueByCountry(ctx, comparePeriod.From, comparePeriod.To)
+			if err != nil {
+				slog.Default().ErrorContext(ctx, "can't get geography compare revenue", slog.String("err", err.Error()))
+				return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+			}
+			applyGeographyGrowth(byCountry, cmp)
+		}
 		sessions, err := s.repo.GA4Data().GetGA4SessionsByCountry(ctx, from, to, 50)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't get geography sessions by country", slog.String("err", err.Error()))

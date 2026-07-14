@@ -1959,6 +1959,11 @@ message GeographyMetric {
   int32 compare_count = 7;
   double share_pct = 8; // percentage of total revenue for this geography
   google.type.Decimal avg_order_value = 9; // AOV for this geography
+  // analytics-v2 task 10 (scaling): period-over-period revenue growth, (value − compare)/compare × 100,
+  // computed server-side so the frontend needn't divide decimal strings. Only set with a compare
+  // period; 0 when the country had no compare-period revenue — read compare_count == 0 as "new country"
+  // (an infinite growth rate) rather than as flat.
+  double change_pct = 10;
 }
 
 message RegionMetric {

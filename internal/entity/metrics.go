@@ -228,6 +228,7 @@ type GeographyMetric struct {
 	CompareCount  *int             // optional, for comparison period
 	SharePct      *float64         // percentage of total revenue
 	AvgOrderValue *decimal.Decimal // average order value for this geography
+	ChangePct     float64          // task 10: period-over-period revenue growth %, set only with a compare period
 }
 
 // RegionMetric aggregates by shipping region (AFRICA, AMERICAS, EUROPE, etc.)

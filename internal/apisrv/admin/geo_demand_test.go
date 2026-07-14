@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,6 +63,39 @@ func TestMergeCountryDemandWindowExceeded(t *testing.T) {
 	require.Equal(t, 0, rows[0].Sessions, "sessions unavailable beyond the GA4 window")
 	require.Zero(t, rows[0].ConversionRatePct)
 	require.Contains(t, rows[0].Caveat, "90-day")
+}
+
+// TestApplyGeographyGrowth checks the per-country growth rate: a country present in both periods gets
+// (value − compare)/compare × 100; a country new this period keeps ChangePct 0 with no CompareValue so
+// the frontend can detect it via compare_count.
+func TestApplyGeographyGrowth(t *testing.T) {
+	d := func(n int64) decimal.Decimal { return decimal.NewFromInt(n) }
+	current := []entity.GeographyMetric{
+		{Country: "DE", Value: d(150), Count: 3}, // was 100 → +50%
+		{Country: "US", Value: d(80), Count: 2},  // new country (absent from compare)
+	}
+	compare := []entity.GeographyMetric{
+		{Country: "DE", Value: d(100), Count: 2},
+	}
+	applyGeographyGrowth(current, compare)
+
+	require.Equal(t, 50.0, current[0].ChangePct, "DE 100→150 = +50%")
+	require.NotNil(t, current[0].CompareValue)
+	require.Equal(t, "100", current[0].CompareValue.String())
+	require.NotNil(t, current[0].CompareCount)
+	require.Equal(t, 2, *current[0].CompareCount)
+
+	require.Zero(t, current[1].ChangePct, "a new country has no growth rate")
+	require.Nil(t, current[1].CompareValue, "new country has no compare value (frontend: new country)")
+	require.Nil(t, current[1].CompareCount)
+}
+
+// TestApplyGeographyGrowthNoCompare is a no-op when there is no compare period.
+func TestApplyGeographyGrowthNoCompare(t *testing.T) {
+	current := []entity.GeographyMetric{{Country: "DE", Value: decimal.NewFromInt(150)}}
+	applyGeographyGrowth(current, nil)
+	require.Zero(t, current[0].ChangePct)
+	require.Nil(t, current[0].CompareValue)
 }
 
 // TestCountryNameToISO2 checks the dictionary resolves the names GA4 emits, including the aliases the
