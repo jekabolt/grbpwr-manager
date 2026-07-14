@@ -581,6 +581,14 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.RfmAnalysis = dto.ConvertRFMAnalysisToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_ORDER_VALUE_BANDS) {
+		items, err := s.repo.Metrics().GetOrderValueBands(ctx, from, to)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't get order value bands")
+		}
+		resp.OrderValueBands = dto.ConvertOrderValueBandsToPb(items)
+	}
+
 	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
 	// Commerce, traffic and email metrics remain visible.
 	if read, _ := s.costingAccess(ctx); !read {

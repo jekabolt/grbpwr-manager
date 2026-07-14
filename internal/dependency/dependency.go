@@ -347,6 +347,8 @@ type (
 		GetRevenueByCountry(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error)
 		// GetCustomerSegmentation returns AOV-based customer segmentation (high/medium/low tiers).
 		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
+		// GetOrderValueBands buckets net-revenue orders into fixed order-value bands (upsell view).
+		GetOrderValueBands(ctx context.Context, from, to time.Time) ([]entity.OrderValueBandRow, error)
 		// GetRFMAnalysis returns RFM (Recency, Frequency, Monetary) customer segmentation.
 		GetRFMAnalysis(ctx context.Context, from, to time.Time) ([]entity.RFMSegmentRow, error)
 		// GetMarginByStyle rolls the per-SKU margin breakdown up to the style (tech card) via

@@ -409,6 +409,27 @@ func categoryMetricsToPb(list []entity.CategoryMetric) []*pb_admin.CategoryMetri
 	return pb
 }
 
+// ConvertOrderValueBandsToPb maps the fixed order-value histogram (analytics-v2 task 03) to the wire.
+func ConvertOrderValueBandsToPb(list []entity.OrderValueBandRow) []*pb_admin.OrderValueBandRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.OrderValueBandRow, len(list))
+	for i, b := range list {
+		pb[i] = &pb_admin.OrderValueBandRow{
+			Label:           b.Label,
+			From:            &decimal.Decimal{Value: b.From.String()},
+			To:              &decimal.Decimal{Value: b.To.String()},
+			Orders:          int32(b.Orders),
+			Revenue:         &decimal.Decimal{Value: b.Revenue.String()},
+			OrdersSharePct:  b.OrdersSharePct,
+			RevenueSharePct: b.RevenueSharePct,
+			AvgOrderValue:   &decimal.Decimal{Value: b.AvgOrderValue.String()},
+		}
+	}
+	return pb
+}
+
 func crossSellPairsToPb(list []entity.CrossSellPair) []*pb_admin.CrossSellPair {
 	if len(list) == 0 {
 		return nil

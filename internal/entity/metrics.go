@@ -277,6 +277,19 @@ type PeakDay struct {
 	Orders  int             // net-revenue orders placed that day
 }
 
+// OrderValueBandRow is one fixed order-value bucket (net-revenue basis) with its order/revenue
+// shares and in-band AOV. Bands are fixed EUR ranges (not quantile) so they compare across periods.
+type OrderValueBandRow struct {
+	Label           string
+	From            decimal.Decimal
+	To              decimal.Decimal // zero = no upper bound
+	Orders          int
+	Revenue         decimal.Decimal
+	OrdersSharePct  float64
+	RevenueSharePct float64
+	AvgOrderValue   decimal.Decimal
+}
+
 // NewVsReturningSplit splits a period's net revenue, orders and AOV by whether the buyer's
 // first-ever order (any status) falls in the period. new+returning revenue reconciles with
 // headline Revenue. Daily series carry revenue in Value and order count in Count.

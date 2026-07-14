@@ -1497,6 +1497,7 @@ enum MetricsSection {
   METRICS_SECTION_MARGIN_BY_STYLE = 46; // task 15: margin rolled up to tech-card style
   METRICS_SECTION_COGS_STRUCTURE = 47; // task 15: cost-of-goods-sold component structure
   METRICS_SECTION_INVENTORY_VALUATION = 48; // task 16: cost frozen in stock + dead stock + write-offs
+  METRICS_SECTION_ORDER_VALUE_BANDS = 49; // analytics-v2 task 03: order-value distribution (upsell)
 }
 
 message GetMetricsRequest {
@@ -1559,6 +1560,22 @@ message GetMetricsResponse {
   repeated MarginByStyleRow margin_by_style = 49; // task 15
   repeated CogsStructureRow cogs_structure = 50; // task 15
   InventoryValuation inventory_valuation = 51; // task 16
+  repeated OrderValueBandRow order_value_bands = 52; // analytics-v2 task 03
+}
+
+// OrderValueBandRow is one fixed order-value bucket: how many orders and how much net revenue
+// fall in [from, to) EUR. Bands are fixed (not quantile) so they are comparable across periods.
+// Order value is net of VAT and after discounts/refunds — consistent with AOV, so band edges will
+// not line up with on-site sticker prices.
+message OrderValueBandRow {
+  string label = 1; // e.g. "€0–50", "€500+"
+  google.type.Decimal from = 2; // inclusive lower edge (base currency)
+  google.type.Decimal to = 3; // exclusive upper edge; 0 = no upper bound
+  int32 orders = 4;
+  google.type.Decimal revenue = 5; // net revenue of orders in this band
+  double orders_share_pct = 6;
+  double revenue_share_pct = 7;
+  google.type.Decimal avg_order_value = 8;
 }
 
 // --- Dashboard (decision-grade summary) ---
