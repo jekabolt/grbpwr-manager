@@ -73,22 +73,75 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 		ClientSecret:                     p.ClientSecret.String,
 		IsTransactionDone:                p.IsTransactionDone,
 		ExpiredAt:                        timestamppb.New(p.ExpiredAt.Time),
+		PaymentMethodType:                p.PaymentMethodType.String,
+		ReceiptUrl:                       p.ReceiptURL.String,
 	}, nil
+}
+
+// stripeDashboardBase is the Stripe dashboard payment path; the "/test" segment is inserted
+// for test-mode payments so the deep link opens the right account view.
+const (
+	stripeDashboardLive = "https://dashboard.stripe.com/payments/"
+	stripeDashboardTest = "https://dashboard.stripe.com/test/payments/"
+)
+
+// ConvertToOrderStripeDetails builds the admin-only settlement/Stripe view of an order from
+// the captured payment facts. It is attached to admin responses only (never to the shared
+// customer-facing order), so EUR revenue and the Stripe fee stay out of the storefront.
+// Returns nil when the order carries no Stripe settlement/detail at all (non-Stripe or
+// pre-feature), so the admin UI can simply hide the block.
+func ConvertToOrderStripeDetails(o *entity.OrderFull) *pb_common.OrderStripeDetails {
+	if o == nil {
+		return nil
+	}
+	p := o.Payment.PaymentInsert
+	hasSettled := o.Order.TotalSettledBase.Valid
+	hasDetail := p.TransactionID.Valid || p.CardBrand.Valid || p.ReceiptURL.Valid ||
+		p.PaymentMethodType.Valid || p.StripeRiskLevel.Valid
+	if !hasSettled && !hasDetail {
+		return nil
+	}
+
+	d := &pb_common.OrderStripeDetails{
+		CardBrand: p.CardBrand.String,
+		CardLast4: p.CardLast4.String,
+		RiskLevel: p.StripeRiskLevel.String,
+	}
+	if o.Order.TotalSettledBase.Valid {
+		settled := o.Order.TotalSettledBase.Decimal
+		d.TotalSettledBase = &pb_decimal.Decimal{Value: settled.String()}
+		if o.Order.PaymentFee.Valid {
+			fee := o.Order.PaymentFee.Decimal
+			d.PaymentFee = &pb_decimal.Decimal{Value: fee.String()}
+			d.NetSettledBase = &pb_decimal.Decimal{Value: settled.Sub(fee).String()}
+		}
+	}
+	if p.StripeExchangeRate.Valid {
+		d.StripeExchangeRate = &pb_decimal.Decimal{Value: p.StripeExchangeRate.Decimal.String()}
+	}
+	if p.TransactionID.Valid && p.TransactionID.String != "" {
+		base := stripeDashboardLive
+		if pm, ok := cache.GetPaymentMethodById(p.PaymentMethodID); ok && pm.Method.Name == entity.CARD_TEST {
+			base = stripeDashboardTest
+		}
+		d.StripeDashboardUrl = base + p.TransactionID.String
+	}
+	return d
 }
 
 // TODO:
 var paymentMethodToCurrency = map[pb_common.PaymentMethodNameEnum]string{
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:         "EUR",
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:    "EUR",
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE:  "EUR",
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:          "EUR",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE: "EUR",
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:         "EUR",
 }
 
 var pbPaymentMethodToEntity = map[pb_common.PaymentMethodNameEnum]entity.PaymentMethodName{
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:         entity.CARD,
 	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:    entity.CARD_TEST,
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE:  entity.BANK_INVOICE,
-	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:          entity.CASH,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE: entity.BANK_INVOICE,
+	pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:         entity.CASH,
 }
 
 func ConvertPaymentMethodToCurrency(pbPaymentMethod pb_common.PaymentMethodNameEnum) string {

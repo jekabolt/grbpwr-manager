@@ -80,6 +80,10 @@ type Order struct {
 	// snapshot, not a settlement). NULL when not captured (pre-feature, non-Stripe,
 	// or unpaid), in which case metrics fall back to the product_price reconstruction.
 	TotalSettledBase decimal.NullDecimal `db:"total_settled_base"`
+	// PaymentFee is the Stripe processing fee for this order in the base currency (EUR),
+	// taken from the same charge balance transaction as TotalSettledBase. A real
+	// contribution-margin cost; NULL when not captured (pre-feature / non-Stripe / unpaid).
+	PaymentFee decimal.NullDecimal `db:"payment_fee"`
 	// VatRatePct is the destination-country VAT rate (percent) resolved from the
 	// shipping country and snapshotted at order time, so historical net revenue is
 	// reproducible if a rate later changes. NULL for pre-feature orders (metrics treat

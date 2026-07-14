@@ -59,8 +59,9 @@ func (s *Server) GetFulfillmentCard(ctx context.Context, req *pb_admin.GetFulfil
 		return nil, status.Errorf(codes.Internal, "can't get fulfillment card")
 	}
 	return &pb_admin.GetFulfillmentCardResponse{
-		Order:      pbOrder,
-		Annotation: dto.ConvertEntityOrderFulfillmentToPb(req.OrderUuid, ann),
+		Order:         pbOrder,
+		Annotation:    dto.ConvertEntityOrderFulfillmentToPb(req.OrderUuid, ann),
+		StripeDetails: dto.ConvertToOrderStripeDetails(orderFull),
 	}, nil
 }
 

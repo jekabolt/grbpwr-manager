@@ -138,6 +138,7 @@ type (
 		AssociatePaymentIntentWithOrder(ctx context.Context, orderUUID string, paymentIntentId string) error
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error
+		UpdatePaymentStripeDetails(ctx context.Context, orderUUID string, d entity.StripePaymentDetails) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		SetShipmentActualCost(ctx context.Context, orderUUID string, actualCost, returnShippingCost decimal.NullDecimal) error
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
