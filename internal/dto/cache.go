@@ -155,14 +155,20 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 		if s.ExpectedDeliveryTime.Valid {
 			expectedDeliveryTime = s.ExpectedDeliveryTime.String
 		}
+		aftershipSlug := ""
+		if s.AftershipSlug.Valid {
+			aftershipSlug = s.AftershipSlug.String
+		}
 		commonDict.ShipmentCarriers = append(commonDict.ShipmentCarriers, &pb_common.ShipmentCarrier{
 			Id: int32(s.Id),
 			ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
-				Carrier:              s.Carrier,
-				Allowed:              s.Allowed,
-				Description:          s.Description,
-				TrackingUrl:          s.TrackingURL,
-				ExpectedDeliveryTime: expectedDeliveryTime,
+				Carrier:               s.Carrier,
+				Allowed:               s.Allowed,
+				Description:           s.Description,
+				TrackingUrl:           s.TrackingURL,
+				ExpectedDeliveryTime:  expectedDeliveryTime,
+				AftershipSlug:         aftershipSlug,
+				AutoDeliverAfterHours: int32(s.AutoDeliverAfterHours),
 			},
 			Prices:         pbPrices,
 			AllowedRegions: pbRegions,

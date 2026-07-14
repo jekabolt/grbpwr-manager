@@ -27,6 +27,12 @@ message ShipmentCarrierInsert {
   string description = 3;
   string tracking_url = 4;
   string expected_delivery_time = 5;
+  // aftership_slug is the AfterShip courier slug used to auto-track this carrier's shipments.
+  // Empty = the carrier has no tracking API, so its orders are auto-delivered only by the timer.
+  string aftership_slug = 6;
+  // auto_deliver_after_hours is the timer safety-net window: hours after shipment to silently mark
+  // an order delivered when no real delivery signal arrived. 0 = use the server default (14 days).
+  int32 auto_deliver_after_hours = 7;
 }
 
 message ShipmentCarrier {

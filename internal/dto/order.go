@@ -501,7 +501,8 @@ var pbRegionToEntity = map[pb_common.ShippingRegion]string{
 }
 
 // ConvertShipmentCarrierRequestToEntity converts request fields to entity.ShipmentCarrierInsert
-func ConvertShipmentCarrierRequestToEntity(carrier, trackingURL, description, expectedDeliveryTime string, allowed bool) entity.ShipmentCarrierInsert {
+func ConvertShipmentCarrierRequestToEntity(carrier, trackingURL, description, expectedDeliveryTime, aftershipSlug string, autoDeliverAfterHours int32, allowed bool) entity.ShipmentCarrierInsert {
+	slug := strings.TrimSpace(aftershipSlug)
 	return entity.ShipmentCarrierInsert{
 		Carrier:     strings.TrimSpace(carrier),
 		TrackingURL: trackingURL,
@@ -511,6 +512,11 @@ func ConvertShipmentCarrierRequestToEntity(carrier, trackingURL, description, ex
 			String: expectedDeliveryTime,
 			Valid:  expectedDeliveryTime != "",
 		},
+		AftershipSlug: sql.NullString{
+			String: slug,
+			Valid:  slug != "",
+		},
+		AutoDeliverAfterHours: int(autoDeliverAfterHours),
 	}
 }
 
@@ -556,14 +562,20 @@ func ConvertEntityShipmentCarrierToPbShipmentCarrier(s *entity.ShipmentCarrier) 
 	if s.ExpectedDeliveryTime.Valid {
 		expectedDeliveryTime = s.ExpectedDeliveryTime.String
 	}
+	aftershipSlug := ""
+	if s.AftershipSlug.Valid {
+		aftershipSlug = s.AftershipSlug.String
+	}
 	return &pb_common.ShipmentCarrier{
 		Id: int32(s.Id),
 		ShipmentCarrier: &pb_common.ShipmentCarrierInsert{
-			Carrier:              s.Carrier,
-			Allowed:              s.Allowed,
-			Description:          s.Description,
-			TrackingUrl:          s.TrackingURL,
-			ExpectedDeliveryTime: expectedDeliveryTime,
+			Carrier:               s.Carrier,
+			Allowed:               s.Allowed,
+			Description:           s.Description,
+			TrackingUrl:           s.TrackingURL,
+			ExpectedDeliveryTime:  expectedDeliveryTime,
+			AftershipSlug:         aftershipSlug,
+			AutoDeliverAfterHours: int32(s.AutoDeliverAfterHours),
 		},
 		Prices:         pbPrices,
 		AllowedRegions: pbRegions,

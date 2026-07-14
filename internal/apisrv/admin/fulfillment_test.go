@@ -128,11 +128,19 @@ func TestMarkFulfillmentDelivered(t *testing.T) {
 		t.Errorf("missing uuid: want InvalidArgument, got %v", err)
 	}
 
+	// Happy path: the real delivered transition happens and, because it transitioned, the
+	// delivered email (with the review link) is sent.
 	repo2 := mocks.NewMockRepository(t)
 	order := mocks.NewMockOrder(t)
+	mailer := mocks.NewMockMailer(t)
 	repo2.EXPECT().Order().Return(order)
-	order.EXPECT().DeliveredOrder(mock.Anything, "u2").Return(nil)
-	s2 := &Server{repo: repo2}
+	order.EXPECT().DeliverOrderWithSource(mock.Anything, "u2", mock.Anything, mock.Anything).Return(true, nil)
+	order.EXPECT().GetOrderFullByUUID(mock.Anything, "u2").Return(&entity.OrderFull{
+		Order: entity.Order{UUID: "u2", Currency: "EUR"},
+		Buyer: entity.Buyer{BuyerInsert: entity.BuyerInsert{Email: "buyer@example.com", FirstName: "Test"}},
+	}, nil)
+	mailer.EXPECT().SendOrderDelivered(mock.Anything, mock.Anything, "buyer@example.com", mock.Anything).Return(nil)
+	s2 := &Server{repo: repo2, mailer: mailer}
 	if _, err := s2.MarkFulfillmentDelivered(context.Background(), &pb_admin.MarkFulfillmentDeliveredRequest{OrderUuid: "u2"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
