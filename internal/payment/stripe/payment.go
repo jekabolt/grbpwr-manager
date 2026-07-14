@@ -310,10 +310,13 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 //     FX rate and Radar risk level, all read from the charge (present as soon as the PI
 //     succeeds), so the admin can see and deep-link the payment without re-hitting Stripe.
 //
-// It never blocks fulfilment: when total_settled_base stays NULL (no balance transaction yet,
-// or a non-base settlement), revenue metrics fall back to the product_price reconstruction.
-// This is the single capture point for every confirmation path (webhook, expiry monitor, lazy
-// CheckForTransactions), so the payment method type is populated on all of them.
+// It never blocks fulfilment. When the balance transaction is not attached to the charge yet
+// (it lands a short window after payment_intent.succeeded), it schedules an async top-up
+// (topUpSettledBase) that fills total_settled_base/fee/FX in once Stripe attaches it; a
+// non-base settlement is left NULL and revenue metrics fall back to the product_price
+// reconstruction. This is the single capture point for every confirmation path (webhook,
+// expiry monitor, lazy CheckForTransactions), so the payment method type is populated on all
+// of them, and each runs capture once per order (only when the paid transition actually won).
 func (p *Processor) capturePaymentDetails(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) {
 	if !payment.ClientSecret.Valid || payment.ClientSecret.String == "" {
 		return
@@ -350,6 +353,7 @@ func (p *Processor) capturePaymentDetails(ctx context.Context, rep dependency.Re
 	// (and the FX rate) when the balance transaction is present and settles in the base ccy.
 	baseCurrency := cache.GetBaseCurrency()
 	var settledCaptured bool
+	var btMissing bool // balance transaction not attached to the charge yet (retryable)
 	var settledBase, paymentFee decimal.Decimal
 	if bt := ch.BalanceTransaction; bt != nil {
 		if strings.EqualFold(string(bt.Currency), baseCurrency) {
@@ -370,7 +374,8 @@ func (p *Processor) capturePaymentDetails(ctx context.Context, rep dependency.Re
 				slog.String("base_currency", baseCurrency))
 		}
 	} else {
-		slog.Default().WarnContext(ctx, "capture-payment: no balance transaction on charge yet; settled base left NULL",
+		btMissing = true
+		slog.Default().WarnContext(ctx, "capture-payment: no balance transaction on charge yet; scheduling settled top-up",
 			slog.String("orderUUID", orderUUID))
 	}
 
@@ -391,6 +396,101 @@ func (p *Processor) capturePaymentDetails(ctx context.Context, rep dependency.Re
 		slog.Bool("settled_captured", settledCaptured),
 		slog.String("amount_base", settledBase.String()),
 		slog.String("payment_fee_base", paymentFee.String()))
+
+	// The balance transaction attaches to the charge a short window after
+	// payment_intent.succeeded, so a confirmation that lands in that window sees it
+	// NULL. Retry in the background to fill in total_settled_base / fee / FX for THIS
+	// order rather than leaving it NULL forever (there is no periodic settled backfill).
+	// Only the "not attached yet" case is retryable; a currency mismatch is persistent.
+	if !settledCaptured && btMissing {
+		p.monWg.Add(1)
+		go p.topUpSettledBase(orderUUID, payment.ClientSecret.String)
+	}
+}
+
+// settledTopUpBackoff is the wait schedule between attempts to re-read the charge's
+// balance transaction after it was absent at confirmation (~4 min total, 5 reads).
+// The balance transaction normally attaches within seconds of payment_intent.succeeded;
+// this spans that window generously without hammering Stripe.
+var settledTopUpBackoff = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second}
+
+// topUpSettledBase fills in an order's settlement figures when the charge's balance
+// transaction was not yet attached at confirmation. It re-reads the PaymentIntent on
+// settledTopUpBackoff and, as soon as the balance transaction is present and settles in
+// the base currency, writes total_settled_base / payment_fee (via UpdateSettledBaseAndFee,
+// which also runs the loyalty reconcile) and the FX rate — exactly what capturePaymentDetails
+// would have written had the balance transaction been ready.
+//
+// Best-effort: it gives up after the backoff is exhausted (revenue metrics then fall back
+// to the product_price reconstruction) and on a persistent currency mismatch. It runs in
+// its own goroutine tracked by monWg and derives its context from monParentCtx, so shutdown
+// stops it and waits for it before the DB is closed; it uses p.rep (the root repository),
+// never a request/tx-scoped handle.
+func (p *Processor) topUpSettledBase(orderUUID, clientSecret string) {
+	defer p.monWg.Done()
+
+	ctx, cancel := context.WithCancel(p.monParentCtx)
+	defer cancel()
+
+	baseCurrency := cache.GetBaseCurrency()
+	for attempt, wait := range settledTopUpBackoff {
+		select {
+		case <-ctx.Done():
+			return // shutdown (or cancellation): stop before touching the DB
+		case <-time.After(wait):
+		}
+
+		pi, err := p.getPaymentIntentWithExpand(clientSecret, []string{"latest_charge.balance_transaction"})
+		if err != nil {
+			slog.Default().WarnContext(ctx, "settled top-up: can't fetch payment intent",
+				slog.String("orderUUID", orderUUID), slog.Int("attempt", attempt+1),
+				slog.String("err", err.Error()))
+			continue
+		}
+		ch := pi.LatestCharge
+		if ch == nil || ch.BalanceTransaction == nil {
+			continue // still not attached; try again on the next backoff step
+		}
+
+		bt := ch.BalanceTransaction
+		if !strings.EqualFold(string(bt.Currency), baseCurrency) {
+			// Settlement currency differs from base — a persistent condition a retry
+			// won't change (capture already logged the mismatch). Stop.
+			slog.Default().ErrorContext(ctx, "settled top-up: settlement currency != base currency; giving up",
+				slog.String("orderUUID", orderUUID),
+				slog.String("settlement_currency", string(bt.Currency)),
+				slog.String("base_currency", baseCurrency))
+			return
+		}
+
+		settledBase := AmountFromSmallestUnit(bt.Amount, baseCurrency)
+		// Stripe keeps the fee even on refunds, so this is the full fee actually paid.
+		paymentFee := AmountFromSmallestUnit(bt.Fee, baseCurrency)
+		if err := p.rep.Order().UpdateSettledBaseAndFee(ctx, orderUUID, settledBase, paymentFee); err != nil {
+			slog.Default().ErrorContext(ctx, "settled top-up: can't persist settled base and fee",
+				slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
+			return
+		}
+		if bt.ExchangeRate != 0 {
+			// Only the FX field is set; UpdatePaymentStripeDetails COALESCEs, so the card
+			// detail captured earlier is preserved (empty fields never blank it).
+			if err := p.rep.Order().UpdatePaymentStripeDetails(ctx, orderUUID, entity.StripePaymentDetails{
+				StripeExchangeRate: decimal.NullDecimal{Decimal: decimal.NewFromFloat(bt.ExchangeRate), Valid: true},
+			}); err != nil {
+				slog.Default().WarnContext(ctx, "settled top-up: can't persist FX rate",
+					slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
+			}
+		}
+		slog.Default().InfoContext(ctx, "settled base topped up after delayed balance transaction",
+			slog.String("orderUUID", orderUUID),
+			slog.Int("attempt", attempt+1),
+			slog.String("amount_base", settledBase.String()),
+			slog.String("payment_fee_base", paymentFee.String()))
+		return
+	}
+
+	slog.Default().WarnContext(ctx, "settled top-up: balance transaction still absent after all retries; total_settled_base left NULL",
+		slog.String("orderUUID", orderUUID))
 }
 
 // paymentMethodLabel returns the most specific label for how a charge was paid: the card
