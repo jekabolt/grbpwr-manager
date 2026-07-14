@@ -521,6 +521,31 @@ func (s *Store) SetPrimaryTechCard(ctx context.Context, productID, techCardID in
 		map[string]any{"id": productID, "tc": techCardID})
 }
 
+// SetProductCustoms sets a product's international-shipping customs data (HS code, ISO-3 country of
+// origin, declared description). Empty values clear the corresponding column (stored NULL).
+func (s *Store) SetProductCustoms(ctx context.Context, productID int, customs entity.ProductCustoms) error {
+	return storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE product SET hs_code = :hs, country_of_origin = :origin, customs_description = :descr WHERE id = :id`,
+		map[string]any{
+			"id":     productID,
+			"hs":     customs.HSCode,
+			"origin": customs.CountryOfOrigin,
+			"descr":  customs.CustomsDescription,
+		})
+}
+
+// GetProductCustoms returns a product's customs data. Returns sql.ErrNoRows if the product does
+// not exist.
+func (s *Store) GetProductCustoms(ctx context.Context, productID int) (*entity.ProductCustoms, error) {
+	c, err := storeutil.QueryNamedOne[entity.ProductCustoms](ctx, s.DB,
+		`SELECT hs_code, country_of_origin, customs_description FROM product WHERE id = :id`,
+		map[string]any{"id": productID})
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 // GetProductCostInfo returns the confidential COGS/provenance fields of a product (admin
 // surface only). Returns sql.ErrNoRows if the product does not exist.
 func (s *Store) GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error) {

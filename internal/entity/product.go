@@ -221,6 +221,15 @@ type ProductCostInfo struct {
 	PrimaryTechCardID   sql.NullInt32       `db:"primary_tech_card_id"`
 }
 
+// ProductCustoms carries the per-product customs data used to build an international shipping
+// label's customs declaration (AfterShip Shipping). All fields are optional; a product without
+// them ships domestically/intra-EU fine. CountryOfOrigin is ISO 3166-1 alpha-3.
+type ProductCustoms struct {
+	HSCode             sql.NullString `db:"hs_code"`
+	CountryOfOrigin    sql.NullString `db:"country_of_origin"`
+	CustomsDescription sql.NullString `db:"customs_description"`
+}
+
 type ProductMeasurementUpdate struct {
 	SizeId            int             `db:"size_id"`
 	MeasurementNameId int             `db:"measurement_name_id"`

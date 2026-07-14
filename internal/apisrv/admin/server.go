@@ -33,6 +33,11 @@ type Server struct {
 	re                dependency.RevalidationService
 	reservationMgr    dependency.StockReservationManager
 	ga4mp             *ga4mp.Client
+	// labelProvider generates carrier shipping labels (AfterShip Shipping); a disabled no-op
+	// when unconfigured, so GenerateShippingLabel reports labels-not-configured. shipFrom is the
+	// warehouse origin address (from config) stamped on every generated label.
+	labelProvider dependency.LabelProvider
+	shipFrom      entity.LabelAddress
 	// pwhash hashes passwords for admin-account management RPCs (create / reset).
 	pwhash *pwhash.PasswordHasher
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
@@ -61,6 +66,8 @@ func New(
 	reservationMgr dependency.StockReservationManager,
 	ga4mpClient *ga4mp.Client,
 	ph *pwhash.PasswordHasher,
+	labelProvider dependency.LabelProvider,
+	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
 ) *Server {
 	revalCtx, revalCancel := context.WithCancel(context.Background())
@@ -74,6 +81,8 @@ func New(
 		reservationMgr:    reservationMgr,
 		ga4mp:             ga4mpClient,
 		pwhash:            ph,
+		labelProvider:     labelProvider,
+		shipFrom:          shipFrom,
 		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
 		revalCtx:          revalCtx,
 		revalCancel:       revalCancel,

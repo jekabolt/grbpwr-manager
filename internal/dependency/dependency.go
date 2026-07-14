@@ -54,6 +54,10 @@ type (
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
 		GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error)
+		// SetProductCustoms sets a product's international-shipping customs data (HS code, ISO-3
+		// origin, declared description); GetProductCustoms reads it back.
+		SetProductCustoms(ctx context.Context, productID int, customs entity.ProductCustoms) error
+		GetProductCustoms(ctx context.Context, productID int) (*entity.ProductCustoms, error)
 		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
 		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
@@ -141,6 +145,15 @@ type (
 		UpdatePaymentStripeDetails(ctx context.Context, orderUUID string, d entity.StripePaymentDetails) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
 		SetShipmentActualCost(ctx context.Context, orderUUID string, actualCost, returnShippingCost decimal.NullDecimal) error
+		// SetShipmentLabel persists the carrier-generated shipping-label fields (Sendcloud)
+		// on an order's shipment; the tracking code and Shipped transition are written by
+		// SetTrackingNumber. GetOrderParcelItems returns each line's packaging weight/box (joined
+		// from the product's primary tech card) to pre-fill the label parcel with a manual override.
+		SetShipmentLabel(ctx context.Context, orderUUID string, label entity.ShipmentLabel) error
+		GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.OrderItemParcel, error)
+		// VoidShipmentLabel clears a generated label + tracking and reverts Shipped->Confirmed so
+		// the order can be re-shipped (the carrier-side cancel is done by the caller first).
+		VoidShipmentLabel(ctx context.Context, orderUUID string) error
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
@@ -863,6 +876,9 @@ type (
 		// UploadPatternPDF uploads a raw PDF cut pattern (выкройка) and returns its url and
 		// stored byte size. The file is kept out of the media library.
 		UploadPatternPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
+		// UploadLabelPDF durably stores a carrier shipping-label PDF (whose provider URL expires)
+		// and returns its CDN url and stored byte size. Kept out of the media library.
+		UploadLabelPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 		// DeleteObjects best-effort removes the S3 objects behind the given media URLs
@@ -883,6 +899,27 @@ type (
 	Tracker interface {
 		RegisterTracking(ctx context.Context, slug, trackingNumber string) error
 		GetTrackingStatus(ctx context.Context, slug, trackingNumber string) (entity.TrackingStatus, error)
+	}
+
+	// LabelProvider is an external shipping-label provider (Sendcloud). CreateLabel announces a
+	// shipment and returns the carrier tracking number + the decoded label PDF bytes (Sendcloud
+	// returns the label inline as base64). Behind an interface per the external-dependency
+	// convention; a disabled no-op impl (methods return entity.ErrLabelsDisabled) is used when no
+	// API keys are set, so callers fall back to manual tracking-number entry.
+	LabelProvider interface {
+		// Enabled reports whether the provider is configured (API keys present). When false the
+		// UI hides label generation and operators enter tracking numbers manually.
+		Enabled() bool
+		CreateLabel(ctx context.Context, req entity.LabelRequest) (*entity.LabelResult, error)
+		// GetShippingOptions fetches the shipping options (carrier + service + quote) available for a
+		// parcel, so an operator can pick one before generating. Returns entity.ErrLabelsDisabled when disabled.
+		GetShippingOptions(ctx context.Context, req entity.OptionsRequest) ([]entity.ShippingOption, error)
+		// VoidLabel cancels a previously announced parcel with the carrier (by Sendcloud parcel id)
+		// so it is no longer billable/usable. Returns entity.ErrLabelsDisabled when disabled.
+		VoidLabel(ctx context.Context, carrierShipmentID string) error
+		// SchedulePickup books a carrier pickup for the day (Sendcloud's end-of-day handover
+		// equivalent; v3 has no generic manifest API). Returns entity.ErrLabelsDisabled when disabled.
+		SchedulePickup(ctx context.Context, req entity.PickupRequest) (*entity.PickupResult, error)
 	}
 
 	Mailer interface {

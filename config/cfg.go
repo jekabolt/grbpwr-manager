@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
@@ -65,6 +66,7 @@ type Config struct {
 	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
 	DeliverySync      deliverysync.Config      `mapstructure:"delivery_sync"`
 	AfterShip         aftership.Config         `mapstructure:"aftership"`
+	ShippingLabel     shippinglabel.Config     `mapstructure:"shipping_label"`
 	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
@@ -309,6 +311,25 @@ func bindEnvVars() {
 	// AfterShip tracking (real delivery signal)
 	viper.BindEnv("aftership.api_key", "AFTERSHIP_API_KEY")
 	viper.BindEnv("aftership.webhook_secret", "AFTERSHIP_WEBHOOK_SECRET")
+
+	// Sendcloud (carrier label + tracking-number generation) + warehouse ship-from origin.
+	// SENDCLOUD_PUBLIC_KEY/SECRET_KEY are the integration key pair (Basic Auth); blank => the label
+	// provider is disabled and operators keep entering tracking numbers manually. SHIP_FROM_COUNTRY
+	// is ISO-2. SENDCLOUD_DEFAULT_SHIPPING_OPTION is an optional fallback shipping_option_code.
+	viper.BindEnv("shipping_label.public_key", "SENDCLOUD_PUBLIC_KEY")
+	viper.BindEnv("shipping_label.secret_key", "SENDCLOUD_SECRET_KEY")
+	viper.BindEnv("shipping_label.default_shipping_option", "SENDCLOUD_DEFAULT_SHIPPING_OPTION")
+	viper.BindEnv("shipping_label.from_name", "SHIP_FROM_NAME")
+	viper.BindEnv("shipping_label.from_company", "SHIP_FROM_COMPANY")
+	viper.BindEnv("shipping_label.from_street1", "SHIP_FROM_STREET1")
+	viper.BindEnv("shipping_label.from_house_number", "SHIP_FROM_HOUSE_NUMBER")
+	viper.BindEnv("shipping_label.from_street2", "SHIP_FROM_STREET2")
+	viper.BindEnv("shipping_label.from_city", "SHIP_FROM_CITY")
+	viper.BindEnv("shipping_label.from_state", "SHIP_FROM_STATE")
+	viper.BindEnv("shipping_label.from_postal_code", "SHIP_FROM_POSTAL_CODE")
+	viper.BindEnv("shipping_label.from_country", "SHIP_FROM_COUNTRY")
+	viper.BindEnv("shipping_label.from_phone", "SHIP_FROM_PHONE")
+	viper.BindEnv("shipping_label.from_email", "SHIP_FROM_EMAIL")
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
