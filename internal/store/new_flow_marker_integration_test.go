@@ -97,7 +97,7 @@ func TestProductionRunMarkers(t *testing.T) {
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		Lines:   []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 20}},
 		Markers: []entity.ProductionRunMarker{{Source: entity.ProductionMarkerSourceOptitex, MarkerName: ns("M-C")}},
-	})
+	}, 0)
 	require.NoError(t, err)
 	run, err = PR.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestProductionRunMarkers(t *testing.T) {
 	err = PR.UpdateProductionRun(ctx, runID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 20}},
-	})
+	}, 0)
 	require.NoError(t, err)
 	var markerCount int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM production_run_marker WHERE run_id = ?", runID).Scan(&markerCount))
@@ -125,7 +125,7 @@ func TestProductionRunMarkers(t *testing.T) {
 	err = PR.UpdateProductionRun(ctx, runID, &entity.ProductionRunInsert{
 		TechCardId: tc2, Status: entity.ProductionRunInProgress,
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 20}},
-	})
+	}, 0)
 	require.ErrorIs(t, err, entity.ErrProductionRunCardChange, "re-pointing a run to another style is refused")
 
 	// --- markers cascade-delete with the run ---
@@ -134,7 +134,7 @@ func TestProductionRunMarkers(t *testing.T) {
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		Lines:   []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 20}},
 		Markers: []entity.ProductionRunMarker{{Source: entity.ProductionMarkerSourceManual, MarkerName: ns("M-D")}},
-	}))
+	}, 0))
 	require.NoError(t, PR.DeleteProductionRun(ctx, runID))
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM production_run_marker WHERE run_id = ?", runID).Scan(&markerCount))
 	require.Equal(t, 0, markerCount, "markers cascade-deleted with the run")

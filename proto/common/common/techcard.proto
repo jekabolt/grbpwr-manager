@@ -711,4 +711,7 @@ message TechCardListItem {
   // moodboard image; otherwise the PREVIEW-kind sketch (falling back to the first technical, then any
   // media). Empty when the card has no media. Resolved server-side to avoid an N+1 GetTechCard.
   string preview_url = 13;
+  // Card purpose: "sellable" (default) or "auxiliary" (NF-07). Lets a board/list badge auxiliary
+  // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
+  string purpose = 14;
 }
