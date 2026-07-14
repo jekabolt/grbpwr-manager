@@ -259,6 +259,37 @@ type CountryEconomicsRow struct {
 	LtvSample          int
 }
 
+// CountryLogisticsRow is per-country fulfilment and returns (analytics-v2 task 09). Durations are for
+// orders placed in the period; delivered-based figures are gated by DeliveredSample. No confidential
+// cost fields (AvgShippingCost is logistics, not COGS).
+type CountryLogisticsRow struct {
+	Country                  string
+	AvgDaysPlacedToDelivered float64
+	AvgDaysPlacedToShipped   float64
+	OnTimeRatePct            float64
+	DeliveredSample          int
+	AvgShippingCost          decimal.Decimal
+	RefundRatePct            float64
+	RefundOrders             int
+}
+
+// CountryDemandRow is per-country demand mix (analytics-v2 task 09): conversion, new-vs-returning and
+// top categories. Conversion is directional (geo-IP sessions vs shipping-address orders, undercounted
+// by consent/ad-block) — comparable across countries, not against external benchmarks. Country is ISO-2
+// (or "(unmatched)" for a GA4 country name with no ISO mapping).
+type CountryDemandRow struct {
+	Country            string
+	Sessions           int
+	Orders             int
+	ConversionRatePct  float64
+	AOV                decimal.Decimal
+	NewCustomers       int
+	ReturningCustomers int
+	NewSharePct        float64
+	TopCategories      []CategoryMetric
+	Caveat             string
+}
+
 // CurrencyMetric aggregates revenue by order currency
 type CurrencyMetric struct {
 	Currency string

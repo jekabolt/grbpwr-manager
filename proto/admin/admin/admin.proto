@@ -1971,6 +1971,44 @@ message GeographySection {
   repeated GeographyMetric by_country = 1;
   repeated GeographySessionMetric sessions_by_country = 2;
   repeated CountryEconomicsRow economics_by_country = 3; // analytics-v2 task 08: per-country profitability
+  repeated CountryLogisticsRow logistics_by_country = 4; // analytics-v2 task 09: fulfilment + returns
+  repeated CountryDemandRow demand_by_country = 5; // analytics-v2 task 09: conversion + demand mix
+}
+
+// CountryLogisticsRow is per-country fulfilment and returns (analytics-v2 task 09). Durations come
+// from order_status_history for orders PLACED in the period; delivered figures are operator-flipped so
+// gate them on delivered_sample (a small country with one missing flip reads as 0% coverage). Refund
+// rate on a handful of orders swings 0↔100, so refund_orders is surfaced for the UI to gate. No
+// confidential cost fields — avg_shipping_cost is logistics (not COGS) and stays visible.
+message CountryLogisticsRow {
+  string country = 1; // ISO-2, as stored in address.country
+  double avg_days_placed_to_delivered = 2;
+  double avg_days_placed_to_shipped = 3;
+  double on_time_rate_pct = 4; // delivered on/before the ETA date
+  int32 delivered_sample = 5; // orders with a usable delivered duration (durations denominator)
+  google.type.Decimal avg_shipping_cost = 6; // actual carrier cost → tariff fallback, incl. return leg
+  double refund_rate_pct = 7; // refunded amount as a share of this country's gross revenue
+  int32 refund_orders = 8; // orders with a partial or full refund
+}
+
+// CountryDemandRow is per-country demand mix (analytics-v2 task 09): conversion, new-vs-returning and
+// the top categories. Conversion is DIRECTIONAL only — sessions are geo-IP (a tourist buying from a
+// hotel), and consent/ad-block undercounts them, so the rate is systematically OVER-stated; compare
+// countries to each other, never to external benchmarks. GA4's cache is 90 days, so sessions (and thus
+// conversion) are 0 when the window exceeds it — the caveat says which. Orders are DB net-revenue,
+// attributed by shipping-address country; sessions by GA4 country name mapped to ISO-2 (an unmapped GA4
+// country lands in a "(unmatched)" row so it is visible, not dropped).
+message CountryDemandRow {
+  string country = 1; // ISO-2, or "(unmatched)" for a GA4 country name with no ISO mapping
+  int32 sessions = 2; // GA4 sessions over the period (0 if outside the GA4 window)
+  int32 orders = 3; // DB net-revenue orders
+  double conversion_rate_pct = 4; // orders / sessions × 100 (0 when sessions = 0)
+  google.type.Decimal aov = 5; // average order value (base currency), for a self-contained tab
+  int32 new_customers = 6;
+  int32 returning_customers = 7;
+  double new_share_pct = 8; // new / (new + returning) × 100
+  repeated CategoryMetric top_categories = 9; // top 3 categories by revenue in this country
+  string caveat = 10; // directional-conversion / GA4-window caveat
 }
 
 // CountryEconomicsRow is per-country profitability (analytics-v2 task 08): margin and its inputs,

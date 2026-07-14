@@ -679,12 +679,58 @@ func geographySessionMetricsToPb(list []entity.GeographySessionMetric) []*pb_adm
 }
 
 // ConvertGeographyToPb converts geography metrics and session data to protobuf GeographySection.
-func ConvertGeographyToPb(byCountry []entity.GeographyMetric, sessions []entity.GeographySessionMetric, economics []entity.CountryEconomicsRow) *pb_admin.GeographySection {
+func ConvertGeographyToPb(byCountry []entity.GeographyMetric, sessions []entity.GeographySessionMetric, economics []entity.CountryEconomicsRow, logistics []entity.CountryLogisticsRow, demand []entity.CountryDemandRow) *pb_admin.GeographySection {
 	return &pb_admin.GeographySection{
 		ByCountry:          geographyMetricsToPb(byCountry),
 		SessionsByCountry:  geographySessionMetricsToPb(sessions),
 		EconomicsByCountry: countryEconomicsToPb(economics),
+		LogisticsByCountry: countryLogisticsToPb(logistics),
+		DemandByCountry:    countryDemandToPb(demand),
 	}
+}
+
+// countryLogisticsToPb maps per-country fulfilment/returns rows (analytics-v2 task 09) to the wire.
+func countryLogisticsToPb(list []entity.CountryLogisticsRow) []*pb_admin.CountryLogisticsRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CountryLogisticsRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CountryLogisticsRow{
+			Country:                  r.Country,
+			AvgDaysPlacedToDelivered: r.AvgDaysPlacedToDelivered,
+			AvgDaysPlacedToShipped:   r.AvgDaysPlacedToShipped,
+			OnTimeRatePct:            r.OnTimeRatePct,
+			DeliveredSample:          int32(r.DeliveredSample),
+			AvgShippingCost:          &decimal.Decimal{Value: r.AvgShippingCost.String()},
+			RefundRatePct:            r.RefundRatePct,
+			RefundOrders:             int32(r.RefundOrders),
+		}
+	}
+	return pb
+}
+
+// countryDemandToPb maps per-country demand rows (analytics-v2 task 09) to the wire.
+func countryDemandToPb(list []entity.CountryDemandRow) []*pb_admin.CountryDemandRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CountryDemandRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CountryDemandRow{
+			Country:            r.Country,
+			Sessions:           int32(r.Sessions),
+			Orders:             int32(r.Orders),
+			ConversionRatePct:  r.ConversionRatePct,
+			Aov:                &decimal.Decimal{Value: r.AOV.String()},
+			NewCustomers:       int32(r.NewCustomers),
+			ReturningCustomers: int32(r.ReturningCustomers),
+			NewSharePct:        r.NewSharePct,
+			TopCategories:      categoryMetricsToPb(r.TopCategories),
+			Caveat:             r.Caveat,
+		}
+	}
+	return pb
 }
 
 // countryEconomicsToPb maps the per-country profitability rows (analytics-v2 task 08) to the wire. The

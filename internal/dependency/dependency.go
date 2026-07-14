@@ -347,6 +347,10 @@ type (
 		GetRevenueByCountry(ctx context.Context, from, to time.Time) ([]entity.GeographyMetric, error)
 		// GetCountryEconomics returns per-country profitability (margin, contribution, profit/order, LTV).
 		GetCountryEconomics(ctx context.Context, from, to time.Time) ([]entity.CountryEconomicsRow, error)
+		// GetCountryLogistics returns per-country fulfilment durations, on-time rate, shipping cost, returns.
+		GetCountryLogistics(ctx context.Context, from, to time.Time) ([]entity.CountryLogisticsRow, error)
+		// GetCountryDemand returns the DB side of per-country demand (orders, AOV, new/returning, top cats).
+		GetCountryDemand(ctx context.Context, from, to time.Time) ([]entity.CountryDemandRow, error)
 		// GetCustomerSegmentation returns AOV-based customer segmentation (high/medium/low tiers).
 		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
 		// GetOrderValueBands buckets net-revenue orders into fixed order-value bands (upsell view).

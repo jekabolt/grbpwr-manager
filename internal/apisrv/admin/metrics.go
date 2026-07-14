@@ -492,7 +492,20 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 			slog.Default().ErrorContext(ctx, "can't get geography economics by country", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
 		}
-		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions, economics)
+		logistics, err := s.repo.Metrics().GetCountryLogistics(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get geography logistics by country", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+		}
+		demandBase, err := s.repo.Metrics().GetCountryDemand(ctx, from, to)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get geography demand by country", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get geography metrics")
+		}
+		// Conversion needs GA4 sessions, whose cache only covers a rolling ~90-day window; suppress it
+		// (window not OK) for longer periods rather than show an understated rate.
+		demand := mergeCountryDemand(demandBase, sessions, to.Sub(from) <= ga4CacheWindow)
+		resp.Geography = dto.ConvertGeographyToPb(byCountry, sessions, economics, logistics, demand)
 	}
 
 	if want(pb_admin.MetricsSection_METRICS_SECTION_ADD_TO_CART_RATE) {
