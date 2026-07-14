@@ -338,6 +338,16 @@ func (s *Store) DeliveredOrder(ctx context.Context, orderUUID string) error {
 			return fmt.Errorf("can't update order status: %w", err)
 		}
 
+		// Stamp the delivery time on the shipment (analytics-v2 task 04). Metrics still derive the
+		// delivered timestamp from order_status_history (works for orders with no shipment row), but
+		// a populated delivered_at keeps future queries and the order card direct. Idempotent: only
+		// set when still NULL.
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			"UPDATE shipment SET delivered_at = NOW() WHERE order_id = :orderId AND delivered_at IS NULL",
+			map[string]any{"orderId": order.Id}); err != nil {
+			return fmt.Errorf("can't stamp shipment delivered_at: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {

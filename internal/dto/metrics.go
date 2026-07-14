@@ -409,6 +409,24 @@ func categoryMetricsToPb(list []entity.CategoryMetric) []*pb_admin.CategoryMetri
 	return pb
 }
 
+// ConvertDeliverySectionToPb maps the fulfilment-speed section (analytics-v2 task 04) to the wire.
+func ConvertDeliverySectionToPb(d entity.DeliverySection) *pb_admin.DeliverySection {
+	return &pb_admin.DeliverySection{
+		AvgDaysPlacedToShipped:      d.AvgDaysPlacedToShipped,
+		AvgDaysShippedToDelivered:   d.AvgDaysShippedToDelivered,
+		AvgDaysPlacedToDelivered:    d.AvgDaysPlacedToDelivered,
+		MedianDaysPlacedToDelivered: d.MedianDaysPlacedToDelivered,
+		OnTimeRatePct:               d.OnTimeRatePct,
+		OnTimeSample:                int32(d.OnTimeSample),
+		EtaCoveragePct:              d.EtaCoveragePct,
+		DeliveredCoveragePct:        d.DeliveredCoveragePct,
+		DeliveredSample:             int32(d.DeliveredSample),
+		ShippedSample:               int32(d.ShippedSample),
+		AvgDeliveryDaysByWeek:       timeSeriesToPb(d.AvgDeliveryDaysByWeek),
+		Caveat:                      d.Caveat,
+	}
+}
+
 // ConvertOrderValueBandsToPb maps the fixed order-value histogram (analytics-v2 task 03) to the wire.
 func ConvertOrderValueBandsToPb(list []entity.OrderValueBandRow) []*pb_admin.OrderValueBandRow {
 	if len(list) == 0 {

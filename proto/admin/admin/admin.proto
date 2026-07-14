@@ -1498,6 +1498,7 @@ enum MetricsSection {
   METRICS_SECTION_COGS_STRUCTURE = 47; // task 15: cost-of-goods-sold component structure
   METRICS_SECTION_INVENTORY_VALUATION = 48; // task 16: cost frozen in stock + dead stock + write-offs
   METRICS_SECTION_ORDER_VALUE_BANDS = 49; // analytics-v2 task 03: order-value distribution (upsell)
+  METRICS_SECTION_DELIVERY = 50; // analytics-v2 task 04: fulfilment durations + on-time rate
 }
 
 message GetMetricsRequest {
@@ -1561,6 +1562,26 @@ message GetMetricsResponse {
   repeated CogsStructureRow cogs_structure = 50; // task 15
   InventoryValuation inventory_valuation = 51; // task 16
   repeated OrderValueBandRow order_value_bands = 52; // analytics-v2 task 03
+  DeliverySection delivery = 53; // analytics-v2 task 04
+}
+
+// DeliverySection reports fulfilment speed for orders PLACED in the period (a placed-cohort, so the
+// average is not dragged by tails of earlier periods). Durations come from order_status_history
+// timestamps; on-time compares delivered_at against shipment.estimated_arrival_date. Delivered is
+// operator-flipped, so gate the delivered-based figures on delivered_coverage_pct / delivered_sample.
+message DeliverySection {
+  double avg_days_placed_to_shipped = 1;
+  double avg_days_shipped_to_delivered = 2;
+  double avg_days_placed_to_delivered = 3;
+  double median_days_placed_to_delivered = 4;
+  double on_time_rate_pct = 5; // delivered on/before the ETA date
+  int32 on_time_sample = 6; // orders with both a delivered timestamp and an ETA
+  double eta_coverage_pct = 7; // % of delivered orders that had an ETA set
+  double delivered_coverage_pct = 8; // % of shipped orders that reached delivered (survivorship gate)
+  int32 delivered_sample = 9; // orders with a usable delivered duration (durations denominator)
+  int32 shipped_sample = 10; // orders with a usable shipped duration
+  repeated TimeSeriesPoint avg_delivery_days_by_week = 11; // value=avg placed→delivered days, count=orders
+  string caveat = 12;
 }
 
 // OrderValueBandRow is one fixed order-value bucket: how many orders and how much net revenue

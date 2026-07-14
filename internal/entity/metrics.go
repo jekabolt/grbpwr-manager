@@ -277,6 +277,24 @@ type PeakDay struct {
 	Orders  int             // net-revenue orders placed that day
 }
 
+// DeliverySection reports fulfilment speed for orders placed in the period (placed-cohort).
+// Delivered-based figures are gated by DeliveredCoveragePct/DeliveredSample because the delivered
+// status is operator-flipped and may be missing.
+type DeliverySection struct {
+	AvgDaysPlacedToShipped      float64
+	AvgDaysShippedToDelivered   float64
+	AvgDaysPlacedToDelivered    float64
+	MedianDaysPlacedToDelivered float64
+	OnTimeRatePct               float64
+	OnTimeSample                int
+	EtaCoveragePct              float64
+	DeliveredCoveragePct        float64
+	DeliveredSample             int
+	ShippedSample               int
+	AvgDeliveryDaysByWeek       []TimeSeriesPoint
+	Caveat                      string
+}
+
 // OrderValueBandRow is one fixed order-value bucket (net-revenue basis) with its order/revenue
 // shares and in-band AOV. Bands are fixed EUR ranges (not quantile) so they compare across periods.
 type OrderValueBandRow struct {

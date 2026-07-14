@@ -589,6 +589,14 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.OrderValueBands = dto.ConvertOrderValueBandsToPb(items)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_DELIVERY) {
+		d, err := s.repo.Metrics().GetDeliveryMetrics(ctx, from, to)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "can't get delivery metrics")
+		}
+		resp.Delivery = dto.ConvertDeliverySectionToPb(d)
+	}
+
 	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
 	// Commerce, traffic and email metrics remain visible.
 	if read, _ := s.costingAccess(ctx); !read {
