@@ -35,8 +35,8 @@ func (rs *retentionStore) GetCohortRetention(ctx context.Context, from, to time.
 				SELECT co.id,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
 					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
@@ -149,8 +149,8 @@ func (rs *retentionStore) GetOrderSequenceMetrics(ctx context.Context, from, to 
 			SELECT
 				co.id,
 				co.placed,
-				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
-					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
+				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0)) / 100.0
+					+ CASE WHEN COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
 					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -348,8 +348,8 @@ func (rs *retentionStore) GetCustomerSpendingCurve(ctx context.Context, from, to
 			SELECT
 				co.id,
 				co.placed,
-				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
-					+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
+				COALESCE(co.total_settled_base, (COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) * (100 - COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0)) / 100.0
+					+ CASE WHEN COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END))
 					* (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS revenue_base
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id

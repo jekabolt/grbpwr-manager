@@ -107,8 +107,8 @@ func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLV
 				SELECT co.id,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
 					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
@@ -195,8 +195,8 @@ WITH order_base AS (
 	SELECT co.id,
 		COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 		COALESCE(MAX(scp.price), 0) AS shipment_base,
-		COALESCE(MAX(pc.discount), 0) AS discount,
-		COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+		COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+		COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 		co.total_price,
 		co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 	FROM customer_order co
@@ -281,15 +281,20 @@ LIMIT 500
 
 func (s *Store) getRevenueByPromo(ctx context.Context, from, to time.Time) ([]entity.PromoMetric, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	// Keyed on the promo snapshot (code + discount captured on the order at apply time), so the
+	// report survives the promo_code row being edited or deleted (analytics-v2 task 05). Falls back
+	// to the live promo_code join for any pre-snapshot row.
 	query := `
 		WITH order_base AS (
-			SELECT ob.id, ob.promo_id, ob.code, ob.discount,
+			SELECT ob.id, ob.code, ob.discount,
 				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0) AS revenue_base
 			FROM (
-				SELECT co.id, pc.id AS promo_id, pc.code, pc.discount,
+				SELECT co.id,
+					COALESCE(co.promo_code_snapshot, pc.code) AS code,
+					COALESCE(co.promo_discount_pct, pc.discount, 0) AS discount,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
 					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 				FROM customer_order co
@@ -297,17 +302,19 @@ func (s *Store) getRevenueByPromo(ctx context.Context, from, to time.Time) ([]en
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 				LEFT JOIN shipment s ON co.id = s.order_id
 				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
-				JOIN promo_code pc ON co.promo_id = pc.id
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
 				WHERE co.placed >= :from AND co.placed < :to
 				AND co.order_status_id IN (:statusIds)
-				GROUP BY co.id, co.total_price, co.refunded_amount, pc.id, pc.code, pc.discount
+				AND (co.promo_code_snapshot IS NOT NULL OR co.promo_id IS NOT NULL)
+				GROUP BY co.id, co.total_price, co.refunded_amount, co.promo_code_snapshot, co.promo_discount_pct, pc.code, pc.discount
 			) ob
 		)
 		SELECT code, COUNT(*) AS orders_count,
 			COALESCE(SUM(revenue_base), 0) AS revenue,
 			COALESCE(AVG(discount), 0) AS avg_discount
 		FROM order_base
-		GROUP BY promo_id, code
+		WHERE code IS NOT NULL
+		GROUP BY code
 		ORDER BY revenue DESC
 		LIMIT 20
 	`
@@ -394,8 +401,8 @@ WITH order_base AS (
 		SELECT co.id,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 			COALESCE(MAX(scp.price), 0) AS shipment_base,
-			COALESCE(MAX(pc.discount), 0) AS discount,
-			COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+			COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+			COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 			co.total_price,
 			co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount
 		FROM customer_order co

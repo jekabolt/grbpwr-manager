@@ -23,8 +23,8 @@ func (s *Store) getRevenueByPeriod(ctx context.Context, from, to time.Time, date
 				SELECT co.id, co.placed,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
 					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
@@ -117,7 +117,7 @@ func (s *Store) getGrossRevenueByPeriod(ctx context.Context, from, to time.Time,
 				SELECT co.id, co.placed,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -164,7 +164,7 @@ func (s *Store) getGrossRevenueTotal(ctx context.Context, from, to time.Time) (d
 				SELECT co.id,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity), 0) AS items_list_price,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
 				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
@@ -199,8 +199,8 @@ func (s *Store) getRefundsByPeriod(ctx context.Context, from, to time.Time, date
 				SELECT co.id, co.placed, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price
 				FROM customer_order co
 				LEFT JOIN order_item oi ON co.id = oi.order_id
@@ -247,8 +247,8 @@ func (s *Store) getAvgOrderValueByPeriod(ctx context.Context, from, to time.Time
 				SELECT co.id, co.placed,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price,
 					co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
@@ -390,8 +390,8 @@ func (s *Store) getNewVsReturningRevenue(ctx context.Context, from, to time.Time
 				SELECT co.id, co.placed, b.email,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
 				FROM customer_order co

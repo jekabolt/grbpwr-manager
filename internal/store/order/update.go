@@ -102,11 +102,20 @@ func updateShipmentCostAndFreeShipping(ctx context.Context, db dependency.DB, sh
 }
 
 func updateOrderTotalPromo(ctx context.Context, db dependency.DB, orderId int, promoId int, totalPrice decimal.Decimal) error {
+	// Snapshot the promo (percentage, free-shipping flag, code) onto the order at apply time so
+	// later edits/deletion of the promo_code row can't rewrite this order's historical discount and
+	// reconstructed revenue (analytics-v2 task 05). The LEFT JOIN yields NULL snapshots when promoId
+	// is 0/NULL (no promo). Cancellation only NULLs promo_id elsewhere and deliberately leaves the
+	// snapshot intact.
 	query := `
-	UPDATE customer_order
-	SET promo_id = :promoId,
-		total_price = :totalPrice
-	WHERE id = :orderId`
+	UPDATE customer_order co
+	LEFT JOIN promo_code pc ON pc.id = :promoId
+	SET co.promo_id = :promoId,
+		co.total_price = :totalPrice,
+		co.promo_discount_pct = pc.discount,
+		co.promo_free_shipping = pc.free_shipping,
+		co.promo_code_snapshot = pc.code
+	WHERE co.id = :orderId`
 
 	promoIdNull := sql.NullInt32{
 		Int32: int32(promoId),

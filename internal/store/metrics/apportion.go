@@ -38,8 +38,8 @@ func orderFactorsCTENamed(name, fromParam, toParam string) string {
 			COALESCE(co.refunded_amount, 0) AS refunded_amount,
 			co.total_settled_base,
 			COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct,
-			COALESCE(MAX(pc.discount), 0) AS discount,
-			COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+			COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+			COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 			COALESCE(MAX(scp.price), 0) AS shipment_base,
 			COALESCE(MAX(rl.has), 0) AS has_line_refunds,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base_total

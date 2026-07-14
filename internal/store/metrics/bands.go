@@ -62,8 +62,8 @@ func (s *Store) GetOrderValueBands(ctx context.Context, from, to time.Time) ([]e
 				SELECT co.id,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
 				FROM customer_order co

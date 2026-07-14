@@ -87,6 +87,13 @@ type Order struct {
 	// pricing: total × rate/(100+rate)).
 	VatRatePct decimal.NullDecimal `db:"vat_rate_pct"`
 	VatAmount  decimal.NullDecimal `db:"vat_amount"`
+	// Promo snapshot captured at apply time (analytics-v2 task 05), so metrics reconstruct the
+	// discount from the order, not a live promo_code join that later edits/deletion would rewrite.
+	// NULL when no promo was applied. PromoCodeSnapshot preserves the code string for promo reports
+	// after the code is deleted. These are read by metrics SQL; the order flow writes them.
+	PromoDiscountPct  decimal.NullDecimal `db:"promo_discount_pct"`
+	PromoFreeShipping sql.NullBool        `db:"promo_free_shipping"`
+	PromoCodeSnapshot sql.NullString      `db:"promo_code_snapshot"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {

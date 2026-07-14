@@ -27,8 +27,8 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 			SELECT co.id,
 				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
-				COALESCE(MAX(pc.discount), 0) AS discount,
-				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+				COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+				COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 				co.total_price,
 				co.total_settled_base,
 				COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct,
@@ -85,8 +85,8 @@ func (s *Store) getPeakRevenueDay(ctx context.Context, from, to time.Time) (day 
 				SELECT co.id, co.placed,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 					COALESCE(MAX(scp.price), 0) AS shipment_base,
-					COALESCE(MAX(pc.discount), 0) AS discount,
-					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 					co.total_price, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
 					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
 				FROM customer_order co
@@ -157,8 +157,8 @@ func (s *Store) getRefundMetrics(ctx context.Context, from, to time.Time) (refun
 			SELECT co.id,
 				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
 				COALESCE(MAX(scp.price), 0) AS shipment_base,
-				COALESCE(MAX(pc.discount), 0) AS discount,
-				COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+				COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0) AS discount,
+				COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) AS free_shipping,
 				co.total_price,
 				co.total_settled_base,
 				COALESCE(co.refunded_amount, 0) AS refunded_amount
@@ -212,14 +212,14 @@ func (s *Store) getDiscountComponents(ctx context.Context, from, to time.Time) (
 		WITH order_items_base AS (
 			SELECT co.id,
 				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
-				COALESCE(pc.discount, 0) AS discount
+				COALESCE(co.promo_discount_pct, pc.discount, 0) AS discount
 			FROM customer_order co
 			LEFT JOIN order_item oi ON co.id = oi.order_id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			LEFT JOIN promo_code pc ON co.promo_id = pc.id
 			WHERE co.placed >= :from AND co.placed < :to
 			AND co.order_status_id IN (:statusIds) AND co.promo_id IS NOT NULL
-			GROUP BY co.id, pc.discount
+			GROUP BY co.id, co.promo_discount_pct, pc.discount
 		)
 		SELECT COALESCE(SUM(items_base * discount / 100.0), 0) AS v
 		FROM order_items_base

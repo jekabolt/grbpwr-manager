@@ -31,8 +31,8 @@ func (s *Store) GetChannelRoasSettled(ctx context.Context, from, to time.Time) (
 				COALESCE(
 					co.total_settled_base,
 					COALESCE(SUM(COALESCE(oi.product_price_base, pp.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0)
-						* (100 - COALESCE(MAX(pc.discount), 0)) / 100.0
-						+ CASE WHEN COALESCE(MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END
+						* (100 - COALESCE(MAX(co.promo_discount_pct), MAX(pc.discount), 0)) / 100.0
+						+ CASE WHEN COALESCE(MAX(co.promo_free_shipping), MAX(pc.free_shipping), 0) THEN 0 ELSE COALESCE(MAX(scp.price), 0) END
 				) * (co.total_price - COALESCE(co.refunded_amount, 0)) / NULLIF(co.total_price, 0) AS settled_base
 			FROM customer_order co
 			JOIN buyer b ON b.order_id = co.id
