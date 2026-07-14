@@ -241,6 +241,10 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 	if err != nil {
 		return nil, err
 	}
+	var totalValue decimal.Decimal
+	for _, r := range rows {
+		totalValue = totalValue.Add(r.Value)
+	}
 	result := make([]entity.CategoryMetric, len(rows))
 	for i, r := range rows {
 		result[i] = entity.CategoryMetric{
@@ -249,6 +253,9 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 			CategoryDisplayName: formatCategoryDisplayName(r.CategoryDisplayName),
 			Value:               r.Value,
 			Count:               r.Count,
+		}
+		if totalValue.GreaterThan(decimal.Zero) {
+			result[i].SharePct = r.Value.Div(totalValue).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
 		}
 	}
 	return result, nil

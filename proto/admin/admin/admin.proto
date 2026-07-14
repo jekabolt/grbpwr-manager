@@ -1689,6 +1689,18 @@ message CommerceCoreMetrics {
   // resolved per order from the destination country (0 for export / pre-feature orders).
   MetricWithComparison revenue_incl_vat = 55;
   MetricWithComparison vat_amount = 56;
+  // unique_customers: distinct buyer emails with a net-revenue order in the period (the
+  // "покупатели" KPI). Differs from new_customers (first-ever order in the period) and from
+  // clv_distribution.sample_size (distinct emails with non-zero apportioned revenue).
+  MetricWithComparison unique_customers = 57;
+  // peak_day: the single calendar day with the highest net revenue in the period (KPI card).
+  // Computed from a daily net-revenue rollup independent of trend_granularity; unset when the
+  // period has no revenue.
+  PeakDay peak_day = 58;
+  // discount_rate_pct: total_discount / gross_revenue × 100 — the share of list revenue given
+  // away as product-sale + promo discounts (a margin-erosion factor). lower_is_better. Numerator
+  // and denominator differ slightly in refunded-order treatment; see caveat.
+  MetricWithComparison discount_rate_pct = 59;
   MetricWithComparison new_subscribers = 13;
   MetricWithComparison new_customers = 14;
   MetricWithComparison repeat_customers_rate = 15;
@@ -1735,6 +1747,13 @@ message CommerceCoreMetrics {
   repeated TimeSeriesPoint returning_customers_by_day_compare = 52;
   repeated TimeSeriesPoint shipped_by_day_compare = 53;
   repeated TimeSeriesPoint delivered_by_day_compare = 54;
+}
+
+// PeakDay is the highest-net-revenue calendar day in the reporting period.
+message PeakDay {
+  google.protobuf.Timestamp date = 1;
+  google.type.Decimal revenue = 2; // net revenue (base currency) on that day
+  int32 orders = 3; // net-revenue orders placed that day
 }
 
 // MarginMetrics is the DB-trusted COGS / margin view (from product.cost_price), computed over
@@ -1871,6 +1890,10 @@ message CategoryMetric {
   google.type.Decimal value = 3;
   int32 count = 4;
   string category_display_name = 5; // Human-readable label (e.g., Hoodies & Sweatshirts)
+  // share_pct: this category's value as a percentage of total category revenue in the period.
+  // Categories are an item-level split (shipping is not attributed), so shares sum to 100 within
+  // the breakdown, not against headline revenue.
+  double share_pct = 6;
 }
 
 message CrossSellPair {

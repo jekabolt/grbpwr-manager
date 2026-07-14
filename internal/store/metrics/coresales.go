@@ -70,6 +70,56 @@ func (s *Store) getCoreSalesMetrics(ctx context.Context, from, to time.Time) (re
 	return revenueNet, grossInclVat, vatAmount, orders, aov, nil
 }
 
+// getPeakRevenueDay returns the single calendar day with the highest net revenue in [from, to),
+// with that day's net revenue (base currency) and net-revenue order count. found is false when
+// the period has no revenue. Uses the same net-revenue basis as getCoreSalesMetrics but rolls up
+// by DATE(placed) regardless of chart granularity; ties are broken by the earlier date.
+func (s *Store) getPeakRevenueDay(ctx context.Context, from, to time.Time) (day time.Time, revenue decimal.Decimal, orders int, found bool, err error) {
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+	query := `
+		WITH order_base AS (
+			SELECT ob.placed,
+				COALESCE(ob.total_settled_base, ob.items_base * (100 - ob.discount) / 100.0 + CASE WHEN ob.free_shipping THEN 0 ELSE ob.shipment_base END) * (ob.total_price - ob.refunded_amount) / NULLIF(ob.total_price, 0)
+					* 100.0 / (100 + ob.vat_rate_pct) AS revenue_base
+			FROM (
+				SELECT co.id, co.placed,
+					COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity), 0) AS items_base,
+					COALESCE(MAX(scp.price), 0) AS shipment_base,
+					COALESCE(MAX(pc.discount), 0) AS discount,
+					COALESCE(MAX(pc.free_shipping), 0) AS free_shipping,
+					co.total_price, co.total_settled_base, COALESCE(co.refunded_amount, 0) AS refunded_amount,
+					COALESCE(co.vat_rate_pct, 0) AS vat_rate_pct
+				FROM customer_order co
+				LEFT JOIN order_item oi ON co.id = oi.order_id
+				LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
+				LEFT JOIN shipment s ON co.id = s.order_id
+				LEFT JOIN shipment_carrier_price scp ON s.carrier_id = scp.shipment_carrier_id AND UPPER(scp.currency) = UPPER(:baseCurrency)
+				LEFT JOIN promo_code pc ON co.promo_id = pc.id
+				WHERE co.placed >= :from AND co.placed < :to
+				AND co.order_status_id IN (:statusIds)
+				GROUP BY co.id, co.placed, co.total_price, co.refunded_amount, co.total_settled_base, co.vat_rate_pct
+			) ob
+		)
+		SELECT DATE(placed) AS d, COALESCE(SUM(revenue_base), 0) AS value, COUNT(*) AS cnt
+		FROM order_base
+		GROUP BY DATE(placed)
+		ORDER BY value DESC, d ASC
+		LIMIT 1
+	`
+	rows, err := storeutil.QueryListNamed[struct {
+		D     time.Time       `db:"d"`
+		Value decimal.Decimal `db:"value"`
+		Count int             `db:"cnt"`
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	if err != nil {
+		return time.Time{}, decimal.Zero, 0, false, err
+	}
+	if len(rows) == 0 {
+		return time.Time{}, decimal.Zero, 0, false, nil
+	}
+	return rows[0].D, rows[0].Value.Round(2), rows[0].Count, true, nil
+}
+
 func (s *Store) getItemsPerOrder(ctx context.Context, from, to time.Time) (decimal.Decimal, error) {
 	type row struct {
 		TotalItems int `db:"total_items"`

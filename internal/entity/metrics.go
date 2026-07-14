@@ -45,6 +45,9 @@ type BusinessMetrics struct {
 	ItemsPerOrder     MetricWithComparison
 	RefundRate        MetricWithComparison
 	PromoUsageRate    MetricWithComparison
+	// PeakDay is the highest-net-revenue calendar day in the period (nil when there is no
+	// revenue). Computed from a dedicated daily rollup, independent of the chart granularity.
+	PeakDay *PeakDay
 	// GrossRevenue is revenue at list prices (before any discounts or refunds) + shipping.
 	// Revenue = GrossRevenue - ProductSaleDiscount - PromoCodeDiscount - TotalRefunded.
 	GrossRevenue  MetricWithComparison
@@ -55,6 +58,10 @@ type BusinessMetrics struct {
 	// TotalDiscount.Value == ProductSaleDiscount + PromoCodeDiscount.
 	ProductSaleDiscount MetricWithComparison
 	PromoCodeDiscount   MetricWithComparison
+	// DiscountRatePct is TotalDiscount / GrossRevenue × 100 — the share of list revenue given
+	// away as discounts (lower is better). Numerator is over net-revenue statuses, denominator
+	// (GrossRevenue) includes fully-refunded orders at list price, so they differ marginally.
+	DiscountRatePct MetricWithComparison
 	// RevenueInclVat is post-discount/refund revenue BEFORE removing VAT — what the company
 	// actually collected from customers. Revenue (headline) is RevenueInclVat net of VAT, and
 	// VatAmount = RevenueInclVat - Revenue. VAT is resolved per order from the destination
@@ -103,7 +110,10 @@ type BusinessMetrics struct {
 	AvgOrdersPerCustomer MetricWithComparison
 	AvgDaysBetweenOrders MetricWithComparison
 	NewCustomers         MetricWithComparison // Aggregate of new_customers_by_day series
-	CLVDistribution      CLVStats
+	// UniqueCustomers is the count of distinct buyer emails with a net-revenue order in the
+	// period (the "покупатели" KPI) — distinct from NewCustomers (first-ever order in period).
+	UniqueCustomers MetricWithComparison
+	CLVDistribution CLVStats
 
 	// Shipping / logistics metrics
 	AvgShippingCost   MetricWithComparison
@@ -254,6 +264,15 @@ type CategoryMetric struct {
 	Value               decimal.Decimal
 	Count               int
 	CategoryDisplayName string
+	// SharePct is this category's Value as a percentage of total category revenue in the period.
+	SharePct float64
+}
+
+// PeakDay is the highest-net-revenue calendar day in a reporting period.
+type PeakDay struct {
+	Date    time.Time
+	Revenue decimal.Decimal // net revenue (base currency) on that day
+	Orders  int             // net-revenue orders placed that day
 }
 
 type CrossSellPair struct {

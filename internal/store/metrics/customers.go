@@ -77,6 +77,26 @@ func (s *Store) getRepeatCustomerMetrics(ctx context.Context, from, to time.Time
 	return repeatRate, avgOrders, avgDays, nil
 }
 
+// getUniqueCustomersCount returns the number of distinct buyer emails with a net-revenue order
+// placed in [from, to) — the "покупатели" KPI. Guest checkouts and account orders are unified by
+// email; typos fragment identity (the same caveat as every other email-keyed customer metric).
+func (s *Store) getUniqueCustomersCount(ctx context.Context, from, to time.Time) (int, error) {
+	query := `
+		SELECT COUNT(DISTINCT b.email) AS n
+		FROM customer_order co
+		JOIN buyer b ON co.id = b.order_id
+		WHERE co.placed >= :from AND co.placed < :to
+		AND co.order_status_id IN (:statusIds)
+	`
+	r, err := storeutil.QueryNamedOne[struct {
+		N int `db:"n"`
+	}](ctx, s.DB, query, map[string]any{"from": from, "to": to, "statusIds": cache.OrderStatusIDsForNetRevenue()})
+	if err != nil {
+		return 0, err
+	}
+	return r.N, nil
+}
+
 func (s *Store) getCLVStats(ctx context.Context, from, to time.Time) (entity.CLVStats, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := `

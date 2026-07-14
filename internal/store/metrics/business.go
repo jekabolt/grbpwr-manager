@@ -51,6 +51,8 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		totalItemRev                             decimal.Decimal
 		paymentFees, cPaymentFees                decimal.Decimal
 		estPaymentFees                           decimal.Decimal
+		uniqueCustomers, cUniqueCustomers        int
+		peakDay                                  *entity.PeakDay
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -115,9 +117,29 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		paymentFees, estPaymentFees, err = s.getPaymentFees(gctx, period.From, period.To)
 		return err
 	})
+	g.Go(func() error {
+		var err error
+		uniqueCustomers, err = s.getUniqueCustomersCount(gctx, period.From, period.To)
+		return err
+	})
+	g.Go(func() error {
+		day, rev, ords, found, err := s.getPeakRevenueDay(gctx, period.From, period.To)
+		if err != nil {
+			return err
+		}
+		if found {
+			peakDay = &entity.PeakDay{Date: day, Revenue: rev, Orders: ords}
+		}
+		return nil
+	})
 
 	// Core sales (compare)
 	if hasCompare {
+		g.Go(func() error {
+			var err error
+			cUniqueCustomers, err = s.getUniqueCustomersCount(gctx, comparePeriod.From, comparePeriod.To)
+			return err
+		})
 		g.Go(func() error {
 			var err error
 			cRev, cGrossInclVat, cVatAmount, cOrders, cAov, err = s.getCoreSalesMetrics(gctx, comparePeriod.From, comparePeriod.To)
@@ -646,6 +668,16 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.TotalDiscount.Value = totalDiscount
 	m.ProductSaleDiscount.Value = productSaleDiscount
 	m.PromoCodeDiscount.Value = promoCodeDiscount
+	// Unique customers (покупатели KPI) + peak revenue day.
+	m.UniqueCustomers.Value = decimal.NewFromInt(int64(uniqueCustomers))
+	m.PeakDay = peakDay
+	// Discount rate: total discount as a share of list (gross) revenue — a margin-erosion factor.
+	// Denominator (GrossRevenue) includes fully-refunded orders at list price while the numerator
+	// is over net-revenue statuses, so they differ marginally; gate the UI on the order count.
+	if grossRev.GreaterThan(decimal.Zero) {
+		m.DiscountRatePct.Value = totalDiscount.Div(grossRev).Mul(decimal.NewFromInt(100)).Round(2)
+		m.DiscountRatePct.SampleSize = placedOrders
+	}
 	if orders > 0 {
 		m.PromoUsageRate.Value = decimal.NewFromInt(int64(promoOrders)).Div(decimal.NewFromInt(int64(orders))).Mul(decimal.NewFromInt(100))
 		// True count-proportion (promo orders / orders): expose n and a 95% CI half-width.
@@ -786,6 +818,14 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 		m.ProductSaleDiscount.ChangePct = changePct(productSaleDiscount, cProductSaleDiscount)
 		m.PromoCodeDiscount.CompareValue = &cPromoCodeDiscount
 		m.PromoCodeDiscount.ChangePct = changePct(promoCodeDiscount, cPromoCodeDiscount)
+
+		m.UniqueCustomers.CompareValue = ptr(decimal.NewFromInt(int64(cUniqueCustomers)))
+		m.UniqueCustomers.ChangePct = changePctInt(uniqueCustomers, cUniqueCustomers)
+		if cGrossTotal.GreaterThan(decimal.Zero) {
+			cDiscountRate := cTotalDiscount.Div(cGrossTotal).Mul(decimal.NewFromInt(100)).Round(2)
+			m.DiscountRatePct.CompareValue = &cDiscountRate
+			m.DiscountRatePct.ChangePct = changePct(m.DiscountRatePct.Value, cDiscountRate)
+		}
 
 		// Repeat customer metrics comparison
 		m.RepeatCustomersRate.CompareValue = &cRepeatRate

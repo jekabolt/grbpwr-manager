@@ -60,6 +60,9 @@ func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMe
 		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
 		RevenueInclVat:       metricWithComparisonToPb(m.RevenueInclVat),
 		VatAmount:            metricWithComparisonToPb(m.VatAmount),
+		UniqueCustomers:      metricWithComparisonToPb(m.UniqueCustomers),
+		PeakDay:              peakDayToPb(m.PeakDay),
+		DiscountRatePct:      metricWithComparisonToPb(m.DiscountRatePct, true), // lower is better
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
 		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
@@ -399,6 +402,7 @@ func categoryMetricsToPb(list []entity.CategoryMetric) []*pb_admin.CategoryMetri
 			CategoryDisplayName: c.CategoryDisplayName,
 			Value:               &decimal.Decimal{Value: c.Value.String()},
 			Count:               int32(c.Count),
+			SharePct:            c.SharePct,
 		}
 	}
 	return pb
@@ -460,6 +464,17 @@ func clvStatsToPb(c entity.CLVStats) *pb_admin.CLVStats {
 		Median:     &decimal.Decimal{Value: c.Median.String()},
 		P90:        &decimal.Decimal{Value: c.P90.String()},
 		SampleSize: int32(c.SampleSize),
+	}
+}
+
+func peakDayToPb(p *entity.PeakDay) *pb_admin.PeakDay {
+	if p == nil {
+		return nil
+	}
+	return &pb_admin.PeakDay{
+		Date:    timestamppb.New(p.Date),
+		Revenue: &decimal.Decimal{Value: p.Revenue.String()},
+		Orders:  int32(p.Orders),
 	}
 }
 
