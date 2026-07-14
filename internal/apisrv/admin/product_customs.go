@@ -35,9 +35,9 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 	}, nil
 }
 
-// SetProductCustoms sets a product's customs data (HS code, ISO-2 country of origin, declared
-// description). Empty fields clear the stored value. A provided country of origin must resolve to
-// an ISO-2 code (Sendcloud origin_country) so the label call never sends an invalid origin.
+// SetProductCustoms sets a product's customs data (HS code + declared description). Empty fields
+// clear the stored value. country_of_origin is ignored here: it is a core product field set via the
+// product form (and reused as the Sendcloud origin_country); the customs path never writes it.
 func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProductCustomsRequest) (*pb_admin.SetProductCustomsResponse, error) {
 	if req.ProductId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
@@ -47,20 +47,11 @@ func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProduct
 		c = &pb_admin.ProductCustoms{}
 	}
 
-	origin := strings.TrimSpace(c.CountryOfOrigin)
-	if origin != "" {
-		iso2, ok := entity.ResolveCountryISO2(origin)
-		if !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "country_of_origin %q is not a valid country", origin)
-		}
-		origin = iso2
-	}
 	hs := strings.TrimSpace(c.HsCode)
 	descr := strings.TrimSpace(c.CustomsDescription)
 
 	err := s.repo.Products().SetProductCustoms(ctx, int(req.ProductId), entity.ProductCustoms{
 		HSCode:             sql.NullString{String: hs, Valid: hs != ""},
-		CountryOfOrigin:    sql.NullString{String: origin, Valid: origin != ""},
 		CustomsDescription: sql.NullString{String: descr, Valid: descr != ""},
 	})
 	if err != nil {
