@@ -183,7 +183,7 @@ envs:
 # safety net, silently delivers stuck/untrackable shipments after the per-carrier window.
 - key: DELIVERY_SYNC_WORKER_INTERVAL
   scope: RUN_TIME
-  value: 15m
+  value: 12h
 - key: DELIVERY_SYNC_FALLBACK_DEFAULT
   scope: RUN_TIME
   value: 336h
