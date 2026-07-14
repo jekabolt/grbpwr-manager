@@ -1500,6 +1500,7 @@ enum MetricsSection {
   METRICS_SECTION_ORDER_VALUE_BANDS = 49; // analytics-v2 task 03: order-value distribution (upsell)
   METRICS_SECTION_DELIVERY = 50; // analytics-v2 task 04: fulfilment durations + on-time rate
   METRICS_SECTION_FORECAST = 51; // analytics-v2 task 06: month revenue forecast
+  METRICS_SECTION_PROFITABILITY = 52; // analytics-v2 task 07: profitability tab (CPO/CAC/LTV/CAC + assembly)
 }
 
 message GetMetricsRequest {
@@ -1565,6 +1566,7 @@ message GetMetricsResponse {
   repeated OrderValueBandRow order_value_bands = 52; // analytics-v2 task 03
   DeliverySection delivery = 53; // analytics-v2 task 04
   RevenueForecast revenue_forecast = 54; // analytics-v2 task 06
+  ProfitabilitySection profitability = 55; // analytics-v2 task 07
 }
 
 // RevenueForecast projects net revenue for the calendar month containing the period end. It blends a
@@ -1616,6 +1618,39 @@ message OrderValueBandRow {
   double orders_share_pct = 6;
   double revenue_share_pct = 7;
   google.type.Decimal avg_order_value = 8;
+}
+
+// ProfitabilitySection is the self-contained "Profitability" tab (analytics-v2 task 07): the margin
+// figures and their erosion (discounts), the acquisition-economics block (CPO / blended CAC / LTV /
+// LTV·CAC), fulfilment cost per order, returns, and the operating-result roll-up — assembled from the
+// SAME builders the dashboard uses so the shared figures tie out. CPO/CAC/LTV·CAC use manually-entered
+// media spend (channel_spend): when none is entered has_spend=false and they are 0 (N/A, not "free").
+// Cost/margin fields are stripped for accounts without costing:read; ltv (revenue-side) is kept.
+message ProfitabilitySection {
+  // --- margin and its erosion (assembly of existing figures) ---
+  MetricWithComparison gross_margin = 1; // costed revenue − COGS
+  MetricWithComparison gross_margin_pct = 2; // gross_margin / costed revenue × 100
+  double cost_coverage_pct = 3; // % of product revenue that has a cost set (trust gate for the margins)
+  MetricWithComparison total_discount = 4; // product-sale + promo-code discount (base currency)
+  MetricWithComparison product_sale_discount = 5;
+  MetricWithComparison promo_code_discount = 6;
+  MetricWithComparison discount_rate_pct = 7; // total discount / gross revenue × 100 (task 01)
+  MetricWithComparison contribution_margin = 8; // gross_margin − shipping − payment fees
+  // --- acquisition economics (new) ---
+  MetricWithComparison cpo = 9; // marketing_spend / orders — 0 when has_spend=false
+  MetricWithComparison blended_cac = 10; // marketing_spend / new_customers — meaningful on monthly+ ranges
+  bool has_spend = 11; // false → cpo / blended_cac / ltv_cac_ratio are N/A (no media spend entered)
+  google.type.Decimal ltv = 12; // historical CLV mean (realized revenue per customer this period), not predictive
+  double ltv_cac_ratio = 13; // ltv / blended_cac — 0 = N/A
+  MetricWithComparison fulfilment_cost_per_order = 14; // (shipping + payment fees) / orders
+  // --- returns and the bottom line ---
+  MetricWithComparison refund_rate = 15; // refunded / gross revenue × 100
+  MetricWithComparison total_refunded = 16;
+  google.type.Decimal opex_total = 17; // day-pro-rated fixed costs over the period
+  google.type.Decimal marketing_spend = 18;
+  google.type.Decimal operating_result = 19; // contribution_margin − opex_total − marketing_spend
+  string opex_caveat = 20; // OPEX missing/uncosted or double-counted (same wording as the dashboard)
+  string caveat = 21; // spend is manual; LTV is historical
 }
 
 // --- Dashboard (decision-grade summary) ---

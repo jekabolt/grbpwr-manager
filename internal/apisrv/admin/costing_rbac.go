@@ -146,6 +146,13 @@ var costingRedactedFieldNames = map[string]bool{
 	"opex_total":          true,
 	"marketing_spend":     true,
 	"opex_caveat":         true,
+	// analytics-v2 task 07: acquisition economics derived from confidential media spend. `ltv`
+	// (revenue-side) and the discount/refund fields (already visible in the commerce section) are
+	// deliberately NOT redacted — only cost-derived figures are.
+	"cpo":                       true,
+	"blended_cac":               true,
+	"ltv_cac_ratio":             true,
+	"fulfilment_cost_per_order": true,
 }
 
 // redactCostingFieldsDeep clears every confidential cost/margin field (by name) anywhere in the

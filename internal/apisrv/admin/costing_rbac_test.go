@@ -144,6 +144,66 @@ func TestStripMetricsCosting(t *testing.T) {
 	require.Zero(t, sd.GrossMarginPct, "sell-through gross_margin_pct redacted")
 }
 
+// TestStripMetricsCostingProfitability verifies the analytics-v2 task-07 profitability tab is
+// cost-stripped by field NAME: the margin and acquisition-economics figures (all derived from
+// confidential cost/spend) are redacted, while the revenue-side figures — ltv, refunds, discounts,
+// has_spend, cost coverage — survive for an analytics-only account.
+func TestStripMetricsCostingProfitability(t *testing.T) {
+	resp := &pb_admin.GetMetricsResponse{
+		Profitability: &pb_admin.ProfitabilitySection{
+			// cost-derived — must be redacted
+			GrossMargin:            &pb_admin.MetricWithComparison{Value: dec("400.00")},
+			GrossMarginPct:         &pb_admin.MetricWithComparison{Value: dec("40.00")},
+			ContributionMargin:     &pb_admin.MetricWithComparison{Value: dec("300.00")},
+			Cpo:                    &pb_admin.MetricWithComparison{Value: dec("5.00")},
+			BlendedCac:             &pb_admin.MetricWithComparison{Value: dec("12.00")},
+			FulfilmentCostPerOrder: &pb_admin.MetricWithComparison{Value: dec("8.00")},
+			LtvCacRatio:            3.5,
+			OpexTotal:              dec("150.00"),
+			MarketingSpend:         dec("60.00"),
+			OperatingResult:        dec("90.00"),
+			OpexCaveat:             "incomplete",
+			// revenue-side — must survive
+			Ltv:                 dec("120.00"),
+			HasSpend:            true,
+			CostCoveragePct:     95.0,
+			RefundRate:          &pb_admin.MetricWithComparison{Value: dec("2.00")},
+			TotalRefunded:       &pb_admin.MetricWithComparison{Value: dec("30.00")},
+			TotalDiscount:       &pb_admin.MetricWithComparison{Value: dec("45.00")},
+			DiscountRatePct:     &pb_admin.MetricWithComparison{Value: dec("4.00")},
+			ProductSaleDiscount: &pb_admin.MetricWithComparison{Value: dec("25.00")},
+			PromoCodeDiscount:   &pb_admin.MetricWithComparison{Value: dec("20.00")},
+			Caveat:              "spend manual",
+		},
+	}
+	stripMetricsCosting(resp)
+	p := resp.Profitability
+	require.NotNil(t, p, "profitability section kept (revenue-side survives)")
+	// cost-derived → redacted
+	require.Nil(t, p.GrossMargin, "gross_margin redacted")
+	require.Nil(t, p.GrossMarginPct, "gross_margin_pct redacted")
+	require.Nil(t, p.ContributionMargin, "contribution_margin redacted")
+	require.Nil(t, p.Cpo, "cpo redacted")
+	require.Nil(t, p.BlendedCac, "blended_cac redacted")
+	require.Nil(t, p.FulfilmentCostPerOrder, "fulfilment_cost_per_order redacted")
+	require.Zero(t, p.LtvCacRatio, "ltv_cac_ratio redacted")
+	require.Nil(t, p.OpexTotal, "opex_total redacted")
+	require.Nil(t, p.MarketingSpend, "marketing_spend redacted")
+	require.Nil(t, p.OperatingResult, "operating_result redacted")
+	require.Empty(t, p.OpexCaveat, "opex_caveat redacted")
+	// revenue-side → kept
+	require.Equal(t, "120.00", p.Ltv.GetValue(), "ltv kept (revenue-side)")
+	require.True(t, p.HasSpend, "has_spend kept")
+	require.Equal(t, 95.0, p.CostCoveragePct, "cost_coverage_pct kept")
+	require.NotNil(t, p.RefundRate, "refund_rate kept")
+	require.Equal(t, "30.00", p.TotalRefunded.GetValue().GetValue(), "total_refunded kept")
+	require.Equal(t, "45.00", p.TotalDiscount.GetValue().GetValue(), "total_discount kept")
+	require.NotNil(t, p.DiscountRatePct, "discount_rate_pct kept")
+	require.NotNil(t, p.ProductSaleDiscount, "product_sale_discount kept")
+	require.NotNil(t, p.PromoCodeDiscount, "promo_code_discount kept")
+	require.Equal(t, "spend manual", p.Caveat, "caveat kept")
+}
+
 // TestStripDashboardCosting redacts margins while revenue/orders survive.
 func TestStripDashboardCosting(t *testing.T) {
 	resp := &pb_admin.GetDashboardResponse{

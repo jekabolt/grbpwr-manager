@@ -606,6 +606,16 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 		resp.RevenueForecast = dto.ConvertRevenueForecastToPb(fc)
 	}
 
+	if want(pb_admin.MetricsSection_METRICS_SECTION_PROFITABILITY) {
+		period := entity.TimeRange{From: periodFrom, To: periodTo}
+		prof, err := s.repo.Metrics().GetProfitability(ctx, period, comparePeriod)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't get profitability", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't get profitability")
+		}
+		resp.Profitability = dto.ConvertProfitabilitySectionToPb(prof)
+	}
+
 	// Redact confidential cost/margin sections for accounts without costing:read (task 19).
 	// Commerce, traffic and email metrics remain visible.
 	if read, _ := s.costingAccess(ctx); !read {

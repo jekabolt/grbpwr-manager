@@ -426,6 +426,36 @@ func ConvertRevenueForecastToPb(f entity.RevenueForecast) *pb_admin.RevenueForec
 	}
 }
 
+// ConvertProfitabilitySectionToPb maps the assembled profitability tab (analytics-v2 task 07) to the
+// wire. Cost/discount/fulfilment metrics carry lower_is_better=true so the UI colours a decrease green;
+// margins do not. The costing-strip (redactCostingFieldsDeep) later blanks the confidential fields by
+// name for accounts without costing:read — ltv (revenue-side) is intentionally left visible.
+func ConvertProfitabilitySectionToPb(p entity.ProfitabilitySection) *pb_admin.ProfitabilitySection {
+	return &pb_admin.ProfitabilitySection{
+		GrossMargin:            metricWithComparisonToPb(p.GrossMargin),
+		GrossMarginPct:         metricWithComparisonToPb(p.GrossMarginPct),
+		CostCoveragePct:        p.CostCoveragePct,
+		TotalDiscount:          metricWithComparisonToPb(p.TotalDiscount, true),
+		ProductSaleDiscount:    metricWithComparisonToPb(p.ProductSaleDiscount, true),
+		PromoCodeDiscount:      metricWithComparisonToPb(p.PromoCodeDiscount, true),
+		DiscountRatePct:        metricWithComparisonToPb(p.DiscountRatePct, true),
+		ContributionMargin:     metricWithComparisonToPb(p.ContributionMargin),
+		Cpo:                    metricWithComparisonToPb(p.CPO, true),
+		BlendedCac:             metricWithComparisonToPb(p.BlendedCAC, true),
+		HasSpend:               p.HasSpend,
+		Ltv:                    &decimal.Decimal{Value: p.LTV.String()},
+		LtvCacRatio:            p.LTVCACRatio,
+		FulfilmentCostPerOrder: metricWithComparisonToPb(p.FulfilmentCostPerOrder, true),
+		RefundRate:             metricWithComparisonToPb(p.RefundRate, true),
+		TotalRefunded:          metricWithComparisonToPb(p.TotalRefunded, true),
+		OpexTotal:              &decimal.Decimal{Value: p.OpexTotal.String()},
+		MarketingSpend:         &decimal.Decimal{Value: p.MarketingSpend.String()},
+		OperatingResult:        &decimal.Decimal{Value: p.OperatingResult.String()},
+		OpexCaveat:             p.OpexCaveat,
+		Caveat:                 p.Caveat,
+	}
+}
+
 // ConvertDeliverySectionToPb maps the fulfilment-speed section (analytics-v2 task 04) to the wire.
 func ConvertDeliverySectionToPb(d entity.DeliverySection) *pb_admin.DeliverySection {
 	return &pb_admin.DeliverySection{

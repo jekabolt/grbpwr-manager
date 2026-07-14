@@ -324,6 +324,37 @@ type OrderValueBandRow struct {
 	AvgOrderValue   decimal.Decimal
 }
 
+// ProfitabilitySection is the assembled "Profitability" tab (analytics-v2 task 07): margin and its
+// erosion, acquisition economics (CPO / blended CAC / LTV / LTV·CAC), fulfilment cost per order,
+// returns and the operating-result roll-up. Built from the same helpers as the dashboard so shared
+// figures tie out. CPO/CAC/LTV·CAC divide by manually-entered media spend (channel_spend): HasSpend
+// is false and they are zero when no spend is entered (N/A, not "free").
+type ProfitabilitySection struct {
+	GrossMargin         MetricWithComparison
+	GrossMarginPct      MetricWithComparison
+	CostCoveragePct     float64
+	TotalDiscount       MetricWithComparison
+	ProductSaleDiscount MetricWithComparison
+	PromoCodeDiscount   MetricWithComparison
+	DiscountRatePct     MetricWithComparison
+	ContributionMargin  MetricWithComparison
+
+	CPO                    MetricWithComparison
+	BlendedCAC             MetricWithComparison
+	HasSpend               bool
+	LTV                    decimal.Decimal
+	LTVCACRatio            float64
+	FulfilmentCostPerOrder MetricWithComparison
+
+	RefundRate      MetricWithComparison
+	TotalRefunded   MetricWithComparison
+	OpexTotal       decimal.Decimal
+	MarketingSpend  decimal.Decimal
+	OperatingResult decimal.Decimal
+	OpexCaveat      string
+	Caveat          string
+}
+
 // NewVsReturningSplit splits a period's net revenue, orders and AOV by whether the buyer's
 // first-ever order (any status) falls in the period. new+returning revenue reconciles with
 // headline Revenue. Daily series carry revenue in Value and order count in Count.
