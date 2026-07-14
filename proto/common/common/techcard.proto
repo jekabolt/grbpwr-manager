@@ -463,8 +463,8 @@ message TechCardPackaging {
   int32 units_per_box = 5; // кол-во в коробе; 0 = unset
   string box_marking = 6; // маркировка короба
   string box_dimensions = 7; // размеры короба (Д×Ш×В)
-  google.type.Decimal weight_net = 8; // вес нетто
-  google.type.Decimal weight_gross = 9; // вес брутто
+  int32 weight_net_grams = 8; // вес нетто, граммы (0 = unset)
+  int32 weight_gross_grams = 9; // вес брутто, граммы (0 = unset)
   string notes = 10;
 }
 

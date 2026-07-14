@@ -206,6 +206,22 @@ type Shipment struct {
 	// ReturnShippingCost is the reverse-logistics cost of a return (base currency EUR),
 	// NULL when the order was not returned.
 	ReturnShippingCost decimal.NullDecimal `db:"return_shipping_cost"`
+	// Carrier-generated shipping label (Sendcloud). All NULL until GenerateShippingLabel succeeds;
+	// a manually-entered tracking number leaves them NULL. label_service_type holds the Sendcloud
+	// shipping_option_code; carrier_shipment_id holds the Sendcloud parcel id.
+	LabelURL          sql.NullString `db:"label_url"`
+	CarrierShipmentID sql.NullString `db:"carrier_shipment_id"`
+	LabelServiceType  sql.NullString `db:"label_service_type"`
+	LabelCreatedAt    sql.NullTime   `db:"label_created_at"`
+	ParcelWeightGrams sql.NullInt32  `db:"parcel_weight_grams"`
+	ParcelDimensions  sql.NullString `db:"parcel_dimensions"`
+}
+
+// HasLabel reports whether a carrier label has already been generated for this shipment. Used
+// as the idempotency guard so GenerateShippingLabel never issues a second CreateLabel (which
+// would double-charge the carrier account).
+func (s *Shipment) HasLabel() bool {
+	return s.CarrierShipmentID.Valid && strings.TrimSpace(s.CarrierShipmentID.String) != ""
 }
 
 // CostDecimal returns shipment cost with currency-aware rounding
@@ -237,4 +253,151 @@ type ShipmentToAutoDeliver struct {
 	CarrierId    int            `db:"carrier_id"`
 	TrackingCode sql.NullString `db:"tracking_code"`
 	ShippingDate time.Time      `db:"shipping_date"`
+}
+
+// ErrLabelsDisabled is returned by the disabled no-op LabelProvider when no Sendcloud API keys
+// are configured, so callers can surface a clear "labels not configured" state.
+var ErrLabelsDisabled = fmt.Errorf("shipping label provider is disabled (no api keys configured)")
+
+// LabelAddress is one endpoint of a shipping label. CountryISO2 is an ISO 3166-1 alpha-2 code
+// (Sendcloud requires alpha-2). Residential is informational (Sendcloud has no address type).
+type LabelAddress struct {
+	ContactName string
+	Company     string
+	Street1     string
+	HouseNumber string // Sendcloud splits address_line_1 / house_number; empty is tolerated
+	Street2     string
+	City        string
+	State       string
+	PostalCode  string
+	CountryISO2 string
+	Phone       string
+	Email       string
+	Residential bool
+}
+
+// LabelParcel is the physical parcel a label is generated for. Weight is in grams and dimensions
+// in whole centimetres; the client converts to the provider's units (kg / cm). Zero dimensions
+// are omitted. BoxType is retained for the UI but not sent to Sendcloud.
+type LabelParcel struct {
+	WeightGrams int
+	LengthCM    int
+	WidthCM     int
+	HeightCM    int
+	BoxType     string
+}
+
+// LabelCustomsItem / LabelCustoms carry the international customs declaration for cross-border
+// (non-intra-EU) shipments. OriginISO2 is an ISO 3166-1 alpha-2 code. Sendcloud auto-generates the
+// customs documents from the parcel_items built from these.
+type LabelCustomsItem struct {
+	Description   string
+	Quantity      int
+	PriceAmount   decimal.Decimal
+	PriceCurrency string
+	WeightGrams   int
+	HSCode        string
+	OriginISO2    string
+	SKU           string
+}
+
+type LabelCustoms struct {
+	Purpose string // Sendcloud parcel_items shipment reason, e.g. "merchandise"
+	Items   []LabelCustomsItem
+}
+
+// LabelRequest is the provider-agnostic input to LabelProvider.CreateLabel. ShipFrom is resolved
+// from configuration by the caller (the warehouse origin). References carries the order UUID.
+// ShippingOptionCode is the Sendcloud shipping_option_code; empty means "let Sendcloud shipping
+// rules pick the carrier/contract".
+type LabelRequest struct {
+	ShippingOptionCode string
+	ShipFrom           LabelAddress
+	ShipTo             LabelAddress
+	Parcel             LabelParcel
+	References         []string
+	Customs            *LabelCustoms
+}
+
+// OptionsRequest is the provider-agnostic input to LabelProvider.GetShippingOptions: fetch the
+// shipping options (carrier + service + quote) available for a parcel. ShipFrom is the warehouse
+// origin; ShipTo is the order destination.
+type OptionsRequest struct {
+	ShipFrom LabelAddress
+	ShipTo   LabelAddress
+	Parcel   LabelParcel
+}
+
+// ShippingOption is one quoted service option returned by GetShippingOptions. Code is the
+// shipping_option_code passed back to CreateLabel to select this option. TotalCharge/Currency and
+// TransitDays/DeliveryDate are best-effort (zero when Sendcloud does not return a quote).
+type ShippingOption struct {
+	Code         string
+	CarrierCode  string
+	CarrierName  string
+	ProductName  string
+	TotalCharge  decimal.Decimal
+	Currency     string
+	TransitDays  int
+	DeliveryDate string
+}
+
+// LabelResult is the normalized output of a successful CreateLabel: the carrier tracking number,
+// the decoded label PDF bytes (Sendcloud returns the label inline as base64), the provider parcel
+// id (stored for void and idempotency), the resolved carrier + shipping_option_code, and status.
+type LabelResult struct {
+	TrackingNumber     string
+	LabelPDF           []byte
+	CarrierShipmentID  string
+	CarrierCode        string
+	CarrierName        string
+	ShippingOptionCode string
+	Status             string
+}
+
+// ShipmentLabel is the persisted result of a generated label, written to the shipment row by
+// SetShipmentLabel. ServiceType holds the Sendcloud shipping_option_code; ParcelDimensions is the
+// free-text "LxWxH cm" actually sent to the carrier.
+type ShipmentLabel struct {
+	LabelURL          string
+	CarrierShipmentID string
+	ServiceType       string
+	ParcelWeightGrams int
+	ParcelDimensions  string
+}
+
+// PickupRequest schedules a carrier pickup (Sendcloud's end-of-day handover equivalent — there is
+// no generic manifest API in v3). Address is the warehouse origin; Date is the pickup day
+// (YYYY-MM-DD); CarrierCode is the Sendcloud carrier to collect. Quantity is the parcel count.
+type PickupRequest struct {
+	Address     LabelAddress
+	CarrierCode string
+	Date        string
+	FromTime    string
+	ToTime      string
+	Quantity    int
+}
+
+// PickupResult is the normalized output of a scheduled pickup.
+type PickupResult struct {
+	PickupID  string
+	Confirmed bool
+	Message   string
+}
+
+// OrderItemParcel is one order line's packaging + customs data, joined from the product and its
+// primary tech card (order_item -> product.primary_tech_card_id -> tech_card_packaging). WeightGross
+// and BoxDimensions are NULL when the product has no primary tech card or no packaging spec; the
+// caller then flags the parcel as incomplete and requires a manual weight/box override. The SKU,
+// price and customs fields feed an international label's customs declaration.
+type OrderItemParcel struct {
+	ProductId            int             `db:"product_id"`
+	Quantity             decimal.Decimal `db:"quantity"`
+	WeightGrossGrams     sql.NullInt32   `db:"weight_gross_grams"`
+	BoxDimensions        sql.NullString  `db:"box_dimensions"`
+	SKU                  string          `db:"sku"`
+	ProductPriceWithSale decimal.Decimal `db:"product_price_with_sale"`
+	HSCode               sql.NullString  `db:"hs_code"`
+	CountryOfOrigin      sql.NullString  `db:"country_of_origin"`
+	CustomsDescription   sql.NullString  `db:"customs_description"`
 }

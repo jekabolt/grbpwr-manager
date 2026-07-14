@@ -43,10 +43,11 @@ const (
 
 	costMaxFrac = 2 // cost articles DECIMAL(12,2)
 	costLimit   = 10_000_000_000
-	weightFrac  = 3 // weight DECIMAL(8,3)
-	weightLimit = 100_000
-	stitchFrac  = 2 // stitches_per_cm DECIMAL(5,2)
-	stitchLimit = 1_000
+	// weightGramsLimit caps packaging weight (INT grams). Generous — 1 tonne — so real parcels
+	// (well above 750 g) are never rejected.
+	weightGramsLimit = 1_000_000
+	stitchFrac       = 2 // stitches_per_cm DECIMAL(5,2)
+	stitchLimit      = 1_000
 )
 
 var techCardLabelTypePbToEntity = map[pb_common.TechCardLabelType]entity.TechCardLabelType{
@@ -279,31 +280,23 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 	if pb.UnitsPerBox < 0 {
 		return nil, fmt.Errorf("packaging units_per_box must not be negative")
 	}
-	weightNet, err := nullDecimalFromPb(pb.WeightNet)
-	if err != nil {
-		return nil, fmt.Errorf("packaging weight_net: %w", err)
+	if pb.WeightNetGrams < 0 || pb.WeightGrossGrams < 0 {
+		return nil, fmt.Errorf("packaging weight must not be negative")
 	}
-	if err := validateDecimalScale(weightNet, "packaging weight_net", weightFrac, weightLimit); err != nil {
-		return nil, err
-	}
-	weightGross, err := nullDecimalFromPb(pb.WeightGross)
-	if err != nil {
-		return nil, fmt.Errorf("packaging weight_gross: %w", err)
-	}
-	if err := validateDecimalScale(weightGross, "packaging weight_gross", weightFrac, weightLimit); err != nil {
-		return nil, err
+	if pb.WeightNetGrams > weightGramsLimit || pb.WeightGrossGrams > weightGramsLimit {
+		return nil, fmt.Errorf("packaging weight exceeds max %d grams", weightGramsLimit)
 	}
 	return &entity.TechCardPackaging{
-		FoldingMethod: nullStringFromPb(pb.FoldingMethod),
-		Polybag:       nullStringFromPb(pb.Polybag),
-		BagSticker:    nullStringFromPb(pb.BagSticker),
-		Inserts:       nullStringFromPb(pb.Inserts),
-		UnitsPerBox:   nullInt32FromPb(pb.UnitsPerBox),
-		BoxMarking:    nullStringFromPb(pb.BoxMarking),
-		BoxDimensions: nullStringFromPb(pb.BoxDimensions),
-		WeightNet:     weightNet,
-		WeightGross:   weightGross,
-		Notes:         nullStringFromPb(pb.Notes),
+		FoldingMethod:    nullStringFromPb(pb.FoldingMethod),
+		Polybag:          nullStringFromPb(pb.Polybag),
+		BagSticker:       nullStringFromPb(pb.BagSticker),
+		Inserts:          nullStringFromPb(pb.Inserts),
+		UnitsPerBox:      nullInt32FromPb(pb.UnitsPerBox),
+		BoxMarking:       nullStringFromPb(pb.BoxMarking),
+		BoxDimensions:    nullStringFromPb(pb.BoxDimensions),
+		WeightNetGrams:   nullInt32FromPb(pb.WeightNetGrams),
+		WeightGrossGrams: nullInt32FromPb(pb.WeightGrossGrams),
+		Notes:            nullStringFromPb(pb.Notes),
 	}, nil
 }
 
@@ -599,16 +592,16 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 		return nil
 	}
 	return &pb_common.TechCardPackaging{
-		FoldingMethod: pbStringFromNull(p.FoldingMethod),
-		Polybag:       pbStringFromNull(p.Polybag),
-		BagSticker:    pbStringFromNull(p.BagSticker),
-		Inserts:       pbStringFromNull(p.Inserts),
-		UnitsPerBox:   pbInt32FromNull(p.UnitsPerBox),
-		BoxMarking:    pbStringFromNull(p.BoxMarking),
-		BoxDimensions: pbStringFromNull(p.BoxDimensions),
-		WeightNet:     pbDecimalFromNull(p.WeightNet),
-		WeightGross:   pbDecimalFromNull(p.WeightGross),
-		Notes:         pbStringFromNull(p.Notes),
+		FoldingMethod:    pbStringFromNull(p.FoldingMethod),
+		Polybag:          pbStringFromNull(p.Polybag),
+		BagSticker:       pbStringFromNull(p.BagSticker),
+		Inserts:          pbStringFromNull(p.Inserts),
+		UnitsPerBox:      pbInt32FromNull(p.UnitsPerBox),
+		BoxMarking:       pbStringFromNull(p.BoxMarking),
+		BoxDimensions:    pbStringFromNull(p.BoxDimensions),
+		WeightNetGrams:   pbInt32FromNull(p.WeightNetGrams),
+		WeightGrossGrams: pbInt32FromNull(p.WeightGrossGrams),
+		Notes:            pbStringFromNull(p.Notes),
 	}
 }
 

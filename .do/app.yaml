@@ -198,6 +198,56 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: ""
+# Sendcloud (carrier label + tracking-number generation). SENDCLOUD_PUBLIC_KEY / SENDCLOUD_SECRET_KEY
+# are the integration key pair (SECRET); blank until set in the DO dashboard, and while blank the
+# label provider is disabled (operators keep entering tracking numbers manually). SHIP_FROM_* is the
+# warehouse origin stamped on every generated label (SHIP_FROM_COUNTRY is ISO-2; SHIP_FROM_HOUSE_NUMBER
+# is the origin house number). SENDCLOUD_DEFAULT_SHIPPING_OPTION is an optional fallback option code
+# (usually blank — Sendcloud shipping rules pick the carrier/contract).
+- key: SENDCLOUD_PUBLIC_KEY
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+- key: SENDCLOUD_SECRET_KEY
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+- key: SENDCLOUD_DEFAULT_SHIPPING_OPTION
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_NAME
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_COMPANY
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_STREET1
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_HOUSE_NUMBER
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_STREET2
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_CITY
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_STATE
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_POSTAL_CODE
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_COUNTRY
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_PHONE
+  scope: RUN_TIME
+  value: ""
+- key: SHIP_FROM_EMAIL
+  scope: RUN_TIME
+  value: ""
 - key: STOREFRONT_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 1h

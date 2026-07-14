@@ -31,6 +31,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
@@ -246,6 +247,12 @@ func (a *App) Start(ctx context.Context) error {
 	// same tracker instance is shared with the webhook handler below.
 	tracker := aftership.New(&a.c.AfterShip)
 	a.dsw = deliverysync.New(&a.c.DeliverySync, a.db, tracker, a.ma)
+	// Sendcloud label provider (carrier tracking-number + label generation); a disabled no-op when
+	// no API keys are configured, so GenerateShippingLabel reports labels-not-configured and
+	// operators keep entering tracking numbers manually. The ship-from (warehouse) origin is
+	// stamped on every generated label.
+	labelProvider := shippinglabel.New(&a.c.ShippingLabel)
+	shipFrom := a.c.ShippingLabel.ShipFromAddress()
 	if err = a.dsw.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start delivery sync worker",
 			slog.String("err", err.Error()),
@@ -318,7 +325,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, a.c.Security.HeroEmbedAllowedHosts)
+	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts)
 	a.adminS = adminS
 
 	var frontendS *frontend.Server

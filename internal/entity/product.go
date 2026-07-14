@@ -221,6 +221,17 @@ type ProductCostInfo struct {
 	PrimaryTechCardID   sql.NullInt32       `db:"primary_tech_card_id"`
 }
 
+// ProductCustoms carries the per-product customs data used to build an international shipping
+// label's customs declaration (Sendcloud). HSCode / CustomsDescription are the optional customs-only
+// fields (a product without them ships domestically/intra-EU fine). CountryOfOrigin is the existing
+// required core product field (free-text manufacture country) surfaced here read-only — it is set
+// via the product form, and resolved to ISO-2 at label build time; SetProductCustoms never writes it.
+type ProductCustoms struct {
+	HSCode             sql.NullString `db:"hs_code"`
+	CountryOfOrigin    sql.NullString `db:"country_of_origin"`
+	CustomsDescription sql.NullString `db:"customs_description"`
+}
+
 type ProductMeasurementUpdate struct {
 	SizeId            int             `db:"size_id"`
 	MeasurementNameId int             `db:"measurement_name_id"`

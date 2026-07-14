@@ -134,6 +134,8 @@ var methodRequirements = map[string]Requirement{
 	"DeleteProductByID":           wr(SectionProducts),
 	"UpdateProductSizeStock":      wr(SectionProducts),
 	"SyncProductCostFromTechCard": wr(SectionProducts),
+	"GetProductCustoms":           rd(SectionProducts),
+	"SetProductCustoms":           wr(SectionProducts),
 	"ListStockChangeHistory":      rd(SectionProducts),
 	"ListStockChanges":            rd(SectionProducts),
 	// promo
@@ -171,13 +173,13 @@ var methodRequirements = map[string]Requirement{
 	"ListOpexRecurring":    rd(SectionAnalytics),
 	// Employee registry (gap-07 v2 A) — salary journal's people. Same analytics + costing:* gating
 	// as recurring OPEX (the registry carries a default_monthly_cost, confidential cost data).
-	"UpsertEmployee":  wr(SectionAnalytics),
-	"ArchiveEmployee": wr(SectionAnalytics),
-	"ListEmployees":   rd(SectionAnalytics),
-	"GetAlertSettings":     rd(SectionAnalytics),
-	"UpsertAlertSettings":  wr(SectionAnalytics),
-	"GetVatRates":          rd(SectionAnalytics),
-	"UpsertVatRates":       wr(SectionAnalytics),
+	"UpsertEmployee":      wr(SectionAnalytics),
+	"ArchiveEmployee":     wr(SectionAnalytics),
+	"ListEmployees":       rd(SectionAnalytics),
+	"GetAlertSettings":    rd(SectionAnalytics),
+	"UpsertAlertSettings": wr(SectionAnalytics),
+	"GetVatRates":         rd(SectionAnalytics),
+	"UpsertVatRates":      wr(SectionAnalytics),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
@@ -277,6 +279,11 @@ var methodRequirements = map[string]Requirement{
 	"DeleteFulfillmentChecklistItem":  wr(SectionFulfillment),
 	"ShipFulfillmentOrder":            wr(SectionFulfillment),
 	"MarkFulfillmentDelivered":        wr(SectionFulfillment),
+	"PrepareShippingLabel":            rd(SectionFulfillment),
+	"GenerateShippingLabel":           wr(SectionFulfillment),
+	"GetShippingOptions":              rd(SectionFulfillment),
+	"VoidShippingLabel":               wr(SectionFulfillment),
+	"SchedulePickup":                  wr(SectionFulfillment),
 	// settings
 	"UpdateSettings":          wr(SectionSettings),
 	"UpsertPaymentMethodFees": wr(SectionSettings),
