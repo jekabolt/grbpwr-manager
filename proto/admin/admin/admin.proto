@@ -1513,6 +1513,11 @@ message GetMetricsRequest {
   repeated MetricsSection sections = 4; // empty = business only
   int32 limit = 5; // for sections that support it (user_journeys, entry_products, revenue_pareto, inventory_health, size_run_efficiency)
   TrendGranularity trend_granularity = 6; // for time series data (default DAILY)
+  // Explicit comparison window — an arbitrary analyst baseline (e.g. "this week vs the launch
+  // week", "Black Friday vs a normal week") instead of the fixed compare_mode presets. When BOTH
+  // from and to are set it OVERRIDES compare_mode; otherwise compare_mode applies. from inclusive,
+  // to exclusive, same as the primary period.
+  TimeRange compare_period = 7;
 }
 
 message GetMetricsResponse {
@@ -1665,6 +1670,10 @@ message GetDashboardRequest {
   google.protobuf.Timestamp end_at = 2;
   // Max rows per action list (top-by-margin, reorder, clear, drops). 0 = server default.
   int32 limit = 3;
+  // Period-over-period comparison of the headline figures. NONE/UNSPECIFIED (default) = no
+  // comparison; PREVIOUS_PERIOD = the same-length window immediately before; SAME_PERIOD_LAST_YEAR
+  // = the same calendar dates a year earlier. When a real mode is set, the response carries `compare`.
+  CompareMode compare_mode = 4;
 }
 
 enum AlertSeverity {
@@ -1715,6 +1724,34 @@ message GetDashboardResponse {
   google.type.Decimal opex_total = 18; // fixed costs (opex_entry) attributed to the period
   google.type.Decimal marketing_spend = 19; // channel_spend for the period (base currency)
   string opex_caveat = 20; // set when OPEX is missing for the period
+  // Period-over-period comparison of the six headline figures. Present only when the request set
+  // compare_mode to a real mode. Every headline metric is higher-is-better, so a positive change
+  // is always a good move (no per-field direction flag needed). The margin/contribution/operating
+  // figures here (values AND change fields) are confidential and redacted for accounts without
+  // costing:read, exactly like their top-level twins.
+  DashboardComparison compare = 21;
+}
+
+// DashboardComparison is the prior-period snapshot of the dashboard headline figures plus the
+// period-over-period change, so each headline tile can render "€42,300 ▲12% vs prev". *_change_pct
+// is 100*(current−prior)/prior, left 0 when prior is 0 (no base). The gross-margin-% delta is a
+// percentage-POINT change (change_pp), NOT a percent-of-a-percent. revenue and orders are public;
+// the margin/contribution/operating figures and their change fields are confidential (redacted
+// without costing:read).
+message DashboardComparison {
+  TimeRange period = 1; // the comparison window actually used
+  google.type.Decimal revenue = 2; // prior net revenue (base currency)
+  double revenue_change_pct = 3;
+  int32 orders = 4; // prior net-revenue order count
+  double orders_change_pct = 5;
+  google.type.Decimal gross_margin = 6; // prior gross margin € (costed net revenue − COGS)
+  double gross_margin_change_pct = 7;
+  double gross_margin_pct = 8; // prior gross margin %
+  double gross_margin_pct_change_pp = 9; // percentage-point change (current − prior)
+  google.type.Decimal contribution_margin = 10; // prior contribution margin €
+  double contribution_margin_change_pct = 11;
+  google.type.Decimal operating_result = 12; // prior operating result €
+  double operating_result_change_pct = 13;
 }
 
 // AlertSettings are the operator-tunable thresholds behind the dashboard alerts.

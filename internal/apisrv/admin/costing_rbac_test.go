@@ -261,6 +261,23 @@ func TestStripDashboardCosting(t *testing.T) {
 		OpexTotal:          dec("150.00"),
 		MarketingSpend:     dec("50.00"),
 		OpexCaveat:         "no opex",
+		// Period-over-period comparison: revenue/orders (and their deltas) are public; every
+		// margin/contribution/operating figure AND its derived change must be redacted, else the
+		// margin TREND leaks with the value hidden.
+		Compare: &pb_admin.DashboardComparison{
+			Revenue:                     dec("900.00"),
+			RevenueChangePct:            11.11,
+			Orders:                      10,
+			OrdersChangePct:             20,
+			GrossMargin:                 dec("350.00"),
+			GrossMarginChangePct:        14.28,
+			GrossMarginPct:              38,
+			GrossMarginPctChangePp:      2,
+			ContributionMargin:          dec("250.00"),
+			ContributionMarginChangePct: 20,
+			OperatingResult:             dec("80.00"),
+			OperatingResultChangePct:    25,
+		},
 	}
 	stripDashboardCosting(resp)
 	require.Equal(t, "1000.00", resp.Revenue.GetValue(), "revenue kept")
@@ -273,6 +290,20 @@ func TestStripDashboardCosting(t *testing.T) {
 	require.Nil(t, resp.OpexTotal, "opex total redacted")
 	require.Nil(t, resp.MarketingSpend, "marketing spend redacted")
 	require.Empty(t, resp.OpexCaveat, "opex caveat redacted")
+	// Comparison block: public deltas survive, every margin/operating figure + its change is gone.
+	require.NotNil(t, resp.Compare, "compare block kept (revenue/orders comparison is public)")
+	require.Equal(t, "900.00", resp.Compare.Revenue.GetValue(), "compare revenue kept")
+	require.EqualValues(t, 11.11, resp.Compare.RevenueChangePct, "compare revenue change kept")
+	require.EqualValues(t, 10, resp.Compare.Orders, "compare orders kept")
+	require.EqualValues(t, 20, resp.Compare.OrdersChangePct, "compare orders change kept")
+	require.Nil(t, resp.Compare.GrossMargin, "compare gross margin redacted")
+	require.Zero(t, resp.Compare.GrossMarginChangePct, "compare gross margin change redacted")
+	require.Zero(t, resp.Compare.GrossMarginPct, "compare gross margin pct redacted")
+	require.Zero(t, resp.Compare.GrossMarginPctChangePp, "compare gross margin pp change redacted")
+	require.Nil(t, resp.Compare.ContributionMargin, "compare contribution margin redacted")
+	require.Zero(t, resp.Compare.ContributionMarginChangePct, "compare contribution change redacted")
+	require.Nil(t, resp.Compare.OperatingResult, "compare operating result redacted")
+	require.Zero(t, resp.Compare.OperatingResultChangePct, "compare operating result change redacted")
 }
 
 // TestStripStyleEconomicsCosting redacts cost/margin from a style-economics card while identity,
