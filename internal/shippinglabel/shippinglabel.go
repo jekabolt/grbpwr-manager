@@ -36,8 +36,8 @@ const (
 	announcePath   = "/shipments/announce-with-shipping-rules"
 	optionsPath    = "/fetch-shipping-options"
 	pickupsPath    = "/pickups"
-	defaultWeightU = "kilogram"
-	defaultDimU    = "centimeter"
+	defaultWeightU = "kg" // Sendcloud v3 accepts kg|g
+	defaultDimU    = "cm" // Sendcloud v3 accepts cm|ft|in|m|mm|yd
 )
 
 // Config holds Sendcloud credentials and the warehouse origin (ship-from) address that every
@@ -623,12 +623,18 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// firstErr renders a Sendcloud error envelope for logging. It joins ALL returned errors (validation
+// responses often carry several at once — surfacing only the first hides the others, e.g. a bad
+// weight unit masked behind a bad dimensions unit).
 func firstErr(errs []wireAPIError) string {
 	if len(errs) == 0 {
 		return ""
 	}
-	e := errs[0]
-	return fmt.Sprintf("code=%q %s", e.Code, firstNonEmpty(e.Detail, e.Message, e.Title))
+	parts := make([]string, 0, len(errs))
+	for _, e := range errs {
+		parts = append(parts, fmt.Sprintf("code=%q %s", e.Code, firstNonEmpty(e.Detail, e.Message, e.Title)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Disabled is a no-op LabelProvider used when Sendcloud is not configured. Every method returns
