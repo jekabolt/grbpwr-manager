@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -167,15 +168,39 @@ func TestCreateLabelErrors(t *testing.T) {
 	if _, err := c.CreateLabel(context.Background(), entity.LabelRequest{Parcel: entity.LabelParcel{WeightGrams: 100}}); err == nil {
 		t.Error("expected error when no parcels returned")
 	}
-	// Non-2xx with errors.
+	// Non-2xx (4xx) with a validation error carrying a field pointer: must become a typed
+	// CarrierValidationError whose message includes the offending field, so the handler can surface
+	// it to the operator instead of a generic 500.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"errors":[{"code":"invalid","detail":"bad address"}]}`))
+		_, _ = w.Write([]byte(`{"errors":[{"code":"validation_error","detail":"Enter a valid zip code.","source":{"pointer":"/to_address/postal_code"}}]}`))
 	}))
 	defer srv2.Close()
 	c2 := &Client{publicKey: "p", secretKey: "s", baseURL: srv2.URL, http: srv2.Client()}
-	if _, err := c2.CreateLabel(context.Background(), entity.LabelRequest{Parcel: entity.LabelParcel{WeightGrams: 100}}); err == nil {
-		t.Error("expected error on http 400")
+	_, err := c2.CreateLabel(context.Background(), entity.LabelRequest{Parcel: entity.LabelParcel{WeightGrams: 100}})
+	if err == nil {
+		t.Fatal("expected error on http 400")
+	}
+	var ve *entity.CarrierValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *entity.CarrierValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ve.Error(), "/to_address/postal_code") || !strings.Contains(ve.Error(), "Enter a valid zip code.") {
+		t.Errorf("validation error should include field pointer and detail, got %q", ve.Error())
+	}
+	// A 5xx stays a plain (non-validation) error so the handler returns a generic 500.
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"code":"server_error","detail":"boom"}]}`))
+	}))
+	defer srv3.Close()
+	c3 := &Client{publicKey: "p", secretKey: "s", baseURL: srv3.URL, http: srv3.Client()}
+	_, err = c3.CreateLabel(context.Background(), entity.LabelRequest{Parcel: entity.LabelParcel{WeightGrams: 100}})
+	if err == nil {
+		t.Fatal("expected error on http 500")
+	}
+	if errors.As(err, &ve) {
+		t.Errorf("5xx should not be a CarrierValidationError, got %v", err)
 	}
 	// Weight non-positive.
 	if _, err := c.CreateLabel(context.Background(), entity.LabelRequest{}); err == nil {
