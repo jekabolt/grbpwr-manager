@@ -14,6 +14,19 @@ import (
 // full-replaced); AmountBase is pre-folded by the caller (apisrv) via the costing FX, or left NULL
 // when the currency has no rate.
 func (s *Store) AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error) {
+	// A linked sample must belong to this expense's tech card — otherwise one style's spend would land
+	// in another style's sample cost AND its own dev-cost total (double attribution) — NF-04.
+	if e.SampleId.Valid {
+		n, err := storeutil.QueryCountNamed(ctx, s.DB,
+			`SELECT COUNT(*) FROM sample WHERE id = :s AND tech_card_id = :tc`,
+			map[string]any{"s": e.SampleId.Int32, "tc": e.TechCardId})
+		if err != nil {
+			return entity.TechCardDevExpense{}, fmt.Errorf("check dev-expense sample: %w", err)
+		}
+		if n == 0 {
+			return entity.TechCardDevExpense{}, entity.ErrSampleForeignToCard
+		}
+	}
 	id, err := storeutil.ExecNamedLastId(ctx, s.DB, `
 		INSERT INTO tech_card_dev_expense
 			(tech_card_id, kind, description, amount, currency, amount_base, fitting_id, sample_id, incurred_at)

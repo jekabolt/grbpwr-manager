@@ -59,12 +59,12 @@ type FilterConditions struct {
 	// (e.g. hide the "object" category from the men's catalog).
 	ExcludeTopCategoryIds []int
 	SubCategoryIds        []int
-	TypeIds        []int
-	SizesIds       []int
-	Preorder       bool
-	ByTag          string
-	Collections    []string
-	Seasons        []SeasonEnum
+	TypeIds               []int
+	SizesIds              []int
+	Preorder              bool
+	ByTag                 string
+	Collections           []string
+	Seasons               []SeasonEnum
 	// ViewerTier is the loyalty tier code (0/1/2/99) of the requesting customer
 	// (0 for guests). Applied as a visibility gate on public listings.
 	ViewerTier int16

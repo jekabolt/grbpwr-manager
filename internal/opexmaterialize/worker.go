@@ -140,25 +140,17 @@ func backoffDelay(consecutiveFailures int) time.Duration {
 	return delay
 }
 
-// runOnce materialises all active recurring templates up to the current month,
-// folding amounts to base currency with the manual costing FX rates. Returns
-// whether the tick succeeded.
+// runOnce materialises all active recurring templates up to the current month, folding each month at
+// its own effective FX rate. Returns whether the tick succeeded. Materialisation loads the FX
+// history itself and fails the tick if it can't (rather than booking uncosted lines that insert-only
+// storage would freeze in place) — a transient outage just retries on the next tick.
 func (w *Worker) runOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, "opexmaterialize")
 
 	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
 	defer cancel()
 
-	rates, err := w.repo.TechCards().GetCostingFxRatesToBase(ctx)
-	if err != nil {
-		// Fold what we can — an empty rate map just leaves non-base lines uncosted
-		// (amount_base NULL, flagged on the dashboard) rather than failing the tick.
-		slog.Default().WarnContext(ctx, "opexmaterialize: FX rates unavailable, non-base lines will be uncosted",
-			slog.String("err", err.Error()))
-		rates = nil
-	}
-
-	n, err := w.repo.Metrics().MaterializeOpexRecurring(ctx, time.Now(), rates)
+	n, err := w.repo.Metrics().MaterializeOpexRecurring(ctx, time.Now())
 	if err != nil {
 		w.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "opexmaterialize: materialize failed", slog.String("err", err.Error()))

@@ -265,8 +265,13 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 		t.Errorf("placement not normalised: %q", us[0].Placement.String)
 	}
 
-	// round-trip: usages emit with computed line_total resolved against the BOM article.
+	// round-trip: usages emit with computed line_total resolved against the BOM article. The stored
+	// colourway row id is emitted too (B-10) so a sample can link to it.
+	got.Colorways[0].Id = 42
 	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
+	if pb.TechCard.Colorways[0].Id != 42 {
+		t.Errorf("colorway id not emitted (B-10): %+v", pb.TechCard.Colorways[0].Id)
+	}
 	pus := pb.TechCard.Colorways[0].Usages
 	if len(pus) != 2 || pus[0].Placement != "outer shell" {
 		t.Fatalf("pb usages mismatch: %+v", pus)
@@ -295,6 +300,87 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_OTHER, Name: "misc"},
 		}}); err != nil {
 		t.Errorf("decoration/other sections should be accepted: %v", err)
+	}
+}
+
+// baseTechCardWithPieces returns a valid card with 2 colourways, 2 BOM items (fabric + fusing
+// hardware) and 1 callout, ready for a Pieces payload — the shared fixture for the piece cases.
+func baseTechCardWithPieces(pieces []*pb_common.TechCardPiece) *pb_common.TechCardInsert {
+	return &pb_common.TechCardInsert{
+		StyleNumber: "ST-P", Name: "Piece Coat", SizeIds: []int32{4},
+		BomItems: []*pb_common.TechCardBomItem{
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", UnitPrice: dec("10"), Currency: "EUR"},
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "fusible", UnitPrice: dec("2"), Currency: "EUR"},
+		},
+		Colorways: []*pb_common.TechCardColorway{{Code: "BLK", Name: "Black"}, {Code: "WHT", Name: "White"}},
+		Callouts:  []*pb_common.TechCardCallout{{Number: 1, Part: "body"}},
+		Pieces:    pieces,
+	}
+}
+
+// TestConvertTechCardPieces covers NF-05 cut-piece dto validation (parseTechCardPieces / pieceBomRef):
+// the happy path plus one case per guard, since these piece×colourway→fabric mappings go to the
+// factory and a dropped range-check would save a silently-wrong material (nf05-01/nf05-03).
+func TestConvertTechCardPieces(t *testing.T) {
+	// happy path: a piece with a per-colourway material referencing fabric (bom 0) fused with hardware
+	// (bom 1), a callout, and a valid grainline.
+	got, err := ConvertPbTechCardInsertToEntity(baseTechCardWithPieces([]*pb_common.TechCardPiece{
+		{Name: "Body", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: i32(1),
+			Materials: []*pb_common.TechCardPieceColorwayMaterial{
+				{ColorwayIndex: 0, BomItemIndex: i32(0), FusingBomItemIndex: i32(1)},
+			}},
+	}))
+	if err != nil {
+		t.Fatalf("valid pieces rejected: %v", err)
+	}
+	if len(got.Pieces) != 1 || got.Pieces[0].PiecesPerGarment != 2 || got.Pieces[0].Grainline != "lengthwise" {
+		t.Fatalf("piece mismatch: %+v", got.Pieces)
+	}
+	if !got.Pieces[0].CalloutNumber.Valid || got.Pieces[0].CalloutNumber.Int32 != 1 {
+		t.Errorf("callout_number not carried: %+v", got.Pieces[0].CalloutNumber)
+	}
+	pm := got.Pieces[0].Materials
+	if len(pm) != 1 || pm[0].BomItemIndex.Int32 != 0 || !pm[0].FusingBomItemIndex.Valid || pm[0].FusingBomItemIndex.Int32 != 1 {
+		t.Fatalf("piece material mismatch: %+v", pm)
+	}
+	// proto3 zero pieces_per_garment defaults to 1.
+	got2, err := ConvertPbTechCardInsertToEntity(baseTechCardWithPieces([]*pb_common.TechCardPiece{
+		{Name: "Sleeve", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, BomItemIndex: i32(0)}}},
+	}))
+	if err != nil || got2.Pieces[0].PiecesPerGarment != 1 {
+		t.Fatalf("zero pieces_per_garment should default to 1: %+v err=%v", got2.Pieces, err)
+	}
+
+	bad := map[string]*pb_common.TechCardInsert{
+		"empty piece name": baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: ""}}),
+		"negative pieces_per_garment": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", PiecesPerGarment: -2}}),
+		"invalid grainline": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Grainline: "diagonal"}}),
+		"unknown callout_number": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", CalloutNumber: i32(7)}}),
+		"colorway_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 5, BomItemIndex: i32(0)}}}}),
+		"duplicate colorway_index": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{
+				{ColorwayIndex: 0, BomItemIndex: i32(0)}, {ColorwayIndex: 0, BomItemIndex: i32(1)}}}}),
+		"bom_item_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, BomItemIndex: i32(9)}}}}),
+		"fusing_bom_item_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, FusingBomItemIndex: i32(9)}}}}),
+	}
+	for name, in := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+			t.Errorf("%s: expected validation error, got nil", name)
+		}
+	}
+
+	// usage piece_index is range-checked against the pieces in the same payload (1 piece → index 1 is
+	// out of range).
+	pieceIdxBad := baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: "Body"}})
+	pieceIdxBad.Colorways[0].Usages = []*pb_common.TechCardColorwayUsage{{BomItemIndex: i32(0), PieceIndex: i32(1)}}
+	if _, err := ConvertPbTechCardInsertToEntity(pieceIdxBad); err == nil {
+		t.Errorf("out-of-range usage piece_index: expected error, got nil")
 	}
 }
 

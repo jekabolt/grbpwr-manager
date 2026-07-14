@@ -96,11 +96,11 @@ var ValidFittingChangeTargets = map[string]bool{
 // link to a photo callout pin, and a resolved flag (set when carried into the tech card). It is a
 // full-replace child of the fitting, like callouts.
 type FittingChangeRequest struct {
-	Id            int            `db:"id"`
-	Target        string         `db:"target"`
-	Note          string         `db:"note"`
-	CalloutNumber sql.NullInt32  `db:"callout_number"`
-	Resolved      bool           `db:"resolved"`
+	Id            int           `db:"id"`
+	Target        string        `db:"target"`
+	Note          string        `db:"note"`
+	CalloutNumber sql.NullInt32 `db:"callout_number"`
+	Resolved      bool          `db:"resolved"`
 }
 
 // FittingInsert is the writable payload for a fitting session. A fitting anchors

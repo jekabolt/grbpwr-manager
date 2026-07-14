@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -888,18 +890,22 @@ func (s *Server) DeleteOpexLine(ctx context.Context, req *pb_admin.DeleteOpexLin
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 	if err := s.repo.Metrics().DeleteOpexLine(ctx, int(req.GetId())); err != nil {
+		if errors.Is(err, entity.ErrOpexLineMaterialised) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't delete opex line", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete opex line")
 	}
 	return &pb_admin.DeleteOpexLineResponse{}, nil
 }
 
-// ListOpexLines returns OPEX lines in a month range. The amounts are confidential cost data, so
-// without costing:read there is nothing non-cost to return — shape it to an empty response, like
-// ListTechCardDevExpenses.
+// ListOpexLines returns OPEX lines in a month range. The whole response is confidential cost data,
+// so without costing:read it is denied outright (PermissionDenied) rather than shaped to an empty
+// success — an empty journal is indistinguishable from "no costs entered" and would bait an
+// analytics-only operator into re-entering data that only fails on write (nf08-06).
 func (s *Server) ListOpexLines(ctx context.Context, req *pb_admin.ListOpexLinesRequest) (*pb_admin.ListOpexLinesResponse, error) {
 	if read, _ := s.costingAccess(ctx); !read {
-		return &pb_admin.ListOpexLinesResponse{}, nil
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view OPEX lines")
 	}
 	filter, err := dto.ConvertOpexLineFilter(req)
 	if err != nil {
@@ -924,6 +930,10 @@ func (s *Server) UpsertOpexRecurring(ctx context.Context, req *pb_admin.UpsertOp
 	}
 	id, err := s.repo.Metrics().UpsertOpexRecurring(ctx, ins, int(req.GetId()))
 	if err != nil {
+		// a bogus employee_id fails the fk_opex_rec_employee FK — a caller-fixable input (g25-10).
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, "employee_id does not reference an existing employee")
+		}
 		slog.Default().ErrorContext(ctx, "can't upsert opex recurring", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't upsert opex recurring")
 	}
@@ -946,10 +956,10 @@ func (s *Server) ArchiveOpexRecurring(ctx context.Context, req *pb_admin.Archive
 }
 
 // ListOpexRecurring returns recurring OPEX templates (active-only unless include_archived). Gated
-// like ListOpexLines — empty response without costing:read.
+// like ListOpexLines — PermissionDenied without costing:read (nf08-06).
 func (s *Server) ListOpexRecurring(ctx context.Context, req *pb_admin.ListOpexRecurringRequest) (*pb_admin.ListOpexRecurringResponse, error) {
 	if read, _ := s.costingAccess(ctx); !read {
-		return &pb_admin.ListOpexRecurringResponse{}, nil
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view recurring OPEX")
 	}
 	list, err := s.repo.Metrics().ListOpexRecurring(ctx, req.GetIncludeArchived())
 	if err != nil {
@@ -957,6 +967,58 @@ func (s *Server) ListOpexRecurring(ctx context.Context, req *pb_admin.ListOpexRe
 		return nil, status.Error(codes.Internal, "can't list opex recurring")
 	}
 	return &pb_admin.ListOpexRecurringResponse{Recurring: dto.OpexRecurringListToPb(list)}, nil
+}
+
+// UpsertEmployee inserts (id==0) or updates an employee-registry row (gap-07 v2 A). Gated on
+// costing:write like recurring OPEX — salary registry data is confidential.
+func (s *Server) UpsertEmployee(ctx context.Context, req *pb_admin.UpsertEmployeeRequest) (*pb_admin.UpsertEmployeeResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit the employee registry")
+	}
+	ins, err := dto.ConvertPbEmployeeToEntity(req.GetEmployee())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	id, err := s.repo.Metrics().UpsertEmployee(ctx, ins, int(req.GetId()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "employee not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't upsert employee", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't upsert employee")
+	}
+	return &pb_admin.UpsertEmployeeResponse{Id: int32(id)}, nil
+}
+
+// ArchiveEmployee soft-archives an employee; linked recurring templates keep their employee_id.
+func (s *Server) ArchiveEmployee(ctx context.Context, req *pb_admin.ArchiveEmployeeRequest) (*pb_admin.ArchiveEmployeeResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to archive an employee")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Metrics().ArchiveEmployee(ctx, int(req.GetId())); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "employee not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't archive employee", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't archive employee")
+	}
+	return &pb_admin.ArchiveEmployeeResponse{}, nil
+}
+
+// ListEmployees returns registry rows (active-only unless include_archived). Gated on costing:read.
+func (s *Server) ListEmployees(ctx context.Context, req *pb_admin.ListEmployeesRequest) (*pb_admin.ListEmployeesResponse, error) {
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view the employee registry")
+	}
+	list, err := s.repo.Metrics().ListEmployees(ctx, req.GetIncludeArchived())
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list employees", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list employees")
+	}
+	return &pb_admin.ListEmployeesResponse{Employees: dto.EmployeeListToPb(list)}, nil
 }
 
 // channelKey joins the three UTM dimensions into a single map key (NUL-separated so empty
@@ -1020,6 +1082,12 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 		t.GA4CoverageWarnPct < 0 || t.GA4CoverageWarnPct > 100 ||
 		t.RateFloorN < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "percentages must be within [0,100] and rate_floor_n >= 0")
+	}
+	// A negative stale-days would silently disable the stale-open-run alert (GetStaleOpenRunCount
+	// treats <= 0 as "off") while GetAlertSettings still reports the stored value as configured —
+	// reject it so the setting can't be quietly turned off (nf09-06). 0 means "disabled" explicitly.
+	if t.ProductionRunStaleDays < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "production_run_stale_days must be >= 0 (0 disables the alert)")
 	}
 	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))

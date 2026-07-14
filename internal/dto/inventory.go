@@ -10,6 +10,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -39,7 +40,7 @@ var validMaterialAdjustReasons = map[string]struct{}{
 	entity.MaterialAdjustReasonStockCount: {}, entity.MaterialAdjustReasonDamage: {},
 	entity.MaterialAdjustReasonLoss: {}, entity.MaterialAdjustReasonFound: {},
 	entity.MaterialAdjustReasonCorrection: {}, entity.MaterialAdjustReasonPackaging: {},
-	entity.MaterialAdjustReasonOther: {},
+	entity.MaterialAdjustReasonScrap: {}, entity.MaterialAdjustReasonOther: {},
 }
 
 // ConvertPbReceiveMaterialStock validates and converts a receipt request. AdminUsername is set by
@@ -57,6 +58,11 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("unit_cost: %w", err)
 	}
 	currency := strings.ToUpper(strings.TrimSpace(req.GetCurrency()))
+	// A non-empty currency must always be a valid 3-letter code (the store persists it whenever set,
+	// so a junk value would overflow CHAR(3)); a unit cost additionally requires the currency.
+	if currency != "" && len(currency) != maxCurrency {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("currency must be a 3-letter ISO 4217 code")
+	}
 	if unitCost.Valid {
 		if unitCost.Decimal.IsNegative() {
 			return entity.MaterialReceiptInsert{}, fmt.Errorf("unit_cost must be non-negative")
@@ -116,8 +122,16 @@ func ConvertPbIssueMaterialStock(req *pb_admin.IssueMaterialStockRequest) (entit
 	}
 	if hasRun {
 		ins.ProductionRunId = nullInt32FromPb(req.ProductionRunId)
+		// Optional per-colourway attribution (gap-07 v2 C) — only for a run issue.
+		if req.ProductId > 0 {
+			ins.ProductId = nullInt32FromPb(req.ProductId)
+		}
 	} else {
 		ins.SampleId = nullInt32FromPb(req.SampleId)
+	}
+	// Optional structured lot draw (gap-07 v2 D) — valid for either target.
+	if req.LotId > 0 {
+		ins.LotId = nullInt32FromPb(req.LotId)
 	}
 	return ins, nil
 }
@@ -167,6 +181,8 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 		ProductionRunId: nullInt32Value(m.ProductionRunId),
 		SampleId:        nullInt32Value(m.SampleId),
 		TechCardId:      nullInt32Value(m.TechCardId),
+		ProductId:       nullInt32Value(m.ProductId),
+		LotId:           nullInt32Value(m.LotId),
 		Lot:             m.Lot.String,
 		SupplierDoc:     m.SupplierDoc.String,
 		Reason:          m.Reason.String,
@@ -245,4 +261,109 @@ func parseNullDate(s string) (sql.NullTime, error) {
 		return sql.NullTime{}, fmt.Errorf("must be YYYY-MM-DD")
 	}
 	return sql.NullTime{Time: t, Valid: true}, nil
+}
+
+// parseNonNegDecimal reads an optional proto decimal into a non-negative rounded quantity (absent → 0).
+func parseNonNegDecimal(d *pb_decimal.Decimal, field string) (decimal.Decimal, error) {
+	if d == nil || strings.TrimSpace(d.Value) == "" {
+		return decimal.Zero, nil
+	}
+	v, err := decimal.NewFromString(d.Value)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("%s must be a number", field)
+	}
+	if v.IsNegative() {
+		return decimal.Zero, fmt.Errorf("%s must be >= 0", field)
+	}
+	return v.Round(3), nil
+}
+
+// ConvertPbPackagingBomToEntity validates the packaging recipe write (gap-07 v2 B): each line needs a
+// material_id, non-negative quantities and a non-zero total; a material_id may appear at most once.
+func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity.PackagingBomItem, error) {
+	out := make([]entity.PackagingBomItem, 0, len(items))
+	seen := map[int32]bool{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.MaterialId <= 0 {
+			return nil, fmt.Errorf("packaging bom line needs a material_id")
+		}
+		if seen[it.MaterialId] {
+			return nil, fmt.Errorf("packaging bom has duplicate material_id %d", it.MaterialId)
+		}
+		seen[it.MaterialId] = true
+		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
+		if err != nil {
+			return nil, err
+		}
+		perItem, err := parseNonNegDecimal(it.QtyPerItem, "qty_per_item")
+		if err != nil {
+			return nil, err
+		}
+		if perOrder.IsZero() && perItem.IsZero() {
+			return nil, fmt.Errorf("packaging bom material %d has no quantity", it.MaterialId)
+		}
+		out = append(out, entity.PackagingBomItem{
+			MaterialId:  int(it.MaterialId),
+			QtyPerOrder: perOrder,
+			QtyPerItem:  perItem,
+			Active:      it.Active,
+		})
+	}
+	return out, nil
+}
+
+// PackagingBomItemToPb converts a stored packaging line to protobuf.
+func PackagingBomItemToPb(it entity.PackagingBomItem) *pb_admin.PackagingBomItem {
+	pb := &pb_admin.PackagingBomItem{
+		MaterialId:   int32(it.MaterialId),
+		MaterialName: it.MaterialName,
+		QtyPerOrder:  pbDecimalFromDecimal(it.QtyPerOrder),
+		QtyPerItem:   pbDecimalFromDecimal(it.QtyPerItem),
+		Active:       it.Active,
+	}
+	if it.MaterialUnit.Valid {
+		pb.MaterialUnit = it.MaterialUnit.String
+	}
+	return pb
+}
+
+// PackagingBomListToPb converts a slice of packaging lines to protobuf.
+func PackagingBomListToPb(items []entity.PackagingBomItem) []*pb_admin.PackagingBomItem {
+	out := make([]*pb_admin.PackagingBomItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, PackagingBomItemToPb(it))
+	}
+	return out
+}
+
+// MaterialLotToPb converts a stored lot (roll / dye-lot) to protobuf (gap-07 v2 D).
+func MaterialLotToPb(l entity.MaterialLot) *pb_common.MaterialLot {
+	pb := &pb_common.MaterialLot{
+		Id:           int32(l.Id),
+		MaterialId:   int32(l.MaterialId),
+		LotCode:      l.LotCode,
+		SupplierDoc:  l.SupplierDoc.String,
+		ReceivedQty:  pbDecimalFromDecimal(l.ReceivedQty),
+		RemainingQty: pbDecimalFromDecimal(l.RemainingQty),
+		UnitCost:     pbDecimalFromNull(l.UnitCost),
+		Currency:     l.Currency.String,
+		Note:         l.Note.String,
+		Archived:     l.Archived,
+	}
+	if l.ReceivedAt.Valid {
+		pb.ReceivedAt = timestamppb.New(l.ReceivedAt.Time)
+	}
+	return pb
+}
+
+// MaterialLotListToPb converts a slice of lots to protobuf.
+func MaterialLotListToPb(lots []entity.MaterialLot) []*pb_common.MaterialLot {
+	out := make([]*pb_common.MaterialLot, 0, len(lots))
+	for _, l := range lots {
+		out = append(out, MaterialLotToPb(l))
+	}
+	return out
 }

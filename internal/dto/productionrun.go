@@ -3,12 +3,14 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -58,6 +60,28 @@ var productionRunCostKindOrder = []entity.ProductionRunCostKind{
 	entity.ProductionRunCostOther,
 }
 
+// productionMarkerSourcePbToEntity maps the proto marker-source enum to the stored string. An unset
+// (UNKNOWN) source defaults to manual — a hand-entered marker with no CAD provenance.
+var productionMarkerSourcePbToEntity = map[pb_common.ProductionMarkerSource]entity.ProductionMarkerSource{
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_UNKNOWN: entity.ProductionMarkerSourceManual,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER:  entity.ProductionMarkerSourceGerber,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OPTITEX: entity.ProductionMarkerSourceOptitex,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_LECTRA:  entity.ProductionMarkerSourceLectra,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_AUDACES: entity.ProductionMarkerSourceAudaces,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_MANUAL:  entity.ProductionMarkerSourceManual,
+	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OTHER:   entity.ProductionMarkerSourceOther,
+}
+
+// productionMarkerSourceEntityToPb is the reverse map.
+var productionMarkerSourceEntityToPb = map[entity.ProductionMarkerSource]pb_common.ProductionMarkerSource{
+	entity.ProductionMarkerSourceGerber:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER,
+	entity.ProductionMarkerSourceOptitex: pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OPTITEX,
+	entity.ProductionMarkerSourceLectra:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_LECTRA,
+	entity.ProductionMarkerSourceAudaces: pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_AUDACES,
+	entity.ProductionMarkerSourceManual:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_MANUAL,
+	entity.ProductionMarkerSourceOther:   pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OTHER,
+}
+
 // ConvertPbProductionRunInsertToEntity validates and converts a writable production run. The
 // planned-cost snapshot is NOT taken from the client — the service layer sets it separately.
 func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*entity.ProductionRunInsert, error) {
@@ -92,6 +116,10 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 	if err != nil {
 		return nil, err
 	}
+	markers, err := convertPbProductionRunMarkers(pb.Markers)
+	if err != nil {
+		return nil, err
+	}
 	return &entity.ProductionRunInsert{
 		TechCardId:          int(pb.TechCardId),
 		ReleaseId:           nullInt64FromPb(int64(pb.ReleaseId)),
@@ -103,7 +131,79 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		Notes:               nullStringFromPb(pb.Notes),
 		Lines:               lines,
 		Costs:               costs,
+		Markers:             markers,
 	}, nil
+}
+
+// convertPbProductionRunMarkers validates and converts the imported nesting markers (gap-07 v2 E).
+// Marker fields are optional metadata; the only hard rules are non-negative dimensions and a
+// 0..100 efficiency. An unset source defaults to manual.
+func convertPbProductionRunMarkers(pbs []*pb_common.ProductionRunMarker) ([]entity.ProductionRunMarker, error) {
+	if len(pbs) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.ProductionRunMarker, 0, len(pbs))
+	for _, m := range pbs {
+		if m == nil {
+			continue
+		}
+		source, ok := productionMarkerSourcePbToEntity[m.Source]
+		if !ok {
+			return nil, fmt.Errorf("production run marker: source is invalid")
+		}
+		if len(m.MarkerName) > maxVarchar191 {
+			return nil, fmt.Errorf("production run marker: marker_name must be at most %d characters", maxVarchar191)
+		}
+		if len(m.MarkerFileUrl) > maxVarchar512 {
+			return nil, fmt.Errorf("production run marker: marker_file_url must be at most %d characters", maxVarchar512)
+		}
+		if len(m.Notes) > maxVarchar1024 {
+			return nil, fmt.Errorf("production run marker: notes must be at most %d characters", maxVarchar1024)
+		}
+		width, err := nonNegNullDecimal(m.MarkerWidth, "production run marker: marker_width")
+		if err != nil {
+			return nil, err
+		}
+		length, err := nonNegNullDecimal(m.LayLength, "production run marker: lay_length")
+		if err != nil {
+			return nil, err
+		}
+		eff, err := nullDecimalFromPb(m.EfficiencyPct)
+		if err != nil {
+			return nil, fmt.Errorf("production run marker: efficiency_pct: %w", err)
+		}
+		if eff.Valid && (eff.Decimal.IsNegative() || eff.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+			return nil, fmt.Errorf("production run marker: efficiency_pct must be between 0 and 100")
+		}
+		if m.UnitsPerMarker < 0 {
+			return nil, fmt.Errorf("production run marker: units_per_marker must be non-negative")
+		}
+		out = append(out, entity.ProductionRunMarker{
+			Source:         source,
+			MarkerName:     nullStringFromPb(m.MarkerName),
+			SizeId:         nullInt32FromPb(m.SizeId),
+			MaterialId:     nullInt32FromPb(m.MaterialId),
+			MarkerWidth:    width,
+			LayLength:      length,
+			UnitsPerMarker: nullInt32FromPb(m.UnitsPerMarker),
+			EfficiencyPct:  eff,
+			MarkerFileUrl:  nullStringFromPb(m.MarkerFileUrl),
+			Notes:          nullStringFromPb(m.Notes),
+		})
+	}
+	return out, nil
+}
+
+// nonNegNullDecimal converts an optional pb decimal, rejecting a negative value.
+func nonNegNullDecimal(d *pb_decimal.Decimal, field string) (decimal.NullDecimal, error) {
+	v, err := nullDecimalFromPb(d)
+	if err != nil {
+		return decimal.NullDecimal{}, fmt.Errorf("%s: %w", field, err)
+	}
+	if v.Valid && v.Decimal.IsNegative() {
+		return decimal.NullDecimal{}, fmt.Errorf("%s must be non-negative", field)
+	}
+	return v, nil
 }
 
 func convertPbProductionRunCosts(pbs []*pb_common.ProductionRunCost) ([]entity.ProductionRunCost, error) {
@@ -211,10 +311,10 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 			}
 			e.DefectQty = sql.NullInt64{Int64: int64(*ln.DefectQty), Valid: true}
 		}
-		// A received quantity needs a product to book it into — guard early with a clear message.
-		if e.ReceivedQty.Valid && e.ReceivedQty.Int64 > 0 && !e.ProductId.Valid {
-			return nil, fmt.Errorf("production run line for size_id %d has a received quantity but no product_id", ln.SizeId)
-		}
+		// NOTE: whether a received line needs a product depends on the card's purpose (a sellable run
+		// books into a product; an AUXILIARY run's output goes to the material warehouse with no
+		// product). The dto cannot see the purpose, so this is enforced in the receive handlers:
+		// ReceiveProductionRun requires a product per received line, receiveAuxiliaryRun forbids one.
 		out = append(out, e)
 	}
 	return out, nil
@@ -238,6 +338,7 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 			Notes:               pbStringFromNull(r.Notes),
 			Lines:               productionRunLinesToPb(r.Lines),
 			Costs:               productionRunCostsToPb(r.Costs),
+			Markers:             productionRunMarkersToPb(r.Markers),
 		},
 		PlannedUnitCost: pbDecimalFromNull(r.PlannedUnitCost),
 		PlannedCurrency: pbStringFromNull(r.PlannedCurrency),
@@ -296,21 +397,44 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 	}
 
 	// Materials issued from the warehouse (NF-06): issues add cost, returns give it back. An issue
-	// with no frozen average is skipped and flagged (the figure then understates).
+	// with no frozen average is skipped and flagged (the figure then understates). Per-colourway
+	// (gap-07 v2 C): the same issues are also bucketed by the product_id they were cut for; issues
+	// with no product_id fall into the unattributed bucket, never a colourway.
 	materialsFromStock := decimal.Zero
 	hasStockIssues, hasUncostedIssues := false, false
+	perColorway := map[int32]decimal.Decimal{}
+	perColorwayUncosted := map[int32]bool{}
+	unattributed := decimal.Zero
+	addColorway := func(pid sql.NullInt32, v decimal.Decimal, costed bool) {
+		if !pid.Valid || pid.Int32 <= 0 {
+			if costed {
+				unattributed = unattributed.Add(v)
+			}
+			return
+		}
+		if costed {
+			perColorway[pid.Int32] = perColorway[pid.Int32].Add(v)
+		} else {
+			perColorwayUncosted[pid.Int32] = true
+		}
+	}
 	for _, m := range r.MaterialMovements {
 		switch m.MovementType {
 		case entity.MaterialMovementIssueProduction:
 			hasStockIssues = true
 			if m.UnitCostBase.Valid {
-				materialsFromStock = materialsFromStock.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
+				v := m.Quantity.Mul(m.UnitCostBase.Decimal)
+				materialsFromStock = materialsFromStock.Add(v)
+				addColorway(m.ProductId, v, true)
 			} else {
 				hasUncostedIssues = true
+				addColorway(m.ProductId, decimal.Zero, false)
 			}
 		case entity.MaterialMovementReturnProduction:
 			if m.UnitCostBase.Valid {
-				materialsFromStock = materialsFromStock.Sub(m.Quantity.Mul(m.UnitCostBase.Decimal))
+				v := m.Quantity.Mul(m.UnitCostBase.Decimal)
+				materialsFromStock = materialsFromStock.Sub(v)
+				addColorway(m.ProductId, v.Neg(), true)
 			}
 		}
 	}
@@ -358,6 +482,67 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 			out.UnitCostVariance = pbDecimalFromDecimal(roundMoney(actualUnit.Sub(r.PlannedUnitCost.Decimal)))
 		}
 	}
+
+	// Per-colourway material breakdown (gap-07 v2 C): emit a row for every product that has attributed
+	// materials, an uncosted issue, or received units. Rows appear only once issues/lines carry a
+	// product_id, so a legacy single-colour run stays empty here.
+	out.UnattributedMaterialsBase = pbDecimalFromDecimal(roundMoney(unattributed))
+	receivedByProduct := map[int32]int64{}
+	for _, ln := range r.Lines {
+		if ln.ProductId.Valid && ln.ReceivedQty.Valid {
+			receivedByProduct[ln.ProductId.Int32] += ln.ReceivedQty.Int64
+		}
+	}
+	pidSet := map[int32]bool{}
+	for pid := range perColorway {
+		pidSet[pid] = true
+	}
+	for pid := range perColorwayUncosted {
+		pidSet[pid] = true
+	}
+	for pid := range receivedByProduct {
+		pidSet[pid] = true
+	}
+	pids := make([]int32, 0, len(pidSet))
+	for pid := range pidSet {
+		pids = append(pids, pid)
+	}
+	sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+	for _, pid := range pids {
+		mat := perColorway[pid] // zero when only uncosted/received
+		cw := &pb_common.ProductionRunColorwayCost{
+			ProductId:              pid,
+			ReceivedQty:            int32(receivedByProduct[pid]),
+			MaterialsFromStockBase: pbDecimalFromDecimal(roundMoney(mat)),
+			HasUncosted:            perColorwayUncosted[pid],
+		}
+		if rq := receivedByProduct[pid]; rq > 0 {
+			cw.MaterialsUnitCost = pbDecimalFromDecimal(roundMoney(mat.Div(decimal.NewFromInt(rq))))
+		}
+		out.ByColorway = append(out.ByColorway, cw)
+	}
+	return out
+}
+
+func productionRunMarkersToPb(markers []entity.ProductionRunMarker) []*pb_common.ProductionRunMarker {
+	if len(markers) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.ProductionRunMarker, 0, len(markers))
+	for _, m := range markers {
+		out = append(out, &pb_common.ProductionRunMarker{
+			Source:         productionMarkerSourceEntityToPb[m.Source],
+			MarkerName:     pbStringFromNull(m.MarkerName),
+			SizeId:         m.SizeId.Int32,
+			MaterialId:     m.MaterialId.Int32,
+			MarkerWidth:    pbDecimalFromNull(m.MarkerWidth),
+			LayLength:      pbDecimalFromNull(m.LayLength),
+			UnitsPerMarker: m.UnitsPerMarker.Int32,
+			EfficiencyPct:  pbDecimalFromNull(m.EfficiencyPct),
+			MarkerFileUrl:  pbStringFromNull(m.MarkerFileUrl),
+			Notes:          pbStringFromNull(m.Notes),
+		})
+	}
 	return out
 }
 
@@ -382,50 +567,10 @@ func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.Produ
 }
 
 // ProductionRunActualUnitCostBase returns the run's actual unit cost in the base currency, valid
-// only when it is trustworthy for setting cost_price: some quantity was received, at least one cost
-// source exists (a manual cost article and/or a stock issue), EVERY manual article folded to base,
-// and NO stock issue is uncosted (either would understate the cost). It is the same figure as
-// ProductionRunActuals.actual_unit_cost under those conditions (manual + materials-from-stock).
+// only when it is trustworthy for setting cost_price. The math lives on the entity so the store can
+// compute it identically inside the receive transaction; this is a thin delegate for dto callers.
 func ProductionRunActualUnitCostBase(r *entity.ProductionRun) decimal.NullDecimal {
-	if r == nil {
-		return decimal.NullDecimal{}
-	}
-	var received int64
-	for _, ln := range r.Lines {
-		if ln.ReceivedQty.Valid {
-			received += ln.ReceivedQty.Int64
-		}
-	}
-	if received == 0 {
-		return decimal.NullDecimal{}
-	}
-	total := decimal.Zero
-	haveManual := len(r.Costs) > 0
-	for _, c := range r.Costs {
-		if !c.AmountBase.Valid {
-			return decimal.NullDecimal{} // partial fold → not trustworthy for cost_price
-		}
-		total = total.Add(c.AmountBase.Decimal)
-	}
-	haveStock := false
-	for _, m := range r.MaterialMovements {
-		switch m.MovementType {
-		case entity.MaterialMovementIssueProduction:
-			haveStock = true
-			if !m.UnitCostBase.Valid {
-				return decimal.NullDecimal{} // an uncosted issue understates the total
-			}
-			total = total.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
-		case entity.MaterialMovementReturnProduction:
-			if m.UnitCostBase.Valid {
-				total = total.Sub(m.Quantity.Mul(m.UnitCostBase.Decimal))
-			}
-		}
-	}
-	if !haveManual && !haveStock {
-		return decimal.NullDecimal{} // no cost source at all
-	}
-	return decimal.NullDecimal{Decimal: roundMoney(total.Div(decimal.NewFromInt(received))), Valid: true}
+	return r.ActualUnitCostBase()
 }
 
 // NormalizeProductionRunStatusFilter validates an optional status filter string, returning the

@@ -21,10 +21,26 @@ func (s *Server) AddSample(ctx context.Context, req *pb_admin.AddSampleRequest) 
 	}
 	id, err := s.repo.Samples().AddSample(ctx, ins)
 	if err != nil {
+		if code := sampleErrCode(s, err); code != codes.OK {
+			return nil, status.Error(code, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't add sample", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't add sample")
 	}
 	return &pb_admin.AddSampleResponse{Id: int32(id)}, nil
+}
+
+// sampleErrCode maps a sample write error to a client-facing gRPC code, or codes.OK when it is not a
+// recognised client error (the caller then logs it as Internal). A bad tech_card_id/size_id/
+// colorway_id is only enforced by FK/ownership checks, so it must surface as InvalidArgument, not 500.
+func sampleErrCode(s *Server, err error) codes.Code {
+	switch {
+	case errors.Is(err, entity.ErrSampleColorwayForeign), errors.Is(err, entity.ErrSampleSizeForeign):
+		return codes.InvalidArgument
+	case s.repo.IsErrForeignKeyViolation(err), s.repo.IsErrUniqueViolation(err):
+		return codes.InvalidArgument
+	}
+	return codes.OK
 }
 
 // UpdateSample updates a sample's editable fields.
@@ -39,6 +55,9 @@ func (s *Server) UpdateSample(ctx context.Context, req *pb_admin.UpdateSampleReq
 	if err := s.repo.Samples().UpdateSample(ctx, int(req.GetId()), ins); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "sample not found")
+		}
+		if code := sampleErrCode(s, err); code != codes.OK {
+			return nil, status.Error(code, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't update sample", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update sample")
@@ -84,13 +103,13 @@ func (s *Server) GetSample(ctx context.Context, req *pb_admin.GetSampleRequest) 
 	return &pb_admin.GetSampleResponse{Sample: pb}, nil
 }
 
-// ListSamples returns a tech card's samples (cost is not loaded on list).
+// ListSamples returns samples (cost is not loaded on list). tech_card_id is optional: 0 lists samples
+// across every style (the cross-style «sewing queue»), >0 scopes to one style. status/purpose are
+// optional string filters (gap-05/B-4).
 func (s *Server) ListSamples(ctx context.Context, req *pb_admin.ListSamplesRequest) (*pb_admin.ListSamplesResponse, error) {
-	if req.GetTechCardId() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
-	}
 	samples, total, err := s.repo.Samples().ListSamples(ctx, int(req.GetLimit()), int(req.GetOffset()),
-		dto.ConvertPBCommonOrderFactorToEntity(req.GetOrderFactor()), int(req.GetTechCardId()))
+		dto.ConvertPBCommonOrderFactorToEntity(req.GetOrderFactor()), int(req.GetTechCardId()),
+		req.GetStatus(), req.GetPurpose())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list samples", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list samples")

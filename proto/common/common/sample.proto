@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package common;
 
+import "common/media.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
@@ -19,6 +20,9 @@ message SampleInsert {
   string notes = 7;
   string started_at = 8; // YYYY-MM-DD
   string finished_at = 9; // YYYY-MM-DD
+  repeated int32 media_ids = 10; // photos of the finished sample (outside a fitting); full-replace on update (B-6)
+  string pattern_url = 11; // optional snapshot of the pattern iteration this sample was cut from (B-3/gap-03)
+  string pattern_note = 12; // optional free-text pattern reference (e.g. «выкройка v2, размер S»)
 }
 
 // SampleCost is the composed cost of a sample in the base currency (confidential; stripped without
@@ -39,4 +43,5 @@ message Sample {
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp updated_at = 5;
   SampleCost cost = 6; // set by GetSample; null on list
+  repeated MediaFull media = 7; // resolved sample photos (media_ids), display order; on Get and List
 }

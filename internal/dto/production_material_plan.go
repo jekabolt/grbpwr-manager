@@ -122,15 +122,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		if shortage.IsNegative() {
 			shortage = decimal.Zero
 		}
+		// issued − required: after the marker is cut and material issued, this is the real over/under
+		// vs the theoretical plan — positive means more fabric went out than the norm predicted (marker
+		// inefficiency / scrap), negative means the run under-issued or has leftover (gap-04).
 		out.Rows = append(out.Rows, &pb_admin.MaterialPlanRow{
-			MaterialId:   int32(mid),
-			MaterialName: a.name,
-			Unit:         a.unit,
-			Required:     pbDecimalFromDecimal(a.required.Round(3)),
-			OnHand:       pbDecimalFromDecimal(on.Round(3)),
-			Issued:       pbDecimalFromDecimal(iss.Round(3)),
-			Shortage:     pbDecimalFromDecimal(shortage.Round(3)),
-			HasSizeNorms: a.hasSizeNorms,
+			MaterialId:     int32(mid),
+			MaterialName:   a.name,
+			Unit:           a.unit,
+			Required:       pbDecimalFromDecimal(a.required.Round(3)),
+			OnHand:         pbDecimalFromDecimal(on.Round(3)),
+			Issued:         pbDecimalFromDecimal(iss.Round(3)),
+			Shortage:       pbDecimalFromDecimal(shortage.Round(3)),
+			HasSizeNorms:   a.hasSizeNorms,
+			IssuedVariance: pbDecimalFromDecimal(iss.Sub(a.required).Round(3)),
 		})
 	}
 	out.Caveats = caveats

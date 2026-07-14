@@ -53,6 +53,7 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	require.Equal(t, "5", row.OnHand.Value)
 	require.Equal(t, "10", row.Issued.Value)
 	require.Equal(t, "48", row.Shortage.Value, "63 − 10 − 5")
+	require.Equal(t, "-53", row.IssuedVariance.Value, "issued 10 − required 63 (under-issued so far)")
 	require.False(t, row.HasSizeNorms, "per-garment norm, not size-graded")
 
 	// caveats: free-text BOM line + the product with no colourway

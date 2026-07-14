@@ -39,6 +39,7 @@ func TestOpexV2(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE label LIKE 'NF-OPEX-TEST%' OR month >= '2029-01-01'")
 		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_recurring WHERE label LIKE 'NF-OPEX-TEST%'")
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM costing_fx_rate WHERE currency IN ('TSD','TSJ')")
 	})
 
 	mtr := s.Metrics()
@@ -104,17 +105,27 @@ func TestOpexV2(t *testing.T) {
 	require.Equal(t, "1200", agg[0].AmountBase.Decimal.String())
 
 	// --- recurring template materialisation ---
-	rates := map[string]decimal.Decimal{"USD": decimal.RequireFromString("0.9")}
+	// Materialisation now folds each month at the FX rate effective THAT month, read from
+	// costing_fx_rate (no rates param). Seed test-only currencies so we don't perturb real rates
+	// other suites read: TSD = 0.9 from 2028 (bumped to 0.8 from 2029-07 for the per-month test),
+	// TSJ seeded later to prove recost of an initially-uncosted line.
+	seedRate := func(cur, rate string, y int, m time.Month) {
+		require.NoError(t, s.TechCards().UpsertCostingFxRates(ctx, []entity.CostingFxRate{{
+			Currency: cur, RateToBase: decimal.RequireFromString(rate), ValidFrom: opexMonth(y, m),
+		}}))
+	}
+	seedRate("TSD", "0.9", 2028, time.January)
+
 	recID, err := mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
 		Label: "NF-OPEX-TEST Salary", Category: "salaries",
-		Amount: decimal.RequireFromString("1000"), Currency: "USD",
+		Amount: decimal.RequireFromString("1000"), Currency: "TSD",
 		ActiveFrom: opexMonth(2029, time.January),
 	}, 0)
 	require.NoError(t, err)
 	require.Positive(t, recID)
 
 	// materialise Jan..Mar → 3 lines, each folded 1000 * 0.9 = 900.
-	n, err := mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.March), rates)
+	n, err := mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.March))
 	require.NoError(t, err)
 	require.Equal(t, 3, n)
 	sal, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
@@ -128,24 +139,24 @@ func TestOpexV2(t *testing.T) {
 		require.Equal(t, "900", l.AmountBase.Decimal.String())
 	}
 
-	// re-running the same window is idempotent (insert-only).
-	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.March), rates)
+	// re-running the same window is idempotent (books nothing new).
+	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.March))
 	require.NoError(t, err)
 	require.Equal(t, 0, n, "re-materialise must book nothing new")
 
 	// advancing the horizon books only the new month.
-	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April), rates)
+	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 
 	// editing the template amount must NOT rewrite an already-booked month.
 	_, err = mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
 		Label: "NF-OPEX-TEST Salary", Category: "salaries",
-		Amount: decimal.RequireFromString("5000"), Currency: "USD",
+		Amount: decimal.RequireFromString("5000"), Currency: "TSD",
 		ActiveFrom: opexMonth(2029, time.January),
 	}, recID)
 	require.NoError(t, err)
-	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April), rates)
+	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April))
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
 	jan, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
@@ -155,14 +166,133 @@ func TestOpexV2(t *testing.T) {
 	require.Len(t, jan, 1)
 	require.Equal(t, "900", jan[0].AmountBase.Decimal.String(), "past booking is frozen at the old amount")
 
-	// no FX rate → materialised line is uncosted (amount_base NULL).
-	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April), map[string]decimal.Decimal{})
+	// renaming a template must NOT double-book past months: dedup is (recurring_id, month), so the
+	// Jan..Apr rows are updated in place (label unchanged — as-booked), not duplicated (nf08-01).
+	_, err = mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
+		Label: "NF-OPEX-TEST Salary Renamed", Category: "salaries",
+		Amount: decimal.RequireFromString("5000"), Currency: "TSD",
+		ActiveFrom: opexMonth(2029, time.January),
+	}, recID)
 	require.NoError(t, err)
-	// archiving stops further materialisation.
+	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.April))
+	require.NoError(t, err)
+	require.Equal(t, 0, n, "rename must not re-book past months")
+	salAfter, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.January), MonthTo: opexMonth(2029, time.April), Category: "salaries",
+	})
+	require.NoError(t, err)
+	require.Len(t, salAfter, 4, "4 months, one row each — no label-driven duplicates")
+
+	// two distinct templates sharing (category, label) both book every month (nf08-02): the second
+	// must NOT be silently dropped. Use a fresh category/month so it doesn't disturb the salary rows.
+	dupA, err := mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
+		Label: "NF-OPEX-TEST Seamstress", Category: "wages",
+		Amount: decimal.RequireFromString("100"), Currency: "TSD", ActiveFrom: opexMonth(2029, time.May),
+	}, 0)
+	require.NoError(t, err)
+	dupB, err := mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
+		Label: "NF-OPEX-TEST Seamstress", Category: "wages",
+		Amount: decimal.RequireFromString("200"), Currency: "TSD", ActiveFrom: opexMonth(2029, time.May),
+	}, 0)
+	require.NoError(t, err)
+	require.NotEqual(t, dupA, dupB)
+	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.May))
+	require.NoError(t, err)
+	// the proof of nf08-02: BOTH same-(category,label) templates booked their own May line — the
+	// second is no longer silently swallowed by a label-based unique key.
+	wages, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.May), MonthTo: opexMonth(2029, time.May), Category: "wages",
+	})
+	require.NoError(t, err)
+	require.Len(t, wages, 2)
+	require.NotEqual(t, wages[0].RecurringId.Int32, wages[1].RecurringId.Int32, "one line per template")
+
+	// recost (nf08-03): a template whose currency has NO rate books uncosted (amount_base NULL);
+	// once a rate is added, a later tick recosts that same month in place (past base is not frozen
+	// while it is NULL). Contractor 200 TSJ, active June.
+	contractorID, err := mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
+		Label: "NF-OPEX-TEST Contractor", Category: "services",
+		Amount: decimal.RequireFromString("200"), Currency: "TSJ", ActiveFrom: opexMonth(2029, time.June),
+	}, 0)
+	require.NoError(t, err)
+	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.June))
+	require.NoError(t, err)
+	svc, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.June), MonthTo: opexMonth(2029, time.June), Category: "services",
+	})
+	require.NoError(t, err)
+	require.Len(t, svc, 1)
+	require.False(t, svc[0].AmountBase.Valid, "no TSJ rate yet → uncosted")
+
+	seedRate("TSJ", "0.5", 2028, time.January)
+	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.June))
+	require.NoError(t, err)
+	svc, err = mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.June), MonthTo: opexMonth(2029, time.June), Category: "services",
+	})
+	require.NoError(t, err)
+	require.True(t, svc[0].AmountBase.Valid, "rate added → recosted in place (past base not frozen while NULL)")
+	require.Equal(t, "100", svc[0].AmountBase.Decimal.String(), "200 TSJ * 0.5")
+	_ = contractorID
+
+	// per-month rate (nf08-04): TSD bumps 0.9 → 0.8 from 2029-07. A template active from June,
+	// materialised through August, folds June at 0.9 and Jul/Aug at 0.8 — NOT all at today's rate.
+	seedRate("TSD", "0.8", 2029, time.July)
+	pmID, err := mtr.UpsertOpexRecurring(ctx, entity.OpexRecurringInsert{
+		Label: "NF-OPEX-TEST PerMonth", Category: "rentmisc",
+		Amount: decimal.RequireFromString("100"), Currency: "TSD", ActiveFrom: opexMonth(2029, time.June),
+	}, 0)
+	require.NoError(t, err)
+	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.August))
+	require.NoError(t, err)
+	pm, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.June), MonthTo: opexMonth(2029, time.August), Category: "rentmisc",
+	})
+	require.NoError(t, err)
+	byMonth := map[string]entity.OpexLine{}
+	for _, l := range pm {
+		byMonth[l.Month.Format("2006-01")] = l
+	}
+	require.Equal(t, "90", byMonth["2029-06"].AmountBase.Decimal.String(), "June at 0.9")
+	require.Equal(t, "80", byMonth["2029-07"].AmountBase.Decimal.String(), "July at 0.8")
+	require.Equal(t, "80", byMonth["2029-08"].AmountBase.Decimal.String(), "August at 0.8")
+	_ = pmID
+
+	// archiving stops further materialisation: the salary template already booked Jan..Aug while
+	// active (the horizon advanced to August across the sub-tests above), but after archiving it must
+	// gain NO rows for Sep..Dec even though the horizon advances to December (other active templates
+	// still book — assert on the archived template's category and its future months, not a count).
 	require.NoError(t, mtr.ArchiveOpexRecurring(ctx, recID))
-	n, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.December), rates)
+	_, err = mtr.MaterializeOpexRecurring(ctx, opexMonth(2029, time.December))
 	require.NoError(t, err)
-	require.Equal(t, 0, n, "archived template materialises nothing")
+	salLater, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.September), MonthTo: opexMonth(2029, time.December), Category: "salaries",
+	})
+	require.NoError(t, err)
+	require.Empty(t, salLater, "archived template materialises nothing for months after it was archived")
+
+	// g25-11: a MATERIALISED line cannot be deleted (it would only resurrect on the next tick and
+	// invite a double-count); a manual line still deletes fine.
+	jan, err = mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.January), MonthTo: opexMonth(2029, time.January), Category: "salaries",
+	})
+	require.NoError(t, err)
+	require.Len(t, jan, 1)
+	require.ErrorIs(t, mtr.DeleteOpexLine(ctx, jan[0].Id), entity.ErrOpexLineMaterialised,
+		"deleting a materialised line is refused")
+	require.NoError(t, mtr.UpsertOpexLines(ctx, []entity.OpexLineInsert{
+		{Month: opexMonth(2029, time.January), Category: "salaries", Label: "NF-OPEX-TEST manual-adj",
+			Amount: decimal.RequireFromString("10"), Currency: "EUR", AmountBase: nd("10")},
+	}))
+	manualLines, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
+		MonthFrom: opexMonth(2029, time.January), MonthTo: opexMonth(2029, time.January), Category: "salaries",
+	})
+	require.NoError(t, err)
+	for _, l := range manualLines {
+		if !l.RecurringId.Valid {
+			require.NoError(t, mtr.DeleteOpexLine(ctx, l.Id), "a manual line deletes fine")
+		}
+	}
 
 	// ListOpexRecurring: active-only hides the archived template; includeArchived shows it.
 	active, err := mtr.ListOpexRecurring(ctx, false)
@@ -182,15 +312,16 @@ func TestOpexV2(t *testing.T) {
 	require.True(t, found)
 
 	// --- dashboard operating result reads opex_line; uncosted lines set the caveat ---
-	// August 2029: one costed line (100 EUR) + one uncosted line → total counts 100, caveat set.
+	// Use a clean 2030 month untouched by the templates above: one costed line (100 EUR) + one
+	// uncosted line → total counts 100, caveat set.
 	require.NoError(t, mtr.UpsertOpexLines(ctx, []entity.OpexLineInsert{
-		{Month: opexMonth(2029, time.August), Category: "other", Label: "NF-OPEX-TEST costed",
+		{Month: opexMonth(2030, time.August), Category: "other", Label: "NF-OPEX-TEST costed",
 			Amount: decimal.RequireFromString("100"), Currency: "EUR", AmountBase: nd("100")},
-		{Month: opexMonth(2029, time.August), Category: "other", Label: "NF-OPEX-TEST uncosted",
+		{Month: opexMonth(2030, time.August), Category: "other", Label: "NF-OPEX-TEST uncosted",
 			Amount: decimal.RequireFromString("50"), Currency: "GBP"},
 	}))
-	from := opexMonth(2029, time.August)
-	to := opexMonth(2029, time.September)
+	from := opexMonth(2030, time.August)
+	to := opexMonth(2030, time.September)
 	dash, err := mtr.GetDashboard(ctx, from, to, 10)
 	require.NoError(t, err)
 	require.Equal(t, "100", dash.OpexTotal.String(), "uncosted line excluded from the total")

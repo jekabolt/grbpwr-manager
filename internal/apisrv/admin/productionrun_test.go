@@ -109,24 +109,47 @@ func TestReceiveProductionRunHappyPath(t *testing.T) {
 	}}
 	card := &entity.TechCard{Id: 7}
 	card.ProductIds = []int{55, 66}
+	card.SizeIds = []int{1, 2}
 
 	repo, pr, _ := receiveMocks(t, run, card)
 	var gotPerProduct map[int]map[int]int
-	var gotCost decimal.NullDecimal
-	pr.EXPECT().ReceiveProductionRun(mock.Anything, 4, mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, _ int, perProduct map[int]map[int]int, _ string, cost decimal.NullDecimal) error {
-			gotPerProduct, gotCost = perProduct, cost
-			return nil
+	var gotUpdateCostPrice bool
+	// The store computes cost_price itself now (inside its tx); the handler passes the validated
+	// per-product grid + updateCostPrice flag and returns whether the store seeded cost_price.
+	pr.EXPECT().ReceiveProductionRun(mock.Anything, 4, mock.Anything, true, mock.Anything).
+		RunAndReturn(func(_ context.Context, _ int, perProduct map[int]map[int]int, updateCostPrice bool, _ string) (bool, error) {
+			gotPerProduct, gotUpdateCostPrice = perProduct, updateCostPrice
+			return updateCostPrice, nil
 		})
 
 	s := &Server{repo: repo}
 	resp, err := s.ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, UpdateCostPrice: true})
 	require.NoError(t, err)
 	require.True(t, resp.CostPriceUpdated)
+	require.True(t, gotUpdateCostPrice, "update-cost-price flag passed through")
 	// each colour-model booked into its own product; 118 units received total across both.
 	require.Equal(t, map[int]map[int]int{55: {1: 58, 2: 40}, 66: {1: 20}}, gotPerProduct)
-	require.True(t, gotCost.Valid)
-	require.True(t, gotCost.Decimal.Equal(decimal.RequireFromString("10")), "1180 / 118 received")
+}
+
+// TestProductionRunActualUnitCostBase covers the trusted actual-unit-cost math (moved to the entity
+// so the store can seed cost_price inside its transaction). 1180 base cost / 118 received = 10.
+func TestProductionRunActualUnitCostBase(t *testing.T) {
+	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
+		Lines: []entity.ProductionRunLine{
+			{SizeId: 1, ReceivedQty: sql.NullInt64{Int64: 58, Valid: true}},
+			{SizeId: 2, ReceivedQty: sql.NullInt64{Int64: 60, Valid: true}},
+		},
+		Costs: []entity.ProductionRunCost{
+			{Kind: entity.ProductionRunCostMaterials, AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("1180"), Valid: true}},
+		},
+	}}
+	c := run.ActualUnitCostBase()
+	require.True(t, c.Valid)
+	require.True(t, c.Decimal.Equal(decimal.RequireFromString("10")), "1180 / 118 received, got %s", c.Decimal)
+
+	// an uncosted manual article makes the figure untrustworthy → invalid.
+	run.Costs = append(run.Costs, entity.ProductionRunCost{Kind: entity.ProductionRunCostCMT})
+	require.False(t, run.ActualUnitCostBase().Valid, "partial fold → not trustworthy")
 }
 
 func TestReceiveProductionRunGuards(t *testing.T) {

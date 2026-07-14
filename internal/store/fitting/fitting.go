@@ -4,12 +4,40 @@ package fitting
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
+
+// resolveFittingSample validates/inherits the fitting's tech card from a linked sample (NF-04): a
+// sample must belong to the fitting's tech card; when the fitting has no tech card set, it inherits
+// the sample's so round auto-numbering and the style's fitting list/rounds include it. No sample
+// linked → nothing to do.
+func resolveFittingSample(ctx context.Context, db dependency.DB, f *entity.FittingInsert) error {
+	if !f.SampleId.Valid {
+		return nil
+	}
+	tc, err := storeutil.QueryNamedOne[struct {
+		TechCardId int `db:"tech_card_id"`
+	}](ctx, db, `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": f.SampleId.Int32})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return entity.ErrSampleForeignToCard
+		}
+		return fmt.Errorf("load fitting sample %d: %w", f.SampleId.Int32, err)
+	}
+	if f.TechCardId.Valid {
+		if int(f.TechCardId.Int32) != tc.TechCardId {
+			return entity.ErrSampleForeignToCard
+		}
+		return nil
+	}
+	f.TechCardId = sql.NullInt32{Int32: int32(tc.TechCardId), Valid: true}
+	return nil
+}
 
 // Pagination bounds for list endpoints: an unset/0 limit falls back to the
 // default page size, and any limit is capped to avoid unbounded scans.
@@ -36,6 +64,11 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// A linked sample must belong to the fitting's tech card; if the fitting has no tech card it
+		// inherits the sample's (so round numbering and the style's fitting list include it) — NF-04.
+		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
+		}
 		params := fittingParams(f)
 		// Auto-assign the round number within the tx when it is not set and the fitting is
 		// anchored to a tech card, so a style's try-ons number themselves 1, 2, 3, …. A manual
@@ -90,6 +123,9 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		}
 		if exists == 0 {
 			return sql.ErrNoRows
+		}
+		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
 		}
 		params := fittingParams(f)
 		params["id"] = id

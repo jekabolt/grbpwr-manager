@@ -45,13 +45,61 @@ func sampleParams(sm *entity.SampleInsert) map[string]any {
 		"notes":         sm.Notes,
 		"started_at":    sm.StartedAt,
 		"finished_at":   sm.FinishedAt,
+		"pattern_url":   sm.PatternUrl,
+		"pattern_note":  sm.PatternNote,
 	}
 }
 
-// AddSample inserts a sample, assigning the next per-card number (MAX+1) in a transaction.
+// insertSampleMedia bulk-inserts a sample's photo media in submitted order (B-6). Empty is a no-op.
+func insertSampleMedia(ctx context.Context, db dependency.DB, sampleID int, mediaIDs []int) error {
+	if len(mediaIDs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(mediaIDs))
+	for i, mid := range mediaIDs {
+		rows = append(rows, map[string]any{"sample_id": sampleID, "media_id": mid, "display_order": i})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "sample_media", rows); err != nil {
+		return fmt.Errorf("insert sample media: %w", err)
+	}
+	return nil
+}
+
+type sampleMediaRow struct {
+	SampleID int `db:"sample_id"`
+	entity.MediaFull
+}
+
+// mediaBySampleIds resolves each sample's photo media (MediaFull), ordered by display_order.
+func (s *Store) mediaBySampleIds(ctx context.Context, ids []int) (map[int][]entity.MediaFull, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.MediaFull{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[sampleMediaRow](ctx, s.DB, `
+		SELECT sm.sample_id, m.*
+		FROM sample_media sm
+		JOIN media m ON m.id = sm.media_id
+		WHERE sm.sample_id IN (:ids)
+		ORDER BY sm.sample_id, sm.display_order`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load sample media: %w", err)
+	}
+	out := make(map[int][]entity.MediaFull, len(ids))
+	for _, r := range rows {
+		out[r.SampleID] = append(out[r.SampleID], r.MediaFull)
+	}
+	return out, nil
+}
+
+// AddSample inserts a sample, assigning the next per-card number (MAX+1) in a transaction. The
+// colorway/size references are validated to belong to the sample's tech card first (a colour-model
+// or size from another style would be a silent mislink).
 func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := validateSampleRefs(ctx, rep.DB(), sm.TechCardId, sm.ColorwayId, sm.SizeId); err != nil {
+			return err
+		}
 		n, err := storeutil.QueryNamedOne[struct {
 			Next int `db:"next"`
 		}](ctx, rep.DB(), `SELECT COALESCE(MAX(number), 0) + 1 AS next FROM sample WHERE tech_card_id = :tc`,
@@ -62,13 +110,13 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 		params := sampleParams(sm)
 		params["number"] = n.Next
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO sample (tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at)
-			VALUES (:tech_card_id, :number, :purpose, :size_id, :colorway_id, :status, :fabric_source, :notes, :started_at, :finished_at)`,
+			INSERT INTO sample (tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note)
+			VALUES (:tech_card_id, :number, :purpose, :size_id, :colorway_id, :status, :fabric_source, :notes, :started_at, :finished_at, :pattern_url, :pattern_note)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("insert sample: %w", err)
 		}
-		return nil
+		return insertSampleMedia(ctx, rep.DB(), id, sm.MediaIds)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add sample: %w", err)
@@ -76,49 +124,104 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 	return id, nil
 }
 
-// UpdateSample updates a sample's editable fields (not its number or tech card). Returns
-// sql.ErrNoRows when the sample does not exist.
-func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error {
-	params := sampleParams(sm)
-	params["id"] = id
-	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `
-		UPDATE sample SET purpose=:purpose, size_id=:size_id, colorway_id=:colorway_id,
-			status=:status, fabric_source=:fabric_source, notes=:notes, started_at=:started_at, finished_at=:finished_at
-		WHERE id=:id`, params)
-	if err != nil {
-		return fmt.Errorf("can't update sample %d: %w", id, err)
+// validateSampleRefs verifies a sample's optional colorway_id / size_id belong to its tech card. A
+// colorway must be one of the card's colours; a size (when the card declares a size grid) must be in
+// it — an early-stage card with no sizes yet accepts any size. Runs on the given db (tx or pool).
+func validateSampleRefs(ctx context.Context, db dependency.DB, techCardID int, colorwayID, sizeID sql.NullInt32) error {
+	if colorwayID.Valid {
+		n, err := storeutil.QueryCountNamed(ctx, db,
+			`SELECT COUNT(*) FROM tech_card_colorway WHERE id = :cw AND tech_card_id = :tc`,
+			map[string]any{"cw": colorwayID.Int32, "tc": techCardID})
+		if err != nil {
+			return fmt.Errorf("check sample colorway: %w", err)
+		}
+		if n == 0 {
+			return entity.ErrSampleColorwayForeign
+		}
 	}
-	if rows == 0 {
-		return sql.ErrNoRows
+	if sizeID.Valid {
+		grid, err := storeutil.QueryNamedOne[struct {
+			Total int `db:"total"`
+			Match int `db:"m"`
+		}](ctx, db, `
+			SELECT COUNT(*) AS total, COALESCE(SUM(size_id = :sz), 0) AS m
+			FROM tech_card_size WHERE tech_card_id = :tc`,
+			map[string]any{"sz": sizeID.Int32, "tc": techCardID})
+		if err != nil {
+			return fmt.Errorf("check sample size: %w", err)
+		}
+		if grid.Total > 0 && grid.Match == 0 {
+			return entity.ErrSampleSizeForeign
+		}
 	}
 	return nil
 }
 
-// DeleteSample deletes a sample, refusing when it has material stock movements (applied facts).
-// Returns ErrSampleHasMovements in that case and sql.ErrNoRows when the sample does not exist.
+// UpdateSample updates a sample's editable fields (not its number or tech card). Existence is
+// checked explicitly (a no-op UPDATE affects 0 rows and can't be told from a missing id), and the
+// colorway/size are validated against the sample's own tech card. Returns sql.ErrNoRows when the
+// sample does not exist.
+func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error {
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[struct {
+			TechCardId int `db:"tech_card_id"`
+		}](ctx, rep.DB(), `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("load sample %d: %w", id, err)
+		}
+		if err := validateSampleRefs(ctx, rep.DB(), cur.TechCardId, sm.ColorwayId, sm.SizeId); err != nil {
+			return err
+		}
+		params := sampleParams(sm)
+		params["id"] = id
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			UPDATE sample SET purpose=:purpose, size_id=:size_id, colorway_id=:colorway_id,
+				status=:status, fabric_source=:fabric_source, notes=:notes, started_at=:started_at, finished_at=:finished_at,
+				pattern_url=:pattern_url, pattern_note=:pattern_note
+			WHERE id=:id`, params); err != nil {
+			return fmt.Errorf("can't update sample %d: %w", id, err)
+		}
+		// Full-replace the sample's photo media in the same tx (mirrors fitting media).
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM sample_media WHERE sample_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("clear sample media %d: %w", id, err)
+		}
+		return insertSampleMedia(ctx, rep.DB(), id, sm.MediaIds)
+	})
+}
+
+// DeleteSample deletes a sample, refusing when it has material stock movements (applied facts). The
+// movement guard and the delete run in one transaction so an issue committed concurrently cannot slip
+// between the check and the delete and orphan its cost. Returns ErrSampleHasMovements in that case and
+// sql.ErrNoRows when the sample does not exist.
 func (s *Store) DeleteSample(ctx context.Context, id int) error {
-	n, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM material_stock_movement WHERE sample_id = :id`, map[string]any{"id": id})
-	if err != nil {
-		return fmt.Errorf("check sample movements: %w", err)
-	}
-	if n > 0 {
-		return entity.ErrSampleHasMovements
-	}
-	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `DELETE FROM sample WHERE id = :id`, map[string]any{"id": id})
-	if err != nil {
-		return fmt.Errorf("can't delete sample %d: %w", id, err)
-	}
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		n, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM material_stock_movement WHERE sample_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("check sample movements: %w", err)
+		}
+		if n > 0 {
+			return entity.ErrSampleHasMovements
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `DELETE FROM sample WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("can't delete sample %d: %w", id, err)
+		}
+		if rows == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
 }
 
 // GetSampleById returns a sample with its composed cost block, or sql.ErrNoRows when none exists.
 func (s *Store) GetSampleById(ctx context.Context, id int) (*entity.Sample, error) {
 	sm, err := storeutil.QueryNamedOne[entity.Sample](ctx, s.DB,
-		`SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, created_at, updated_at
+		`SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note, created_at, updated_at
 		 FROM sample WHERE id = :id`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -131,25 +234,63 @@ func (s *Store) GetSampleById(ctx context.Context, id int) (*entity.Sample, erro
 		return nil, err
 	}
 	sm.Cost = cost
+	media, err := s.mediaBySampleIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
+	sm.Media = media[id]
 	return &sm, nil
 }
 
 // ListSamples returns a tech card's samples (newest number first), with the total count. Cost is
 // nil on list rows.
-func (s *Store) ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int) ([]entity.Sample, int, error) {
+func (s *Store) ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int, statusFilter, purposeFilter string) ([]entity.Sample, int, error) {
 	limit, offset = clampPagination(limit, offset)
+	// All three filters are optional: techCardID <= 0 lists samples across every style (the cross-style
+	// «sewing queue»); an empty status/purpose is not filtered. Built dynamically so the same query
+	// serves both the per-style card and the queue screen (gap-05/B-4).
+	params := map[string]any{}
+	where := ""
+	if techCardID > 0 {
+		where += " AND tech_card_id = :tc"
+		params["tc"] = techCardID
+	}
+	if statusFilter != "" {
+		where += " AND status = :status"
+		params["status"] = statusFilter
+	}
+	if purposeFilter != "" {
+		where += " AND purpose = :purpose"
+		params["purpose"] = purposeFilter
+	}
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM sample WHERE tech_card_id = :tc`, map[string]any{"tc": techCardID})
+		fmt.Sprintf(`SELECT COUNT(*) FROM sample WHERE 1=1%s`, where), params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count samples: %w", err)
 	}
-	rows, err := storeutil.QueryListNamed[entity.Sample](ctx, s.DB, `
-		SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, created_at, updated_at
-		FROM sample WHERE tech_card_id = :tc
-		ORDER BY number DESC LIMIT :limit OFFSET :offset`,
-		map[string]any{"tc": techCardID, "limit": limit, "offset": offset})
+	params["limit"] = limit
+	params["offset"] = offset
+	// Cross-style listing orders by tech_card then number so one style's samples stay grouped; a
+	// single-style listing collapses to just number.
+	rows, err := storeutil.QueryListNamed[entity.Sample](ctx, s.DB, fmt.Sprintf(`
+		SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note, created_at, updated_at
+		FROM sample WHERE 1=1%s
+		ORDER BY tech_card_id, number %s LIMIT :limit OFFSET :offset`, where, orderFactor.String()),
+		params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list samples: %w", err)
+	}
+	// Resolve photo media for the page in one batched query (thumbnails for the sewing-queue grid).
+	ids := make([]int, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].Id
+	}
+	media, err := s.mediaBySampleIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range rows {
+		rows[i].Media = media[rows[i].Id]
 	}
 	return rows, total, nil
 }

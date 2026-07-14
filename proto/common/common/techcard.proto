@@ -137,6 +137,11 @@ message TechCardColorway {
   // garment part, in what colour, at what consumption. Per-colourway divergence lives here.
   repeated TechCardColorwayUsage usages = 16;
   reserved 15; // was `materials` (OUTPUT-ONLY); usages + bom_items resolve it now
+  // OUTPUT-ONLY stable row id (B-10): set on Get/List so a sample can be linked to a colourway
+  // (Sample.colorway_id). Ignored on write — a card save full-replaces colourways with fresh ids
+  // (the server re-points existing sample links by colourway identity, case-folded code+name), so
+  // re-read the card and use a fresh id right before linking a sample.
+  int32 id = 17;
 }
 
 // TechCardColorwayUsage is one material use inside a colourway: which catalog article
@@ -587,7 +592,10 @@ message TechCardPiece {
 
 message TechCardInsert {
   // identification (Sheet «Титул»)
-  string style_number = 1; // Артикул (required)
+  // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
+  // is by definition pre-article (NF-03/B-2). Moving a card out of IDEA without a real style
+  // number is rejected with InvalidArgument.
+  string style_number = 1;
   string name = 2; // Название изделия (required)
   string brand = 3;
   string season = 4;
@@ -619,13 +627,23 @@ message TechCardInsert {
   //   moodboard_media — mood / inspiration / reference / fabric-swatch photos (design intent)
   //   technical_media — flat sketches used in construction (front / back / detail / lining / preview)
   // Construction consumes ONLY technical_media. Each item's `kind` sub-classifies within its
-  // list. Both are full-replace on update; callouts pin onto technical_media by media_id.
+  // list. Both are full-replace on update. A callout pins onto ANY media_id on the card — moodboard
+  // OR technical (the backend does not restrict the category), so at the idea stage a callout can pin
+  // onto a moodboard/reference image before any technical sketch exists.
   repeated TechCardMediaItem moodboard_media = 55;
   repeated TechCardMediaItem technical_media = 56;
-  repeated TechCardCallout callouts = 33; // sketch callouts (pin onto technical_media)
+  repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
   repeated TechCardRevision revisions = 34; // revision log
 
   // materials (Phase 2): bill of materials (article catalog) and colourways (recipes).
+  // CONTRACT (nf05-01): downstream references into bom_items and colorways are POSITIONAL, by index,
+  // and every write is a full replace (there are no stable ids to reference across a save). So when a
+  // BOM line or colourway is removed or reordered, the client MUST renumber all downstream indices in
+  // the SAME payload — colorway usages' bom_item_index, operations' bom_item_index, and pieces'
+  // colorway_index / bom_item_index / fusing_bom_item_index. An index left pointing at a shifted row
+  // silently maps a detail to the wrong material/colourway (data that goes to the factory); an
+  // out-of-range index is rejected, but an in-range-but-wrong one is not. The server range-checks but
+  // cannot detect a wrong-but-valid index.
   repeated TechCardBomItem bom_items = 40;
   repeated TechCardColorway colorways = 41;
 
@@ -689,4 +707,8 @@ message TechCardListItem {
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
   int32 lock_version = 12; // optimistic-lock token, so a list→edit needs no extra GET
+  // Thumbnail URL for a grid/gallery view (idea gallery). For an IDEA card it is the first
+  // moodboard image; otherwise the PREVIEW-kind sketch (falling back to the first technical, then any
+  // media). Empty when the card has no media. Resolved server-side to avoid an N+1 GetTechCard.
+  string preview_url = 13;
 }

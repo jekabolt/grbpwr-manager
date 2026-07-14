@@ -78,14 +78,21 @@ func TestGetStyleEconomics(t *testing.T) {
 	require.EqualValues(t, 1, e.Production.Runs)
 	require.EqualValues(t, 10, e.Production.PlannedQtyTotal)
 	require.EqualValues(t, 8, e.Production.ReceivedQtyTotal)
-	// NF-09 samples + materials-from-stock.
+	// NF-09: warehouse material (40) folds into the production actual alongside the manual cost (25),
+	// same as the run-level actuals — the style card must not read a saving the run detail doesn't
+	// (nf09-02). actual = 25 + 40 = 65; materials_from_stock echoed separately.
+	require.Equal(t, "65", e.Production.ActualCostBase.GetValue(), "manual 25 + materials 40")
+	require.Equal(t, "40", e.Production.MaterialsFromStockBase.GetValue())
+	// NF-09 samples.
 	require.EqualValues(t, 2, e.SamplesCount)
 	require.Equal(t, "15.00", e.SamplesCostBase.GetValue())
-	require.Equal(t, "40.00", e.Production.MaterialsFromStockBase.GetValue())
-	// net_after_dev = 180 − 50 = 130 (samples material is informational, NOT subtracted).
+	// net_after_dev = 180 − 50 = 130: warehouse materials fold into PRODUCTION actuals only, never into
+	// the sales bottom line, which stays gross_margin − dev_total (domain rule holds).
 	require.NotNil(t, e.NetAfterDev)
 	require.True(t, decimal.RequireFromString(e.NetAfterDev.Value).Equal(decimal.NewFromInt(130)), "net after dev 130, got %s", e.NetAfterDev.Value)
-	require.Empty(t, e.Caveat, "no caveat when style has cost and dev fully converted")
+	// samples_cost_base (15) > 0 → the sample-materials caveat is present (nf09-05); dev is fully
+	// converted and cost is set, so that is the ONLY caveat.
+	require.Contains(t, e.Caveat, "sample materials from stock are not included in net_after_dev")
 }
 
 // TestGetStyleEconomicsNoCost: a style without product cost gets a caveat and no net result, but

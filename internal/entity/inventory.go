@@ -26,7 +26,35 @@ var (
 	// ErrMaterialCodeTaken is returned when a material's internal code duplicates another
 	// non-archived material's code.
 	ErrMaterialCodeTaken = errors.New("material code already in use")
+	// ErrMaterialNotFound is returned by a warehouse operation whose material id does not exist.
+	ErrMaterialNotFound = errors.New("material not found")
+	// ErrExcessiveMaterialReturn is returned when a return exceeds the quantity still outstanding
+	// (issued minus already returned) on the target — returning more than was issued would mint
+	// phantom stock and drive the target's material cost negative.
+	ErrExcessiveMaterialReturn = errors.New("return exceeds the material still issued to this target")
+	// ErrInsufficientMaterialLot is returned when an issue draws more from a specific lot than the lot
+	// has remaining (gap-07 v2 D).
+	ErrInsufficientMaterialLot = errors.New("insufficient material lot remaining")
+	// ErrMaterialLotMismatch is returned when a referenced lot belongs to a different material.
+	ErrMaterialLotMismatch = errors.New("material lot belongs to a different material")
 )
+
+// MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code
+// with a running remaining quantity, for traceability and colour matching. UnitCost is informational
+// only — valuation stays moving-average on MaterialStock; lots are NOT a FIFO costing basis.
+type MaterialLot struct {
+	Id           int                 `db:"id"`
+	MaterialId   int                 `db:"material_id"`
+	LotCode      string              `db:"lot_code"`
+	SupplierDoc  sql.NullString      `db:"supplier_doc"`
+	ReceivedQty  decimal.Decimal     `db:"received_qty"`
+	RemainingQty decimal.Decimal     `db:"remaining_qty"`
+	UnitCost     decimal.NullDecimal `db:"unit_cost"`
+	Currency     sql.NullString      `db:"currency"`
+	ReceivedAt   sql.NullTime        `db:"received_at"`
+	Note         sql.NullString      `db:"note"`
+	Archived     bool                `db:"archived"`
+}
 
 // MaterialPriceSourcePurchase marks a price point that entered the history from a stock receipt
 // (a real purchase document), as opposed to a manual catalog entry or a production-run cost.
@@ -64,6 +92,7 @@ const (
 	MaterialAdjustReasonFound      = "found"
 	MaterialAdjustReasonCorrection = "correction"
 	MaterialAdjustReasonPackaging  = "packaging"
+	MaterialAdjustReasonScrap      = "scrap" // cutting waste / offcuts from a marker layout (NF-06, gap-04)
 	MaterialAdjustReasonOther      = "other"
 )
 
@@ -78,25 +107,31 @@ type MaterialStock struct {
 
 // MaterialMovement is one row of the append-only stock ledger.
 type MaterialMovement struct {
-	Id              int                 `db:"id"`
-	MaterialId      int                 `db:"material_id"`
+	Id              int                  `db:"id"`
+	MaterialId      int                  `db:"material_id"`
 	MovementType    MaterialMovementType `db:"movement_type"`
-	Quantity        decimal.Decimal     `db:"quantity"`
-	OnHandBefore    decimal.Decimal     `db:"on_hand_before"`
-	OnHandAfter     decimal.Decimal     `db:"on_hand_after"`
-	UnitCost        decimal.NullDecimal `db:"unit_cost"`
-	Currency        sql.NullString      `db:"currency"`
-	UnitCostBase    decimal.NullDecimal `db:"unit_cost_base"`
-	ProductionRunId sql.NullInt32       `db:"production_run_id"`
-	SampleId        sql.NullInt32       `db:"sample_id"`
-	TechCardId      sql.NullInt32       `db:"tech_card_id"`
-	Lot             sql.NullString      `db:"lot"`
-	SupplierDoc     sql.NullString      `db:"supplier_doc"`
-	Reason          sql.NullString      `db:"reason"`
-	Comment         sql.NullString      `db:"comment"`
-	AdminUsername   string              `db:"admin_username"`
-	OccurredAt      sql.NullTime        `db:"occurred_at"`
-	CreatedAt       time.Time           `db:"created_at"`
+	Quantity        decimal.Decimal      `db:"quantity"`
+	OnHandBefore    decimal.Decimal      `db:"on_hand_before"`
+	OnHandAfter     decimal.Decimal      `db:"on_hand_after"`
+	UnitCost        decimal.NullDecimal  `db:"unit_cost"`
+	Currency        sql.NullString       `db:"currency"`
+	UnitCostBase    decimal.NullDecimal  `db:"unit_cost_base"`
+	ProductionRunId sql.NullInt32        `db:"production_run_id"`
+	SampleId        sql.NullInt32        `db:"sample_id"`
+	TechCardId      sql.NullInt32        `db:"tech_card_id"`
+	// ProductId is the colour-model an issue to a run was cut for (gap-07 v2 C); NULL = shared /
+	// unattributed. Lets a run's material cost break down per colourway.
+	ProductId sql.NullInt32  `db:"product_id"`
+	Lot       sql.NullString `db:"lot"`
+	// LotId is the structured lot (roll / dye-lot) this movement received into or drew from (gap-07 v2
+	// D). NULL when no lot was tracked. The free-text Lot above is kept for backward compatibility.
+	LotId         sql.NullInt32  `db:"lot_id"`
+	SupplierDoc   sql.NullString `db:"supplier_doc"`
+	Reason        sql.NullString `db:"reason"`
+	Comment       sql.NullString `db:"comment"`
+	AdminUsername string         `db:"admin_username"`
+	OccurredAt    sql.NullTime   `db:"occurred_at"`
+	CreatedAt     time.Time      `db:"created_at"`
 }
 
 // MaterialReceiptInsert is the payload of a stock receipt (purchase-in or produced-in). UnitCost is
@@ -125,10 +160,16 @@ type MaterialIssueInsert struct {
 	Quantity        decimal.Decimal
 	ProductionRunId sql.NullInt32
 	SampleId        sql.NullInt32
-	IsReturn        bool
-	OccurredAt      sql.NullTime
-	Comment         sql.NullString
-	AdminUsername   string
+	// ProductId optionally names the colour-model (product) an issue to a run is for (gap-07 v2 C);
+	// only meaningful with ProductionRunId set. NULL = shared / unattributed.
+	ProductId sql.NullInt32
+	// LotId optionally draws this issue from a specific structured lot / roll (gap-07 v2 D); a return
+	// with a LotId puts the quantity back on that lot. NULL = no lot tracking.
+	LotId         sql.NullInt32
+	IsReturn      bool
+	OccurredAt    sql.NullTime
+	Comment       sql.NullString
+	AdminUsername string
 }
 
 // MaterialAdjustMode selects how AdjustMaterialStock changes the balance.
@@ -177,4 +218,20 @@ type MaterialMovementFilter struct {
 	ProductionRunId int
 	SampleId        int
 	MovementType    MaterialMovementType
+	// Optional inclusive occurred_at DATE bounds (YYYY-MM-DD); empty = open (B-5).
+	OccurredFrom string
+	OccurredTo   string
+}
+
+// PackagingBomItem is one line of the global packaging recipe (gap-07 v2 B): a material consumed on
+// ship, `QtyPerOrder` once per shipment plus `QtyPerItem` × the order's unit count. MaterialName is
+// resolved on read (List) for display; it is ignored on write.
+type PackagingBomItem struct {
+	Id           int             `db:"id"`
+	MaterialId   int             `db:"material_id"`
+	MaterialName string          `db:"material_name"`
+	MaterialUnit sql.NullString  `db:"material_unit"`
+	QtyPerOrder  decimal.Decimal `db:"qty_per_order"`
+	QtyPerItem   decimal.Decimal `db:"qty_per_item"`
+	Active       bool            `db:"active"`
 }

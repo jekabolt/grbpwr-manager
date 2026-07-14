@@ -26,8 +26,11 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 
 	// Ids created below; cleaned up in reverse-dependency order so this test leaves the
 	// shared DB as it found it (else the seed media's FK refs break TestMedia's cleanup).
-	var mediaID, fid, tid, tcID int
+	var mediaID, fid, tid, tcID, smID int
 	defer func() {
+		if smID != 0 {
+			_ = s.Samples().DeleteSample(ctx, smID)
+		}
 		if tcID != 0 {
 			_ = s.TechCards().DeleteTechCard(ctx, tcID)
 		}
@@ -156,4 +159,64 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 	require.Equal(t, "EUR", card.Costing.Currency.String)
 	require.Len(t, card.Colorways, 1)
 	require.Len(t, card.Colorways[0].Usages, 1)
+
+	// ---- sample: photo media (B-6) + pattern link (B-3/gap-03) round-trip ----
+	smID, err = s.Samples().AddSample(ctx, &entity.SampleInsert{
+		TechCardId: tcID, Purpose: entity.SamplePurposeProto, Status: entity.SampleStatusInSewing,
+		FabricSource: entity.SampleFabricSample,
+		PatternUrl:   sql.NullString{String: "https://x/pattern-v2.pdf", Valid: true},
+		PatternNote:  sql.NullString{String: "выкройка v2, размер S", Valid: true},
+		MediaIds:     []int{mediaID},
+	})
+	require.NoError(t, err)
+	sm, err := s.Samples().GetSampleById(ctx, smID)
+	require.NoError(t, err)
+	require.Equal(t, "https://x/pattern-v2.pdf", sm.PatternUrl.String)
+	require.Equal(t, "выкройка v2, размер S", sm.PatternNote.String)
+	require.Len(t, sm.Media, 1, "sample photo media resolved")
+	require.Equal(t, mediaID, sm.Media[0].Id)
+	require.Equal(t, "https://x/t.jpg", sm.Media[0].ThumbnailMediaURL)
+	// update full-replaces media: empty list clears it.
+	require.NoError(t, s.Samples().UpdateSample(ctx, smID, &entity.SampleInsert{
+		TechCardId: tcID, Purpose: entity.SamplePurposeProto, Status: entity.SampleStatusDone,
+		FabricSource: entity.SampleFabricSample, MediaIds: nil,
+	}))
+	sm, err = s.Samples().GetSampleById(ctx, smID)
+	require.NoError(t, err)
+	require.Empty(t, sm.Media, "media cleared on full-replace update")
+
+	// ---- B-9: ListTechCards resolves a preview thumbnail (proto card → technical media) ----
+	cards, _, err := s.TechCards().ListTechCards(ctx, 100, 0, entity.Descending, entity.TechCardListFilter{Name: "IT-001"})
+	require.NoError(t, err)
+	var found bool
+	for i := range cards {
+		if cards[i].Id == tcID {
+			found = true
+			require.Equal(t, "https://x/t.jpg", cards[i].PreviewURL, "proto card preview = technical media thumbnail")
+		}
+	}
+	require.True(t, found, "the seeded card is in the list")
+
+	// ---- gap-01: GetStylePipeline returns all 6 lifecycle columns in order; proto column counts ours ----
+	cols, err := s.TechCards().GetStylePipeline(ctx, 50)
+	require.NoError(t, err)
+	require.Len(t, cols, 6, "one column per lifecycle stage")
+	wantOrder := []entity.TechCardStage{
+		entity.TechCardStageIdea, entity.TechCardStageProto, entity.TechCardStageFit,
+		entity.TechCardStageSMS, entity.TechCardStagePP, entity.TechCardStageProd,
+	}
+	for i, c := range cols {
+		require.Equal(t, wantOrder[i], c.Stage, "columns in lifecycle order")
+	}
+	proto := cols[1]
+	require.Equal(t, entity.TechCardStageProto, proto.Stage)
+	require.GreaterOrEqual(t, proto.Count, 1, "at least our proto card")
+	var inColumn bool
+	for i := range proto.Cards {
+		if proto.Cards[i].Id == tcID {
+			inColumn = true
+			require.Equal(t, "https://x/t.jpg", proto.Cards[i].PreviewURL, "pipeline card carries preview")
+		}
+	}
+	require.True(t, inColumn, "our freshly-updated proto card is among the column's recent cards")
 }

@@ -380,6 +380,9 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
 	if err := s.repo.TechCards().DeleteTechCard(ctx, int(req.Id)); err != nil {
+		if errors.Is(err, entity.ErrSampleHasMovements) {
+			return nil, status.Error(codes.FailedPrecondition, "a sample of this tech card has material movements; delete/return them first")
+		}
 		slog.Default().ErrorContext(ctx, "can't delete tech card",
 			slog.String("err", err.Error()),
 		)
@@ -427,4 +430,15 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		items = append(items, dto.ConvertEntityTechCardToListItemPb(&cards[i]))
 	}
 	return &pb_admin.ListTechCardsResponse{TechCards: items, Total: int32(total)}, nil
+}
+
+// GetStylePipeline returns the development board: per-stage counts + a few light preview cards per
+// column, so the whole idea→prod pipeline loads in one call (gap-01).
+func (s *Server) GetStylePipeline(ctx context.Context, req *pb_admin.GetStylePipelineRequest) (*pb_admin.GetStylePipelineResponse, error) {
+	cols, err := s.repo.TechCards().GetStylePipeline(ctx, int(req.GetCardsPerStage()))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get style pipeline", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get style pipeline")
+	}
+	return dto.ConvertStylePipelineToPb(cols), nil
 }

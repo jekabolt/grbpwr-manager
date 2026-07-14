@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,6 +27,12 @@ func (s *Server) AddTechCardDevExpense(ctx context.Context, req *pb_admin.AddTec
 	dto.FoldTechCardDevExpenseToBase(&e, s.costingFx(ctx))
 	saved, err := s.repo.TechCards().AddTechCardDevExpense(ctx, e)
 	if err != nil {
+		if errors.Is(err, entity.ErrSampleForeignToCard) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, "tech_card_id, fitting_id or sample_id does not reference an existing record")
+		}
 		slog.Default().ErrorContext(ctx, "can't add tech card dev expense", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't add tech card dev expense")
 	}

@@ -55,10 +55,22 @@ func (s *Store) UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) 
 // UpsertOpexEntries API (and backfilled from opex_entry by migration 0112).
 const opexAggregateLabel = "(aggregate)"
 
-// getOpexForPeriod returns the OPEX attributable to [from, to), day-pro-rated per month, and
-// whether the period is FULLY covered — i.e. every calendar month the period overlaps has at least
-// one costed OPEX line AND no line in those months is uncosted (an amount whose currency had no FX
-// rate, so amount_base is NULL). `complete=false` makes the dashboard flag the operating result as
+// opexPeriod is the OPEX read for a dashboard period: the pro-rated total plus two independent
+// quality flags the dashboard turns into caveats.
+type opexPeriod struct {
+	Total decimal.Decimal
+	// Complete is true iff every calendar month the period overlaps has at least one OPEX line AND no
+	// line in those months is uncosted — false understates fixed costs (missing month or dropped
+	// uncosted line).
+	Complete bool
+	// DoubleCountRisk is true iff some overlapped (month, category) carries BOTH a legacy
+	// '(aggregate)' line and itemised lines — those sum together and overstate that month's OPEX
+	// (nf08-05); the fix is to delete the aggregate once the category is itemised.
+	DoubleCountRisk bool
+}
+
+// getOpexForPeriod returns the OPEX attributable to [from, to), day-pro-rated per month, with the
+// coverage/double-count flags. `Complete=false` makes the dashboard flag the operating result as
 // incomplete: a period straddling two months with only one month entered would otherwise silently
 // treat the missing month's fixed costs as zero and look complete, and an uncosted line would be
 // dropped from the total with no warning. OPEX is summed per calendar month from opex_line (NF-08),
@@ -66,7 +78,7 @@ const opexAggregateLabel = "(aggregate)"
 // month's share by day overlap, so a rolling 30-day window across two months gets the right fraction
 // of each. All month arithmetic is in UTC so the month-floor filter matches the overlap math (a
 // from.Location()-based floor could exclude a month the UTC overlap wants).
-func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (decimal.Decimal, bool, error) {
+func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (opexPeriod, error) {
 	fromUTC, toUTC := from.UTC(), to.UTC()
 	// The earliest month that can overlap [from, to) is the month containing `from` (UTC).
 	monthFloor := time.Date(fromUTC.Year(), fromUTC.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -83,7 +95,7 @@ func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (decim
 		GROUP BY month`,
 		map[string]any{"monthFloor": monthFloor.Format("2006-01-02"), "to": toUTC})
 	if err != nil {
-		return decimal.Zero, false, fmt.Errorf("get opex for period: %w", err)
+		return opexPeriod{}, fmt.Errorf("get opex for period: %w", err)
 	}
 
 	monthKey := func(t time.Time) string { return fmt.Sprintf("%04d-%02d", t.Year(), int(t.Month())) }
@@ -117,7 +129,23 @@ func (s *Store) getOpexForPeriod(ctx context.Context, from, to time.Time) (decim
 			complete = false
 		}
 	}
-	return total.Round(2), complete, nil
+
+	// Double-count risk: any overlapped (month, category) that has BOTH a legacy '(aggregate)' line
+	// and itemised lines — their base amounts both land in the SUM above and overstate that month.
+	dc, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM (
+			SELECT month, category
+			FROM opex_line
+			WHERE month >= :monthFloor AND month < :to
+			GROUP BY month, category
+			HAVING SUM(label = :agg) > 0 AND SUM(label <> :agg) > 0
+		) x`,
+		map[string]any{"monthFloor": monthFloor.Format("2006-01-02"), "to": toUTC, "agg": opexAggregateLabel})
+	if err != nil {
+		return opexPeriod{}, fmt.Errorf("get opex double-count check: %w", err)
+	}
+
+	return opexPeriod{Total: total.Round(2), Complete: complete, DoubleCountRisk: dc > 0}, nil
 }
 
 // getChannelSpendTotal sums marketing spend (channel_spend, base currency) over the period,

@@ -70,8 +70,8 @@ func TestStripTechCardCosting(t *testing.T) {
 	require.Nil(t, u.SizeRunTotal, "usage run total removed")
 	require.Equal(t, "outer", u.Placement, "usage placement kept")
 
-	stripTechCardCosting(nil)                    // no panic on nil
-	stripTechCardCosting(&pb_common.TechCard{})  // no panic on nil inner
+	stripTechCardCosting(nil)                   // no panic on nil
+	stripTechCardCosting(&pb_common.TechCard{}) // no panic on nil inner
 }
 
 // TestStripReleaseMetaCosting clears the planned unit cost on a release header.
@@ -184,9 +184,11 @@ func TestStripStyleEconomicsCosting(t *testing.T) {
 				Name: "coat", Revenue: dec("200.00"), UnitsSold: 2, ColorwayCount: 2,
 				UnitCost: dec("10.00"), RevenueCost: dec("20.00"), GrossMargin: dec("180.00"), GrossMarginPct: 90, HasCost: true,
 			},
-			DevCost:     &pb_common.TechCardDevCostSummary{TotalBase: dec("50.00")},
-			Production:  &pb_admin.StyleProductionSummary{Runs: 2, PlannedQtyTotal: 30, ReceivedQtyTotal: 8, PlannedCostBase: dec("300.00"), ActualCostBase: dec("330.00"), CostVariance: dec("30.00"), HasActuals: true},
-			NetAfterDev: dec("130.00"),
+			DevCost:         &pb_common.TechCardDevCostSummary{TotalBase: dec("50.00")},
+			Production:      &pb_admin.StyleProductionSummary{Runs: 2, PlannedQtyTotal: 30, ReceivedQtyTotal: 8, PlannedCostBase: dec("300.00"), ActualCostBase: dec("330.00"), CostVariance: dec("30.00"), MaterialsFromStockBase: dec("40.00"), HasActuals: true},
+			NetAfterDev:     dec("130.00"),
+			SamplesCostBase: dec("15.00"),
+			SamplesCount:    2,
 		},
 	}
 	stripStyleEconomicsCosting(resp)

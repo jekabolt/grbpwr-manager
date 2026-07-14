@@ -222,26 +222,31 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	defer func() { _ = s.TechCards().DeleteTechCard(ctx, tcID) }()
 
 	P := s.ProductionRuns()
+	// Planned-only line: this store-level test exercises only the status transition + double-receive
+	// guard with an empty perProduct (the multi-product stock increment is covered by the handler
+	// test). The store now re-reads lines under the run lock and rejects a received line with no
+	// product, so a received-but-productless line here would (correctly) be a conflict.
 	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
-		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}},
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}},
 	})
 	require.NoError(t, err)
 	defer func() { _ = P.DeleteProductionRun(ctx, runID) }()
 
 	// receive with empty perProduct + no cost-price only exercises the guard + status transition.
-	require.NoError(t, P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, "tester", decimal.NullDecimal{}))
+	_, err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, false, "tester")
+	require.NoError(t, err)
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunReceived, got.Status)
 	require.True(t, got.ReceivedAt.Valid, "received_at stamped")
 
 	// a second receive is refused (guards double-counting)
-	err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, "tester", decimal.NullDecimal{})
+	_, err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, false, "tester")
 	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 
 	// receiving a missing run → ErrNoRows
-	err = P.ReceiveProductionRun(ctx, 0, map[int]map[int]int{}, "tester", decimal.NullDecimal{})
+	_, err = P.ReceiveProductionRun(ctx, 0, map[int]map[int]int{}, false, "tester")
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// task.production_run_id typed link round-trips (FK to the run).

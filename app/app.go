@@ -138,6 +138,12 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	cache.SetDefaultCurrency(a.c.Rates.BaseCurrency)
+
+	// Start the OPEX materialiser AFTER the base currency is set: its startup tick folds each
+	// recurring template to base via cache.GetBaseCurrency(), and a materialised opex_line is
+	// insert-only (a wrong-base fold on the first tick would be permanent). Every other worker is
+	// base-currency-independent, so this is the one ordering that matters here (infra-01).
 	a.om = opexmaterialize.New(&a.c.OpexMaterialize, a.db)
 	if err = a.om.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start opex materialize worker",
@@ -145,8 +151,6 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
-
-	cache.SetDefaultCurrency(a.c.Rates.BaseCurrency)
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {

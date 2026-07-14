@@ -169,6 +169,11 @@ var methodRequirements = map[string]Requirement{
 	"UpsertOpexRecurring":  wr(SectionAnalytics),
 	"ArchiveOpexRecurring": wr(SectionAnalytics),
 	"ListOpexRecurring":    rd(SectionAnalytics),
+	// Employee registry (gap-07 v2 A) — salary journal's people. Same analytics + costing:* gating
+	// as recurring OPEX (the registry carries a default_monthly_cost, confidential cost data).
+	"UpsertEmployee":  wr(SectionAnalytics),
+	"ArchiveEmployee": wr(SectionAnalytics),
+	"ListEmployees":   rd(SectionAnalytics),
 	"GetAlertSettings":     rd(SectionAnalytics),
 	"UpsertAlertSettings":  wr(SectionAnalytics),
 	"GetVatRates":          rd(SectionAnalytics),
@@ -212,6 +217,7 @@ var methodRequirements = map[string]Requirement{
 	"UpdateTechCard":           wr(SectionTechCards),
 	"DeleteTechCard":           wr(SectionTechCards),
 	"ListTechCards":            rd(SectionTechCards),
+	"GetStylePipeline":         rd(SectionTechCards),
 	"GetCostingFxRates":        rd(SectionTechCards),
 	"UpsertCostingFxRates":     wr(SectionTechCards),
 	"CreateMaterial":           wr(SectionTechCards),
@@ -241,6 +247,11 @@ var methodRequirements = map[string]Requirement{
 	"GetMaterialStock":      rd(SectionInventory),
 	"ListMaterialStock":     rd(SectionInventory),
 	"ListMaterialMovements": rd(SectionInventory),
+	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
+	"UpsertPackagingBom": wr(SectionInventory),
+	"ListPackagingBom":   rd(SectionInventory),
+	// structured lots / rolls (gap-07 v2 D)
+	"ListMaterialLots": rd(SectionInventory),
 	// tasks (internal team kanban)
 	"AddTask":          wr(SectionTasks),
 	"GetTask":          rd(SectionTasks),

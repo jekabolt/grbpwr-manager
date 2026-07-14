@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -53,56 +54,71 @@ const materialWithPriceSelect = `
 	FROM material m
 	LEFT JOIN latest l ON l.material_id = m.id AND l.rn = 1`
 
-// CreateMaterial inserts a catalog material and returns its id.
+// CreateMaterial inserts a catalog material and returns its id. The uniqueness guard and the insert
+// run in one transaction (SERIALIZABLE) so two concurrent creates of the same code cannot both pass
+// the check — there is no DB-level unique index on code (it must stay unique only among non-archived
+// rows), so the check must hold the read range.
 func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error) {
-	if err := s.checkMaterialCodeFree(ctx, m.Code, 0); err != nil {
-		return 0, err
-	}
-	id, err := storeutil.ExecNamedLastId(ctx, s.DB, `
-		INSERT INTO material (name, section, supplier, supplier_ref, composition, spec, unit,
-			fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes)
-		VALUES (:name, :section, :supplier, :supplier_ref, :composition, :spec, :unit,
-			:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes)`,
-		materialParams(m))
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, 0); err != nil {
+			return err
+		}
+		newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
+			INSERT INTO material (name, section, supplier, supplier_ref, composition, spec, unit,
+				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes)
+			VALUES (:name, :section, :supplier, :supplier_ref, :composition, :spec, :unit,
+				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes)`,
+			materialParams(m))
+		if err != nil {
+			return fmt.Errorf("create material: %w", err)
+		}
+		id = newID
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("create material: %w", err)
+		return 0, err
 	}
 	return id, nil
 }
 
 // UpdateMaterial updates a catalog material's descriptive fields (not its price history). The unit
 // of measure is locked once the material has stock movements (historical quantities would lose
-// meaning), and the internal code must stay unique among non-archived materials.
+// meaning), and the internal code must stay unique among non-archived materials. Both guards and the
+// update run in one transaction so a concurrent movement/create cannot slip past the checks.
 func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error {
-	if err := s.checkMaterialCodeFree(ctx, m.Code, id); err != nil {
-		return err
-	}
-	if err := s.checkMaterialUnitChange(ctx, id, m.Unit); err != nil {
-		return err
-	}
-	params := materialParams(m)
-	params["id"] = id
-	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `
-		UPDATE material SET name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
-			composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-			code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes
-		WHERE id=:id`, params)
-	if err != nil {
-		return fmt.Errorf("update material %d: %w", id, err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("material %d not found", id)
-	}
-	return nil
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, id); err != nil {
+			return err
+		}
+		if err := checkMaterialUnitChange(ctx, rep.DB(), id, m.Unit); err != nil {
+			return err
+		}
+		params := materialParams(m)
+		params["id"] = id
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			UPDATE material SET name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
+				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
+				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes
+			WHERE id=:id`, params)
+		if err != nil {
+			return fmt.Errorf("update material %d: %w", id, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("material %d not found", id)
+		}
+		return nil
+	})
 }
 
 // checkMaterialCodeFree fails with ErrMaterialCodeTaken if code duplicates another non-archived
-// material's code. An empty code is always free. excludeID skips the material being updated.
-func (s *Store) checkMaterialCodeFree(ctx context.Context, code sql.NullString, excludeID int) error {
+// material's code. An empty code is always free. excludeID skips the material being updated. Runs on
+// the given db (pool or tx) so callers can hold the read range in a transaction.
+func checkMaterialCodeFree(ctx context.Context, db dependency.DB, code sql.NullString, excludeID int) error {
 	if !code.Valid || strings.TrimSpace(code.String) == "" {
 		return nil
 	}
-	n, err := storeutil.QueryCountNamed(ctx, s.DB,
+	n, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM material WHERE archived = FALSE AND code = :code AND id <> :id`,
 		map[string]any{"code": strings.TrimSpace(code.String), "id": excludeID})
 	if err != nil {
@@ -116,10 +132,10 @@ func (s *Store) checkMaterialCodeFree(ctx context.Context, code sql.NullString, 
 
 // checkMaterialUnitChange fails with ErrMaterialUnitLocked if the unit is being changed on a
 // material that already has stock movements.
-func (s *Store) checkMaterialUnitChange(ctx context.Context, id int, newUnit sql.NullString) error {
+func checkMaterialUnitChange(ctx context.Context, db dependency.DB, id int, newUnit sql.NullString) error {
 	cur, err := storeutil.QueryNamedOne[struct {
 		Unit sql.NullString `db:"unit"`
-	}](ctx, s.DB, `SELECT unit FROM material WHERE id = :id`, map[string]any{"id": id})
+	}](ctx, db, `SELECT unit FROM material WHERE id = :id`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // update will report not-found
@@ -129,7 +145,7 @@ func (s *Store) checkMaterialUnitChange(ctx context.Context, id int, newUnit sql
 	if strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
 		return nil
 	}
-	n, err := storeutil.QueryCountNamed(ctx, s.DB,
+	n, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM material_stock_movement WHERE material_id = :id`, map[string]any{"id": id})
 	if err != nil {
 		return fmt.Errorf("check material movements: %w", err)

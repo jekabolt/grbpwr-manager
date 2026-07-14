@@ -84,13 +84,21 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	}
 	econ.FittingRounds = int32(rounds)
 
-	// Production plan/fact across the style's runs.
+	// Production plan/fact across the style's runs. The material actuals issued from the warehouse
+	// (net of returns, non-cancelled runs) fold into the run-level and now the style-level actual, so
+	// fetch them first and pass them in (nf09-02) — the run detail and this roll-up must agree.
 	runs, _, err := s.repo.ProductionRuns().ListProductionRuns(ctx, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: tcID})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production runs")
 	}
-	econ.Production = dto.ComputeStyleProductionSummary(runs)
+	matFromStock, err := s.repo.Metrics().GetStyleMaterialsFromStock(ctx, tcID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "style economics: can't get materials from stock", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get materials from stock")
+	}
+	hasStockMaterials := !matFromStock.Base.IsZero() || matFromStock.HasUncosted
+	econ.Production = dto.ComputeStyleProductionSummary(runs, matFromStock.Base, hasStockMaterials)
 
 	// Samples (NF-09): how many, and the warehouse material they consumed. Informational only — sample
 	// material is R&D spend, deliberately NOT folded into net_after_dev.
@@ -102,15 +110,6 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	econ.SamplesCount = int32(sampleSummary.Count)
 	econ.SamplesCostBase = &pb_decimal.Decimal{Value: sampleSummary.MaterialsCostBase.StringFixed(2)}
 
-	// Material actuals issued from the warehouse into the style's production runs (NF-09).
-	matFromStock, err := s.repo.Metrics().GetStyleMaterialsFromStock(ctx, tcID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "style economics: can't get materials from stock", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't get materials from stock")
-	}
-	if econ.Production != nil {
-		econ.Production.MaterialsFromStockBase = &pb_decimal.Decimal{Value: matFromStock.Base.StringFixed(2)}
-	}
 	materialsUncosted := sampleSummary.HasUncosted || matFromStock.HasUncosted
 
 	// Bottom line: net_after_dev = gross_margin − dev_total. Contribution-style, NOT net profit
@@ -133,6 +132,12 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	}
 	if materialsUncosted {
 		caveats = append(caveats, "some material issues have no unit cost — sample/production material figures understate")
+	}
+	// Samples are R&D: their warehouse material (samples_cost_base) is deliberately OUTSIDE
+	// net_after_dev, and a manual kind=sample dev-expense covering the same fabric would overlap it —
+	// spell that out so the operator doesn't eyeball-add the two (nf09-05).
+	if sampleSummary.MaterialsCostBase.GreaterThan(decimal.Zero) {
+		caveats = append(caveats, "sample materials from stock are not included in net_after_dev; a manual kind=sample dev expense may overlap this figure")
 	}
 	econ.Caveat = strings.Join(caveats, "; ")
 

@@ -835,6 +835,18 @@ type TechCard struct {
 	UpdatedAt time.Time `db:"updated_at"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
+	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
+	// IDEA card, else the PREVIEW-kind sketch (fallback first technical, then any). Populated only by
+	// ListTechCards; empty elsewhere.
+	PreviewURL string `db:"-"`
+}
+
+// StylePipelineColumn is one lifecycle-stage column of the development board (gap-01): the stage,
+// the total number of cards in it, and a few light preview cards (most-recently-updated first).
+type StylePipelineColumn struct {
+	Stage TechCardStage
+	Count int
+	Cards []TechCard
 }
 
 // TechCardReleaseMeta is the header of an immutable release snapshot (task 11) without the

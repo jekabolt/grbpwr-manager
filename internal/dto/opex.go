@@ -123,7 +123,99 @@ func ConvertPbOpexRecurringToEntity(r *pb_admin.OpexRecurringInsert) (entity.Ope
 		ActiveFrom: activeFrom,
 		ActiveTo:   activeTo,
 		Note:       trimmedNullString(r.Note),
+		EmployeeId: pbToNullInt32(r.EmployeeId),
 	}, nil
+}
+
+// ConvertPbEmployeeToEntity validates and converts an employee-registry insert (gap-07 v2 A).
+// Length/format guards mirror the columns (g25-09) — an over-long value must be a clean
+// InvalidArgument, not a strict-mode DB error surfacing as a 500.
+func ConvertPbEmployeeToEntity(e *pb_admin.EmployeeInsert) (entity.EmployeeInsert, error) {
+	if e == nil {
+		return entity.EmployeeInsert{}, fmt.Errorf("employee is required")
+	}
+	name := strings.TrimSpace(e.FullName)
+	if name == "" {
+		return entity.EmployeeInsert{}, fmt.Errorf("employee full_name is required")
+	}
+	for _, f := range []struct {
+		name string
+		v    string
+		max  int
+	}{
+		{"full_name", name, maxVarchar191},
+		{"role", strings.TrimSpace(e.Role), maxVarchar64},
+		{"note", strings.TrimSpace(e.Note), maxVarchar255},
+	} {
+		if len(f.v) > f.max {
+			return entity.EmployeeInsert{}, fmt.Errorf("employee %s must be at most %d characters", f.name, f.max)
+		}
+	}
+	currency := normalizeCurrency(e.DefaultCurrency)
+	if currency != "" && len(currency) != maxCurrency {
+		return entity.EmployeeInsert{}, fmt.Errorf("employee default_currency must be a 3-letter ISO 4217 code")
+	}
+	start, err := parseOptionalDate(e.EmploymentStart, "employment_start")
+	if err != nil {
+		return entity.EmployeeInsert{}, err
+	}
+	end, err := parseOptionalDate(e.EmploymentEnd, "employment_end")
+	if err != nil {
+		return entity.EmployeeInsert{}, err
+	}
+	if start.Valid && end.Valid && end.Time.Before(start.Time) {
+		return entity.EmployeeInsert{}, fmt.Errorf("employment_end precedes employment_start")
+	}
+	var cost decimal.NullDecimal
+	if e.DefaultMonthlyCost != nil && strings.TrimSpace(e.DefaultMonthlyCost.Value) != "" {
+		d, err := parseOpexAmount(e.DefaultMonthlyCost.Value)
+		if err != nil {
+			return entity.EmployeeInsert{}, fmt.Errorf("default_monthly_cost: %w", err)
+		}
+		cost = decimal.NullDecimal{Decimal: d, Valid: true}
+	}
+	return entity.EmployeeInsert{
+		FullName:           name,
+		Role:               trimmedNullString(e.Role),
+		EmploymentStart:    start,
+		EmploymentEnd:      end,
+		DefaultCurrency:    trimmedNullString(currency),
+		DefaultMonthlyCost: cost,
+		Note:               trimmedNullString(e.Note),
+	}, nil
+}
+
+// EmployeeToPb converts a stored employee to protobuf.
+func EmployeeToPb(e entity.Employee) *pb_admin.Employee {
+	ins := &pb_admin.EmployeeInsert{FullName: e.FullName}
+	if e.Role.Valid {
+		ins.Role = e.Role.String
+	}
+	if e.EmploymentStart.Valid {
+		ins.EmploymentStart = e.EmploymentStart.Time.Format("2006-01-02")
+	}
+	if e.EmploymentEnd.Valid {
+		ins.EmploymentEnd = e.EmploymentEnd.Time.Format("2006-01-02")
+	}
+	if e.DefaultCurrency.Valid {
+		ins.DefaultCurrency = e.DefaultCurrency.String
+	}
+	if e.DefaultMonthlyCost.Valid {
+		ins.DefaultMonthlyCost = pbDecimalFromDecimal(e.DefaultMonthlyCost.Decimal)
+	}
+	if e.Note.Valid {
+		ins.Note = e.Note.String
+	}
+	return &pb_admin.Employee{Id: int32(e.Id), Employee: ins, Archived: e.Archived}
+}
+
+// EmployeeListToPb converts a slice of stored employees to protobuf.
+func EmployeeListToPb(list []entity.Employee) []*pb_admin.Employee {
+	out := make([]*pb_admin.Employee, 0, len(list))
+	for _, e := range list {
+		out = append(out, EmployeeToPb(e))
+	}
+	return out
 }
 
 // FoldOpexLinesToBase fills each line's AmountBase by folding Amount from its currency into base via
@@ -192,6 +284,7 @@ func OpexRecurringToPb(r entity.OpexRecurring) *pb_admin.OpexRecurring {
 		Amount:     pbDecimalFromDecimal(r.Amount),
 		Currency:   r.Currency,
 		ActiveFrom: r.ActiveFrom.Format("2006-01-02"),
+		EmployeeId: nullInt32ToPb(r.EmployeeId),
 	}
 	if r.ActiveTo.Valid {
 		ins.ActiveTo = r.ActiveTo.Time.Format("2006-01-02")
@@ -234,4 +327,22 @@ func nullInt32ToPb(n sql.NullInt32) int32 {
 		return n.Int32
 	}
 	return 0
+}
+
+// pbToNullInt32 maps a proto id (0 = none) to a nullable int32.
+func pbToNullInt32(v int32) sql.NullInt32 {
+	return sql.NullInt32{Int32: v, Valid: v > 0}
+}
+
+// parseOptionalDate parses an optional YYYY-MM-DD date (empty → NULL), keeping the exact day (not
+// month-snapped, unlike OPEX dates).
+func parseOptionalDate(s, field string) (sql.NullTime, error) {
+	if strings.TrimSpace(s) == "" {
+		return sql.NullTime{}, nil
+	}
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return sql.NullTime{}, fmt.Errorf("invalid %s %q: %w", field, s, err)
+	}
+	return sql.NullTime{Time: d, Valid: true}, nil
 }

@@ -42,8 +42,10 @@ func (s *Store) GetStyleSampleSummary(ctx context.Context, techCardID int) (enti
 }
 
 // GetStyleMaterialsFromStock returns the net warehouse-material cost issued into a style's production
-// runs (issue_production − return_production, base EUR), across all its runs, plus whether any issue
-// was uncosted (NF-09). This is the material actuals feeding the style production summary.
+// runs (issue_production − return_production, base EUR), plus whether any issue was uncosted (NF-09).
+// This is the material actuals feeding the style production summary, so it is scoped to the SAME runs
+// the summary counts — cancelled runs are excluded (nf09-04): otherwise the block would exclude a
+// cancelled run from runs/planned/actual yet still sum its issued material here, contradicting itself.
 func (s *Store) GetStyleMaterialsFromStock(ctx context.Context, techCardID int) (entity.StyleMaterialsFromStock, error) {
 	out, err := storeutil.QueryNamedOne[entity.StyleMaterialsFromStock](ctx, s.DB, `
 		SELECT
@@ -57,10 +59,11 @@ func (s *Store) GetStyleMaterialsFromStock(ctx context.Context, techCardID int) 
 					THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_uncosted
 		FROM material_stock_movement mv
 		JOIN production_run pr ON pr.id = mv.production_run_id
-		WHERE pr.tech_card_id = :tc AND mv.movement_type IN (:issue, :return)`, map[string]any{
-		"tc":     techCardID,
-		"issue":  string(entity.MaterialMovementIssueProduction),
-		"return": string(entity.MaterialMovementReturnProduction),
+		WHERE pr.tech_card_id = :tc AND pr.status <> :cancelled AND mv.movement_type IN (:issue, :return)`, map[string]any{
+		"tc":        techCardID,
+		"issue":     string(entity.MaterialMovementIssueProduction),
+		"return":    string(entity.MaterialMovementReturnProduction),
+		"cancelled": string(entity.ProductionRunCancelled),
 	})
 	if err != nil {
 		return entity.StyleMaterialsFromStock{}, fmt.Errorf("get style materials from stock %d: %w", techCardID, err)

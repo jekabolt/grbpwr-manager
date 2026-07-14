@@ -2,10 +2,18 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// ErrOpexLineMaterialised is returned by DeleteOpexLine for a materialised line (recurring_id set):
+// deleting it would only resurrect it on the worker's next tick (materialisation is insert-only per
+// (recurring_id, month)), and an operator who deleted-and-re-entered the month by hand would end up
+// double-counted after that tick (g25-11). To stop a recurring cost archive its template; to correct
+// a booked month add a manual adjustment line (±).
+var ErrOpexLineMaterialised = errors.New("a materialised OPEX line cannot be deleted; archive the template or add a manual adjustment line")
 
 // OpexLineInsert is the writable payload of one operating-expense line (NF-08). Amount is in
 // Currency; AmountBase is the base-currency equivalent, folded on write via the costing FX rates
@@ -42,6 +50,10 @@ type OpexRecurringInsert struct {
 	ActiveFrom time.Time       `db:"active_from"`
 	ActiveTo   sql.NullTime    `db:"active_to"`
 	Note       sql.NullString  `db:"note"`
+	// EmployeeId links a salary template to a person in the employee registry (gap-07 v2 A); 0/NULL
+	// for non-salary templates (rent, software…). ON DELETE SET NULL — removing an employee never
+	// deletes booked OPEX history.
+	EmployeeId sql.NullInt32 `db:"employee_id"`
 }
 
 // OpexRecurring is a stored recurring OPEX template.

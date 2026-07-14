@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	v "github.com/asaskevich/govalidator"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -121,11 +122,36 @@ func (s *Server) shipOrder(ctx context.Context, orderUUID, trackingCode string) 
 	if err != nil {
 		return fmt.Errorf("can't get order details: %w", err)
 	}
+	// gap-07 v2 B: auto-consume packaging from the material warehouse on the shipped transition. This
+	// is best-effort and idempotent (the store guards a re-ship) — a warehouse hiccup or a short
+	// packaging material must never block the actual shipment, so a failure is logged, not returned.
+	s.consumePackagingOnShip(ctx, orderFull)
 	shipmentDetails := dto.OrderFullToOrderShipment(orderFull)
 	if err := s.mailer.SendOrderShipped(ctx, s.repo, orderFull.Buyer.Email, shipmentDetails); err != nil {
 		return fmt.Errorf("can't send order shipped email: %w", err)
 	}
 	return nil
+}
+
+// consumePackagingOnShip writes off the configured packaging materials for a just-shipped order
+// (gap-07 v2 B). Errors are logged, never returned: shipping succeeded and must not be undone by a
+// warehouse problem. itemCount is the order's total unit count.
+func (s *Server) consumePackagingOnShip(ctx context.Context, orderFull *entity.OrderFull) {
+	itemCount := decimal.Zero
+	for _, it := range orderFull.OrderItems {
+		itemCount = itemCount.Add(it.Quantity)
+	}
+	mvs, err := s.repo.MaterialStock().ConsumePackagingForOrder(
+		ctx, orderFull.Order.Id, int(itemCount.IntPart()), authsrv.GetAdminUsername(ctx))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "packaging auto-consume failed on ship",
+			slog.Int("order_id", orderFull.Order.Id), slog.String("err", err.Error()))
+		return
+	}
+	if len(mvs) > 0 {
+		slog.Default().InfoContext(ctx, "packaging consumed on ship",
+			slog.Int("order_id", orderFull.Order.Id), slog.Int("materials", len(mvs)))
+	}
 }
 
 func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest) (*pb_admin.ListOrdersResponse, error) {

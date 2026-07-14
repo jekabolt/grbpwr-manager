@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -19,6 +20,8 @@ import (
 const (
 	maxVarchar32   = 32
 	maxVarchar64   = 64
+	maxVarchar191  = 191
+	maxVarchar512  = 512
 	maxVarchar1024 = 1024
 	maxCurrency    = 3
 
@@ -745,7 +748,26 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 		LockVersion:   int32(tc.LockVersion),
+		PreviewUrl:    tc.PreviewURL,
 	}
+}
+
+// ConvertStylePipelineToPb converts the development-board columns to pb (gap-01), reusing the
+// light-card mapper for each column's preview cards.
+func ConvertStylePipelineToPb(cols []entity.StylePipelineColumn) *pb_admin.GetStylePipelineResponse {
+	out := &pb_admin.GetStylePipelineResponse{Columns: make([]*pb_admin.StylePipelineColumn, 0, len(cols))}
+	for i := range cols {
+		cards := make([]*pb_common.TechCardListItem, 0, len(cols[i].Cards))
+		for j := range cols[i].Cards {
+			cards = append(cards, ConvertEntityTechCardToListItemPb(&cols[i].Cards[j]))
+		}
+		out.Columns = append(out.Columns, &pb_admin.StylePipelineColumn{
+			Stage: pbTechCardStage(cols[i].Stage),
+			Count: int32(cols[i].Count),
+			Cards: cards,
+		})
+	}
+	return out
 }
 
 // ConvertPbTechCardStageToEntityString maps a stage filter enum to its entity
@@ -968,8 +990,14 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, colorwayCount, bomItemC
 		if len(p.Note) > maxVarchar255 {
 			return nil, fmt.Errorf("piece note must be at most %d characters", maxVarchar255)
 		}
+		// proto3 zero means "unset" → default to 1; but a negative value is a client bug and must not be
+		// silently coerced (the user would see 1, not what they sent), matching the other numeric guards
+		// in this file that reject negatives (nf05-02).
+		if p.PiecesPerGarment < 0 {
+			return nil, fmt.Errorf("piece %q pieces_per_garment must be non-negative", p.Name)
+		}
 		perGarment := int(p.PiecesPerGarment)
-		if perGarment <= 0 {
+		if perGarment == 0 {
 			perGarment = 1
 		}
 		grainline := strings.ToLower(strings.TrimSpace(p.Grainline))
@@ -1179,6 +1207,9 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.Tech
 	for ci := range cws {
 		c := &cws[ci]
 		out = append(out, &pb_common.TechCardColorway{
+			// stable row id (B-10), OUTPUT-ONLY: lets a sample link to this colourway
+			// (Sample.colorway_id). Regenerated on every card save; ignored on write.
+			Id:                 int32(c.Id),
 			Code:               pbStringFromNull(c.Code),
 			Name:               c.Name,
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),

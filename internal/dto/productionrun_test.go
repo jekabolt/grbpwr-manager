@@ -65,6 +65,61 @@ func TestComputeProductionRunActuals(t *testing.T) {
 	require.Equal(t, "500", a.ByKind[0].AmountBase.Value)
 }
 
+// TestComputeProductionRunActualsByColorway covers the per-colourway material breakdown (gap-07 v2
+// C): issues bucket by product_id, returns net against the same product, an uncosted issue flags its
+// colourway, and issues with no product_id fall into the unattributed bucket.
+func TestComputeProductionRunActualsByColorway(t *testing.T) {
+	iss := entity.MaterialMovementIssueProduction
+	ret := entity.MaterialMovementReturnProduction
+	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
+		Lines: []entity.ProductionRunLine{
+			{ProductId: ni32(101), SizeId: 1, PlannedQty: 10, ReceivedQty: ni(6)},
+			{ProductId: ni32(102), SizeId: 1, PlannedQty: 10, ReceivedQty: ni(4)},
+		},
+	}}
+	run.MaterialMovements = []entity.MaterialMovement{
+		{MovementType: iss, Quantity: d("20"), UnitCostBase: nd2("5"), ProductId: ni32(101)}, // 100
+		{MovementType: ret, Quantity: d("2"), UnitCostBase: nd2("5"), ProductId: ni32(101)},  // −10 → 90
+		{MovementType: iss, Quantity: d("10"), UnitCostBase: nd2("5"), ProductId: ni32(102)}, // 50
+		{MovementType: iss, Quantity: d("1"), ProductId: ni32(102)},                          // uncosted → flags 102
+		{MovementType: iss, Quantity: d("4"), UnitCostBase: nd2("5")},                        // no product → unattributed 20
+	}
+
+	a := ConvertEntityProductionRunToPb(run).Actuals
+	require.NotNil(t, a)
+	require.Equal(t, "160", a.MaterialsFromStockBase.Value, "90 + 50 + 20")
+	require.Equal(t, "20", a.UnattributedMaterialsBase.Value)
+	require.True(t, a.HasUncostedIssues)
+	require.Len(t, a.ByColorway, 2)
+
+	c1 := a.ByColorway[0]
+	require.Equal(t, int32(101), c1.ProductId, "sorted by product_id")
+	require.Equal(t, "90", c1.MaterialsFromStockBase.Value)
+	require.Equal(t, int32(6), c1.ReceivedQty)
+	require.Equal(t, "15", c1.MaterialsUnitCost.Value) // 90 / 6
+	require.False(t, c1.HasUncosted)
+
+	c2 := a.ByColorway[1]
+	require.Equal(t, int32(102), c2.ProductId)
+	require.Equal(t, "50", c2.MaterialsFromStockBase.Value)
+	require.Equal(t, int32(4), c2.ReceivedQty)
+	require.Equal(t, "12.5", c2.MaterialsUnitCost.Value) // 50 / 4
+	require.True(t, c2.HasUncosted, "the uncosted issue for 102 flags it")
+}
+
+// A legacy single-colour run (no product_id on issues or lines) emits no per-colourway rows.
+func TestComputeProductionRunActualsNoColorway(t *testing.T) {
+	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: ni(10)}},
+	}}
+	run.MaterialMovements = []entity.MaterialMovement{
+		{MovementType: entity.MaterialMovementIssueProduction, Quantity: d("10"), UnitCostBase: nd2("5")},
+	}
+	a := ConvertEntityProductionRunToPb(run).Actuals
+	require.Empty(t, a.ByColorway, "no product_id → no colourway rows")
+	require.Equal(t, "50", a.UnattributedMaterialsBase.Value, "all material is unattributed")
+}
+
 // A cost that could not be folded to base flags has_base=false and is excluded from the total.
 func TestComputeProductionRunActualsPartialBase(t *testing.T) {
 	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
@@ -145,7 +200,6 @@ func TestConvertPbProductionRunInsertToEntity(t *testing.T) {
 }
 
 func TestConvertPbProductionRunInsertValidation(t *testing.T) {
-	rq := int32(5)
 	cases := map[string]*pb_common.ProductionRunInsert{
 		"missing tech_card_id": {Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED},
 		"unknown status":       {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_UNKNOWN},
@@ -153,8 +207,9 @@ func TestConvertPbProductionRunInsertValidation(t *testing.T) {
 			Lines: []*pb_common.ProductionRunLine{{ProductId: 11, SizeId: 1, PlannedQty: 1}, {ProductId: 11, SizeId: 1, PlannedQty: 2}}},
 		"zero size_id": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
 			Lines: []*pb_common.ProductionRunLine{{SizeId: 0, PlannedQty: 1}}},
-		"received without product": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Lines: []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 5, ReceivedQty: &rq}}},
+		// NOTE: a received line without a product is NOT a dto error — an auxiliary run's output has
+		// no product (it goes to the material warehouse). Product-presence is enforced per card
+		// purpose in the receive handlers, not here.
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

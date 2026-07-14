@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"slices"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -25,6 +24,13 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	// A run is born planned/in_progress. Creating it straight into received/closed would mark stock
+	// as booked that never was (bypassing ReceiveProductionRun) and — since received/closed runs are
+	// immutable for update AND delete — leave a permanently stuck row (g25-01); cancelled makes no
+	// sense at birth either.
+	if ins.Status != entity.ProductionRunPlanned && ins.Status != entity.ProductionRunInProgress {
+		return nil, status.Error(codes.InvalidArgument, "a production run is created as planned or in_progress; received/closed/cancelled are reached through their flows")
 	}
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
@@ -59,6 +65,16 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		// A received/closed run is immutable; receive must go through ReceiveProductionRun; moving an
+		// open run to cancelled/closed while material is still issued to it would strand that stock
+		// outside WIP with no receive or write-off (nf09-03); and a run never moves to another tech
+		// card (g25-13) — all are caller-fixable preconditions.
+		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) ||
+			errors.Is(err, entity.ErrProductionRunReceiveViaUpdate) ||
+			errors.Is(err, entity.ErrProductionRunHasOpenIssues) ||
+			errors.Is(err, entity.ErrProductionRunCardChange) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
@@ -151,9 +167,19 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
 		return s.receiveAuxiliaryRun(ctx, run, card)
 	}
-	// group each line's received quantity by product → size. (run_id, product_id, size_id) is unique
-	// so no accumulation collisions; a received line without a product, or with a product not in the
-	// card, is a precondition failure.
+	// group each line's received quantity by product → size, validating each against the card's
+	// products and size grid. (run_id, product_id, size_id) is unique so no accumulation collisions.
+	// A received line without a product, with a product not in the card, or with a size outside the
+	// card's grid is rejected. This is the friendly early check; the store re-validates the grid
+	// against freshly-read lines under the run lock (concurrency), and recomputes cost_price there.
+	validProduct := make(map[int]bool, len(card.ProductIds))
+	for _, id := range card.ProductIds {
+		validProduct[id] = true
+	}
+	validSize := make(map[int]bool, len(card.SizeIds))
+	for _, id := range card.SizeIds {
+		validSize[id] = true
+	}
 	perProduct := make(map[int]map[int]int)
 	for _, ln := range run.Lines {
 		if !ln.ReceivedQty.Valid || ln.ReceivedQty.Int64 <= 0 {
@@ -163,8 +189,11 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 			return nil, status.Error(codes.FailedPrecondition, entity.ErrProductionRunLineProductMissing.Error())
 		}
 		pid := int(ln.ProductId.Int32)
-		if !slices.Contains(card.ProductIds, pid) {
-			return nil, status.Error(codes.InvalidArgument, "a received line's product is not linked to the run's tech card")
+		if !validProduct[pid] {
+			return nil, status.Error(codes.InvalidArgument, entity.ErrProductionRunLineProductUnlinked.Error())
+		}
+		if len(validSize) > 0 && !validSize[ln.SizeId] {
+			return nil, status.Error(codes.InvalidArgument, entity.ErrProductionRunLineSizeUnlinked.Error())
 		}
 		if perProduct[pid] == nil {
 			perProduct[pid] = make(map[int]int)
@@ -174,32 +203,32 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	if len(perProduct) == 0 {
 		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
 	}
-	// optional cost_price update from the run's (base-currency) actual unit cost — one style-level
-	// figure applied to every received product.
-	var costPrice decimal.NullDecimal
-	if req.UpdateCostPrice {
-		costPrice = dto.ProductionRunActualUnitCostBase(run)
-	}
-	if err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), perProduct, authsrv.GetAdminUsername(ctx), costPrice); err != nil {
-		if errors.Is(err, entity.ErrProductionRunAlreadyReceived) {
+	// The store books stock and (when asked) seeds each product's cost_price from the run's actual
+	// unit cost, recomputed inside the transaction so a material issue racing the receive is included.
+	costPriceUpdated, err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), perProduct, req.UpdateCostPrice, authsrv.GetAdminUsername(ctx))
+	if err != nil {
+		switch {
+		case errors.Is(err, entity.ErrProductionRunAlreadyReceived):
 			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
-		}
-		if errors.Is(err, sql.ErrNoRows) {
+		case errors.Is(err, entity.ErrProductionRunConcurrentModification):
+			return nil, status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Error(codes.NotFound, "production run not found")
-		}
-		if s.repo.IsErrForeignKeyViolation(err) {
+		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
 		}
 		slog.Default().ErrorContext(ctx, "can't receive production run", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't receive production run")
 	}
-	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPrice.Valid}, nil
+	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPriceUpdated}, nil
 }
 
 // receiveAuxiliaryRun receives an auxiliary card's run output into its output material (NF-07): the
 // finished item (dust bag, shopper) lands in the warehouse as a receipt_production whose unit cost
 // is the run's actual per-unit base cost, so the packaging's stock value reflects real production
 // cost. Auxiliary lines must not link products, and the card must have declared an output material.
+// This is the friendly early check; the store re-reads the lines and recomputes the quantity and
+// unit cost under the run lock (g25-07), so a racing edit/issue is either included or aborts.
 func (s *Server) receiveAuxiliaryRun(ctx context.Context, run *entity.ProductionRun, card *entity.TechCard) (*pb_admin.ReceiveProductionRunResponse, error) {
 	if !card.OutputMaterialId.Valid {
 		return nil, status.Error(codes.FailedPrecondition, "auxiliary card has no output material set; set it before receiving")
@@ -216,18 +245,18 @@ func (s *Server) receiveAuxiliaryRun(ctx context.Context, run *entity.Production
 	if total == 0 {
 		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
 	}
-	// per-unit base cost from the run actuals (manual costs + materials-from-stock); invalid when
-	// the actuals have no base — the receipt is then uncosted and the average is left unmoved.
-	unitCost := dto.ProductionRunActualUnitCostBase(run)
 	if err := s.repo.ProductionRuns().ReceiveAuxiliaryProductionRun(ctx, run.Id, int(card.OutputMaterialId.Int64),
-		decimal.NewFromInt(total), unitCost, authsrv.GetAdminUsername(ctx)); err != nil {
-		if errors.Is(err, entity.ErrProductionRunAlreadyReceived) {
+		authsrv.GetAdminUsername(ctx)); err != nil {
+		switch {
+		case errors.Is(err, entity.ErrProductionRunAlreadyReceived):
 			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
-		}
-		if errors.Is(err, sql.ErrNoRows) {
+		case errors.Is(err, entity.ErrProductionRunConcurrentModification):
+			return nil, status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, entity.ErrProductionRunNothingReceived):
+			return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
+		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Error(codes.NotFound, "production run not found")
-		}
-		if s.repo.IsErrForeignKeyViolation(err) {
+		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
 		}
 		slog.Default().ErrorContext(ctx, "can't receive auxiliary production run", slog.String("err", err.Error()))

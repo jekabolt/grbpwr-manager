@@ -56,7 +56,7 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard ga4 revenue: %w", err)
 	}
-	opexTotal, opexComplete, err := s.getOpexForPeriod(ctx, from, to)
+	opex, err := s.getOpexForPeriod(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard opex: %w", err)
 	}
@@ -119,13 +119,17 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	// Operating result (task 22): the honest total under contribution margin. Marketing spend is
 	// subtracted HERE (not in contribution — it isn't variable per order), which also avoids
 	// double-counting it against the ROAS report.
-	d.OpexTotal = opexTotal
+	d.OpexTotal = opex.Total
 	d.MarketingSpend = marketingSpend
-	d.OperatingResult = d.ContributionMargin.Sub(opexTotal).Sub(marketingSpend).Round(2)
-	if !opexComplete {
+	d.OperatingResult = d.ContributionMargin.Sub(opex.Total).Sub(marketingSpend).Round(2)
+	if !opex.Complete {
 		// Covers "no OPEX at all", "some months recorded, others missing", and "a line whose currency
 		// had no FX rate (uncosted, excluded from the total)" — any of these understates fixed costs.
 		d.OpexCaveat = "OPEX is missing or uncosted for one or more months in this period — operating result excludes those fixed costs and is incomplete."
+	} else if opex.DoubleCountRisk {
+		// The opposite failure: a month carries both a migrated '(aggregate)' lump and itemised lines
+		// of the same category, so its OPEX is counted twice and the operating result is overstated.
+		d.OpexCaveat = "OPEX may be double-counted: a month in this period has both an aggregate figure and itemised lines for the same category — remove the aggregate once the category is itemised."
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) {
 		d.CostCoveragePct = costedRev.Div(totalItemRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
@@ -166,11 +170,11 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if grossRev.GreaterThan(decimal.Zero) {
 		refundRatePct = revRefund.Div(grossRev).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
-	lowStockNames, lowStockCount, err := s.getLowStockMaterials(ctx, dashboardLowStockNamesLimit)
+	lowStockNames, lowStockCount, err := s.GetLowStockMaterials(ctx, dashboardLowStockNamesLimit)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard low material stock: %w", err)
 	}
-	staleRuns, err := s.getStaleOpenRunCount(ctx, thresholds.ProductionRunStaleDays)
+	staleRuns, err := s.GetStaleOpenRunCount(ctx, thresholds.ProductionRunStaleDays)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard stale runs: %w", err)
 	}
@@ -204,19 +208,27 @@ func (s *Store) getGA4Revenue(ctx context.Context, from, to time.Time) (decimal.
 	return row.Revenue, nil
 }
 
-// getLowStockMaterials returns the names of active materials whose on-hand is below their configured
+// GetLowStockMaterials returns the names of active materials whose on-hand is below their configured
 // minimum (NF-02), ordered by shortfall (most-below first) and capped at `limit`, plus the total
 // count of below-min materials (the count reflects all, not just the returned top-N). Materials with
 // no min_stock set are never low-stock. Feeds the low_material_stock dashboard alert (NF-09).
-func (s *Store) getLowStockMaterials(ctx context.Context, limit int) ([]string, int, error) {
+// Exported (not on the dependency.Metrics interface) so the store integration suite can exercise the
+// query directly — the metrics package has no live-DB harness of its own (nf09-07).
+//
+// LEFT JOIN + COALESCE(on_hand, 0), symmetric with the warehouse list (ListMaterialStock BelowMinOnly):
+// a material_stock row is created lazily on the first movement, so a just-created material with a
+// min_stock and zero movements has NO stock row. An INNER JOIN would drop exactly that material —
+// the most blatant «we have none of this» case — making the dashboard alert disagree with the
+// warehouse screen (nf09-01).
+func (s *Store) GetLowStockMaterials(ctx context.Context, limit int) ([]string, int, error) {
 	rows, err := storeutil.QueryListNamed[struct {
 		Name string `db:"name"`
 	}](ctx, s.DB, `
 		SELECT m.name
 		FROM material m
-		JOIN material_stock st ON st.material_id = m.id
-		WHERE m.archived = FALSE AND m.min_stock IS NOT NULL AND st.on_hand < m.min_stock
-		ORDER BY (m.min_stock - st.on_hand) DESC, m.name`, nil)
+		LEFT JOIN material_stock st ON st.material_id = m.id
+		WHERE m.archived = FALSE AND m.min_stock IS NOT NULL AND COALESCE(st.on_hand, 0) < m.min_stock
+		ORDER BY (m.min_stock - COALESCE(st.on_hand, 0)) DESC, m.name`, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get low stock materials: %w", err)
 	}
@@ -230,10 +242,11 @@ func (s *Store) getLowStockMaterials(ctx context.Context, limit int) ([]string, 
 	return names, len(rows), nil
 }
 
-// getStaleOpenRunCount counts production runs still open (planned/in_progress) whose created_at is
+// GetStaleOpenRunCount counts production runs still open (planned/in_progress) whose created_at is
 // older than staleDays — forgotten runs that keep their issued materials pinned in WIP (NF-09).
-// staleDays <= 0 disables the check.
-func (s *Store) getStaleOpenRunCount(ctx context.Context, staleDays int) (int, error) {
+// staleDays <= 0 disables the check. Exported for the same integration-coverage reason as
+// GetLowStockMaterials (nf09-07).
+func (s *Store) GetStaleOpenRunCount(ctx context.Context, staleDays int) (int, error) {
 	if staleDays <= 0 {
 		return 0, nil
 	}

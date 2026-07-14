@@ -147,3 +147,137 @@ func TestInventoryValuationMaterialsAndStyle(t *testing.T) {
 	require.True(t, v2.WriteOffsMaterialsValue.Sub(baseline.WriteOffsMaterialsValue).Equal(dec("25")),
 		"material write-off delta 25, got %s", v2.WriteOffsMaterialsValue.Sub(baseline.WriteOffsMaterialsValue))
 }
+
+// TestInventoryValuationReceiveLeavesWip closes the NF-09 valuation gap (nf09-07 #1): material
+// issued to an OPEN run sits in WIP, but once the run is received it must LEAVE WIP (the WIP query
+// only counts issues on planned/in_progress runs). The aux variant then shows the "WIP→raw"
+// hand-off: receiving an auxiliary run drops its input from WIP and lands its output as raw stock.
+// Assertions are delta-based so shared DB state can't skew them.
+func TestInventoryValuationReceiveLeavesWip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	nd := func(v string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
+	}
+	dec := decimal.RequireFromString
+	from := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	mtr := s.Metrics()
+	MS := s.MaterialStock()
+
+	wip := func() decimal.Decimal {
+		v, err := mtr.GetInventoryValuation(ctx, from, to, 50)
+		require.NoError(t, err)
+		return v.WipValue
+	}
+
+	// --- regular run: issued material sits in WIP, then leaves on receive ---
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Recv Style", Stage: entity.TechCardStageProto,
+		StyleNumber:     sql.NullString{String: "NF-RECV-1", Valid: true},
+		MeasurementUnit: entity.TechCardUnitMm,
+		ApprovalState:   entity.TechCardApprovalDraft,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+
+	runID, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+
+	m1, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Recv Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", m1)
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", m1)
+	})
+
+	wipBefore := wip()
+	_, err = MS.ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: m1, Quantity: dec("100"), UnitCost: nd("5"), Currency: "EUR"})
+	require.NoError(t, err)
+	_, err = MS.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: m1, Quantity: dec("30"), ProductionRunId: sql.NullInt32{Int32: int32(runID), Valid: true}})
+	require.NoError(t, err)
+
+	wipIssued := wip()
+	require.True(t, wipIssued.Sub(wipBefore).Equal(dec("150")),
+		"issuing 30 @ 5 to the open run adds 150 to WIP, got %s", wipIssued.Sub(wipBefore))
+
+	// receive the run (status → received); the WIP query must now exclude its issues.
+	_, err = testDB.ExecContext(ctx, "UPDATE production_run SET status = ? WHERE id = ?", string(entity.ProductionRunReceived), runID)
+	require.NoError(t, err)
+
+	wipReceived := wip()
+	require.True(t, wipReceived.Sub(wipBefore).Equal(decimal.Zero),
+		"received run leaves WIP (delta back to 0), got %s", wipReceived.Sub(wipBefore))
+
+	// --- aux variant: WIP→raw hand-off ---
+	outMatID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Recv Output", Section: "packaging", Unit: sql.NullString{String: "pc", Valid: true}})
+	require.NoError(t, err)
+	inMatID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Recv AuxInput", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, id := range []int{outMatID, inMatID} {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", id)
+		}
+	})
+
+	auxTC, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "NF Recv Aux", Stage: entity.TechCardStageProto,
+		StyleNumber:      sql.NullString{String: "NF-RECV-AUX-1", Valid: true},
+		MeasurementUnit:  entity.TechCardUnitMm,
+		ApprovalState:    entity.TechCardApprovalDraft,
+		Purpose:          entity.TechCardPurposeAuxiliary,
+		OutputMaterialId: sql.NullInt64{Int64: int64(outMatID), Valid: true},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", auxTC) })
+
+	auxRun, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: auxTC, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 100, ReceivedQty: sql.NullInt64{Int64: 100, Valid: true}}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", auxRun) })
+
+	// feed 10 @ 2 of the input material into the open aux run → +20 WIP.
+	_, err = MS.ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: inMatID, Quantity: dec("50"), UnitCost: nd("2"), Currency: "EUR"})
+	require.NoError(t, err)
+	_, err = MS.IssueMaterialStock(ctx, entity.MaterialIssueInsert{MaterialId: inMatID, Quantity: dec("10"), ProductionRunId: sql.NullInt32{Int32: int32(auxRun), Valid: true}})
+	require.NoError(t, err)
+
+	beforeReceive, err := mtr.GetInventoryValuation(ctx, from, to, 50)
+	require.NoError(t, err)
+	require.True(t, beforeReceive.WipValue.Sub(wipReceived).Equal(dec("20")),
+		"aux input 10 @ 2 adds 20 to WIP while the aux run is open, got %s", beforeReceive.WipValue.Sub(wipReceived))
+
+	// receive the aux run's output → run received, output raw. The store derives the receipt's unit
+	// cost from the run's ACTUALS (g25-07): only the 20-base material issue → 20/100 = 0.2/unit, so
+	// the hand-off is value-conserving — exactly the WIP consumed lands as raw.
+	require.NoError(t, s.ProductionRuns().ReceiveAuxiliaryProductionRun(ctx, auxRun, outMatID, "tester"))
+
+	afterReceive, err := mtr.GetInventoryValuation(ctx, from, to, 50)
+	require.NoError(t, err)
+	// WIP→: the aux input leaves WIP on receive.
+	require.True(t, afterReceive.WipValue.Sub(beforeReceive.WipValue).Equal(dec("-20")),
+		"aux input leaves WIP on receive (−20), got %s", afterReceive.WipValue.Sub(beforeReceive.WipValue))
+	// →raw: the run's output lands as raw material stock (100 @ 0.2 = 20 — the consumed WIP value).
+	require.True(t, afterReceive.RawMaterialsValue.Sub(beforeReceive.RawMaterialsValue).Equal(dec("20")),
+		"aux output becomes raw inventory (+20), got %s", afterReceive.RawMaterialsValue.Sub(beforeReceive.RawMaterialsValue))
+}

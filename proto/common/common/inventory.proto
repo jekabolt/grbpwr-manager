@@ -45,7 +45,7 @@ message MaterialMovement {
   google.type.Decimal unit_cost_base = 9; // costing:read only
   int32 production_run_id = 10; // 0 = none
   int32 sample_id = 11; // 0 = none
-  int32 tech_card_id = 12; // 0 = none
+  int32 tech_card_id = 12; // owning style, denormalised from the run/sample at issue time (0 = none); filter movements by style. Derived, not an independent issue target.
   string lot = 13;
   string supplier_doc = 14;
   string reason = 15;
@@ -53,6 +53,25 @@ message MaterialMovement {
   string admin_username = 17;
   google.protobuf.Timestamp occurred_at = 18;
   google.protobuf.Timestamp created_at = 19;
+  int32 product_id = 20; // colour-model an issue to a run was cut for (gap-07 v2 C); 0 = shared/unattributed
+  int32 lot_id = 21; // structured lot (roll / dye-lot) this movement received into or drew from (gap-07 v2 D); 0 = none
+}
+
+// MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code
+// with a running remaining quantity, for traceability and colour matching. unit_cost is
+// informational only — valuation stays moving-average; a lot is NOT a FIFO costing basis.
+message MaterialLot {
+  int32 id = 1;
+  int32 material_id = 2;
+  string lot_code = 3; // supplier dye-lot / roll number
+  string supplier_doc = 4;
+  google.type.Decimal received_qty = 5; // total received into this lot
+  google.type.Decimal remaining_qty = 6; // still available to issue from this lot
+  google.type.Decimal unit_cost = 7; // informational, purchase currency (costing:read); NOT a valuation basis
+  string currency = 8;
+  google.protobuf.Timestamp received_at = 9;
+  string note = 10;
+  bool archived = 11;
 }
 
 // MaterialStockRow is a catalog material joined with its stock balance, valuation and low-stock

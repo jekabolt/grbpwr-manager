@@ -75,7 +75,7 @@ func TestListOpexLinesHandler(t *testing.T) {
 			Id: 1, OpexLineInsert: entity.OpexLineInsert{
 				Month: time.Date(2029, 6, 1, 0, 0, 0, 0, time.UTC), Category: "salaries", Label: "Maria",
 				Amount: decimal.RequireFromString("1000"), Currency: "USD",
-				AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("900"), Valid: true},
+				AmountBase:  decimal.NullDecimal{Decimal: decimal.RequireFromString("900"), Valid: true},
 				RecurringId: sql.NullInt32{Int32: 7, Valid: true},
 			},
 		},

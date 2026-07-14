@@ -83,6 +83,50 @@ message ProductionRunActuals {
   google.type.Decimal materials_from_stock_base = 13;
   bool mixed_materials_sources = 14; // both a manual kind=materials cost AND stock issues exist (possible double count)
   bool has_uncosted_issues = 15; // some stock issue had no average cost, so materials_from_stock understates
+  // Per-colourway material cost (gap-07 v2 C): stock issues grouped by the product_id they were cut
+  // for. Covers materials_from_stock only (manual cost articles stay run-level). Issues with no
+  // product_id fall into unattributed_materials_base, not any colourway.
+  repeated ProductionRunColorwayCost by_colorway = 16;
+  google.type.Decimal unattributed_materials_base = 17; // stock issues not attributed to a colourway
+}
+
+// ProductionRunColorwayCost is one colour-model's slice of a run's material-from-stock cost (gap-07
+// v2 C): the net material issued for that product and, if it received units, its per-unit material
+// cost. Manual (non-stock) cost articles are run-level and are NOT split here.
+message ProductionRunColorwayCost {
+  int32 product_id = 1;
+  int32 received_qty = 2; // units of this colour-model received (from the run lines)
+  google.type.Decimal materials_from_stock_base = 3; // net (issue − return) × unit_cost_base for this product
+  google.type.Decimal materials_unit_cost = 4; // materials_from_stock_base / received_qty (omitted if none received)
+  bool has_uncosted = 5; // an issue for this product had no average cost, so its figure understates
+}
+
+// ProductionMarkerSource is the CAD/nesting software (or hand entry) a marker record came from.
+enum ProductionMarkerSource {
+  PRODUCTION_MARKER_SOURCE_UNKNOWN = 0;
+  PRODUCTION_MARKER_SOURCE_GERBER = 1;
+  PRODUCTION_MARKER_SOURCE_OPTITEX = 2;
+  PRODUCTION_MARKER_SOURCE_LECTRA = 3;
+  PRODUCTION_MARKER_SOURCE_AUDACES = 4;
+  PRODUCTION_MARKER_SOURCE_MANUAL = 5;
+  PRODUCTION_MARKER_SOURCE_OTHER = 6;
+}
+
+// ProductionRunMarker is one imported nesting marker (раскладка / lay) of a run (gap-07 v2 E): the
+// CAD source, the fabric width and lay length it was nested on, the units it yields, its
+// fabric-utilisation %, an optional fabric/size, and a reference URL to the exported marker file.
+// It is planning / traceability data — nothing here feeds the run's actual cost or cost_price.
+message ProductionRunMarker {
+  ProductionMarkerSource source = 1;
+  string marker_name = 2; // marker / lay identifier from the software
+  int32 size_id = 3; // single-size marker; 0 = mixed-size lay
+  int32 material_id = 4; // fabric the marker was nested on; 0 = unset
+  google.type.Decimal marker_width = 5; // fabric width the marker was made for (cm)
+  google.type.Decimal lay_length = 6; // marker / lay length (cm)
+  int32 units_per_marker = 7; // garments yielded by one marker; 0 = unset
+  google.type.Decimal efficiency_pct = 8; // fabric utilisation % (per-marker), 0..100
+  string marker_file_url = 9; // bare URL of the exported marker file (UploadPattern convention)
+  string notes = 10;
 }
 
 // ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).
@@ -99,6 +143,7 @@ message ProductionRunInsert {
   repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)
   google.type.Decimal marker_efficiency_pct = 10; // % fabric utilisation from the nesting software (NF-06)
   string marker_notes = 11; // free marker / раскладка parameters
+  repeated ProductionRunMarker markers = 12; // imported nesting markers (gap-07 v2 E)
   reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
 }
 

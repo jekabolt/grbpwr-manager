@@ -324,8 +324,17 @@ type (
 		// ListOpexRecurring returns recurring templates (active-only unless includeArchived).
 		ListOpexRecurring(ctx context.Context, includeArchived bool) ([]entity.OpexRecurring, error)
 		// MaterializeOpexRecurring books each active template into monthly opex_lines up to `upTo`,
-		// folding amounts to base with `rates`; INSERT-only and idempotent. Returns lines created.
-		MaterializeOpexRecurring(ctx context.Context, upTo time.Time, rates map[string]decimal.Decimal) (int, error)
+		// folding each month at its own effective FX rate (loaded internally). Dedup is
+		// (recurring_id, month); already-costed months are frozen, uncosted ones are recosted on a
+		// later tick. Returns lines newly created (recosts excluded). Fails if FX history won't load.
+		MaterializeOpexRecurring(ctx context.Context, upTo time.Time) (int, error)
+		// UpsertEmployee inserts (id==0) or updates an employee-registry row, returning its id (gap-07
+		// v2 A). The registry links salary OpexRecurring templates to a person via employee_id.
+		UpsertEmployee(ctx context.Context, ins entity.EmployeeInsert, id int) (int, error)
+		// ArchiveEmployee soft-archives an employee; linked recurring templates keep their employee_id.
+		ArchiveEmployee(ctx context.Context, id int) error
+		// ListEmployees returns registry rows (active-only unless includeArchived).
+		ListEmployees(ctx context.Context, includeArchived bool) ([]entity.Employee, error)
 		// ListVatRates / UpsertVatRates read and write the destination-country VAT rates
 		// (vat_rate table) used to compute net-of-VAT revenue.
 		ListVatRates(ctx context.Context) ([]entity.VatRate, error)
@@ -457,6 +466,9 @@ type (
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
+		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
+		// and up to cardsPerStage light preview cards (gap-01).
+		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
@@ -494,14 +506,21 @@ type (
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
 		// ReceiveProductionRun receives a multi-colourway run into stock (NF-06): perProduct maps each
-		// product_id → (size_id → qty); it increments every product's stock, optionally seeds each
-		// product's cost_price from the run's actual unit cost, and transitions the run to received —
-		// guarded against a double receipt.
-		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, username string, costPrice decimal.NullDecimal) error
+		// product_id → (size_id → qty), pre-validated by the caller against the run's tech card. Inside
+		// one transaction it locks the run, re-reads its lines to confirm perProduct is still current
+		// (else ErrProductionRunConcurrentModification), increments every product's stock, and — when
+		// updateCostPrice is set — seeds each product's cost_price from the run's actual unit cost
+		// recomputed from the freshly-read costs/movements (so a material issue racing the receive is
+		// not missed). It transitions the run to received, guarded against a double receipt, and reports
+		// whether cost_price was seeded.
+		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, updateCostPrice bool, username string) (bool, error)
 		// ReceiveAuxiliaryProductionRun receives an auxiliary run's output into the material warehouse
-		// (NF-07): it books a receipt_production of qty into outputMaterialID (moving the average by
-		// unitCostBase) and transitions the run to received — guarded against a double receipt.
-		ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, qty decimal.Decimal, unitCostBase decimal.NullDecimal, username string) error
+		// (NF-07): under the run lock it re-reads the lines (product-free, Σ received_qty > 0 — else
+		// ErrProductionRunConcurrentModification / ErrProductionRunNothingReceived) and recomputes the
+		// actual per-unit base cost from the freshly-read costs+movements (g25-07), books a
+		// receipt_production of that quantity into outputMaterialID (moving the average when costed)
+		// and transitions the run to received — guarded against a double receipt.
+		ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, username string) error
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
@@ -511,7 +530,9 @@ type (
 		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error
 		DeleteSample(ctx context.Context, id int) error
 		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
-		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int) ([]entity.Sample, int, error)
+		// ListSamples lists samples; techCardID <= 0 spans all styles (cross-style queue), and
+		// status/purpose are optional string filters ("" = any).
+		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int, status, purpose string) ([]entity.Sample, int, error)
 	}
 
 	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
@@ -524,6 +545,16 @@ type (
 		GetMaterialStock(ctx context.Context, materialID int) (*entity.MaterialStock, error)
 		ListMaterialStock(ctx context.Context, filter entity.MaterialStockFilter) ([]entity.MaterialStockRow, error)
 		ListMaterialMovements(ctx context.Context, limit, offset int, filter entity.MaterialMovementFilter) ([]entity.MaterialMovement, int, error)
+		// UpsertPackagingBom full-replaces the global packaging recipe consumed on ship (gap-07 v2 B).
+		UpsertPackagingBom(ctx context.Context, items []entity.PackagingBomItem) error
+		// ListPackagingBom returns the packaging recipe joined with material name/unit.
+		ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem, error)
+		// ConsumePackagingForOrder writes off packaging for a shipped order, idempotently (PK guard) and
+		// best-effort (a short material is skipped, never failing the ship). itemCount = total units.
+		ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error)
+		// ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D), active-only unless
+		// includeArchived. Traceability registry; valuation stays moving-average.
+		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
