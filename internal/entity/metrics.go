@@ -55,6 +55,12 @@ type BusinessMetrics struct {
 	// TotalDiscount.Value == ProductSaleDiscount + PromoCodeDiscount.
 	ProductSaleDiscount MetricWithComparison
 	PromoCodeDiscount   MetricWithComparison
+	// RevenueInclVat is post-discount/refund revenue BEFORE removing VAT — what the company
+	// actually collected from customers. Revenue (headline) is RevenueInclVat net of VAT, and
+	// VatAmount = RevenueInclVat - Revenue. VAT is resolved per order from the destination
+	// country and is 0 for export / pre-feature orders. All margins are computed on net Revenue.
+	RevenueInclVat MetricWithComparison
+	VatAmount      MetricWithComparison
 
 	// GA4 Traffic & Engagement
 	Sessions           MetricWithComparison
@@ -655,19 +661,23 @@ const (
 // AlertThresholds are the operator-tunable thresholds behind the dashboard alerts, loaded
 // from the alert_setting table (with DefaultAlertThresholds as the fallback).
 type AlertThresholds struct {
-	CoverageWarnPct      float64 // warn when cost coverage (% of revenue with a cost) is below this
-	RefundRateWarnPct    float64 // warn when refund rate is at/above this
-	RateFloorN           int     // min orders before any rate-based alert fires (significance floor)
-	ContributionTrustPct float64 // only trust the contribution-margin sign at/above this coverage
+	CoverageWarnPct        float64 // warn when cost coverage (% of revenue with a cost) is below this
+	RefundRateWarnPct      float64 // warn when refund rate is at/above this
+	RateFloorN             int     // min orders before any rate-based alert fires (significance floor)
+	ContributionTrustPct   float64 // only trust the contribution-margin sign at/above this coverage
+	GA4CoverageWarnPct     float64 // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
+	ProductionRunStaleDays int     // warn when an open production run is older than this many days (NF-09)
 }
 
 // DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
 func DefaultAlertThresholds() AlertThresholds {
 	return AlertThresholds{
-		CoverageWarnPct:      70,
-		RefundRateWarnPct:    10,
-		RateFloorN:           30,
-		ContributionTrustPct: 50,
+		CoverageWarnPct:        70,
+		RefundRateWarnPct:      10,
+		RateFloorN:             30,
+		ContributionTrustPct:   50,
+		GA4CoverageWarnPct:     80,
+		ProductionRunStaleDays: 60,
 	}
 }
 
@@ -691,11 +701,26 @@ type Dashboard struct {
 	CostCoveragePct    float64
 	Caveat             string
 	UncostedProductIds []int
-	Alerts             []DashboardAlert
-	TopByMargin        []ProductMetric      // top revenue products re-ranked by gross margin €
-	Reorder            []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
-	Clear              []SlowMoverRow       // slow movers to clear
-	Drops              []SellThroughByDropRow
+	// GA4Revenue is the GA4-reported revenue for the period (analytics cache), and
+	// TrackingCoveragePct is 100 * GA4Revenue / DB gross revenue — the share of real revenue
+	// the client-side tracking saw (task 20 step 1). 0 when DB revenue is 0 / unknown.
+	GA4Revenue          decimal.Decimal
+	TrackingCoveragePct float64
+	// Operating result (task 22): the "honest" total under the contribution margin.
+	// OperatingResult = ContributionMargin − OpexTotal − MarketingSpend. OpexTotal is the
+	// day-pro-rated fixed-cost journal for the period; MarketingSpend is channel_spend for the
+	// period (subtracted here, not in contribution — ad spend isn't variable per order, and this
+	// avoids double-counting with ROAS). OpexCaveat is set when no OPEX is recorded for the
+	// period's months, so the operating result is understood as incomplete (coverage honesty).
+	OperatingResult decimal.Decimal
+	OpexTotal       decimal.Decimal
+	MarketingSpend  decimal.Decimal
+	OpexCaveat      string
+	Alerts          []DashboardAlert
+	TopByMargin     []ProductMetric      // top revenue products re-ranked by gross margin €
+	Reorder         []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
+	Clear           []SlowMoverRow       // slow movers to clear
+	Drops           []SellThroughByDropRow
 }
 
 // --- Slow Movers ---
@@ -716,6 +741,109 @@ type SlowMoverRow struct {
 	RevenueCost    decimal.Decimal `db:"-"`
 	GrossMargin    decimal.Decimal `db:"-"`
 	GrossMarginPct float64         `db:"-"`
+}
+
+// --- Margin by Style (task 15) ---
+
+// MarginByStyleRow rolls per-SKU sales up to the STYLE (tech card) a product's
+// primary_tech_card_id points at, so a style with several colourway SKUs is ONE row instead
+// of many uncorrelated ones. Products with no primary tech card collapse into a single
+// "no style" row (TechCardID = 0), the same uncosted-honesty as products without a cost.
+// Margin fields mirror ProductMetric (N/A when the sold SKUs carry no cost).
+type MarginByStyleRow struct {
+	TechCardID    int             `db:"tech_card_id"` // 0 = products with no primary style
+	StyleNumber   string          `db:"style_number"`
+	Name          string          `db:"name"`
+	Revenue       decimal.Decimal `db:"revenue"`
+	UnitsSold     int64           `db:"units_sold"`
+	ColorwayCount int             `db:"colorway_count"` // distinct products that sold under this style
+	// Margin fields (mirror ProductMetric), computed in Go after the query — not scanned.
+	HasCost        bool            `db:"-"`
+	UnitCost       decimal.Decimal `db:"-"`
+	RevenueCost    decimal.Decimal `db:"-"`
+	GrossMargin    decimal.Decimal `db:"-"`
+	GrossMarginPct float64         `db:"-"`
+}
+
+// --- COGS structure (task 15) ---
+
+// CogsStructureRow is one component of the cost of goods SOLD in a period, attributed from
+// each product's cost_breakdown snapshot (materials / cmt / hardware / packaging / logistics
+// / overhead). The actual line COGS (cost_price_at_sale × net qty) is split by the breakdown's
+// component proportions, so the components always sum to the reported COGS; sold units whose
+// product has no breakdown (manual cost, or seeded before the column existed) collect in a
+// single "unattributed" component so coverage stays honest.
+type CogsStructureRow struct {
+	Component string          `db:"component"` // materials|cmt|hardware|packaging|logistics|overhead|unattributed
+	Amount    decimal.Decimal `db:"amount"`    // base-currency (EUR) Σ over the period, refund-adjusted
+	Pct       float64         `db:"-"`         // share of total COGS, filled in Go
+}
+
+// --- Inventory valuation (task 16) ---
+
+// InventoryValuationRow is one product's frozen stock value: on-hand units × current per-unit
+// cost. SoldUnits is the product's net units sold in the reporting window (0 ⇒ dead stock — it
+// is sitting in the warehouse as unsold cost).
+type InventoryValuationRow struct {
+	ProductID   int             `db:"product_id"`
+	ProductName string          `db:"product_name"`
+	OnHand      int64           `db:"on_hand"`
+	UnitCost    decimal.Decimal `db:"-"`
+	Value       decimal.Decimal `db:"-"`
+	SoldUnits   int64           `db:"-"`
+}
+
+// InventoryValuation is the money view of the warehouse: how much cost is frozen in stock, how
+// much of it is dead (unsold in the window), and how much was written off in the period. Stock
+// is valued at the CURRENT plan cost_price (v1 — the only cost available); products without a
+// cost are counted honestly as uncosted (value unknown), never as zero.
+type InventoryValuation struct {
+	TotalStockValue       decimal.Decimal         // Σ cost_price × on_hand over COSTED products, base EUR
+	TotalOnHandUnits      int64                   // Σ on_hand over ALL in-stock products
+	CostedOnHandUnits     int64                   // on_hand of products that HAVE a cost
+	UncostedStockUnits    int64                   // on_hand of products with NO cost (value unknown)
+	UncostedStockProducts int                     // distinct in-stock products with no cost
+	CoveragePct           float64                 // costed_on_hand_units / total_on_hand_units × 100
+	TopByValue            []InventoryValuationRow // costed products ranked by frozen value
+	DeadStock             []InventoryValuationRow // costed, in-stock, unsold in window — by value
+	WriteOffsValue        decimal.Decimal         // Σ |Δqty| × cost_price for damage/loss in the period
+	WriteOffsUnits        int64                   // units written off (damage/loss) in the period
+
+	// Raw-material warehouse (NF-09 valuation v2). Materials are valued at their moving-average
+	// unit cost in base currency; materials with stock but no average are counted, not valued.
+	RawMaterialsValue       decimal.Decimal        // Σ on_hand × avg_unit_cost_base over costed materials with stock, base EUR
+	RawMaterialsCount       int                    // materials with on_hand > 0
+	RawUncostedCount        int                    // materials with stock but no average (value unknown)
+	WipValue                decimal.Decimal        // work-in-progress: materials issued into OPEN runs and not returned, base EUR
+	WriteOffsMaterialsValue decimal.Decimal        // material write-offs (damage/loss/defect) in the period, base EUR
+	TopMaterialsByValue     []MaterialValuationRow // costed in-stock materials ranked by frozen value
+}
+
+// StyleSampleSummary counts a style's samples and the warehouse-material cost they consumed
+// (NF-09, informational — sample materials are R&D spend, not folded into the style's sales net).
+// HasUncosted is set when a sample material issue had no unit cost, so the figure understates.
+type StyleSampleSummary struct {
+	Count             int             `db:"count"`
+	MaterialsCostBase decimal.Decimal `db:"materials_cost_base"`
+	HasUncosted       bool            `db:"has_uncosted"`
+}
+
+// StyleMaterialsFromStock is the net warehouse-material cost issued into a style's production runs
+// (NF-09), from the material ledger — the actuals side of production cost. HasUncosted flags issues
+// with no unit cost (the value understates).
+type StyleMaterialsFromStock struct {
+	Base        decimal.Decimal `db:"base"`
+	HasUncosted bool            `db:"has_uncosted"`
+}
+
+// MaterialValuationRow is one raw-material line in the warehouse money view (NF-09).
+type MaterialValuationRow struct {
+	MaterialId      int             `db:"material_id"`
+	Name            string          `db:"name"`
+	Unit            string          `db:"unit"`
+	OnHand          decimal.Decimal `db:"on_hand"`
+	AvgUnitCostBase decimal.Decimal `db:"avg_unit_cost_base"`
+	Value           decimal.Decimal `db:"value"`
 }
 
 // --- Return Analysis ---
@@ -967,4 +1095,54 @@ type ChannelSpendRow struct {
 	UTMMedium   string          `db:"utm_medium"`
 	UTMCampaign string          `db:"utm_campaign"`
 	Spend       decimal.Decimal `db:"spend"`
+}
+
+// OrderChannelRow maps a GA4 client_id (= customer_order.ga_client_id) to its last non-direct UTM
+// channel (task 20 step 2). Produced by the BQ precompute, cached in bq_order_channel, and joined to
+// orders for server-side, settled-revenue attribution. Date is the session date of that last touch.
+type OrderChannelRow struct {
+	ClientID    string    `db:"client_id"`
+	Date        time.Time `db:"date"`
+	UTMSource   string    `db:"utm_source"`
+	UTMMedium   string    `db:"utm_medium"`
+	UTMCampaign string    `db:"utm_campaign"`
+}
+
+// ChannelSettledRow is one channel's SETTLED-revenue attribution over a period (task 20 step 2):
+// orders whose GA client_id maps to this UTM triple, their settled base revenue, and how many were
+// placed by first-time customers. Spend/ROAS/CAC are layered on in the handler from channel_spend.
+type ChannelSettledRow struct {
+	UTMSource      string          `db:"utm_source"`
+	UTMMedium      string          `db:"utm_medium"`
+	UTMCampaign    string          `db:"utm_campaign"`
+	SettledRevenue decimal.Decimal `db:"settled_revenue"`
+	Orders         int64           `db:"orders"`
+	NewCustomers   int64           `db:"new_customers"`
+}
+
+// OpexEntry is one fixed-cost (OPEX) line: an amount for a category in a given month, base
+// currency (task 22). Feeds the dashboard operating result (contribution − OPEX − marketing).
+type OpexEntry struct {
+	Month    time.Time       `db:"month"` // first day of the month
+	Category string          `db:"category"`
+	Amount   decimal.Decimal `db:"amount"`
+	Note     sql.NullString  `db:"note"`
+}
+
+// ValidOpexCategories is the closed set of OPEX categories (validated in dto rather than a DB
+// CHECK, so the set can evolve without a migration). marketing spend is deliberately NOT here —
+// it lives in channel_spend and is subtracted separately, so ROAS and the operating result
+// don't double-count it.
+var ValidOpexCategories = map[string]struct{}{
+	"salaries":           {},
+	"rent":               {},
+	"software":           {},
+	"marketing_other":    {},
+	"production_content": {},
+	// NF-08 additions (the set is dto-validated, so it extends without a migration):
+	"taxes":                 {},
+	"bank_fees":             {},
+	"professional_services": {}, // accountant / lawyer
+	"logistics_office":      {}, // office/ops logistics (not order shipping)
+	"other":                 {},
 }

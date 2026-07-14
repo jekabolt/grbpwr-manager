@@ -192,10 +192,14 @@ func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.Pro
 }
 
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, id int, sku string) (int, error) {
+	// A cost provided at create time is manual admin input, so stamp its provenance
+	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
 	query := `
 	INSERT INTO product
-	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price)
-	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice)`
+	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
+		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
+		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
 		"id":                   id,
@@ -415,7 +419,12 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
 		-- product edits from the admin panel (which does not carry cost) never wipe it.
-		cost_price = COALESCE(:costPrice, cost_price)
+		-- When a cost IS supplied it is manual admin input: mark it manual, drop any
+		-- tech-card provenance, and stamp the time. When omitted, provenance is untouched.
+		cost_price = COALESCE(:costPrice, cost_price),
+		cost_price_source = CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE cost_price_source END,
+		cost_price_tech_card_id = CASE WHEN :costPrice IS NOT NULL THEN NULL ELSE cost_price_tech_card_id END,
+		cost_price_updated_at = CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE cost_price_updated_at END
 	WHERE id = :id
 	`
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
@@ -446,16 +455,96 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 	})
 }
 
-// SetProductsCostPrice sets cost_price (per-unit COGS in base currency) on the given
-// products. Used to seed product cost from a tech card costing. An empty id slice is a
-// no-op. Last write wins when a product is linked to more than one tech card.
-func (s *Store) SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error {
+// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing) card
+// of each given product that has no primary yet, so the first card to link a product becomes
+// its primary. Products with an existing primary (this or another card) are left untouched.
+func (s *Store) AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int, productIDs []int) error {
 	if len(productIDs) == 0 {
 		return nil
 	}
 	return storeutil.ExecNamed(ctx, s.DB,
-		`UPDATE product SET cost_price = :cost WHERE id IN (:ids)`,
-		map[string]any{"cost": cost, "ids": productIDs})
+		`UPDATE product SET primary_tech_card_id = :tc WHERE id IN (:ids) AND primary_tech_card_id IS NULL`,
+		map[string]any{"tc": techCardID, "ids": productIDs})
+}
+
+// SeedProductsCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced cost
+// of every product whose PRIMARY card is techCardID and whose cost is not manually set, and
+// which the card currently links. It never overwrites a manual cost. Returns the number of
+// products updated. Used by the best-effort seed on tech-card save.
+func (s *Store) SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error) {
+	return storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE product p
+		JOIN tech_card_product tcp ON tcp.product_id = p.id AND tcp.tech_card_id = :tc
+		SET p.cost_price = :cost,
+			p.cost_price_source = 'tech_card',
+			p.cost_price_tech_card_id = :tc,
+			p.cost_price_updated_at = NOW()
+		WHERE p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')`,
+		map[string]any{"tc": techCardID, "cost": cost})
+}
+
+// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON (base
+// currency) onto every product whose PRIMARY card is techCardID, whose cost is not manually
+// set, and which the card currently links — the SAME target set and predicate as
+// SeedProductsCostPriceFromTechCard, so cost_price and cost_breakdown never drift. A NULL
+// breakdown clears any stale decomposition (e.g. the cost is still base-seedable but its
+// components are no longer convertible). Returns the number of products updated.
+func (s *Store) SeedProductsCostBreakdownFromTechCard(ctx context.Context, techCardID int, breakdown sql.NullString) (int64, error) {
+	return storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE product p
+		JOIN tech_card_product tcp ON tcp.product_id = p.id AND tcp.tech_card_id = :tc
+		SET p.cost_breakdown = :breakdown
+		WHERE p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')`,
+		map[string]any{"tc": techCardID, "breakdown": breakdown})
+}
+
+// ForceSetProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced
+// cost of a single product, overriding any manual value. Used by the explicit
+// SyncProductCostFromTechCard admin action.
+func (s *Store) ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error {
+	return storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE product
+		SET cost_price = :cost,
+			cost_price_source = 'tech_card',
+			cost_price_tech_card_id = :tc,
+			cost_price_updated_at = NOW()
+		WHERE id = :id`,
+		map[string]any{"id": productID, "tc": techCardID, "cost": cost})
+}
+
+// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
+func (s *Store) SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error {
+	return storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE product SET primary_tech_card_id = :tc WHERE id = :id`,
+		map[string]any{"id": productID, "tc": techCardID})
+}
+
+// GetProductCostInfo returns the confidential COGS/provenance fields of a product (admin
+// surface only). Returns sql.ErrNoRows if the product does not exist.
+func (s *Store) GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error) {
+	ci, err := storeutil.QueryNamedOne[entity.ProductCostInfo](ctx, s.DB,
+		`SELECT cost_price, cost_price_source, cost_price_tech_card_id, cost_price_updated_at, primary_tech_card_id
+		 FROM product WHERE id = :id`,
+		map[string]any{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	return &ci, nil
+}
+
+// IsProductLinkedToTechCard reports whether the given product is currently linked to the card.
+func (s *Store) IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		N int `db:"n"`
+	}](ctx, s.DB,
+		`SELECT 1 AS n FROM tech_card_product WHERE product_id = :pid AND tech_card_id = :tc LIMIT 1`,
+		map[string]any{"pid": productID, "tc": techCardID})
+	if err != nil {
+		return false, err
+	}
+	return len(rows) > 0, nil
 }
 
 func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {

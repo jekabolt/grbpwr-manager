@@ -109,7 +109,7 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	if len(pb.Assignee) > maxVarchar255 {
 		return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
 	}
-	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 {
+	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 || pb.ProductionRunId < 0 {
 		return nil, fmt.Errorf("task deep-link ids must not be negative")
 	}
 	orderUUID := strings.TrimSpace(pb.OrderUuid)
@@ -167,19 +167,21 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	}
 
 	return &entity.TaskInsert{
-		Title:       title,
-		Description: nullStringFromPb(strings.TrimSpace(pb.Description)),
-		Assignee:    strings.TrimSpace(pb.Assignee),
-		Priority:    priority,
-		DueDate:     dueDate,
-		StartDate:   startDate,
-		TechCardId:  nullInt32FromPb(pb.TechCardId),
-		ProductId:   nullInt32FromPb(pb.ProductId),
-		OrderUuid:   nullStringFromPb(orderUUID),
-		ArchiveId:   nullInt32FromPb(pb.ArchiveId),
-		FittingId:   nullInt32FromPb(pb.FittingId),
-		Labels:      labels,
-		MediaIds:    mediaIds,
+		Title:           title,
+		Description:     nullStringFromPb(strings.TrimSpace(pb.Description)),
+		Assignee:        strings.TrimSpace(pb.Assignee),
+		Priority:        priority,
+		DueDate:         dueDate,
+		StartDate:       startDate,
+		TechCardId:      nullInt32FromPb(pb.TechCardId),
+		ProductId:       nullInt32FromPb(pb.ProductId),
+		OrderUuid:       nullStringFromPb(orderUUID),
+		ArchiveId:       nullInt32FromPb(pb.ArchiveId),
+		FittingId:       nullInt32FromPb(pb.FittingId),
+		ProductionRunId: nullInt32FromPb(pb.ProductionRunId),
+		SampleId:        nullInt32FromPb(pb.SampleId),
+		Labels:          labels,
+		MediaIds:        mediaIds,
 	}, nil
 }
 
@@ -200,19 +202,21 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 	return &pb_common.Task{
 		Id: int32(t.Id),
 		Task: &pb_common.TaskInsert{
-			Title:       t.Title,
-			Description: pbStringFromNull(t.Description),
-			Assignee:    t.Assignee,
-			Priority:    taskPriorityEntityToPb[t.Priority],
-			DueDate:     pbTimestampFromNullTime(t.DueDate),
-			StartDate:   pbTimestampFromNullTime(t.StartDate),
-			Labels:      t.Labels,
-			MediaIds:    mediaIds,
-			TechCardId:  pbInt32FromNull(t.TechCardId),
-			ProductId:   pbInt32FromNull(t.ProductId),
-			OrderUuid:   pbStringFromNull(t.OrderUuid),
-			ArchiveId:   pbInt32FromNull(t.ArchiveId),
-			FittingId:   pbInt32FromNull(t.FittingId),
+			Title:           t.Title,
+			Description:     pbStringFromNull(t.Description),
+			Assignee:        t.Assignee,
+			Priority:        taskPriorityEntityToPb[t.Priority],
+			DueDate:         pbTimestampFromNullTime(t.DueDate),
+			StartDate:       pbTimestampFromNullTime(t.StartDate),
+			Labels:          t.Labels,
+			MediaIds:        mediaIds,
+			TechCardId:      pbInt32FromNull(t.TechCardId),
+			ProductId:       pbInt32FromNull(t.ProductId),
+			OrderUuid:       pbStringFromNull(t.OrderUuid),
+			ArchiveId:       pbInt32FromNull(t.ArchiveId),
+			FittingId:       pbInt32FromNull(t.FittingId),
+			ProductionRunId: pbInt32FromNull(t.ProductionRunId),
+			SampleId:        pbInt32FromNull(t.SampleId),
 		},
 		Board:      taskBoardEntityToPb[t.Board],
 		Status:     taskStatusEntityToPb[t.Status],

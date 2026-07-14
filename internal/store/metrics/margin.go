@@ -49,8 +49,10 @@ func applyProductMargin(pm *entity.ProductMetric, unitCost decimal.NullDecimal, 
 }
 
 // getMarginMetrics computes cost of goods (COGS) and the revenue it is matched against,
-// in base currency, for net-revenue orders in [from, to). Each line item is joined to its
-// product's cost_price. Because not every product has a cost set, it returns three sums so
+// in base currency, for net-revenue orders in [from, to). Each line item's cost is its
+// sale-time snapshot (order_item.cost_price_at_sale), falling back to the product's current
+// cost_price for rows placed before the snapshot column existed. Because not every product
+// has a cost set, it returns three sums so
 // the caller can report an honest margin plus its coverage:
 //
 //   - costedRevenue: net product revenue of items that HAVE a cost (the margin denominator)
@@ -72,13 +74,13 @@ func (s *Store) getMarginMetrics(ctx context.Context, from, to time.Time) (coste
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL AND pp_base.price IS NOT NULL
-				THEN pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+				THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
 				ELSE 0 END), 0) AS costed_revenue,
-			COALESCE(SUM(CASE WHEN p.cost_price IS NOT NULL AND pp_base.price IS NOT NULL
-				THEN p.cost_price * oi.quantity * %s
+			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+				THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s
 				ELSE 0 END), 0) AS cogs,
-			COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
+			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
@@ -110,7 +112,7 @@ func (s *Store) getUncostedSoldProductIDs(ctx context.Context, from, to time.Tim
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		WHERE p.cost_price IS NULL AND p.deleted_at IS NULL
 		GROUP BY oi.product_id
-		ORDER BY COALESCE(SUM(pp_base.price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
+		ORDER BY COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
 	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductID int `db:"product_id"`

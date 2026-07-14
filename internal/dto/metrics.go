@@ -58,6 +58,8 @@ func commerceCoreMetricsToPb(m *entity.BusinessMetrics) *pb_admin.CommerceCoreMe
 		TotalDiscount:        metricWithComparisonToPb(m.TotalDiscount),
 		ProductSaleDiscount:  metricWithComparisonToPb(m.ProductSaleDiscount),
 		PromoCodeDiscount:    metricWithComparisonToPb(m.PromoCodeDiscount),
+		RevenueInclVat:       metricWithComparisonToPb(m.RevenueInclVat),
+		VatAmount:            metricWithComparisonToPb(m.VatAmount),
 		NewSubscribers:       metricWithComparisonToPb(m.NewSubscribers),
 		NewCustomers:         metricWithComparisonToPb(m.NewCustomers),
 		RepeatCustomersRate:  metricWithComparisonToPb(m.RepeatCustomersRate),
@@ -1096,10 +1098,12 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 // AlertThresholdsToPb / AlertThresholdsFromPb map the operator-tunable alert thresholds.
 func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
 	return &pb_admin.AlertSettings{
-		CoverageWarnPct:      t.CoverageWarnPct,
-		RefundRateWarnPct:    t.RefundRateWarnPct,
-		RateFloorN:           int32(t.RateFloorN),
-		ContributionTrustPct: t.ContributionTrustPct,
+		CoverageWarnPct:        t.CoverageWarnPct,
+		RefundRateWarnPct:      t.RefundRateWarnPct,
+		RateFloorN:             int32(t.RateFloorN),
+		ContributionTrustPct:   t.ContributionTrustPct,
+		Ga4CoverageWarnPct:     t.GA4CoverageWarnPct,
+		ProductionRunStaleDays: int32(t.ProductionRunStaleDays),
 	}
 }
 
@@ -1108,10 +1112,12 @@ func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
 		return entity.DefaultAlertThresholds()
 	}
 	return entity.AlertThresholds{
-		CoverageWarnPct:      s.CoverageWarnPct,
-		RefundRateWarnPct:    s.RefundRateWarnPct,
-		RateFloorN:           int(s.RateFloorN),
-		ContributionTrustPct: s.ContributionTrustPct,
+		CoverageWarnPct:        s.CoverageWarnPct,
+		RefundRateWarnPct:      s.RefundRateWarnPct,
+		RateFloorN:             int(s.RateFloorN),
+		ContributionTrustPct:   s.ContributionTrustPct,
+		GA4CoverageWarnPct:     s.Ga4CoverageWarnPct,
+		ProductionRunStaleDays: int(s.ProductionRunStaleDays),
 	}
 }
 
@@ -1135,19 +1141,25 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 		return nil
 	}
 	resp := &pb_admin.GetDashboardResponse{
-		Period:             timeRangeToPb(d.Period),
-		Revenue:            &decimal.Decimal{Value: d.Revenue.String()},
-		Orders:             int32(d.Orders),
-		GrossMargin:        &decimal.Decimal{Value: d.GrossMargin.String()},
-		GrossMarginPct:     d.GrossMarginPct,
-		ContributionMargin: &decimal.Decimal{Value: d.ContributionMargin.String()},
-		CostCoveragePct:    d.CostCoveragePct,
-		Caveat:             d.Caveat,
-		UncostedProductIds: intsToInt32(d.UncostedProductIds),
-		TopByMargin:        productMetricsToPb(d.TopByMargin),
-		Reorder:            ConvertInventoryHealthToPb(d.Reorder),
-		Clear:              ConvertSlowMoversToPb(d.Clear),
-		Drops:              ConvertSellThroughByDropToPb(d.Drops),
+		Period:              timeRangeToPb(d.Period),
+		Revenue:             &decimal.Decimal{Value: d.Revenue.String()},
+		Orders:              int32(d.Orders),
+		GrossMargin:         &decimal.Decimal{Value: d.GrossMargin.String()},
+		GrossMarginPct:      d.GrossMarginPct,
+		ContributionMargin:  &decimal.Decimal{Value: d.ContributionMargin.String()},
+		CostCoveragePct:     d.CostCoveragePct,
+		Caveat:              d.Caveat,
+		UncostedProductIds:  intsToInt32(d.UncostedProductIds),
+		Ga4Revenue:          &decimal.Decimal{Value: d.GA4Revenue.String()},
+		TrackingCoveragePct: d.TrackingCoveragePct,
+		OperatingResult:     &decimal.Decimal{Value: d.OperatingResult.String()},
+		OpexTotal:           &decimal.Decimal{Value: d.OpexTotal.String()},
+		MarketingSpend:      &decimal.Decimal{Value: d.MarketingSpend.String()},
+		OpexCaveat:          d.OpexCaveat,
+		TopByMargin:         productMetricsToPb(d.TopByMargin),
+		Reorder:             ConvertInventoryHealthToPb(d.Reorder),
+		Clear:               ConvertSlowMoversToPb(d.Clear),
+		Drops:               ConvertSellThroughByDropToPb(d.Drops),
 	}
 	if len(d.Alerts) > 0 {
 		resp.Alerts = make([]*pb_admin.DashboardAlert, len(d.Alerts))
@@ -1612,6 +1624,48 @@ func ConvertPbChannelSpendToEntity(list []*pb_admin.ChannelSpendInsert) ([]entit
 	return out, nil
 }
 
+// ConvertPbOpexEntriesToEntity validates and normalises OPEX journal lines (task 22): the month
+// is snapped to the first of its month, the category is checked against the closed set, and the
+// amount must be a non-negative base-currency figure.
+func ConvertPbOpexEntriesToEntity(list []*pb_admin.OpexEntryInsert) ([]entity.OpexEntry, error) {
+	out := make([]entity.OpexEntry, 0, len(list))
+	for _, e := range list {
+		if e == nil {
+			continue
+		}
+		m, err := time.Parse("2006-01-02", e.Month)
+		if err != nil {
+			return nil, fmt.Errorf("invalid opex month %q: %w", e.Month, err)
+		}
+		m = time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC) // first of the month
+		category := strings.TrimSpace(e.Category)
+		if _, ok := entity.ValidOpexCategories[category]; !ok {
+			return nil, fmt.Errorf("invalid opex category %q", category)
+		}
+		amount := shopspring.Zero
+		if e.Amount != nil && e.Amount.Value != "" {
+			amount, err = shopspring.NewFromString(e.Amount.Value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid opex amount %q: %w", e.Amount.Value, err)
+			}
+		}
+		if amount.IsNegative() {
+			return nil, fmt.Errorf("opex amount must be >= 0")
+		}
+		note := sql.NullString{}
+		if s := strings.TrimSpace(e.Note); s != "" {
+			note = sql.NullString{String: s, Valid: true}
+		}
+		out = append(out, entity.OpexEntry{
+			Month:    m,
+			Category: category,
+			Amount:   amount.Round(2),
+			Note:     note,
+		})
+	}
+	return out, nil
+}
+
 // ConvertCustomerSegmentationToPb converts AOV customer segments to protobuf.
 func ConvertCustomerSegmentationToPb(rows []entity.CustomerSegmentRow) []*pb_admin.CustomerSegmentRow {
 	result := make([]*pb_admin.CustomerSegmentRow, len(rows))
@@ -1643,4 +1697,109 @@ func ConvertRFMAnalysisToPb(rows []entity.RFMSegmentRow) []*pb_admin.RFMSegmentR
 		}
 	}
 	return result
+}
+
+// ConvertMarginByStyleToPb maps per-style margin rows to proto, emitting the margin fields only
+// when the style's sold SKUs have a cost (else left unset so the client shows N/A, not 100%).
+func ConvertMarginByStyleToPb(list []entity.MarginByStyleRow) []*pb_admin.MarginByStyleRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.MarginByStyleRow, len(list))
+	for i, r := range list {
+		row := &pb_admin.MarginByStyleRow{
+			TechCardId:    int32(r.TechCardID),
+			StyleNumber:   r.StyleNumber,
+			Name:          r.Name,
+			Revenue:       &decimal.Decimal{Value: r.Revenue.String()},
+			UnitsSold:     r.UnitsSold,
+			ColorwayCount: int32(r.ColorwayCount),
+			HasCost:       r.HasCost,
+		}
+		if r.HasCost {
+			row.UnitCost = &decimal.Decimal{Value: r.UnitCost.String()}
+			row.RevenueCost = &decimal.Decimal{Value: r.RevenueCost.String()}
+			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
+			row.GrossMarginPct = r.GrossMarginPct
+		}
+		pb[i] = row
+	}
+	return pb
+}
+
+// ConvertCogsStructureToPb maps the COGS component rows to proto.
+func ConvertCogsStructureToPb(list []entity.CogsStructureRow) []*pb_admin.CogsStructureRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.CogsStructureRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.CogsStructureRow{
+			Component: r.Component,
+			Amount:    &decimal.Decimal{Value: r.Amount.String()},
+			Pct:       r.Pct,
+		}
+	}
+	return pb
+}
+
+// ConvertInventoryValuationToPb maps the inventory-valuation summary to proto.
+func ConvertInventoryValuationToPb(v *entity.InventoryValuation) *pb_admin.InventoryValuation {
+	if v == nil {
+		return nil
+	}
+	return &pb_admin.InventoryValuation{
+		TotalStockValue:         &decimal.Decimal{Value: v.TotalStockValue.String()},
+		TotalOnHandUnits:        v.TotalOnHandUnits,
+		CostedOnHandUnits:       v.CostedOnHandUnits,
+		UncostedStockUnits:      v.UncostedStockUnits,
+		UncostedStockProducts:   int32(v.UncostedStockProducts),
+		CoveragePct:             v.CoveragePct,
+		TopByValue:              convertInventoryValuationRows(v.TopByValue),
+		DeadStock:               convertInventoryValuationRows(v.DeadStock),
+		WriteOffsValue:          &decimal.Decimal{Value: v.WriteOffsValue.String()},
+		WriteOffsUnits:          v.WriteOffsUnits,
+		RawMaterialsValue:       &decimal.Decimal{Value: v.RawMaterialsValue.String()},
+		RawMaterialsCount:       int32(v.RawMaterialsCount),
+		RawUncostedCount:        int32(v.RawUncostedCount),
+		WipValue:                &decimal.Decimal{Value: v.WipValue.String()},
+		WriteoffsMaterialsValue: &decimal.Decimal{Value: v.WriteOffsMaterialsValue.String()},
+		TopMaterialsByValue:     convertMaterialValuationRows(v.TopMaterialsByValue),
+	}
+}
+
+func convertMaterialValuationRows(list []entity.MaterialValuationRow) []*pb_admin.MaterialValuationRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.MaterialValuationRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.MaterialValuationRow{
+			MaterialId:      int32(r.MaterialId),
+			Name:            r.Name,
+			Unit:            r.Unit,
+			OnHand:          &decimal.Decimal{Value: r.OnHand.String()},
+			AvgUnitCostBase: &decimal.Decimal{Value: r.AvgUnitCostBase.String()},
+			Value:           &decimal.Decimal{Value: r.Value.String()},
+		}
+	}
+	return pb
+}
+
+func convertInventoryValuationRows(list []entity.InventoryValuationRow) []*pb_admin.InventoryValuationRow {
+	if len(list) == 0 {
+		return nil
+	}
+	pb := make([]*pb_admin.InventoryValuationRow, len(list))
+	for i, r := range list {
+		pb[i] = &pb_admin.InventoryValuationRow{
+			ProductId:   int32(r.ProductID),
+			ProductName: r.ProductName,
+			OnHand:      r.OnHand,
+			UnitCost:    &decimal.Decimal{Value: r.UnitCost.String()},
+			Value:       &decimal.Decimal{Value: r.Value.String()},
+			SoldUnits:   r.SoldUnits,
+		}
+	}
+	return pb
 }

@@ -4,12 +4,40 @@ package fitting
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
+
+// resolveFittingSample validates/inherits the fitting's tech card from a linked sample (NF-04): a
+// sample must belong to the fitting's tech card; when the fitting has no tech card set, it inherits
+// the sample's so round auto-numbering and the style's fitting list/rounds include it. No sample
+// linked → nothing to do.
+func resolveFittingSample(ctx context.Context, db dependency.DB, f *entity.FittingInsert) error {
+	if !f.SampleId.Valid {
+		return nil
+	}
+	tc, err := storeutil.QueryNamedOne[struct {
+		TechCardId int `db:"tech_card_id"`
+	}](ctx, db, `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": f.SampleId.Int32})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return entity.ErrSampleForeignToCard
+		}
+		return fmt.Errorf("load fitting sample %d: %w", f.SampleId.Int32, err)
+	}
+	if f.TechCardId.Valid {
+		if int(f.TechCardId.Int32) != tc.TechCardId {
+			return entity.ErrSampleForeignToCard
+		}
+		return nil
+	}
+	f.TechCardId = sql.NullInt32{Int32: int32(tc.TechCardId), Valid: true}
+	return nil
+}
 
 // Pagination bounds for list endpoints: an unset/0 limit falls back to the
 // default page size, and any limit is capped to avoid unbounded scans.
@@ -36,11 +64,29 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// A linked sample must belong to the fitting's tech card; if the fitting has no tech card it
+		// inherits the sample's (so round numbering and the style's fitting list include it) — NF-04.
+		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
+		}
+		params := fittingParams(f)
+		// Auto-assign the round number within the tx when it is not set and the fitting is
+		// anchored to a tech card, so a style's try-ons number themselves 1, 2, 3, …. A manual
+		// round_number is honoured; the uniq_fitting_round index guards a concurrent collision.
+		if !f.RoundNumber.Valid && f.TechCardId.Valid {
+			next, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COALESCE(MAX(round_number), 0) + 1 FROM fitting WHERE tech_card_id = :tc`,
+				map[string]any{"tc": f.TechCardId.Int32})
+			if err != nil {
+				return fmt.Errorf("failed to compute next fitting round: %w", err)
+			}
+			params["roundNumber"] = next
+		}
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO fitting (tech_card_id, product_id, model_id, fitting_date, comment, status, verdict, recorded_by)
-			VALUES (:techCardId, :productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy)`,
-			fittingParams(f))
+			INSERT INTO fitting (tech_card_id, product_id, model_id, fitting_date, comment, status, verdict, recorded_by, round_number, outcome, sample_id)
+			VALUES (:techCardId, :productId, :modelId, :fittingDate, :comment, :status, :verdict, :recordedBy, :roundNumber, :outcome, :sampleId)`,
+			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert fitting: %w", err)
 		}
@@ -53,7 +99,10 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		if err := insertFittingPatterns(ctx, rep.DB(), id, f.Patterns); err != nil {
 			return err
 		}
-		return insertFittingCallouts(ctx, rep.DB(), id, f.Callouts)
+		if err := insertFittingCallouts(ctx, rep.DB(), id, f.Callouts); err != nil {
+			return err
+		}
+		return insertFittingChangeRequests(ctx, rep.DB(), id, f.ChangeRequests)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add fitting: %w", err)
@@ -75,6 +124,9 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		if exists == 0 {
 			return sql.ErrNoRows
 		}
+		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
+		}
 		params := fittingParams(f)
 		params["id"] = id
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
@@ -86,7 +138,10 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 				comment = :comment,
 				status = :status,
 				verdict = :verdict,
-				recorded_by = :recordedBy
+				recorded_by = :recordedBy,
+				round_number = :roundNumber,
+				outcome = :outcome
+				, sample_id = :sampleId
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update fitting: %w", err)
 		}
@@ -106,6 +161,10 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 			`DELETE FROM fitting_callout WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear fitting callouts: %w", err)
 		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM fitting_change_request WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear fitting change requests: %w", err)
+		}
 		if err := insertFittingSizes(ctx, rep.DB(), id, f.Sizes); err != nil {
 			return err
 		}
@@ -115,7 +174,10 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		if err := insertFittingPatterns(ctx, rep.DB(), id, f.Patterns); err != nil {
 			return err
 		}
-		return insertFittingCallouts(ctx, rep.DB(), id, f.Callouts)
+		if err := insertFittingCallouts(ctx, rep.DB(), id, f.Callouts); err != nil {
+			return err
+		}
+		return insertFittingChangeRequests(ctx, rep.DB(), id, f.ChangeRequests)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update fitting: %w", err)
@@ -155,10 +217,15 @@ func (s *Store) GetFittingById(ctx context.Context, id int) (*entity.Fitting, er
 	if err != nil {
 		return nil, err
 	}
+	changeRequests, err := s.changeRequestsByFittingIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	f.Sizes = sizes[id]
 	f.Media = media[id]
 	f.Patterns = patterns[id]
 	f.Callouts = callouts[id]
+	f.ChangeRequests = changeRequests[id]
 	return &f, nil
 }
 
@@ -226,11 +293,16 @@ func (s *Store) ListFittings(ctx context.Context, limit, offset int, orderFactor
 	if err != nil {
 		return nil, 0, err
 	}
+	changeRequests, err := s.changeRequestsByFittingIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range fittings {
 		fittings[i].Sizes = sizes[fittings[i].Id]
 		fittings[i].Media = media[fittings[i].Id]
 		fittings[i].Patterns = patterns[fittings[i].Id]
 		fittings[i].Callouts = callouts[fittings[i].Id]
+		fittings[i].ChangeRequests = changeRequests[fittings[i].Id]
 	}
 	return fittings, total, nil
 }
@@ -261,6 +333,9 @@ func fittingParams(f *entity.FittingInsert) map[string]any {
 		"status":      string(f.Status),
 		"verdict":     string(f.Verdict),
 		"recordedBy":  f.RecordedBy,
+		"roundNumber": f.RoundNumber,
+		"outcome":     f.Outcome,
+		"sampleId":    f.SampleId,
 	}
 }
 
@@ -325,6 +400,27 @@ func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int,
 	return nil
 }
 
+func insertFittingChangeRequests(ctx context.Context, db dependency.DB, fittingID int, crs []entity.FittingChangeRequest) error {
+	if len(crs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(crs))
+	for i, c := range crs {
+		rows = append(rows, map[string]any{
+			"fitting_id":     fittingID,
+			"target":         c.Target,
+			"note":           c.Note,
+			"callout_number": c.CalloutNumber,
+			"resolved":       c.Resolved,
+			"display_order":  i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "fitting_change_request", rows); err != nil {
+		return fmt.Errorf("failed to insert fitting change requests: %w", err)
+	}
+	return nil
+}
+
 func insertFittingMedia(ctx context.Context, db dependency.DB, fittingID int, mediaIDs []int) error {
 	if len(mediaIDs) == 0 {
 		return nil
@@ -380,6 +476,30 @@ type fittingPatternRow struct {
 type fittingCalloutRow struct {
 	FittingID int `db:"fitting_id"`
 	entity.FittingCallout
+}
+
+type fittingChangeRequestRow struct {
+	FittingID int `db:"fitting_id"`
+	entity.FittingChangeRequest
+}
+
+func (s *Store) changeRequestsByFittingIds(ctx context.Context, ids []int) (map[int][]entity.FittingChangeRequest, error) {
+	if len(ids) == 0 {
+		return map[int][]entity.FittingChangeRequest{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[fittingChangeRequestRow](ctx, s.DB, `
+		SELECT fitting_id, id, target, note, callout_number, resolved
+		FROM fitting_change_request
+		WHERE fitting_id IN (:ids)
+		ORDER BY fitting_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load fitting change requests: %w", err)
+	}
+	out := make(map[int][]entity.FittingChangeRequest, len(ids))
+	for _, r := range rows {
+		out[r.FittingID] = append(out[r.FittingID], r.FittingChangeRequest)
+	}
+	return out, nil
 }
 
 func (s *Store) calloutsByFittingIds(ctx context.Context, ids []int) (map[int][]entity.FittingCallout, error) {

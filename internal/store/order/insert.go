@@ -9,7 +9,9 @@ import (
 
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -119,6 +121,23 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	if len(items) == 0 {
 		return fmt.Errorf("no order items to insert")
 	}
+	// Snapshot each line's COGS (base currency) from the product's current cost_price so
+	// historical margins stay reproducible when a product is later re-costed. cost_price is
+	// confidential and deliberately not loaded on the order-validation product read, so fetch
+	// it here directly. A product with no cost stays NULL; metrics fall back to the live
+	// product cost for such legacy/uncosted lines.
+	costByProduct, err := fetchProductCostPrices(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch product costs for order-item snapshot: %w", err)
+	}
+	// Snapshot each line's base-currency (EUR) list price too, so fallback revenue
+	// reconstruction (orders without total_settled_base) stays reproducible when a product is
+	// later repriced. Products with no base-currency price row stay NULL; metrics fall back to
+	// the live base price for such lines.
+	basePriceByProduct, err := fetchProductBasePrices(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch product base prices for order-item snapshot: %w", err)
+	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		row := map[string]any{
@@ -128,11 +147,79 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"product_sale_percentage": item.ProductSalePercentageDecimal(),
 			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeId,
+			"cost_price_at_sale":      nil,
+			"product_price_base":      nil,
+		}
+		if cost, ok := costByProduct[item.ProductId]; ok {
+			row["cost_price_at_sale"] = cost
+		}
+		if base, ok := basePriceByProduct[item.ProductId]; ok {
+			row["product_price_base"] = base
 		}
 		rows = append(rows, row)
 	}
 
 	return storeutil.BulkInsert(ctx, db, "order_item", rows)
+}
+
+// distinctProductIDs returns the unique product ids referenced by items, order-preserving.
+func distinctProductIDs(items []entity.OrderItemInsert) []int {
+	ids := make([]int, 0, len(items))
+	seen := make(map[int]struct{}, len(items))
+	for _, item := range items {
+		if _, ok := seen[item.ProductId]; ok {
+			continue
+		}
+		seen[item.ProductId] = struct{}{}
+		ids = append(ids, item.ProductId)
+	}
+	return ids
+}
+
+// fetchProductCostPrices returns the current per-unit cost_price (base currency) for the
+// distinct products in items, omitting products whose cost_price is NULL. Used to snapshot
+// COGS onto order lines at sale time.
+func fetchProductCostPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := distinctProductIDs(items)
+	if len(ids) == 0 {
+		return map[int]decimal.Decimal{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ID        int             `db:"id"`
+		CostPrice decimal.Decimal `db:"cost_price"`
+	}](ctx, db, `SELECT id, cost_price FROM product WHERE id IN (:ids) AND cost_price IS NOT NULL`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.CostPrice
+	}
+	return out, nil
+}
+
+// fetchProductBasePrices returns the current base-currency (EUR) list price for the distinct
+// products in items, read from product_price. Products with no base-currency price row are
+// omitted. Used to snapshot the base list price onto order lines at sale time.
+func fetchProductBasePrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := distinctProductIDs(items)
+	if len(ids) == 0 {
+		return map[int]decimal.Decimal{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ProductID int             `db:"product_id"`
+		Price     decimal.Decimal `db:"price"`
+	}](ctx, db, `SELECT product_id, price FROM product_price WHERE product_id IN (:ids) AND UPPER(currency) = :base`,
+		map[string]any{"ids": ids, "base": strings.ToUpper(cache.GetBaseCurrency())})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.ProductID] = r.Price
+	}
+	return out, nil
 }
 
 func deleteOrderItems(ctx context.Context, db dependency.DB, orderId int) error {
@@ -167,8 +254,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	var err error
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id)
-	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId)
+	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount)
+	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount)
 	`
 
 	orderRef, err := generateOrderReference()
@@ -179,6 +266,13 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 	if order.TotalPriceEUR.Valid {
 		totalPriceEur = order.TotalPriceEUR.Decimal
 	}
+	var vatRatePct, vatAmount any
+	if order.VatRatePct.Valid {
+		vatRatePct = order.VatRatePct.Decimal
+	}
+	if order.VatAmount.Valid {
+		vatAmount = order.VatAmount.Decimal
+	}
 	order.Id, err = storeutil.ExecNamedLastId(ctx, db, query, map[string]interface{}{
 		"uuid":          orderRef,
 		"totalPrice":    order.TotalPriceDecimal(),
@@ -187,6 +281,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 		"orderStatusId": order.OrderStatusId,
 		"promoId":       order.PromoId,
 		"gaClientId":    order.GAClientID,
+		"vatRatePct":    vatRatePct,
+		"vatAmount":     vatAmount,
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)
@@ -201,6 +297,22 @@ func (s *Store) insertOrderDetails(ctx context.Context, db dependency.DB, order 
 		slog.Default().WarnContext(ctx, "can't compute EUR snapshot for order", slog.String("err", eerr.Error()))
 	} else {
 		order.TotalPriceEUR = eur
+	}
+	// Resolve + snapshot destination VAT so net-of-VAT revenue is reproducible if a rate later
+	// changes. Rate comes from the shipping country (absent/non-EU → 0); prices are
+	// VAT-inclusive, so vat_amount = total × rate/(100+rate) in the order currency.
+	shippingCountry := ""
+	if orderNew.ShippingAddress != nil {
+		shippingCountry = orderNew.ShippingAddress.Country
+	}
+	vatRate, verr := getVatRatePct(ctx, db, shippingCountry)
+	if verr != nil {
+		return fmt.Errorf("error while resolving vat rate: %w", verr)
+	}
+	order.VatRatePct = decimal.NullDecimal{Decimal: vatRate, Valid: true}
+	order.VatAmount = decimal.NullDecimal{
+		Decimal: dto.RoundForCurrency(entity.VatFromInclusive(order.TotalPriceDecimal(), vatRate), order.Currency),
+		Valid:   true,
 	}
 	order.Id, order.UUID, err = insertOrder(ctx, db, order)
 	if err != nil {

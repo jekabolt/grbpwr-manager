@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package common;
+
+import "common/media.proto";
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// SampleInsert is the writable payload of a sample (сэмпл) — a sewn prototype of a style
+// (new-flow NF-04). number is server-assigned (MAX+1 per tech card) and not part of the payload.
+message SampleInsert {
+  int32 tech_card_id = 1; // required
+  string purpose = 2; // proto | fit | sms | pp
+  int32 size_id = 3; // 0 = unset (the size it was sewn in)
+  int32 colorway_id = 4; // 0 = unset (for pp / colour-model samples)
+  string status = 5; // planned | in_sewing | done | scrapped
+  string fabric_source = 6; // sample | production
+  string notes = 7;
+  string started_at = 8; // YYYY-MM-DD
+  string finished_at = 9; // YYYY-MM-DD
+  repeated int32 media_ids = 10; // photos of the finished sample (outside a fitting); full-replace on update (B-6)
+  string pattern_url = 11; // optional snapshot of the pattern iteration this sample was cut from (B-3/gap-03)
+  string pattern_note = 12; // optional free-text pattern reference (e.g. «выкройка v2, размер S»)
+}
+
+// SampleCost is the composed cost of a sample in the base currency (confidential; stripped without
+// costing:read): materials issued from the warehouse plus the manual dev-expense journal.
+message SampleCost {
+  google.type.Decimal materials_base = 1;
+  google.type.Decimal manual_base = 2;
+  google.type.Decimal total_base = 3;
+  bool has_uncosted = 4; // a material issue had no known average / a dev cost had no base
+}
+
+// Sample is a stored sample: the writable payload plus identity, its per-card number, timestamps,
+// and (on GetSample) the composed cost.
+message Sample {
+  int32 id = 1;
+  SampleInsert sample = 2;
+  int32 number = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  SampleCost cost = 6; // set by GetSample; null on list
+  repeated MediaFull media = 7; // resolved sample photos (media_ids), display order; on Get and List
+}

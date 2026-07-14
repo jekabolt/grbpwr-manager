@@ -29,9 +29,33 @@ type (
 		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
 		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
-		// SetProductsCostPrice sets cost_price (base-currency COGS) on the given products,
-		// used to seed product cost from a tech card costing. Empty ids is a no-op.
-		SetProductsCostPrice(ctx context.Context, productIDs []int, cost decimal.Decimal) error
+		// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing)
+		// card of each given product that has no primary yet. Empty ids is a no-op.
+		AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int, productIDs []int) error
+		// SeedProductsCostPriceFromTechCard writes cost as the tech-card-sourced cost of every
+		// product whose primary card is techCardID (and cost is not manual, and the card links
+		// it), never overwriting a manual cost. Returns the number of products updated.
+		SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error)
+		// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON onto the
+		// same (primary, non-manual) products as SeedProductsCostPriceFromTechCard, so cost_price and
+		// cost_breakdown stay in sync; a NULL breakdown clears any stale one. Returns rows updated.
+		SeedProductsCostBreakdownFromTechCard(ctx context.Context, techCardID int, breakdown sql.NullString) (int64, error)
+		// ForceSetProductCostPriceFromTechCard writes cost as the tech-card-sourced cost of one
+		// product, overriding any manual value (explicit SyncProductCostFromTechCard action).
+		ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error
+		// ReceiveProductionStock increments a product's per-size stock from a production run's
+		// received quantities, recording each change with the production_received source. Runs on
+		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
+		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error
+		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
+		// cost_price of a product, recording provenance (source + run id + timestamp).
+		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error
+		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
+		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
+		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
+		GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error)
+		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
+		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
 		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
@@ -115,6 +139,7 @@ type (
 		UpdateTotalPaymentCurrency(ctx context.Context, orderUUID string, tapc decimal.Decimal) error
 		UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, settledBase, paymentFee decimal.Decimal) error
 		SetTrackingNumber(ctx context.Context, orderUUID string, trackingCode string) (*entity.OrderBuyerShipment, error)
+		SetShipmentActualCost(ctx context.Context, orderUUID string, actualCost, returnShippingCost decimal.NullDecimal) error
 		GetOrderById(ctx context.Context, orderID int) (*entity.OrderFull, error)
 		GetPaymentByOrderUUID(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		GetOrderFullByUUID(ctx context.Context, orderUUID string) (*entity.OrderFull, error)
@@ -281,6 +306,39 @@ type (
 		// thresholds behind the dashboard alerts (alert_setting table).
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
 		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
+		// UpsertOpexEntries writes the fixed-cost (OPEX) journal used by the dashboard
+		// operating result (opex_entry table), upserting on (month, category). NF-08: it also
+		// mirrors each aggregate into opex_line as an '(aggregate)' base-currency line.
+		UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) error
+		// UpsertOpexLines writes OPEX line items (opex_line, NF-08), upserting on
+		// (month, category, label). AmountBase is folded to base currency by the caller.
+		UpsertOpexLines(ctx context.Context, rows []entity.OpexLineInsert) error
+		// DeleteOpexLine removes one OPEX line by id.
+		DeleteOpexLine(ctx context.Context, id int) error
+		// ListOpexLines returns OPEX lines within the (inclusive) month bounds, optional category.
+		ListOpexLines(ctx context.Context, f entity.OpexLineFilter) ([]entity.OpexLine, error)
+		// UpsertOpexRecurring inserts (id==0) or updates a recurring OPEX template, returning its id.
+		UpsertOpexRecurring(ctx context.Context, ins entity.OpexRecurringInsert, id int) (int, error)
+		// ArchiveOpexRecurring stops a template from materialising further months.
+		ArchiveOpexRecurring(ctx context.Context, id int) error
+		// ListOpexRecurring returns recurring templates (active-only unless includeArchived).
+		ListOpexRecurring(ctx context.Context, includeArchived bool) ([]entity.OpexRecurring, error)
+		// MaterializeOpexRecurring books each active template into monthly opex_lines up to `upTo`,
+		// folding each month at its own effective FX rate (loaded internally). Dedup is
+		// (recurring_id, month); already-costed months are frozen, uncosted ones are recosted on a
+		// later tick. Returns lines newly created (recosts excluded). Fails if FX history won't load.
+		MaterializeOpexRecurring(ctx context.Context, upTo time.Time) (int, error)
+		// UpsertEmployee inserts (id==0) or updates an employee-registry row, returning its id (gap-07
+		// v2 A). The registry links salary OpexRecurring templates to a person via employee_id.
+		UpsertEmployee(ctx context.Context, ins entity.EmployeeInsert, id int) (int, error)
+		// ArchiveEmployee soft-archives an employee; linked recurring templates keep their employee_id.
+		ArchiveEmployee(ctx context.Context, id int) error
+		// ListEmployees returns registry rows (active-only unless includeArchived).
+		ListEmployees(ctx context.Context, includeArchived bool) ([]entity.Employee, error)
+		// ListVatRates / UpsertVatRates read and write the destination-country VAT rates
+		// (vat_rate table) used to compute net-of-VAT revenue.
+		ListVatRates(ctx context.Context) ([]entity.VatRate, error)
+		UpsertVatRates(ctx context.Context, rates []entity.VatRate) error
 		// GetEmailMetricsSummary aggregates email delivery counters for a date range and computes rates.
 		GetEmailMetricsSummary(ctx context.Context, from, to time.Time) (*entity.EmailMetricsSummary, error)
 		// GetPeriodOrderCount returns the number of placed orders (valid statuses) in [from, to).
@@ -291,6 +349,30 @@ type (
 		GetCustomerSegmentation(ctx context.Context, from, to time.Time) ([]entity.CustomerSegmentRow, error)
 		// GetRFMAnalysis returns RFM (Recency, Frequency, Monetary) customer segmentation.
 		GetRFMAnalysis(ctx context.Context, from, to time.Time) ([]entity.RFMSegmentRow, error)
+		// GetMarginByStyle rolls the per-SKU margin breakdown up to the style (tech card) via
+		// product.primary_tech_card_id; products with no primary card fall into a "no style" row.
+		GetMarginByStyle(ctx context.Context, from, to time.Time, limit int) ([]entity.MarginByStyleRow, error)
+		// GetStyleMargin returns the lifetime sales margin for one style (all its colourway SKUs) as a
+		// single MarginByStyleRow, or nil when the style has no sales. Sales anchor of GetStyleEconomics.
+		GetStyleMargin(ctx context.Context, techCardID int) (*entity.MarginByStyleRow, error)
+		// GetStyleSampleSummary returns a style's sample count and the warehouse-material cost they
+		// consumed (informational, not folded into the sales net) — NF-09 style economics.
+		GetStyleSampleSummary(ctx context.Context, techCardID int) (entity.StyleSampleSummary, error)
+		// GetStyleMaterialsFromStock returns the net warehouse-material cost issued into a style's
+		// production runs (base EUR) — the material actuals for the production summary (NF-09).
+		GetStyleMaterialsFromStock(ctx context.Context, techCardID int) (entity.StyleMaterialsFromStock, error)
+		// GetChannelRoasSettled attributes settled order revenue to marketing channels via the
+		// bq_order_channel map (order.ga_client_id → last non-direct UTM), returning per-channel settled
+		// revenue, order count and new-customer count over the period (task 20 step 2). Spend/ROAS/CAC
+		// are layered on by the caller from channel_spend.
+		GetChannelRoasSettled(ctx context.Context, from, to time.Time) ([]entity.ChannelSettledRow, error)
+		// GetCogsStructure decomposes the cost of goods sold in the period into its components
+		// (materials / cmt / … / unattributed) from each product's cost_breakdown snapshot.
+		GetCogsStructure(ctx context.Context, from, to time.Time) ([]entity.CogsStructureRow, error)
+		// GetInventoryValuation is the money view of the warehouse: cost frozen in stock, dead
+		// stock (unsold in the window), and damage/loss write-offs in the period, valued at the
+		// current plan cost_price with uncosted stock counted honestly.
+		GetInventoryValuation(ctx context.Context, from, to time.Time, limit int) (*entity.InventoryValuation, error)
 	}
 
 	Support interface {
@@ -384,6 +466,95 @@ type (
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
+		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
+		// and up to cardsPerStage light preview cards (gap-01).
+		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
+		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
+		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
+		// ListCostingFxRates returns every stored rate (all effective dates) for admin display.
+		ListCostingFxRates(ctx context.Context) ([]entity.CostingFxRate, error)
+		// UpsertCostingFxRates inserts/updates rates by (currency, valid_from). Empty is a no-op.
+		UpsertCostingFxRates(ctx context.Context, rates []entity.CostingFxRate) error
+		// Material catalog (task 10): shared nomenclature a BOM line can optionally link to,
+		// with an append-only price history.
+		CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error)
+		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error
+		ArchiveMaterial(ctx context.Context, id int, archived bool) error
+		GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPrice, error)
+		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
+		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
+		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
+		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
+		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
+		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
+		ListTechCardReleases(ctx context.Context, techCardID int) ([]entity.TechCardReleaseMeta, error)
+		GetTechCardRelease(ctx context.Context, id int) (*entity.TechCardRelease, error)
+		// Development (R&D) cost journal (task 14): append + delete + list rows at the tech-card
+		// level (NOT full-replace); a period cost, never seeded into product.cost_price.
+		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)
+		DeleteTechCardDevExpense(ctx context.Context, id int) error
+		ListTechCardDevExpenses(ctx context.Context, techCardID int) ([]entity.TechCardDevExpense, error)
+	}
+
+	// ProductionRuns is the production-run (партия) repository: the run header + per-size
+	// planned/received/defect grid, with the planned unit cost snapshotted at plan time.
+	ProductionRuns interface {
+		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert) error
+		DeleteProductionRun(ctx context.Context, id int) error
+		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
+		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
+		// ReceiveProductionRun receives a multi-colourway run into stock (NF-06): perProduct maps each
+		// product_id → (size_id → qty), pre-validated by the caller against the run's tech card. Inside
+		// one transaction it locks the run, re-reads its lines to confirm perProduct is still current
+		// (else ErrProductionRunConcurrentModification), increments every product's stock, and — when
+		// updateCostPrice is set — seeds each product's cost_price from the run's actual unit cost
+		// recomputed from the freshly-read costs/movements (so a material issue racing the receive is
+		// not missed). It transitions the run to received, guarded against a double receipt, and reports
+		// whether cost_price was seeded.
+		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, updateCostPrice bool, username string) (bool, error)
+		// ReceiveAuxiliaryProductionRun receives an auxiliary run's output into the material warehouse
+		// (NF-07): under the run lock it re-reads the lines (product-free, Σ received_qty > 0 — else
+		// ErrProductionRunConcurrentModification / ErrProductionRunNothingReceived) and recomputes the
+		// actual per-unit base cost from the freshly-read costs+movements (g25-07), books a
+		// receipt_production of that quantity into outputMaterialID (moving the average when costed)
+		// and transitions the run to received — guarded against a double receipt.
+		ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, username string) error
+	}
+
+	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
+	// a cost composed on read from material issues + the dev-expense journal.
+	Samples interface {
+		AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error)
+		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error
+		DeleteSample(ctx context.Context, id int) error
+		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
+		// ListSamples lists samples; techCardID <= 0 spans all styles (cross-style queue), and
+		// status/purpose are optional string filters ("" = any).
+		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int, status, purpose string) ([]entity.Sample, int, error)
+	}
+
+	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
+	// moving-average unit cost per catalog material, and the append-only movement ledger. Distinct
+	// from Inventory (which is the finished-goods valuation metrics of task 16).
+	MaterialStock interface {
+		ReceiveMaterialStock(ctx context.Context, ins entity.MaterialReceiptInsert) (entity.MaterialMovement, error)
+		IssueMaterialStock(ctx context.Context, ins entity.MaterialIssueInsert) (entity.MaterialMovement, error)
+		AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error)
+		GetMaterialStock(ctx context.Context, materialID int) (*entity.MaterialStock, error)
+		ListMaterialStock(ctx context.Context, filter entity.MaterialStockFilter) ([]entity.MaterialStockRow, error)
+		ListMaterialMovements(ctx context.Context, limit, offset int, filter entity.MaterialMovementFilter) ([]entity.MaterialMovement, int, error)
+		// UpsertPackagingBom full-replaces the global packaging recipe consumed on ship (gap-07 v2 B).
+		UpsertPackagingBom(ctx context.Context, items []entity.PackagingBomItem) error
+		// ListPackagingBom returns the packaging recipe joined with material name/unit.
+		ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem, error)
+		// ConsumePackagingForOrder writes off packaging for a shipped order, idempotently (PK guard) and
+		// best-effort (a short material is skipped, never failing the ship). itemCount = total units.
+		ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error)
+		// ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D), active-only unless
+		// includeArchived. Traceability registry; valuation stays moving-average.
+		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
@@ -412,6 +583,9 @@ type (
 		GetNewsletterSignups(ctx context.Context, startDate, endDate time.Time) ([]entity.NewsletterMetricRow, error)
 		GetAbandonedCart(ctx context.Context, startDate, endDate time.Time) ([]entity.AbandonedCartRow, error)
 		GetCampaignAttribution(ctx context.Context, startDate, endDate time.Time) ([]entity.CampaignAttributionRow, error)
+		// GetOrderChannelMap maps each GA4 client_id to its last non-direct UTM channel, for
+		// server-side settled-revenue attribution (task 20 step 2).
+		GetOrderChannelMap(ctx context.Context, startDate, endDate time.Time) ([]entity.OrderChannelRow, error)
 		GetTimeOnPage(ctx context.Context, startDate, endDate time.Time) ([]entity.TimeOnPageRow, error)
 		GetProductZoom(ctx context.Context, startDate, endDate time.Time) ([]entity.ProductZoomRow, error)
 		GetImageSwipes(ctx context.Context, startDate, endDate time.Time) ([]entity.ImageSwipeRow, error)
@@ -499,6 +673,9 @@ type (
 		SaveBQNewsletter(ctx context.Context, rows []entity.NewsletterMetricRow) error
 		SaveBQAbandonedCart(ctx context.Context, rows []entity.AbandonedCartRow) error
 		SaveBQCampaignAttribution(ctx context.Context, rows []entity.CampaignAttributionRow) error
+		// SaveBQOrderChannel upserts the client_id→channel attribution map (task 20 step 2), keyed on
+		// client_id so a client's latest non-direct touch replaces the prior one.
+		SaveBQOrderChannel(ctx context.Context, rows []entity.OrderChannelRow) error
 		SaveBQTimeOnPage(ctx context.Context, rows []entity.TimeOnPageRow) error
 		SaveBQProductZoom(ctx context.Context, rows []entity.ProductZoomRow) error
 		SaveBQImageSwipes(ctx context.Context, rows []entity.ImageSwipeRow) error
@@ -566,6 +743,8 @@ type (
 		SetShipmentCarrierAllowance(ctx context.Context, carrier string, allowance bool) error
 		SetShipmentCarrierPrices(ctx context.Context, carrier string, prices map[string]decimal.Decimal) error
 		SetPaymentMethodAllowance(ctx context.Context, paymentMethod entity.PaymentMethodName, allowance bool) error
+		// SetPaymentMethodFees sets a method's estimated processing-fee model (percent + fixed).
+		SetPaymentMethodFees(ctx context.Context, paymentMethod entity.PaymentMethodName, feePct, feeFixed decimal.Decimal) error
 		SetPaymentIsProd(ctx context.Context, isProd bool) error
 		SetSiteAvailability(ctx context.Context, allowance bool) error
 		SetMaxOrderItems(ctx context.Context, count int) error
@@ -598,6 +777,9 @@ type (
 		Tasks() Tasks
 		Fulfillment() Fulfillment
 		TechCards() TechCards
+		ProductionRuns() ProductionRuns
+		MaterialStock() MaterialStock
+		Samples() Samples
 		Admin() Admin
 		Cache() Cache
 		Mail() Mail

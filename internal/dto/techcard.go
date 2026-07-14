@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -19,6 +20,8 @@ import (
 const (
 	maxVarchar32   = 32
 	maxVarchar64   = 64
+	maxVarchar191  = 191
+	maxVarchar512  = 512
 	maxVarchar1024 = 1024
 	maxCurrency    = 3
 
@@ -31,6 +34,7 @@ const (
 )
 
 var techCardStagePbToEntity = map[pb_common.TechCardStage]entity.TechCardStage{
+	pb_common.TechCardStage_TECH_CARD_STAGE_IDEA:  entity.TechCardStageIdea,
 	pb_common.TechCardStage_TECH_CARD_STAGE_PROTO: entity.TechCardStageProto,
 	pb_common.TechCardStage_TECH_CARD_STAGE_FIT:   entity.TechCardStageFit,
 	pb_common.TechCardStage_TECH_CARD_STAGE_SMS:   entity.TechCardStageSMS,
@@ -190,9 +194,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if pb == nil {
 		return nil, fmt.Errorf("tech card insert is nil")
 	}
-	if pb.StyleNumber == "" {
-		return nil, fmt.Errorf("style_number is required")
-	}
 	if pb.Name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
@@ -225,6 +226,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		}
 		stage = s
 	}
+	// style_number is optional for an `idea` draft (NF-03) but required to start sampling — every
+	// stage from proto onward. This gates both create and update (both pass through here).
+	styleNumber := strings.TrimSpace(pb.StyleNumber)
+	if stage != entity.TechCardStageIdea && styleNumber == "" {
+		return nil, fmt.Errorf("style_number is required from the proto stage onward")
+	}
 
 	approvalState := entity.TechCardApprovalDraft
 	if pb.ApprovalState != pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_UNKNOWN {
@@ -233,6 +240,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, fmt.Errorf("unknown tech card approval state: %v", pb.ApprovalState)
 		}
 		approvalState = a
+	}
+	// An `idea` draft cannot be approved or released — advance it to a real stage first (NF-03).
+	if stage == entity.TechCardStageIdea &&
+		(approvalState == entity.TechCardApprovalApproved || approvalState == entity.TechCardApprovalReleased) {
+		return nil, fmt.Errorf("an idea draft cannot be approved or released; advance the stage first")
 	}
 
 	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
@@ -262,6 +274,39 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	productIds, err := dedupePositiveIDs(pb.ProductIds, "product_ids")
 	if err != nil {
 		return nil, err
+	}
+	// tech_card_product (product_ids) is the CANON product↔style link — every external consumer
+	// (cost_price seed, GetMarginByStyle, ListTechCards-by-product) reads it, never colorway
+	// product_id. A colourway's product_id is an annotation obliged to be a subset. Rather than
+	// reject a colourway whose product isn't yet listed (the old write-time 400), auto-seed it:
+	// union colourway product_ids into product_ids so the link stays in sync with no manual step.
+	// (The primary-for-costing card is a separate, deterministic pointer: product.primary_tech_card_id.)
+	productIds = unionColorwayProductIds(productIds, pb.Colorways)
+
+	// NF-07 purpose: sellable (default) produces a product; auxiliary produces a packaging material.
+	// An auxiliary card must not link products (its output is stock, not a SKU); a sellable card must
+	// not carry an output material. output_material_id is only required before the first run (the
+	// service/receive path enforces that), not at save time — a card can be drafted first.
+	purpose := entity.TechCardPurposeSellable
+	if p := strings.ToLower(strings.TrimSpace(pb.Purpose)); p != "" {
+		purpose = entity.TechCardPurpose(p)
+		if !entity.ValidTechCardPurposes[purpose] {
+			return nil, fmt.Errorf("purpose must be one of sellable|auxiliary")
+		}
+	}
+	var outputMaterialId sql.NullInt64
+	if purpose == entity.TechCardPurposeAuxiliary {
+		if len(productIds) > 0 {
+			return nil, fmt.Errorf("an auxiliary card cannot link products (its output is a warehouse material, not a SKU)")
+		}
+		if pb.OutputMaterialId < 0 {
+			return nil, fmt.Errorf("output_material_id must not be negative")
+		}
+		if pb.OutputMaterialId > 0 {
+			outputMaterialId = sql.NullInt64{Int64: int64(pb.OutputMaterialId), Valid: true}
+		}
+	} else if pb.OutputMaterialId != 0 {
+		return nil, fmt.Errorf("output_material_id is only for auxiliary cards")
 	}
 
 	// base_sample_size_id, when set, must be part of the declared size range: the
@@ -347,7 +392,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	colorways, err := parseTechCardColorways(pb.Colorways, productIds, len(bomItems), sizeIds)
+	colorways, err := parseTechCardColorways(pb.Colorways, productIds, len(bomItems), sizeIds, len(pb.Pieces))
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +410,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		calloutNumbers[c.Number] = true
 	}
 	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems))
+	if err != nil {
+		return nil, err
+	}
+	// Cut-pieces (NF-05): colorway_index range-checked against colourways, bom refs against the
+	// BOM, callout_number against the sketch callouts — all in this same full-replace payload.
+	pieces, err := parseTechCardPieces(pb.Pieces, len(pb.Colorways), len(bomItems), calloutNumbers)
 	if err != nil {
 		return nil, err
 	}
@@ -414,23 +465,25 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	return &entity.TechCardInsert{
-		StyleNumber:       pb.StyleNumber,
-		Name:              pb.Name,
-		Brand:             nullStringFromPb(pb.Brand),
-		Season:            nullStringFromPb(pb.Season),
-		Collection:        nullStringFromPb(pb.Collection),
-		CategoryId:        nullInt32FromPb(pb.CategoryId),
-		TargetGender:      gender,
-		Stage:             stage,
-		Status:            nullStringFromPb(pb.Status),
-		ApprovalState:     approvalState,
-		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
-		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
-		Version:           nullStringFromPb(pb.Version),
-		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
-		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
+		StyleNumber:      nullStringFromPb(styleNumber),
+		Purpose:          purpose,
+		OutputMaterialId: outputMaterialId,
+		Name:             pb.Name,
+		Brand:            nullStringFromPb(pb.Brand),
+		Season:           nullStringFromPb(pb.Season),
+		Collection:       nullStringFromPb(pb.Collection),
+		CategoryId:       nullInt32FromPb(pb.CategoryId),
+		TargetGender:     gender,
+		Stage:            stage,
+		Status:           nullStringFromPb(pb.Status),
+		ApprovalState:    approvalState,
+		ApprovedBy:       nullStringFromPb(pb.ApprovedBy),
+		ApprovedAt:       nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:       nullTimeFromPbTimestamp(pb.ReleasedAt),
+		Version:          nullStringFromPb(pb.Version),
+		RevisionDate:     nullDateFromPbTimestamp(pb.RevisionDate),
+		BaseModelId:      nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId: nullInt32FromPb(pb.BaseSampleSizeId),
 		Designer:         nullStringFromPb(pb.Designer),
 		Constructor:      nullStringFromPb(pb.Constructor),
 		Technologist:     nullStringFromPb(pb.Technologist),
@@ -454,6 +507,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		SizeQuantities:   sizeQuantities,
 		Signoffs:         signoffs,
 		Patterns:         patterns,
+		Pieces:           pieces,
 	}, nil
 }
 
@@ -522,8 +576,10 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 	return out, nil
 }
 
-// ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard.
-func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
+// ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard. fx supplies the
+// manual FX rates used to render the costing's base-currency rollup; pass a zero CostingFx to
+// omit the *_base figures (e.g. in tests that don't exercise conversion).
+func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCard {
 	if tc == nil {
 		return nil
 	}
@@ -596,23 +652,25 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 		CreatedAt:   timestamppb.New(tc.CreatedAt),
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
-			StyleNumber:       tc.StyleNumber,
-			Name:              tc.Name,
-			Brand:             pbStringFromNull(tc.Brand),
-			Season:            pbStringFromNull(tc.Season),
-			Collection:        pbStringFromNull(tc.Collection),
-			CategoryId:        pbInt32FromNull(tc.CategoryId),
-			TargetGender:      pbGenderFromNull(tc.TargetGender),
-			Stage:             pbTechCardStage(tc.Stage),
-			Status:            pbStringFromNull(tc.Status),
-			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
-			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
-			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
-			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
-			Version:           pbStringFromNull(tc.Version),
-			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
-			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
-			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
+			StyleNumber:      tc.StyleNumber.String,
+			Purpose:          string(tc.Purpose),
+			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
+			Name:             tc.Name,
+			Brand:            pbStringFromNull(tc.Brand),
+			Season:           pbStringFromNull(tc.Season),
+			Collection:       pbStringFromNull(tc.Collection),
+			CategoryId:       pbInt32FromNull(tc.CategoryId),
+			TargetGender:     pbGenderFromNull(tc.TargetGender),
+			Stage:            pbTechCardStage(tc.Stage),
+			Status:           pbStringFromNull(tc.Status),
+			ApprovalState:    pbTechCardApprovalState(tc.ApprovalState),
+			ApprovedBy:       pbStringFromNull(tc.ApprovedBy),
+			ApprovedAt:       pbTimestampFromNullTime(tc.ApprovedAt),
+			ReleasedAt:       pbTimestampFromNullTime(tc.ReleasedAt),
+			Version:          pbStringFromNull(tc.Version),
+			RevisionDate:     pbTimestampFromNullTime(tc.RevisionDate),
+			BaseModelId:      pbInt32FromNull(tc.BaseModelId),
+			BaseSampleSizeId: pbInt32FromNull(tc.BaseSampleSizeId),
 			Designer:         pbStringFromNull(tc.Designer),
 			Constructor:      pbStringFromNull(tc.Constructor),
 			Technologist:     pbStringFromNull(tc.Technologist),
@@ -632,11 +690,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard) *pb_common.TechCard {
 			Operations:       techCardOperationsToPb(tc.Operations),
 			Labels:           techCardLabelsToPb(tc.Labels),
 			Packaging:        techCardPackagingToPb(tc.Packaging),
-			Costing:          techCardCostingToPb(tc),
+			Costing:          techCardCostingToPb(tc, fx),
 			Issues:           techCardIssuesToPb(tc.Issues),
 			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
 			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
 			Patterns:         techCardPatternsToPb(tc.Patterns),
+			Pieces:           techCardPiecesToPb(tc.Pieces),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -678,7 +737,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 	}
 	return &pb_common.TechCardListItem{
 		Id:            int32(tc.Id),
-		StyleNumber:   tc.StyleNumber,
+		StyleNumber:   tc.StyleNumber.String,
 		Name:          tc.Name,
 		Brand:         pbStringFromNull(tc.Brand),
 		Stage:         pbTechCardStage(tc.Stage),
@@ -689,7 +748,26 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 		LockVersion:   int32(tc.LockVersion),
+		PreviewUrl:    tc.PreviewURL,
 	}
+}
+
+// ConvertStylePipelineToPb converts the development-board columns to pb (gap-01), reusing the
+// light-card mapper for each column's preview cards.
+func ConvertStylePipelineToPb(cols []entity.StylePipelineColumn) *pb_admin.GetStylePipelineResponse {
+	out := &pb_admin.GetStylePipelineResponse{Columns: make([]*pb_admin.StylePipelineColumn, 0, len(cols))}
+	for i := range cols {
+		cards := make([]*pb_common.TechCardListItem, 0, len(cols[i].Cards))
+		for j := range cols[i].Cards {
+			cards = append(cards, ConvertEntityTechCardToListItemPb(&cols[i].Cards[j]))
+		}
+		out.Columns = append(out.Columns, &pb_admin.StylePipelineColumn{
+			Stage: pbTechCardStage(cols[i].Stage),
+			Count: int32(cols[i].Count),
+			Cards: cards,
+		})
+	}
+	return out
 }
 
 // ConvertPbTechCardStageToEntityString maps a stage filter enum to its entity
@@ -735,7 +813,26 @@ func pbTechCardMediaKind(k entity.TechCardMediaKind) pb_common.TechCardMediaKind
 
 // --- materials (Phase 2): parse pb -> entity ---
 
-func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int) ([]entity.TechCardColorway, error) {
+// unionColorwayProductIds appends any positive colourway product_id not already in productIds,
+// preserving order (existing ids first, new ones in colourway order). This keeps tech_card_product
+// (the canon) a superset of every colourway's annotated product, so linking a colour to a product
+// never needs a separate edit to the product list. Deduplicates against the existing set.
+func unionColorwayProductIds(productIds []int, colorways []*pb_common.TechCardColorway) []int {
+	seen := make(map[int]bool, len(productIds))
+	for _, id := range productIds {
+		seen[id] = true
+	}
+	for _, c := range colorways {
+		if c == nil || c.ProductId <= 0 || seen[int(c.ProductId)] {
+			continue
+		}
+		seen[int(c.ProductId)] = true
+		productIds = append(productIds, int(c.ProductId))
+	}
+	return productIds
+}
+
+func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int, bomItemCount int, sizeIds []int, pieceCount int) ([]entity.TechCardColorway, error) {
 	out := make([]entity.TechCardColorway, 0, len(pbs))
 	// Non-empty codes must be unique within the card (DB enforces
 	// uniq_tech_card_colorway_code); dedupe here so a collision fails as a precise
@@ -760,10 +857,10 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 		if c.ProductId < 0 {
 			return nil, fmt.Errorf("colorway product_id must not be negative")
 		}
-		// Soft consistency: a colourway's published product must be one of the tech
-		// card's linked products (tech_card_product), so a colourway cannot point at
-		// a product outside the card. tech_card_product stays the catalog-SKU list;
-		// this only keeps the two in sync at write time.
+		// Invariant (post-auto-seed): a colourway's product must be in the card's product_ids.
+		// unionColorwayProductIds already folded every colourway product into product_ids before
+		// this parse, so this never fires on a normal payload — it is a defensive guard that the
+		// annotation ⊆ canon invariant holds.
 		if c.ProductId > 0 && !slices.Contains(productIds, int(c.ProductId)) {
 			return nil, fmt.Errorf("colorway product_id %d must be one of the tech card's product_ids", c.ProductId)
 		}
@@ -789,7 +886,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 		if c.SwatchMediaId < 0 || c.LabDipRound < 0 {
 			return nil, fmt.Errorf("colorway swatch_media_id/lab_dip_round must not be negative")
 		}
-		usages, err := parseTechCardColorwayUsages(c.Usages, bomItemCount, sizeIds)
+		usages, err := parseTechCardColorwayUsages(c.Usages, bomItemCount, sizeIds, pieceCount)
 		if err != nil {
 			return nil, err
 		}
@@ -817,7 +914,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 // parseTechCardColorwayUsages parses one colourway's material recipe. A usage's
 // bom_item_index (when set) must point at a submitted BOM line; placement is normalised
 // (trim+lower) so the construction resolver can match operation.placement to it (plan §3).
-func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItemCount int, sizeIds []int) ([]entity.TechCardColorwayUsage, error) {
+func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItemCount int, sizeIds []int, pieceCount int) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for _, u := range pbs {
 		var bomItemIndex sql.NullInt32
@@ -827,6 +924,14 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 				return nil, fmt.Errorf("usage bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
 			}
 			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		}
+		var pieceIndex sql.NullInt32
+		if u.PieceIndex != nil {
+			idx := *u.PieceIndex
+			if idx < 0 || int(idx) >= pieceCount {
+				return nil, fmt.Errorf("usage piece_index %d out of range (have %d pieces)", idx, pieceCount)
+			}
+			pieceIndex = sql.NullInt32{Int32: idx, Valid: true}
 		}
 		if len(u.Placement) > maxVarchar255 {
 			return nil, fmt.Errorf("usage placement must be at most %d characters", maxVarchar255)
@@ -859,10 +964,111 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 			Pantone:          nullStringFromPb(u.Pantone),
 			Consumption:      consumption,
 			Quantity:         quantity,
+			PieceIndex:       pieceIndex,
 			SizeConsumptions: sizeConsumptions,
 		})
 	}
 	return out, nil
+}
+
+// parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
+// mapping references colourways positionally (colorway_index) and the BOM positionally
+// (bom_item_index / fusing_bom_item_index); callout_number, when set, must be a submitted callout.
+// All indices are range-checked against the same full-replace payload.
+func parseTechCardPieces(pbs []*pb_common.TechCardPiece, colorwayCount, bomItemCount int, calloutNumbers map[int]bool) ([]entity.TechCardPiece, error) {
+	if len(pbs) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.TechCardPiece, 0, len(pbs))
+	for _, p := range pbs {
+		if p.Name == "" {
+			return nil, fmt.Errorf("piece name is required")
+		}
+		if len(p.Name) > maxVarchar255 {
+			return nil, fmt.Errorf("piece name must be at most %d characters", maxVarchar255)
+		}
+		if len(p.Note) > maxVarchar255 {
+			return nil, fmt.Errorf("piece note must be at most %d characters", maxVarchar255)
+		}
+		// proto3 zero means "unset" → default to 1; but a negative value is a client bug and must not be
+		// silently coerced (the user would see 1, not what they sent), matching the other numeric guards
+		// in this file that reject negatives (nf05-02).
+		if p.PiecesPerGarment < 0 {
+			return nil, fmt.Errorf("piece %q pieces_per_garment must be non-negative", p.Name)
+		}
+		perGarment := int(p.PiecesPerGarment)
+		if perGarment == 0 {
+			perGarment = 1
+		}
+		grainline := strings.ToLower(strings.TrimSpace(p.Grainline))
+		if grainline == "" {
+			grainline = "lengthwise"
+		}
+		if !entity.ValidTechCardGrainlines[grainline] {
+			return nil, fmt.Errorf("piece %q grainline must be one of lengthwise|crosswise|bias|any", p.Name)
+		}
+		var calloutNumber sql.NullInt32
+		if p.CalloutNumber != nil {
+			n := *p.CalloutNumber
+			if !calloutNumbers[int(n)] {
+				return nil, fmt.Errorf("piece %q callout_number %d does not match any callout", p.Name, n)
+			}
+			calloutNumber = sql.NullInt32{Int32: n, Valid: true}
+		}
+
+		materials := make([]entity.TechCardPieceMaterial, 0, len(p.Materials))
+		seenColorway := make(map[int32]bool, len(p.Materials))
+		for _, m := range p.Materials {
+			if m.ColorwayIndex < 0 || int(m.ColorwayIndex) >= colorwayCount {
+				return nil, fmt.Errorf("piece %q colorway_index %d out of range (have %d colorways)", p.Name, m.ColorwayIndex, colorwayCount)
+			}
+			if seenColorway[m.ColorwayIndex] {
+				return nil, fmt.Errorf("piece %q has duplicate colorway_index %d", p.Name, m.ColorwayIndex)
+			}
+			seenColorway[m.ColorwayIndex] = true
+			bomIdx, err := pieceBomRef(m.BomItemIndex, bomItemCount, "bom_item_index", p.Name)
+			if err != nil {
+				return nil, err
+			}
+			fusingIdx, err := pieceBomRef(m.FusingBomItemIndex, bomItemCount, "fusing_bom_item_index", p.Name)
+			if err != nil {
+				return nil, err
+			}
+			if len(m.Note) > maxVarchar255 {
+				return nil, fmt.Errorf("piece %q material note must be at most %d characters", p.Name, maxVarchar255)
+			}
+			materials = append(materials, entity.TechCardPieceMaterial{
+				ColorwayIndex:      int(m.ColorwayIndex),
+				BomItemIndex:       bomIdx,
+				FusingBomItemIndex: fusingIdx,
+				Note:               nullStringFromPb(m.Note),
+			})
+		}
+
+		out = append(out, entity.TechCardPiece{
+			Name:             p.Name,
+			PiecesPerGarment: perGarment,
+			Mirrored:         p.Mirrored,
+			Grainline:        grainline,
+			Fused:            p.Fused,
+			CalloutNumber:    calloutNumber,
+			Note:             nullStringFromPb(p.Note),
+			Materials:        materials,
+		})
+	}
+	return out, nil
+}
+
+// pieceBomRef range-checks an optional positional BOM reference on a piece material.
+func pieceBomRef(v *int32, bomItemCount int, field, pieceName string) (sql.NullInt32, error) {
+	if v == nil {
+		return sql.NullInt32{}, nil
+	}
+	idx := *v
+	if idx < 0 || int(idx) >= bomItemCount {
+		return sql.NullInt32{}, fmt.Errorf("piece %q %s %d out of range (have %d bom_items)", pieceName, field, idx, bomItemCount)
+	}
+	return sql.NullInt32{Int32: idx, Valid: true}, nil
 }
 
 func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardBomItem, error) {
@@ -937,7 +1143,13 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			direction = sql.NullString{String: string(d), Valid: true}
 		}
 
+		materialID := sql.NullInt64{}
+		if b.MaterialId != 0 {
+			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
+		}
+
 		out = append(out, entity.TechCardBomItem{
+			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
 			Supplier:        nullStringFromPb(b.Supplier),
@@ -995,6 +1207,9 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.Tech
 	for ci := range cws {
 		c := &cws[ci]
 		out = append(out, &pb_common.TechCardColorway{
+			// stable row id (B-10), OUTPUT-ONLY: lets a sample link to this colourway
+			// (Sample.colorway_id). Regenerated on every card save; ignored on write.
+			Id:                 int32(c.Id),
 			Code:               pbStringFromNull(c.Code),
 			Name:               c.Name,
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
@@ -1027,6 +1242,11 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			v := u.BomItemIndex.Int32
 			bomItemIndex = &v
 		}
+		var pieceIndex *int32
+		if u.PieceIndex.Valid {
+			v := u.PieceIndex.Int32
+			pieceIndex = &v
+		}
 		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
 		for _, sc := range u.SizeConsumptions {
 			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
@@ -1042,8 +1262,56 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			Consumption:      pbDecimalFromNull(u.Consumption),
 			Quantity:         pbDecimalFromNull(u.Quantity),
 			SizeConsumptions: sizeCons,
+			PieceIndex:       pieceIndex,
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+		})
+	}
+	return out
+}
+
+// techCardPiecesToPb emits the structural cut-pieces (+ per-colourway fabric mapping) for display.
+func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiece {
+	if len(pieces) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardPiece, 0, len(pieces))
+	for i := range pieces {
+		p := &pieces[i]
+		var calloutNumber *int32
+		if p.CalloutNumber.Valid {
+			v := p.CalloutNumber.Int32
+			calloutNumber = &v
+		}
+		materials := make([]*pb_common.TechCardPieceColorwayMaterial, 0, len(p.Materials))
+		for j := range p.Materials {
+			m := &p.Materials[j]
+			var bomIdx *int32
+			if m.BomItemIndex.Valid {
+				v := m.BomItemIndex.Int32
+				bomIdx = &v
+			}
+			var fusingIdx *int32
+			if m.FusingBomItemIndex.Valid {
+				v := m.FusingBomItemIndex.Int32
+				fusingIdx = &v
+			}
+			materials = append(materials, &pb_common.TechCardPieceColorwayMaterial{
+				ColorwayIndex:      int32(m.ColorwayIndex),
+				BomItemIndex:       bomIdx,
+				FusingBomItemIndex: fusingIdx,
+				Note:               pbStringFromNull(m.Note),
+			})
+		}
+		out = append(out, &pb_common.TechCardPiece{
+			Name:             p.Name,
+			PiecesPerGarment: int32(p.PiecesPerGarment),
+			Mirrored:         p.Mirrored,
+			Grainline:        p.Grainline,
+			Fused:            p.Fused,
+			CalloutNumber:    calloutNumber,
+			Note:             pbStringFromNull(p.Note),
+			Materials:        materials,
 		})
 	}
 	return out
@@ -1063,6 +1331,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
+			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,
 			Supplier:        pbStringFromNull(b.Supplier),
@@ -1315,4 +1584,18 @@ func pbTimestampFromNullTime(nt sql.NullTime) *timestamppb.Timestamp {
 		return nil
 	}
 	return timestamppb.New(nt.Time)
+}
+
+// ConvertTechCardReleaseMetaToPb converts an immutable release-snapshot header (task 11) to pb.
+// The JSON blob itself is not carried here — it is parsed separately by the read handler.
+func ConvertTechCardReleaseMetaToPb(m entity.TechCardReleaseMeta) *pb_common.TechCardReleaseMeta {
+	return &pb_common.TechCardReleaseMeta{
+		Id:         int32(m.Id),
+		TechCardId: int32(m.TechCardId),
+		Version:    pbStringFromNull(m.Version),
+		ReleasedBy: pbStringFromNull(m.ReleasedBy),
+		UnitCost:   pbDecimalFromNull(m.UnitCost),
+		Currency:   pbStringFromNull(m.Currency),
+		CreatedAt:  timestamppb.New(m.CreatedAt),
+	}
 }

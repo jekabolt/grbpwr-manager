@@ -1,0 +1,160 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/timestamp.proto";
+import "google/type/decimal.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// ProductionRunStatus is the lifecycle state of a production run (партия). A run is planned, then
+// started (in_progress), then received into stock, then closed; it can be cancelled from any
+// non-terminal state. Stored as its lowercase name in the DB.
+enum ProductionRunStatus {
+  PRODUCTION_RUN_STATUS_UNKNOWN = 0;
+  PRODUCTION_RUN_STATUS_PLANNED = 1;
+  PRODUCTION_RUN_STATUS_IN_PROGRESS = 2;
+  PRODUCTION_RUN_STATUS_RECEIVED = 3;
+  PRODUCTION_RUN_STATUS_CLOSED = 4;
+  PRODUCTION_RUN_STATUS_CANCELLED = 5;
+}
+
+// ProductionRunLine is one colour-model × size line of a run: which product (colourway) at which
+// size, the planned quantity, and — once received — the received and defective counts (unset until
+// received) that drive plan/fact. product_id may be 0 while planning (the colourway may not be
+// published as a product yet), but every line with a received_qty > 0 must carry it at receive
+// time. Replaces the flat ProductionRunSize grid so one marker yields several colour-models (NF-06).
+message ProductionRunLine {
+  int32 product_id = 1; // FK product(id); 0 = unset (planning only)
+  int32 size_id = 2; // FK size(id)
+  int32 planned_qty = 3;
+  optional int32 received_qty = 4; // unset until the run is received
+  optional int32 defect_qty = 5; // unset until the run is received
+}
+
+// ProductionRunCostKind is the article category of an actual production-run cost.
+enum ProductionRunCostKind {
+  PRODUCTION_RUN_COST_KIND_UNKNOWN = 0;
+  PRODUCTION_RUN_COST_KIND_MATERIALS = 1;
+  PRODUCTION_RUN_COST_KIND_CMT = 2;
+  PRODUCTION_RUN_COST_KIND_HARDWARE = 3;
+  PRODUCTION_RUN_COST_KIND_PACKAGING = 4;
+  PRODUCTION_RUN_COST_KIND_LOGISTICS = 5;
+  PRODUCTION_RUN_COST_KIND_DUTY = 6;
+  PRODUCTION_RUN_COST_KIND_OTHER = 7;
+}
+
+// ProductionRunCost is one actual cost article incurred for a run (phase 2). amount is in
+// `currency`; amount_base is the base-currency equivalent — server-folded via the costing FX
+// rates when left unset on write, or supplied manually — so run totals need no read-time FX.
+message ProductionRunCost {
+  ProductionRunCostKind kind = 1;
+  string description = 2;
+  google.type.Decimal amount = 3;
+  string currency = 4; // ISO 4217
+  google.type.Decimal amount_base = 5; // base-currency amount (server-folded when unset)
+  google.protobuf.Timestamp incurred_at = 6;
+}
+
+// ProductionRunCostByKind is the base-currency total of actual costs of one kind.
+message ProductionRunCostByKind {
+  ProductionRunCostKind kind = 1;
+  google.type.Decimal amount_base = 2;
+}
+
+// ProductionRunActuals is the computed-on-read plan/fact summary of a run: actual totals from the
+// cost articles + the phase-1 size grid, against the frozen planned unit cost.
+message ProductionRunActuals {
+  google.type.Decimal actual_total_base = 1; // Σ cost.amount_base
+  string base_currency = 2;
+  int32 planned_qty_total = 3;
+  int32 received_qty_total = 4;
+  int32 defect_qty_total = 5;
+  google.type.Decimal actual_unit_cost = 6; // actual_total_base / received_qty_total
+  google.type.Decimal defect_pct_actual = 7; // defect / (received + defect) × 100
+  repeated ProductionRunCostByKind by_kind = 8;
+  google.type.Decimal planned_total_base = 9; // planned_unit_cost × received_qty_total
+  google.type.Decimal unit_cost_variance = 10; // actual_unit_cost − planned_unit_cost
+  google.type.Decimal total_variance = 11; // actual_total_base − planned_total_base
+  bool has_base = 12; // false when some cost article could not be folded to base (total is partial)
+  // materials issued from the warehouse (NF-06): Σ (issue_production − return_production) ×
+  // unit_cost_base. Folded INTO actual_total_base, so a run can cost its fabric either by hand
+  // (a kind=materials cost article) or from stock issues — or, with the caveat below, both.
+  google.type.Decimal materials_from_stock_base = 13;
+  bool mixed_materials_sources = 14; // both a manual kind=materials cost AND stock issues exist (possible double count)
+  bool has_uncosted_issues = 15; // some stock issue had no average cost, so materials_from_stock understates
+  // Per-colourway material cost (gap-07 v2 C): stock issues grouped by the product_id they were cut
+  // for. Covers materials_from_stock only (manual cost articles stay run-level). Issues with no
+  // product_id fall into unattributed_materials_base, not any colourway.
+  repeated ProductionRunColorwayCost by_colorway = 16;
+  google.type.Decimal unattributed_materials_base = 17; // stock issues not attributed to a colourway
+}
+
+// ProductionRunColorwayCost is one colour-model's slice of a run's material-from-stock cost (gap-07
+// v2 C): the net material issued for that product and, if it received units, its per-unit material
+// cost. Manual (non-stock) cost articles are run-level and are NOT split here.
+message ProductionRunColorwayCost {
+  int32 product_id = 1;
+  int32 received_qty = 2; // units of this colour-model received (from the run lines)
+  google.type.Decimal materials_from_stock_base = 3; // net (issue − return) × unit_cost_base for this product
+  google.type.Decimal materials_unit_cost = 4; // materials_from_stock_base / received_qty (omitted if none received)
+  bool has_uncosted = 5; // an issue for this product had no average cost, so its figure understates
+}
+
+// ProductionMarkerSource is the CAD/nesting software (or hand entry) a marker record came from.
+enum ProductionMarkerSource {
+  PRODUCTION_MARKER_SOURCE_UNKNOWN = 0;
+  PRODUCTION_MARKER_SOURCE_GERBER = 1;
+  PRODUCTION_MARKER_SOURCE_OPTITEX = 2;
+  PRODUCTION_MARKER_SOURCE_LECTRA = 3;
+  PRODUCTION_MARKER_SOURCE_AUDACES = 4;
+  PRODUCTION_MARKER_SOURCE_MANUAL = 5;
+  PRODUCTION_MARKER_SOURCE_OTHER = 6;
+}
+
+// ProductionRunMarker is one imported nesting marker (раскладка / lay) of a run (gap-07 v2 E): the
+// CAD source, the fabric width and lay length it was nested on, the units it yields, its
+// fabric-utilisation %, an optional fabric/size, and a reference URL to the exported marker file.
+// It is planning / traceability data — nothing here feeds the run's actual cost or cost_price.
+message ProductionRunMarker {
+  ProductionMarkerSource source = 1;
+  string marker_name = 2; // marker / lay identifier from the software
+  int32 size_id = 3; // single-size marker; 0 = mixed-size lay
+  int32 material_id = 4; // fabric the marker was nested on; 0 = unset
+  google.type.Decimal marker_width = 5; // fabric width the marker was made for (cm)
+  google.type.Decimal lay_length = 6; // marker / lay length (cm)
+  int32 units_per_marker = 7; // garments yielded by one marker; 0 = unset
+  google.type.Decimal efficiency_pct = 8; // fabric utilisation % (per-marker), 0..100
+  string marker_file_url = 9; // bare URL of the exported marker file (UploadPattern convention)
+  string notes = 10;
+}
+
+// ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).
+// planned_unit_cost / planned_currency are NOT here — they are server-snapshotted at plan time
+// (from the linked tech_card_release or the live card's computed costing) and are read-only on write.
+message ProductionRunInsert {
+  int32 tech_card_id = 1; // required
+  int32 release_id = 2; // optional tech_card_release to plan from (0 = none / plan from live card)
+  ProductionRunStatus status = 3; // required
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp received_at = 5;
+  string notes = 6;
+  repeated ProductionRunLine lines = 9; // colour-model × size grid (NF-06, replaces sizes)
+  repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)
+  google.type.Decimal marker_efficiency_pct = 10; // % fabric utilisation from the nesting software (NF-06)
+  string marker_notes = 11; // free marker / раскладка parameters
+  repeated ProductionRunMarker markers = 12; // imported nesting markers (gap-07 v2 E)
+  reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
+}
+
+// ProductionRun is a stored run: the writable payload plus the server-owned identity, the frozen
+// plan snapshot, and timestamps.
+message ProductionRun {
+  int32 id = 1;
+  ProductionRunInsert run = 2;
+  google.type.Decimal planned_unit_cost = 3; // snapshot of the card/release unit cost at plan time
+  string planned_currency = 4; // currency of planned_unit_cost
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  ProductionRunActuals actuals = 7; // computed-on-read plan/fact summary
+}

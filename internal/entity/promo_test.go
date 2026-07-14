@@ -58,14 +58,14 @@ func TestPromoCode_CalculateTotalWithPromo(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                     string
-		promo                    PromoCode
-		subtotal                 decimal.Decimal
-		shippingPrice            decimal.Decimal
-		decimalPlaces            int32
-		expectedTotal            string
-		expectedFreeShipping     bool
-		description              string
+		name                 string
+		promo                PromoCode
+		subtotal             decimal.Decimal
+		shippingPrice        decimal.Decimal
+		decimalPlaces        int32
+		expectedTotal        string
+		expectedFreeShipping bool
+		description          string
 	}{
 		{
 			name:                 "10% discount on subtotal, shipping added",

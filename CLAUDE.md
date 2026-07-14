@@ -111,6 +111,39 @@ Branch flow: feature → `beta` (auto-deploys beta) → verify → merge to `mas
 (`grbpwr.com` / `admin.grbpwr.com` and their `beta.` / `admin.beta.` counterparts) are separate Vercel
 projects, not in this repo. See `git log` and project memory for the full beta bring-up details.
 
+## Two EUR figures on an order (do not confuse them)
+
+`customer_order` carries two independently-derived EUR amounts — pick the right one:
+
+- **`total_price_eur`** — a *loyalty* qualifying-spend snapshot, computed at order time by
+  reconstructing from EUR catalogue prices (`internal/store/order/eur_snapshot.go`). It exists to
+  accrue tiers immediately, for every payment method. **Never use it in revenue/margin metrics.**
+- **`total_settled_base`** — the *actual* Stripe settlement in EUR at the payment FX rate (captured
+  in `UpdateSettledBaseAndFee`). This is the **authoritative revenue figure** metrics must read.
+
+They diverge (FX spread, rounding, promos). At capture `UpdateSettledBaseAndFee` collapses the
+loyalty snapshot onto the settled fact when they agree within `settledEURReconcileTolerance` (2%);
+a larger gap is left untouched and logged (rewriting qualifying spend would silently move tiers).
+Historical rows are never revisited.
+
+## Material warehouse vs sales COGS (do not cross the streams)
+
+The new-flow material warehouse (`material_stock` / `material_stock_movement`, NF-01…NF-09) makes
+production cost more *accurate* — a run's actual cost is derived from the materials issued to it, and
+`product.cost_price` is set from that actual at receive. But it does **not** change how revenue or
+sales margin is computed. The sales-margin chain is unchanged and one-directional:
+
+material issues → production-run actual cost → `product.cost_price` at receive (provenance
+`production_run`) → snapshot into `order_item` at sale → COGS in metrics.
+
+So **sales/margin metrics read the order-time cost snapshot, never the live warehouse.** The warehouse
+feeds *inventory* views only — `GetInventoryValuation` (raw/WIP/write-off money), the
+`low_material_stock` / `stale_open_production_run` dashboard alerts, and the informational
+`materials_from_stock_base` / `samples_cost_base` on `GetStyleEconomics` (which are **not** folded into
+`net_after_dev`). Reading `material_stock` inside a revenue or gross-margin query is a bug: it would
+double-count against the cost already snapshotted on the sold line and make margins depend on today's
+stock rather than what the item actually cost when sold.
+
 ## Conventions
 
 - Structured logging via `log/slog` (JSON handler); pass `ctx` and use `slog.String("err", err.Error())`.

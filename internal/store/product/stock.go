@@ -212,6 +212,59 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 	return nil
 }
 
+// ReceiveProductionStock increments a product's per-size stock by the received quantities of a
+// production run and records each increment in product_stock_change_history with the
+// `production_received` source (the run id in reference_id). It operates on the store's current
+// connection so it participates in the caller's transaction (ReceiveProductionRun) — do not open a
+// new transaction here. Sizes with a non-positive quantity are skipped.
+func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error {
+	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
+	var adminUser sql.NullString
+	if username != "" {
+		adminUser = sql.NullString{String: username, Valid: true}
+	}
+	for sizeID, qty := range perSize {
+		if qty <= 0 {
+			continue
+		}
+		before, _, err := s.GetProductSizeStock(ctx, productID, sizeID)
+		if err != nil {
+			return fmt.Errorf("can't read stock for product %d size %d: %w", productID, sizeID, err)
+		}
+		after := before.Add(decimal.NewFromInt(int64(qty)))
+		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
+			return fmt.Errorf("can't increment stock for product %d size %d: %w", productID, sizeID, err)
+		}
+		if err := s.RecordStockChange(ctx, []entity.StockChangeInsert{{
+			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
+			SizeId:         sql.NullInt32{Int32: int32(sizeID), Valid: true},
+			QuantityDelta:  decimal.NewFromInt(int64(qty)),
+			QuantityBefore: before,
+			QuantityAfter:  after,
+			Source:         string(entity.StockChangeSourceProductionReceived),
+			ReferenceId:    ref,
+			AdminUsername:  adminUser,
+		}}); err != nil {
+			return fmt.Errorf("can't record production-received stock change: %w", err)
+		}
+	}
+	return nil
+}
+
+// SetProductCostPriceFromProductionRun writes cost (base currency) as the production-run-sourced
+// cost_price of a product, recording the provenance (source + run id + timestamp).
+func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error {
+	return storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE product
+		SET cost_price = :cost,
+			cost_price_source = 'production_run',
+			cost_price_production_run_id = :run,
+			cost_price_tech_card_id = NULL,
+			cost_price_updated_at = NOW()
+		WHERE id = :id`,
+		map[string]any{"id": productID, "run": runID, "cost": cost})
+}
+
 // UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
 func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, newQuantity int, reason string, comment string) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

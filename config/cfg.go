@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
@@ -62,6 +63,7 @@ type Config struct {
 	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
 	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
+	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
 	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
 	Rates             RatesConfig              `mapstructure:"rates"`
 	Security          SecurityConfig           `mapstructure:"security"`
@@ -298,6 +300,9 @@ func bindEnvVars() {
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
+
+	// OPEX materialize (book recurring fixed-cost templates into monthly lines)
+	viper.BindEnv("opex_materialize.worker_interval", "OPEX_MATERIALIZE_WORKER_INTERVAL")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")

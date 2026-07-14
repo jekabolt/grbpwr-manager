@@ -198,6 +198,32 @@ func (s *Store) SetTrackingNumber(ctx context.Context, orderUUID string, trackin
 	}, nil
 }
 
+// SetShipmentActualCost records the real carrier invoice (actualCost) and the optional
+// return-leg cost (returnShippingCost) for an order's shipment, keyed by order UUID. These
+// feed contribution-margin analytics, which otherwise falls back to the customer-charged
+// carrier price (shipment.cost). Both values are base currency (EUR); an invalid
+// decimal.NullDecimal clears the corresponding column. Errors if no shipment matches the UUID.
+func (s *Store) SetShipmentActualCost(ctx context.Context, orderUUID string, actualCost, returnShippingCost decimal.NullDecimal) error {
+	query := `
+	UPDATE shipment sh
+	JOIN customer_order co ON co.id = sh.order_id
+	SET sh.actual_cost = :actualCost,
+		sh.return_shipping_cost = :returnShippingCost
+	WHERE co.uuid = :uuid`
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB, query, map[string]any{
+		"uuid":               orderUUID,
+		"actualCost":         actualCost,
+		"returnShippingCost": returnShippingCost,
+	})
+	if err != nil {
+		return fmt.Errorf("can't set shipment actual cost: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("no shipment found for order uuid %s", orderUUID)
+	}
+	return nil
+}
+
 // RefundOrder processes a full or partial refund for an order.
 func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

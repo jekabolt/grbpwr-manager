@@ -676,3 +676,115 @@ func (c *Client) getCampaignAttribution(
 	}
 	return rows, nil
 }
+
+// GetOrderChannelMap returns, for each GA4 client_id (user_pseudo_id) seen in the window, its LAST
+// NON-DIRECT UTM channel — the server-side "last non-direct click" attribution that powers
+// settled-revenue ROAS and per-channel CAC (task 20 step 2). user_pseudo_id is the same GA client_id
+// the storefront writes to customer_order.ga_client_id (browser _ga cookie), so the caller joins the
+// two. Pure-direct clients contribute no row (they attribute to '(direct)' on the join side). The
+// UTM triple is derived exactly as GetCampaignAttribution (session_start utm_* → source/medium →
+// traffic_source fallback), so the two reports agree on channel labels.
+func (c *Client) GetOrderChannelMap(ctx context.Context, startDate, endDate time.Time) ([]entity.OrderChannelRow, error) {
+	var result []entity.OrderChannelRow
+	err := c.withCircuitBreaker(ctx, func(ctx context.Context) error {
+		rows, err := c.getOrderChannelMap(ctx, startDate, endDate)
+		if err != nil {
+			return err
+		}
+		result = rows
+		return nil
+	})
+	return result, err
+}
+
+func (c *Client) getOrderChannelMap(ctx context.Context, startDate, endDate time.Time) ([]entity.OrderChannelRow, error) {
+	ctx, cancel := c.queryContext(ctx)
+	defer cancel()
+	src, err := c.eventsSourceColumns(startDate, endDate, "event_timestamp", "user_pseudo_id", "event_params", "traffic_source", "event_name")
+	if err != nil {
+		return nil, fmt.Errorf("GetOrderChannelMap: %w", err)
+	}
+	sql := fmt.Sprintf(`
+		WITH sessions AS (
+			SELECT
+				user_pseudo_id AS client_id,
+				(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
+				MIN(event_timestamp) AS session_start_micros,
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_source') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source') END),
+					MAX(IFNULL(traffic_source.source, '(direct)'))
+				) AS utm_source,
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_medium') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium') END),
+					MAX(IFNULL(traffic_source.medium, '(none)'))
+				) AS utm_medium,
+				COALESCE(
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'utm_campaign') END),
+					MAX(CASE WHEN event_name = 'session_start' THEN
+						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign') END),
+					MAX(IFNULL(traffic_source.name, '(not set)'))
+				) AS utm_campaign
+			FROM %[1]s
+			WHERE %[2]s
+			GROUP BY client_id, session_id
+		),
+		non_direct AS (
+			SELECT client_id, utm_source, utm_medium, utm_campaign, session_start_micros,
+				ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY session_start_micros DESC) AS rn
+			FROM sessions
+			WHERE utm_source IS NOT NULL AND utm_source NOT IN ('(direct)', '')
+		)
+		SELECT client_id,
+			DATE(TIMESTAMP_MICROS(session_start_micros)) AS date,
+			utm_source, utm_medium, utm_campaign
+		FROM non_direct
+		WHERE rn = 1
+	`, src, c.dateFilterSQL(startDate, endDate))
+
+	query := c.client.Query(sql)
+	if !c.useLiteralDates {
+		query.Parameters = []bigquery.QueryParameter{
+			{Name: "start_date", Value: startDate},
+			{Name: "end_date", Value: endDate},
+		}
+	}
+
+	it, err := query.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetOrderChannelMap: %w", err)
+	}
+
+	var rows []entity.OrderChannelRow
+	for {
+		var r struct {
+			ClientID    string     `bigquery:"client_id"`
+			Date        civil.Date `bigquery:"date"`
+			UTMSource   string     `bigquery:"utm_source"`
+			UTMMedium   string     `bigquery:"utm_medium"`
+			UTMCampaign string     `bigquery:"utm_campaign"`
+		}
+		if err := it.Next(&r); err == iterator.Done {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("GetOrderChannelMap iterate: %w", err)
+		}
+		if r.ClientID == "" {
+			continue
+		}
+		rows = append(rows, entity.OrderChannelRow{
+			ClientID:    r.ClientID,
+			Date:        civilDateToTime(r.Date),
+			UTMSource:   r.UTMSource,
+			UTMMedium:   r.UTMMedium,
+			UTMCampaign: r.UTMCampaign,
+		})
+	}
+	return rows, nil
+}

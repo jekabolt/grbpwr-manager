@@ -188,6 +188,9 @@ envs:
 - key: STRIPE_RECONCILE_PRE_ORDER_THRESHOLD
   scope: RUN_TIME
   value: 24h
+- key: OPEX_MATERIALIZE_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 24h
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR

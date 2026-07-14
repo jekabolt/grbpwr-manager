@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -22,6 +23,9 @@ func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest
 
 	id, err := s.repo.Fittings().AddFitting(ctx, fi)
 	if err != nil {
+		if errors.Is(err, entity.ErrSampleForeignToCard) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "tech_card_id, product_id, model_id, size_id, or media_id does not reference an existing record")
 		}
@@ -82,6 +86,9 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 	if err := s.repo.Fittings().UpdateFitting(ctx, int(req.Id), fi); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "fitting not found")
+		}
+		if errors.Is(err, entity.ErrSampleForeignToCard) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "tech_card_id, product_id, model_id, size_id, or media_id does not reference an existing record")

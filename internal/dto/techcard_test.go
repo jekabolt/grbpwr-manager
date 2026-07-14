@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.StyleNumber != "ST-001" || got.Name != "Field Jacket" {
+	if got.StyleNumber.String != "ST-001" || got.Name != "Field Jacket" {
 		t.Errorf("identity mismatch: %+v", got)
 	}
 	if got.Stage != entity.TechCardStageFit {
@@ -118,6 +119,29 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		t.Errorf("base size with empty size range should be allowed: %v", err)
 	}
 
+	// NF-03: an `idea` draft may omit style_number (stored NULL); from proto onward it is required.
+	idea, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Just an idea", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+	})
+	if err != nil {
+		t.Fatalf("idea draft without style_number should be allowed: %v", err)
+	}
+	if idea.Stage != entity.TechCardStageIdea || idea.StyleNumber.Valid {
+		t.Errorf("idea draft: stage=%v style_number=%+v (want idea + NULL)", idea.Stage, idea.StyleNumber)
+	}
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Now sampling", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_PROTO,
+	}); err == nil {
+		t.Error("proto stage without style_number must be rejected")
+	}
+	// an idea draft cannot be released.
+	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
+		Name: "Premature", Stage: pb_common.TechCardStage_TECH_CARD_STAGE_IDEA,
+		ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
+	}); err == nil {
+		t.Error("releasing an idea draft must be rejected")
+	}
+
 	// invalid cases.
 	bad := map[string]*pb_common.TechCardInsert{
 		"nil":               nil,
@@ -151,7 +175,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id: 9,
 		TechCardInsert: entity.TechCardInsert{
-			StyleNumber:     "ST-001",
+			StyleNumber:     sql.NullString{String: "ST-001", Valid: true},
 			Name:            "Field Jacket",
 			Stage:           entity.TechCardStageProd,
 			ApprovalState:   entity.TechCardApprovalReleased,
@@ -176,7 +200,7 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 		},
 	}
 
-	pb := ConvertEntityTechCardToPb(tc)
+	pb := ConvertEntityTechCardToPb(tc, CostingFx{})
 	if pb.Id != 9 || pb.TechCard.StyleNumber != "ST-001" {
 		t.Errorf("id/style mismatch: %+v", pb)
 	}
@@ -241,8 +265,13 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 		t.Errorf("placement not normalised: %q", us[0].Placement.String)
 	}
 
-	// round-trip: usages emit with computed line_total resolved against the BOM article.
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	// round-trip: usages emit with computed line_total resolved against the BOM article. The stored
+	// colourway row id is emitted too (B-10) so a sample can link to it.
+	got.Colorways[0].Id = 42
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
+	if pb.TechCard.Colorways[0].Id != 42 {
+		t.Errorf("colorway id not emitted (B-10): %+v", pb.TechCard.Colorways[0].Id)
+	}
 	pus := pb.TechCard.Colorways[0].Usages
 	if len(pus) != 2 || pus[0].Placement != "outer shell" {
 		t.Fatalf("pb usages mismatch: %+v", pus)
@@ -271,6 +300,87 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_OTHER, Name: "misc"},
 		}}); err != nil {
 		t.Errorf("decoration/other sections should be accepted: %v", err)
+	}
+}
+
+// baseTechCardWithPieces returns a valid card with 2 colourways, 2 BOM items (fabric + fusing
+// hardware) and 1 callout, ready for a Pieces payload — the shared fixture for the piece cases.
+func baseTechCardWithPieces(pieces []*pb_common.TechCardPiece) *pb_common.TechCardInsert {
+	return &pb_common.TechCardInsert{
+		StyleNumber: "ST-P", Name: "Piece Coat", SizeIds: []int32{4},
+		BomItems: []*pb_common.TechCardBomItem{
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", UnitPrice: dec("10"), Currency: "EUR"},
+			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "fusible", UnitPrice: dec("2"), Currency: "EUR"},
+		},
+		Colorways: []*pb_common.TechCardColorway{{Code: "BLK", Name: "Black"}, {Code: "WHT", Name: "White"}},
+		Callouts:  []*pb_common.TechCardCallout{{Number: 1, Part: "body"}},
+		Pieces:    pieces,
+	}
+}
+
+// TestConvertTechCardPieces covers NF-05 cut-piece dto validation (parseTechCardPieces / pieceBomRef):
+// the happy path plus one case per guard, since these piece×colourway→fabric mappings go to the
+// factory and a dropped range-check would save a silently-wrong material (nf05-01/nf05-03).
+func TestConvertTechCardPieces(t *testing.T) {
+	// happy path: a piece with a per-colourway material referencing fabric (bom 0) fused with hardware
+	// (bom 1), a callout, and a valid grainline.
+	got, err := ConvertPbTechCardInsertToEntity(baseTechCardWithPieces([]*pb_common.TechCardPiece{
+		{Name: "Body", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: i32(1),
+			Materials: []*pb_common.TechCardPieceColorwayMaterial{
+				{ColorwayIndex: 0, BomItemIndex: i32(0), FusingBomItemIndex: i32(1)},
+			}},
+	}))
+	if err != nil {
+		t.Fatalf("valid pieces rejected: %v", err)
+	}
+	if len(got.Pieces) != 1 || got.Pieces[0].PiecesPerGarment != 2 || got.Pieces[0].Grainline != "lengthwise" {
+		t.Fatalf("piece mismatch: %+v", got.Pieces)
+	}
+	if !got.Pieces[0].CalloutNumber.Valid || got.Pieces[0].CalloutNumber.Int32 != 1 {
+		t.Errorf("callout_number not carried: %+v", got.Pieces[0].CalloutNumber)
+	}
+	pm := got.Pieces[0].Materials
+	if len(pm) != 1 || pm[0].BomItemIndex.Int32 != 0 || !pm[0].FusingBomItemIndex.Valid || pm[0].FusingBomItemIndex.Int32 != 1 {
+		t.Fatalf("piece material mismatch: %+v", pm)
+	}
+	// proto3 zero pieces_per_garment defaults to 1.
+	got2, err := ConvertPbTechCardInsertToEntity(baseTechCardWithPieces([]*pb_common.TechCardPiece{
+		{Name: "Sleeve", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, BomItemIndex: i32(0)}}},
+	}))
+	if err != nil || got2.Pieces[0].PiecesPerGarment != 1 {
+		t.Fatalf("zero pieces_per_garment should default to 1: %+v err=%v", got2.Pieces, err)
+	}
+
+	bad := map[string]*pb_common.TechCardInsert{
+		"empty piece name": baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: ""}}),
+		"negative pieces_per_garment": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", PiecesPerGarment: -2}}),
+		"invalid grainline": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Grainline: "diagonal"}}),
+		"unknown callout_number": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", CalloutNumber: i32(7)}}),
+		"colorway_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 5, BomItemIndex: i32(0)}}}}),
+		"duplicate colorway_index": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{
+				{ColorwayIndex: 0, BomItemIndex: i32(0)}, {ColorwayIndex: 0, BomItemIndex: i32(1)}}}}),
+		"bom_item_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, BomItemIndex: i32(9)}}}}),
+		"fusing_bom_item_index out of range": baseTechCardWithPieces([]*pb_common.TechCardPiece{
+			{Name: "Body", Materials: []*pb_common.TechCardPieceColorwayMaterial{{ColorwayIndex: 0, FusingBomItemIndex: i32(9)}}}}),
+	}
+	for name, in := range bad {
+		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+			t.Errorf("%s: expected validation error, got nil", name)
+		}
+	}
+
+	// usage piece_index is range-checked against the pieces in the same payload (1 piece → index 1 is
+	// out of range).
+	pieceIdxBad := baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: "Body"}})
+	pieceIdxBad.Colorways[0].Usages = []*pb_common.TechCardColorwayUsage{{BomItemIndex: i32(0), PieceIndex: i32(1)}}
+	if _, err := ConvertPbTechCardInsertToEntity(pieceIdxBad); err == nil {
+		t.Errorf("out-of-range usage piece_index: expected error, got nil")
 	}
 }
 
@@ -305,7 +415,7 @@ func TestConvertTechCardCosting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	cost := pb.TechCard.Costing
 	if cost == nil {
 		t.Fatalf("costing not emitted")
@@ -386,7 +496,7 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	cost := pb.TechCard.Costing
 	cc := cost.ColorwayCosts[0]
 	// Per-unit: the per-size usage normalises to 102/30 = 3.4, the per-garment zip is 3, so
@@ -441,7 +551,7 @@ func TestConvertTechCardOperations(t *testing.T) {
 		t.Errorf("bom_item_index 0 should be present: %+v", got.Operations[1].BomItemIndex)
 	}
 
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	if pb.TechCard.Operations[0].OperationNumber != 10 || pb.TechCard.Operations[0].Placement != "outer hem" {
 		t.Errorf("pb operation mismatch: %+v", pb.TechCard.Operations[0])
 	}
@@ -518,7 +628,7 @@ func TestConvertTechCardSignoffs(t *testing.T) {
 	if got.Signoffs[1].State != entity.SignoffStatePending {
 		t.Errorf("signoff default state mismatch: %+v", got.Signoffs[1])
 	}
-	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got})
+	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	if len(pb.TechCard.Signoffs) != 2 || pb.TechCard.Signoffs[0].Section != pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING {
 		t.Errorf("pb signoffs mismatch: %+v", pb.TechCard.Signoffs)
 	}
@@ -564,12 +674,39 @@ func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
 func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id:             5,
-		TechCardInsert: entity.TechCardInsert{StyleNumber: "ST-003", Name: "Pants", Stage: entity.TechCardStagePP},
+		TechCardInsert: entity.TechCardInsert{StyleNumber: sql.NullString{String: "ST-003", Valid: true}, Name: "Pants", Stage: entity.TechCardStagePP},
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
 	li := ConvertEntityTechCardToListItemPb(tc)
 	if li.Id != 5 || li.StyleNumber != "ST-003" || li.Stage != pb_common.TechCardStage_TECH_CARD_STAGE_PP {
 		t.Errorf("list item mismatch: %+v", li)
+	}
+}
+
+// TestColorwayProductAutoSeed covers task 17: a colourway whose product_id is not yet in the
+// card's product_ids is auto-unioned into product_ids (rather than rejected), keeping
+// tech_card_product a superset of every colourway's annotated product. Already-listed and unset
+// (0) colourway products don't add duplicates.
+func TestColorwayProductAutoSeed(t *testing.T) {
+	card := &pb_common.TechCardInsert{
+		StyleNumber:     "ST-AUTOSEED",
+		Name:            "n",
+		Stage:           pb_common.TechCardStage_TECH_CARD_STAGE_PROTO,
+		ApprovalState:   pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
+		MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+		ProductIds:      []int32{100},
+		Colorways: []*pb_common.TechCardColorway{
+			{Name: "Black", ProductId: 100}, // already listed
+			{Name: "White", ProductId: 200}, // NOT listed → auto-seeded
+			{Name: "Sample"},                // product_id 0 → ignored
+		},
+	}
+	got, err := ConvertPbTechCardInsertToEntity(card)
+	if err != nil {
+		t.Fatalf("unexpected error (auto-seed should not reject): %v", err)
+	}
+	if len(got.ProductIds) != 2 || got.ProductIds[0] != 100 || got.ProductIds[1] != 200 {
+		t.Fatalf("product_ids should be [100 200] after auto-seed, got %v", got.ProductIds)
 	}
 }
