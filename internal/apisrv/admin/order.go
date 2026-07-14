@@ -96,7 +96,8 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUI
 	}
 
 	return &pb_admin.GetOrderByUUIDResponse{
-		Order: oPb,
+		Order:         oPb,
+		StripeDetails: dto.ConvertToOrderStripeDetails(o),
 	}, nil
 }
 

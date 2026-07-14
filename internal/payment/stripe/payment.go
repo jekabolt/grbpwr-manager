@@ -172,14 +172,8 @@ func (p *Processor) expireOrderPayment(ctx context.Context, orderUUID string) er
 
 	switch pi.Status {
 	case stripe.PaymentIntentStatusSucceeded:
-		// Fetch PaymentIntent with expanded payment_method to get sub-type (apple_pay, klarna, etc.)
-		piExpanded, expandErr := p.getPaymentIntentWithExpand(payment.ClientSecret.String, []string{"payment_method"})
-		if expandErr == nil && piExpanded.PaymentMethod != nil {
-			payment.PaymentInsert.PaymentMethodType = sql.NullString{
-				String: string(piExpanded.PaymentMethod.Type),
-				Valid:  true,
-			}
-		}
+		// The payment method type, card, receipt and settled amount are all captured from the
+		// charge in capturePaymentDetails (via updateOrderAsPaid), so no separate expand here.
 		received := AmountFromSmallestUnit(pi.AmountReceived, string(pi.Currency))
 		err = p.updateOrderAsPaid(ctx, p.rep, orderUUID, *payment, received)
 		if err != nil {
@@ -269,9 +263,10 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 
 	slog.Default().InfoContext(ctx, "Order marked as paid", slog.String("orderUUID", orderUUID))
 
-	// Capture the actual amount Stripe settled, in base currency, for accurate
-	// revenue analytics. Best effort — never blocks fulfillment.
-	p.captureSettledBase(ctx, rep, orderUUID, payment)
+	// Capture the Stripe payment detail (settled EUR + fee, PaymentIntent id, method
+	// type, card, receipt, FX rate, risk) for accurate revenue analytics and admin
+	// visibility. Best effort — never blocks fulfillment.
+	p.capturePaymentDetails(ctx, rep, orderUUID, payment)
 
 	// RELEASE RESERVATION: Free stock when payment is completed
 	if p.reservationMgr != nil {
@@ -308,53 +303,108 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 
 }
 
-// captureSettledBase records the actual amount Stripe settled for the order,
-// converted to the base currency, taken from the charge's balance transaction. The
-// Stripe account settles in the base currency (EUR), so BalanceTransaction.Amount is
-// already in base. Best effort: it never blocks fulfillment — when total_settled_base
-// stays NULL (no charge yet, or a non-base settlement), revenue metrics fall back to
-// the product_price reconstruction.
-func (p *Processor) captureSettledBase(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) {
+// capturePaymentDetails records, best-effort, the facts of a succeeded Stripe charge:
+//   - the actual amount Stripe settled in the base currency + the processing fee, from the
+//     charge's balance transaction (may lag for async methods; guarded);
+//   - the PaymentIntent id, payment method / wallet, card brand+last4, hosted receipt URL,
+//     FX rate and Radar risk level, all read from the charge (present as soon as the PI
+//     succeeds), so the admin can see and deep-link the payment without re-hitting Stripe.
+//
+// It never blocks fulfilment: when total_settled_base stays NULL (no balance transaction yet,
+// or a non-base settlement), revenue metrics fall back to the product_price reconstruction.
+// This is the single capture point for every confirmation path (webhook, expiry monitor, lazy
+// CheckForTransactions), so the payment method type is populated on all of them.
+func (p *Processor) capturePaymentDetails(ctx context.Context, rep dependency.Repository, orderUUID string, payment entity.Payment) {
 	if !payment.ClientSecret.Valid || payment.ClientSecret.String == "" {
 		return
 	}
 	pi, err := p.getPaymentIntentWithExpand(payment.ClientSecret.String, []string{"latest_charge.balance_transaction"})
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "settled-base: can't fetch payment intent",
+		slog.Default().ErrorContext(ctx, "capture-payment: can't fetch payment intent",
 			slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
 		return
 	}
-	if pi.LatestCharge == nil || pi.LatestCharge.BalanceTransaction == nil {
-		slog.Default().WarnContext(ctx, "settled-base: no balance transaction on charge yet",
+	ch := pi.LatestCharge
+	if ch == nil {
+		slog.Default().WarnContext(ctx, "capture-payment: no charge on succeeded payment intent yet",
 			slog.String("orderUUID", orderUUID))
 		return
 	}
-	bt := pi.LatestCharge.BalanceTransaction
+
+	// Charge-level detail (available as soon as the PI succeeds). Persisted to the payment row.
+	details := entity.StripePaymentDetails{
+		TransactionID:     pi.ID,
+		PaymentMethodType: paymentMethodLabel(ch),
+		ReceiptURL:        ch.ReceiptURL,
+	}
+	if pmd := ch.PaymentMethodDetails; pmd != nil && pmd.Card != nil {
+		details.CardBrand = string(pmd.Card.Brand)
+		details.CardLast4 = pmd.Card.Last4
+	}
+	if ch.Outcome != nil {
+		details.StripeRiskLevel = ch.Outcome.RiskLevel
+	}
+
+	// Settlement figures (base currency) from the balance transaction. It may not exist yet
+	// for async settlement — capture the charge detail regardless and only write settled/fee
+	// (and the FX rate) when the balance transaction is present and settles in the base ccy.
 	baseCurrency := cache.GetBaseCurrency()
-	// The balance transaction settles in the Stripe account's payout currency, which
-	// we require to equal the base currency. If Stripe ever settles in another
-	// currency, skip rather than store a non-base amount as if it were base.
-	if !strings.EqualFold(string(bt.Currency), baseCurrency) {
-		slog.Default().ErrorContext(ctx, "settled-base: Stripe settlement currency != base currency; skipping capture",
-			slog.String("orderUUID", orderUUID),
-			slog.String("settlement_currency", string(bt.Currency)),
-			slog.String("base_currency", baseCurrency))
-		return
+	var settledCaptured bool
+	var settledBase, paymentFee decimal.Decimal
+	if bt := ch.BalanceTransaction; bt != nil {
+		if strings.EqualFold(string(bt.Currency), baseCurrency) {
+			settledBase = AmountFromSmallestUnit(bt.Amount, baseCurrency)
+			// Stripe keeps the fee even on refunds, so this is the full fee actually paid.
+			paymentFee = AmountFromSmallestUnit(bt.Fee, baseCurrency)
+			settledCaptured = true
+			if bt.ExchangeRate != 0 {
+				details.StripeExchangeRate = decimal.NullDecimal{
+					Decimal: decimal.NewFromFloat(bt.ExchangeRate),
+					Valid:   true,
+				}
+			}
+		} else {
+			slog.Default().ErrorContext(ctx, "capture-payment: Stripe settlement currency != base currency; skipping settled capture",
+				slog.String("orderUUID", orderUUID),
+				slog.String("settlement_currency", string(bt.Currency)),
+				slog.String("base_currency", baseCurrency))
+		}
+	} else {
+		slog.Default().WarnContext(ctx, "capture-payment: no balance transaction on charge yet; settled base left NULL",
+			slog.String("orderUUID", orderUUID))
 	}
-	settledBase := AmountFromSmallestUnit(bt.Amount, baseCurrency)
-	// The processing fee rides on the same balance transaction (same base currency, already
-	// expanded above), so capture it here for free. Stripe keeps the fee even on refunds, so
-	// it is the full fee actually paid — a real contribution-margin cost.
-	paymentFee := AmountFromSmallestUnit(bt.Fee, baseCurrency)
-	if err := rep.Order().UpdateSettledBaseAndFee(ctx, orderUUID, settledBase, paymentFee); err != nil {
-		slog.Default().ErrorContext(ctx, "settled-base: can't persist",
+
+	if err := rep.Order().UpdatePaymentStripeDetails(ctx, orderUUID, details); err != nil {
+		slog.Default().ErrorContext(ctx, "capture-payment: can't persist payment detail",
 			slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
-		return
 	}
-	slog.Default().InfoContext(ctx, "settled-base captured",
+	if settledCaptured {
+		if err := rep.Order().UpdateSettledBaseAndFee(ctx, orderUUID, settledBase, paymentFee); err != nil {
+			slog.Default().ErrorContext(ctx, "capture-payment: can't persist settled base and fee",
+				slog.String("orderUUID", orderUUID), slog.String("err", err.Error()))
+		}
+	}
+	slog.Default().InfoContext(ctx, "payment detail captured",
 		slog.String("orderUUID", orderUUID),
+		slog.String("payment_intent_id", pi.ID),
+		slog.String("method_type", details.PaymentMethodType),
+		slog.Bool("settled_captured", settledCaptured),
 		slog.String("amount_base", settledBase.String()),
 		slog.String("payment_fee_base", paymentFee.String()))
+}
+
+// paymentMethodLabel returns the most specific label for how a charge was paid: the card
+// wallet (apple_pay, google_pay, link, ...) when the card was tokenised through a wallet,
+// otherwise the payment-method type on the charge (card, klarna, sepa_debit, ...).
+func paymentMethodLabel(ch *stripe.Charge) string {
+	pmd := ch.PaymentMethodDetails
+	if pmd == nil {
+		return ""
+	}
+	if pmd.Card != nil && pmd.Card.Wallet != nil && pmd.Card.Wallet.Type != "" {
+		return string(pmd.Card.Wallet.Type)
+	}
+	return string(pmd.Type)
 }
 
 // flagUnderpaidForReview records a persistent, admin-visible marker on the order

@@ -239,6 +239,45 @@ func (s *Store) UpdateSettledBaseAndFee(ctx context.Context, orderUUID string, s
 	return nil
 }
 
+// nullStr maps an empty string to a NULL column value so uncaptured Stripe fields stay NULL
+// rather than being written as empty strings.
+func nullStr(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// UpdatePaymentStripeDetails records the payment-row facts captured from a succeeded Stripe
+// charge (PaymentIntent id, method type, card, receipt, FX rate, risk). Written best-effort
+// after the order is confirmed; see Processor.capturePaymentDetails. Only overwrites a field
+// when a value was captured, so a later partial re-capture never blanks an earlier one.
+func (s *Store) UpdatePaymentStripeDetails(ctx context.Context, orderUUID string, d entity.StripePaymentDetails) error {
+	query := `
+	UPDATE payment p
+	JOIN customer_order co ON p.order_id = co.id
+	SET p.transaction_id        = COALESCE(:transactionId, p.transaction_id),
+	    p.payment_method_type    = COALESCE(:paymentMethodType, p.payment_method_type),
+	    p.card_brand             = COALESCE(:cardBrand, p.card_brand),
+	    p.card_last4             = COALESCE(:cardLast4, p.card_last4),
+	    p.receipt_url            = COALESCE(:receiptUrl, p.receipt_url),
+	    p.stripe_exchange_rate   = COALESCE(:exchangeRate, p.stripe_exchange_rate),
+	    p.stripe_risk_level      = COALESCE(:riskLevel, p.stripe_risk_level)
+	WHERE co.uuid = :orderUUID`
+
+	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
+		"transactionId":     nullStr(d.TransactionID),
+		"paymentMethodType": nullStr(d.PaymentMethodType),
+		"cardBrand":         nullStr(d.CardBrand),
+		"cardLast4":         nullStr(d.CardLast4),
+		"receiptUrl":        nullStr(d.ReceiptURL),
+		"exchangeRate":      d.StripeExchangeRate,
+		"riskLevel":         nullStr(d.StripeRiskLevel),
+		"orderUUID":         orderUUID,
+	})
+	if err != nil {
+		return fmt.Errorf("can't update payment stripe details: %w", err)
+	}
+	return nil
+}
+
 // shouldReconcileLoyaltyEUR reports whether the order's loyalty snapshot (total_price_eur)
 // should be collapsed onto the settled base at capture. It returns true only when a snapshot
 // exists and sits within settledEURReconcileTolerance of settledBase. A missing snapshot, a
