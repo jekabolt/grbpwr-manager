@@ -152,9 +152,18 @@ type (
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
 		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
+		// DeliverOrderWithSource marks an order delivered attributed to changedBy/notes and
+		// reports whether this call performed the transition (used by the delivery-sync worker
+		// and AfterShip webhook to send the delivered email at most once).
+		DeliverOrderWithSource(ctx context.Context, orderUUID, changedBy, notes string) (bool, error)
 		CancelOrder(ctx context.Context, orderUUID string) error
 		GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error)
 		GetExpiredAwaitingPaymentOrders(ctx context.Context, now time.Time) ([]entity.Order, error)
+		// GetShippedOrdersForDeliverySync returns Shipped orders with a shipping_date for the
+		// delivery-sync worker (AfterShip poll + timer safety net).
+		GetShippedOrdersForDeliverySync(ctx context.Context) ([]entity.ShipmentToAutoDeliver, error)
+		// GetOrderUUIDByTrackingCode resolves an AfterShip delivery event to an order UUID.
+		GetOrderUUIDByTrackingCode(ctx context.Context, trackingCode string) (string, error)
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
 		SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error
 		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
@@ -861,6 +870,16 @@ type (
 		RevalidateAll(ctx context.Context, revalidationData *dto.RevalidationData) error
 	}
 
+	// Tracker is an external shipment-tracking provider (AfterShip). RegisterTracking makes the
+	// provider start monitoring a shipment (so it emits delivery webhooks); GetTrackingStatus
+	// polls the current normalized status (the delivery-sync worker's reconcile path). Behind an
+	// interface per the external-dependency convention; a disabled no-op impl is used when no API
+	// key is configured.
+	Tracker interface {
+		RegisterTracking(ctx context.Context, slug, trackingNumber string) error
+		GetTrackingStatus(ctx context.Context, slug, trackingNumber string) (entity.TrackingStatus, error)
+	}
+
 	Mailer interface {
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
 		QueueNewSubscriber(ctx context.Context, rep Repository, to string) error
@@ -868,6 +887,7 @@ type (
 		QueueOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
 		SendOrderCancellation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderCancelled) error
 		SendOrderShipped(ctx context.Context, rep Repository, to string, shipmentDetails *dto.OrderShipment) error
+		SendOrderDelivered(ctx context.Context, rep Repository, to string, deliveryDetails *dto.OrderDelivered) error
 		SendRefundInitiated(ctx context.Context, rep Repository, to string, refundDetails *dto.OrderRefundInitiated) error
 		SendPendingReturn(ctx context.Context, rep Repository, to string, details *dto.OrderPendingReturn) error
 		SendPromoCode(ctx context.Context, rep Repository, to string, promoDetails *dto.PromoCodeDetails) error

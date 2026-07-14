@@ -162,7 +162,7 @@ func (s *Server) MarkFulfillmentDelivered(ctx context.Context, req *pb_admin.Mar
 	if req.OrderUuid == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_uuid is required")
 	}
-	if err := s.repo.Order().DeliveredOrder(ctx, req.OrderUuid); err != nil {
+	if err := s.deliverOrder(ctx, req.OrderUuid); err != nil {
 		slog.Default().ErrorContext(ctx, "can't mark fulfillment order delivered", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't mark order delivered")
 	}

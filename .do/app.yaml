@@ -179,6 +179,25 @@ envs:
 - key: ORDER_CLEANUP_PLACED_THRESHOLD
   scope: RUN_TIME
   value: 24h
+# Delivery sync (shipped -> delivered): polls AfterShip for a real delivery signal and, as a
+# safety net, silently delivers stuck/untrackable shipments after the per-carrier window.
+- key: DELIVERY_SYNC_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 12h
+- key: DELIVERY_SYNC_FALLBACK_DEFAULT
+  scope: RUN_TIME
+  value: 336h
+# AfterShip tracking. Both are SECRETs, blank until set in the DO dashboard. Without an API key
+# the tracker is disabled (timer-only auto-delivery); without a webhook secret the /api/webhooks/
+# aftership endpoint is disabled and delivery relies on the worker poll + timer.
+- key: AFTERSHIP_API_KEY
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+- key: AFTERSHIP_WEBHOOK_SECRET
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
 - key: STOREFRONT_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 1h

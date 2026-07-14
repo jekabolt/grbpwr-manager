@@ -20,7 +20,7 @@ func (s *Server) AddShipmentCarrier(ctx context.Context, req *pb_admin.AddShipme
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
-	carrier := dto.ConvertShipmentCarrierRequestToEntity(req.Carrier, req.TrackingUrl, req.Description, req.ExpectedDeliveryTime, req.Allowed)
+	carrier := dto.ConvertShipmentCarrierRequestToEntity(req.Carrier, req.TrackingUrl, req.Description, req.ExpectedDeliveryTime, req.AftershipSlug, req.AutoDeliverAfterHours, req.Allowed)
 	prices := parseShipmentCarrierPrices(req.Prices)
 	allowedRegions := dto.ConvertPbShippingRegionsToEntity(req.AllowedRegions)
 
@@ -42,7 +42,7 @@ func (s *Server) UpdateShipmentCarrier(ctx context.Context, req *pb_admin.Update
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
-	carrier := dto.ConvertShipmentCarrierRequestToEntity(req.Carrier, req.TrackingUrl, req.Description, req.ExpectedDeliveryTime, req.Allowed)
+	carrier := dto.ConvertShipmentCarrierRequestToEntity(req.Carrier, req.TrackingUrl, req.Description, req.ExpectedDeliveryTime, req.AftershipSlug, req.AutoDeliverAfterHours, req.Allowed)
 	prices := parseShipmentCarrierPrices(req.Prices)
 	allowedRegions := dto.ConvertPbShippingRegionsToEntity(req.AllowedRegions)
 

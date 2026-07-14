@@ -317,6 +317,8 @@ func orderSubject(tn templateName, data interface{}) string {
 		id = d.OrderUUID
 	case *dto.OrderShipment:
 		id = d.OrderUUID
+	case *dto.OrderDelivered:
+		id = d.OrderUUID
 	case *dto.OrderCancelled:
 		id = d.OrderUUID
 	case *dto.OrderRefundInitiated:
@@ -333,6 +335,8 @@ func orderSubject(tn templateName, data interface{}) string {
 		return fmt.Sprintf("Order %s confirmed", id)
 	case OrderShipped:
 		return fmt.Sprintf("Order %s shipped", id)
+	case OrderDelivered:
+		return fmt.Sprintf("Order %s delivered", id)
 	case OrderCancelled:
 		return fmt.Sprintf("Order %s cancelled", id)
 	case OrderRefundInitiated:

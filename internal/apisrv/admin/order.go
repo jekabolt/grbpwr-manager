@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -303,14 +304,32 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 }
 
 func (s *Server) DeliveredOrder(ctx context.Context, req *pb_admin.DeliveredOrderRequest) (*pb_admin.DeliveredOrderResponse, error) {
-	err := s.repo.Order().DeliveredOrder(ctx, req.OrderUuid)
-	if err != nil {
+	if err := s.deliverOrder(ctx, req.OrderUuid); err != nil {
 		slog.Default().ErrorContext(ctx, "can't mark order as delivered",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't mark order as delivered")
 	}
 	return &pb_admin.DeliveredOrderResponse{}, nil
+}
+
+// deliverOrder performs the manual delivered transition (shared by the orders and fulfillment
+// sections) and, only when this call actually transitioned the order, sends the delivered email
+// (with the review link). Mirrors shipOrder. The email is best-effort: the status is already
+// delivered, so a mail hiccup must not fail the RPC.
+func (s *Server) deliverOrder(ctx context.Context, orderUUID string) error {
+	transitioned, err := s.repo.Order().DeliverOrderWithSource(ctx, orderUUID, authsrv.GetAdminUsername(ctx), "marked delivered by admin")
+	if err != nil {
+		return fmt.Errorf("can't mark order delivered: %w", err)
+	}
+	if !transitioned {
+		return nil // already delivered / not eligible — no duplicate email
+	}
+	if err := mail.SendOrderDeliveredForUUID(ctx, s.repo, s.mailer, orderUUID); err != nil {
+		slog.Default().ErrorContext(ctx, "can't send order delivered email",
+			slog.String("order_uuid", orderUUID), slog.String("err", err.Error()))
+	}
+	return nil
 }
 
 func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderRequest) (*pb_admin.CancelOrderResponse, error) {

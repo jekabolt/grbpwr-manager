@@ -1,0 +1,19 @@
+{{template "email_header" (dict "tag" "DELIVERY" "preheader" .Preheader)}}
+
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">DELIVERED</div>
+              {{template "spacer_16"}}
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">YOUR ORDER HAS ARRIVED.</div>
+              {{template "spacer_22"}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "DELIVERED" "buyer" .BuyerName)}}
+
+              {{template "spacer_24"}}
+              {{template "order_items_list" .}}
+              {{template "spacer_16"}}
+              {{template "order_totals" .}}
+
+              {{template "spacer_28"}}
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">HOW DID WE DO? LEAVE A REVIEW.</div>
+              {{template "spacer_16"}}
+              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" "LEAVE A REVIEW" "variant" "solid")}}
+
+{{template "email_footer" .}}

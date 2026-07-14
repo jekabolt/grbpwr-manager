@@ -94,6 +94,26 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 	}
 }
 
+// OrderFullToOrderDelivered builds the delivered-email data. It reuses the shipment builder (same
+// item/total layout) and only changes the preheader.
+func OrderFullToOrderDelivered(of *entity.OrderFull) *OrderDelivered {
+	s := OrderFullToOrderShipment(of)
+	return &OrderDelivered{
+		Preheader:           "YOUR GRBPWR ORDER HAS BEEN DELIVERED",
+		BuyerName:           s.BuyerName,
+		OrderUUID:           s.OrderUUID,
+		CurrencySymbol:      s.CurrencySymbol,
+		EmailB64:            s.EmailB64,
+		OrderItems:          s.OrderItems,
+		SubtotalPrice:       s.SubtotalPrice,
+		TotalPrice:          s.TotalPrice,
+		PromoExist:          s.PromoExist,
+		PromoDiscountAmount: s.PromoDiscountAmount,
+		HasFreeShipping:     s.HasFreeShipping,
+		ShippingPrice:       s.ShippingPrice,
+	}
+}
+
 func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
 	// Build buyer name (first name, or first + last if both available)
 	buyerName := of.Buyer.FirstName
@@ -213,6 +233,23 @@ type OrderCancelled struct {
 }
 
 type OrderShipment struct {
+	Preheader           string
+	BuyerName           string // First name or full name if available
+	OrderUUID           string
+	CurrencySymbol      string
+	EmailB64            string
+	OrderItems          []OrderItem
+	SubtotalPrice       string
+	TotalPrice          string
+	PromoExist          bool
+	PromoDiscountAmount string
+	HasFreeShipping     bool
+	ShippingPrice       string
+}
+
+// OrderDelivered carries the data for the "order delivered" email. It mirrors OrderShipment (same
+// item/total layout) but is a distinct type so the subject line and template resolve correctly.
+type OrderDelivered struct {
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string

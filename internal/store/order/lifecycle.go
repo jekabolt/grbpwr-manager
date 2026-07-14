@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -164,6 +165,12 @@ func (s *Store) SetTrackingNumber(ctx context.Context, orderUUID string, trackin
 			String: trackingCode,
 			Valid:  true,
 		}
+		// Stamp the shipped-at time so the delivery-sync worker's timer safety net (and the
+		// frontend's estimated arrival) have a reference point. Set only on the first ship, so a
+		// re-ship / tracking-code correction doesn't reset the auto-deliver clock.
+		if !shipment.ShippingDate.Valid {
+			shipment.ShippingDate = sql.NullTime{Time: time.Now().UTC(), Valid: true}
+		}
 
 		buyer, err = getBuyerById(ctx, rep.DB(), order.Id)
 		if err != nil {
@@ -320,41 +327,72 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 	})
 }
 
-// DeliveredOrder updates order status to Delivered.
+// setShipmentDeliveredAt stamps the shipment's delivered_at (base for delivery analytics and the
+// exact moment the order was marked delivered). Idempotent: a re-run overwrites with the same
+// intent. A missing shipment row is not an error (0 rows affected).
+func setShipmentDeliveredAt(ctx context.Context, db dependency.DB, orderId int, t time.Time) error {
+	query := `UPDATE shipment SET delivered_at = :deliveredAt WHERE order_id = :orderId`
+	return storeutil.ExecNamed(ctx, db, query, map[string]any{
+		"orderId":     orderId,
+		"deliveredAt": t,
+	})
+}
+
+// deliverOrderTx marks an order delivered inside an open transaction: it validates the current
+// status, transitions to Delivered (recording changedBy/notes in order_status_history), and
+// stamps shipment.delivered_at. It is idempotent and reports whether THIS call performed the
+// transition: an order already Delivered, or in a status from which delivery is not valid (e.g. a
+// return/refund path), is a no-op returning transitioned=false without error — so the worker and
+// webhook can retry freely and never fight a manual return.
+func deliverOrderTx(ctx context.Context, db dependency.DB, orderUUID, changedBy, notes string, deliveredAt time.Time) (bool, error) {
+	order, err := getOrderByUUIDForUpdate(ctx, db, orderUUID)
+	if err != nil {
+		return false, fmt.Errorf("can't get order by uuid: %w", err)
+	}
+	st, err := getOrderStatus(order.OrderStatusId)
+	if err != nil {
+		return false, err
+	}
+	switch st.Status.Name {
+	case entity.Delivered:
+		return false, nil // already delivered — nothing to do
+	case entity.Confirmed, entity.Shipped:
+		// eligible — fall through
+	default:
+		return false, nil // pending_return / refund / cancelled — do not force-deliver
+	}
+	if err := updateOrderStatusWithValidation(ctx, db, order.Id, cache.OrderStatusDelivered.Status.Id, changedBy, notes); err != nil {
+		return false, fmt.Errorf("can't update order status: %w", err)
+	}
+	if err := setShipmentDeliveredAt(ctx, db, order.Id, deliveredAt); err != nil {
+		return false, fmt.Errorf("can't set delivered_at: %w", err)
+	}
+	return true, nil
+}
+
+// DeliveredOrder marks an order delivered (manual admin / fulfillment path), attributed to
+// "system". Idempotent no-op if the order is already delivered or not in a deliverable status.
 func (s *Store) DeliveredOrder(ctx context.Context, orderUUID string) error {
+	_, err := s.DeliverOrderWithSource(ctx, orderUUID, "system", "")
+	return err
+}
+
+// DeliverOrderWithSource marks an order delivered, attributing the change to changedBy with the
+// given notes, and reports whether THIS call performed the transition (true) or found the order
+// already delivered / ineligible (false). Callers use the bool to send the delivered email at
+// most once. Used by the delivery-sync worker (real AfterShip signal or the timer safety net) and
+// the AfterShip webhook.
+func (s *Store) DeliverOrderWithSource(ctx context.Context, orderUUID, changedBy, notes string) (bool, error) {
+	var transitioned bool
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		order, err := getOrderByUUIDForUpdate(ctx, rep.DB(), orderUUID)
-		if err != nil {
-			return fmt.Errorf("can't get order by id: %w", err)
-		}
-
-		_, err = validateOrderStatus(order, entity.Confirmed, entity.Shipped)
-		if err != nil {
-			return fmt.Errorf("order status can be only Confirmed or Shipped: %w", err)
-		}
-
-		err = updateOrderStatus(ctx, rep.DB(), order.Id, cache.OrderStatusDelivered.Status.Id)
-		if err != nil {
-			return fmt.Errorf("can't update order status: %w", err)
-		}
-
-		// Stamp the delivery time on the shipment (analytics-v2 task 04). Metrics still derive the
-		// delivered timestamp from order_status_history (works for orders with no shipment row), but
-		// a populated delivered_at keeps future queries and the order card direct. Idempotent: only
-		// set when still NULL.
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			"UPDATE shipment SET delivered_at = NOW() WHERE order_id = :orderId AND delivered_at IS NULL",
-			map[string]any{"orderId": order.Id}); err != nil {
-			return fmt.Errorf("can't stamp shipment delivered_at: %w", err)
-		}
-
-		return nil
+		var err error
+		transitioned, err = deliverOrderTx(ctx, rep.DB(), orderUUID, changedBy, notes, time.Now().UTC())
+		return err
 	})
 	if err != nil {
-		return fmt.Errorf("can't update order payment: %w", err)
+		return false, fmt.Errorf("can't mark order delivered: %w", err)
 	}
-
-	return nil
+	return transitioned, nil
 }
 
 // CancelOrder cancels an order (admin-initiated). Restores stock and sets status to Cancelled.
