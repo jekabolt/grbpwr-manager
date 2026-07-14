@@ -25,13 +25,17 @@ SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
 SET @sql := IF(@need_col,
     'ALTER TABLE opex_line ADD COLUMN manual_key TINYINT AS (IF(recurring_id IS NULL, 1, NULL)) VIRTUAL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 2) drop the label-based unique key (superseded by the two below).
 SET @has_old := (SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_line' AND INDEX_NAME = 'uniq_opex_line');
 SET @sql := IF(@has_old > 0, 'ALTER TABLE opex_line DROP INDEX uniq_opex_line', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 3) manual/aggregate dedup: (month, category, label) among manual rows only (manual_key = 1).
 SET @has_manual := (SELECT COUNT(*) FROM information_schema.STATISTICS
@@ -39,7 +43,9 @@ SET @has_manual := (SELECT COUNT(*) FROM information_schema.STATISTICS
 SET @sql := IF(@has_manual = 0,
     'ALTER TABLE opex_line ADD UNIQUE KEY uniq_opex_manual (month, category, label, manual_key)',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 4) materialised dedup: one line per template per month, independent of label.
 SET @has_rec := (SELECT COUNT(*) FROM information_schema.STATISTICS
@@ -47,7 +53,9 @@ SET @has_rec := (SELECT COUNT(*) FROM information_schema.STATISTICS
 SET @sql := IF(@has_rec = 0,
     'ALTER TABLE opex_line ADD UNIQUE KEY uniq_opex_recurring_month (recurring_id, month)',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 
@@ -55,11 +63,15 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 SET @has_manual := (SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_line' AND INDEX_NAME = 'uniq_opex_manual');
 SET @sql := IF(@has_manual > 0, 'ALTER TABLE opex_line DROP INDEX uniq_opex_manual', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @has_rec := (SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_line' AND INDEX_NAME = 'uniq_opex_recurring_month');
 SET @sql := IF(@has_rec > 0, 'ALTER TABLE opex_line DROP INDEX uniq_opex_recurring_month', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SELECT 1;

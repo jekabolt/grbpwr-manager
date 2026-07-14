@@ -21,7 +21,9 @@ SET @sql := IF(@need_cols,
         ADD COLUMN min_stock DECIMAL(12,3) NULL,
         ADD COLUMN notes TEXT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- material.section: drop the auto-named CHECK, add the named, widened one ---
 SET @cname := (
@@ -35,13 +37,17 @@ SET @cname := (
         AND tc.CONSTRAINT_NAME <> 'chk_material_section'
     LIMIT 1);
 SET @sql := IF(@cname IS NULL, 'SELECT 1', CONCAT('ALTER TABLE material DROP CHECK ', @cname));
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @have := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND CONSTRAINT_NAME = 'chk_material_section');
 SET @sql := IF(@have > 0, 'SELECT 1',
     'ALTER TABLE material ADD CONSTRAINT chk_material_section CHECK (section REGEXP ''^(fabric|lining|interlining|insulation|hardware|thread|label|packaging|trim|decoration|other)$'')');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- tech_card_bom_item.section: same realignment ---
 SET @cname := (
@@ -55,19 +61,25 @@ SET @cname := (
         AND tc.CONSTRAINT_NAME <> 'chk_bom_item_section'
     LIMIT 1);
 SET @sql := IF(@cname IS NULL, 'SELECT 1', CONCAT('ALTER TABLE tech_card_bom_item DROP CHECK ', @cname));
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @have := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_bom_item' AND CONSTRAINT_NAME = 'chk_bom_item_section');
 SET @sql := IF(@have > 0, 'SELECT 1',
     'ALTER TABLE tech_card_bom_item ADD CONSTRAINT chk_bom_item_section CHECK (section REGEXP ''^(fabric|lining|interlining|insulation|hardware|thread|label|packaging|trim|decoration|other)$'')');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- index for the internal article lookup
 SET @have_idx := (SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND INDEX_NAME = 'idx_material_code');
 SET @sql := IF(@have_idx > 0, 'SELECT 1', 'CREATE INDEX idx_material_code ON material (code)');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

@@ -20,21 +20,27 @@ SET @sql := IF(@need_cols,
         ADD COLUMN purpose VARCHAR(16) NOT NULL DEFAULT ''sellable'',
         ADD COLUMN output_material_id INT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND CONSTRAINT_NAME = 'fk_tech_card_output_material');
 SET @sql := IF(@need_fk,
     'ALTER TABLE tech_card ADD CONSTRAINT fk_tech_card_output_material FOREIGN KEY (output_material_id) REFERENCES material(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_chk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND CONSTRAINT_NAME = 'chk_tech_card_purpose');
 SET @sql := IF(@need_chk,
     'ALTER TABLE tech_card ADD CONSTRAINT chk_tech_card_purpose CHECK (purpose REGEXP ''^(sellable|auxiliary)$'')',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

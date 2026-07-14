@@ -23,13 +23,17 @@ SET @cname := (
         AND tc.CONSTRAINT_NAME <> 'chk_tech_card_stage'
     LIMIT 1);
 SET @sql := IF(@cname IS NULL, 'SELECT 1', CONCAT('ALTER TABLE tech_card DROP CHECK ', @cname));
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @have := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND CONSTRAINT_NAME = 'chk_tech_card_stage');
 SET @sql := IF(@have > 0, 'SELECT 1',
     'ALTER TABLE tech_card ADD CONSTRAINT chk_tech_card_stage CHECK (stage REGEXP ''^(idea|proto|fit|sms|pp|prod)$'')');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

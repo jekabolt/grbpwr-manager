@@ -49,7 +49,9 @@ SET @sql := IF(@need_cols,
         ADD COLUMN marker_efficiency_pct DECIMAL(5,2) NULL,
         ADD COLUMN marker_notes TEXT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

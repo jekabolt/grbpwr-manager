@@ -14,7 +14,9 @@ SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
 SET @sql := IF(@need_col,
     'ALTER TABLE material_stock_movement ADD COLUMN product_id INT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement'
@@ -23,14 +25,18 @@ SET @sql := IF(@need_fk,
     'ALTER TABLE material_stock_movement
         ADD CONSTRAINT fk_msm_product FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_idx := (SELECT COUNT(*) = 0 FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement' AND INDEX_NAME = 'idx_msm_product');
 SET @sql := IF(@need_idx,
     'ALTER TABLE material_stock_movement ADD INDEX idx_msm_product (product_id)',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 
@@ -40,6 +46,8 @@ SET @has_fk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
 SET @sql := IF(@has_fk,
     'ALTER TABLE material_stock_movement DROP FOREIGN KEY fk_msm_product',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 -- (leaves the product_id column + index; Down is not exercised in prod automigrate)
 SELECT 1;

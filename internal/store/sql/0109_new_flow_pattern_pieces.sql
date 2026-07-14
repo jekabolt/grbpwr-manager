@@ -53,7 +53,9 @@ SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
 SET @sql := IF(@need_col,
     'ALTER TABLE tech_card_colorway_usage ADD COLUMN piece_index INT NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 

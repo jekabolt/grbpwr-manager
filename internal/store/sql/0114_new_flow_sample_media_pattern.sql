@@ -25,7 +25,9 @@ SET @sql := IF(@need_cols,
         ADD COLUMN pattern_url VARCHAR(512) NULL,
         ADD COLUMN pattern_note VARCHAR(255) NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 
