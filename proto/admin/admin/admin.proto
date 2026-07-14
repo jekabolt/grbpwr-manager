@@ -108,6 +108,20 @@ service AdminService {
     };
   }
 
+  // GetProductCustoms returns a product's international-shipping customs data (HS code, origin,
+  // declared description).
+  rpc GetProductCustoms(GetProductCustomsRequest) returns (GetProductCustomsResponse) {
+    option (google.api.http) = {get: "/api/admin/product/{product_id}/customs"};
+  }
+
+  // SetProductCustoms sets a product's customs data used to build international shipping labels.
+  rpc SetProductCustoms(SetProductCustomsRequest) returns (SetProductCustomsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/product/customs"
+      body: "*"
+    };
+  }
+
   // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
   // any manual value. If tech_card_id is set it also becomes the product's primary card;
   // otherwise the product's existing primary card is used.
@@ -683,6 +697,52 @@ service AdminService {
   rpc MarkFulfillmentDelivered(MarkFulfillmentDeliveredRequest) returns (MarkFulfillmentDeliveredResponse) {
     option (google.api.http) = {
       post: "/api/admin/fulfillment/deliver"
+      body: "*"
+    };
+  }
+
+  // PrepareShippingLabel returns the default parcel (weight/box derived from the
+  // order's tech cards, editable) plus whether label generation is available, so the
+  // UI can pre-fill the label form before generating. Read-only.
+  rpc PrepareShippingLabel(PrepareShippingLabelRequest) returns (PrepareShippingLabelResponse) {
+    option (google.api.http) = {get: "/api/admin/fulfillment/label/{order_uuid}"};
+  }
+
+  // GenerateShippingLabel announces the order's parcel with Sendcloud (carrier label
+  // + tracking number), then performs the real shipped transition via the shared ship
+  // path. Returns the printable label URL. Gated by fulfillment perms.
+  rpc GenerateShippingLabel(GenerateShippingLabelRequest) returns (GenerateShippingLabelResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/label"
+      body: "*"
+    };
+  }
+
+  // GetShippingOptions fetches the shipping options (carrier + service + quote)
+  // available for the order's parcel via Sendcloud, so an operator can pick one
+  // before generating. Read-only.
+  rpc GetShippingOptions(GetShippingOptionsRequest) returns (GetShippingOptionsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/label/options"
+      body: "*"
+    };
+  }
+
+  // VoidShippingLabel cancels a generated label with the carrier and reverts the
+  // order Shipped -> Confirmed so it can be regenerated. Gated by fulfillment perms.
+  rpc VoidShippingLabel(VoidShippingLabelRequest) returns (VoidShippingLabelResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/label/void"
+      body: "*"
+    };
+  }
+
+  // SchedulePickup books a carrier pickup from the warehouse origin for the day
+  // (Sendcloud's end-of-day handover equivalent; v3 has no generic manifest API).
+  // Gated by fulfillment perms.
+  rpc SchedulePickup(SchedulePickupRequest) returns (SchedulePickupResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fulfillment/pickup"
       body: "*"
     };
   }
@@ -1316,6 +1376,28 @@ message UpdateProductSizeStockRequest {
 }
 
 message UpdateProductSizeStockResponse {}
+
+// ProductCustoms is a product's international-shipping customs data. country_of_origin is ISO-2.
+message ProductCustoms {
+  string hs_code = 1;
+  string country_of_origin = 2; // ISO 3166-1 alpha-2 (Sendcloud origin_country)
+  string customs_description = 3;
+}
+
+message GetProductCustomsRequest {
+  int32 product_id = 1;
+}
+
+message GetProductCustomsResponse {
+  ProductCustoms customs = 1;
+}
+
+message SetProductCustomsRequest {
+  int32 product_id = 1;
+  ProductCustoms customs = 2;
+}
+
+message SetProductCustomsResponse {}
 
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;
@@ -2598,6 +2680,88 @@ message MarkFulfillmentDeliveredRequest {
 }
 
 message MarkFulfillmentDeliveredResponse {}
+
+// ShippingParcel is the physical parcel a label is generated for. Weight is in
+// grams; dimensions are whole centimetres (0 = unknown, omitted from the label).
+message ShippingParcel {
+  int32 weight_grams = 1;
+  int32 length_cm = 2;
+  int32 width_cm = 3;
+  int32 height_cm = 4;
+  string box_type = 5; // carrier box type; empty => "custom"
+}
+
+message PrepareShippingLabelRequest {
+  string order_uuid = 1;
+}
+
+message PrepareShippingLabelResponse {
+  ShippingParcel parcel = 1; // default derived from tech cards, pre-filled and editable
+  bool complete = 2; // false => some products lack weight/box; a manual override is required
+  repeated int32 missing_product_ids = 3; // products with no tech-card packaging weight
+  int32 carrier_id = 4;
+  string carrier_name = 5;
+  bool labels_enabled = 6; // Sendcloud is configured (else operators enter tracking manually)
+  bool already_generated = 7; // a label already exists for this shipment
+  string label_url = 8; // existing label URL when already_generated
+  string tracking_code = 9; // existing tracking code, if any
+}
+
+message GenerateShippingLabelRequest {
+  string order_uuid = 1;
+  ShippingParcel parcel = 2; // after operator review/override
+  string shipping_option_code = 3; // optional; empty => Sendcloud shipping rules pick the carrier
+}
+
+message GenerateShippingLabelResponse {
+  string tracking_code = 1;
+  string label_url = 2; // durable printable label PDF URL (our bucket)
+  string carrier_shipment_id = 3; // Sendcloud parcel id
+  string shipping_option_code = 4;
+  string carrier_name = 5;
+}
+
+// ShippingOption is one Sendcloud shipping option (carrier + service) with its quote. code is the
+// shipping_option_code passed back to GenerateShippingLabel to select it.
+message ShippingOption {
+  string code = 1;
+  string carrier_code = 2;
+  string carrier_name = 3;
+  string product_name = 4;
+  google.type.Decimal total_charge = 5;
+  string currency = 6;
+  int32 transit_days = 7; // 0 = carrier did not provide
+  string delivery_date = 8; // ISO date; empty if not provided
+}
+
+message GetShippingOptionsRequest {
+  string order_uuid = 1;
+  ShippingParcel parcel = 2; // after operator review/override
+}
+
+message GetShippingOptionsResponse {
+  repeated ShippingOption options = 1;
+}
+
+message VoidShippingLabelRequest {
+  string order_uuid = 1;
+}
+
+message VoidShippingLabelResponse {}
+
+message SchedulePickupRequest {
+  string carrier_code = 1; // Sendcloud carrier to collect (e.g. "dhl")
+  string date = 2; // pickup day, YYYY-MM-DD
+  int32 quantity = 3; // parcel count (default 1)
+  string from_time = 4; // optional pickup window start HH:MM:SS (default 09:00:00)
+  string to_time = 5; // optional pickup window end HH:MM:SS (default 17:00:00)
+}
+
+message SchedulePickupResponse {
+  string pickup_id = 1;
+  bool confirmed = 2;
+  string message = 3; // provider status
+}
 
 // SETTINGS
 

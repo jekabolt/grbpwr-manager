@@ -656,16 +656,19 @@ type TechCardLabel struct {
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка», 1:1).
 type TechCardPackaging struct {
-	FoldingMethod sql.NullString      `db:"folding_method"`
-	Polybag       sql.NullString      `db:"polybag"`
-	BagSticker    sql.NullString      `db:"bag_sticker"`
-	Inserts       sql.NullString      `db:"inserts"`
-	UnitsPerBox   sql.NullInt32       `db:"units_per_box"`
-	BoxMarking    sql.NullString      `db:"box_marking"`
-	BoxDimensions sql.NullString      `db:"box_dimensions"`
-	WeightNet     decimal.NullDecimal `db:"weight_net"`
-	WeightGross   decimal.NullDecimal `db:"weight_gross"`
-	Notes         sql.NullString      `db:"notes"`
+	FoldingMethod sql.NullString `db:"folding_method"`
+	Polybag       sql.NullString `db:"polybag"`
+	BagSticker    sql.NullString `db:"bag_sticker"`
+	Inserts       sql.NullString `db:"inserts"`
+	UnitsPerBox   sql.NullInt32  `db:"units_per_box"`
+	BoxMarking    sql.NullString `db:"box_marking"`
+	BoxDimensions sql.NullString `db:"box_dimensions"`
+	// WeightNetGrams / WeightGrossGrams are the packaging weights in whole grams (0 / NULL = unset).
+	// Integer grams instead of the old ambiguous DECIMAL(8,3) kilograms, so the shipping-label
+	// weight derivation reads grams with no unit conversion.
+	WeightNetGrams   sql.NullInt32  `db:"weight_net_grams"`
+	WeightGrossGrams sql.NullInt32  `db:"weight_gross_grams"`
+	Notes            sql.NullString `db:"notes"`
 }
 
 // TechCardCosting holds the manually-entered per-unit cost articles (Sheet
