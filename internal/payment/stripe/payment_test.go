@@ -3,6 +3,7 @@ package stripe
 import (
 	"context"
 	"testing"
+	"time"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -55,6 +56,33 @@ func TestUpdateOrderAsPaidAllowsFullPayment(t *testing.T) {
 	err := p.updateOrderAsPaid(context.Background(), mockRepo, "ord-paid", payment, received)
 	assert.Error(t, err)
 	assert.NotErrorIs(t, err, ErrUnderpaid)
+}
+
+// TestTopUpSettledBaseStopsOnCancelledParent verifies the background settled top-up is
+// shutdown-safe: when the processor-wide parent context is already cancelled (as
+// StopAllMonitors does at shutdown before the DB is closed), the goroutine returns
+// immediately without hitting Stripe or the DB. The Processor here has a nil stripeClient
+// and nil rep, so any call past the first context check would panic — reaching monWg.Done
+// (awaited below) proves it short-circuited on ctx.Done before touching either.
+func TestTopUpSettledBaseStopsOnCancelledParent(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel() // simulate shutdown: monParentCtx already cancelled
+
+	p := &Processor{monParentCtx: parent}
+	p.monWg.Add(1) // mirror the production launch site (Add before `go`)
+
+	done := make(chan struct{})
+	go func() {
+		p.topUpSettledBase("ord-x", "pi_x_secret_y")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("topUpSettledBase did not return promptly on cancelled parent context")
+	}
+	p.monWg.Wait() // Done ran: the goroutine is accounted for at shutdown
 }
 
 func TestPaymentMethodTypesForCurrency(t *testing.T) {
