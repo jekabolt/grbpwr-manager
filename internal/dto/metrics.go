@@ -1368,6 +1368,26 @@ func ConvertDashboardToPb(d *entity.Dashboard) *pb_admin.GetDashboardResponse {
 			}
 		}
 	}
+	// Period-over-period comparison of the six headline figures. Prior values come from the compare
+	// window; the % changes are (current − prior)/prior × 100 (unset → 0 when prior is 0). The
+	// gross-margin-% delta is a percentage-POINT change, not a percent-of-a-percent.
+	if c := d.Compare; c != nil {
+		resp.Compare = &pb_admin.DashboardComparison{
+			Period:                      timeRangeToPb(d.ComparePeriod),
+			Revenue:                     &decimal.Decimal{Value: c.Revenue.String()},
+			RevenueChangePct:            ptrFloat64ToVal(computeChangePct(d.Revenue, c.Revenue)),
+			Orders:                      int32(c.Orders),
+			OrdersChangePct:             ptrFloat64ToVal(computeChangePct(shopspring.NewFromInt(int64(d.Orders)), shopspring.NewFromInt(int64(c.Orders)))),
+			GrossMargin:                 &decimal.Decimal{Value: c.GrossMargin.String()},
+			GrossMarginChangePct:        ptrFloat64ToVal(computeChangePct(d.GrossMargin, c.GrossMargin)),
+			GrossMarginPct:              c.GrossMarginPct,
+			GrossMarginPctChangePp:      shopspring.NewFromFloat(d.GrossMarginPct).Sub(shopspring.NewFromFloat(c.GrossMarginPct)).Round(2).InexactFloat64(),
+			ContributionMargin:          &decimal.Decimal{Value: c.ContributionMargin.String()},
+			ContributionMarginChangePct: ptrFloat64ToVal(computeChangePct(d.ContributionMargin, c.ContributionMargin)),
+			OperatingResult:             &decimal.Decimal{Value: c.OperatingResult.String()},
+			OperatingResultChangePct:    ptrFloat64ToVal(computeChangePct(d.OperatingResult, c.OperatingResult)),
+		}
+	}
 	return resp
 }
 

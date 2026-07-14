@@ -53,16 +53,22 @@ func (s *Server) GetMetrics(ctx context.Context, req *pb_admin.GetMetricsRequest
 	from, to := periodFrom, periodTo
 
 	comparePeriod := entity.TimeRange{}
-	switch req.CompareMode {
-	case pb_admin.CompareMode_COMPARE_MODE_PREVIOUS_PERIOD:
-		comparePeriod = entity.TimeRange{
-			From: periodFrom.Add(-dur),
-			To:   periodFrom,
-		}
-	case pb_admin.CompareMode_COMPARE_MODE_SAME_PERIOD_LAST_YEAR:
-		comparePeriod = entity.TimeRange{
-			From: periodFrom.AddDate(-1, 0, 0),
-			To:   periodTo.AddDate(-1, 0, 0),
+	// An explicit compare_period (arbitrary analyst baseline) OVERRIDES the compare_mode presets;
+	// both timestamps must be set to use it. Otherwise fall back to the fixed modes.
+	if cp := req.ComparePeriod; cp != nil && cp.From != nil && cp.To != nil {
+		comparePeriod = entity.TimeRange{From: cp.From.AsTime().UTC(), To: cp.To.AsTime().UTC()}
+	} else {
+		switch req.CompareMode {
+		case pb_admin.CompareMode_COMPARE_MODE_PREVIOUS_PERIOD:
+			comparePeriod = entity.TimeRange{
+				From: periodFrom.Add(-dur),
+				To:   periodFrom,
+			}
+		case pb_admin.CompareMode_COMPARE_MODE_SAME_PERIOD_LAST_YEAR:
+			comparePeriod = entity.TimeRange{
+				From: periodFrom.AddDate(-1, 0, 0),
+				To:   periodTo.AddDate(-1, 0, 0),
+			}
 		}
 	}
 
@@ -1104,18 +1110,43 @@ func (s *Server) GetDashboard(ctx context.Context, req *pb_admin.GetDashboardReq
 		endAt = req.EndAt.AsTime().UTC()
 	}
 	from, to, isSpecial := computePeriodBounds(req.Period, endAt)
+	var dur time.Duration
 	if !isSpecial {
-		dur, err := parseMetricsPeriod(req.Period)
+		var err error
+		dur, err = parseMetricsPeriod(req.Period)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid period %q: %v", req.Period, err)
 		}
 		to = endAt
 		from = endAt.Add(-dur)
+	} else {
+		// For special windows (today, WTD, MTD, …) the length is the resolved span; the previous-period
+		// comparison uses this same length so it is never a full-vs-partial mismatch.
+		dur = to.Sub(from)
 	}
 	d, err := s.repo.Metrics().GetDashboard(ctx, from, to, int(req.Limit))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get dashboard", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't get dashboard")
+	}
+	// Period-over-period comparison of the headline figures (optional). PREVIOUS_PERIOD = the same
+	// length immediately before; SAME_PERIOD_LAST_YEAR = the same calendar dates a year earlier.
+	var comparePeriod entity.TimeRange
+	switch req.CompareMode {
+	case pb_admin.CompareMode_COMPARE_MODE_PREVIOUS_PERIOD:
+		comparePeriod = entity.TimeRange{From: from.Add(-dur), To: from}
+	case pb_admin.CompareMode_COMPARE_MODE_SAME_PERIOD_LAST_YEAR:
+		comparePeriod = entity.TimeRange{From: from.AddDate(-1, 0, 0), To: to.AddDate(-1, 0, 0)}
+	}
+	if !comparePeriod.From.IsZero() && !comparePeriod.To.IsZero() {
+		ch, cerr := s.repo.Metrics().GetDashboardHeadline(ctx, comparePeriod.From, comparePeriod.To)
+		if cerr != nil {
+			// Comparison is secondary — never fail the dashboard over it; just omit it.
+			slog.Default().WarnContext(ctx, "can't get dashboard compare headline; omitting comparison", slog.String("err", cerr.Error()))
+		} else {
+			d.ComparePeriod = comparePeriod
+			d.Compare = ch
+		}
 	}
 	resp := dto.ConvertDashboardToPb(d)
 	// Redact margin figures for accounts without costing:read (task 19); revenue, order

@@ -159,6 +159,13 @@ var costingRedactedFieldNames = map[string]bool{
 	// not COGS) and `ltv_avg` is revenue-side.
 	"profit_per_order": true,
 	"payment_fees":     true,
+	// Dashboard period-over-period comparison (DashboardComparison): the value fields reuse the
+	// names above and are cleared by them, but the DERIVED margin-change fields have distinct names
+	// and would otherwise leak the margin trend (direction + magnitude) with the value redacted.
+	"gross_margin_change_pct":        true,
+	"gross_margin_pct_change_pp":     true,
+	"contribution_margin_change_pct": true,
+	"operating_result_change_pct":    true,
 }
 
 // redactCostingFieldsDeep clears every confidential cost/margin field (by name) anywhere in the

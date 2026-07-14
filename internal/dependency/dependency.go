@@ -312,6 +312,10 @@ type (
 		// GetDashboard returns the small, DB-trusted decision payload (headline + alerts +
 		// action lists) without building the full BusinessMetrics god-object.
 		GetDashboard(ctx context.Context, from, to time.Time, limit int) (*entity.Dashboard, error)
+		// GetDashboardHeadline returns only the six headline decision figures for a window (no
+		// action lists / alerts), using the same arithmetic as GetDashboard. Used to compute the
+		// dashboard's period-over-period comparison cheaply.
+		GetDashboardHeadline(ctx context.Context, from, to time.Time) (*entity.DashboardHeadline, error)
 		// GetAlertThresholds / UpsertAlertThresholds read and write the operator-tunable
 		// thresholds behind the dashboard alerts (alert_setting table).
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)

@@ -889,6 +889,24 @@ type Dashboard struct {
 	Reorder         []InventoryHealthRow // SKUs flagged needs_reorder, most urgent first
 	Clear           []SlowMoverRow       // slow movers to clear
 	Drops           []SellThroughByDropRow
+	// Compare, when non-nil, is the headline snapshot over ComparePeriod (previous period or same
+	// period last year), set by the handler from GetDashboardHeadline when the request asked for a
+	// comparison. Only the six higher-is-better headline scalars are recomputed for the compare
+	// window — not the action lists or alerts. The change percentages are derived at DTO time.
+	ComparePeriod TimeRange
+	Compare       *DashboardHeadline
+}
+
+// DashboardHeadline is the six higher-is-better decision figures of the dashboard, computed
+// cheaply for a single window. It is the full payload of the comparison period
+// (Metrics.GetDashboardHeadline) and a subset of the primary Dashboard.
+type DashboardHeadline struct {
+	Revenue            decimal.Decimal
+	Orders             int
+	GrossMargin        decimal.Decimal
+	GrossMarginPct     float64
+	ContributionMargin decimal.Decimal
+	OperatingResult    decimal.Decimal
 }
 
 // --- Slow Movers ---

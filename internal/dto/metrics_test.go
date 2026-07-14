@@ -2,6 +2,7 @@ package dto
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	shopspring "github.com/shopspring/decimal"
@@ -36,6 +37,53 @@ func TestComputeChangePct(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertDashboardToPb_Compare(t *testing.T) {
+	d := &entity.Dashboard{
+		Revenue:            shopspring.NewFromInt(1000),
+		Orders:             12,
+		GrossMargin:        shopspring.NewFromInt(400),
+		GrossMarginPct:     40,
+		ContributionMargin: shopspring.NewFromInt(300),
+		OperatingResult:    shopspring.NewFromInt(100),
+		ComparePeriod:      entity.TimeRange{From: time.Unix(1000, 0).UTC(), To: time.Unix(2000, 0).UTC()},
+		Compare: &entity.DashboardHeadline{
+			Revenue:            shopspring.NewFromInt(900),
+			Orders:             10,
+			GrossMargin:        shopspring.NewFromInt(350),
+			GrossMarginPct:     38,
+			ContributionMargin: shopspring.NewFromInt(250),
+			OperatingResult:    shopspring.NewFromInt(80),
+		},
+	}
+	c := ConvertDashboardToPb(d).Compare
+	assert.NotNil(t, c, "compare block emitted")
+	assert.NotNil(t, c.Period, "compare window echoed")
+	assert.Equal(t, "900", c.Revenue.GetValue(), "prior revenue value")
+	assert.EqualValues(t, 10, c.Orders, "prior orders")
+	assert.InDelta(t, 11.11, c.RevenueChangePct, 0.01, "revenue +11.11%")
+	assert.InDelta(t, 20.0, c.OrdersChangePct, 0.01, "orders +20%")
+	assert.InDelta(t, 14.29, c.GrossMarginChangePct, 0.01, "gross margin € +14.29%")
+	// The margin-% delta must be a percentage-POINT change (40−38 = 2.0), NOT a percent-of-a-percent
+	// (which would be (40−38)/38×100 ≈ 5.26). Locking 2.0 guards that distinction.
+	assert.InDelta(t, 2.0, c.GrossMarginPctChangePp, 0.001, "gross margin % delta is +2 pp")
+	assert.InDelta(t, 20.0, c.ContributionMarginChangePct, 0.01, "contribution +20%")
+	assert.InDelta(t, 25.0, c.OperatingResultChangePct, 0.01, "operating result +25%")
+}
+
+func TestConvertDashboardToPb_CompareEdgeCases(t *testing.T) {
+	// No comparison requested → no compare block.
+	assert.Nil(t, ConvertDashboardToPb(&entity.Dashboard{Revenue: shopspring.NewFromInt(1000)}).Compare,
+		"no compare block when Compare is nil")
+
+	// Zero prior → change is 0 (no base), never +Inf/NaN.
+	zeroPrior := &entity.Dashboard{
+		Revenue: shopspring.NewFromInt(1000),
+		Compare: &entity.DashboardHeadline{Revenue: shopspring.Zero},
+	}
+	assert.Zero(t, ConvertDashboardToPb(zeroPrior).Compare.RevenueChangePct,
+		"prior 0 revenue → change 0, not +Inf")
 }
 
 func TestMetricWithComparisonToPb_ChangePct(t *testing.T) {
@@ -179,7 +227,7 @@ func TestMetricWithComparisonToPb_AvgSessionDuration(t *testing.T) {
 			if pb == nil {
 				t.Fatal("metricWithComparisonToPb returned nil")
 			}
-			
+
 			// Verify displayed values match expected rounded values
 			if pb.Value.Value != tt.wantDisplayedCurr {
 				t.Errorf("Value display: got %s, want %s", pb.Value.Value, tt.wantDisplayedCurr)
@@ -187,14 +235,14 @@ func TestMetricWithComparisonToPb_AvgSessionDuration(t *testing.T) {
 			if pb.CompareValue != nil && pb.CompareValue.Value != tt.wantDisplayedPrev {
 				t.Errorf("CompareValue display: got %s, want %s", pb.CompareValue.Value, tt.wantDisplayedPrev)
 			}
-			
+
 			// Verify delta is computed from rounded values and matches manual calculation
 			diff := pb.ChangePct - tt.wantChangePct
 			if diff < -0.5 || diff > 0.5 {
 				t.Errorf("%s: AvgSessionDuration %s vs %s ChangePct = %.2f, want ~%.2f (diff: %.2f)",
 					tt.description, pb.Value.Value, pb.CompareValue.Value, pb.ChangePct, tt.wantChangePct, diff)
 			}
-			
+
 			// Most importantly: verify users can manually calculate the delta from displayed values
 			// Manual calculation: (current - previous) / previous * 100
 			curr, _ := shopspring.NewFromString(pb.Value.Value)
@@ -315,7 +363,7 @@ func TestMetricWithComparisonToPb_Caveat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pb := metricWithComparisonToPb(tt.metric)
-			
+
 			assert.NotNil(t, pb)
 			assert.Equal(t, tt.wantCaveat, pb.Caveat)
 		})

@@ -184,6 +184,53 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	return d, nil
 }
 
+// GetDashboardHeadline computes only the six higher-is-better headline figures (revenue, orders,
+// gross margin €/%, contribution margin, operating result) for a single window, using the SAME
+// arithmetic as GetDashboard so a period-over-period delta is apples-to-apples. It runs the six
+// targeted sales/cost queries but, unlike GetDashboard, builds no action lists or alerts — cheap
+// enough to call for the comparison window on every dashboard render. The handler diffs its result
+// against the primary dashboard to populate the comparison; the deltas themselves are shaped at DTO.
+func (s *Store) GetDashboardHeadline(ctx context.Context, from, to time.Time) (*entity.DashboardHeadline, error) {
+	rev, _, _, orders, _, err := s.getCoreSalesMetrics(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline core sales: %w", err)
+	}
+	costedRev, cogs, _, err := s.getMarginMetrics(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline margin: %w", err)
+	}
+	_, totalShip, err := s.getShippingCostMetrics(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline shipping: %w", err)
+	}
+	fees, _, err := s.getPaymentFees(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline fees: %w", err)
+	}
+	opex, err := s.getOpexForPeriod(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline opex: %w", err)
+	}
+	marketingSpend, err := s.getChannelSpendTotal(ctx, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("headline marketing spend: %w", err)
+	}
+
+	grossMargin := costedRev.Sub(cogs).Round(2)
+	contribution := grossMargin.Sub(totalShip).Sub(fees).Round(2)
+	h := &entity.DashboardHeadline{
+		Revenue:            rev,
+		Orders:             orders,
+		GrossMargin:        grossMargin,
+		ContributionMargin: contribution,
+		OperatingResult:    contribution.Sub(opex.Total).Sub(marketingSpend).Round(2),
+	}
+	if costedRev.GreaterThan(decimal.Zero) {
+		h.GrossMarginPct = grossMargin.Div(costedRev).Mul(decimal.NewFromInt(100)).Round(2).InexactFloat64()
+	}
+	return h, nil
+}
+
 // dashboardLowStockNamesLimit caps how many material names the low_material_stock alert lists.
 const dashboardLowStockNamesLimit = 5
 
