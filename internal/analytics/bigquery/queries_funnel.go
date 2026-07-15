@@ -920,12 +920,12 @@ func (c *Client) getAddToCartRate(
 		WITH product_events AS (
 			SELECT
 				DATE(TIMESTAMP_MICROS(e.event_timestamp)) AS event_date,
-				item.item_id AS product_id,
+				%[3]s AS product_id,
 				item.item_name AS product_name,
 				e.user_pseudo_id,
 				e.event_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[1]s AS e, UNNEST(e.items) AS item
+			WHERE %[2]s
 				AND e.event_name IN ('view_item', 'add_to_cart')
 				AND item.item_id IS NOT NULL
 		),
@@ -950,7 +950,7 @@ func (c *Client) getAddToCartRate(
 		FROM daily
 		GROUP BY event_date, product_id
 		HAVING view_count > 0
-	`, src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
