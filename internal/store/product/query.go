@@ -45,11 +45,14 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 	var whereClauses []string
 	args := make(map[string]interface{})
 
-	whereClauses = append(whereClauses, "p.deleted_at IS NULL")
-
-	if !showHidden {
-		whereClauses = append(whereClauses, "p.hidden = :isHidden")
-		args["isHidden"] = 0
+	if showHidden {
+		// Admin view: everything except soft-deleted (archived) — hidden items still shown.
+		// Equivalent to the old `deleted_at IS NULL`.
+		whereClauses = append(whereClauses, "p.status <> 'archived'")
+	} else {
+		// Storefront: only publicly-visible products. status = 'active' is exactly the old
+		// `hidden = 0 AND deleted_at IS NULL` (PR5-A).
+		whereClauses = append(whereClauses, "p.status = 'active'")
 
 		// Tier gating: return ONLY products the viewer is eligible to buy for
 		// their tier (resolved from the auth token; 0 for guests). Hacker-only
@@ -216,7 +219,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -231,7 +234,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (:ids) AND p.hidden = 0 AND p.deleted_at IS NULL`
+	WHERE p.id IN (:ids) AND p.status = 'active'`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"ids": ids,
@@ -286,7 +289,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -301,7 +304,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
-	WHERE p.hidden = 0 AND p.deleted_at IS NULL
+	WHERE p.status = 'active'
 		AND ` + productStockExpr + ` BETWEEN 1 AND :threshold
 	ORDER BY ` + productStockExpr + ` ASC
 	LIMIT :limit`
@@ -355,7 +358,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -370,7 +373,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0 AND p.deleted_at IS NULL`
+	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.status = 'active'`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"tag": tag,
@@ -424,7 +427,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.season, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.version, p.collection, p.season, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -441,10 +444,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
-	query += " AND p.deleted_at IS NULL"
-
-	if !showHidden {
-		query += " AND p.hidden = false"
+	// Lifecycle filter (PR5-A): storefront sees only 'active'; the admin (showHidden) sees everything
+	// except soft-deleted. Equivalent to the old `deleted_at IS NULL [AND hidden = false]`.
+	if showHidden {
+		query += " AND p.status <> 'archived'"
+	} else {
+		query += " AND p.status = 'active'"
 	}
 
 	type productDetailsResult struct {
@@ -567,7 +572,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.top_category_id, p.sub_category_id, p.type_id,
 		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
 		p.season, p.care_instructions, p.composition, p.thumbnail_id,
-		p.secondary_thumbnail_id, p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.secondary_thumbnail_id, p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,

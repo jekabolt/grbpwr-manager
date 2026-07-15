@@ -516,6 +516,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		ProductDisplay: pbProductDisplay,
 		Prices:         pbPrices, // Prices are in nested Product
 		SoldOut:        soldOut,
+		Status:         string(e.Product.Status),
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)

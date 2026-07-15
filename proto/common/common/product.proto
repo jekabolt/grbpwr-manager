@@ -83,6 +83,9 @@ message Product {
   ProductDisplay product_display = 6;
   repeated ProductPrice prices = 7;
   bool sold_out = 8;
+  // status is the product's lifecycle state: "active" | "hidden" | "archived" (PR5-A). It is derived
+  // (a generated column) from hidden/deleted_at; sold_out and preorder are separate axes.
+  string status = 9;
 }
 
 message ProductBody {

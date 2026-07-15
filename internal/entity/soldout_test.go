@@ -27,3 +27,19 @@ func TestSoldOutFromSizes(t *testing.T) {
 		}
 	}
 }
+
+// TestProductIsPubliclyVisible pins that only 'active' is public-facing (PR5-A).
+func TestProductIsPubliclyVisible(t *testing.T) {
+	cases := map[ProductStatus]bool{
+		ProductStatusActive:   true,
+		ProductStatusHidden:   false,
+		ProductStatusArchived: false,
+		ProductStatus(""):     false,
+	}
+	for st, want := range cases {
+		p := &Product{Status: st}
+		if got := p.IsPubliclyVisible(); got != want {
+			t.Errorf("status %q: IsPubliclyVisible = %v, want %v", st, got, want)
+		}
+	}
+}

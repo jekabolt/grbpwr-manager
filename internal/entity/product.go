@@ -77,6 +77,21 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
+// ProductStatus is a product's lifecycle state — the single authoritative view of the
+// (deleted_at, hidden) pair, whose interaction used to be re-expressed ad-hoc in each WHERE clause.
+// It is a STORED generated column (migration 0137, PR5-A): 'archived' when soft-deleted, else
+// 'hidden' when hidden, else 'active'. Read-only from Go — the operator still toggles `hidden` or
+// soft-deletes via `deleted_at` and the status recomputes. It is ORTHOGONAL to preorder, sold_out
+// and hidden_for_non_qualified (availability window / derived stock / tier gating), which are not
+// lifecycle states and are applied independently.
+type ProductStatus string
+
+const (
+	ProductStatusActive   ProductStatus = "active"   // publicly visible on the storefront
+	ProductStatusHidden   ProductStatus = "hidden"   // admin-visible, hidden from storefront, not deleted
+	ProductStatusArchived ProductStatus = "archived" // soft-deleted
+)
+
 type SeasonEnum string
 
 const (
@@ -230,6 +245,15 @@ type Product struct {
 	ProductDisplay ProductDisplay `valid:"required"`
 	Prices         []ProductPrice // Multi-currency prices
 	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
+	Status         ProductStatus  `db:"status"` // lifecycle state (generated: active/hidden/archived)
+}
+
+// IsPubliclyVisible reports whether the product is exposed on the storefront: only 'active' products
+// are (hidden/archived are not). It is the single Go predicate behind the storefront read filter
+// (status = 'active'); tier gating (HiddenForNonQualified) and stock (SoldOut) are separate axes
+// applied on top of it, not part of this decision.
+func (p *Product) IsPubliclyVisible() bool {
+	return p.Status == ProductStatusActive
 }
 
 type ProductInsert struct {

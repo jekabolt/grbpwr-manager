@@ -763,8 +763,9 @@ type productQueryResult struct {
 	SecondaryCompressed         sql.NullString `db:"secondary_compressed"`
 	SecondaryCompressedW        sql.NullInt32  `db:"secondary_compressed_width"`
 	SecondaryCompressedH        sql.NullInt32  `db:"secondary_compressed_height"`
-	SecondaryBlurHash           sql.NullString `db:"secondary_blur_hash"`
-	SoldOut                     bool           `db:"sold_out"`
+	SecondaryBlurHash           sql.NullString       `db:"secondary_blur_hash"`
+	SoldOut                     bool                 `db:"sold_out"`
+	Status                      entity.ProductStatus `db:"status"`
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslationInsert) entity.Product {
@@ -800,6 +801,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		Slug:      pqr.Slug,
 		SKU:       pqr.SKU,
 		SoldOut:   pqr.SoldOut,
+		Status:    pqr.Status,
 		ProductDisplay: entity.ProductDisplay{
 			ProductBody: entity.ProductBody{
 				ProductBodyInsert: entity.ProductBodyInsert{
