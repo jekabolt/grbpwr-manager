@@ -34,6 +34,33 @@ func TestValidateMinimumFailsClosed(t *testing.T) {
 	}
 }
 
+// TestRequiredCurrenciesMatchSupported guards against drift: the "price set is complete" required
+// list (single source of truth for product prices + shipping carriers) must equal the supported
+// (Stripe-minimum) currency set, so a currency can't be required without being chargeable, or
+// chargeable without being required.
+func TestRequiredCurrenciesMatchSupported(t *testing.T) {
+	required := RequiredCurrencies()
+	if len(required) != len(minimumAmounts) {
+		t.Fatalf("required currencies (%d) and supported/minimumAmounts (%d) differ in size", len(required), len(minimumAmounts))
+	}
+	for _, c := range required {
+		if !IsSupported(c) {
+			t.Errorf("required currency %q is not in the supported (minimumAmounts) set", c)
+		}
+	}
+	// MissingRequired reports the canonical-ordered gap.
+	got := MissingRequired(map[string]bool{"EUR": true, "USD": true})
+	want := []string{"GBP", "JPY", "CNY", "KRW"}
+	if len(got) != len(want) {
+		t.Fatalf("MissingRequired = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("MissingRequired = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestIsSupported(t *testing.T) {
 	for _, c := range []string{"EUR", "usd", "GBP", "JPY", "KRW", "CNY"} {
 		if !IsSupported(c) {

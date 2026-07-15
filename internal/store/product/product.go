@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -598,11 +599,6 @@ func (s *Store) IsProductLinkedToTechCard(ctx context.Context, productID, techCa
 }
 
 func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
-	requiredCurrencies := map[string]bool{
-		"EUR": true, "USD": true, "JPY": true,
-		"CNY": true, "KRW": true, "GBP": true,
-	}
-
 	providedCurrencies := make(map[string]bool)
 	var zeroPriceCurrencies []string
 	var belowMinCurrencies []string
@@ -621,14 +617,7 @@ func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 		}
 	}
 
-	var missingCurrencies []string
-	for currency := range requiredCurrencies {
-		if !providedCurrencies[currency] {
-			missingCurrencies = append(missingCurrencies, currency)
-		}
-	}
-
-	if len(missingCurrencies) > 0 {
+	if missingCurrencies := currency.MissingRequired(providedCurrencies); len(missingCurrencies) > 0 {
 		return fmt.Errorf("missing required currencies: %s", strings.Join(missingCurrencies, ", "))
 	}
 
