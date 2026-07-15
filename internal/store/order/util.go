@@ -11,11 +11,20 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// getProductPrice resolves a product's price in the order currency. It enforces the order-time
+// pricing invariant (PR5-D): the currency must be present AND its price must be positive. Product
+// create/update already reject a missing or non-positive price (validateRequiredCurrencies), but
+// that runs only at write time; re-checking here is defence in depth so a data anomaly (a stray
+// zero price in the order currency) fails the order instead of silently selling at zero. The custom
+// order path intentionally does not use this — it prices from admin-supplied amounts.
 func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, error) {
 	for _, price := range prd.Prices {
 		// Stored currencies are uppercase; compare case-insensitively so a
 		// lowercase/mixed-case client currency does not falsely miss the price.
 		if strings.EqualFold(price.Currency, currency) {
+			if price.Price.LessThanOrEqual(decimal.Zero) {
+				return decimal.Zero, fmt.Errorf("product %d has a non-positive price in currency %s", prd.Id, currency)
+			}
 			return price.Price, nil
 		}
 	}
