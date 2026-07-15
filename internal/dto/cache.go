@@ -29,6 +29,7 @@ type Dict struct {
 	IsProd                      bool // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 	BackgroundHeroColor         string
 	ProductTags                 []string
+	Colors                      []entity.Color
 }
 
 var (
@@ -182,6 +183,8 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 				Name:       sz.Name,
 				CountMen:   int32(sz.CountMen),
 				CountWomen: int32(sz.CountWomen),
+				SkuOrd:     int32(sz.SkuOrd),
+				SkuSystem:  sz.SkuSystem.String,
 			})
 	}
 
@@ -236,6 +239,15 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.IsProd = dict.IsProd
 	commonDict.BackgroundHeroColor = dict.BackgroundHeroColor
 	commonDict.ProductTags = dict.ProductTags
+
+	for _, c := range dict.Colors {
+		commonDict.Colors = append(commonDict.Colors, &pb_common.Color{
+			Id:   int32(c.ID),
+			Code: c.Code,
+			Name: c.Name,
+			Hex:  c.Hex.String,
+		})
+	}
 
 	return commonDict
 }

@@ -169,6 +169,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Preorder:           preorderTime,
 			Brand:              pbProductBodyInsert.Brand,
 			Color:              pbProductBodyInsert.Color,
+			ColorCode:          sql.NullString{String: pbProductBodyInsert.ColorCode, Valid: pbProductBodyInsert.ColorCode != ""},
 			ColorHex:           pbProductBodyInsert.ColorHex,
 			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
 			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
@@ -468,6 +469,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 				Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
 				Brand:           productBodyInsert.Brand,
 				Color:           productBodyInsert.Color,
+				ColorCode:       productBodyInsert.ColorCode.String,
 				ColorHex:        productBodyInsert.ColorHex,
 				CountryOfOrigin: productBodyInsert.CountryOfOrigin,
 
@@ -559,6 +561,7 @@ func convertEntitySizesToPbSizes(sizes []entity.ProductSize) []*pb_common.Produc
 			},
 			ProductId: int32(size.ProductId),
 			SizeId:    int32(size.SizeId),
+			Sku:       size.SKU.String,
 		})
 	}
 	return pbSizes
@@ -799,6 +802,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 					Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
 					Brand:           productBodyInsert.Brand,
 					Color:           productBodyInsert.Color,
+					ColorCode:       productBodyInsert.ColorCode.String,
 					ColorHex:        productBodyInsert.ColorHex,
 					CountryOfOrigin: productBodyInsert.CountryOfOrigin,
 

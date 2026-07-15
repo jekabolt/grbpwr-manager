@@ -294,6 +294,7 @@ type ProductSize struct {
 	Quantity  decimal.Decimal `db:"quantity"`
 	ProductId int             `db:"product_id"`
 	SizeId    int             `db:"size_id"`
+	SKU       sql.NullString  `db:"sku"` // first-class variant SKU (SS26-00021-BLK-04)
 }
 
 func (ps *ProductSize) QuantityDecimal() decimal.Decimal {

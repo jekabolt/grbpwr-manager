@@ -25,6 +25,17 @@ message Size {
   string name = 2;
   int32 count_men = 3;
   int32 count_women = 4;
+  int32 sku_ord = 5; // 2-digit ordinal for the size segment of the variant SKU
+  string sku_system = 6; // apparel|shoe|composite_ta|composite_bo
+}
+
+// Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the
+// colour segment of the SKU and is referenced by product.color_code.
+message Color {
+  int32 id = 1;
+  string code = 2;
+  string name = 3;
+  string hex = 4;
 }
 
 message MeasurementName {
@@ -85,6 +96,7 @@ message ProductBodyInsert {
   string color = 3;
   string color_hex = 4;
   string country_of_origin = 5;
+  string color_code = 21; // FK to the colour dictionary (3-char code); drives the SKU colour segment
   google.type.Decimal sale_percentage = 6;
   int32 top_category_id = 7;
   int32 sub_category_id = 8;
@@ -143,6 +155,7 @@ message ProductSize {
   google.type.Decimal quantity = 2;
   int32 product_id = 3;
   int32 size_id = 4;
+  string sku = 5; // first-class variant SKU (SS26-00021-BLK-04)
 }
 
 message ProductSizeInsert {

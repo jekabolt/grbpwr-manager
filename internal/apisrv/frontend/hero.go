@@ -35,6 +35,7 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			ShipmentCarriers:            cache.GetShipmentCarriers(),
 			Sizes:                       cache.GetSizes(),
 			Collections:                 cache.GetCollections(),
+			Colors:                      cache.GetColors(),
 			Genders:                     cache.GetGenders(),
 			Languages:                   cache.GetLanguages(),
 			SortFactors:                 cache.GetSortFactors(),

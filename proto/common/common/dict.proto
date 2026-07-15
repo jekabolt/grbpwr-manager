@@ -32,6 +32,7 @@ message Dictionary {
   // Hero section background color for the storefront (CSS). Empty if unset.
   string background_hero_color = 17;
   repeated string product_tags = 18; // all distinct tags across visible products
+  repeated Color colors = 19; // controlled colour dictionary (SKU colour segment source)
 }
 
 message Collection {
