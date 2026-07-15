@@ -443,6 +443,7 @@ type (
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveList, int, error)
 		DeleteArchiveById(ctx context.Context, id int) error
 		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
+		GetArchiveByCode(ctx context.Context, code string) (*entity.ArchiveFull, error)
 		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
 	}
 

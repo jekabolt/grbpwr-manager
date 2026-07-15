@@ -44,12 +44,12 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 
 func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequest) (*pb_frontend.GetArchiveResponse, error) {
 
-	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	af, err := s.repo.Archive().GetArchiveByCode(ctx, req.Code)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "archive not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get archive by id", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't get archive by code", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 

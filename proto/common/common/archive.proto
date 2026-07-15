@@ -43,6 +43,9 @@ message ArchiveList {
   string slug = 4;
   google.protobuf.Timestamp created_at = 5;
   common.MediaFull thumbnail = 6;
+  // code is the stable, immutable public identifier used in the /timeline URL tail
+  // and by GetArchive to resolve the archive (id is no longer the public key).
+  string code = 7;
 }
 
 // ─── read side (resolved timeline blocks) ────────────────────────────────────

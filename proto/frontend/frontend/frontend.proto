@@ -114,9 +114,9 @@ service FrontendService {
     option (google.api.http) = {get: "/api/frontend/archive/paged"};
   }
 
-  // GetArchive retrieves an archive by its heading, tag and id.
+  // GetArchive retrieves an archive by its stable public code (the /timeline URL tail).
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
-    option (google.api.http) = {get: "/api/frontend/archive/{heading}/{tag}/{id}"};
+    option (google.api.http) = {get: "/api/frontend/archive/{code}"};
   }
 
   // Submit a support ticket
@@ -373,9 +373,8 @@ message GetArchivesPagedResponse {
 }
 
 message GetArchiveRequest {
-  string heading = 1;
-  string tag = 2;
-  int32 id = 3;
+  // code is the archive's stable public identifier (the tail of /timeline/{pretty}-{code}).
+  string code = 1;
 }
 
 message GetArchiveResponse {

@@ -1,16 +1,32 @@
 package entity
 
 import (
+	"strconv"
+	"strings"
 	"time"
 )
 
 type ArchiveList struct {
 	Id           int                  `db:"id" json:"id"`
+	Code         string               `db:"code" json:"code"`
 	Translations []ArchiveTranslation `db:"translations" json:"translations"`
 	Tag          string               `db:"tag" json:"tag"`
 	Slug         string               `json:"slug"`
 	CreatedAt    time.Time            `db:"created_at" json:"created_at"`
 	Thumbnail    MediaFull            `db:"thumbnail" json:"thumbnail"`
+}
+
+// ArchiveCodeFromID derives an archive's stable public code from its primary key:
+// "AR" + upper-case base36(id), left-padded with '0' to width 4 (e.g. id 12 -> AR000C).
+// It MUST stay byte-identical to the SQL backfill in migration 0136
+// (CONCAT('AR', LPAD(UPPER(CONV(id,10,36)),4,'0'))). The code is assigned once at
+// creation and is immutable thereafter.
+func ArchiveCodeFromID(id int) string {
+	b36 := strings.ToUpper(strconv.FormatInt(int64(id), 36))
+	if len(b36) < 4 {
+		b36 = strings.Repeat("0", 4-len(b36)) + b36
+	}
+	return "AR" + b36
 }
 
 type ArchiveFull struct {
