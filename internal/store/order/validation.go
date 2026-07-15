@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -189,7 +190,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			ProductBrand:    productBody.ProductBodyInsert.Brand,
 			Color:           productBody.ProductBodyInsert.Color,
 			SKU:             prd.SKU,
-			Slug:            dto.GetProductSlug(prd.Id, productBody.ProductBodyInsert.Brand, productName, productBody.ProductBodyInsert.TargetGender.String()),
+			Slug:            slug.ProductPath(productName, prd.SKU),
 			TopCategoryId:   productBody.ProductBodyInsert.TopCategoryId,
 			SubCategoryId:   productBody.ProductBodyInsert.SubCategoryId,
 			TypeId:          productBody.ProductBodyInsert.TypeId,
@@ -278,7 +279,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			ProductBrand:    pb.ProductBodyInsert.Brand,
 			Color:           pb.ProductBodyInsert.Color,
 			SKU:             prd.SKU,
-			Slug:            dto.GetProductSlug(prd.Id, pb.ProductBodyInsert.Brand, productName, pb.ProductBodyInsert.TargetGender.String()),
+			Slug:            slug.ProductPath(productName, prd.SKU),
 			TopCategoryId:   pb.ProductBodyInsert.TopCategoryId,
 			SubCategoryId:   pb.ProductBodyInsert.SubCategoryId,
 			TypeId:          pb.ProductBodyInsert.TypeId,

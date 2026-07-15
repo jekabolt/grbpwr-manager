@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -258,14 +259,14 @@ func (c *Client) getProductPageMetrics(ctx context.Context, startDate, endDate t
 			}
 
 			pagePath := row.DimensionValues[1].Value
-			productID := extractProductIDFromPath(pagePath)
-			if productID == 0 {
+			productSKU := extractProductSKUFromPath(pagePath)
+			if productSKU == "" {
 				continue
 			}
 
 			metrics = append(metrics, ProductPageMetrics{
 				Date:       date,
-				ProductID:  strconv.Itoa(productID),
+				ProductID:  productSKU,
 				PagePath:   pagePath,
 				PageViews:  parseInt(row.MetricValues[0].Value),
 				Sessions:   parseInt(row.MetricValues[1].Value),
@@ -495,19 +496,22 @@ func parseDecimal(s string) decimal.Decimal {
 	return d
 }
 
-// extractProductIDFromPath extracts product ID from URL path.
-// Handles both /product/42 and /product/{gender}/{brand}/{name}/{id} (see dto.GetProductSlug).
-// Returns 0 if path is not a product path or last segment is not numeric.
-func extractProductIDFromPath(path string) int {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 2 || parts[0] != "product" {
-		return 0
+// baseSKUInPath matches the base-SKU tail of a product URL (/p/{pretty}-{sku}), lowercase in the URL:
+// SSYY-NNNNN-CCC, e.g. ss26-00021-blk. The product.id no longer appears in the path (SKU redesign PR3).
+var baseSKUInPath = regexp.MustCompile(`(?i)([a-z]{2}[0-9]{2}-[0-9]{5}-[a-z0-9]{3})$`)
+
+// extractProductSKUFromPath extracts the uppercased base SKU from a product page path
+// (/p/{pretty}-{sku}). Returns "" when the path is not a product path or carries no SKU.
+func extractProductSKUFromPath(path string) string {
+	path = strings.Trim(path, "/")
+	if !strings.HasPrefix(path, "p/") {
+		return ""
 	}
-	id, err := strconv.Atoi(parts[len(parts)-1])
-	if err != nil {
-		return 0
+	m := baseSKUInPath.FindStringSubmatch(path)
+	if m == nil {
+		return ""
 	}
-	return id
+	return strings.ToUpper(m[1])
 }
 
 // CircuitBreakerState returns the current state of the circuit breaker.

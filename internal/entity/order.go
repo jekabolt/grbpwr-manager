@@ -129,7 +129,8 @@ type OrderItem struct {
 	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
 	TypeId        sql.NullInt32              `db:"type_id"`
 	TargetGender  GenderEnum                 `db:"target_gender"`
-	SKU           string                     `db:"product_sku"`
+	SKU           string                     `db:"product_sku"`     // variant SKU (snapshot / product_size.sku)
+	ProductBaseSKU string                    `db:"product_base_sku"` // base SKU for the product-page URL
 	Slug          string
 	Preorder      sql.NullTime `db:"preorder"`
 	OrderItemInsert

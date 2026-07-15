@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 )
 
 // BackInStock represents the data needed for back-in-stock email notifications
@@ -47,16 +48,10 @@ func ProductFullToBackInStock(product *entity.ProductFull, sizeId int, buyerName
 		thumbnail = product.Product.ProductDisplay.Thumbnail.ThumbnailMediaURL
 	}
 
-	// Generate product URL
+	// Generate product URL (/p/{pretty}-{base-sku})
 	productURL := ""
 	if product.Product != nil {
-		gender := product.Product.ProductDisplay.ProductBody.ProductBodyInsert.TargetGender.String()
-		productURL = fmt.Sprintf("https://grbpwr.com%s", GetProductSlug(
-			product.Product.Id,
-			brand,
-			productName,
-			gender,
-		))
+		productURL = fmt.Sprintf("https://grbpwr.com%s", slug.ProductPath(productName, product.Product.SKU))
 	}
 
 	return &BackInStock{

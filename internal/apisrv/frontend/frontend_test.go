@@ -242,8 +242,8 @@ func TestGetProduct(t *testing.T) {
 	mockProducts := mocks.NewProducts(t)
 	mockRepo.EXPECT().Products().Return(mockProducts)
 
-	// Setup mock for GetProductByIdNoHidden
-	mockProducts.EXPECT().GetProductByIdNoHidden(mock.Anything, 1).Return(mockProduct, nil)
+	// Setup mock for GetProductBySKU (product resolves by base SKU under the /p/{pretty}-{sku} scheme)
+	mockProducts.EXPECT().GetProductBySKU(mock.Anything, "TST123").Return(mockProduct, nil)
 
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
@@ -267,7 +267,7 @@ func TestGetProduct(t *testing.T) {
 
 	// Call the function being tested
 	resp, err := server.GetProduct(ctx, &pb_frontend.GetProductRequest{
-		Id: 1,
+		Sku: "TST123",
 	})
 
 	// Assert expectations

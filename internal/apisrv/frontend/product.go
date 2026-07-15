@@ -16,13 +16,16 @@ import (
 )
 
 func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequest) (*pb_frontend.GetProductResponse, error) {
+	if req.Sku == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "sku is required")
+	}
 
-	pf, err := s.repo.Products().GetProductByIdNoHidden(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductBySKU(ctx, req.Sku)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get product by id",
+		slog.Default().ErrorContext(ctx, "can't get product by sku",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "failed to get product")

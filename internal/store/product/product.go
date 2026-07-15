@@ -203,6 +203,13 @@ func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.Pro
 	return s.getProductDetails(ctx, map[string]any{"id": id}, false)
 }
 
+// GetProductBySKU returns a product by its base SKU (the public resolve key, case-insensitive since
+// product.sku is stored uppercase and MySQL string compares are case-insensitive), excluding hidden
+// products. This is the storefront resolver for the /p/{pretty}-{sku} URL scheme.
+func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.ProductFull, error) {
+	return s.getProductDetails(ctx, map[string]any{"sku": strings.ToUpper(sku)}, false)
+}
+
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
 	// sizes exist. color_code is the dictionary FK (NULL falls back to translit/UNK in the generator).

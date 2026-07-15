@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -122,6 +122,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			m.blur_hash,
 			p.brand AS product_brand,
 			COALESCE(oi.product_sku, ps.sku, p.sku) AS product_sku,
+			p.sku AS product_base_sku,
 			p.color AS color,
 			p.top_category_id AS top_category_id,
 			p.sub_category_id AS sub_category_id,
@@ -162,7 +163,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			productName = translationMap[oi.ProductId][0].Name
 		}
 
-		oi.Slug = dto.GetProductSlug(oi.ProductId, oi.ProductBrand, productName, oi.TargetGender.String())
+		oi.Slug = slug.ProductPath(productName, oi.ProductBaseSKU)
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
 	}
 

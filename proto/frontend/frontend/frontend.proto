@@ -26,7 +26,7 @@ service FrontendService {
 
   // Get product brand and name
   rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
-    option (google.api.http) = {get: "/api/frontend/product/{gender}/{brand}/{name}/{id}"};
+    option (google.api.http) = {get: "/api/frontend/product/{sku}"};
   }
 
   // Get paged products
@@ -225,10 +225,10 @@ message GetHeroResponse {
 }
 
 message GetProductRequest {
-  string gender = 1;
-  string brand = 2;
-  string name = 3;
-  int32 id = 4;
+  // Resolve by base SKU (the public product key). The frontend extracts it from the
+  // /p/{pretty}-{sku} URL tail. Fields 1-4 (gender/brand/name/id) are removed — the internal
+  // product.id is no longer a public key (SKU redesign PR3, breaking, no redirects).
+  string sku = 5;
 }
 
 message GetProductResponse {

@@ -72,6 +72,8 @@ type (
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.
+		GetProductBySKU(ctx context.Context, sku string) (*entity.ProductFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.

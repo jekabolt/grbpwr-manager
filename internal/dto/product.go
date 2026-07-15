@@ -3,11 +3,11 @@ package dto
 import (
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -519,7 +519,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetProductSlug(e.Product.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
+		Slug:           slug.ProductPath(firstTranslationName, e.Product.SKU),
 		Sku:            e.Product.SKU,
 		ProductDisplay: pbProductDisplay,
 		Prices:         pbPrices, // Prices are in nested Product
@@ -624,28 +624,6 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 		CreatedAt:      timestamppb.New(e.CreatedAt),
 		AdminUsername:  e.AdminUsername,
 	}
-}
-
-var reg = regexp.MustCompile("[^a-zA-Z0-9]+")
-
-func GetProductSlug(id int, brand, name, gender string) string {
-	clean := func(part string) string {
-		// Replace all non-alphanumeric characters with an empty string
-		return reg.ReplaceAllString(part, "")
-	}
-
-	// Use strings.Builder for efficient string concatenation
-	var sb strings.Builder
-	sb.WriteString("/product/")
-	sb.WriteString(gender)
-	sb.WriteString("/")
-	sb.WriteString(clean(brand))
-	sb.WriteString("/")
-	sb.WriteString(clean(name))
-	sb.WriteString("/")
-	sb.WriteString(fmt.Sprint(id))
-
-	return sb.String()
 }
 
 // MapStockChangeSourceToAPI maps internal source types to API-friendly names.
@@ -794,7 +772,7 @@ func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error)
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetProductSlug(e.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
+		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
 		Sku:       e.SKU,
 		ProductDisplay: &pb_common.ProductDisplay{
 			ProductBody: &pb_common.ProductBody{
