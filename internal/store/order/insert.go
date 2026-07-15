@@ -138,6 +138,13 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	if err != nil {
 		return fmt.Errorf("can't fetch product base prices for order-item snapshot: %w", err)
 	}
+	// Snapshot each line's variant SKU (product_size.sku) so order history keeps the SKU sold even
+	// if the product is later re-minted (task 15). Re-snapshotted at OrderPaymentDone (the freeze
+	// point) in case it changed between checkout and payment.
+	skuByProductSize, err := fetchVariantSKUs(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch variant SKUs for order-item snapshot: %w", err)
+	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		row := map[string]any{
@@ -149,6 +156,7 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"size_id":                 item.SizeId,
 			"cost_price_at_sale":      nil,
 			"product_price_base":      nil,
+			"product_sku":             nil,
 		}
 		if cost, ok := costByProduct[item.ProductId]; ok {
 			row["cost_price_at_sale"] = cost
@@ -156,10 +164,36 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 		if base, ok := basePriceByProduct[item.ProductId]; ok {
 			row["product_price_base"] = base
 		}
+		if sku, ok := skuByProductSize[[2]int{item.ProductId, item.SizeId}]; ok {
+			row["product_sku"] = sku
+		}
 		rows = append(rows, row)
 	}
 
 	return storeutil.BulkInsert(ctx, db, "order_item", rows)
+}
+
+// fetchVariantSKUs returns the current variant SKU (product_size.sku) for each (product_id, size_id)
+// referenced by items, keyed by [2]int{productID, sizeID}. Rows with a NULL sku are omitted.
+func fetchVariantSKUs(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[[2]int]string, error) {
+	ids := distinctProductIDs(items)
+	if len(ids) == 0 {
+		return map[[2]int]string{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ProductID int    `db:"product_id"`
+		SizeID    int    `db:"size_id"`
+		SKU       string `db:"sku"`
+	}](ctx, db, `SELECT product_id, size_id, sku FROM product_size WHERE product_id IN (:ids) AND sku IS NOT NULL`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[[2]int]string, len(rows))
+	for _, r := range rows {
+		out[[2]int{r.ProductID, r.SizeID}] = r.SKU
+	}
+	return out, nil
 }
 
 // distinctProductIDs returns the unique product ids referenced by items, order-preserving.
