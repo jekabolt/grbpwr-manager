@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -308,10 +307,9 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *p
 		})
 	}
 
+	// orderItem.SKU is already the variant SKU: the snapshot (order_item.product_sku) or, for legacy
+	// lines, the live product_size.sku — resolved in the order fetch query. No size suffix to append.
 	sku := orderItem.SKU
-	if size, ok := cache.GetSizeById(orderItem.SizeId); ok && size.Name != "" {
-		sku = fmt.Sprintf("%s-%s", orderItem.SKU, strings.ToUpper(size.Name))
-	}
 
 	return &pb_common.OrderItem{
 		Id:                    int32(orderItem.Id),

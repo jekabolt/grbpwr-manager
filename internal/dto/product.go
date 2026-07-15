@@ -645,27 +645,6 @@ func GetProductSlug(id int, brand, name, gender string) string {
 	return sb.String()
 }
 
-// FormatSKUWithSize formats SKU with 5-character padded size suffix using dash separator.
-// Removes decimal points from numeric sizes and pads to 5 characters with leading zeros.
-// Examples:
-//   - "HOO-BLA-M1763463513" + "xxl" -> "HOO-BLA-M1763463513-00XXL"
-//   - "PAN-PIN-M1768402195" + "xs" -> "PAN-PIN-M1768402195-00XXS"
-//   - "SHO-WHI-U1234567890" + "35.5" -> "SHO-WHI-U1234567890-03550"
-//   - "SHO-WHI-U1234567890" + "26" -> "SHO-WHI-U1234567890-00026"
-func FormatSKUWithSize(sku string, sizeName string) string {
-	// Remove decimal points from size (35.5 -> 355)
-	sizeClean := strings.ReplaceAll(sizeName, ".", "")
-
-	// Pad to exactly 5 characters with leading zeros
-	paddedSize := fmt.Sprintf("%05s", sizeClean)
-
-	// Uppercase the size
-	paddedSize = strings.ToUpper(paddedSize)
-
-	// Use dash separator
-	return sku + "-" + paddedSize
-}
-
 // MapStockChangeSourceToAPI maps internal source types to API-friendly names.
 // Simplifies source categories for end-user consumption.
 func MapStockChangeSourceToAPI(internalSource string) string {
@@ -710,11 +689,9 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 		return nil
 	}
 
-	// Format SKU with size (or use "SHIPPING" if it's a shipping entry)
+	// e.SKU is already the variant SKU (product_size.sku) from the stock-history query, or SHIPPING
+	// for a shipping-only entry. No size suffix to append.
 	formattedSKU := e.SKU
-	if e.SKU != "SHIPPING" && e.SizeName != "" {
-		formattedSKU = FormatSKUWithSize(e.SKU, e.SizeName)
-	}
 
 	// Map source to API-friendly name
 	apiSource := MapStockChangeSourceToAPI(e.Source)
