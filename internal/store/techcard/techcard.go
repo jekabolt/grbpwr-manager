@@ -37,12 +37,14 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
 // targets and the flat construction-description strings are gone (description → details[];
 // pricing is on costing).
-const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
+// season_code/season_year are the normalized SKU-facing season (task 05), derived from the free-text
+// `season` in techCardHeaderParams. The legacy free-text `season` is kept (UNIQUE key + filters).
+const techCardHeaderColumns = `style_number, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
 	measurement_unit, concept, notes, purpose, output_material_id`
 
-const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
+const techCardHeaderValues = `:style_number, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
@@ -54,6 +56,16 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	if purpose == "" {
 		purpose = entity.TechCardPurposeSellable
 	}
+	// Derive the normalized SKU-facing season (task 05) from the free-text season. Unparseable
+	// values ("-", "", junk) leave season_code/season_year NULL — the generator then falls back.
+	var seasonCode sql.NullString
+	var seasonYear sql.NullInt32
+	if tc.Season.Valid {
+		if code, year, ok := entity.ParseSeasonText(tc.Season.String); ok {
+			seasonCode = sql.NullString{String: string(code), Valid: true}
+			seasonYear = sql.NullInt32{Int32: int32(year), Valid: true}
+		}
+	}
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
 		"purpose":             string(purpose),
@@ -61,6 +73,8 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              tc.Season,
+		"season_code":         seasonCode,
+		"season_year":         seasonYear,
 		"collection":          tc.Collection,
 		"category_id":         tc.CategoryId,
 		"target_gender":       tc.TargetGender,
