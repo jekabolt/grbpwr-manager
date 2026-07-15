@@ -4121,6 +4121,8 @@ message ListTechCardsRequest {
   string season = 7; // optional case-insensitive substring
   string name = 8; // optional case-insensitive substring on name or style_number
   int32 product_id = 9; // optional: only cards linked to this product (0 = no filter)
+  string purpose = 10; // optional exact match: "sellable" | "auxiliary" ("" = no filter). A
+  // product-linking picker passes "sellable" to hide auxiliary/packaging cards.
 }
 
 message ListTechCardsResponse {

@@ -407,6 +407,11 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		gender = string(g)
 	}
 
+	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
+	if purpose != "" && !entity.ValidTechCardPurposes[entity.TechCardPurpose(purpose)] {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid purpose filter: must be sellable|auxiliary")
+	}
+
 	filter := entity.TechCardListFilter{
 		Stage:     stage,
 		Gender:    gender,
@@ -414,6 +419,7 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		Season:    strings.TrimSpace(req.Season),
 		Name:      strings.TrimSpace(req.Name),
 		ProductId: int(req.ProductId),
+		Purpose:   purpose,
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

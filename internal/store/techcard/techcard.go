@@ -444,6 +444,10 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		where += " AND id IN (SELECT tech_card_id FROM tech_card_product WHERE product_id = :productId)"
 		params["productId"] = filter.ProductId
 	}
+	if filter.Purpose != "" {
+		where += " AND purpose = :purpose"
+		params["purpose"] = filter.Purpose
+	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
 		fmt.Sprintf(`SELECT COUNT(*) FROM tech_card WHERE 1=1%s`, where), params)

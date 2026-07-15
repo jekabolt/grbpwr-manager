@@ -827,6 +827,9 @@ type TechCardListFilter struct {
 	Season    string // case-insensitive substring on season
 	Name      string // case-insensitive substring on name or style_number
 	ProductId int    // only cards linked to this product
+	Purpose   string // tech_card.purpose exact match (sellable|auxiliary); "" = no filter.
+	// A product-linking picker passes "sellable" so auxiliary (packaging) cards, which can never
+	// produce a SKU, do not clutter the choice (PR5-E).
 }
 
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
