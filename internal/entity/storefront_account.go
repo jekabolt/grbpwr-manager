@@ -5,12 +5,16 @@ import (
 	"time"
 )
 
-// StorefrontShoppingPreference is a value for storefront_account.shopping_preference ENUM.
+// StorefrontShoppingPreference is a value for storefront_account.shopping_preference ENUM. Its
+// gendered values are single-sourced from GenderEnum (Male/Female) so the "male"/"female" literals
+// are not defined twice; "all" is a preference-only value with no gender-attribute equivalent — it
+// is the filter superset (male ∪ female ∪ unisex), which is why it is NOT GenderEnum's "unisex"
+// (a product attribute, not a filter). See TestStorefrontShoppingPreferenceMatchesGender.
 type StorefrontShoppingPreference string
 
 const (
-	StorefrontShoppingMale   StorefrontShoppingPreference = "male"
-	StorefrontShoppingFemale StorefrontShoppingPreference = "female"
+	StorefrontShoppingMale   = StorefrontShoppingPreference(Male)
+	StorefrontShoppingFemale = StorefrontShoppingPreference(Female)
 	StorefrontShoppingAll    StorefrontShoppingPreference = "all"
 )
 
