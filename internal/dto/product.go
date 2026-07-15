@@ -504,16 +504,8 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 		firstTranslationName = productBody.Translations[0].Name
 	}
 
-	// Calculate sold_out from sizes: product is sold out if it has no sizes OR all sizes have quantity <= 0
-	soldOut := true
-	if len(e.Sizes) > 0 {
-		for _, size := range e.Sizes {
-			if size.Quantity.GreaterThan(decimal.Zero) {
-				soldOut = false
-				break
-			}
-		}
-	}
+	// sold_out is derived from the sizes' total stock — one shared definition (PR5-B).
+	soldOut := entity.SoldOutFromSizes(e.Sizes)
 
 	pbProduct := &pb_common.Product{
 		Id:             int32(e.Product.Id),

@@ -301,6 +301,18 @@ func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
 	return ps.Quantity.Round(0)
 }
 
+// SoldOutFromSizes is the single Go definition of the derived sold_out flag: a product is sold out
+// when the total available quantity across its sizes is <= 0 (which includes having no sizes). The
+// SQL read path computes the same thing server-side via one shared expression (store/product's
+// soldOutSelect / productStockExpr); keep the two in agreement (PR5-B).
+func SoldOutFromSizes(sizes []ProductSize) bool {
+	total := decimal.Zero
+	for i := range sizes {
+		total = total.Add(sizes[i].Quantity)
+	}
+	return total.LessThanOrEqual(decimal.Zero)
+}
+
 // ProductSizes for insert represents the product_size table
 type ProductSizeInsert struct {
 	Quantity decimal.Decimal `db:"quantity"`

@@ -12,6 +12,15 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// productStockExpr is the single SQL scalar for a product's total available stock: the sum of its
+// sizes' quantities (0 when it has none), correlated on p.id. soldOutSelect derives the sold_out
+// flag from it. Both are reused across every product list/detail/low-stock query so the definition
+// can't drift; the Go equivalent for locally-loaded sizes is entity.SoldOutFromSizes (PR5-B).
+const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0)`
+
+// soldOutSelect is the sold_out projection: a product is sold out when its total stock is zero.
+const soldOutSelect = productStockExpr + ` = 0 AS sold_out`
+
 // GetProductsPaged returns a paged list of products based on provided parameters.
 func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error) {
 	if len(sortFactors) > 0 {
@@ -218,7 +227,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
@@ -288,13 +297,13 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE p.hidden = 0 AND p.deleted_at IS NULL
-		AND COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) BETWEEN 1 AND :threshold
-	ORDER BY COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) ASC
+		AND ` + productStockExpr + ` BETWEEN 1 AND :threshold
+	ORDER BY ` + productStockExpr + ` ASC
 	LIMIT :limit`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
@@ -357,7 +366,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
@@ -533,11 +542,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		product.Prices = []entity.ProductPrice{}
 	}
 
-	totalQuantity := decimal.Zero
-	for _, size := range sizes {
-		totalQuantity = totalQuantity.Add(size.Quantity)
-	}
-	product.SoldOut = totalQuantity.LessThanOrEqual(decimal.Zero)
+	product.SoldOut = entity.SoldOutFromSizes(sizes)
 
 	productInfo.Product = &product
 	productInfo.Sizes = sizes
@@ -573,7 +578,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
