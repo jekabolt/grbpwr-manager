@@ -94,9 +94,16 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 	for _, oi := range order.OrderItems {
 		price, _ := oi.ProductPriceWithSale.Float64()
 		qty, _ := oi.Quantity.Float64()
+		// item_id is the variant SKU (order fetch resolves oi.SKU to the frozen snapshot / variant
+		// product_size.sku), matching what the browser sends (task 09). item_name stays a human
+		// label — brand + product name — not the SKU.
+		name := oi.ProductBrand
+		if len(oi.Translations) > 0 && oi.Translations[0].Name != "" {
+			name = oi.ProductBrand + " " + oi.Translations[0].Name
+		}
 		items = append(items, mpItem{
 			ItemID:   oi.SKU,
-			ItemName: oi.ProductBrand + " " + oi.SKU,
+			ItemName: name,
 			Price:    price,
 			Quantity: int(qty),
 		})
