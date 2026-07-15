@@ -153,6 +153,44 @@ func ensureProductModelNo(ctx context.Context, db dependency.DB, f *productSKUFa
 	return n, nil
 }
 
+// BackfillSKUs mints new-format SKUs for every non-frozen product that still needs one: base SKU
+// empty or in the old format, or any variant SKU missing. It reuses MintProductSKUs so backfilled
+// values are identical to runtime-generated ones (same translit, fallbacks, style-vs-standalone).
+// Deleted products are INCLUDED. It is idempotent and self-limiting — once a product is converted it
+// no longer matches the predicate — so it is safe to run on every boot. It never fails boot: a single
+// product that cannot be minted is logged and skipped. Frozen products (sku_locked_at) are excluded.
+func (s *Store) BackfillSKUs(ctx context.Context) error {
+	ids, err := storeutil.QueryListNamed[struct {
+		ID int `db:"id"`
+	}](ctx, s.DB, `
+		SELECT id FROM product
+		WHERE sku_locked_at IS NULL
+		  AND (
+		        sku = ''
+		     OR sku NOT REGEXP '^[A-Z]{2}[0-9]{2}-[0-9]{5}-'
+		     OR EXISTS (SELECT 1 FROM product_size ps WHERE ps.product_id = product.id AND ps.sku IS NULL)
+		  )`, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("backfill: list products needing SKUs: %w", err)
+	}
+	minted := 0
+	for _, r := range ids {
+		id := r.ID
+		if err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			return MintProductSKUs(ctx, rep.DB(), id)
+		}); err != nil {
+			slog.WarnContext(ctx, "sku backfill: could not mint product; skipping",
+				slog.Int("product_id", id), slog.String("err", err.Error()))
+			continue
+		}
+		minted++
+	}
+	if len(ids) > 0 {
+		slog.InfoContext(ctx, "sku backfill complete", slog.Int("candidates", len(ids)), slog.Int("minted", minted))
+	}
+	return nil
+}
+
 // MintProductSKUs (re)generates the base SKU and every per-size variant SKU for a product, unless the
 // product's SKU is frozen (sku_locked_at set), in which case it is a no-op. It is idempotent: the
 // same facts yield the same SKUs. Runs inside the caller's transaction.

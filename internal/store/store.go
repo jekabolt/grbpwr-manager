@@ -254,6 +254,13 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("can't init consts: %w", err)
 	}
 
+	// SKU redesign task 13: mint new-format SKUs for any product still lacking them, reusing the
+	// runtime generator. Runs after InitConsts (the generator reads the size/colour dictionaries from
+	// cache) and after migrations. Idempotent and self-limiting; never fails boot.
+	if err := ss.productStore.BackfillSKUs(ctx); err != nil {
+		slog.WarnContext(ctx, "sku backfill returned an error (continuing boot)", slog.String("err", err.Error()))
+	}
+
 	go func() {
 		<-ctx.Done()
 		d.Close()
