@@ -183,6 +183,11 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err = insertPaymentRecordForCustomOrder(ctx, txDB, paymentMethod.Method.Id, order.Id, totalPrice); err != nil {
 			return err
 		}
+		// A custom order is born Confirmed — a sale, and thus a SKU freeze point (task 07/15): the
+		// line SKUs were snapshotted at insert; stamp sku_locked_at on its products too.
+		if err = freezeAndResnapshotOrderSKUs(ctx, txDB, order.Id); err != nil {
+			return fmt.Errorf("can't freeze custom order SKUs: %w", err)
+		}
 		history := &entity.StockHistoryParams{
 			Source:        entity.StockChangeSourceOrderCustom,
 			OrderId:       order.Id,

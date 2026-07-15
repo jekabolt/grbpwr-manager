@@ -56,9 +56,10 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 				Decimal: decimal.NewFromFloat(0),
 			}
 		}
-		id := time.Now().UTC().Unix()
-		sku := GenerateSKU(prd.Product, int(id))
-		prdId, err = insertProduct(ctx, rep.DB(), prd.Product, int(id), sku)
+		// product.id is AUTO_INCREMENT: let the DB assign it (no more time.Now().Unix(), which
+		// collided when two products were created in the same second). The SKU is minted after the
+		// sizes exist, from resolved dictionary segments (base + per-size variant).
+		prdId, err = insertProduct(ctx, rep.DB(), prd.Product)
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}
@@ -71,6 +72,10 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 		err = insertSizeMeasurements(ctx, rep.DB(), prd.SizeMeasurements, prdId)
 		if err != nil {
 			return fmt.Errorf("can't insert size measurements: %w", err)
+		}
+
+		if err := MintProductSKUs(ctx, rep.DB(), prdId); err != nil {
+			return fmt.Errorf("can't mint product SKUs: %w", err)
 		}
 
 		if err := recordStockChangeFromSizeMeasurements(ctx, rep, prdId, prd.SizeMeasurements, entity.StockChangeSourceAdminNewProduct, entity.StockChangeReasonInitialStock); err != nil {
@@ -132,6 +137,13 @@ func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ProductNew, id in
 			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
+		// Re-mint SKUs so an attribute change (colour, season, ...) is reflected while the SKU is
+		// unlocked; sizes were delete+reinserted above, and MintProductSKUs regenerates base + every
+		// variant. It is a no-op once the product is frozen (sku_locked_at set).
+		if err := MintProductSKUs(ctx, rep.DB(), id); err != nil {
+			return fmt.Errorf("can't re-mint product SKUs: %w", err)
+		}
+
 		err = updateProductMedia(ctx, rep.DB(), id, prd.MediaIds)
 		if err != nil {
 			return fmt.Errorf("can't update product media: %w", err)
@@ -191,22 +203,23 @@ func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.Pro
 	return s.getProductDetails(ctx, map[string]any{"id": id}, false)
 }
 
-func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, id int, sku string) (int, error) {
+func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert) (int, error) {
+	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
+	// sizes exist. color_code is the dictionary FK (NULL falls back to translit/UNK in the generator).
 	// A cost provided at create time is manual admin input, so stamp its provenance
 	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
 	query := `
 	INSERT INTO product
-	(id, sku, preorder, brand, color, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES (:id, :sku, :preorder, :brand, :color, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
+	(sku, preorder, brand, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :preorder, :brand, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
-		"id":                   id,
-		"sku":                  sku,
 		"preorder":             product.ProductBodyInsert.Preorder,
 		"brand":                product.ProductBodyInsert.Brand,
 		"color":                product.ProductBodyInsert.Color,
+		"colorCode":            product.ProductBodyInsert.ColorCode,
 		"colorHex":             product.ProductBodyInsert.ColorHex,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          product.ThumbnailMediaID,
@@ -395,11 +408,12 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 	query := `
 	UPDATE product 
 	SET 
-		preorder = :preorder, 
-		brand = :brand, 
-		color = :color, 
-		color_hex = :colorHex, 
-		country_of_origin = :countryOfOrigin, 
+		preorder = :preorder,
+		brand = :brand,
+		color = :color,
+		color_code = :colorCode,
+		color_hex = :colorHex,
+		country_of_origin = :countryOfOrigin,
 		thumbnail_id = :thumbnailId, 
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
@@ -431,6 +445,7 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		"preorder":             prd.ProductBodyInsert.Preorder,
 		"brand":                prd.ProductBodyInsert.Brand,
 		"color":                prd.ProductBodyInsert.Color,
+		"colorCode":            prd.ProductBodyInsert.ColorCode,
 		"colorHex":             prd.ProductBodyInsert.ColorHex,
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          prd.ThumbnailMediaID,

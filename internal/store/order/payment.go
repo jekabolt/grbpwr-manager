@@ -419,6 +419,32 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 	return payment, nil
 }
 
+// freezeAndResnapshotOrderSKUs is the SKU freeze at first sale (task 07/15). It re-snapshots each
+// order line's product_sku from the current product_size.sku (covering any change between checkout
+// and payment), then stamps sku_locked_at on every product in the order so MintProductSKUs treats it
+// as frozen from now on. Idempotent: only fills still-NULL snapshots and stamps still-unlocked
+// products, so a retried OrderPaymentDone is a no-op here.
+func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE order_item oi
+		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		SET oi.product_sku = ps.sku
+		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL
+		  AND (oi.product_sku IS NULL OR oi.product_sku = '')`,
+		map[string]any{"oid": orderID}); err != nil {
+		return fmt.Errorf("re-snapshot order_item.product_sku: %w", err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE product p
+		JOIN order_item oi ON oi.product_id = p.id
+		SET p.sku_locked_at = NOW()
+		WHERE oi.order_id = :oid AND p.sku_locked_at IS NULL`,
+		map[string]any{"oid": orderID}); err != nil {
+		return fmt.Errorf("stamp product.sku_locked_at: %w", err)
+	}
+	return nil
+}
+
 // OrderPaymentDone marks an order payment as done and transitions to Confirmed.
 func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (bool, error) {
 	wasUpdated := false
@@ -462,6 +488,13 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 		err = updateOrderPayment(ctx, txDB, order.Id, p.PaymentInsert)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		// First sale is a freeze point for the SKU (task 07/15): re-snapshot each line's variant SKU
+		// from the live product_size.sku (it may have changed between checkout and payment), then
+		// stamp sku_locked_at on the order's products so their SKUs are never rebuilt again.
+		if err := freezeAndResnapshotOrderSKUs(ctx, txDB, order.Id); err != nil {
+			return fmt.Errorf("can't freeze order SKUs: %w", err)
 		}
 
 		wasUpdated = true

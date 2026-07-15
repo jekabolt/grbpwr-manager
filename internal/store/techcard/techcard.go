@@ -11,6 +11,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
@@ -138,12 +139,54 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
 		}
-		return insertTechCardChildren(ctx, rep.DB(), id, tc)
+		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+			return err
+		}
+		// A new card's colourways may already link products (they become "styled" and take the
+		// style's season/model + colourway colour) — re-mint their SKUs while unlocked.
+		return remintCardProducts(ctx, rep.DB(), id, nil)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add tech card: %w", err)
 	}
 	return id, nil
+}
+
+// captureCardProductLinks returns the product ids currently linked via this card's colourways.
+func captureCardProductLinks(ctx context.Context, db dependency.DB, tcID int) ([]int, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		ProductID int `db:"product_id"`
+	}](ctx, db, `SELECT product_id FROM tech_card_colorway WHERE tech_card_id = :id AND product_id IS NOT NULL`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return nil, fmt.Errorf("capture card product links: %w", err)
+	}
+	ids := make([]int, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ProductID)
+	}
+	return ids, nil
+}
+
+// remintCardProducts re-mints the SKUs of every product affected by a colourway save: those linked
+// after the save UNION any passed in `previous` (products that were linked before and may now be
+// unlinked, so they revert to a standalone SKU). MintProductSKUs is a no-op for a frozen product.
+func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previous []int) error {
+	current, err := captureCardProductLinks(ctx, db, tcID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[int]struct{}, len(current)+len(previous))
+	for _, id := range append(current, previous...) {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if err := product.MintProductSKUs(ctx, db, id); err != nil {
+			return fmt.Errorf("re-mint product %d after colourway change: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // UpdateTechCard updates a tech card and replaces its child sections. It is
@@ -229,6 +272,13 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return err
 		}
 
+		// Capture product links before the full-replace so products that get UNLINKED by this save
+		// are still re-minted (reverting to a standalone SKU) alongside the newly-linked ones.
+		prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
+
 		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade
 		// from their parents — colourway usages (+ their per-size consumption) via
 		// tech_card_colorway, and detail media via tech_card_detail.
@@ -249,7 +299,11 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
-		return relinkSamplesToColorways(ctx, rep.DB(), id, sampleColorwayLinks)
+		if err := relinkSamplesToColorways(ctx, rep.DB(), id, sampleColorwayLinks); err != nil {
+			return err
+		}
+		// Re-mint SKUs for products linked now and those unlinked by this save (revert to standalone).
+		return remintCardProducts(ctx, rep.DB(), id, prevProductLinks)
 	})
 	if err != nil {
 		switch err {
