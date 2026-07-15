@@ -70,7 +70,21 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get product tags: %w", err)
 	}
 
+	if dict.Colors, err = s.getColors(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get colors: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getColors returns the controlled colour dictionary, ordered by code.
+func (s *Store) getColors(ctx context.Context) ([]entity.Color, error) {
+	query := `SELECT id, code, name, hex FROM color ORDER BY code`
+	colors, err := storeutil.QueryListNamed[entity.Color](ctx, s.DB, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get colors: %w", err)
+	}
+	return colors, nil
 }
 
 // getProductTags returns every distinct tag attached to a visible (non-hidden,

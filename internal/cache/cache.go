@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -104,6 +105,13 @@ var (
 	sizeById = map[int]entity.Size{}
 
 	entitySizes = []entity.Size{}
+
+	// Colour dictionary (task 01). colorByCode maps a 3-char code to its entry; colorCodeByName
+	// maps a lowercased free-text colour name to its code (for the free-text->code mapper used by
+	// the SKU generator/backfill). Both guarded by cacheMu.
+	entityColors    = []entity.Color{}
+	colorByCode     = map[string]entity.Color{}
+	colorCodeByName = map[string]string{}
 
 	entityCollections = []entity.Collection{}
 
@@ -207,6 +215,8 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
 	}
+
+	loadColors(dInfo.Colors)
 
 	for _, os := range dInfo.OrderStatuses {
 		for _, s := range orderStatuses {
@@ -322,6 +332,19 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	sizeById = make(map[int]entity.Size, len(entitySizes))
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
+	}
+	loadColors(dInfo.Colors)
+}
+
+// loadColors rebuilds the colour dictionary lookups. Callers hold cacheMu (RefreshDictionary) or
+// run during single-threaded init (InitConsts).
+func loadColors(colors []entity.Color) {
+	entityColors = colors
+	colorByCode = make(map[string]entity.Color, len(colors))
+	colorCodeByName = make(map[string]string, len(colors))
+	for _, c := range colors {
+		colorByCode[c.Code] = c
+		colorCodeByName[strings.ToLower(c.Name)] = c.Code
 	}
 }
 
@@ -657,6 +680,31 @@ func GetCollections() []entity.Collection {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 	return entityCollections
+}
+
+// GetColors returns the controlled colour dictionary.
+func GetColors() []entity.Color {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityColors
+}
+
+// GetColorByCode returns the dictionary entry for a 3-char colour code.
+func GetColorByCode(code string) (entity.Color, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	c, ok := colorByCode[code]
+	return c, ok
+}
+
+// MapColorNameToCode maps a free-text colour name (case-insensitive) to a dictionary code. Used by
+// the SKU generator/backfill to resolve a standalone product's legacy free-text colour. Returns
+// ("", false) when the name is not in the dictionary.
+func MapColorNameToCode(name string) (string, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	code, ok := colorCodeByName[strings.ToLower(strings.TrimSpace(name))]
+	return code, ok
 }
 
 func GetProductTags() []string {

@@ -16,4 +16,5 @@ type DictionaryInfo struct {
 	ComplimentaryShippingPrices map[string]decimal.Decimal
 	BackgroundHeroColor         string
 	ProductTags                 []string
+	Colors                      []Color
 }

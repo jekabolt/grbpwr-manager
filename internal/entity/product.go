@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -37,10 +38,22 @@ type Category struct {
 
 // Size represents the size table
 type Size struct {
-	Id         int    `db:"id"`
-	Name       string `db:"name"`
+	Id         int            `db:"id"`
+	Name       string         `db:"name"`
+	SkuOrd     int            `db:"sku_ord"`    // 2-digit ordinal for the size segment of the variant SKU
+	SkuSystem  sql.NullString `db:"sku_system"` // apparel|shoe|composite_ta|composite_bo
 	CountMen   int
 	CountWomen int
+}
+
+// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique; it feeds the
+// colour segment of the SKU and is referenced by product.color_code and tech_card_colorway.color_code.
+// Hex is the base shade; product.color_hex may override it per product.
+type Color struct {
+	ID   int            `db:"id"`
+	Code string         `db:"code"`
+	Name string         `db:"name"`
+	Hex  sql.NullString `db:"hex"`
 }
 
 // Collection represents a product collection with counts
@@ -93,6 +106,30 @@ func IsValidSeason(s SeasonEnum) bool {
 	return ok
 }
 
+// ParseSeasonText parses a free-text season string like "ss26" / "SS26" / " FW25 " into a validated
+// season code (SS/FW/PF/RC) and a full 4-digit year (2026). It returns ok=false when the string does
+// not start with a valid 2-letter code or has no 2-digit year — callers then leave the normalized
+// season_code/season_year NULL (e.g. legacy "-" or empty values). Used by tech-card season
+// normalization (task 05) and the SKU generator for styled products.
+func ParseSeasonText(s string) (code SeasonEnum, year int, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return "", 0, false
+	}
+	code = SeasonEnum(strings.ToUpper(s[:2]))
+	if !IsValidSeason(code) {
+		return "", 0, false
+	}
+	// first run of two consecutive digits anywhere after the code
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' && s[i+1] >= '0' && s[i+1] <= '9' {
+			year = 2000 + int(s[i]-'0')*10 + int(s[i+1]-'0')
+			return code, year, true
+		}
+	}
+	return "", 0, false
+}
+
 var ValidSeasons = map[SeasonEnum]bool{
 	SeasonSS: true,
 	SeasonFW: true,
@@ -129,6 +166,7 @@ type ProductBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
 	Color              string              `db:"color" valid:"required"`
+	ColorCode          sql.NullString      `db:"color_code" valid:"-"` // FK color(code); NULL falls back to translit/UNK in the generator
 	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
@@ -187,6 +225,8 @@ type Product struct {
 	DeletedAt      sql.NullTime   `db:"deleted_at"`
 	Slug           string         `db:"slug"`
 	SKU            string         `db:"sku"`
+	ModelNo        sql.NullInt32  `db:"model_no"`      // 5-digit standalone model number; NULL for colourway-linked products
+	SkuLockedAt    sql.NullTime   `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
 	ProductDisplay ProductDisplay `valid:"required"`
 	Prices         []ProductPrice // Multi-currency prices
 	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
