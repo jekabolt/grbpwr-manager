@@ -127,6 +127,23 @@ func validateColorCode(code string) error {
 	return nil
 }
 
+// logModelNoCeilingAlert emits the R7 ceiling-alert as a structured log when modelNo approaches the
+// fixed 5-digit width. It never fails the mint — ClassifyModelNoCeiling(modelNo) is still a valid
+// model number at both thresholds, this is early warning for capacity planning (the next SKU
+// contract version), not a validation boundary.
+func logModelNoCeilingAlert(ctx context.Context, productID, modelNo int) {
+	switch ClassifyModelNoCeiling(modelNo) {
+	case ModelNoCeilingCritical:
+		slog.ErrorContext(ctx, "sku: model_no approaching 5-digit ceiling (critical)",
+			slog.Int("product_id", productID), slog.Int("model_no", modelNo),
+			slog.Int("threshold", ModelNoCriticalThreshold))
+	case ModelNoCeilingWarn:
+		slog.WarnContext(ctx, "sku: model_no approaching 5-digit ceiling (warn)",
+			slog.Int("product_id", productID), slog.Int("model_no", modelNo),
+			slog.Int("threshold", ModelNoWarnThreshold))
+	}
+}
+
 // ensureStyleModelNo returns the style's model number, allocating and persisting one on the tech_card
 // if it has none yet (self-healing so minting never emits 00000).
 func ensureStyleModelNo(ctx context.Context, db dependency.DB, f *productSKUFacts) (int, error) {
@@ -354,7 +371,11 @@ func MintProductSKUs(ctx context.Context, db dependency.DB, productID int) error
 	if err != nil {
 		return err
 	}
-	base := BuildBaseSKU(seg)
+	logModelNoCeilingAlert(ctx, productID, seg.ModelNo)
+	base, err := BuildBaseSKU(seg)
+	if err != nil {
+		return fmt.Errorf("mint product %d: %w", productID, err)
+	}
 	base, err = disambiguateBase(ctx, db, base, productID)
 	if err != nil {
 		return err
@@ -426,7 +447,10 @@ func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base 
 		return err
 	}
 	for _, fact := range facts {
-		variant := BuildVariantSKU(base, fact.SKUOrd)
+		variant, err := BuildVariantSKU(base, fact.SKUOrd)
+		if err != nil {
+			return fmt.Errorf("mint variant sku (product %d size %d): %w", productID, fact.SizeID, err)
+		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
@@ -458,7 +482,10 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 		if fact.SKU.Valid && fact.SKU.String != "" {
 			continue
 		}
-		variant := BuildVariantSKU(baseRow.SKU, fact.SKUOrd)
+		variant, err := BuildVariantSKU(baseRow.SKU, fact.SKUOrd)
+		if err != nil {
+			return fmt.Errorf("mint frozen variant sku (product %d size %d): %w", productID, fact.SizeID, err)
+		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
@@ -500,7 +527,10 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 	if baseRow.SKU == "" {
 		return fmt.Errorf("cannot mint variant sku: product %d has no base sku", productID)
 	}
-	variant := BuildVariantSKU(baseRow.SKU, target.SKUOrd)
+	variant, err := BuildVariantSKU(baseRow.SKU, target.SKUOrd)
+	if err != nil {
+		return fmt.Errorf("mint variant sku (product %d size %d): %w", productID, sizeID, err)
+	}
 	if err := storeutil.ExecNamed(ctx, db,
 		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 		map[string]any{"sku": variant, "pid": productID, "sid": sizeID}); err != nil {

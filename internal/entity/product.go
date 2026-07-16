@@ -47,13 +47,19 @@ const (
 	SizeSKUSystemCompositeBO SizeSKUSystem = "composite_bo"
 )
 
+// ValidSizeSKUSystems is the canonical set of size families, mirroring ValidSeasons/
+// ValidProductTargetGenders below. It backs both IsValidSizeSKUSystem and the entity<->DB CHECK
+// drift test (problem 033/50-F — internal/store/migrationlint) against migration 0147's
+// chk_size_sku_contract.
+var ValidSizeSKUSystems = map[SizeSKUSystem]bool{
+	SizeSKUSystemApparel:     true,
+	SizeSKUSystemShoe:        true,
+	SizeSKUSystemCompositeTA: true,
+	SizeSKUSystemCompositeBO: true,
+}
+
 func IsValidSizeSKUSystem(system SizeSKUSystem) bool {
-	switch system {
-	case SizeSKUSystemApparel, SizeSKUSystemShoe, SizeSKUSystemCompositeTA, SizeSKUSystemCompositeBO:
-		return true
-	default:
-		return false
-	}
+	return ValidSizeSKUSystems[system]
 }
 
 // Size represents the size table.
@@ -111,6 +117,21 @@ const (
 	ProductStatusHidden   ColorwayStatus = "hidden"   // admin-visible, hidden from storefront, not deleted
 	ProductStatusArchived ColorwayStatus = "archived" // soft-deleted
 )
+
+// ValidColorwayStatuses is the canonical status set, mirroring ValidSeasons/ValidProductTargetGenders.
+// It backs the entity<->DB CHECK drift test (internal/store/migrationlint) against migration 0137's
+// generated-column ENUM('active','hidden','archived'). NOTE: R6 (01-contract-decisions.md) plans a
+// stored lifecycle_status with a 5-value enum (adds UNKNOWN/DRAFT) that reassembles 0137 — that is
+// T-A's work, not done in this track; this set matches the CURRENT 3-value generated column.
+var ValidColorwayStatuses = map[ColorwayStatus]bool{
+	ProductStatusActive:   true,
+	ProductStatusHidden:   true,
+	ProductStatusArchived: true,
+}
+
+func IsValidColorwayStatus(status ColorwayStatus) bool {
+	return ValidColorwayStatuses[status]
+}
 
 type SeasonEnum string
 
