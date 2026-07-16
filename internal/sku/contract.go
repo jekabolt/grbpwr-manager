@@ -25,19 +25,19 @@ const ContractFileName = "sku-contract-v1.json"
 
 // Contract is the decoded shape of sku-contract-v1.json.
 type Contract struct {
-	Version           string                `json:"version"`
-	Description       string                `json:"description"`
-	BaseSKUShape      string                `json:"base_sku_shape"`
-	BaseSKULength     int                   `json:"base_sku_length"`
-	VariantSKUShape   string                `json:"variant_sku_shape"`
-	VariantSKULength  int                   `json:"variant_sku_length"`
-	Season            SeasonContract        `json:"season"`
-	ModelNo           ModelNoContract       `json:"model_no"`
-	ColorCode         ColorCodeContract     `json:"color_code"`
-	SizeOrdinal       SizeOrdinalContract   `json:"size_ordinal"`
-	SizeSystems       map[string]SizeSystem `json:"size_systems"`
-	GoldenVectors     GoldenVectors         `json:"golden_vectors"`
-	NegativeVectors   NegativeVectors       `json:"negative_vectors"`
+	Version          string                `json:"version"`
+	Description      string                `json:"description"`
+	BaseSKUShape     string                `json:"base_sku_shape"`
+	BaseSKULength    int                   `json:"base_sku_length"`
+	VariantSKUShape  string                `json:"variant_sku_shape"`
+	VariantSKULength int                   `json:"variant_sku_length"`
+	Season           SeasonContract        `json:"season"`
+	ModelNo          ModelNoContract       `json:"model_no"`
+	ColorCode        ColorCodeContract     `json:"color_code"`
+	SizeOrdinal      SizeOrdinalContract   `json:"size_ordinal"`
+	SizeSystems      map[string]SizeSystem `json:"size_systems"`
+	GoldenVectors    GoldenVectors         `json:"golden_vectors"`
+	NegativeVectors  NegativeVectors       `json:"negative_vectors"`
 }
 
 // SeasonContract is the valid season code set and year window.

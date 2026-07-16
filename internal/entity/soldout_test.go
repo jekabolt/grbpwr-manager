@@ -40,7 +40,7 @@ func TestProductIsPubliclyVisible(t *testing.T) {
 		ProductStatusActive:   true,
 		ProductStatusHidden:   false,
 		ProductStatusArchived: false,
-		ColorwayStatus(""):     false,
+		ColorwayStatus(""):    false,
 	}
 	for st, want := range cases {
 		p := &Colorway{Status: st}
