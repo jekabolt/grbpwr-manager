@@ -15,8 +15,9 @@
 --
 -- Representative product = MIN(product.id) per style_id. These fields are invariant across a style's
 -- colourways, so any linked colourway agrees; MIN is just a deterministic pick. Styles with no product
--- (pure dev tech cards) keep NULLs — no colourway reads them. season_code/season_year (PR1 SKU parts)
--- are intentionally NOT touched: they are a separate normalized concern used only by the SKU generator.
+-- (pure dev tech cards) keep NULLs — no colourway reads them. season_code IS backfilled (from the
+-- product's catalogue season CODE — see the step-3 note below); season_year (a PR1 SKU part) is
+-- intentionally NOT touched — it is a separate normalized concern used only by the SKU generator.
 -- care_instructions is added WITHOUT the product's belt-and-suspenders regex CHECK — validation is
 -- enforced in the write path (which moves to the style in step 3); backfilled values already passed it.
 --
@@ -92,6 +93,14 @@ DEALLOCATE PREPARE s;
 -- style's normalized season_code (0134), NOT the free-text PLM label tech_card.season ("ss26"). So we
 -- backfill season_code from product and leave tech_card.season (the PLM label, load-bearing in
 -- UNIQUE(style_number, season)) untouched — clobbering it would corrupt PLM data and risk the key.
+--
+-- ORPHAN SAFETY on the four FK-backed columns (model_wears_size_id, top/sub/type_category_id): product
+-- declared these with INLINE column REFERENCES, which InnoDB parses but does NOT enforce — so a product
+-- can carry a value whose size/category row was later deleted. The tech_card copies are guarded by REAL
+-- foreign keys (added in step 2), so copying an orphan verbatim would trip ERROR 1452 and HALT PROD BOOT
+-- (auto-migrate). We instead resolve each value through its target table: a valid id copies as itself, an
+-- orphan resolves to NULL (the tech_card columns are nullable, and only an already-broken reference is
+-- affected). Idempotent and lossless on healthy data.
 UPDATE tech_card t
 JOIN (SELECT style_id, MIN(id) AS pid FROM product GROUP BY style_id) rep ON rep.style_id = t.id
 JOIN product p ON p.id = rep.pid
@@ -104,7 +113,7 @@ SET
     t.composition           = p.composition,
     t.care_instructions     = p.care_instructions,
     t.model_wears_height_cm = p.model_wears_height_cm,
-    t.model_wears_size_id   = p.model_wears_size_id,
-    t.top_category_id       = p.top_category_id,
-    t.sub_category_id       = p.sub_category_id,
-    t.type_id               = p.type_id;
+    t.model_wears_size_id   = (SELECT s.id  FROM size s     WHERE s.id = p.model_wears_size_id),
+    t.top_category_id       = (SELECT c.id  FROM category c WHERE c.id = p.top_category_id),
+    t.sub_category_id       = (SELECT c.id  FROM category c WHERE c.id = p.sub_category_id),
+    t.type_id               = (SELECT c.id  FROM category c WHERE c.id = p.type_id);
