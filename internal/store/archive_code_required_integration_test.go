@@ -91,6 +91,12 @@ func TestArchiveCodeRequired(t *testing.T) {
 	require.NoError(t, err, "code lookup must be case-insensitive")
 	require.Equal(t, aid, lower.ArchiveList.Id)
 
+	// The application update surface never exposes or rewrites the immutable public code.
+	require.NoError(t, s.Archive().UpdateArchive(ctx, aid, mkInsert("Spring Drop Updated")))
+	var afterUpdateCode string
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT code FROM archive WHERE id = ?", aid).Scan(&afterUpdateCode))
+	require.Equal(t, persisted, afterUpdateCode, "content update must preserve immutable code")
+
 	// --- 3) concurrent creation: every archive gets a distinct, valid code ---
 	const n = 8
 	var wg sync.WaitGroup
