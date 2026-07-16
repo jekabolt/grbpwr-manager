@@ -39,7 +39,7 @@ type productSKUFacts struct {
 func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (*productSKUFacts, error) {
 	const q = `
 		SELECT p.id AS id,
-		       p.season AS season,
+		       sty.season_code AS season,
 		       YEAR(p.created_at) AS created_yr,
 		       p.color AS color,
 		       p.color_code AS color_code,
@@ -52,6 +52,7 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 		       cw.name        AS cw_name,
 		       (cw.id IS NOT NULL) AS styled
 		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN tech_card_colorway cw ON cw.id = (
 		    SELECT MIN(cw2.id) FROM tech_card_colorway cw2 WHERE cw2.product_id = p.id)
 		LEFT JOIN tech_card tc ON tc.id = cw.tech_card_id

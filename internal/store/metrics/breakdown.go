@@ -134,7 +134,7 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT oi.product_id, p.brand,
+		SELECT oi.product_id, sty.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt,
@@ -142,9 +142,10 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		GROUP BY oi.product_id, p.brand
+		GROUP BY oi.product_id, sty.brand
 		ORDER BY value DESC
 		LIMIT :limit
 	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
@@ -176,7 +177,7 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT oi.product_id, p.brand,
+		SELECT oi.product_id, sty.brand,
 			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
 			SUM(oi.quantity) AS cnt,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
@@ -184,9 +185,10 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		GROUP BY oi.product_id, p.brand
+		GROUP BY oi.product_id, sty.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
 	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
@@ -218,16 +220,17 @@ func (s *Store) getRevenueByCategory(ctx context.Context, from, to time.Time) ([
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT p.top_category_id AS category_id, c.name AS category_name,
+		SELECT sty.top_category_id AS category_id, c.name AS category_name,
 			c.name AS category_display_name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		JOIN category c ON p.top_category_id = c.id
-		GROUP BY p.top_category_id, c.name
+		JOIN category c ON sty.top_category_id = c.id
+		GROUP BY sty.top_category_id, c.name
 		ORDER BY value DESC
 		LIMIT 30
 	`, orderFactorsCTE, itemAdjExpr)

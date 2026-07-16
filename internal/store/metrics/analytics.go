@@ -73,7 +73,7 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			p.id AS product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			COALESCE(ps.revenue, 0) AS revenue,
 			COALESCE(ps.units_sold, 0) AS units_sold,
@@ -84,6 +84,7 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			COALESCE(ps.unit_cost, p.cost_price) AS unit_cost,
 			COALESCE(ps.revenue_cost, 0) AS revenue_cost
 		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN product_sales ps ON ps.product_id = p.id
 		LEFT JOIN ga4_views gv ON gv.product_id = p.id
 		ORDER BY revenue ASC, days_in_stock DESC
@@ -182,7 +183,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			p.id AS product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			COALESCE(r.refund_reason, '') AS refund_reason,
 			COALESCE(r.refund_reason_code, '') AS refund_reason_code,
@@ -194,6 +195,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			END AS return_rate_pct
 		FROM sold s
 		JOIN product p ON p.id = s.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN returned_by_reason r ON r.product_id = s.product_id
 		WHERE p.deleted_at IS NULL
 			AND (p.hidden IS NULL OR p.hidden = 0)
@@ -335,7 +337,7 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			ss.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			ss.size_id,
 			s.name AS size_name,
@@ -347,6 +349,7 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			END AS pct_of_product
 		FROM size_sales ss
 		JOIN product p ON p.id = ss.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN size s ON s.id = ss.size_id
 		JOIN product_totals pt ON pt.product_id = ss.product_id
 		WHERE p.deleted_at IS NULL
@@ -410,7 +413,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 			ps.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			ps.size_id,
 			s.name AS size_name,
@@ -419,6 +422,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 			ps.quantity * COALESCE(pp.price, 0) AS stock_value
 		FROM product_size ps
 		JOIN product p ON p.id = ps.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN product_price pp ON p.id = pp.product_id AND UPPER(pp.currency) = UPPER(:baseCurrency)
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN last_sales ls ON ls.product_id = ps.product_id AND ls.size_id = ps.size_id
@@ -480,7 +484,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 				(SELECT pt.name FROM product_translation pt
 				 WHERE pt.product_id = COALESCE(c.product_id, pr.product_id)
 				 ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			COALESCE(c.revenue, 0) AS current_revenue,
 			COALESCE(pr.revenue, 0) AS previous_revenue,
@@ -495,19 +499,21 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		FROM current_period c
 		LEFT JOIN previous_period pr ON pr.product_id = c.product_id
 		JOIN product p ON p.id = COALESCE(c.product_id, pr.product_id)
+		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE p.deleted_at IS NULL AND (p.hidden IS NULL OR p.hidden = 0)
 		UNION ALL
 		SELECT
 			pr.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = pr.product_id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			),
 			0, pr.revenue,
 			-100, 0, pr.units
 		FROM previous_period pr
 		LEFT JOIN current_period c ON c.product_id = pr.product_id
 		JOIN product p ON p.id = pr.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE c.product_id IS NULL
 			AND p.deleted_at IS NULL
 			AND (p.hidden IS NULL OR p.hidden = 0)

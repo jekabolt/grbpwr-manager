@@ -64,6 +64,11 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 		if err != nil {
 			return fmt.Errorf("can't create style for product: %w", err)
 		}
+		// Write the garment-level fields onto the synthesised style. Must precede MintProductSKUs,
+		// which now resolves season (a style field) from the style.
+		if err := writeStyleFields(ctx, rep.DB(), styleId, prd.Product.ProductBodyInsert); err != nil {
+			return fmt.Errorf("can't write style fields: %w", err)
+		}
 
 		// product.id is AUTO_INCREMENT: let the DB assign it (no more time.Now().Unix(), which
 		// collided when two products were created in the same second). The SKU is minted after the
@@ -230,29 +235,56 @@ func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity
 	if len(product.Translations) > 0 && strings.TrimSpace(product.Translations[0].Name) != "" {
 		name = strings.TrimSpace(product.Translations[0].Name)
 	}
-	gender := sql.NullString{}
-	if g := strings.TrimSpace(string(product.ProductBodyInsert.TargetGender)); g != "" {
-		gender = sql.NullString{String: g, Valid: true}
-	}
+	// Minimal header (style_number + name only, both NOT NULL). The garment-level fields
+	// (brand/season/category/fit/...) are written by writeStyleFields once the style exists —
+	// the single source of that field list, shared with the update path (PR6 P2).
 	return storeutil.ExecNamedLastId(ctx, db, `
-		INSERT INTO tech_card (style_number, name, brand, season, collection, target_gender)
-		VALUES (CONCAT('AUTO-', UUID_SHORT()), :name, :brand, :season, :collection, :gender)`,
-		map[string]any{
-			"name":       name,
-			"brand":      nullifyEmpty(product.ProductBodyInsert.Brand),
-			"season":     nullifyEmpty(string(product.ProductBodyInsert.Season)),
-			"collection": nullifyEmpty(product.ProductBodyInsert.Collection),
-			"gender":     gender,
-		})
+		INSERT INTO tech_card (style_number, name)
+		VALUES (CONCAT('AUTO-', UUID_SHORT()), :name)`,
+		map[string]any{"name": name})
 }
 
-// nullifyEmpty maps an empty/whitespace string to a NULL so a synthesised tech_card leaves optional
-// header columns unset rather than storing "".
-func nullifyEmpty(s string) sql.NullString {
-	if strings.TrimSpace(s) == "" {
-		return sql.NullString{}
+// writeStyleFields writes the garment-level catalogue fields onto the STYLE (tech_card). These are
+// invariant across a style's colourways (one pattern, colour is the only axis that varies), so the
+// style owns them and every colourway (product) reads them from here (PR6 P2). Called after
+// createSyntheticStyle on add and from updateProduct on edit — editing any colourway's style-level
+// field updates the style, hence all its colourways, which is the intended semantics.
+func styleFieldParams(b entity.ProductBodyInsert) map[string]any {
+	return map[string]any{
+		"brand":              b.Brand,
+		"season":             string(b.Season),
+		"collection":         b.Collection,
+		"targetGender":       string(b.TargetGender),
+		"fit":                b.Fit,
+		"composition":        b.Composition,
+		"careInstructions":   b.CareInstructions,
+		"modelWearsHeightCm": b.ModelWearsHeightCm,
+		"modelWearsSizeId":   b.ModelWearsSizeId,
+		"topCategoryId":      b.TopCategoryId,
+		"subCategoryId":      b.SubCategoryId,
+		"typeId":             b.TypeId,
 	}
-	return sql.NullString{String: s, Valid: true}
+}
+
+const styleFieldsSet = `
+	brand = :brand,
+	season_code = :season,
+	collection = :collection,
+	target_gender = :targetGender,
+	fit = :fit,
+	composition = :composition,
+	care_instructions = :careInstructions,
+	model_wears_height_cm = :modelWearsHeightCm,
+	model_wears_size_id = :modelWearsSizeId,
+	top_category_id = :topCategoryId,
+	sub_category_id = :subCategoryId,
+	type_id = :typeId`
+
+func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b entity.ProductBodyInsert) error {
+	params := styleFieldParams(b)
+	params["styleId"] = styleId
+	return storeutil.ExecNamed(ctx, db,
+		`UPDATE tech_card SET`+styleFieldsSet+` WHERE id = :styleId`, params)
 }
 
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, styleId int) (int, error) {
@@ -261,17 +293,19 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
 	// A cost provided at create time is manual admin input, so stamp its provenance
 	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
+	// Garment-level fields (brand/season/collection/target_gender/fit/composition/care/model_wears/
+	// category top-sub-type) live on the STYLE now (PR6 P2) and are written by writeStyleFields, not
+	// here. This INSERT carries only colourway-level columns (colour, media, price, country, ...).
 	query := `
 	INSERT INTO product
-	(sku, style_id, preorder, brand, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, :brand, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
+	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, hidden, version, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :styleId, :preorder, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :version, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
 		"styleId":              styleId,
 		"preorder":             product.ProductBodyInsert.Preorder,
-		"brand":                product.ProductBodyInsert.Brand,
 		"color":                product.ProductBodyInsert.Color,
 		"colorCode":            product.ProductBodyInsert.ColorCode,
 		"colorHex":             product.ProductBodyInsert.ColorHex,
@@ -279,19 +313,8 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 		"thumbnailId":          product.ThumbnailMediaID,
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
-		"topCategoryId":        product.ProductBodyInsert.TopCategoryId,
-		"subCategoryId":        product.ProductBodyInsert.SubCategoryId,
-		"typeId":               product.ProductBodyInsert.TypeId,
-		"modelWearsHeightCm":   product.ProductBodyInsert.ModelWearsHeightCm,
-		"modelWearsSizeId":     product.ProductBodyInsert.ModelWearsSizeId,
 		"hidden":               product.ProductBodyInsert.Hidden,
-		"targetGender":         product.ProductBodyInsert.TargetGender,
-		"season":               product.ProductBodyInsert.Season,
-		"careInstructions":     product.ProductBodyInsert.CareInstructions,
-		"composition":          product.ProductBodyInsert.Composition,
 		"version":              product.ProductBodyInsert.Version,
-		"collection":           product.ProductBodyInsert.Collection,
-		"fit":                  product.ProductBodyInsert.Fit,
 		"minTier":              product.ProductBodyInsert.MinTier,
 		"costPrice":            product.CostPrice,
 	}
@@ -459,31 +482,23 @@ func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.R
 }
 
 func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductInsert, id int) error {
+	// Colourway-level columns only. The garment-level fields (brand/season/collection/target_gender/
+	// fit/composition/care/model_wears/category top-sub-type) live on the STYLE now (PR6 P2) and are
+	// written to tech_card by writeStyleFields below — editing any colourway updates its style, hence
+	// all the style's colourways, which is the intended invariant.
 	query := `
-	UPDATE product 
-	SET 
+	UPDATE product
+	SET
 		preorder = :preorder,
-		brand = :brand,
 		color = :color,
 		color_code = :colorCode,
 		color_hex = :colorHex,
 		country_of_origin = :countryOfOrigin,
-		thumbnail_id = :thumbnailId, 
+		thumbnail_id = :thumbnailId,
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
-		top_category_id = :topCategoryId, 
-		sub_category_id = :subCategoryId, 
-		type_id = :typeId, 
-		model_wears_height_cm = :modelWearsHeightCm, 
-		model_wears_size_id = :modelWearsSizeId, 
 		hidden = :hidden,
-		target_gender = :targetGender,
-		season = :season,
-		care_instructions = :careInstructions,
-		composition = :composition,
 		version = :version,
-		collection = :collection,
-		fit = :fit,
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
 		-- product edits from the admin panel (which does not carry cost) never wipe it.
@@ -495,9 +510,8 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		cost_price_updated_at = CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE cost_price_updated_at END
 	WHERE id = :id
 	`
-	return storeutil.ExecNamed(ctx, db, query, map[string]any{
+	if err := storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
-		"brand":                prd.ProductBodyInsert.Brand,
 		"color":                prd.ProductBodyInsert.Color,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
 		"colorHex":             prd.ProductBodyInsert.ColorHex,
@@ -505,23 +519,21 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		"thumbnailId":          prd.ThumbnailMediaID,
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
-		"topCategoryId":        prd.ProductBodyInsert.TopCategoryId,
-		"subCategoryId":        prd.ProductBodyInsert.SubCategoryId,
-		"typeId":               prd.ProductBodyInsert.TypeId,
-		"modelWearsHeightCm":   prd.ProductBodyInsert.ModelWearsHeightCm,
-		"modelWearsSizeId":     prd.ProductBodyInsert.ModelWearsSizeId,
 		"hidden":               prd.ProductBodyInsert.Hidden,
-		"targetGender":         prd.ProductBodyInsert.TargetGender,
-		"season":               prd.ProductBodyInsert.Season,
-		"careInstructions":     prd.ProductBodyInsert.CareInstructions,
-		"composition":          prd.ProductBodyInsert.Composition,
 		"version":              prd.ProductBodyInsert.Version,
-		"collection":           prd.ProductBodyInsert.Collection,
-		"fit":                  prd.ProductBodyInsert.Fit,
 		"minTier":              prd.ProductBodyInsert.MinTier,
 		"costPrice":            prd.CostPrice,
 		"id":                   id,
-	})
+	}); err != nil {
+		return err
+	}
+	// Write the garment-level fields onto the product's style. Joined on product.id so we do not need
+	// to fetch style_id separately.
+	styleParams := styleFieldParams(prd.ProductBodyInsert)
+	styleParams["id"] = id
+	return storeutil.ExecNamed(ctx, db,
+		`UPDATE tech_card st JOIN product p ON p.style_id = st.id SET`+styleFieldsSet+` WHERE p.id = :id`,
+		styleParams)
 }
 
 // AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing) card
@@ -787,28 +799,28 @@ type productQueryResult struct {
 	MinTier               int16 `db:"min_tier"`
 	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
 
-	ThumbnailId                 int            `db:"thumbnail_id"`
-	SecondaryThumbnailId        sql.NullInt32  `db:"secondary_thumbnail_id"`
-	SecondaryThumbnailCreatedAt sql.NullTime   `db:"secondary_thumbnail_created_at"`
-	ThumbnailFullSize           string         `db:"full_size"`
-	ThumbnailFullSizeW          int            `db:"full_size_width"`
-	ThumbnailFullSizeH          int            `db:"full_size_height"`
-	ThumbnailThumb              string         `db:"thumbnail"`
-	ThumbnailThumbW             int            `db:"thumbnail_width"`
-	ThumbnailThumbH             int            `db:"thumbnail_height"`
-	ThumbnailCompressed         string         `db:"compressed"`
-	ThumbnailCompressedW        int            `db:"compressed_width"`
-	ThumbnailCompressedH        int            `db:"compressed_height"`
-	ThumbnailBlurHash           string         `db:"blur_hash"`
-	SecondaryFullSize           sql.NullString `db:"secondary_full_size"`
-	SecondaryFullSizeW          sql.NullInt32  `db:"secondary_full_size_width"`
-	SecondaryFullSizeH          sql.NullInt32  `db:"secondary_full_size_height"`
-	SecondaryThumb              sql.NullString `db:"secondary_thumbnail"`
-	SecondaryThumbW             sql.NullInt32  `db:"secondary_thumbnail_width"`
-	SecondaryThumbH             sql.NullInt32  `db:"secondary_thumbnail_height"`
-	SecondaryCompressed         sql.NullString `db:"secondary_compressed"`
-	SecondaryCompressedW        sql.NullInt32  `db:"secondary_compressed_width"`
-	SecondaryCompressedH        sql.NullInt32  `db:"secondary_compressed_height"`
+	ThumbnailId                 int                  `db:"thumbnail_id"`
+	SecondaryThumbnailId        sql.NullInt32        `db:"secondary_thumbnail_id"`
+	SecondaryThumbnailCreatedAt sql.NullTime         `db:"secondary_thumbnail_created_at"`
+	ThumbnailFullSize           string               `db:"full_size"`
+	ThumbnailFullSizeW          int                  `db:"full_size_width"`
+	ThumbnailFullSizeH          int                  `db:"full_size_height"`
+	ThumbnailThumb              string               `db:"thumbnail"`
+	ThumbnailThumbW             int                  `db:"thumbnail_width"`
+	ThumbnailThumbH             int                  `db:"thumbnail_height"`
+	ThumbnailCompressed         string               `db:"compressed"`
+	ThumbnailCompressedW        int                  `db:"compressed_width"`
+	ThumbnailCompressedH        int                  `db:"compressed_height"`
+	ThumbnailBlurHash           string               `db:"blur_hash"`
+	SecondaryFullSize           sql.NullString       `db:"secondary_full_size"`
+	SecondaryFullSizeW          sql.NullInt32        `db:"secondary_full_size_width"`
+	SecondaryFullSizeH          sql.NullInt32        `db:"secondary_full_size_height"`
+	SecondaryThumb              sql.NullString       `db:"secondary_thumbnail"`
+	SecondaryThumbW             sql.NullInt32        `db:"secondary_thumbnail_width"`
+	SecondaryThumbH             sql.NullInt32        `db:"secondary_thumbnail_height"`
+	SecondaryCompressed         sql.NullString       `db:"secondary_compressed"`
+	SecondaryCompressedW        sql.NullInt32        `db:"secondary_compressed_width"`
+	SecondaryCompressedH        sql.NullInt32        `db:"secondary_compressed_height"`
 	SecondaryBlurHash           sql.NullString       `db:"secondary_blur_hash"`
 	SoldOut                     bool                 `db:"sold_out"`
 	Status                      entity.ProductStatus `db:"status"`

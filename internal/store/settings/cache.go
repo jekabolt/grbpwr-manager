@@ -94,6 +94,7 @@ func (s *Store) getProductTags(ctx context.Context) ([]string, error) {
 		SELECT DISTINCT pt.tag AS tag
 		FROM product_tag pt
 		JOIN product p ON pt.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE p.hidden = 0
 			AND p.deleted_at IS NULL
 			AND pt.tag != ''
@@ -193,21 +194,24 @@ func (s *Store) getCategoriesCountsByGender(ctx context.Context, gender entity.G
 			category_id, 
 			COUNT(*) as count
 		FROM (
-			SELECT DISTINCT p.top_category_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex')
+			SELECT DISTINCT sty.top_category_id as category_id, p.id as product_id
+			FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id 
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex')
 			
 			UNION
 			
-			SELECT DISTINCT p.sub_category_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex') AND p.sub_category_id IS NOT NULL
+			SELECT DISTINCT sty.sub_category_id as category_id, p.id as product_id
+			FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id 
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex') AND sty.sub_category_id IS NOT NULL
 			
 			UNION
 			
-			SELECT DISTINCT p.type_id as category_id, p.id as product_id
-			FROM product p 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex') AND p.type_id IS NOT NULL
+			SELECT DISTINCT sty.type_id as category_id, p.id as product_id
+			FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id 
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex') AND sty.type_id IS NOT NULL
 		) AS category_products
 		GROUP BY category_id
 	`
@@ -279,7 +283,8 @@ func (s *Store) getSizeCountsByGender(ctx context.Context, gender entity.GenderE
 			SELECT DISTINCT ps.size_id, p.id as product_id
 			FROM product_size ps
 			JOIN product p ON ps.product_id = p.id
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND p.target_gender IN (:gender, 'unisex')
+		JOIN tech_card sty ON sty.id = p.style_id
+			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex')
 		) AS size_products
 		GROUP BY size_id
 	`
@@ -307,13 +312,14 @@ func (s *Store) getSizeCountsByGender(ctx context.Context, gender entity.GenderE
 func (s *Store) getCollections(ctx context.Context) ([]entity.Collection, error) {
 	query := `
 		SELECT DISTINCT 
-			p.collection as name
+			sty.collection as name
 		FROM product p
-		WHERE p.collection IS NOT NULL 
-			AND p.collection != ''
+		JOIN tech_card sty ON sty.id = p.style_id
+		WHERE sty.collection IS NOT NULL 
+			AND sty.collection != ''
 			AND p.hidden = 0 
 			AND p.deleted_at IS NULL
-		ORDER BY p.collection
+		ORDER BY sty.collection
 	`
 
 	type collectionResult struct {
@@ -357,15 +363,16 @@ func (s *Store) getCollections(ctx context.Context) ([]entity.Collection, error)
 func (s *Store) getCollectionCountsByGender(ctx context.Context, gender entity.GenderEnum) (map[string]int, error) {
 	query := `
 		SELECT 
-			p.collection as name, 
+			sty.collection as name, 
 			COUNT(DISTINCT p.id) as count
 		FROM product p
-		WHERE p.collection IS NOT NULL 
-			AND p.collection != ''
+		JOIN tech_card sty ON sty.id = p.style_id
+		WHERE sty.collection IS NOT NULL 
+			AND sty.collection != ''
 			AND p.hidden = 0 
 			AND p.deleted_at IS NULL 
-			AND p.target_gender IN (:gender, 'unisex')
-		GROUP BY p.collection
+			AND sty.target_gender IN (:gender, 'unisex')
+		GROUP BY sty.collection
 	`
 
 	type collectionCount struct {

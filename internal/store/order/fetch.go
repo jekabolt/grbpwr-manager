@@ -120,17 +120,18 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
 			m.blur_hash,
-			p.brand AS product_brand,
+			sty.brand AS product_brand,
 			COALESCE(oi.product_sku, ps.sku, p.sku) AS product_sku,
 			p.sku AS product_base_sku,
 			p.color AS color,
-			p.top_category_id AS top_category_id,
-			p.sub_category_id AS sub_category_id,
-			p.type_id AS type_id,
-			p.target_gender AS target_gender,
+			sty.top_category_id AS top_category_id,
+			sty.sub_category_id AS sub_category_id,
+			sty.type_id AS type_id,
+			sty.target_gender AS target_gender,
 			p.preorder AS preorder
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
 		JOIN media m ON p.thumbnail_id = m.id
         WHERE oi.order_id IN (:orderIds)

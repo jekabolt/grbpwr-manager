@@ -114,7 +114,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			whereClauses = append(whereClauses, "p.sale_percentage > 0")
 		}
 		if len(filterConditions.Gender) != 0 {
-			whereClauses = append(whereClauses, "p.target_gender IN (:targetGenders)")
+			whereClauses = append(whereClauses, "sty.target_gender IN (:targetGenders)")
 			genders := make([]string, len(filterConditions.Gender))
 			for i, g := range filterConditions.Gender {
 				genders[i] = string(g)
@@ -126,19 +126,19 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			args["color"] = filterConditions.Color
 		}
 		if len(filterConditions.TopCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.top_category_id IN (:topCategoryIds)")
+			whereClauses = append(whereClauses, "sty.top_category_id IN (:topCategoryIds)")
 			args["topCategoryIds"] = filterConditions.TopCategoryIds
 		}
 		if len(filterConditions.ExcludeTopCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.top_category_id NOT IN (:excludeTopCategoryIds)")
+			whereClauses = append(whereClauses, "sty.top_category_id NOT IN (:excludeTopCategoryIds)")
 			args["excludeTopCategoryIds"] = filterConditions.ExcludeTopCategoryIds
 		}
 		if len(filterConditions.SubCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.sub_category_id IN (:subCategoryIds)")
+			whereClauses = append(whereClauses, "sty.sub_category_id IN (:subCategoryIds)")
 			args["subCategoryIds"] = filterConditions.SubCategoryIds
 		}
 		if len(filterConditions.TypeIds) != 0 {
-			whereClauses = append(whereClauses, "p.type_id IN (:typeIds)")
+			whereClauses = append(whereClauses, "sty.type_id IN (:typeIds)")
 			args["typeIds"] = filterConditions.TypeIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
@@ -153,7 +153,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			args["tag"] = filterConditions.ByTag
 		}
 		if len(filterConditions.Collections) != 0 {
-			whereClauses = append(whereClauses, "p.collection IN (:collections)")
+			whereClauses = append(whereClauses, "sty.collection IN (:collections)")
 			args["collections"] = filterConditions.Collections
 		}
 		if len(filterConditions.Seasons) != 0 {
@@ -161,7 +161,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			for i, ss := range filterConditions.Seasons {
 				seasons[i] = string(ss)
 			}
-			whereClauses = append(whereClauses, "p.season IN (:seasons)")
+			whereClauses = append(whereClauses, "sty.season_code IN (:seasons)")
 			args["seasons"] = seasons
 		}
 	}
@@ -214,12 +214,12 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		p.version, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -232,6 +232,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
 		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
 	WHERE p.id IN (:ids) AND p.status = 'active'`
@@ -284,12 +285,12 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 
 	query := `
 	SELECT
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		p.version, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -302,6 +303,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
 		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE p.status = 'active'
@@ -353,12 +355,12 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		p.version, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -371,6 +373,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
 		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
 	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.status = 'active'`
@@ -422,12 +425,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 
 	query := fmt.Sprintf(`
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.season, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		p.version, sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -440,6 +443,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
@@ -567,12 +571,12 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 
 	baseQuery := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.season, p.care_instructions, p.composition, p.thumbnail_id,
-		p.secondary_thumbnail_id, p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.season_code AS season, sty.care_instructions, sty.composition, p.thumbnail_id,
+		p.secondary_thumbnail_id, p.version, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -585,10 +589,12 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
 		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
-	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p 
+	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id 
 		JOIN media m ON p.thumbnail_id = m.id
 		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 

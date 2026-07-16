@@ -230,13 +230,14 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 			oi.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			COUNT(*) AS purchase_count,
 			SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS total_revenue
 		FROM first_orders fo
 		JOIN order_item oi ON oi.order_id = fo.first_order_id
 		JOIN product p ON p.id = oi.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 		WHERE p.deleted_at IS NULL AND (p.hidden IS NULL OR p.hidden = 0)
 		GROUP BY oi.product_id, product_name
@@ -268,7 +269,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 				oi.product_id,
 				COALESCE(
 					(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-					p.brand
+					sty.brand
 				) AS product_name,
 				SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS revenue,
 				MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
@@ -276,6 +277,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
 			JOIN product p ON p.id = oi.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			WHERE co.order_status_id IN (%s)
 				AND co.placed >= :from AND co.placed < :to
@@ -418,7 +420,8 @@ func (rs *retentionStore) GetCategoryLoyalty(ctx context.Context, from, to time.
 			FROM ordered o
 			JOIN order_item oi ON oi.order_id = o.order_id
 			JOIN product p ON p.id = oi.product_id
-			JOIN category c ON c.id = COALESCE(p.sub_category_id, p.top_category_id)
+		JOIN tech_card sty ON sty.id = p.style_id
+			JOIN category c ON c.id = COALESCE(sty.sub_category_id, sty.top_category_id)
 			WHERE o.order_num = 1
 		),
 		second_cat AS (
@@ -426,7 +429,8 @@ func (rs *retentionStore) GetCategoryLoyalty(ctx context.Context, from, to time.
 			FROM ordered o
 			JOIN order_item oi ON oi.order_id = o.order_id
 			JOIN product p ON p.id = oi.product_id
-			JOIN category c ON c.id = COALESCE(p.sub_category_id, p.top_category_id)
+		JOIN tech_card sty ON sty.id = p.style_id
+			JOIN category c ON c.id = COALESCE(sty.sub_category_id, sty.top_category_id)
 			WHERE o.order_num = 2
 		)
 		SELECT

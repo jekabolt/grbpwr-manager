@@ -184,8 +184,8 @@ func (s *Store) GetGA4ProductPageMetrics(ctx context.Context, from, to time.Time
 	query := `
 		SELECT
 			p.id AS product_id,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1), p.brand) AS product_name,
-			p.brand,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1), sty.brand) AS product_name,
+			sty.brand,
 			ga.total_page_views,
 			ga.total_sessions,
 			ga.total_add_to_carts,
@@ -201,6 +201,7 @@ func (s *Store) GetGA4ProductPageMetrics(ctx context.Context, from, to time.Time
 			GROUP BY product_id
 		) ga
 		JOIN product p ON p.id = CAST(ga.product_id AS UNSIGNED)
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN (
 			SELECT
 				oi.product_id,
