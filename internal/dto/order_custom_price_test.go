@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
@@ -22,14 +23,14 @@ func TestConvertCustomOrderItemPositivePrice(t *testing.T) {
 
 	rejected := []string{"0", "0.00", "-1", "-0.01"}
 	for _, p := range rejected {
-		if _, err := ConvertCustomOrderItemInsertToEntity(mk(p)); err == nil {
+		if _, err := ConvertCustomOrderItemInsertToEntity(mk(p), "EUR"); err == nil {
 			t.Errorf("custom_price %q: expected rejection, got nil error", p)
 		}
 	}
 
 	accepted := []string{"0.01", "1", "199.99"}
 	for _, p := range accepted {
-		got, err := ConvertCustomOrderItemInsertToEntity(mk(p))
+		got, err := ConvertCustomOrderItemInsertToEntity(mk(p), "EUR")
 		if err != nil {
 			t.Errorf("custom_price %q: unexpected error %v", p, err)
 			continue
@@ -43,7 +44,16 @@ func TestConvertCustomOrderItemPositivePrice(t *testing.T) {
 	}
 
 	// a missing custom_price is still required
-	if _, err := ConvertCustomOrderItemInsertToEntity(&pb_common.CustomOrderItemInsert{ProductId: 1}); err == nil {
+	if _, err := ConvertCustomOrderItemInsertToEntity(&pb_common.CustomOrderItemInsert{ProductId: 1}, "EUR"); err == nil {
 		t.Errorf("nil custom_price: expected error, got nil")
+	}
+
+	// A nominally positive sub-minor price is zero in a zero-decimal currency and must be rejected.
+	if _, err := ConvertCustomOrderItemInsertToEntity(mk("0.01"), "JPY"); err == nil {
+		t.Error("JPY 0.01 rounds to zero and must be rejected")
+	}
+	got, err := ConvertCustomOrderItemInsertToEntity(mk("1"), "JPY")
+	if err != nil || !got.ProductPrice.Equal(decimal.NewFromInt(1)) {
+		t.Errorf("JPY 1 should remain a positive whole-unit price: got %s, err=%v", got.ProductPrice, err)
 	}
 }

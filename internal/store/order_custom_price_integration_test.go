@@ -111,6 +111,29 @@ func TestCreateCustomOrderRequiresPositivePrice(t *testing.T) {
 	require.Contains(t, strings.ToLower(verr.Message), "price must be positive", "mixed -> price invariant message")
 	assertNoMutation("mixed", before)
 
+	// Duplicate variant lines are validated before merge: a bad or inconsistent second price cannot
+	// disappear behind the first line's price.
+	before = snapshot()
+	_, err = s.Order().CreateCustomOrder(ctx, mkOrder([]entity.OrderItemInsert{item(fakeA, "10"), item(fakeA, "0")}))
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "price must be positive")
+	assertNoMutation("duplicate-zero", before)
+
+	before = snapshot()
+	_, err = s.Order().CreateCustomOrder(ctx, mkOrder([]entity.OrderItemInsert{item(fakeA, "10"), item(fakeA, "11")}))
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "inconsistent custom prices")
+	assertNoMutation("duplicate-inconsistent", before)
+
+	// Positive before rounding is not enough: JPY has no minor units, so 0.01 becomes zero.
+	before = snapshot()
+	jpyOrder := mkOrder([]entity.OrderItemInsert{item(fakeA, "0.01")})
+	jpyOrder.Currency = "JPY"
+	_, err = s.Order().CreateCustomOrder(ctx, jpyOrder)
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "price must be positive")
+	assertNoMutation("jpy-sub-minor", before)
+
 	// --- positive price passes the invariant: the resulting error is NOT the price one (it is the
 	// downstream out-of-stock failure for the non-existent product), proving the price gate let it through.
 	before = snapshot()

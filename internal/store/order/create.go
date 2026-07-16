@@ -127,6 +127,18 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 	if err != nil {
 		return nil, err
 	}
+	normalizedItems, err := normalizeCustomOrderItems(orderNew.Items, orderNew.Currency)
+	if err != nil {
+		return nil, err
+	}
+	orderNew.Items = normalizedItems
+	if orderNew.CustomShipmentCost != nil {
+		normalizedShipment := dto.RoundForCurrency(*orderNew.CustomShipmentCost, orderNew.Currency)
+		if normalizedShipment.IsNegative() {
+			return nil, &entity.ValidationError{Message: "custom shipment cost must be non-negative"}
+		}
+		orderNew.CustomShipmentCost = &normalizedShipment
+	}
 	shippingCountry := ""
 	if orderNew.ShippingAddress != nil {
 		shippingCountry = orderNew.ShippingAddress.Country
@@ -161,9 +173,12 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err != nil {
 			return fmt.Errorf("error calculating total: %w", err)
 		}
+		if !subtotal.IsPositive() {
+			return &entity.ValidationError{Message: "custom order subtotal must be positive after currency rounding"}
+		}
 		var shipmentPrice decimal.Decimal
 		if orderNew.CustomShipmentCost != nil {
-			shipmentPrice = orderNew.CustomShipmentCost.Round(2)
+			shipmentPrice = dto.RoundForCurrency(*orderNew.CustomShipmentCost, orderNew.Currency)
 		} else {
 			shipmentPrice, err = shipmentCarrier.PriceDecimal(orderNew.Currency)
 			if err != nil {
@@ -171,6 +186,9 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 			}
 		}
 		totalPrice := dto.RoundForCurrency(subtotal.Add(shipmentPrice), orderNew.Currency)
+		if !totalPrice.IsPositive() {
+			return &entity.ValidationError{Message: "custom order total must be positive after currency rounding"}
+		}
 		order = &entity.Order{
 			TotalPrice:    totalPrice,
 			Currency:      orderNew.Currency,
