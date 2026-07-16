@@ -1,0 +1,61 @@
+FIELD_NO_DELETE|proto/admin/admin/admin.proto|Previously present field \"7\" with name \"season\" on message \"ListTechCardsRequest\" was deleted.
+FIELD_NO_DELETE|proto/common/common/filter.proto|Previously present field \"6\" with name \"color\" on message \"FilterConditions\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.
+FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductFull\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualFull\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"2\" on message \"ArchiveProductsTagFull\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroFeaturedProductsWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroLastChanceWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroNewArrivalsWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroProductSpotlightWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"2\" on message \"HeroSplitWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
+FIELD_SAME_TYPE|proto/common/common/order.proto|Field \"17\" on message \"OrderItem\" changed type from \"common.ProductInsertTranslation\" to \"common.ColorwayInsertTranslation\".
+FIELD_SAME_TYPE|proto/common/common/product.proto|Field \"1\" on message \"SizeWithMeasurementInsert\" changed type from \"common.ProductSizeInsert\" to \"common.VariantInsert\".
+FIELD_SAME_TYPE|proto/common/common/product.proto|Field \"1\" on message \"SizeWithMeasurement\" changed type from \"common.ProductSize\" to \"common.Variant\".
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"DeleteProductByIDRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"DeleteProductByIDResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductByIDRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductByIDResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductCustomsRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductCustomsResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductsPagedRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductsPagedResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"ProductCostInfo\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"ProductCustoms\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SetProductCustomsRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SetProductCustomsResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SyncProductCostFromTechCardRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SyncProductCostFromTechCardResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpdateProductSizeStockRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpdateProductSizeStockResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertProductRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertProductResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/language.proto|Previously present message \"ProductInsertTranslation\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductBodyInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductBody\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductDisplay\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductFull\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductNew\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductPriceInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductPrice\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductSizeInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductSize\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductTagInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductTag\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"Product\" was deleted from file.
+MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedResponse\" was deleted from file.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"DeleteProductByID\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductByID\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductCustoms\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductsPaged\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"SetProductCustoms\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"SyncProductCostFromTechCard\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"UpdateProductSizeStock\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"UpsertProduct\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present RPC \"GetProduct\" on service \"FrontendService\" was deleted.
+RPC_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present RPC \"GetProductsPaged\" on service \"FrontendService\" was deleted.

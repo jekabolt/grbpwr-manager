@@ -1,0 +1,42 @@
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"ACCESS_LEVEL_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"ALERT_SEVERITY_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"COMPARE_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"METRICS_GRANULARITY_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"METRICS_SECTION_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"REFUND_REASON_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"TIER_CODE_MEMBER\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"TREND_GRANULARITY_DAILY\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_ADJUSTMENT_DIRECTION_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_ADJUSTMENT_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_REASON_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_SOURCE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+IMPORT_USED|proto/common/common/language.proto|Import \"google/protobuf/timestamp.proto\" is unused.
+PACKAGE_VERSION_SUFFIX|proto/admin/admin/admin.proto|Package name \"admin\" should be suffixed with a correctly formed version, such as \"admin.v1\".
+PACKAGE_VERSION_SUFFIX|proto/auth/auth/auth.proto|Package name \"auth\" should be suffixed with a correctly formed version, such as \"auth.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/archive.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/buyer.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/dict.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/filter.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/fitting.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/fulfillment.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/hero.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/inventory.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/language.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/media.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/model.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/order.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/payment.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/product.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/production.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/promo.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/sample.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/shipment.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/subscription.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/support.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/task.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/techcard.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/frontend/frontend/frontend.proto|Package name \"frontend\" should be suffixed with a correctly formed version, such as \"frontend.v1\".
+RPC_REQUEST_RESPONSE_UNIQUE|proto/frontend/frontend/frontend.proto|\"frontend.VerifyAccountLoginResponse\" is used as the request or response type for multiple RPCs.
+RPC_REQUEST_RESPONSE_UNIQUE|proto/frontend/frontend/frontend.proto|\"frontend.VerifyAccountLoginResponse\" is used as the request or response type for multiple RPCs.
+RPC_RESPONSE_STANDARD_NAME|proto/frontend/frontend/frontend.proto|RPC response type \"VerifyAccountLoginResponse\" should be named \"VerifyAccountLoginCodeResponse\" or \"FrontendServiceVerifyAccountLoginCodeResponse\".
+RPC_RESPONSE_STANDARD_NAME|proto/frontend/frontend/frontend.proto|RPC response type \"VerifyAccountLoginResponse\" should be named \"VerifyAccountMagicLinkResponse\" or \"FrontendServiceVerifyAccountMagicLinkResponse\".
