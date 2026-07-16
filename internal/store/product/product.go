@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -245,9 +247,13 @@ func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.Colorw
 // suffix (mirrors migration 0138's convention for backfilled standalones); the operator can flesh the
 // style out later. Only style_number + name are NOT NULL on tech_card, the rest default.
 func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert) (int, error) {
+	// Name from the canonical translation (default language, else smallest language id) — deterministic,
+	// not the order-dependent Translations[0] (problem 030); same policy as the pretty slug.
 	name := "Product"
-	if len(product.Translations) > 0 && strings.TrimSpace(product.Translations[0].Name) != "" {
-		name = strings.TrimSpace(product.Translations[0].Name)
+	if tr, ok := canonical.Select(product.Translations,
+		func(t entity.ColorwayTranslationInsert) int { return t.LanguageId },
+		canonical.IsDefaultFunc(cache.GetLanguages())); ok && strings.TrimSpace(tr.Name) != "" {
+		name = strings.TrimSpace(tr.Name)
 	}
 	// Minimal header (style_number + name only, both NOT NULL). The garment-level fields
 	// (brand/season/category/fit/...) are written by writeStyleFields once the style exists —

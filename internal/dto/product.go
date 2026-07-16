@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -489,6 +490,20 @@ func convertMediaIds(pbMediaIds []int32) []int {
 	return mediaIds
 }
 
+// canonicalProductName returns the name of the product's canonical translation — the default-language
+// translation, or the smallest language id when none is default — for pretty-slug generation. It must
+// not use Translations[0], whose position depends on SQL row order / insert order and would make the
+// canonical URL unstable across reads (problem 030). The same policy is applied to archives.
+func canonicalProductName(translations []entity.ColorwayTranslationInsert) string {
+	tr, ok := canonical.Select(translations,
+		func(t entity.ColorwayTranslationInsert) int { return t.LanguageId },
+		canonical.IsDefaultFunc(cache.GetLanguages()))
+	if !ok {
+		return ""
+	}
+	return tr.Name
+}
+
 func convertTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInsert {
 	var tags []entity.ColorwayTagInsert
 	for _, pbTag := range pbTags {
@@ -559,11 +574,9 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 	// Convert prices - place prices inside nested Product
 	pbPrices := convertEntityPricesToPb(e.Prices)
 
-	// Get first translation for slug generation (or empty strings if no translations)
-	var firstTranslationName string
-	if len(productBody.Translations) > 0 {
-		firstTranslationName = productBody.Translations[0].Name
-	}
+	// Canonical translation name for the pretty slug — deterministic (default language, else the
+	// smallest language id), never the order-dependent Translations[0] (problem 030).
+	firstTranslationName := canonicalProductName(productBody.Translations)
 
 	// sold_out is derived from the sizes' total stock — one shared definition (PR5-B).
 	soldOut := entity.SoldOutFromSizes(e.Sizes)
@@ -808,11 +821,9 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		})
 	}
 
-	// Get first translation for slug generation (or empty strings if no translations)
-	var firstTranslationName string
-	if len(productBody.Translations) > 0 {
-		firstTranslationName = productBody.Translations[0].Name
-	}
+	// Canonical translation name for the pretty slug — deterministic (default language, else the
+	// smallest language id), never the order-dependent Translations[0] (problem 030).
+	firstTranslationName := canonicalProductName(productBody.Translations)
 
 	var pbSecondaryThumbnail *pb_common.MediaFull
 	if e.ProductDisplay.SecondaryThumbnail != nil {

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/slug"
@@ -21,9 +23,13 @@ import (
 // read-time fallback: an empty code would surface as a broken URL rather than being masked by an
 // id-derived fabrication that the code resolver would 404 on (problem 029).
 func setArchiveSlug(al *entity.ArchiveList) {
+	// Canonical translation heading — deterministic (default language, else the smallest language id),
+	// never the order-dependent Translations[0] (problem 030). Same policy as the product slug.
 	heading := ""
-	if len(al.Translations) > 0 {
-		heading = al.Translations[0].Heading
+	if tr, ok := canonical.Select(al.Translations,
+		func(t entity.ArchiveTranslation) int { return t.LanguageId },
+		canonical.IsDefaultFunc(cache.GetLanguages())); ok {
+		heading = tr.Heading
 	}
 	al.Slug = slug.TimelinePath(heading, al.Code)
 }
@@ -576,7 +582,8 @@ func (s *Store) GetArchiveTranslations(ctx context.Context, id int) ([]entity.Ar
 	SELECT
 		at.language_id, at.heading
 	FROM archive_translation at
-	WHERE at.archive_id = :id`
+	WHERE at.archive_id = :id
+	ORDER BY at.language_id`
 	translations, err := storeutil.QueryListNamed[entity.ArchiveTranslation](ctx, s.DB, query, map[string]any{"id": id})
 	if err != nil {
 		return nil, err
