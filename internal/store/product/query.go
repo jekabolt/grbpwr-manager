@@ -517,7 +517,15 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, `SELECT * FROM size_measurement WHERE product_id = :id`, idParams); e != nil {
+		// The size chart lives on the style now (PR6 P3): reconstruct the per-colourway view by joining
+		// the style's chart to this product's sizes, preserving the product_size_id the frontend keys on.
+		measurementQuery := `
+			SELECT ssm.id AS id, p.id AS product_id, ps.id AS product_size_id,
+			       ssm.measurement_name_id, ssm.measurement_value
+			FROM tech_card_size_measurement ssm
+			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
+			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id`
+		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, measurementQuery, idParams); e != nil {
 			return fmt.Errorf("can't get measurements: %w", e)
 		}
 		return nil

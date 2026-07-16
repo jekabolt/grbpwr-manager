@@ -363,7 +363,10 @@ func deleteSizeMeasurements(ctx context.Context, db dependency.DB, productID int
 		return fmt.Errorf("can't delete product sizes: %w", err)
 	}
 
-	query = "DELETE FROM size_measurement WHERE product_id = :productId"
+	// The size chart lives on the STYLE now (PR6 P3): clear the style's chart. Editing any colourway
+	// replaces its style's chart, hence all its colourways — the intended invariant (same as the
+	// style-level fields in P2).
+	query = "DELETE FROM tech_card_size_measurement WHERE tech_card_id = (SELECT style_id FROM product WHERE id = :productId)"
 	err = storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"productId": productID,
 	})
@@ -382,11 +385,22 @@ func insertSizeMeasurements(ctx context.Context, db dependency.DB, sizeMeasureme
 		}
 	}
 
-	rowsPrdMeasurements := make([]map[string]any, 0)
+	// The per-size stock stays on the colourway (product_size); the measurement values move to the
+	// STYLE (tech_card_size_measurement), keyed by size (PR6 P3), so all colourways of a style share
+	// one size chart. deleteSizeMeasurements cleared the style's chart on update; a new product's
+	// synthesised style starts empty — so a plain insert never conflicts on the UNIQUE key.
+	styleRow, err := storeutil.QueryNamedOne[struct {
+		StyleId int `db:"style_id"`
+	}](ctx, db, `SELECT style_id FROM product WHERE id = :id`, map[string]any{"id": productID})
+	if err != nil {
+		return fmt.Errorf("can't resolve product style: %w", err)
+	}
+
+	rowsStyleMeasurements := make([]map[string]any, 0)
 
 	for _, sm := range sizeMeasurements {
 		query := `INSERT INTO product_size (product_id, size_id, quantity) VALUES (:productId, :sizeId, :quantity)`
-		productSizeID, err := storeutil.ExecNamedLastId(ctx, db, query, map[string]any{
+		_, err := storeutil.ExecNamedLastId(ctx, db, query, map[string]any{
 			"productId": productID,
 			"sizeId":    sm.ProductSize.SizeId,
 			"quantity":  sm.ProductSize.QuantityDecimal(),
@@ -397,17 +411,17 @@ func insertSizeMeasurements(ctx context.Context, db dependency.DB, sizeMeasureme
 
 		for _, m := range sm.Measurements {
 			row := map[string]any{
-				"product_id":          productID,
-				"product_size_id":     productSizeID,
+				"tech_card_id":        styleRow.StyleId,
+				"size_id":             sm.ProductSize.SizeId,
 				"measurement_name_id": m.MeasurementNameId,
 				"measurement_value":   m.MeasurementValue,
 			}
-			rowsPrdMeasurements = append(rowsPrdMeasurements, row)
+			rowsStyleMeasurements = append(rowsStyleMeasurements, row)
 		}
 	}
 
-	if len(rowsPrdMeasurements) > 0 {
-		err := storeutil.BulkInsert(ctx, db, "size_measurement", rowsPrdMeasurements)
+	if len(rowsStyleMeasurements) > 0 {
+		err := storeutil.BulkInsert(ctx, db, "tech_card_size_measurement", rowsStyleMeasurements)
 		if err != nil {
 			return fmt.Errorf("can't insert product measurements: %w", err)
 		}

@@ -348,7 +348,8 @@ func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
 	return psi.Quantity.Round(0)
 }
 
-// SizeMeasurement represents the size_measurement table
+// ProductMeasurement is the per-colourway view of a size-chart entry, reconstructed from the
+// style-level tech_card_size_measurement (PR6 P3) joined to the colourway's product_size.
 type ProductMeasurement struct {
 	Id                int             `db:"id"`
 	ProductId         int             `db:"product_id"`
@@ -357,7 +358,8 @@ type ProductMeasurement struct {
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
-// SizeMeasurement represents the size_measurement table
+// ProductMeasurementInsert is one measurement value in a size-chart write (persisted to the
+// style-level tech_card_size_measurement, PR6 P3).
 type ProductMeasurementInsert struct {
 	MeasurementNameId int             `db:"measurement_name_id"`
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
