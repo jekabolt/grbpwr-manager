@@ -533,7 +533,7 @@ message TechCardCosting {
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
-// replacements on update (like ProductNew).
+// replacements on update (like ColorwayNew).
 // TechCardSignoffSection is the sheet a sign-off covers.
 enum TechCardSignoffSection {
   TECH_CARD_SIGNOFF_SECTION_UNKNOWN = 0;
