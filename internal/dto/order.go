@@ -124,6 +124,9 @@ func convertBuyer(pb *pb_common.BuyerInsert) *entity.BuyerInsert {
 
 // ConvertCustomOrderItemInsertToEntity converts a common.CustomOrderItemInsert to entity.OrderItemInsert.
 // Uses custom_price for ProductPrice; ProductSalePercentage is 0, ProductPriceWithSale = ProductPrice.
+// custom_price must be strictly positive — the same positive-price invariant standard orders enforce
+// (problem 044). A zero/negative price (a silent comp/gift sale) is rejected here; the store re-checks
+// via requirePositivePrice as defence in depth. The admin handler maps this error to InvalidArgument.
 func ConvertCustomOrderItemInsertToEntity(pb *pb_common.CustomOrderItemInsert) (entity.OrderItemInsert, error) {
 	if pb == nil || pb.CustomPrice == nil {
 		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price is required")
@@ -133,8 +136,8 @@ func ConvertCustomOrderItemInsertToEntity(pb *pb_common.CustomOrderItemInsert) (
 		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: invalid custom_price: %w", err)
 	}
 	price = price.Round(2)
-	if price.LessThan(decimal.Zero) {
-		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price must be >= 0")
+	if price.LessThanOrEqual(decimal.Zero) {
+		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price must be positive")
 	}
 	return entity.OrderItemInsert{
 		ProductId:             int(pb.ProductId),

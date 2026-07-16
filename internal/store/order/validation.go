@@ -233,6 +233,12 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 		if item.Quantity.LessThanOrEqual(decimal.Zero) {
 			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("invalid quantity for product %d size %d: must be positive", item.ProductId, item.SizeId)}
 		}
+		// The admin-supplied custom price must satisfy the same positive-price invariant as a standard
+		// catalogue line (problem 044): a zero/negative custom_price is a hard rejection, not a silent
+		// comp sale. Checked here, before any order/stock/payment mutation, so a bad price creates nothing.
+		if verr := requirePositivePrice(item.ProductId, item.ProductPriceDecimal()); verr != nil {
+			return nil, nil, verr
+		}
 		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
 		prdSize, exists := prdSizeMap[sizeKey]
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {

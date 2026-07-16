@@ -11,19 +11,33 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// requirePositivePrice enforces the order-time positive-price invariant (PR5-D / problem 044): every
+// order line — standard (priced from the catalogue) or custom (priced from admin-supplied amounts) —
+// must have a strictly positive unit price. Zero and negative are both rejected: a silent free/comp
+// or negative sale is not supported here (a genuine comp/gift order needs a separate typed flow with
+// reason, audit and permission). It returns a *entity.ValidationError so the API layer maps it to
+// InvalidArgument. This is the single shared invariant the standard and custom paths both call.
+func requirePositivePrice(productID int, price decimal.Decimal) *entity.ValidationError {
+	if price.LessThanOrEqual(decimal.Zero) {
+		return &entity.ValidationError{Message: fmt.Sprintf("product %d: item price must be positive (got %s)", productID, price.String())}
+	}
+	return nil
+}
+
 // getProductPrice resolves a product's price in the order currency. It enforces the order-time
-// pricing invariant (PR5-D): the currency must be present AND its price must be positive. Product
-// create/update already reject a missing or non-positive price (validateRequiredCurrencies), but
-// that runs only at write time; re-checking here is defence in depth so a data anomaly (a stray
-// zero price in the order currency) fails the order instead of silently selling at zero. The custom
-// order path intentionally does not use this — it prices from admin-supplied amounts.
+// pricing invariant (PR5-D): the currency must be present AND its price must be positive (via the
+// shared requirePositivePrice helper). Product create/update already reject a missing or non-positive
+// price (validateRequiredCurrencies), but that runs only at write time; re-checking here is defence
+// in depth so a data anomaly (a stray zero price in the order currency) fails the order instead of
+// silently selling at zero. The custom order path prices from admin-supplied amounts, but shares the
+// same positivity invariant (requirePositivePrice) in validateOrderItemsStockForCustomOrder.
 func getProductPrice(prd *entity.Colorway, currency string) (decimal.Decimal, error) {
 	for _, price := range prd.Prices {
 		// Stored currencies are uppercase; compare case-insensitively so a
 		// lowercase/mixed-case client currency does not falsely miss the price.
 		if strings.EqualFold(price.Currency, currency) {
-			if price.Price.LessThanOrEqual(decimal.Zero) {
-				return decimal.Zero, fmt.Errorf("product %d has a non-positive price in currency %s", prd.Id, currency)
+			if verr := requirePositivePrice(prd.Id, price.Price); verr != nil {
+				return decimal.Zero, verr
 			}
 			return price.Price, nil
 		}
