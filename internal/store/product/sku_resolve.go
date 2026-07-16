@@ -171,40 +171,166 @@ func ensureProductModelNo(ctx context.Context, db dependency.DB, f *productSKUFa
 	return n, nil
 }
 
-// BackfillSKUs mints new-format SKUs for every non-frozen product that still needs one: base SKU
-// empty or in the old format, or any variant SKU missing. It reuses MintProductSKUs so backfilled
-// values are identical to runtime-generated ones (same translit, fallbacks, style-vs-standalone).
-// Deleted products are INCLUDED. It is idempotent and self-limiting — once a product is converted it
-// no longer matches the predicate — so it is safe to run on every boot. It never fails boot: a single
-// product that cannot be minted is logged and skipped. Frozen products (sku_locked_at) are excluded.
+const (
+	baseSKUInvariantPattern    = `^(SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3}$`
+	variantSKUInvariantPattern = `^(SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3}-[0-9]{2}$`
+)
+
+type skuInvariantViolation struct {
+	Kind      string        `db:"kind"`
+	ProductID int           `db:"product_id"`
+	VariantID sql.NullInt64 `db:"variant_id"`
+}
+
+type skuBackfillReadinessError struct {
+	FailedProductIDs    []int
+	ViolationProductIDs []int
+	ViolationVariantIDs []int64
+	ViolationCount      int
+}
+
+func (e *skuBackfillReadinessError) Error() string {
+	return fmt.Sprintf(
+		"sku backfill/readiness failed: mint_failed_product_ids=%v invariant_violations=%d violation_product_ids=%v violation_variant_ids=%v",
+		e.FailedProductIDs, e.ViolationCount, e.ViolationProductIDs, e.ViolationVariantIDs,
+	)
+}
+
+func appendUnique[T comparable](values []T, value T) []T {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+// findSKUInvariantViolations is the readiness postcondition. It covers every product, including
+// deleted and frozen rows: a frozen identity is immutable, but it is not allowed to be malformed.
+// The exact variant equality check is stronger than shape validation and catches a SKU attached to
+// the wrong size ordinal or base product.
+func findSKUInvariantViolations(ctx context.Context, db dependency.DB) ([]skuInvariantViolation, error) {
+	return storeutil.QueryListNamed[skuInvariantViolation](ctx, db, `
+		SELECT v.kind, v.product_id, v.variant_id
+		FROM (
+			SELECT 'invalid_base' AS kind, p.id AS product_id, NULL AS variant_id
+			FROM product p
+			WHERE p.sku = '' OR NOT REGEXP_LIKE(p.sku, :base_pattern, 'c')
+
+			UNION ALL
+
+			SELECT 'duplicate_base' AS kind, p.id AS product_id, NULL AS variant_id
+			FROM product p
+			JOIN (
+				SELECT sku FROM product
+				WHERE sku <> ''
+				GROUP BY sku HAVING COUNT(*) > 1
+			) duplicate ON duplicate.sku = p.sku
+
+			UNION ALL
+
+			SELECT 'invalid_variant' AS kind, ps.product_id, ps.id AS variant_id
+			FROM product_size ps
+			JOIN product p ON p.id = ps.product_id
+			JOIN size s ON s.id = ps.size_id
+			WHERE ps.sku IS NULL
+			   OR ps.sku = ''
+			   OR NOT REGEXP_LIKE(ps.sku, :variant_pattern, 'c')
+			   OR BINARY ps.sku <> BINARY CONCAT(p.sku, '-', LPAD(s.sku_ord, 2, '0'))
+
+			UNION ALL
+
+			SELECT 'duplicate_variant' AS kind, ps.product_id, ps.id AS variant_id
+			FROM product_size ps
+			JOIN (
+				SELECT sku FROM product_size
+				WHERE sku IS NOT NULL AND sku <> ''
+				GROUP BY sku HAVING COUNT(*) > 1
+			) duplicate ON duplicate.sku = ps.sku
+		) v
+		ORDER BY v.kind, v.product_id, v.variant_id`, map[string]any{
+		"base_pattern":    baseSKUInvariantPattern,
+		"variant_pattern": variantSKUInvariantPattern,
+	})
+}
+
+// BackfillSKUs mints canonical SKUs for every non-frozen product that needs repair, then verifies
+// the complete catalog before readiness. Deleted products are included. Frozen products are never
+// reminted; if their identity violates the invariant the postcondition fails and boot is blocked.
+// Per-product mint failures are aggregated so one bad row does not hide the rest of the report.
 func (s *Store) BackfillSKUs(ctx context.Context) error {
 	ids, err := storeutil.QueryListNamed[struct {
 		ID int `db:"id"`
 	}](ctx, s.DB, `
-		SELECT id FROM product
-		WHERE sku_locked_at IS NULL
+		SELECT p.id FROM product p
+		WHERE p.sku_locked_at IS NULL
 		  AND (
-		        sku = ''
-		     OR sku NOT REGEXP '^[A-Z]{2}[0-9]{2}-[0-9]{5}-'
-		     OR EXISTS (SELECT 1 FROM product_size ps WHERE ps.product_id = product.id AND ps.sku IS NULL)
-		  )`, map[string]any{})
+		        p.sku = ''
+		     OR NOT REGEXP_LIKE(p.sku, :base_pattern, 'c')
+		     OR EXISTS (
+		          SELECT 1
+		          FROM product_size ps
+		          JOIN size s ON s.id = ps.size_id
+		          WHERE ps.product_id = p.id
+		            AND (
+		                 ps.sku IS NULL
+		              OR ps.sku = ''
+		              OR NOT REGEXP_LIKE(ps.sku, :variant_pattern, 'c')
+		              OR BINARY ps.sku <> BINARY CONCAT(p.sku, '-', LPAD(s.sku_ord, 2, '0'))
+		            )
+		     )
+		  )
+		ORDER BY p.id`, map[string]any{
+		"base_pattern":    baseSKUInvariantPattern,
+		"variant_pattern": variantSKUInvariantPattern,
+	})
 	if err != nil {
 		return fmt.Errorf("backfill: list products needing SKUs: %w", err)
 	}
 	minted := 0
+	failedProductIDs := make([]int, 0)
 	for _, r := range ids {
 		id := r.ID
 		if err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 			return MintProductSKUs(ctx, rep.DB(), id)
 		}); err != nil {
-			slog.WarnContext(ctx, "sku backfill: could not mint product; skipping",
+			failedProductIDs = append(failedProductIDs, id)
+			slog.ErrorContext(ctx, "sku backfill: could not mint product",
 				slog.Int("product_id", id), slog.String("err", err.Error()))
 			continue
 		}
 		minted++
 	}
-	if len(ids) > 0 {
-		slog.InfoContext(ctx, "sku backfill complete", slog.Int("candidates", len(ids)), slog.Int("minted", minted))
+
+	violations, err := findSKUInvariantViolations(ctx, s.DB)
+	if err != nil {
+		return fmt.Errorf("backfill: verify SKU readiness invariants: %w", err)
+	}
+	violationProductIDs := make([]int, 0)
+	violationVariantIDs := make([]int64, 0)
+	for _, violation := range violations {
+		violationProductIDs = appendUnique(violationProductIDs, violation.ProductID)
+		if violation.VariantID.Valid {
+			violationVariantIDs = appendUnique(violationVariantIDs, violation.VariantID.Int64)
+		}
+		slog.ErrorContext(ctx, "sku readiness invariant violation",
+			slog.String("kind", violation.Kind),
+			slog.Int("product_id", violation.ProductID),
+			slog.Int64("variant_id", violation.VariantID.Int64))
+	}
+
+	slog.InfoContext(ctx, "sku backfill readiness check complete",
+		slog.Int("candidates", len(ids)),
+		slog.Int("minted", minted),
+		slog.Int("mint_failures", len(failedProductIDs)),
+		slog.Int("invariant_violations", len(violations)))
+	if len(failedProductIDs) > 0 || len(violations) > 0 {
+		return &skuBackfillReadinessError{
+			FailedProductIDs:    failedProductIDs,
+			ViolationProductIDs: violationProductIDs,
+			ViolationVariantIDs: violationVariantIDs,
+			ViolationCount:      len(violations),
+		}
 	}
 	return nil
 }
