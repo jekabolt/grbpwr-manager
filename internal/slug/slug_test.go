@@ -2,6 +2,7 @@ package slug
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -86,25 +87,31 @@ func TestParseProductTail(t *testing.T) {
 	}
 
 	bad := []string{
-		"/x/ss26-00021-blk",        // wrong prefix
-		"/product/male/name/42",    // old scheme
-		"/timeline/ss26-00021-blk", // wrong prefix
-		"p/ss26-00021-blk",         // missing leading slash (strict)
-		"/p/",                      // empty token
-		"/p/ss26-00021-blk?utm=x",  // query
-		"/p/ss26-00021-blk#frag",   // fragment
-		"/p/ss26-00021-blk/",       // trailing slash / garbage
-		"/p/ss26-00021-blk-",       // trailing dash
-		"/p/ss26-00021-blk-04",     // variant-size suffix
-		"/p/ss26-00021-blk2",       // collision suffix
-		"/p/ss6-00021-blk",         // year too short
-		"/p/ss266-00021-blk",       // year too long
-		"/p/ss26-0021-blk",         // model too short
-		"/p/ss26-000021-blk",       // model too long
-		"/p/ss26-00021-bl",         // color too short
-		"/p/ss26-00021-blkk",       // color too long
-		"/p/zz26-00021-blk",        // unknown season code
-		"/p/-ss26-00021-blk",       // leading dash before SKU (empty pretty segment)
+		"/x/ss26-00021-blk",           // wrong prefix
+		"/product/male/name/42",       // old scheme
+		"/timeline/ss26-00021-blk",    // wrong prefix
+		"p/ss26-00021-blk",            // missing leading slash (strict)
+		"/p/",                         // empty token
+		"/p/ss26-00021-blk?utm=x",     // query
+		"/p/ss26-00021-blk#frag",      // fragment
+		"/p/ss26-00021-blk/",          // trailing slash / garbage
+		"/p/ss26-00021-blk-",          // trailing dash
+		"/p/ss26-00021-blk-04",        // variant-size suffix
+		"/p/ss26-00021-blk2",          // collision suffix
+		"/p/ss6-00021-blk",            // year too short
+		"/p/ss266-00021-blk",          // year too long
+		"/p/ss26-0021-blk",            // model too short
+		"/p/ss26-000021-blk",          // model too long
+		"/p/ss26-00021-bl",            // color too short
+		"/p/ss26-00021-blkk",          // color too long
+		"/p/zz26-00021-blk",           // unknown season code
+		"/p/-ss26-00021-blk",          // leading dash before SKU (empty pretty segment)
+		"/p/foo/bar-ss26-00021-blk",   // pretty must be one path segment
+		"/p/foo--bar-ss26-00021-blk",  // canonical kebab only
+		"/p/foo bar-ss26-00021-blk",   // whitespace alias
+		"/p/foo%20bar-ss26-00021-blk", // encoded alias
+		"/p/UPPER-ss26-00021-blk",     // builder pretty is lowercase
+		"/p/" + strings.Repeat("a", MaxPrettyLen+1) + "-ss26-00021-blk",
 	}
 	for _, p := range bad {
 		if got, err := ParseProductTail(p); err == nil {
@@ -140,6 +147,10 @@ func TestParseArchiveTail(t *testing.T) {
 		"/timeline/AR000C/",    // trailing garbage
 		"/timeline/AR000C-",    // trailing dash
 		"/timeline/AR",         // AR alone (no base36 chars)
+		"/timeline/foo/bar-AR000C",
+		"/timeline/foo--bar-AR000C",
+		"/timeline/foo bar-AR000C",
+		"/timeline/" + strings.Repeat("a", MaxPrettyLen+1) + "-AR000C",
 	}
 	for _, p := range bad {
 		if got, err := ParseArchiveTail(p); err == nil {

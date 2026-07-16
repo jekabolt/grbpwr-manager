@@ -30,19 +30,15 @@ var (
 	ErrNotArchiveTail = errors.New("slug: not an archive tail")
 )
 
-// productTailRe matches a base SKU anchored at the END of the pretty-stripped, upper-cased tail:
-// {SEASON:SS|FW|PF|RC}{YY:2}-{MODEL:5}-{COLOR:3} (fixed 14, e.g. SS26-00021-BLK,
-// mirrors the typed product.BuildBaseSKU contract rather than accepting arbitrary letters).
-// The optional greedy `(?:.+-)?` swallows the decorative pretty segment (any number of hyphens, and
-// even SKU-like fragments), so the captured group is always the final triplet. Because the SKU is
-// anchored at `$`, a variant-size suffix (`-04`), an emergency collision suffix (`…2`) or any trailing
-// garbage leaves the string unmatched — those are rejected, not truncated to a base.
-var productTailRe = regexp.MustCompile(`^(?:.+-)?((?:SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})$`)
+var (
+	productTokenRe = regexp.MustCompile(`^(?:SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3}$`)
+	archiveTokenRe = regexp.MustCompile(`^AR[0-9A-Z]{1,10}$`)
+	prettyRe       = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+)
 
-// archiveTailRe matches an archive code anchored at the end: "AR" + 1..10 upper base36 chars (mirrors
-// entity.ValidArchiveCode / migration 0148). The code carries no hyphen, so the greedy prefix cleanly
-// separates it from the pretty segment.
-var archiveTailRe = regexp.MustCompile(`^(?:.+-)?(AR[0-9A-Z]{1,10})$`)
+func validPretty(pretty string) bool {
+	return len(pretty) > 0 && len(pretty) <= MaxPrettyLen && prettyRe.MatchString(pretty)
+}
 
 // ParseProductTail parses a public product URL tail "/p/{pretty-}{base-SKU}" and returns the
 // normalized upper-case base SKU (e.g. SS26-00021-BLK). This is the single shared parser for the
@@ -58,11 +54,21 @@ func ParseProductTail(path string) (string, error) {
 	if !ok || strings.ContainsAny(rest, "?#") {
 		return "", ErrNotProductTail
 	}
-	m := productTailRe.FindStringSubmatch(strings.ToUpper(rest))
-	if m == nil {
+	if len(rest) < 14 {
 		return "", ErrNotProductTail
 	}
-	return m[1], nil
+	token := rest[len(rest)-14:]
+	prefix := rest[:len(rest)-14]
+	if prefix != "" {
+		if !strings.HasSuffix(prefix, "-") || !validPretty(strings.TrimSuffix(prefix, "-")) {
+			return "", ErrNotProductTail
+		}
+	}
+	token = strings.ToUpper(token)
+	if !productTokenRe.MatchString(token) {
+		return "", ErrNotProductTail
+	}
+	return token, nil
 }
 
 // ParseArchiveTail parses a public timeline URL tail "/timeline/{pretty-}{code}" and returns the
@@ -74,11 +80,18 @@ func ParseArchiveTail(path string) (string, error) {
 	if !ok || strings.ContainsAny(rest, "?#") {
 		return "", ErrNotArchiveTail
 	}
-	m := archiveTailRe.FindStringSubmatch(strings.ToUpper(rest))
-	if m == nil {
+	pretty, token := "", rest
+	if split := strings.LastIndexByte(rest, '-'); split >= 0 {
+		pretty, token = rest[:split], rest[split+1:]
+		if !validPretty(pretty) {
+			return "", ErrNotArchiveTail
+		}
+	}
+	token = strings.ToUpper(token)
+	if !archiveTokenRe.MatchString(token) {
 		return "", ErrNotArchiveTail
 	}
-	return m[1], nil
+	return token, nil
 }
 
 var nonKebab = regexp.MustCompile(`[^a-z0-9]+`)
