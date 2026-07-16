@@ -771,30 +771,43 @@ type TechCardInsert struct {
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
-	Purpose          TechCardPurpose         `db:"purpose"`
-	OutputMaterialId sql.NullInt64           `db:"output_material_id"` // material an auxiliary run receipts into
-	Name             string                  `db:"name"`
-	Brand            sql.NullString          `db:"brand"`
-	Season           sql.NullString          `db:"season"`
-	Collection       sql.NullString          `db:"collection"`
-	CategoryId       sql.NullInt32           `db:"category_id"`
-	TargetGender     sql.NullString          `db:"target_gender"`
-	Stage            TechCardStage           `db:"stage"`
-	Status           sql.NullString          `db:"status"`
-	ApprovalState    TechCardApprovalState   `db:"approval_state"`
-	ApprovedBy       sql.NullString          `db:"approved_by"`
-	ApprovedAt       sql.NullTime            `db:"approved_at"`
-	ReleasedAt       sql.NullTime            `db:"released_at"`
-	Version          sql.NullString          `db:"version"`
-	RevisionDate     sql.NullTime            `db:"revision_date"`
-	BaseModelId      sql.NullInt32           `db:"base_model_id"`
-	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
-	Designer         sql.NullString          `db:"designer"`
-	Constructor      sql.NullString          `db:"constructor"`
-	Technologist     sql.NullString          `db:"technologist"`
-	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
-	Concept          sql.NullString          `db:"concept"` // design concept / intent (designer)
-	Notes            sql.NullString          `db:"notes"`
+	Purpose          TechCardPurpose `db:"purpose"`
+	OutputMaterialId sql.NullInt64   `db:"output_material_id"` // material an auxiliary run receipts into
+	Name             string          `db:"name"`
+	Brand            sql.NullString  `db:"brand"`
+	Season           sql.NullString  `db:"season"`
+	Collection       sql.NullString  `db:"collection"`
+	CategoryId       sql.NullInt32   `db:"category_id"`
+	TargetGender     sql.NullString  `db:"target_gender"`
+	// Garment-level catalogue fields (PR6 P2): invariant across a style's colourways (one
+	// pattern, colour is the only axis that varies), so they live on the STYLE. Colourways
+	// (products) read them from here; the duplicated product columns are dropped in step 3.
+	// top/sub/type_category mirror the product taxonomy (all → category(id)); the legacy
+	// single category_id above is a separate optional tag and is untouched.
+	Fit                sql.NullString          `db:"fit"`
+	Composition        sql.NullString          `db:"composition"` // JSON column
+	CareInstructions   sql.NullString          `db:"care_instructions"`
+	ModelWearsHeightCm sql.NullInt32           `db:"model_wears_height_cm"`
+	ModelWearsSizeId   sql.NullInt32           `db:"model_wears_size_id"`
+	TopCategoryId      sql.NullInt32           `db:"top_category_id"`
+	SubCategoryId      sql.NullInt32           `db:"sub_category_id"`
+	TypeId             sql.NullInt32           `db:"type_id"`
+	Stage              TechCardStage           `db:"stage"`
+	Status             sql.NullString          `db:"status"`
+	ApprovalState      TechCardApprovalState   `db:"approval_state"`
+	ApprovedBy         sql.NullString          `db:"approved_by"`
+	ApprovedAt         sql.NullTime            `db:"approved_at"`
+	ReleasedAt         sql.NullTime            `db:"released_at"`
+	Version            sql.NullString          `db:"version"`
+	RevisionDate       sql.NullTime            `db:"revision_date"`
+	BaseModelId        sql.NullInt32           `db:"base_model_id"`
+	BaseSampleSizeId   sql.NullInt32           `db:"base_sample_size_id"`
+	Designer           sql.NullString          `db:"designer"`
+	Constructor        sql.NullString          `db:"constructor"`
+	Technologist       sql.NullString          `db:"technologist"`
+	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
+	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
+	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
 	SizeIds    []int               `db:"-"`
 	ProductIds []int               `db:"-"`
