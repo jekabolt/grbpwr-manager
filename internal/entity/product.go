@@ -235,7 +235,6 @@ type Colorway struct {
 	DeletedAt      sql.NullTime    `db:"deleted_at"`
 	Slug           string          `db:"slug"`
 	SKU            string          `db:"sku"`
-	ModelNo        sql.NullInt32   `db:"model_no"`      // 5-digit standalone model number; NULL for colourway-linked products
 	SkuLockedAt    sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
 	ProductDisplay ColorwayDisplay `valid:"required"`
 	Prices         []ColorwayPrice // Multi-currency prices
