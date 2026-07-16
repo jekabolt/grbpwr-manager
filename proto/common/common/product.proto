@@ -120,9 +120,9 @@ message Colorway {
   ColorwayDisplay product_display = 6;
   repeated ColorwayPrice prices = 7;
   bool sold_out = 8;
-  // status is the product's lifecycle state: "active" | "hidden" | "archived" (PR5-A). It is derived
-  // (a generated column) from hidden/deleted_at; sold_out and preorder are separate axes.
-  string status = 9;
+  // status is the colourway's stored lifecycle (R6). Type change string→enum on the same wire number
+  // (non-identity, big-bang regen). Only ACTIVE is exposed publicly; an UNKNOWN read fails closed.
+  ColorwayLifecycleStatus status = 9;
 }
 
 message ColorwayBody {

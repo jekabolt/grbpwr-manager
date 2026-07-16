@@ -744,7 +744,8 @@ message TechCardInsert {
   // NF-07 auxiliary items. purpose is "sellable" (default/empty) or "auxiliary"; an auxiliary card
   // produces a packaging material rather than a product, so it may not link products and its run
   // output receipts into output_material_id (required before the first run; 0 = unset).
-  string purpose = 101;
+  TechCardPurpose purpose = 101; // R6: type change string→enum on the same wire number
+
   int32 output_material_id = 102;
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
@@ -788,6 +789,6 @@ message TechCardListItem {
   string preview_url = 13;
   // Card purpose: "sellable" (default) or "auxiliary" (NF-07). Lets a board/list badge auxiliary
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
-  string purpose = 14;
+  TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
   SkuSeason sku_season = 15;
 }

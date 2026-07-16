@@ -59,3 +59,23 @@ func TestSeasonEnumNoDrift(t *testing.T) {
 		t.Errorf("proto season values (%d) != entity.ValidSeasons (%d)", protoValues, len(entity.ValidSeasons))
 	}
 }
+
+// TestTechCardPurposeEnumNoDrift is the same guard for the R6 TechCardPurpose enum: every non-UNKNOWN
+// proto value maps (via techCardPurposeFromPb) to a valid entity purpose and the sets match in size.
+// Closes the entity<->proto leg the T-C purpose drift work left for T-B (handoff item 3).
+func TestTechCardPurposeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardPurpose_name {
+		if pb_common.TechCardPurpose(v) == pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN {
+			continue
+		}
+		protoValues++
+		p := techCardPurposeFromPb(pb_common.TechCardPurpose(v))
+		if !entity.ValidTechCardPurposes[p] {
+			t.Errorf("proto TechCardPurpose %s maps to invalid entity purpose %q", name, p)
+		}
+	}
+	if protoValues != len(entity.ValidTechCardPurposes) {
+		t.Errorf("proto purpose values (%d) != entity.ValidTechCardPurposes (%d)", protoValues, len(entity.ValidTechCardPurposes))
+	}
+}
