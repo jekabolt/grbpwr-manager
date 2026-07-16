@@ -447,45 +447,37 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 		}
 	}
 
-	// compute new quantity
-
-	// Get previous quantity to detect stock transition and compute final value
-	previousQuantity, _, err := s.repo.Products().GetProductSizeStock(ctx, productId, sizeId)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get previous product size quantity",
-			slog.String("err", err.Error()),
-		)
-		// Continue anyway, we'll just skip waitlist notifications
-		previousQuantity = decimal.Zero
-	}
-
-	var newQuantity int
+	// Resolve the operation into mode + amount for the store, which reads+computes+writes atomically
+	// under a row lock (problem 025): mode=set passes the absolute value, mode=adjust passes a signed
+	// delta so concurrent adjustments compose instead of both overwriting a stale-read absolute.
+	var mode entity.StockUpdateMode
+	var amount int
 	if isSetMode {
-		// mode="set": quantity IS the final stock value
-		newQuantity = quantity
+		mode = entity.StockUpdateModeSet
+		amount = quantity
 	} else {
-		// mode="adjust": compute final value from direction + quantity
-		prevQtyInt := int(previousQuantity.IntPart())
+		mode = entity.StockUpdateModeAdjust
 		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE {
-			newQuantity = prevQtyInt + quantity
+			amount = quantity
 		} else {
-			newQuantity = prevQtyInt - quantity
-			if newQuantity < 0 {
-				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("adjustment would result in negative stock (%d - %d = %d)", prevQtyInt, quantity, newQuantity))
-			}
+			amount = -quantity
 		}
 	}
 
-	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity, reason, comment)
+	previousQuantity, newQuantityDecimal, err := s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, mode, amount, reason, comment)
 	if err != nil {
+		var verr *entity.ValidationError
+		if errors.As(err, &verr) {
+			return nil, status.Error(codes.InvalidArgument, verr.Message)
+		}
 		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
 	}
 
-	// Check if stock transitioned from 0 to >0
-	newQuantityDecimal := decimal.NewFromInt(int64(newQuantity))
+	// Waitlist notification from the REAL committed transition (0 -> >0), using the store's locked
+	// before/after — not a pre-read value that a concurrent adjustment could have invalidated.
 	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
 		// Trigger waitlist notifications asynchronously. This is a detached,
 		// best-effort side effect; a panic inside it (DB, DTO render, mail) must

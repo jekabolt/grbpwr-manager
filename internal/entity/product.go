@@ -489,6 +489,17 @@ const (
 	StockAdjustmentDirectionDecrease StockAdjustmentDirection = "decrease"
 )
 
+// StockUpdateMode selects how UpdateProductSizeStockWithHistory interprets its amount argument. Set
+// treats amount as the absolute final quantity; Adjust treats it as a signed delta applied to the
+// row-locked current quantity, so concurrent adjustments compose instead of clobbering each other
+// (problem 025).
+type StockUpdateMode int
+
+const (
+	StockUpdateModeSet    StockUpdateMode = iota // amount is the absolute final quantity
+	StockUpdateModeAdjust                        // amount is a signed delta on the current quantity
+)
+
 // StockChangeInsert represents a row to insert into product_stock_change_history.
 type StockChangeInsert struct {
 	ProductId           sql.NullInt32       `db:"product_id"`

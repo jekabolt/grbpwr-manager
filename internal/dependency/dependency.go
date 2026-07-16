@@ -86,8 +86,9 @@ type (
 		RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
-		// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
-		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int, reason string, comment string) error
+		// UpdateProductSizeStockWithHistory applies a stock change (mode Set=absolute, Adjust=signed
+		// delta) and records history atomically under a row lock, returning the committed before/after.
+		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, mode entity.StockUpdateMode, amount int, reason string, comment string) (before decimal.Decimal, after decimal.Decimal, err error)
 		// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 		GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error)
 		// AddToWaitlist adds an email to the waitlist for a specific product/size combination.

@@ -122,7 +122,7 @@ func TestStockPathMintsVariantSKU(t *testing.T) {
 	require.NotEmpty(t, skuC, "new variant on a frozen product must get a SKU")
 
 	// 4) a size from another SKU system via the transactional admin path errors AND leaves no row.
-	err = s.Products().UpdateProductSizeStockWithHistory(ctx, prodID, otherSystemSizeID, 1, "correction", "")
+	_, _, err = s.Products().UpdateProductSizeStockWithHistory(ctx, prodID, otherSystemSizeID, entity.StockUpdateModeSet, 1, "correction", "")
 	require.ErrorContains(t, err, "mixes size SKU systems")
 	_, exists := skuOf(otherSystemSizeID)
 	require.False(t, exists, "the failed stock update must roll back — no mixed-system variant left behind")

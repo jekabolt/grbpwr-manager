@@ -271,24 +271,38 @@ func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, produc
 		map[string]any{"id": productID, "run": runID, "cost": cost})
 }
 
-// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
-func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, newQuantity int, reason string, comment string) error {
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		prevQty, _, err := rep.Products().GetProductSizeStock(ctx, productId, sizeId)
+// UpdateProductSizeStockWithHistory applies a stock change and records it to
+// product_stock_change_history atomically. It reads the current quantity FOR UPDATE, computes the new
+// value from mode+amount (Set = absolute, Adjust = signed delta), writes it and records the history —
+// all under the same row lock — so concurrent adjustments compose instead of clobbering (problem 025).
+// It returns the committed before/after quantities so the caller derives the real 0->positive
+// transition (e.g. waitlist notification) from what actually happened, not a pre-read stale value.
+// A resulting negative quantity is a *entity.ValidationError (the caller maps it to InvalidArgument).
+func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, mode entity.StockUpdateMode, amount int, reason string, comment string) (decimal.Decimal, decimal.Decimal, error) {
+	var before, after decimal.Decimal
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		before, err = lockProductSizeQuantity(ctx, rep.DB(), productId, sizeId)
 		if err != nil {
 			return err
 		}
-		if err := rep.Products().UpdateProductSizeStock(ctx, productId, sizeId, newQuantity); err != nil {
+		if mode == entity.StockUpdateModeAdjust {
+			after = before.Add(decimal.NewFromInt(int64(amount)))
+		} else {
+			after = decimal.NewFromInt(int64(amount))
+		}
+		if after.IsNegative() {
+			return &entity.ValidationError{Message: fmt.Sprintf("stock adjustment would result in negative stock (%s -> %s)", before.String(), after.String())}
+		}
+		if err := rep.Products().UpdateProductSizeStock(ctx, productId, sizeId, int(after.IntPart())); err != nil {
 			return err
 		}
-		newQty := decimal.NewFromInt(int64(newQuantity))
-		delta := newQty.Sub(prevQty)
 		e := entity.StockChangeInsert{
 			ProductId:      sql.NullInt32{Int32: int32(productId), Valid: true},
 			SizeId:         sql.NullInt32{Int32: int32(sizeId), Valid: true},
-			QuantityDelta:  delta,
-			QuantityBefore: prevQty,
-			QuantityAfter:  newQty,
+			QuantityDelta:  after.Sub(before),
+			QuantityBefore: before,
+			QuantityAfter:  after,
 			Source:         string(entity.StockChangeSourceManualAdjustment),
 		}
 		if adminUsername := auth.GetAdminUsername(ctx); adminUsername != "" {
@@ -303,4 +317,24 @@ func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId
 		}
 		return rep.Products().RecordStockChange(ctx, []entity.StockChangeInsert{e})
 	})
+	return before, after, err
+}
+
+// lockProductSizeQuantity reads a variant's current quantity with FOR UPDATE (row lock), returning 0
+// when the variant row does not exist yet. Must run inside a transaction; the lock serialises
+// concurrent adjustments on the same variant.
+func lockProductSizeQuantity(ctx context.Context, db dependency.DB, productId, sizeId int) (decimal.Decimal, error) {
+	type qty struct {
+		Quantity decimal.Decimal `db:"quantity"`
+	}
+	row, err := storeutil.QueryNamedOne[qty](ctx, db,
+		`SELECT quantity FROM product_size WHERE product_id = :p AND size_id = :s FOR UPDATE`,
+		map[string]any{"p": productId, "s": sizeId})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return decimal.Zero, nil
+		}
+		return decimal.Zero, fmt.Errorf("lock product size stock: %w", err)
+	}
+	return row.Quantity, nil
 }
