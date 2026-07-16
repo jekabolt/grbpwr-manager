@@ -57,10 +57,18 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 				Decimal: decimal.NewFromFloat(0),
 			}
 		}
+		// PR6: every product is a colourway of a style. A product created through the product admin
+		// has no explicit style, so synthesise a minimal one from its own header — "одиночка = стиль
+		// с 1 цветомоделью" (North Star). style_id is NOT NULL, so this must precede the insert.
+		styleId, err := createSyntheticStyle(ctx, rep.DB(), prd.Product)
+		if err != nil {
+			return fmt.Errorf("can't create style for product: %w", err)
+		}
+
 		// product.id is AUTO_INCREMENT: let the DB assign it (no more time.Now().Unix(), which
 		// collided when two products were created in the same second). The SKU is minted after the
 		// sizes exist, from resolved dictionary segments (base + per-size variant).
-		prdId, err = insertProduct(ctx, rep.DB(), prd.Product)
+		prdId, err = insertProduct(ctx, rep.DB(), prd.Product, styleId)
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}
@@ -211,19 +219,57 @@ func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.Produc
 	return s.getProductDetails(ctx, map[string]any{"sku": strings.ToUpper(sku)}, false)
 }
 
-func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert) (int, error) {
+// createSyntheticStyle inserts a minimal tech_card (style) for a newly-created product and returns
+// its id. In the target model (PR6) every product is a colourway of a style; a product created via
+// the product admin carries no explicit style, so we synthesise one from its own header fields (name
+// from the first translation, brand/season/collection/gender). The style_number is 'AUTO-' + a unique
+// suffix (mirrors migration 0138's convention for backfilled standalones); the operator can flesh the
+// style out later. Only style_number + name are NOT NULL on tech_card, the rest default.
+func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity.ProductInsert) (int, error) {
+	name := "Product"
+	if len(product.Translations) > 0 && strings.TrimSpace(product.Translations[0].Name) != "" {
+		name = strings.TrimSpace(product.Translations[0].Name)
+	}
+	gender := sql.NullString{}
+	if g := strings.TrimSpace(string(product.ProductBodyInsert.TargetGender)); g != "" {
+		gender = sql.NullString{String: g, Valid: true}
+	}
+	return storeutil.ExecNamedLastId(ctx, db, `
+		INSERT INTO tech_card (style_number, name, brand, season, collection, target_gender)
+		VALUES (CONCAT('AUTO-', UUID_SHORT()), :name, :brand, :season, :collection, :gender)`,
+		map[string]any{
+			"name":       name,
+			"brand":      nullifyEmpty(product.ProductBodyInsert.Brand),
+			"season":     nullifyEmpty(string(product.ProductBodyInsert.Season)),
+			"collection": nullifyEmpty(product.ProductBodyInsert.Collection),
+			"gender":     gender,
+		})
+}
+
+// nullifyEmpty maps an empty/whitespace string to a NULL so a synthesised tech_card leaves optional
+// header columns unset rather than storing "".
+func nullifyEmpty(s string) sql.NullString {
+	if strings.TrimSpace(s) == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, styleId int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
 	// sizes exist. color_code is the dictionary FK (NULL falls back to translit/UNK in the generator).
+	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
 	// A cost provided at create time is manual admin input, so stamp its provenance
 	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
 	query := `
 	INSERT INTO product
-	(sku, preorder, brand, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :preorder, :brand, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
+	(sku, style_id, preorder, brand, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, top_category_id, sub_category_id, type_id, model_wears_height_cm, model_wears_size_id, care_instructions, composition, hidden, target_gender, season, version, collection, fit, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :styleId, :preorder, :brand, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :topCategoryId, :subCategoryId, :typeId, :modelWearsHeightCm, :modelWearsSizeId, :careInstructions, :composition, :hidden, :targetGender, :season, :version, :collection, :fit, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
+		"styleId":              styleId,
 		"preorder":             product.ProductBodyInsert.Preorder,
 		"brand":                product.ProductBodyInsert.Brand,
 		"color":                product.ProductBodyInsert.Color,
@@ -766,6 +812,7 @@ type productQueryResult struct {
 	SecondaryBlurHash           sql.NullString       `db:"secondary_blur_hash"`
 	SoldOut                     bool                 `db:"sold_out"`
 	Status                      entity.ProductStatus `db:"status"`
+	StyleId                     int                  `db:"style_id"`
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslationInsert) entity.Product {
@@ -802,6 +849,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		SKU:       pqr.SKU,
 		SoldOut:   pqr.SoldOut,
 		Status:    pqr.Status,
+		StyleId:   pqr.StyleId,
 		ProductDisplay: entity.ProductDisplay{
 			ProductBody: entity.ProductBody{
 				ProductBodyInsert: entity.ProductBodyInsert{

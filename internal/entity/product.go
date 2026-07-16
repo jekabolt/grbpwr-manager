@@ -245,7 +245,8 @@ type Product struct {
 	ProductDisplay ProductDisplay `valid:"required"`
 	Prices         []ProductPrice // Multi-currency prices
 	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
-	Status         ProductStatus  `db:"status"` // lifecycle state (generated: active/hidden/archived)
+	Status         ProductStatus  `db:"status"`   // lifecycle state (generated: active/hidden/archived)
+	StyleId        int            `db:"style_id"` // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
 }
 
 // IsPubliclyVisible reports whether the product is exposed on the storefront: only 'active' products
