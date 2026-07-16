@@ -125,7 +125,8 @@ message ColorwayBodyInsert {
   bool hidden = 14;
   GenderEnum target_gender = 15;
   SeasonEnum season = 19;
-  string version = 16;
+  reserved 16; // was `version` — the DB/entity version column was removed (PR6); the store never
+  reserved "version"; // persisted it and it did not round-trip, so it is removed, not stubbed (problem 032)
   string collection = 17;
   string fit = 18;
   // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
