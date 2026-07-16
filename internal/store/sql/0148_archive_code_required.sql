@@ -43,7 +43,7 @@ SET @need_chk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'archive'
       AND CONSTRAINT_TYPE = 'CHECK' AND CONSTRAINT_NAME = 'chk_archive_code_format');
 SET @sql := IF(@need_chk,
-    'ALTER TABLE archive ADD CONSTRAINT chk_archive_code_format CHECK (code REGEXP ''^AR[0-9A-Z]{1,10}$'')',
+    'ALTER TABLE archive ADD CONSTRAINT chk_archive_code_format CHECK (REGEXP_LIKE(code, ''^AR[0-9A-Z]{1,10}$'', ''c''))',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;

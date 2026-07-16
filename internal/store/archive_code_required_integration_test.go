@@ -55,6 +55,10 @@ func TestArchiveCodeRequired(t *testing.T) {
 	_, err = testDB.ExecContext(ctx,
 		`INSERT INTO archive (tag, thumbnail_id, code) VALUES ('c', ?, 'XX01')`, mediaID)
 	require.Error(t, err, "malformed code must be rejected (CHECK)")
+	// CHECK is explicitly case-sensitive even though the database collation is not.
+	_, err = testDB.ExecContext(ctx,
+		`INSERT INTO archive (tag, thumbnail_id, code) VALUES ('c', ?, 'ar000c')`, mediaID)
+	require.Error(t, err, "lowercase persisted code must be rejected (case-sensitive CHECK)")
 	// UNIQUE: the same code twice collides.
 	_, err = testDB.ExecContext(ctx,
 		`INSERT INTO archive (tag, thumbnail_id, code) VALUES ('c', ?, 'ARZZZ9')`, mediaID)

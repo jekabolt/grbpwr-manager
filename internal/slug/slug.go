@@ -31,12 +31,13 @@ var (
 )
 
 // productTailRe matches a base SKU anchored at the END of the pretty-stripped, upper-cased tail:
-// {SEASON:2}{YY:2}-{MODEL:5}-{COLOR:3} (fixed 14, e.g. SS26-00021-BLK, mirrors product.BuildBaseSKU).
+// {SEASON:SS|FW|PF|RC}{YY:2}-{MODEL:5}-{COLOR:3} (fixed 14, e.g. SS26-00021-BLK,
+// mirrors the typed product.BuildBaseSKU contract rather than accepting arbitrary letters).
 // The optional greedy `(?:.+-)?` swallows the decorative pretty segment (any number of hyphens, and
 // even SKU-like fragments), so the captured group is always the final triplet. Because the SKU is
 // anchored at `$`, a variant-size suffix (`-04`), an emergency collision suffix (`…2`) or any trailing
 // garbage leaves the string unmatched — those are rejected, not truncated to a base.
-var productTailRe = regexp.MustCompile(`^(?:.+-)?([A-Z]{2}[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})$`)
+var productTailRe = regexp.MustCompile(`^(?:.+-)?((?:SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})$`)
 
 // archiveTailRe matches an archive code anchored at the end: "AR" + 1..10 upper base36 chars (mirrors
 // entity.ValidArchiveCode / migration 0148). The code carries no hyphen, so the greedy prefix cleanly
