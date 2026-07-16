@@ -147,6 +147,14 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
+		// The variant SKU snapshot is mandatory and immutable (problem 023): a line must resolve to a
+		// live variant (product_size) that has a non-empty SKU, or the order is rejected here — before
+		// any commit — so order history can never be born without a stable identity. fetchVariantSKUs
+		// omits NULL/empty SKUs, so a missing row (mismatched pair) or a blank SKU both fail this check.
+		sku, ok := skuByProductSize[[2]int{item.ProductId, item.SizeId}]
+		if !ok || sku == "" {
+			return fmt.Errorf("cannot create order line: product %d size %d has no live variant SKU", item.ProductId, item.SizeId)
+		}
 		row := map[string]any{
 			"order_id":                orderID,
 			"product_id":              item.ProductId,
@@ -156,16 +164,13 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"size_id":                 item.SizeId,
 			"cost_price_at_sale":      nil,
 			"product_price_base":      nil,
-			"product_sku":             nil,
+			"product_sku":             sku,
 		}
 		if cost, ok := costByProduct[item.ProductId]; ok {
 			row["cost_price_at_sale"] = cost
 		}
 		if base, ok := basePriceByProduct[item.ProductId]; ok {
 			row["product_price_base"] = base
-		}
-		if sku, ok := skuByProductSize[[2]int{item.ProductId, item.SizeId}]; ok {
-			row["product_sku"] = sku
 		}
 		rows = append(rows, row)
 	}

@@ -116,8 +116,9 @@ func (s *Store) GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.
 		oi.product_id,
 		oi.quantity,
 		oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
-		-- variant SKU on the customs line — the frozen order snapshot, else the live variant, else base.
-		COALESCE(oi.product_sku, ps.sku, p.sku) AS sku,
+		-- variant SKU on the customs line — the immutable frozen order snapshot (NOT NULL, no live/base
+		-- fallback so order history never shifts under a later catalogue remint, problem 023).
+		oi.product_sku AS sku,
 		p.hs_code,
 		p.country_of_origin,
 		p.customs_description,
@@ -125,7 +126,6 @@ func (s *Store) GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.
 		tcp.box_dimensions
 	FROM order_item oi
 	JOIN product p ON oi.product_id = p.id
-	LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
 	LEFT JOIN tech_card_packaging tcp ON tcp.tech_card_id = p.primary_tech_card_id
 	WHERE oi.order_id = :orderId`
 	items, err := storeutil.QueryListNamed[entity.OrderItemParcel](ctx, s.DB, query, map[string]any{

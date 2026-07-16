@@ -121,7 +121,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			m.thumbnail,
 			m.blur_hash,
 			sty.brand AS product_brand,
-			COALESCE(oi.product_sku, ps.sku, p.sku) AS product_sku,
+			oi.product_sku AS product_sku,
 			p.sku AS product_base_sku,
 			p.color AS color,
 			sty.top_category_id AS top_category_id,
@@ -132,7 +132,6 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
 		JOIN tech_card sty ON sty.id = p.style_id
-		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
 		JOIN media m ON p.thumbnail_id = m.id
         WHERE oi.order_id IN (:orderIds)
     `
