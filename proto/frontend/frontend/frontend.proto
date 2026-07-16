@@ -25,12 +25,12 @@ service FrontendService {
   }
 
   // Get product brand and name
-  rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
+  rpc GetColorway(GetColorwayRequest) returns (GetColorwayResponse) {
     option (google.api.http) = {get: "/api/frontend/product/{sku}"};
   }
 
   // Get paged products
-  rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
+  rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
     option (google.api.http) = {get: "/api/frontend/products/paged"};
   }
 
@@ -224,18 +224,18 @@ message GetHeroResponse {
   common.Dictionary dictionary = 2;
 }
 
-message GetProductRequest {
+message GetColorwayRequest {
   // Resolve by base SKU (the public product key). The frontend extracts it from the
   // /p/{pretty}-{sku} URL tail. Fields 1-4 (gender/brand/name/id) are removed — the internal
   // product.id is no longer a public key (SKU redesign PR3, breaking, no redirects).
   string sku = 5;
 }
 
-message GetProductResponse {
+message GetColorwayResponse {
   common.ColorwayFull product = 1;
 }
 
-message GetProductsPagedRequest {
+message GetColorwaysPagedRequest {
   int32 limit = 1;
   int32 offset = 2;
   repeated common.SortFactor sort_factors = 3;
@@ -243,7 +243,7 @@ message GetProductsPagedRequest {
   common.FilterConditions filter_conditions = 5;
 }
 
-message GetProductsPagedResponse {
+message GetColorwaysPagedResponse {
   repeated common.Colorway products = 1;
   int32 total = 2;
 }

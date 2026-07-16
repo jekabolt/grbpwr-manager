@@ -78,7 +78,7 @@ service AdminService {
   // PRODUCTS MANAGER
 
   // Adds a new product or updates an existing one.
-  rpc UpsertProduct(UpsertProductRequest) returns (UpsertProductResponse) {
+  rpc UpsertColorway(UpsertColorwayRequest) returns (UpsertColorwayResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/upsert"
       body: "*"
@@ -86,36 +86,36 @@ service AdminService {
   }
 
   // Retrieves a paginated list of products.
-  rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
+  rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
     option (google.api.http) = {get: "/api/admin/products/paged"};
   }
 
   // Gets a product by its ID.
-  rpc GetProductByID(GetProductByIDRequest) returns (GetProductByIDResponse) {
+  rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
     option (google.api.http) = {get: "/api/admin/product/{id}"};
   }
 
   // Deletes a product by its ID.
-  rpc DeleteProductByID(DeleteProductByIDRequest) returns (DeleteProductByIDResponse) {
+  rpc DeleteColorwayByID(DeleteColorwayByIDRequest) returns (DeleteColorwayByIDResponse) {
     option (google.api.http) = {delete: "/api/admin/product/{id}"};
   }
 
   // Updates the stock for a specific product size.
-  rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
+  rpc UpdateVariantStock(UpdateVariantStockRequest) returns (UpdateVariantStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/stock/update"
       body: "*"
     };
   }
 
-  // GetProductCustoms returns a product's international-shipping customs data (HS code, origin,
+  // GetColorwayCustoms returns a product's international-shipping customs data (HS code, origin,
   // declared description).
-  rpc GetProductCustoms(GetProductCustomsRequest) returns (GetProductCustomsResponse) {
+  rpc GetColorwayCustoms(GetColorwayCustomsRequest) returns (GetColorwayCustomsResponse) {
     option (google.api.http) = {get: "/api/admin/product/{product_id}/customs"};
   }
 
-  // SetProductCustoms sets a product's customs data used to build international shipping labels.
-  rpc SetProductCustoms(SetProductCustomsRequest) returns (SetProductCustomsResponse) {
+  // SetColorwayCustoms sets a product's customs data used to build international shipping labels.
+  rpc SetColorwayCustoms(SetColorwayCustomsRequest) returns (SetColorwayCustomsResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/customs"
       body: "*"
@@ -125,7 +125,7 @@ service AdminService {
   // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
   // any manual value. If tech_card_id is set it also becomes the product's primary card;
   // otherwise the product's existing primary card is used.
-  rpc SyncProductCostFromTechCard(SyncProductCostFromTechCardRequest) returns (SyncProductCostFromTechCardResponse) {
+  rpc SyncColorwayCostFromStyle(SyncColorwayCostFromStyleRequest) returns (SyncColorwayCostFromStyleResponse) {
     option (google.api.http) = {
       post: "/api/admin/product/cost/sync-from-tech-card"
       body: "*"
@@ -1299,16 +1299,16 @@ message DeleteFromBucketResponse {}
 
 // PRODUCTS MANAGER
 
-message UpsertProductRequest {
+message UpsertColorwayRequest {
   int32 id = 1;
   common.ColorwayNew product = 2;
 }
 
-message UpsertProductResponse {
+message UpsertColorwayResponse {
   int32 id = 1;
 }
 
-message GetProductsPagedRequest {
+message GetColorwaysPagedRequest {
   int32 limit = 1;
   int32 offset = 2;
   repeated common.SortFactor sort_factors = 3;
@@ -1317,18 +1317,18 @@ message GetProductsPagedRequest {
   bool show_hidden = 6;
 }
 
-message GetProductsPagedResponse {
+message GetColorwaysPagedResponse {
   repeated common.Colorway products = 1;
 }
 
-message GetProductByIDRequest {
+message GetColorwayByIDRequest {
   int32 id = 1;
 }
 
-message GetProductByIDResponse {
+message GetColorwayByIDResponse {
   common.ColorwayFull product = 1;
   // cost_info carries the confidential COGS/provenance fields. Admin-only — this lives on the
-  // admin GetProductByID response, never on the shared ColorwayFull, so it cannot leak to the
+  // admin GetColorwayByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
   ColorwayCostInfo cost_info = 2;
 }
@@ -1344,14 +1344,14 @@ message ColorwayCostInfo {
   int32 primary_tech_card_id = 5;
 }
 
-message SyncProductCostFromTechCardRequest {
+message SyncColorwayCostFromStyleRequest {
   int32 product_id = 1;
   // tech_card_id optionally repoints the product's primary card before seeding; 0 = use the
   // product's existing primary card.
   int32 tech_card_id = 2;
 }
 
-message SyncProductCostFromTechCardResponse {
+message SyncColorwayCostFromStyleResponse {
   // the cost_price written, in base currency.
   google.type.Decimal cost_price = 1;
   string currency = 2;
@@ -1359,13 +1359,13 @@ message SyncProductCostFromTechCardResponse {
   int32 tech_card_id = 3;
 }
 
-message DeleteProductByIDRequest {
+message DeleteColorwayByIDRequest {
   int32 id = 1;
 }
 
-message DeleteProductByIDResponse {}
+message DeleteColorwayByIDResponse {}
 
-message UpdateProductSizeStockRequest {
+message UpdateVariantStockRequest {
   common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta
   int32 product_id = 2; // Required: product ID
   int32 size_id = 3; // Required: size ID
@@ -1375,32 +1375,32 @@ message UpdateProductSizeStockRequest {
   optional string comment = 7; // Optional, but required for reason=OTHER
 }
 
-message UpdateProductSizeStockResponse {}
+message UpdateVariantStockResponse {}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
-// customs_description are the customs-only fields set by SetProductCustoms. country_of_origin is the
+// customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the
 // existing core product field (free-text manufacture country) returned read-only for display and
-// reused as the Sendcloud origin_country — SetProductCustoms ignores it (edit it on the product form).
+// reused as the Sendcloud origin_country — SetColorwayCustoms ignores it (edit it on the product form).
 message ColorwayCustoms {
   string hs_code = 1;
   string country_of_origin = 2; // read-only; core product field, resolved to ISO-2 at label time
   string customs_description = 3;
 }
 
-message GetProductCustomsRequest {
+message GetColorwayCustomsRequest {
   int32 product_id = 1;
 }
 
-message GetProductCustomsResponse {
+message GetColorwayCustomsResponse {
   ColorwayCustoms customs = 1;
 }
 
-message SetProductCustomsRequest {
+message SetColorwayCustomsRequest {
   int32 product_id = 1;
   ColorwayCustoms customs = 2;
 }
 
-message SetProductCustomsResponse {}
+message SetColorwayCustomsResponse {}
 
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;

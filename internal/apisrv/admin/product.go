@@ -25,7 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductRequest) (*pb_admin.UpsertProductResponse, error) {
+func (s *Server) UpsertColorway(ctx context.Context, req *pb_admin.UpsertColorwayRequest) (*pb_admin.UpsertColorwayResponse, error) {
 
 	if _, write := s.costingAccess(ctx); !write && productInsertHasCostPrice(req.GetProduct().GetProduct()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a product cost_price")
@@ -92,12 +92,12 @@ func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductR
 		Hero:     true,
 	})
 
-	return &pb_admin.UpsertProductResponse{
+	return &pb_admin.UpsertColorwayResponse{
 		Id: int32(id),
 	}, nil
 }
 
-func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
+func (s *Server) DeleteColorwayByID(ctx context.Context, req *pb_admin.DeleteColorwayByIDRequest) (*pb_admin.DeleteColorwayByIDResponse, error) {
 	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
 	if err != nil {
 		if errors.Is(err, store.ErrProductInOrders) {
@@ -122,10 +122,10 @@ func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProd
 		Products: []int{int(req.Id)},
 		Hero:     true,
 	})
-	return &pb_admin.DeleteProductByIDResponse{}, nil
+	return &pb_admin.DeleteColorwayByIDResponse{}, nil
 }
 
-func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
+func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayByIDRequest) (*pb_admin.GetColorwayByIDResponse, error) {
 
 	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
 	if err != nil {
@@ -158,7 +158,7 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 		}
 	}
 
-	return &pb_admin.GetProductByIDResponse{
+	return &pb_admin.GetColorwayByIDResponse{
 		Product:  pbPrd,
 		CostInfo: costInfo,
 	}, nil
@@ -169,7 +169,7 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 // card, overriding any manual value. tech_card_id (when > 0) repoints the product's primary
 // card before seeding; otherwise the product's existing primary card is used. The card must
 // currently link the product and have a computable unit cost in the base currency.
-func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.SyncProductCostFromTechCardRequest) (*pb_admin.SyncProductCostFromTechCardResponse, error) {
+func (s *Server) SyncColorwayCostFromStyle(ctx context.Context, req *pb_admin.SyncColorwayCostFromStyleRequest) (*pb_admin.SyncColorwayCostFromStyleResponse, error) {
 	if _, write := s.costingAccess(ctx); !write {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a product cost from a tech card")
 	}
@@ -227,7 +227,7 @@ func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.
 		slog.Default().ErrorContext(ctx, "can't sync product cost from tech card", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't sync product cost")
 	}
-	return &pb_admin.SyncProductCostFromTechCardResponse{
+	return &pb_admin.SyncColorwayCostFromStyleResponse{
 		CostPrice:  &pb_decimal.Decimal{Value: unit.Decimal.String()},
 		Currency:   currency,
 		TechCardId: int32(techCardID),
@@ -253,7 +253,7 @@ func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ColorwayCostInfo
 	return out
 }
 
-func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProductsPagedRequest) (*pb_admin.GetProductsPagedResponse, error) {
+func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwaysPagedRequest) (*pb_admin.GetColorwaysPagedResponse, error) {
 
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
@@ -308,12 +308,12 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		prdsPb = append(prdsPb, pbPrd)
 	}
 
-	return &pb_admin.GetProductsPagedResponse{
+	return &pb_admin.GetColorwaysPagedResponse{
 		Products: prdsPb,
 	}, nil
 }
 
-func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
+func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVariantStockRequest) (*pb_admin.UpdateVariantStockResponse, error) {
 	productId := int(req.ProductId)
 	sizeId := int(req.SizeId)
 	quantity := int(req.Quantity)
@@ -498,7 +498,7 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		Products: []int{productId},
 		Hero:     true,
 	})
-	return &pb_admin.UpdateProductSizeStockResponse{}, nil
+	return &pb_admin.UpdateVariantStockResponse{}, nil
 }
 
 func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListStockChangeHistoryRequest) (*pb_admin.ListStockChangeHistoryResponse, error) {

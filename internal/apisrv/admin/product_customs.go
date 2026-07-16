@@ -14,7 +14,7 @@ import (
 )
 
 // GetProductCustoms returns a product's international-shipping customs data.
-func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProductCustomsRequest) (*pb_admin.GetProductCustomsResponse, error) {
+func (s *Server) GetColorwayCustoms(ctx context.Context, req *pb_admin.GetColorwayCustomsRequest) (*pb_admin.GetColorwayCustomsResponse, error) {
 	if req.ProductId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
@@ -26,7 +26,7 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 		slog.Default().ErrorContext(ctx, "can't get product customs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get product customs")
 	}
-	return &pb_admin.GetProductCustomsResponse{
+	return &pb_admin.GetColorwayCustomsResponse{
 		Customs: &pb_admin.ColorwayCustoms{
 			HsCode:             c.HSCode.String,
 			CountryOfOrigin:    c.CountryOfOrigin.String,
@@ -38,7 +38,7 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 // SetProductCustoms sets a product's customs data (HS code + declared description). Empty fields
 // clear the stored value. country_of_origin is ignored here: it is a core product field set via the
 // product form (and reused as the Sendcloud origin_country); the customs path never writes it.
-func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProductCustomsRequest) (*pb_admin.SetProductCustomsResponse, error) {
+func (s *Server) SetColorwayCustoms(ctx context.Context, req *pb_admin.SetColorwayCustomsRequest) (*pb_admin.SetColorwayCustomsResponse, error) {
 	if req.ProductId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
@@ -58,5 +58,5 @@ func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProduct
 		slog.Default().ErrorContext(ctx, "can't set product customs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't set product customs")
 	}
-	return &pb_admin.SetProductCustomsResponse{}, nil
+	return &pb_admin.SetColorwayCustomsResponse{}, nil
 }

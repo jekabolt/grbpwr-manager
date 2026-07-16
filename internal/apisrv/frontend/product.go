@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequest) (*pb_frontend.GetProductResponse, error) {
+func (s *Server) GetColorway(ctx context.Context, req *pb_frontend.GetColorwayRequest) (*pb_frontend.GetColorwayResponse, error) {
 	if req.Sku == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "sku is required")
 	}
@@ -39,7 +39,7 @@ func (s *Server) GetProduct(ctx context.Context, req *pb_frontend.GetProductRequ
 		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
 	}
 
-	return &pb_frontend.GetProductResponse{
+	return &pb_frontend.GetColorwayResponse{
 		Product: pbPrd,
 	}, nil
 }
@@ -58,7 +58,7 @@ func (s *Server) viewerTier(ctx context.Context) int16 {
 	return entity.TierCode(acc.Tier())
 }
 
-func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProductsPagedRequest) (*pb_frontend.GetProductsPagedResponse, error) {
+func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColorwaysPagedRequest) (*pb_frontend.GetColorwaysPagedResponse, error) {
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
 		sfs = append(sfs, dto.ConvertPBCommonSortFactorToEntity(sf))
@@ -123,7 +123,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 		prdsPb = append(prdsPb, pbPrd)
 	}
 
-	return &pb_frontend.GetProductsPagedResponse{
+	return &pb_frontend.GetColorwaysPagedResponse{
 		Products: prdsPb,
 		Total:    int32(count),
 	}, nil

@@ -266,7 +266,7 @@ func TestGetProduct(t *testing.T) {
 	)
 
 	// Call the function being tested
-	resp, err := server.GetProduct(ctx, &pb_frontend.GetProductRequest{
+	resp, err := server.GetProduct(ctx, &pb_frontend.GetColorwayRequest{
 		Sku: "TST123",
 	})
 
@@ -404,7 +404,7 @@ func TestGetProductsPaged(t *testing.T) {
 	)
 
 	// Call the function being tested
-	resp, err := server.GetProductsPaged(ctx, &pb_frontend.GetProductsPagedRequest{
+	resp, err := server.GetProductsPaged(ctx, &pb_frontend.GetColorwaysPagedRequest{
 		Limit:       10,
 		Offset:      0,
 		SortFactors: []pb_common.SortFactor{pb_common.SortFactor_SORT_FACTOR_PRICE},
