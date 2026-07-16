@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
@@ -43,13 +45,38 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 }
 
 func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequest) (*pb_frontend.GetArchiveResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "archive lookup is required")
+	}
 
-	af, err := s.repo.Archive().GetArchiveByCode(ctx, req.Code)
+	code := strings.TrimSpace(req.Code)
+	hasLegacyFields := req.Heading != "" || req.Tag != "" || req.Id != 0
+	if code != "" && hasLegacyFields {
+		return nil, status.Error(codes.InvalidArgument, "use either archive code or legacy archive fields, not both")
+	}
+
+	var (
+		af     *entity.ArchiveFull
+		err    error
+		lookup string
+	)
+	switch {
+	case code != "":
+		lookup = "code"
+		af, err = s.repo.Archive().GetArchiveByCode(ctx, code)
+	case req.Id > 0:
+		// Transitional compatibility for the former /archive/{heading}/{tag}/{id} route. Heading and
+		// tag were decorative in the old handler; id was always the actual lookup key.
+		lookup = "legacy_id"
+		af, err = s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	default:
+		return nil, status.Error(codes.InvalidArgument, "archive code or legacy archive id is required")
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "archive not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get archive by code", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't get archive", slog.String("lookup", lookup), slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 

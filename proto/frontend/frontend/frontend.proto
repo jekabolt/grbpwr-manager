@@ -116,7 +116,10 @@ service FrontendService {
 
   // GetArchive retrieves an archive by its stable public code (the /timeline URL tail).
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
-    option (google.api.http) = {get: "/api/frontend/archive/{code}"};
+    option (google.api.http) = {
+      get: "/api/frontend/archive/{code}"
+      additional_bindings {get: "/api/frontend/archive/{heading}/{tag}/{id}"}
+    };
   }
 
   // Submit a support ticket
@@ -228,6 +231,8 @@ message GetColorwayRequest {
   // Resolve by base SKU (the public product key). The frontend extracts it from the
   // /p/{pretty}-{sku} URL tail. Fields 1-4 (gender/brand/name/id) are removed — the internal
   // product.id is no longer a public key (SKU redesign PR3, breaking, no redirects).
+  reserved 1 to 4;
+  reserved "gender", "brand", "name", "id";
   string sku = 5;
 }
 
@@ -373,8 +378,13 @@ message GetArchivesPagedResponse {
 }
 
 message GetArchiveRequest {
+  // Legacy lookup fields. Kept on their original wire numbers during the coordinated URL cutover so
+  // an old serialized heading can never be interpreted as the new public code.
+  string heading = 1 [deprecated = true];
+  string tag = 2 [deprecated = true];
+  int32 id = 3 [deprecated = true];
   // code is the archive's stable public identifier (the tail of /timeline/{pretty}-{code}).
-  string code = 1;
+  string code = 4;
 }
 
 message GetArchiveResponse {
