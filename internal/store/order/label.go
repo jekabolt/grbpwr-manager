@@ -94,7 +94,7 @@ func (s *Store) GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.
 		oi.product_id,
 		oi.quantity,
 		oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
-		-- variant SKU on the customs line: the frozen order snapshot, else the live variant, else base.
+		-- variant SKU on the customs line — the frozen order snapshot, else the live variant, else base.
 		COALESCE(oi.product_sku, ps.sku, p.sku) AS sku,
 		p.hs_code,
 		p.country_of_origin,
