@@ -883,6 +883,7 @@ type productQueryResult struct {
 	Brand              string              `db:"brand"`
 	SKU                string              `db:"sku"`
 	Color              string              `db:"color"`
+	ColorCode          sql.NullString      `db:"color_code"`
 	ColorHex           string              `db:"color_hex"`
 	CountryOfOrigin    string              `db:"country_of_origin"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
@@ -972,6 +973,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					Brand:                 pqr.Brand,
 					Collection:            pqr.Collection,
 					Color:                 pqr.Color,
+					ColorCode:             pqr.ColorCode,
 					ColorHex:              pqr.ColorHex,
 					CountryOfOrigin:       pqr.CountryOfOrigin,
 					SalePercentage:        pqr.SalePercentage,
