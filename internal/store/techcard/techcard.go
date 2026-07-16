@@ -246,6 +246,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
 				style_number = :style_number, name = :name, brand = :brand, season = :season,
+				season_code = :season_code, season_year = :season_year,
 				collection = :collection, category_id = :category_id, target_gender = :target_gender,
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
