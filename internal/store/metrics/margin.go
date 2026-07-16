@@ -110,7 +110,7 @@ func (s *Store) getUncostedSoldProductIDs(ctx context.Context, from, to time.Tim
 		JOIN product p ON p.id = oi.product_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		WHERE p.cost_price IS NULL AND p.deleted_at IS NULL
+		WHERE p.cost_price IS NULL AND p.lifecycle_status <> 4
 		GROUP BY oi.product_id
 		ORDER BY COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
 	`, orderFactorsCTE, itemAdjExpr)

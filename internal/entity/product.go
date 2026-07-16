@@ -97,20 +97,9 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
-// ColorwayStatus is a product's lifecycle state — the single authoritative view of the
-// (deleted_at, hidden) pair, whose interaction used to be re-expressed ad-hoc in each WHERE clause.
-// It is a STORED generated column (migration 0137, PR5-A): 'archived' when soft-deleted, else
-// 'hidden' when hidden, else 'active'. Read-only from Go — the operator still toggles `hidden` or
-// soft-deletes via `deleted_at` and the status recomputes. It is ORTHOGONAL to preorder, sold_out
-// and hidden_for_non_qualified (availability window / derived stock / tier gating), which are not
-// lifecycle states and are applied independently.
-type ColorwayStatus string
-
-const (
-	ProductStatusActive   ColorwayStatus = "active"   // publicly visible on the storefront
-	ProductStatusHidden   ColorwayStatus = "hidden"   // admin-visible, hidden from storefront, not deleted
-	ProductStatusArchived ColorwayStatus = "archived" // soft-deleted
-)
+// ColorwayStatus (the stored product.lifecycle_status) and its lifecycle state machine live in
+// colorway_lifecycle.go. It is ORTHOGONAL to preorder, sold_out and hidden_for_non_qualified
+// (availability window / derived stock / tier gating), which are not lifecycle states.
 
 type SeasonEnum string
 
@@ -188,7 +177,6 @@ type ColorwayBodyInsert struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id" valid:"-"`
 	CareInstructions   sql.NullString      `db:"care_instructions" valid:"-"`
 	Composition        sql.NullString      `db:"composition" valid:"-"`
-	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
 	Season             SeasonEnum          `db:"season" valid:"required"`
 	Collection         string              `db:"collection" valid:"-"`
@@ -238,17 +226,17 @@ type Colorway struct {
 	SkuLockedAt    sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
 	ProductDisplay ColorwayDisplay `valid:"required"`
 	Prices         []ColorwayPrice // Multi-currency prices
-	SoldOut        bool            // Indicates if product is sold out (all sizes have quantity <= 0)
-	Status         ColorwayStatus  `db:"status"`   // lifecycle state (generated: active/hidden/archived)
-	StyleId        int             `db:"style_id"` // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
+	SoldOut         bool           // Indicates if product is sold out (all sizes have quantity <= 0)
+	LifecycleStatus ColorwayStatus `db:"lifecycle_status"` // stored lifecycle: draft/active/hidden/archived (R6)
+	StyleId         int            `db:"style_id"`         // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
 }
 
-// IsPubliclyVisible reports whether the product is exposed on the storefront: only 'active' products
-// are (hidden/archived are not). It is the single Go predicate behind the storefront read filter
-// (status = 'active'); tier gating (HiddenForNonQualified) and stock (SoldOut) are separate axes
+// IsPubliclyVisible reports whether the product is exposed on the storefront: only ACTIVE colourways
+// are (draft/hidden/archived are not). It is the single Go predicate behind the storefront read filter
+// (lifecycle_status = 2); tier gating (HiddenForNonQualified) and stock (SoldOut) are separate axes
 // applied on top of it, not part of this decision.
 func (p *Colorway) IsPubliclyVisible() bool {
-	return p.Status == ProductStatusActive
+	return p.LifecycleStatus == ColorwayStatusActive
 }
 
 type ColorwayInsert struct {

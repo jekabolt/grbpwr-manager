@@ -239,7 +239,7 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 		JOIN product p ON p.id = oi.product_id
 		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		WHERE p.deleted_at IS NULL AND (p.hidden IS NULL OR p.hidden = 0)
+		WHERE p.lifecycle_status = 2
 		GROUP BY oi.product_id, product_name
 		ORDER BY purchase_count DESC
 		LIMIT :limit
@@ -281,8 +281,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			WHERE co.order_status_id IN (%s)
 				AND co.placed >= :from AND co.placed < :to
-				AND p.deleted_at IS NULL
-				AND (p.hidden IS NULL OR p.hidden = 0)
+				AND p.lifecycle_status = 2
 			GROUP BY oi.product_id, product_name
 		),
 		ranked AS (

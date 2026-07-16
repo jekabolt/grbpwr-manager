@@ -28,18 +28,19 @@ func TestSoldOutFromSizes(t *testing.T) {
 	}
 }
 
-// TestProductIsPubliclyVisible pins that only 'active' is public-facing (PR5-A).
+// TestProductIsPubliclyVisible pins that only ACTIVE is public-facing (R6).
 func TestProductIsPubliclyVisible(t *testing.T) {
 	cases := map[ColorwayStatus]bool{
-		ProductStatusActive:   true,
-		ProductStatusHidden:   false,
-		ProductStatusArchived: false,
-		ColorwayStatus(""):     false,
+		ColorwayStatusDraft:    false,
+		ColorwayStatusActive:   true,
+		ColorwayStatusHidden:   false,
+		ColorwayStatusArchived: false,
+		ColorwayStatusUnknown:  false,
 	}
 	for st, want := range cases {
-		p := &Colorway{Status: st}
+		p := &Colorway{LifecycleStatus: st}
 		if got := p.IsPubliclyVisible(); got != want {
-			t.Errorf("status %q: IsPubliclyVisible = %v, want %v", st, got, want)
+			t.Errorf("status %s: IsPubliclyVisible = %v, want %v", st, got, want)
 		}
 	}
 }

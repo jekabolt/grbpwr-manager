@@ -296,7 +296,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       c.pantone, c.pantone_system, c.hex, c.swatch_media_id, c.lab_dip_round,
 		       c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
 		FROM tech_card_colorway c
-		LEFT JOIN product p ON p.id = c.product_id AND p.deleted_at IS NULL
+		LEFT JOIN product p ON p.id = c.product_id AND p.lifecycle_status <> 4
 		WHERE c.tech_card_id IN (:ids)
 		ORDER BY c.tech_card_id, c.display_order`, map[string]any{"ids": ids})
 	if err != nil {

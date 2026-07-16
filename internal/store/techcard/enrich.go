@@ -130,7 +130,7 @@ func (s *Store) productIdsByTechCardIds(ctx context.Context, ids []int) (map[int
 		SELECT tcp.tech_card_id, tcp.product_id AS value
 		FROM tech_card_product tcp
 		JOIN product p ON p.id = tcp.product_id
-		WHERE tcp.tech_card_id IN (:ids) AND p.deleted_at IS NULL
+		WHERE tcp.tech_card_id IN (:ids) AND p.lifecycle_status <> 4
 		ORDER BY tcp.tech_card_id, tcp.display_order`, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, fmt.Errorf("can't load tech card products: %w", err)

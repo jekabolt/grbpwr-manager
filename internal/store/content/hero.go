@@ -316,7 +316,8 @@ func resolveHeroSingleSlice(ctx context.Context, l *mediaLoader, in []entity.Her
 func filterVisibleProducts(products []entity.Colorway) []entity.Colorway {
 	prds := make([]entity.Colorway, 0, len(products))
 	for _, p := range products {
-		if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
+		// Hero features only publicly-visible colourways (ACTIVE); drafts/hidden/archived are excluded (R6).
+		if !p.IsPubliclyVisible() {
 			continue
 		}
 		prds = append(prds, p)

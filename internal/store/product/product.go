@@ -217,7 +217,10 @@ func (s *Store) DeleteProductById(ctx context.Context, id int) error {
 		return ErrProductInOrders
 	}
 
-	query := "UPDATE product SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id AND deleted_at IS NULL"
+	// Archive keeps the stored lifecycle consistent with the audit stamp: deleted_at set <=> lifecycle
+	// status ARCHIVED(4). The dedicated ArchiveColorway transition enforces the ACTIVE|HIDDEN source
+	// rule; this lenient legacy archive only refuses an already-archived row.
+	query := "UPDATE product SET deleted_at = CURRENT_TIMESTAMP, lifecycle_status = 4 WHERE id = :id AND deleted_at IS NULL"
 	return storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
 		"id": id,
 	})
@@ -316,10 +319,13 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 	// Garment-level fields (brand/season/collection/target_gender/fit/composition/care/model_wears/
 	// category top-sub-type) live on the STYLE now (PR6 P2) and are written by writeStyleFields, not
 	// here. This INSERT carries only colourway-level columns (colour, media, price, country, ...).
+	// lifecycle_status starts ACTIVE(2) via this legacy upsert bridge (preserves create-then-visible).
+	// The North Star create (T-B's CreateColorway) instead mints a DRAFT(1) and publishes it through
+	// PublishColorway; a colourway save never changes lifecycle (R6). Merge dev-colourways are DRAFT.
 	query := `
 	INSERT INTO product
-	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, hidden, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :minTier, :costPrice,
+	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, 2, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
@@ -332,7 +338,6 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		"thumbnailId":          product.ThumbnailMediaID,
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
-		"hidden":               product.ProductBodyInsert.Hidden,
 		"minTier":              product.ProductBodyInsert.MinTier,
 		"costPrice":            product.CostPrice,
 	}
@@ -679,7 +684,8 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		thumbnail_id = :thumbnailId,
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
-		hidden = :hidden,
+		-- lifecycle_status is deliberately NOT written here: a colourway save never changes lifecycle
+		-- (R6). Hide/Unhide/Archive are dedicated transition commands.
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
 		-- product edits from the admin panel (which does not carry cost) never wipe it.
@@ -701,7 +707,6 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		"thumbnailId":          prd.ThumbnailMediaID,
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
-		"hidden":               prd.ProductBodyInsert.Hidden,
 		"minTier":              prd.ProductBodyInsert.MinTier,
 		"costPrice":            prd.CostPrice,
 		"id":                   id,
@@ -971,7 +976,6 @@ type productQueryResult struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id"`
 	CareInstructions   sql.NullString      `db:"care_instructions"`
 	Composition        sql.NullString      `db:"composition"`
-	Hidden             sql.NullBool        `db:"hidden"`
 	TargetGender       entity.GenderEnum   `db:"target_gender"`
 	Season             entity.SeasonEnum   `db:"season"`
 	Collection         string              `db:"collection"`
@@ -1004,7 +1008,7 @@ type productQueryResult struct {
 	SecondaryCompressedH        sql.NullInt32         `db:"secondary_compressed_height"`
 	SecondaryBlurHash           sql.NullString        `db:"secondary_blur_hash"`
 	SoldOut                     bool                  `db:"sold_out"`
-	Status                      entity.ColorwayStatus `db:"status"`
+	LifecycleStatus             entity.ColorwayStatus `db:"lifecycle_status"`
 	StyleId                     int                   `db:"style_id"`
 }
 
@@ -1040,9 +1044,9 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 		DeletedAt: pqr.DeletedAt,
 		Slug:      pqr.Slug,
 		SKU:       pqr.SKU,
-		SoldOut:   pqr.SoldOut,
-		Status:    pqr.Status,
-		StyleId:   pqr.StyleId,
+		SoldOut:         pqr.SoldOut,
+		LifecycleStatus: pqr.LifecycleStatus,
+		StyleId:         pqr.StyleId,
 		ProductDisplay: entity.ColorwayDisplay{
 			ProductBody: entity.ColorwayBody{
 				ProductBodyInsert: entity.ColorwayBodyInsert{
@@ -1061,7 +1065,6 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					ModelWearsSizeId:      pqr.ModelWearsSizeId,
 					CareInstructions:      pqr.CareInstructions,
 					Composition:           pqr.Composition,
-					Hidden:                pqr.Hidden,
 					TargetGender:          pqr.TargetGender,
 					Season:                pqr.Season,
 					Fit:                   pqr.Fit,

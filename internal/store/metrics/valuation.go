@@ -39,7 +39,7 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN product_size ps ON ps.product_id = p.id
 		LEFT JOIN sold ON sold.product_id = p.id
-		WHERE p.deleted_at IS NULL
+		WHERE p.lifecycle_status <> 4
 		GROUP BY p.id, product_name, p.cost_price
 		HAVING on_hand > 0`
 
