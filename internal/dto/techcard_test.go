@@ -12,7 +12,7 @@ import (
 )
 
 func dec(s string) *pb_decimal.Decimal { return &pb_decimal.Decimal{Value: s} }
-func i32(v int32) *int32              { return &v }
+func i32(v int32) *int32               { return &v }
 
 func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	revDate := timestamppb.New(time.Date(2026, 6, 19, 15, 30, 0, 0, time.UTC))
@@ -144,22 +144,22 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 
 	// invalid cases.
 	bad := map[string]*pb_common.TechCardInsert{
-		"nil":               nil,
-		"no style":          {Name: "x"},
-		"no name":           {StyleNumber: "x"},
-		"neg category":      {StyleNumber: "x", Name: "y", CategoryId: -1},
-		"dup size":          {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 4}},
-		"dup product":       {StyleNumber: "x", Name: "y", ProductIds: []int32{1, 1}},
-		"size id zero":      {StyleNumber: "x", Name: "y", SizeIds: []int32{0}},
-		"base not in range": {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
+		"nil":                     nil,
+		"no style":                {Name: "x"},
+		"no name":                 {StyleNumber: "x"},
+		"neg category":            {StyleNumber: "x", Name: "y", CategoryId: -1},
+		"dup size":                {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 4}},
+		"dup product":             {StyleNumber: "x", Name: "y", ProductIds: []int32{1, 1}},
+		"size id zero":            {StyleNumber: "x", Name: "y", SizeIds: []int32{0}},
+		"base not in range":       {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
 		"moodboard media id zero": {StyleNumber: "x", Name: "y", MoodboardMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
-		"technical media id zero":  {StyleNumber: "x", Name: "y", TechnicalMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
-		"version too long":  {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
-		"detail media zero": {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{0}}}},
-		"detail media dup":  {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{5, 5}}}},
-		"dup colorway code": {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK"}, {Name: "b", Code: "BLK"}}},
-		"bad hex":           {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Hex: "red"}}},
-		"bad pantone sys":   {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", PantoneSystem: "XXX"}}},
+		"technical media id zero": {StyleNumber: "x", Name: "y", TechnicalMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
+		"version too long":        {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
+		"detail media zero":       {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{0}}}},
+		"detail media dup":        {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{5, 5}}}},
+		"dup colorway code":       {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK"}, {Name: "b", Code: "BLK"}}},
+		"bad hex":                 {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Hex: "red"}}},
+		"bad pantone sys":         {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", PantoneSystem: "XXX"}}},
 		"release unapproved": {StyleNumber: "x", Name: "y",
 			ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
 			Colorways:     []*pb_common.TechCardColorway{{Name: "Black"}}}, // lab dip defaults to pending

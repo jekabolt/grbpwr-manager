@@ -100,9 +100,9 @@ func newStorefrontAuthRuntime(p *storefront.Config) (*storefrontAuthRuntime, err
 		accessIssueOpts:            accessOpts,
 		accessJtiRevocationEnabled: p.AccessJtiRevocationEnabled,
 		refreshTTL:                 rt,
-		loginChallengeTTL:  lt,
-		loginPepper:        p.LoginPepper,
-		refreshPepper:      p.RefreshPepper,
-		magicLinkBaseURL:   strings.TrimRight(strings.TrimSpace(p.MagicLinkBaseURL), "/"),
+		loginChallengeTTL:          lt,
+		loginPepper:                p.LoginPepper,
+		refreshPepper:              p.RefreshPepper,
+		magicLinkBaseURL:           strings.TrimRight(strings.TrimSpace(p.MagicLinkBaseURL), "/"),
 	}, nil
 }

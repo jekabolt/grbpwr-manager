@@ -27,7 +27,7 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 		return nil, status.Error(codes.Internal, "can't get product customs")
 	}
 	return &pb_admin.GetProductCustomsResponse{
-		Customs: &pb_admin.ProductCustoms{
+		Customs: &pb_admin.ColorwayCustoms{
 			HsCode:             c.HSCode.String,
 			CountryOfOrigin:    c.CountryOfOrigin.String,
 			CustomsDescription: c.CustomsDescription.String,
@@ -44,7 +44,7 @@ func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProduct
 	}
 	c := req.Customs
 	if c == nil {
-		c = &pb_admin.ProductCustoms{}
+		c = &pb_admin.ColorwayCustoms{}
 	}
 
 	hs := strings.TrimSpace(c.HsCode)

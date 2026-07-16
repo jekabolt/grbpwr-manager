@@ -68,7 +68,7 @@ message OrderItem {
   string sku = 14;
   google.protobuf.Timestamp preorder = 15;
   OrderItemInsert order_item = 16;
-  repeated ProductInsertTranslation translations = 17;
+  repeated ColorwayInsertTranslation translations = 17;
 }
 
 message OrderItemInsert {

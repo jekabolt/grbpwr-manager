@@ -58,42 +58,42 @@ enum SeasonEnum {
   SEASON_ENUM_RC = 4; // Resort/Cruise
 }
 
-message ProductNew {
-  ProductInsert product = 1;
+message ColorwayNew {
+  ColorwayInsert product = 1;
   repeated SizeWithMeasurementInsert size_measurements = 2;
   repeated int32 media_ids = 3;
-  repeated ProductTagInsert tags = 4;
-  repeated ProductPriceInsert prices = 5;
+  repeated ColorwayTagInsert tags = 4;
+  repeated ColorwayPriceInsert prices = 5;
 }
 
-message ProductFull {
-  Product product = 1;
-  repeated ProductSize sizes = 2;
+message ColorwayFull {
+  Colorway product = 1;
+  repeated Variant sizes = 2;
   repeated ProductMeasurement measurements = 3;
   repeated common.MediaFull media = 4;
-  repeated ProductTag tags = 5;
+  repeated ColorwayTag tags = 5;
 }
 
-message Product {
+message Colorway {
   int32 id = 1;
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   string slug = 4;
   string sku = 5;
-  ProductDisplay product_display = 6;
-  repeated ProductPrice prices = 7;
+  ColorwayDisplay product_display = 6;
+  repeated ColorwayPrice prices = 7;
   bool sold_out = 8;
   // status is the product's lifecycle state: "active" | "hidden" | "archived" (PR5-A). It is derived
   // (a generated column) from hidden/deleted_at; sold_out and preorder are separate axes.
   string status = 9;
 }
 
-message ProductBody {
-  ProductBodyInsert product_body_insert = 1;
-  repeated ProductInsertTranslation translations = 2;
+message ColorwayBody {
+  ColorwayBodyInsert product_body_insert = 1;
+  repeated ColorwayInsertTranslation translations = 2;
 }
 
-message ProductBodyInsert {
+message ColorwayBodyInsert {
   google.protobuf.Timestamp preorder = 1;
   string brand = 2;
   string color = 3;
@@ -118,21 +118,21 @@ message ProductBodyInsert {
   int32 min_tier = 20;
 }
 
-message ProductInsert {
-  ProductBodyInsert product_body_insert = 1;
+message ColorwayInsert {
+  ColorwayBodyInsert product_body_insert = 1;
   int32 thumbnail_media_id = 2;
-  repeated common.ProductInsertTranslation translations = 3;
+  repeated common.ColorwayInsertTranslation translations = 3;
   int32 secondary_thumbnail_media_id = 4;
-  repeated ProductPriceInsert prices = 5;
+  repeated ColorwayPriceInsert prices = 5;
   // cost_price is the confidential per-unit cost of goods (COGS) in base currency (EUR),
   // used for margin analytics. Omit/empty to leave the stored value unchanged on update.
-  // Deliberately on ProductInsert (write-only) and NOT on ProductBodyInsert, so it is
+  // Deliberately on ColorwayInsert (write-only) and NOT on ColorwayBodyInsert, so it is
   // never serialized on the storefront product read path.
   google.type.Decimal cost_price = 6;
 }
 
-message ProductDisplay {
-  ProductBody product_body = 1;
+message ColorwayDisplay {
+  ColorwayBody product_body = 1;
   common.MediaFull thumbnail = 2;
   common.MediaFull secondary_thumbnail = 3;
 }
@@ -144,16 +144,16 @@ message ProductMeasurementUpdate {
 }
 
 message SizeWithMeasurementInsert {
-  ProductSizeInsert product_size = 1;
+  VariantInsert product_size = 1;
   repeated ProductMeasurementInsert measurements = 2;
 }
 
 message SizeWithMeasurement {
-  ProductSize product_size = 1;
+  Variant product_size = 1;
   repeated ProductMeasurement measurements = 2;
 }
 
-message ProductSize {
+message Variant {
   int32 id = 1;
   google.type.Decimal quantity = 2;
   int32 product_id = 3;
@@ -161,7 +161,7 @@ message ProductSize {
   string sku = 5; // first-class variant SKU (SS26-00021-BLK-04)
 }
 
-message ProductSizeInsert {
+message VariantInsert {
   google.type.Decimal quantity = 1;
   int32 size_id = 2;
 }
@@ -179,22 +179,22 @@ message ProductMeasurementInsert {
   google.type.Decimal measurement_value = 2;
 }
 
-message ProductTag {
+message ColorwayTag {
   int32 id = 1;
   int32 product_id = 2;
-  ProductTagInsert product_tag_insert = 3;
+  ColorwayTagInsert product_tag_insert = 3;
 }
 
-message ProductTagInsert {
+message ColorwayTagInsert {
   string tag = 1;
 }
 
-message ProductPrice {
+message ColorwayPrice {
   string currency = 1;
   google.type.Decimal price = 2;
 }
 
-message ProductPriceInsert {
+message ColorwayPriceInsert {
   string currency = 1;
   google.type.Decimal price = 2;
 }

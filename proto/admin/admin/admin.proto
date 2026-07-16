@@ -1301,7 +1301,7 @@ message DeleteFromBucketResponse {}
 
 message UpsertProductRequest {
   int32 id = 1;
-  common.ProductNew product = 2;
+  common.ColorwayNew product = 2;
 }
 
 message UpsertProductResponse {
@@ -1318,7 +1318,7 @@ message GetProductsPagedRequest {
 }
 
 message GetProductsPagedResponse {
-  repeated common.Product products = 1;
+  repeated common.Colorway products = 1;
 }
 
 message GetProductByIDRequest {
@@ -1326,17 +1326,17 @@ message GetProductByIDRequest {
 }
 
 message GetProductByIDResponse {
-  common.ProductFull product = 1;
+  common.ColorwayFull product = 1;
   // cost_info carries the confidential COGS/provenance fields. Admin-only — this lives on the
-  // admin GetProductByID response, never on the shared ProductFull, so it cannot leak to the
+  // admin GetProductByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
-  ProductCostInfo cost_info = 2;
+  ColorwayCostInfo cost_info = 2;
 }
 
-// ProductCostInfo is the admin-only view of a product's confidential cost of goods and where
+// ColorwayCostInfo is the admin-only view of a product's confidential cost of goods and where
 // that cost came from. source is "manual" | "tech_card" | "" (unset); tech-card ids are 0
 // when absent.
-message ProductCostInfo {
+message ColorwayCostInfo {
   google.type.Decimal cost_price = 1;
   string cost_price_source = 2;
   int32 cost_price_tech_card_id = 3;
@@ -1377,11 +1377,11 @@ message UpdateProductSizeStockRequest {
 
 message UpdateProductSizeStockResponse {}
 
-// ProductCustoms is a product's international-shipping customs data. hs_code and
+// ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetProductCustoms. country_of_origin is the
 // existing core product field (free-text manufacture country) returned read-only for display and
 // reused as the Sendcloud origin_country — SetProductCustoms ignores it (edit it on the product form).
-message ProductCustoms {
+message ColorwayCustoms {
   string hs_code = 1;
   string country_of_origin = 2; // read-only; core product field, resolved to ISO-2 at label time
   string customs_description = 3;
@@ -1392,12 +1392,12 @@ message GetProductCustomsRequest {
 }
 
 message GetProductCustomsResponse {
-  ProductCustoms customs = 1;
+  ColorwayCustoms customs = 1;
 }
 
 message SetProductCustomsRequest {
   int32 product_id = 1;
-  ProductCustoms customs = 2;
+  ColorwayCustoms customs = 2;
 }
 
 message SetProductCustomsResponse {}
@@ -3013,7 +3013,7 @@ message DeviceFunnelMetric {
   int32 purchase_users = 6;
 }
 
-// --- Analytics: Product Engagement ---
+// --- Analytics: Colorway Engagement ---
 
 message ProductEngagementMetric {
   google.protobuf.Timestamp date = 1;
@@ -3294,7 +3294,7 @@ message SlowMoverRow {
   int64 units_sold = 4;
   double days_in_stock = 5;
   google.protobuf.Timestamp last_sale_date = 6;
-  bool product_hidden = 7; // Product visibility flag (from product.hidden)
+  bool product_hidden = 7; // Colorway visibility flag (from product.hidden)
   int64 total_views = 8; // GA4 page views for period (from ga4_product_page_metrics)
   // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
   // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Computed on
@@ -3495,7 +3495,7 @@ message DeadStockRow {
   google.type.Decimal stock_value = 7;
 }
 
-// --- Analytics: Product Trend ---
+// --- Analytics: Colorway Trend ---
 
 message ProductTrendRow {
   int32 product_id = 1;
@@ -3520,7 +3520,7 @@ message TimeOnPageRow {
   int64 page_views = 6;
 }
 
-// --- Analytics: Product Zoom ---
+// --- Analytics: Colorway Zoom ---
 
 message ProductZoomRow {
   google.protobuf.Timestamp date = 1;

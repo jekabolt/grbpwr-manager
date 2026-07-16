@@ -111,7 +111,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_frontend.GetProdu
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
 	}
 
-	prdsPb := make([]*pb_common.Product, 0, len(prds))
+	prdsPb := make([]*pb_common.Colorway, 0, len(prds))
 	for _, prd := range prds {
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {

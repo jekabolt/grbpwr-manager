@@ -10,8 +10,8 @@ import (
 // TestConvertPbPackagingBomToEntity covers the packaging-recipe write validation (gap-07 v2 B).
 func TestConvertPbPackagingBomToEntity(t *testing.T) {
 	ok := []*pb_admin.PackagingBomItem{
-		{MaterialId: 10, QtyPerOrder: dec("1"), Active: true},                    // box: per order
-		{MaterialId: 11, QtyPerItem: dec("1.5"), Active: true},                   // dust bag: per item
+		{MaterialId: 10, QtyPerOrder: dec("1"), Active: true},  // box: per order
+		{MaterialId: 11, QtyPerItem: dec("1.5"), Active: true}, // dust bag: per item
 		{MaterialId: 12, QtyPerOrder: dec("1"), QtyPerItem: dec("2"), Active: false},
 	}
 	got, err := ConvertPbPackagingBomToEntity(ok)
@@ -25,11 +25,11 @@ func TestConvertPbPackagingBomToEntity(t *testing.T) {
 
 	// failures.
 	for name, in := range map[string][]*pb_admin.PackagingBomItem{
-		"no material_id":  {{QtyPerOrder: dec("1")}},
-		"negative qty":    {{MaterialId: 10, QtyPerOrder: dec("-1")}},
-		"zero total":      {{MaterialId: 10, QtyPerOrder: dec("0"), QtyPerItem: dec("0")}},
-		"duplicate mat":   {{MaterialId: 10, QtyPerOrder: dec("1")}, {MaterialId: 10, QtyPerItem: dec("1")}},
-		"bad number":      {{MaterialId: 10, QtyPerOrder: dec("abc")}},
+		"no material_id": {{QtyPerOrder: dec("1")}},
+		"negative qty":   {{MaterialId: 10, QtyPerOrder: dec("-1")}},
+		"zero total":     {{MaterialId: 10, QtyPerOrder: dec("0"), QtyPerItem: dec("0")}},
+		"duplicate mat":  {{MaterialId: 10, QtyPerOrder: dec("1")}, {MaterialId: 10, QtyPerItem: dec("1")}},
+		"bad number":     {{MaterialId: 10, QtyPerOrder: dec("abc")}},
 	} {
 		_, err := ConvertPbPackagingBomToEntity(in)
 		require.Error(t, err, name)

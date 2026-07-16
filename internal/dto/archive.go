@@ -260,4 +260,3 @@ func ConvertEntityToCommonArchiveList(al *entity.ArchiveList) *pb_common.Archive
 		Thumbnail:    ConvertEntityToCommonMedia(&al.Thumbnail),
 	}
 }
-

@@ -8,23 +8,23 @@ import (
 )
 
 type Dict struct {
-	Categories       []entity.Category
-	Measurements     []entity.MeasurementName
-	OrderStatuses    []entity.OrderStatus
-	PaymentMethods   []entity.PaymentMethod
-	ShipmentCarriers []entity.ShipmentCarrier
-	Sizes            []entity.Size
-	Collections      []entity.Collection
-	Languages        []entity.Language
-	Genders          []pb_common.Genders
-	SortFactors      []pb_common.SortFactors
-	OrderFactors     []pb_common.OrderFactors
-	SiteEnabled            bool
-	MaxOrderItems          int
-	BaseCurrency           string
-	BigMenu                bool
-	Announce                   *entity.AnnounceWithTranslations
-	OrderExpirationSeconds     int
+	Categories                  []entity.Category
+	Measurements                []entity.MeasurementName
+	OrderStatuses               []entity.OrderStatus
+	PaymentMethods              []entity.PaymentMethod
+	ShipmentCarriers            []entity.ShipmentCarrier
+	Sizes                       []entity.Size
+	Collections                 []entity.Collection
+	Languages                   []entity.Language
+	Genders                     []pb_common.Genders
+	SortFactors                 []pb_common.SortFactors
+	OrderFactors                []pb_common.OrderFactors
+	SiteEnabled                 bool
+	MaxOrderItems               int
+	BaseCurrency                string
+	BigMenu                     bool
+	Announce                    *entity.AnnounceWithTranslations
+	OrderExpirationSeconds      int
 	ComplimentaryShippingPrices map[string]decimal.Decimal
 	IsProd                      bool // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 	BackgroundHeroColor         string
@@ -34,14 +34,14 @@ type Dict struct {
 
 var (
 	orderStatusEntityPbMap = map[entity.OrderStatusName]pb_common.OrderStatusEnum{
-		entity.Placed:           pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
-		entity.AwaitingPayment:  pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
-		entity.Confirmed:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
-		entity.Shipped:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
-		entity.Delivered:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
-		entity.Cancelled:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
-		entity.PendingReturn:    pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN,
-		entity.RefundInProgress: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS,
+		entity.Placed:            pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
+		entity.AwaitingPayment:   pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
+		entity.Confirmed:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
+		entity.Shipped:           pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
+		entity.Delivered:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
+		entity.Cancelled:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
+		entity.PendingReturn:     pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN,
+		entity.RefundInProgress:  pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS,
 		entity.Refunded:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
 		entity.PartiallyRefunded: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED,
 	}
@@ -55,7 +55,7 @@ var (
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED:          entity.Cancelled,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN:     entity.PendingReturn,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS: entity.RefundInProgress,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:            entity.Refunded,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:           entity.Refunded,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED: entity.PartiallyRefunded,
 	}
 

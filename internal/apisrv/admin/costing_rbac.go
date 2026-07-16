@@ -271,7 +271,7 @@ func techCardInsertHasCostingData(ins *pb_common.TechCardInsert) bool {
 // cost unchanged" (see nullDecimalFromPb) — not a cost write — so it is not gated. Because
 // cost_price is write-only (never serialized on the product read path), a cost-stripped
 // account's resave omits it and preserves the stored value: no anti-erase logic needed here.
-func productInsertHasCostPrice(p *pb_common.ProductInsert) bool {
+func productInsertHasCostPrice(p *pb_common.ColorwayInsert) bool {
 	return strings.TrimSpace(p.GetCostPrice().GetValue()) != ""
 }
 

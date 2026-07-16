@@ -366,7 +366,7 @@ func TestCostingWriteDetectors(t *testing.T) {
 	}), "a priceless BOM line is not cost data")
 
 	require.False(t, productInsertHasCostPrice(nil))
-	require.False(t, productInsertHasCostPrice(&pb_common.ProductInsert{}))
-	require.False(t, productInsertHasCostPrice(&pb_common.ProductInsert{CostPrice: dec("")}), "empty = leave unchanged")
-	require.True(t, productInsertHasCostPrice(&pb_common.ProductInsert{CostPrice: dec("9.99")}))
+	require.False(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{}))
+	require.False(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{CostPrice: dec("")}), "empty = leave unchanged")
+	require.True(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{CostPrice: dec("9.99")}))
 }

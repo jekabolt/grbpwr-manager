@@ -18,7 +18,7 @@ func ns2(v string) sql.NullString { return sql.NullString{String: v, Valid: true
 func TestConvertPbProductionRunMarkers(t *testing.T) {
 	got, err := convertPbProductionRunMarkers([]*pb_common.ProductionRunMarker{
 		{
-			Source: pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER,
+			Source:     pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER,
 			MarkerName: "M-42", SizeId: 3, MaterialId: 7,
 			MarkerWidth: dec("150"), LayLength: dec("6.4"), UnitsPerMarker: 12,
 			EfficiencyPct: dec("87.5"), MarkerFileUrl: "https://cdn/x.mrk", Notes: "two-way",

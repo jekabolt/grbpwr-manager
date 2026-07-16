@@ -148,7 +148,7 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 
 	// Confidential cost/provenance — admin surface only, on a field of the admin response,
 	// and further gated by costing:read (task 19): a scoped account without it gets no cost.
-	var costInfo *pb_admin.ProductCostInfo
+	var costInfo *pb_admin.ColorwayCostInfo
 	if read, _ := s.costingAccess(ctx); read {
 		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
 			slog.Default().ErrorContext(ctx, "can't get product cost info",
@@ -235,11 +235,11 @@ func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.
 }
 
 // productCostInfoToPb converts the confidential product cost fields to their admin proto form.
-func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ProductCostInfo {
+func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ColorwayCostInfo {
 	if ci == nil {
 		return nil
 	}
-	out := &pb_admin.ProductCostInfo{
+	out := &pb_admin.ColorwayCostInfo{
 		CostPriceSource:     ci.CostPriceSource.String,
 		CostPriceTechCardId: ci.CostPriceTechCardID.Int32,
 		PrimaryTechCardId:   ci.PrimaryTechCardID.Int32,
@@ -295,7 +295,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
 	}
 
-	prdsPb := make([]*pb_common.Product, 0, len(prds))
+	prdsPb := make([]*pb_common.Colorway, 0, len(prds))
 	for _, prd := range prds {
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {

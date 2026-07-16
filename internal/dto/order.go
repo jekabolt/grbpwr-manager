@@ -298,9 +298,9 @@ func ConvertEntityOrderItemAdjustmentsToPb(adjustments []entity.OrderItemAdjustm
 
 func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *pb_common.OrderItem {
 	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
+	var pbTranslations []*pb_common.ColorwayInsertTranslation
 	for _, trans := range orderItem.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+		pbTranslations = append(pbTranslations, &pb_common.ColorwayInsertTranslation{
 			LanguageId:  int32(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -428,9 +428,9 @@ func ConvertEntityOrderItemsToPbOrderItems(items []entity.OrderItem, currency st
 // convertOrderItem converts an individual entity.OrderItem to a pb_common.OrderItem
 func convertOrderItem(e *entity.OrderItem, currency string) *pb_common.OrderItem {
 	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
+	var pbTranslations []*pb_common.ColorwayInsertTranslation
 	for _, trans := range e.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+		pbTranslations = append(pbTranslations, &pb_common.ColorwayInsertTranslation{
 			LanguageId:  int32(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,

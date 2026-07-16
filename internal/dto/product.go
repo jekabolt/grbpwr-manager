@@ -127,7 +127,7 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 	return decimal.NewFromString(value)
 }
 
-func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ProductBodyInsert) (*entity.ColorwayBody, error) {
+func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ColorwayBodyInsert) (*entity.ColorwayBody, error) {
 	if pbProductBodyInsert == nil {
 		return nil, fmt.Errorf("ProductBodyInsert is nil")
 	}
@@ -193,7 +193,7 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 	return pb, nil
 }
 
-func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ColorwayInsert, error) {
+func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ColorwayInsert) (*entity.ColorwayInsert, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
@@ -253,7 +253,7 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	}, nil
 }
 
-func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ColorwayPriceInsert {
+func convertPrices(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayPriceInsert {
 	var prices []entity.ColorwayPriceInsert
 	for _, pbPrice := range pbPrices {
 		if pbPrice == nil || pbPrice.Price == nil {
@@ -302,7 +302,7 @@ func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpd
 	return measurements, nil
 }
 
-func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ColorwayNew, error) {
+func ConvertCommonProductToEntity(pbProductNew *pb_common.ColorwayNew) (*entity.ColorwayNew, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
@@ -426,7 +426,7 @@ func convertMediaIds(pbMediaIds []int32) []int {
 	return mediaIds
 }
 
-func convertTags(pbTags []*pb_common.ProductTagInsert) []entity.ColorwayTagInsert {
+func convertTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInsert {
 	var tags []entity.ColorwayTagInsert
 	for _, pbTag := range pbTags {
 		tags = append(tags, entity.ColorwayTagInsert{
@@ -436,7 +436,7 @@ func convertTags(pbTags []*pb_common.ProductTagInsert) []entity.ColorwayTagInser
 	return tags
 }
 
-func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, error) {
+func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -448,9 +448,9 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, err
 	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
 
 	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
+	var pbTranslations []*pb_common.ColorwayInsertTranslation
 	for _, trans := range productBody.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+		pbTranslations = append(pbTranslations, &pb_common.ColorwayInsertTranslation{
 			LanguageId:  int32(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -462,9 +462,9 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, err
 		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.Product.ProductDisplay.SecondaryThumbnail)
 	}
 
-	pbProductDisplay := &pb_common.ProductDisplay{
-		ProductBody: &pb_common.ProductBody{
-			ProductBodyInsert: &pb_common.ProductBodyInsert{
+	pbProductDisplay := &pb_common.ColorwayDisplay{
+		ProductBody: &pb_common.ColorwayBody{
+			ProductBodyInsert: &pb_common.ColorwayBodyInsert{
 				Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
 				Brand:           productBodyInsert.Brand,
 				Color:           productBodyInsert.Color,
@@ -505,7 +505,7 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, err
 	// sold_out is derived from the sizes' total stock — one shared definition (PR5-B).
 	soldOut := entity.SoldOutFromSizes(e.Sizes)
 
-	pbProduct := &pb_common.Product{
+	pbProduct := &pb_common.Colorway{
 		Id:             int32(e.Product.Id),
 		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
 		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
@@ -522,7 +522,7 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, err
 	pbMedia := ConvertEntityMediaListToPbMedia(e.Media)
 	pbTags := convertEntityTagsToPbTags(e.Tags)
 
-	return &pb_common.ProductFull{
+	return &pb_common.ColorwayFull{
 		Product:      pbProduct,
 		Sizes:        pbSizes,
 		Measurements: pbMeasurements,
@@ -531,10 +531,10 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, err
 	}, nil
 }
 
-func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.ProductPrice {
-	var pbPrices []*pb_common.ProductPrice
+func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.ColorwayPrice {
+	var pbPrices []*pb_common.ColorwayPrice
 	for _, price := range prices {
-		pbPrices = append(pbPrices, &pb_common.ProductPrice{
+		pbPrices = append(pbPrices, &pb_common.ColorwayPrice{
 			Currency: price.Currency,
 			Price:    &pb_decimal.Decimal{Value: price.Price.String()},
 		})
@@ -542,10 +542,10 @@ func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.Product
 	return pbPrices
 }
 
-func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.ProductSize {
-	var pbSizes []*pb_common.ProductSize
+func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.Variant {
+	var pbSizes []*pb_common.Variant
 	for _, size := range sizes {
-		pbSizes = append(pbSizes, &pb_common.ProductSize{
+		pbSizes = append(pbSizes, &pb_common.Variant{
 			Id: int32(size.Id),
 			Quantity: &pb_decimal.Decimal{
 				Value: size.Quantity.String(),
@@ -574,12 +574,12 @@ func convertEntityMeasurementsToPbMeasurements(measurements []entity.ProductMeas
 	return pbMeasurements
 }
 
-func convertEntityTagsToPbTags(tags []entity.ColorwayTag) []*pb_common.ProductTag {
-	var pbTags []*pb_common.ProductTag
+func convertEntityTagsToPbTags(tags []entity.ColorwayTag) []*pb_common.ColorwayTag {
+	var pbTags []*pb_common.ColorwayTag
 	for _, tag := range tags {
-		pbTags = append(pbTags, &pb_common.ProductTag{
+		pbTags = append(pbTags, &pb_common.ColorwayTag{
 			Id: int32(tag.Id),
-			ProductTagInsert: &pb_common.ProductTagInsert{
+			ProductTagInsert: &pb_common.ColorwayTagInsert{
 				Tag: tag.Tag,
 			},
 		})
@@ -727,8 +727,8 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	return row
 }
 
-// ConvertEntityProductToCommon converts entity.Colorway to pb_common.Product
-func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Product, error) {
+// ConvertEntityProductToCommon converts entity.Colorway to pb_common.Colorway
+func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, error) {
 	productBody := &e.ProductDisplay.ProductBody
 	productBodyInsert := &productBody.ProductBodyInsert
 
@@ -736,9 +736,9 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Product, error
 	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
 
 	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
+	var pbTranslations []*pb_common.ColorwayInsertTranslation
 	for _, trans := range productBody.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+		pbTranslations = append(pbTranslations, &pb_common.ColorwayInsertTranslation{
 			LanguageId:  int32(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -759,15 +759,15 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Product, error
 	// Convert prices
 	pbPrices := convertEntityPricesToPb(e.Prices)
 
-	pbProduct := &pb_common.Product{
+	pbProduct := &pb_common.Colorway{
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
 		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
 		Sku:       e.SKU,
-		ProductDisplay: &pb_common.ProductDisplay{
-			ProductBody: &pb_common.ProductBody{
-				ProductBodyInsert: &pb_common.ProductBodyInsert{
+		ProductDisplay: &pb_common.ColorwayDisplay{
+			ProductBody: &pb_common.ColorwayBody{
+				ProductBodyInsert: &pb_common.ColorwayBodyInsert{
 					Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
 					Brand:           productBodyInsert.Brand,
 					Color:           productBodyInsert.Color,

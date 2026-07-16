@@ -14,7 +14,7 @@ message Language {
   bool is_active = 5; // Whether this language is currently supported
 }
 
-message ProductInsertTranslation {
+message ColorwayInsertTranslation {
   int32 language_id = 1;
   string name = 2;
   string description = 3;

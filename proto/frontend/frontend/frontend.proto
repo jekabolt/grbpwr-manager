@@ -232,7 +232,7 @@ message GetProductRequest {
 }
 
 message GetProductResponse {
-  common.ProductFull product = 1;
+  common.ColorwayFull product = 1;
 }
 
 message GetProductsPagedRequest {
@@ -244,7 +244,7 @@ message GetProductsPagedRequest {
 }
 
 message GetProductsPagedResponse {
-  repeated common.Product products = 1;
+  repeated common.Colorway products = 1;
   int32 total = 2;
 }
 

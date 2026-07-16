@@ -84,20 +84,20 @@ message ArchiveMediaWithCaptionFull {
 
 // PRODUCT: a single product. Optional caption in translations.caption.
 message ArchiveProductFull {
-  common.Product product = 1;
+  common.Colorway product = 1;
   repeated common.ArchiveItemTranslation translations = 2;
 }
 
 // PRODUCTS_TAG: products resolved by tag. Optional caption in translations.caption.
 message ArchiveProductsTagFull {
   string tag = 1;
-  repeated common.Product products = 2;
+  repeated common.Colorway products = 2;
   repeated common.ArchiveItemTranslation translations = 3;
 }
 
 // PRODUCTS_MANUAL: hand-picked, ordered products. Optional caption.
 message ArchiveProductsManualFull {
-  repeated common.Product products = 1;
+  repeated common.Colorway products = 1;
   repeated common.ArchiveItemTranslation translations = 2;
 }
 
