@@ -290,6 +290,47 @@ func convertPrices(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayP
 	return prices
 }
 
+// resolveColorwayPrices keeps ColorwayNew.prices as the canonical write field while accepting
+// the deprecated ColorwayInsert.prices from clients generated before the contract was cleaned up.
+// A payload that supplies different values in both locations is ambiguous and must not silently
+// pick one of them.
+func resolveColorwayPrices(topLevel, legacyNested []*pb_common.ColorwayPriceInsert) ([]entity.ColorwayPriceInsert, error) {
+	topLevelPrices := convertPrices(topLevel)
+	legacyPrices := convertPrices(legacyNested)
+
+	if len(topLevel) == 0 {
+		return legacyPrices, nil
+	}
+	if len(legacyNested) == 0 {
+		return topLevelPrices, nil
+	}
+	if !equalColorwayPrices(topLevelPrices, legacyPrices) {
+		return nil, fmt.Errorf("conflicting prices: use ColorwayNew.prices; deprecated ColorwayInsert.prices must be omitted or identical")
+	}
+
+	return topLevelPrices, nil
+}
+
+func equalColorwayPrices(left, right []entity.ColorwayPriceInsert) bool {
+	if len(left) != len(right) {
+		return false
+	}
+
+	counts := make(map[string]int, len(left))
+	for _, price := range left {
+		counts[price.Currency+"\x00"+price.Price.String()]++
+	}
+	for _, price := range right {
+		key := price.Currency + "\x00" + price.Price.String()
+		if counts[key] == 0 {
+			return false
+		}
+		counts[key]--
+	}
+
+	return true
+}
+
 func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpdate) ([]entity.ProductMeasurementUpdate, error) {
 	if mUpd == nil {
 		return nil, fmt.Errorf("input pbProductMeasurementUpdate is nil")
@@ -345,6 +386,11 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ColorwayNew) (*entity.
 
 	productBody.Translations = translations
 
+	prices, err := resolveColorwayPrices(pbProductNew.Prices, pbProductNew.Product.Prices)
+	if err != nil {
+		return nil, err
+	}
+
 	productInsert := &entity.ColorwayInsert{
 		ProductBodyInsert: productBody.ProductBodyInsert,
 		ThumbnailMediaID:  int(pbProductNew.Product.ThumbnailMediaId),
@@ -353,7 +399,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ColorwayNew) (*entity.
 			Valid: pbProductNew.Product.SecondaryThumbnailMediaId != 0,
 		},
 		Translations: translations,
-		Prices:       convertPrices(pbProductNew.Prices),
+		Prices:       prices,
 	}
 
 	sizeMeasurements, err := convertSizeMeasurements(pbProductNew.SizeMeasurements)
@@ -363,7 +409,6 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ColorwayNew) (*entity.
 
 	mediaIds := convertMediaIds(pbProductNew.MediaIds)
 	tags := convertTags(pbProductNew.Tags)
-	prices := convertPrices(pbProductNew.Prices)
 
 	return &entity.ColorwayNew{
 		Product:          productInsert,

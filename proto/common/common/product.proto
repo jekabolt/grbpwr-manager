@@ -128,7 +128,9 @@ message ColorwayInsert {
   int32 thumbnail_media_id = 2;
   repeated common.ColorwayInsertTranslation translations = 3;
   int32 secondary_thumbnail_media_id = 4;
-  repeated ColorwayPriceInsert prices = 5;
+  // Legacy duplicate of ColorwayNew.prices. New clients must use the top-level field.
+  // Kept during the compatibility window so already generated clients continue to decode.
+  repeated ColorwayPriceInsert prices = 5 [deprecated = true];
   // cost_price is the confidential per-unit cost of goods (COGS) in base currency (EUR),
   // used for margin analytics. Omit/empty to leave the stored value unchanged on update.
   // Deliberately on ColorwayInsert (write-only) and NOT on ColorwayBodyInsert, so it is
