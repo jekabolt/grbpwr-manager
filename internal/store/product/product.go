@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -137,14 +138,19 @@ func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id i
 			return fmt.Errorf("can't update product translations: %w", err)
 		}
 
-		err = deleteSizeMeasurements(ctx, rep.DB(), id)
+		// Stably reconcile the colourway's variants: existing sizes keep their row id and (frozen) SKU,
+		// only quantity is refreshed; new sizes are inserted; removed-and-unsold sizes are deleted. A
+		// blind delete+reinsert here would blank every product_size.sku, and because MintProductSKUs is
+		// a no-op on a frozen product it would permanently destroy the variant identity of a sold
+		// colourway (P0). The style-level size chart is a separate concern and IS fully replaced.
+		err = reconcileVariants(ctx, rep.DB(), prd.SizeMeasurements, id)
 		if err != nil {
-			return fmt.Errorf("can't delete product sizes: %w", err)
+			return fmt.Errorf("can't reconcile product variants: %w", err)
 		}
 
-		err = insertSizeMeasurements(ctx, rep.DB(), prd.SizeMeasurements, id)
+		err = replaceStyleChart(ctx, rep.DB(), prd.SizeMeasurements, id)
 		if err != nil {
-			return fmt.Errorf("can't update product measurements: %w", err)
+			return fmt.Errorf("can't update style size chart: %w", err)
 		}
 
 		if err := recordStockChangeFromSizeMeasurements(ctx, rep, id, prd.SizeMeasurements, entity.StockChangeSourceManualAdjustment, entity.StockChangeReasonCorrection); err != nil {
@@ -353,24 +359,109 @@ func insertProductTranslations(ctx context.Context, db dependency.DB, productId 
 	return storeutil.BulkInsert(ctx, db, "product_translation", rows)
 }
 
-func deleteSizeMeasurements(ctx context.Context, db dependency.DB, productID int) error {
-	query := "DELETE FROM product_size WHERE product_id = :productId"
-	err := storeutil.ExecNamed(ctx, db, query, map[string]any{
-		"productId": productID,
-	})
+// reconcileVariants stably reconciles a colourway's product_size rows against the update payload:
+// existing sizes keep their row id AND SKU (only quantity is refreshed), new sizes are inserted (SKU
+// minted afterwards), and sizes dropped from the payload are removed ONLY when they carry no order
+// history. A sold variant that the operator happened to omit is preserved with its SKU/identity intact
+// rather than deleted — an ordinary edit of a frozen colourway must not destroy variant SKUs (P0), and
+// deleting a sold size would also orphan/cascade its order history.
+func reconcileVariants(ctx context.Context, db dependency.DB, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) error {
+	existing, err := storeutil.QueryListNamed[struct {
+		SizeID int `db:"size_id"`
+	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id`, map[string]any{"id": productID})
 	if err != nil {
-		return fmt.Errorf("can't delete product sizes: %w", err)
+		return fmt.Errorf("can't load existing variants: %w", err)
+	}
+	have := make(map[int]bool, len(existing))
+	for _, e := range existing {
+		have[e.SizeID] = true
+	}
+	want := make(map[int]bool, len(sizeMeasurements))
+	for _, sm := range sizeMeasurements {
+		want[sm.ProductSize.SizeId] = true
 	}
 
-	// The size chart lives on the STYLE now (PR6 P3): clear the style's chart. Editing any colourway
-	// replaces its style's chart, hence all its colourways — the intended invariant (same as the
-	// style-level fields in P2).
-	query = "DELETE FROM tech_card_size_measurement WHERE tech_card_id = (SELECT style_id FROM product WHERE id = :productId)"
-	err = storeutil.ExecNamed(ctx, db, query, map[string]any{
-		"productId": productID,
-	})
+	// Upsert every incoming size: refresh quantity on an existing row (preserving id + sku), insert a
+	// new one (sku stays NULL until minted).
+	for _, sm := range sizeMeasurements {
+		if have[sm.ProductSize.SizeId] {
+			if err := storeutil.ExecNamed(ctx, db,
+				`UPDATE product_size SET quantity = :quantity WHERE product_id = :productId AND size_id = :sizeId`,
+				map[string]any{"productId": productID, "sizeId": sm.ProductSize.SizeId, "quantity": sm.ProductSize.QuantityDecimal()}); err != nil {
+				return fmt.Errorf("can't update variant (size %d): %w", sm.ProductSize.SizeId, err)
+			}
+			continue
+		}
+		if _, err := storeutil.ExecNamedLastId(ctx, db,
+			`INSERT INTO product_size (product_id, size_id, quantity) VALUES (:productId, :sizeId, :quantity)`,
+			map[string]any{"productId": productID, "sizeId": sm.ProductSize.SizeId, "quantity": sm.ProductSize.QuantityDecimal()}); err != nil {
+			return fmt.Errorf("can't insert variant (size %d): %w", sm.ProductSize.SizeId, err)
+		}
+	}
+
+	// Remove sizes no longer in the payload — but never a sold one (would orphan order history).
+	for _, e := range existing {
+		if want[e.SizeID] {
+			continue
+		}
+		sold, err := storeutil.QueryNamedOne[struct {
+			N int `db:"n"`
+		}](ctx, db, `SELECT COUNT(*) AS n FROM order_item WHERE product_id = :pid AND size_id = :sid`,
+			map[string]any{"pid": productID, "sid": e.SizeID})
+		if err != nil {
+			return fmt.Errorf("can't check variant order history (size %d): %w", e.SizeID, err)
+		}
+		if sold.N > 0 {
+			slog.WarnContext(ctx, "product update: keeping a removed size that has order history",
+				slog.Int("product_id", productID), slog.Int("size_id", e.SizeID))
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM product_size WHERE product_id = :pid AND size_id = :sid`,
+			map[string]any{"pid": productID, "sid": e.SizeID}); err != nil {
+			return fmt.Errorf("can't delete removed variant (size %d): %w", e.SizeID, err)
+		}
+	}
+	return nil
+}
+
+// replaceStyleChart fully replaces the STYLE's size chart (tech_card_size_measurement) from the update
+// payload. The chart is style-level (shared by all colourways) and carries no SKU/stock/identity, so a
+// delete+reinsert is correct here — unlike the per-colourway variants handled by reconcileVariants.
+func replaceStyleChart(ctx context.Context, db dependency.DB, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) error {
+	for _, sm := range sizeMeasurements {
+		for _, m := range sm.Measurements {
+			if m.MeasurementNameId == 0 {
+				return fmt.Errorf("invalid measurement_name_id: cannot be 0")
+			}
+		}
+	}
+	styleRow, err := storeutil.QueryNamedOne[struct {
+		StyleId int `db:"style_id"`
+	}](ctx, db, `SELECT style_id FROM product WHERE id = :id`, map[string]any{"id": productID})
 	if err != nil {
-		return fmt.Errorf("can't delete product measurements: %w", err)
+		return fmt.Errorf("can't resolve product style: %w", err)
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM tech_card_size_measurement WHERE tech_card_id = :styleId`,
+		map[string]any{"styleId": styleRow.StyleId}); err != nil {
+		return fmt.Errorf("can't clear style size chart: %w", err)
+	}
+	rows := make([]map[string]any, 0)
+	for _, sm := range sizeMeasurements {
+		for _, m := range sm.Measurements {
+			rows = append(rows, map[string]any{
+				"tech_card_id":        styleRow.StyleId,
+				"size_id":             sm.ProductSize.SizeId,
+				"measurement_name_id": m.MeasurementNameId,
+				"measurement_value":   m.MeasurementValue,
+			})
+		}
+	}
+	if len(rows) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_size_measurement", rows); err != nil {
+			return fmt.Errorf("can't insert style size chart: %w", err)
+		}
 	}
 	return nil
 }
@@ -514,8 +605,10 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
 		-- product edits from the admin panel (which does not carry cost) never wipe it.
-		-- When a cost IS supplied it is manual admin input: mark it manual, drop any
+		-- When a cost IS supplied it is manual admin input, so mark it manual, drop any
 		-- tech-card provenance, and stamp the time. When omitted, provenance is untouched.
+		-- (No colon may appear anywhere in these comments — sqlx.Named scans the raw query
+		-- string and would read a bare colon as an empty bind name and fail the statement.)
 		cost_price = COALESCE(:costPrice, cost_price),
 		cost_price_source = CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE cost_price_source END,
 		cost_price_tech_card_id = CASE WHEN :costPrice IS NOT NULL THEN NULL ELSE cost_price_tech_card_id END,

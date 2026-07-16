@@ -201,7 +201,10 @@ func MintProductSKUs(ctx context.Context, db dependency.DB, productID int) error
 		return err
 	}
 	if f.LockedAt.Valid {
-		return nil // frozen: never rebuild
+		// Frozen: the base SKU and every existing variant SKU are immutable and must never be rebuilt.
+		// But a size added to a frozen colourway still needs a variant SKU — derive it from the already
+		// frozen base and mint ONLY the missing ones, leaving base and existing variants untouched.
+		return mintMissingVariantSKUs(ctx, db, productID)
 	}
 
 	seg, err := resolveSegments(ctx, db, f)
@@ -241,6 +244,45 @@ func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base 
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
 			return fmt.Errorf("set product_size.sku (size %d): %w", r.SizeID, err)
+		}
+	}
+	return nil
+}
+
+// mintMissingVariantSKUs sets product_size.sku for a FROZEN product's sizes that still lack one,
+// deriving each from the product's already-frozen base SKU. The base and every existing variant SKU
+// are left untouched — this exists only so a size added to a frozen colourway (or one left NULL by an
+// older bug) gets a valid variant SKU without rebuilding the frozen identity.
+func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int) error {
+	baseRow, err := storeutil.QueryNamedOne[struct {
+		SKU string `db:"sku"`
+	}](ctx, db, `SELECT sku FROM product WHERE id = :id`, map[string]any{"id": productID})
+	if err != nil {
+		return fmt.Errorf("load frozen base sku for product %d: %w", productID, err)
+	}
+	if baseRow.SKU == "" {
+		// No base to derive from (should not happen once frozen) — nothing safe to mint.
+		return nil
+	}
+	sizeRows, err := storeutil.QueryListNamed[struct {
+		SizeID int `db:"size_id"`
+	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id AND (sku IS NULL OR sku = '')`,
+		map[string]any{"id": productID})
+	if err != nil {
+		return fmt.Errorf("list frozen variants needing sku: %w", err)
+	}
+	for _, r := range sizeRows {
+		sz, ok := cache.GetSizeById(r.SizeID)
+		if !ok || sz.SkuOrd == 0 {
+			slog.WarnContext(ctx, "sku: skipping frozen variant for size without ordinal",
+				slog.Int("product_id", productID), slog.Int("size_id", r.SizeID))
+			continue
+		}
+		variant := BuildVariantSKU(baseRow.SKU, sz.SkuOrd)
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
+			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
+			return fmt.Errorf("set frozen variant sku (size %d): %w", r.SizeID, err)
 		}
 	}
 	return nil
