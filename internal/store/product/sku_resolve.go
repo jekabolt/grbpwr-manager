@@ -233,13 +233,11 @@ func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base 
 		return fmt.Errorf("list product sizes: %w", err)
 	}
 	for _, r := range sizeRows {
-		sz, ok := cache.GetSizeById(r.SizeID)
-		if !ok || sz.SkuOrd == 0 {
-			slog.WarnContext(ctx, "sku: skipping variant for size without ordinal",
-				slog.Int("product_id", productID), slog.Int("size_id", r.SizeID))
-			continue
+		ord, err := requireSizeOrdinal(r.SizeID)
+		if err != nil {
+			return err
 		}
-		variant := BuildVariantSKU(base, sz.SkuOrd)
+		variant := BuildVariantSKU(base, ord)
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
@@ -272,13 +270,11 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 		return fmt.Errorf("list frozen variants needing sku: %w", err)
 	}
 	for _, r := range sizeRows {
-		sz, ok := cache.GetSizeById(r.SizeID)
-		if !ok || sz.SkuOrd == 0 {
-			slog.WarnContext(ctx, "sku: skipping frozen variant for size without ordinal",
-				slog.Int("product_id", productID), slog.Int("size_id", r.SizeID))
-			continue
+		ord, err := requireSizeOrdinal(r.SizeID)
+		if err != nil {
+			return err
 		}
-		variant := BuildVariantSKU(baseRow.SKU, sz.SkuOrd)
+		variant := BuildVariantSKU(baseRow.SKU, ord)
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
@@ -286,6 +282,21 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 		}
 	}
 	return nil
+}
+
+// requireSizeOrdinal returns a size's SKU ordinal, FAILING (rather than emitting a SKU-less variant)
+// when the size is unknown to the cache, has no ordinal (0), or is outside the two-digit range the
+// variant segment allows. Every mint path routes through it so an invalid ordinal rolls the whole
+// operation back instead of silently committing a NULL variant SKU (problem 017).
+func requireSizeOrdinal(sizeID int) (int, error) {
+	sz, ok := cache.GetSizeById(sizeID)
+	if !ok {
+		return 0, fmt.Errorf("cannot mint variant sku: size %d is not in the size dictionary", sizeID)
+	}
+	if sz.SkuOrd < 1 || sz.SkuOrd > 99 {
+		return 0, fmt.Errorf("cannot mint variant sku: size %d has an invalid SKU ordinal %d (must be 1-99)", sizeID, sz.SkuOrd)
+	}
+	return sz.SkuOrd, nil
 }
 
 // ensureVariantSKU guarantees a single variant row (product_id, size_id) has a SKU, minting it from the
@@ -313,11 +324,11 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 	if baseRow.SKU == "" {
 		return fmt.Errorf("cannot mint variant sku: product %d has no base sku", productID)
 	}
-	sz, ok := cache.GetSizeById(sizeID)
-	if !ok || sz.SkuOrd == 0 {
-		return fmt.Errorf("cannot mint variant sku: size %d has no SKU ordinal", sizeID)
+	ord, err := requireSizeOrdinal(sizeID)
+	if err != nil {
+		return err
 	}
-	variant := BuildVariantSKU(baseRow.SKU, sz.SkuOrd)
+	variant := BuildVariantSKU(baseRow.SKU, ord)
 	if err := storeutil.ExecNamed(ctx, db,
 		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 		map[string]any{"sku": variant, "pid": productID, "sid": sizeID}); err != nil {
