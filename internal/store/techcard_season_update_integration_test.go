@@ -11,8 +11,8 @@ import (
 )
 
 // TestUpdateTechCardPersistsNormalizedSeason is the acceptance test for problem 010: UpdateTechCard
-// must persist the normalized season_code/season_year it derives from the free-text season label, the
-// same way the add path does — otherwise a label change (ss26 -> fw27) leaves the SKU-facing pair stale.
+// must persist the normalized season_code/season_year supplied by the structured season contract,
+// so a pair change (SS26 -> FW27) cannot leave the SKU-facing facts stale.
 func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -26,11 +26,12 @@ func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
 	var sizeID int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&sizeID))
 
-	mkTC := func(season string) *entity.TechCardInsert {
+	mkTC := func(code entity.SeasonEnum, year int32) *entity.TechCardInsert {
 		return &entity.TechCardInsert{
 			StyleNumber:     sql.NullString{String: "T10-STYLE", Valid: true},
 			Name:            "T10",
-			Season:          sql.NullString{String: season, Valid: true},
+			SeasonCode:      sql.NullString{String: string(code), Valid: true},
+			SeasonYear:      sql.NullInt32{Int32: year, Valid: true},
 			Stage:           entity.TechCardStageProto,
 			ApprovalState:   entity.TechCardApprovalDraft,
 			MeasurementUnit: entity.TechCardUnitMm,
@@ -38,7 +39,7 @@ func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
 		}
 	}
 
-	id, err := s.TechCards().AddTechCard(ctx, mkTC("ss26"))
+	id, err := s.TechCards().AddTechCard(ctx, mkTC(entity.SeasonSS, 2026))
 	require.NoError(t, err)
 	defer func() { _ = s.TechCards().DeleteTechCard(ctx, id) }()
 
@@ -57,7 +58,7 @@ func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
 	var lockVersion int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT lock_version FROM tech_card WHERE id = ?", id).Scan(&lockVersion))
 
-	require.NoError(t, s.TechCards().UpdateTechCard(ctx, id, mkTC("fw27"), lockVersion))
+	require.NoError(t, s.TechCards().UpdateTechCard(ctx, id, mkTC(entity.SeasonFW, 2027), lockVersion))
 
 	code, year = readSeason()
 	require.Equal(t, "FW", code, "update must re-normalize season_code")

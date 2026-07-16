@@ -189,6 +189,33 @@ var techCardLabDipEntityToPb = func() map[entity.TechCardLabDipStatus]pb_common.
 	return m
 }()
 
+// ConvertPbSkuSeasonToEntity validates the atomic style-owned season pair. A nil message means
+// explicitly unset (allowed for early draft/idea cards); once present, both fields are required.
+func ConvertPbSkuSeasonToEntity(pb *pb_common.SkuSeason) (entity.SeasonEnum, int, error) {
+	if pb == nil {
+		return "", 0, nil
+	}
+	code, err := ConvertPbSeasonEnumToEntitySeasonEnum(pb.Code)
+	if err != nil {
+		return "", 0, fmt.Errorf("sku_season code is required and must be SS, FW, PF, or RC")
+	}
+	if pb.Year < 2000 || pb.Year > 2099 {
+		return "", 0, fmt.Errorf("sku_season year must be between 2000 and 2099")
+	}
+	return code, int(pb.Year), nil
+}
+
+func skuSeasonToPb(code sql.NullString, year sql.NullInt32) *pb_common.SkuSeason {
+	if !code.Valid || !year.Valid {
+		return nil
+	}
+	pbCode, _ := ConvertEntitySeasonToPbSeasonEnum(entity.SeasonEnum(code.String))
+	if pbCode == pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN || year.Int32 < 2000 || year.Int32 > 2099 {
+		return nil
+	}
+	return &pb_common.SkuSeason{Code: pbCode, Year: year.Int32}
+}
+
 // ConvertPbTechCardInsertToEntity converts a pb_common.TechCardInsert to an
 // entity.TechCardInsert, validating identifiers, lengths, enums and child lists.
 func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.TechCardInsert, error) {
@@ -206,7 +233,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		{"style_number", pb.StyleNumber, maxVarchar255},
 		{"name", pb.Name, maxVarchar255},
 		{"brand", pb.Brand, maxVarchar255},
-		{"season", pb.Season, maxVarchar255},
 		{"collection", pb.Collection, maxVarchar255},
 		{"status", pb.Status, maxVarchar255},
 		{"version", pb.Version, maxVarchar64},
@@ -232,6 +258,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	styleNumber := strings.TrimSpace(pb.StyleNumber)
 	if stage != entity.TechCardStageIdea && styleNumber == "" {
 		return nil, fmt.Errorf("style_number is required from the proto stage onward")
+	}
+	seasonCode, seasonYear, err := ConvertPbSkuSeasonToEntity(pb.SkuSeason)
+	if err != nil {
+		return nil, err
 	}
 
 	approvalState := entity.TechCardApprovalDraft
@@ -471,7 +501,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		OutputMaterialId: outputMaterialId,
 		Name:             pb.Name,
 		Brand:            nullStringFromPb(pb.Brand),
-		Season:           nullStringFromPb(pb.Season),
+		SeasonCode:       sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
+		SeasonYear:       sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
 		Collection:       nullStringFromPb(pb.Collection),
 		CategoryId:       nullInt32FromPb(pb.CategoryId),
 		TargetGender:     gender,
@@ -658,7 +689,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
-			Season:           pbStringFromNull(tc.Season),
+			SkuSeason:        skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
 			Collection:       pbStringFromNull(tc.Collection),
 			CategoryId:       pbInt32FromNull(tc.CategoryId),
 			TargetGender:     pbGenderFromNull(tc.TargetGender),
@@ -745,7 +776,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		Status:        pbStringFromNull(tc.Status),
 		ApprovalState: pbTechCardApprovalState(tc.ApprovalState),
 		TargetGender:  pbGenderFromNull(tc.TargetGender),
-		Season:        pbStringFromNull(tc.Season),
+		SkuSeason:     skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
 		CreatedAt:     timestamppb.New(tc.CreatedAt),
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 		LockVersion:   int32(tc.LockVersion),

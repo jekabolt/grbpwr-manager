@@ -38,8 +38,8 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
 // targets and the flat construction-description strings are gone (description → details[];
 // pricing is on costing).
-// season_code/season_year are the normalized SKU-facing season (task 05), derived from the free-text
-// `season` in techCardHeaderParams. The legacy free-text `season` is kept (UNIQUE key + filters).
+// season_code/season_year are the normalized SKU-facing season (task 05). The legacy `season`
+// column remains only as a canonical derived label for the existing UNIQUE key/read models.
 const techCardHeaderColumns = `style_number, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
@@ -50,32 +50,41 @@ const techCardHeaderValues = `:style_number, :name, :brand, :season, :season_cod
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
 
-func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
+func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
 	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
 	purpose := tc.Purpose
 	if purpose == "" {
 		purpose = entity.TechCardPurposeSellable
 	}
-	// Derive the normalized SKU-facing season (task 05) from the free-text season. Unparseable
-	// values ("-", "", junk) leave season_code/season_year NULL — the generator then falls back.
-	var seasonCode sql.NullString
-	var seasonYear sql.NullInt32
-	if tc.Season.Valid {
-		if code, year, ok := entity.ParseSeasonText(tc.Season.String); ok {
-			seasonCode = sql.NullString{String: string(code), Valid: true}
-			seasonYear = sql.NullInt32{Int32: int32(year), Valid: true}
+	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
+		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
+	}
+	var seasonLabel sql.NullString
+	if tc.SeasonCode.Valid {
+		code := entity.SeasonEnum(tc.SeasonCode.String)
+		if !entity.IsValidSeason(code) {
+			return nil, fmt.Errorf("sku_season code %q is invalid", tc.SeasonCode.String)
+		}
+		if tc.SeasonYear.Int32 < 2000 || tc.SeasonYear.Int32 > 2099 {
+			return nil, fmt.Errorf("sku_season year must be between 2000 and 2099")
+		}
+		seasonLabel = sql.NullString{
+			String: fmt.Sprintf("%s%02d", code, tc.SeasonYear.Int32%100),
+			Valid:  true,
 		}
 	}
+	// Never trust a caller-provided display label: keep it a projection of the typed pair.
+	tc.SeasonLabel = seasonLabel
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
-		"season":              tc.Season,
-		"season_code":         seasonCode,
-		"season_year":         seasonYear,
+		"season":              seasonLabel,
+		"season_code":         tc.SeasonCode,
+		"season_year":         tc.SeasonYear,
 		"collection":          tc.Collection,
 		"category_id":         tc.CategoryId,
 		"target_gender":       tc.TargetGender,
@@ -95,7 +104,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
-	}
+	}, nil
 }
 
 // stampApprovalTimes makes the server authoritative for approved_at/released_at,
@@ -132,10 +141,13 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		var err error
+		params, err := techCardHeaderParams(tc)
+		if err != nil {
+			return err
+		}
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
 			fmt.Sprintf(`INSERT INTO tech_card (%s) VALUES (%s)`, techCardHeaderColumns, techCardHeaderValues),
-			techCardHeaderParams(tc))
+			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
 		}
@@ -239,7 +251,10 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
-		params := techCardHeaderParams(tc)
+		params, err := techCardHeaderParams(tc)
+		if err != nil {
+			return err
+		}
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
@@ -433,9 +448,10 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		where += " AND brand LIKE :brand"
 		params["brand"] = "%" + escapeLike(filter.Brand) + "%"
 	}
-	if filter.Season != "" {
-		where += " AND season LIKE :season"
-		params["season"] = "%" + escapeLike(filter.Season) + "%"
+	if filter.SeasonCode != "" {
+		where += " AND season_code = :seasonCode AND season_year = :seasonYear"
+		params["seasonCode"] = string(filter.SeasonCode)
+		params["seasonYear"] = filter.SeasonYear
 	}
 	if filter.Name != "" {
 		where += " AND (name LIKE :nameSearch OR style_number LIKE :nameSearch)"

@@ -247,7 +247,6 @@ func TestTechCardIdeaStage(t *testing.T) {
 		return &entity.TechCardInsert{
 			// no StyleNumber (NULL) — an idea draft
 			Name:            name,
-			Season:          sql.NullString{String: "NF-IDEA-SEASON", Valid: true},
 			Stage:           entity.TechCardStageIdea,
 			ApprovalState:   entity.TechCardApprovalDraft,
 			TargetGender:    sql.NullString{String: "unisex", Valid: true},

@@ -776,10 +776,14 @@ type TechCardInsert struct {
 	OutputMaterialId sql.NullInt64   `db:"output_material_id"` // material an auxiliary run receipts into
 	Name             string          `db:"name"`
 	Brand            sql.NullString  `db:"brand"`
-	Season           sql.NullString  `db:"season"`
-	Collection       sql.NullString  `db:"collection"`
-	CategoryId       sql.NullInt32   `db:"category_id"`
-	TargetGender     sql.NullString  `db:"target_gender"`
+	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
+	// It is never accepted from the public contract.
+	SeasonLabel  sql.NullString `db:"season"`
+	SeasonCode   sql.NullString `db:"season_code"`
+	SeasonYear   sql.NullInt32  `db:"season_year"`
+	Collection   sql.NullString `db:"collection"`
+	CategoryId   sql.NullInt32  `db:"category_id"`
+	TargetGender sql.NullString `db:"target_gender"`
 	// Garment-level catalogue fields (PR6 P2): invariant across a style's colourways (one
 	// pattern, colour is the only axis that varies), so they live on the STYLE. Colourways
 	// (products) read them from here; the duplicated product columns are dropped in step 3.
@@ -835,13 +839,14 @@ type TechCardInsert struct {
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
 // fields mean "no filter".
 type TechCardListFilter struct {
-	Stage     string // tech_card.stage exact match
-	Gender    string // tech_card.target_gender exact match
-	Brand     string // case-insensitive substring on brand
-	Season    string // case-insensitive substring on season
-	Name      string // case-insensitive substring on name or style_number
-	ProductId int    // only cards linked to this product
-	Purpose   string // tech_card.purpose exact match (sellable|auxiliary); "" = no filter.
+	Stage      string     // tech_card.stage exact match
+	Gender     string     // tech_card.target_gender exact match
+	Brand      string     // case-insensitive substring on brand
+	SeasonCode SeasonEnum // exact normalized pair; empty means no season filter
+	SeasonYear int
+	Name       string // case-insensitive substring on name or style_number
+	ProductId  int    // only cards linked to this product
+	Purpose    string // tech_card.purpose exact match (sellable|auxiliary); "" = no filter.
 	// A product-linking picker passes "sellable" so auxiliary (packaging) cards, which can never
 	// produce a SKU, do not clutter the choice (PR5-E).
 }

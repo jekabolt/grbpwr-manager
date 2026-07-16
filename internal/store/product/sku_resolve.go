@@ -67,10 +67,14 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) (SKUSegments, error) {
 	var seg SKUSegments
 	if f.Styled {
-		seg.Season = entity.SeasonEnum(f.StyleSeasonCode.String)
-		if f.StyleSeasonYear.Valid {
-			seg.Year = int(f.StyleSeasonYear.Int32)
+		if !f.StyleSeasonCode.Valid || !f.StyleSeasonYear.Valid {
+			return seg, fmt.Errorf("styled product %d has no complete sku_season", f.ID)
 		}
+		if err := validateSKUSeason(entity.SeasonEnum(f.StyleSeasonCode.String), int(f.StyleSeasonYear.Int32)); err != nil {
+			return seg, fmt.Errorf("styled product %d: %w", f.ID, err)
+		}
+		seg.Season = entity.SeasonEnum(f.StyleSeasonCode.String)
+		seg.Year = int(f.StyleSeasonYear.Int32)
 		modelNo, err := ensureStyleModelNo(ctx, db, f)
 		if err != nil {
 			return seg, err
@@ -88,6 +92,9 @@ func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) 
 
 	seg.Season = entity.SeasonEnum(f.Season)
 	seg.Year = f.CreatedYr
+	if err := validateSKUSeason(seg.Season, seg.Year); err != nil {
+		return seg, fmt.Errorf("product %d: %w", f.ID, err)
+	}
 	modelNo, err := ensureProductModelNo(ctx, db, f)
 	if err != nil {
 		return seg, err
@@ -98,6 +105,16 @@ func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) 
 	}
 	seg.ColorCode = f.ColorCode
 	return seg, nil
+}
+
+func validateSKUSeason(code entity.SeasonEnum, year int) error {
+	if !entity.IsValidSeason(code) {
+		return fmt.Errorf("season code %q is not canonical", code)
+	}
+	if year < 2000 || year > 2099 {
+		return fmt.Errorf("season year %d must be between 2000 and 2099", year)
+	}
+	return nil
 }
 
 func validateColorCode(code string) error {

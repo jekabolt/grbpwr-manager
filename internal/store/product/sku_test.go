@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildBaseSKU(t *testing.T) {
@@ -79,6 +80,13 @@ func TestBuildVariantSKU(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateSKUSeasonRejectsFallbackInputs(t *testing.T) {
+	require.NoError(t, validateSKUSeason(entity.SeasonSS, 2026))
+	require.Error(t, validateSKUSeason("", 2026))
+	require.Error(t, validateSKUSeason(entity.SeasonFW, 1999))
+	require.Error(t, validateSKUSeason(entity.SeasonFW, 2100))
 }
 
 func TestColorSegment(t *testing.T) {

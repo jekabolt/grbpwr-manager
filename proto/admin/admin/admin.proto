@@ -4118,11 +4118,13 @@ message ListTechCardsRequest {
   common.TechCardStage stage = 4; // UNKNOWN = no filter
   common.GenderEnum gender = 5; // UNKNOWN = no filter
   string brand = 6; // optional case-insensitive substring
-  string season = 7; // optional case-insensitive substring
+  reserved 7;
+  reserved "season";
   string name = 8; // optional case-insensitive substring on name or style_number
   int32 product_id = 9; // optional: only cards linked to this product (0 = no filter)
   string purpose = 10; // optional exact match: "sellable" | "auxiliary" ("" = no filter). A
   // product-linking picker passes "sellable" to hide auxiliary/packaging cards.
+  common.SkuSeason sku_season = 11; // optional exact normalized pair; no free-text matching
 }
 
 message ListTechCardsResponse {

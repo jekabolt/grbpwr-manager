@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		StyleNumber:      "ST-001",
 		Name:             "Field Jacket",
 		Brand:            "grbpwr",
-		Season:           "FW25",
+		SkuSeason:        &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_FW, Year: 2025},
 		Stage:            pb_common.TechCardStage_TECH_CARD_STAGE_FIT,
 		ApprovalState:    pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED,
 		ApprovedBy:       "lead",
@@ -65,6 +66,9 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	}
 	if !got.TargetGender.Valid || got.TargetGender.String != string(entity.Male) {
 		t.Errorf("gender mismatch: %+v", got.TargetGender)
+	}
+	if !got.SeasonCode.Valid || got.SeasonCode.String != "FW" || !got.SeasonYear.Valid || got.SeasonYear.Int32 != 2025 {
+		t.Errorf("sku season mismatch: code=%+v year=%+v", got.SeasonCode, got.SeasonYear)
 	}
 	if !got.CategoryId.Valid || got.CategoryId.Int32 != 3 || !got.BaseModelId.Valid || got.BaseSampleSizeId.Int32 != 4 {
 		t.Errorf("fk fields mismatch: %+v", got)
@@ -171,12 +175,47 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	}
 }
 
+func TestTechCardSkuSeasonIsAtomicAndValidated(t *testing.T) {
+	tests := []struct {
+		name    string
+		season  *pb_common.SkuSeason
+		wantErr string
+	}{
+		{name: "unset"},
+		{name: "missing code", season: &pb_common.SkuSeason{Year: 2026}, wantErr: "code is required"},
+		{name: "missing year", season: &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_SS}, wantErr: "year must be between"},
+		{name: "year below range", season: &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_FW, Year: 1999}, wantErr: "year must be between"},
+		{name: "year above range", season: &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_FW, Year: 2100}, wantErr: "year must be between"},
+		{name: "valid", season: &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_PF, Year: 2027}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, year, err := ConvertPbSkuSeasonToEntity(tt.season)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.season != nil && (code != entity.SeasonPF || year != 2027) {
+				t.Fatalf("got (%q,%d), want (PF,2027)", code, year)
+			}
+		})
+	}
+}
+
 func TestConvertEntityTechCardToPb(t *testing.T) {
 	tc := &entity.TechCard{
 		Id: 9,
 		TechCardInsert: entity.TechCardInsert{
 			StyleNumber:     sql.NullString{String: "ST-001", Valid: true},
 			Name:            "Field Jacket",
+			SeasonCode:      sql.NullString{String: "FW", Valid: true},
+			SeasonYear:      sql.NullInt32{Int32: 2025, Valid: true},
 			Stage:           entity.TechCardStageProd,
 			ApprovalState:   entity.TechCardApprovalReleased,
 			MeasurementUnit: entity.TechCardUnitMm,
@@ -211,6 +250,9 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	if pb.TechCard.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM ||
 		pb.TechCard.TargetGender != pb_common.GenderEnum_GENDER_ENUM_FEMALE || pb.TechCard.Concept != "intent" {
 		t.Errorf("unit/gender/concept mismatch: %+v", pb.TechCard)
+	}
+	if pb.TechCard.SkuSeason == nil || pb.TechCard.SkuSeason.Code != pb_common.SeasonEnum_SEASON_ENUM_FW || pb.TechCard.SkuSeason.Year != 2025 {
+		t.Errorf("sku season mismatch: %+v", pb.TechCard.SkuSeason)
 	}
 	if len(pb.TechCard.Details) != 1 || pb.TechCard.Details[0].Key != "collar" || len(pb.TechCard.Details[0].MediaIds) != 1 {
 		t.Errorf("details round-trip mismatch: %+v", pb.TechCard.Details)

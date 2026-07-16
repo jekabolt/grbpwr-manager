@@ -411,15 +411,20 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 	if purpose != "" && !entity.ValidTechCardPurposes[entity.TechCardPurpose(purpose)] {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid purpose filter: must be sellable|auxiliary")
 	}
+	seasonCode, seasonYear, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season filter: %v", err)
+	}
 
 	filter := entity.TechCardListFilter{
-		Stage:     stage,
-		Gender:    gender,
-		Brand:     strings.TrimSpace(req.Brand),
-		Season:    strings.TrimSpace(req.Season),
-		Name:      strings.TrimSpace(req.Name),
-		ProductId: int(req.ProductId),
-		Purpose:   purpose,
+		Stage:      stage,
+		Gender:     gender,
+		Brand:      strings.TrimSpace(req.Brand),
+		SeasonCode: seasonCode,
+		SeasonYear: seasonYear,
+		Name:       strings.TrimSpace(req.Name),
+		ProductId:  int(req.ProductId),
+		Purpose:    purpose,
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

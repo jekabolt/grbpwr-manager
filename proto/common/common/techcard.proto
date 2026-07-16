@@ -595,6 +595,14 @@ message TechCardPiece {
   repeated TechCardPieceColorwayMaterial materials = 8; // per-colourway fabric mapping
 }
 
+// SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers
+// either omit the whole message (early draft/idea) or provide both a known code and a 2000..2099
+// year. Free-text season labels are not part of the contract.
+message SkuSeason {
+  SeasonEnum code = 1;
+  int32 year = 2;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
@@ -603,7 +611,8 @@ message TechCardInsert {
   string style_number = 1;
   string name = 2; // Название изделия (required)
   string brand = 3;
-  string season = 4;
+  reserved 4;
+  reserved "season";
   string collection = 5;
   int32 category_id = 6; // FK category(id); 0 = unset
   GenderEnum target_gender = 7; // UNKNOWN = unset
@@ -678,6 +687,7 @@ message TechCardInsert {
   // output receipts into output_material_id (required before the first run; 0 = unset).
   string purpose = 101;
   int32 output_material_id = 102;
+  SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
@@ -707,7 +717,8 @@ message TechCardListItem {
   TechCardStage stage = 5;
   string status = 6;
   GenderEnum target_gender = 7;
-  string season = 8;
+  reserved 8;
+  reserved "season";
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
@@ -719,4 +730,5 @@ message TechCardListItem {
   // Card purpose: "sellable" (default) or "auxiliary" (NF-07). Lets a board/list badge auxiliary
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
   string purpose = 14;
+  SkuSeason sku_season = 15;
 }

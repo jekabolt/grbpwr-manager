@@ -2,7 +2,6 @@ package entity
 
 import (
 	"database/sql"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -119,30 +118,6 @@ func (se SeasonEnum) String() string {
 func IsValidSeason(s SeasonEnum) bool {
 	_, ok := ValidSeasons[s]
 	return ok
-}
-
-// ParseSeasonText parses a free-text season string like "ss26" / "SS26" / " FW25 " into a validated
-// season code (SS/FW/PF/RC) and a full 4-digit year (2026). It returns ok=false when the string does
-// not start with a valid 2-letter code or has no 2-digit year — callers then leave the normalized
-// season_code/season_year NULL (e.g. legacy "-" or empty values). Used by tech-card season
-// normalization (task 05) and the SKU generator for styled products.
-func ParseSeasonText(s string) (code SeasonEnum, year int, ok bool) {
-	s = strings.TrimSpace(s)
-	if len(s) < 2 {
-		return "", 0, false
-	}
-	code = SeasonEnum(strings.ToUpper(s[:2]))
-	if !IsValidSeason(code) {
-		return "", 0, false
-	}
-	// first run of two consecutive digits anywhere after the code
-	for i := 0; i+1 < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' && s[i+1] >= '0' && s[i+1] <= '9' {
-			year = 2000 + int(s[i]-'0')*10 + int(s[i+1]-'0')
-			return code, year, true
-		}
-	}
-	return "", 0, false
 }
 
 var ValidSeasons = map[SeasonEnum]bool{
