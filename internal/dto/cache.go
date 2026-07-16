@@ -68,6 +68,13 @@ var (
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:      entity.CARD,
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST: entity.CARD_TEST,
 	}
+
+	sizeSKUSystemEntityPBMap = map[entity.SizeSKUSystem]pb_common.SizeSkuSystem{
+		entity.SizeSKUSystemApparel:     pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_APPAREL,
+		entity.SizeSKUSystemShoe:        pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_SHOE,
+		entity.SizeSKUSystemCompositeTA: pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_COMPOSITE_TA,
+		entity.SizeSKUSystemCompositeBO: pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_COMPOSITE_BO,
+	}
 )
 
 func ConvertPbToEntityOrderStatus(o pb_common.OrderStatusEnum) (entity.OrderStatusName, bool) {
@@ -177,6 +184,10 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	}
 
 	for _, sz := range dict.Sizes {
+		skuSystem := pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_UNKNOWN
+		if mapped, ok := sizeSKUSystemEntityPBMap[sz.SkuSystem]; ok {
+			skuSystem = mapped
+		}
 		commonDict.Sizes = append(commonDict.Sizes,
 			&pb_common.Size{
 				Id:         int32(sz.Id),
@@ -184,7 +195,7 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 				CountMen:   int32(sz.CountMen),
 				CountWomen: int32(sz.CountWomen),
 				SkuOrd:     int32(sz.SkuOrd),
-				SkuSystem:  sz.SkuSystem.String,
+				SkuSystem:  skuSystem,
 			})
 	}
 

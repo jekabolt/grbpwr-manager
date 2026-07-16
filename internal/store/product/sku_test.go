@@ -82,6 +82,53 @@ func TestBuildVariantSKU(t *testing.T) {
 	}
 }
 
+func TestValidateSizeOrdinalFacts(t *testing.T) {
+	tests := []struct {
+		name    string
+		facts   []sizeOrdinalFact
+		wantErr string
+	}{
+		{
+			name: "valid single system",
+			facts: []sizeOrdinalFact{
+				{SizeID: 1, SKUOrd: 5, SKUSystem: string(entity.SizeSKUSystemApparel)},
+				{SizeID: 2, SKUOrd: 25, SKUSystem: string(entity.SizeSKUSystemApparel)},
+			},
+		},
+		{name: "zero ordinal", facts: []sizeOrdinalFact{{SizeID: 1, SKUOrd: 0, SKUSystem: string(entity.SizeSKUSystemApparel)}}, wantErr: "must be 1-99"},
+		{name: "ordinal over width", facts: []sizeOrdinalFact{{SizeID: 1, SKUOrd: 100, SKUSystem: string(entity.SizeSKUSystemApparel)}}, wantErr: "must be 1-99"},
+		{name: "missing system", facts: []sizeOrdinalFact{{SizeID: 1, SKUOrd: 10}}, wantErr: "invalid SKU system"},
+		{name: "unknown system", facts: []sizeOrdinalFact{{SizeID: 1, SKUOrd: 10, SKUSystem: "free-text"}}, wantErr: "invalid SKU system"},
+		{
+			name: "mixed systems",
+			facts: []sizeOrdinalFact{
+				{SizeID: 1, SKUOrd: 10, SKUSystem: string(entity.SizeSKUSystemApparel)},
+				{SizeID: 2, SKUOrd: 50, SKUSystem: string(entity.SizeSKUSystemShoe)},
+			},
+			wantErr: "mixes size SKU systems",
+		},
+		{
+			name: "duplicate ordinal",
+			facts: []sizeOrdinalFact{
+				{SizeID: 1, SKUOrd: 10, SKUSystem: string(entity.SizeSKUSystemApparel)},
+				{SizeID: 2, SKUOrd: 10, SKUSystem: string(entity.SizeSKUSystemApparel)},
+			},
+			wantErr: "share SKU ordinal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSizeOrdinalFacts(42, tt.facts)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestValidateSKUSeasonRejectsFallbackInputs(t *testing.T) {
 	require.NoError(t, validateSKUSeason(entity.SeasonSS, 2026))
 	require.Error(t, validateSKUSeason("", 2026))

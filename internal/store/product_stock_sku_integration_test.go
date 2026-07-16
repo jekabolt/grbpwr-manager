@@ -15,8 +15,8 @@ import (
 
 // TestStockPathMintsVariantSKU is the acceptance test for problem 002: a stock update for a size the
 // colourway did not have must materialise the variant WITH a SKU (never NULL), for both unlocked and
-// frozen products; a stock update for an existing variant must not touch its SKU; and an unmintable
-// size (no SKU ordinal) must fail rather than leave a SKU-less variant.
+// frozen products; a stock update for an existing variant must not touch its SKU; and a size from a
+// different SKU system must fail rather than leave a mixed-system/SKU-less variant.
 func TestStockPathMintsVariantSKU(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -27,22 +27,13 @@ func TestStockPathMintsVariantSKU(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	// A size with sku_ord = 0 must exist in the cache to exercise the unmintable path — seed one before
-	// cache init so GetSizeById returns it with SkuOrd == 0.
-	zeroRes, err := testDB.ExecContext(ctx, `INSERT INTO size (name, sku_ord) VALUES ('T02-ZERO', 0)`)
-	require.NoError(t, err)
-	zeroSizeID64, err := zeroRes.LastInsertId()
-	require.NoError(t, err)
-	zeroSizeID := int(zeroSizeID64)
-	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM size WHERE id = ?", zeroSizeID) }()
-
 	di, err := s.Cache().GetDictionaryInfo(ctx)
 	require.NoError(t, err)
 	hf, err := s.Hero().GetHero(ctx)
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
-	sizeRows, err := testDB.QueryContext(ctx, `SELECT id FROM size WHERE sku_ord != 0 ORDER BY id LIMIT 3`)
+	sizeRows, err := testDB.QueryContext(ctx, `SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 3`)
 	require.NoError(t, err)
 	var sizeIDs []int
 	for sizeRows.Next() {
@@ -54,6 +45,9 @@ func TestStockPathMintsVariantSKU(t *testing.T) {
 	sizeRows.Close()
 	require.GreaterOrEqual(t, len(sizeIDs), 3)
 	sizeA, sizeB, sizeC := sizeIDs[0], sizeIDs[1], sizeIDs[2]
+	var otherSystemSizeID int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system <> 'apparel' ORDER BY sku_system, sku_ord LIMIT 1`).Scan(&otherSystemSizeID))
 
 	var langID int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM language").Scan(&langID))
@@ -127,9 +121,9 @@ func TestStockPathMintsVariantSKU(t *testing.T) {
 	require.True(t, ok)
 	require.NotEmpty(t, skuC, "new variant on a frozen product must get a SKU")
 
-	// 4) unmintable size (sku_ord = 0) via the transactional admin path — errors AND leaves no row
-	err = s.Products().UpdateProductSizeStockWithHistory(ctx, prodID, zeroSizeID, 1, "correction", "")
-	require.Error(t, err, "a size with no SKU ordinal must not silently create a SKU-less variant")
-	_, exists := skuOf(zeroSizeID)
-	require.False(t, exists, "the failed stock update must roll back — no SKU-less variant row left behind")
+	// 4) a size from another SKU system via the transactional admin path errors AND leaves no row.
+	err = s.Products().UpdateProductSizeStockWithHistory(ctx, prodID, otherSystemSizeID, 1, "correction", "")
+	require.ErrorContains(t, err, "mixes size SKU systems")
+	_, exists := skuOf(otherSystemSizeID)
+	require.False(t, exists, "the failed stock update must roll back — no mixed-system variant left behind")
 }

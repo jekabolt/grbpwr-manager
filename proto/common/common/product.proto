@@ -20,13 +20,22 @@ message Category {
   int32 count_women = 7;
 }
 
+enum SizeSkuSystem {
+  SIZE_SKU_SYSTEM_UNKNOWN = 0;
+  SIZE_SKU_SYSTEM_APPAREL = 1;
+  SIZE_SKU_SYSTEM_SHOE = 2;
+  SIZE_SKU_SYSTEM_COMPOSITE_TA = 3;
+  SIZE_SKU_SYSTEM_COMPOSITE_BO = 4;
+}
+
 message Size {
   int32 id = 1;
   string name = 2;
   int32 count_men = 3;
   int32 count_women = 4;
-  int32 sku_ord = 5; // 2-digit ordinal for the size segment of the variant SKU
-  string sku_system = 6; // apparel|shoe|composite_ta|composite_bo
+  int32 sku_ord = 5; // required 1..99 ordinal for the size segment of the variant SKU
+  reserved 6; // was free-text sku_system
+  SizeSkuSystem sku_system = 7;
 }
 
 // Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the

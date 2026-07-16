@@ -240,25 +240,71 @@ func MintProductSKUs(ctx context.Context, db dependency.DB, productID int) error
 	return mintVariantSKUs(ctx, db, productID, base)
 }
 
-// mintVariantSKUs sets product_size.sku for every size row of the product. A size whose ordinal is 0
-// (unseeded system) is skipped with a warning rather than emitting a bogus "-00" segment.
-func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base string) error {
-	sizeRows, err := storeutil.QueryListNamed[struct {
-		SizeID int `db:"size_id"`
-	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id`, map[string]any{"id": productID})
-	if err != nil {
-		return fmt.Errorf("list product sizes: %w", err)
-	}
-	for _, r := range sizeRows {
-		ord, err := requireSizeOrdinal(r.SizeID)
-		if err != nil {
-			return err
+type sizeOrdinalFact struct {
+	SizeID    int            `db:"size_id"`
+	SKUOrd    int            `db:"sku_ord"`
+	SKUSystem string         `db:"sku_system"`
+	SKU       sql.NullString `db:"sku"`
+}
+
+// validateSizeOrdinalFacts enforces the complete product-level size contract before any SKU is
+// written. DB constraints protect each dictionary row; this additionally rejects a colourway that
+// mixes size systems, because the same two-digit ordinal has meaning only inside one system.
+func validateSizeOrdinalFacts(productID int, facts []sizeOrdinalFact) error {
+	var productSystem entity.SizeSKUSystem
+	ordSizeID := make(map[int]int, len(facts))
+	for _, fact := range facts {
+		system := entity.SizeSKUSystem(fact.SKUSystem)
+		if !entity.IsValidSizeSKUSystem(system) {
+			return fmt.Errorf("cannot mint variant sku: size %d has invalid SKU system %q", fact.SizeID, fact.SKUSystem)
 		}
-		variant := BuildVariantSKU(base, ord)
+		if fact.SKUOrd < 1 || fact.SKUOrd > 99 {
+			return fmt.Errorf("cannot mint variant sku: size %d has invalid SKU ordinal %d (must be 1-99)", fact.SizeID, fact.SKUOrd)
+		}
+		if productSystem == "" {
+			productSystem = system
+		} else if system != productSystem {
+			return fmt.Errorf("cannot mint variant sku: product %d mixes size SKU systems %q and %q", productID, productSystem, system)
+		}
+		if previousSizeID, exists := ordSizeID[fact.SKUOrd]; exists {
+			return fmt.Errorf("cannot mint variant sku: product %d sizes %d and %d share SKU ordinal %d", productID, previousSizeID, fact.SizeID, fact.SKUOrd)
+		}
+		ordSizeID[fact.SKUOrd] = fact.SizeID
+	}
+	return nil
+}
+
+// loadValidatedSizeOrdinalFacts reads ordinal facts from the transaction's DB connection rather
+// than the process cache. That makes a size dictionary row and its constraints the authoritative
+// source even during cache refresh, and validates the single-system invariant over the whole product.
+func loadValidatedSizeOrdinalFacts(ctx context.Context, db dependency.DB, productID int) ([]sizeOrdinalFact, error) {
+	facts, err := storeutil.QueryListNamed[sizeOrdinalFact](ctx, db, `
+		SELECT ps.size_id, s.sku_ord, s.sku_system, ps.sku
+		FROM product_size ps
+		JOIN size s ON s.id = ps.size_id
+		WHERE ps.product_id = :id
+		ORDER BY ps.size_id`, map[string]any{"id": productID})
+	if err != nil {
+		return nil, fmt.Errorf("list product size SKU facts: %w", err)
+	}
+	if err := validateSizeOrdinalFacts(productID, facts); err != nil {
+		return nil, err
+	}
+	return facts, nil
+}
+
+// mintVariantSKUs sets product_size.sku for every size row after validating the full size contract.
+func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base string) error {
+	facts, err := loadValidatedSizeOrdinalFacts(ctx, db, productID)
+	if err != nil {
+		return err
+	}
+	for _, fact := range facts {
+		variant := BuildVariantSKU(base, fact.SKUOrd)
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
-			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
-			return fmt.Errorf("set product_size.sku (size %d): %w", r.SizeID, err)
+			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
+			return fmt.Errorf("set product_size.sku (size %d): %w", fact.SizeID, err)
 		}
 	}
 	return nil
@@ -276,44 +322,24 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 		return fmt.Errorf("load frozen base sku for product %d: %w", productID, err)
 	}
 	if baseRow.SKU == "" {
-		// No base to derive from (should not happen once frozen) — nothing safe to mint.
-		return nil
+		return fmt.Errorf("cannot mint frozen variant sku: product %d has no frozen base sku", productID)
 	}
-	sizeRows, err := storeutil.QueryListNamed[struct {
-		SizeID int `db:"size_id"`
-	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id AND (sku IS NULL OR sku = '')`,
-		map[string]any{"id": productID})
+	facts, err := loadValidatedSizeOrdinalFacts(ctx, db, productID)
 	if err != nil {
-		return fmt.Errorf("list frozen variants needing sku: %w", err)
+		return err
 	}
-	for _, r := range sizeRows {
-		ord, err := requireSizeOrdinal(r.SizeID)
-		if err != nil {
-			return err
+	for _, fact := range facts {
+		if fact.SKU.Valid && fact.SKU.String != "" {
+			continue
 		}
-		variant := BuildVariantSKU(baseRow.SKU, ord)
+		variant := BuildVariantSKU(baseRow.SKU, fact.SKUOrd)
 		if err := storeutil.ExecNamed(ctx, db,
 			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
-			map[string]any{"sku": variant, "pid": productID, "sid": r.SizeID}); err != nil {
-			return fmt.Errorf("set frozen variant sku (size %d): %w", r.SizeID, err)
+			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
+			return fmt.Errorf("set frozen variant sku (size %d): %w", fact.SizeID, err)
 		}
 	}
 	return nil
-}
-
-// requireSizeOrdinal returns a size's SKU ordinal, FAILING (rather than emitting a SKU-less variant)
-// when the size is unknown to the cache, has no ordinal (0), or is outside the two-digit range the
-// variant segment allows. Every mint path routes through it so an invalid ordinal rolls the whole
-// operation back instead of silently committing a NULL variant SKU (problem 017).
-func requireSizeOrdinal(sizeID int) (int, error) {
-	sz, ok := cache.GetSizeById(sizeID)
-	if !ok {
-		return 0, fmt.Errorf("cannot mint variant sku: size %d is not in the size dictionary", sizeID)
-	}
-	if sz.SkuOrd < 1 || sz.SkuOrd > 99 {
-		return 0, fmt.Errorf("cannot mint variant sku: size %d has an invalid SKU ordinal %d (must be 1-99)", sizeID, sz.SkuOrd)
-	}
-	return sz.SkuOrd, nil
 }
 
 // ensureVariantSKU guarantees a single variant row (product_id, size_id) has a SKU, minting it from the
@@ -322,14 +348,21 @@ func requireSizeOrdinal(sizeID int) (int, error) {
 // yet, or the size has no ordinal. Stock paths that can materialise a new variant (admin stock edit,
 // production receive) call this right after the upsert so no successful path leaves a NULL/empty SKU.
 func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID int) error {
-	cur, err := storeutil.QueryNamedOne[struct {
-		SKU sql.NullString `db:"sku"`
-	}](ctx, db, `SELECT sku FROM product_size WHERE product_id = :pid AND size_id = :sid`,
-		map[string]any{"pid": productID, "sid": sizeID})
+	facts, err := loadValidatedSizeOrdinalFacts(ctx, db, productID)
 	if err != nil {
-		return fmt.Errorf("load variant sku (product %d size %d): %w", productID, sizeID, err)
+		return err
 	}
-	if cur.SKU.Valid && cur.SKU.String != "" {
+	var target *sizeOrdinalFact
+	for i := range facts {
+		if facts[i].SizeID == sizeID {
+			target = &facts[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("cannot mint variant sku: product %d has no size %d", productID, sizeID)
+	}
+	if target.SKU.Valid && target.SKU.String != "" {
 		return nil // identity already set — a stock quantity change must never touch it
 	}
 	baseRow, err := storeutil.QueryNamedOne[struct {
@@ -341,11 +374,7 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 	if baseRow.SKU == "" {
 		return fmt.Errorf("cannot mint variant sku: product %d has no base sku", productID)
 	}
-	ord, err := requireSizeOrdinal(sizeID)
-	if err != nil {
-		return err
-	}
-	variant := BuildVariantSKU(baseRow.SKU, ord)
+	variant := BuildVariantSKU(baseRow.SKU, target.SKUOrd)
 	if err := storeutil.ExecNamed(ctx, db,
 		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
 		map[string]any{"sku": variant, "pid": productID, "sid": sizeID}); err != nil {

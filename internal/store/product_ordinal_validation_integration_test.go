@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMintRejectsInvalidOrdinal is the acceptance test for problem 017: a mint over a size with no
-// SKU ordinal (sku_ord = 0) must FAIL and roll the whole create back, never commit a product with a
-// NULL variant SKU.
-func TestMintRejectsInvalidOrdinal(t *testing.T) {
+// TestSizeSKUContractIsStrict is the DB/runtime acceptance test for problem 017: individual size
+// rows cannot carry a missing/out-of-range/duplicate/free-text contract, and a colourway cannot mix
+// otherwise-valid size systems. Every failure must happen before a partial product is committed.
+func TestSizeSKUContractIsStrict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -26,18 +26,40 @@ func TestMintRejectsInvalidOrdinal(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	// zero-ordinal size, seeded before cache init so GetSizeById returns it with SkuOrd == 0
-	zeroRes, err := testDB.ExecContext(ctx, `INSERT INTO size (name, sku_ord) VALUES ('T17-ZERO', 0)`)
-	require.NoError(t, err)
-	zid64, _ := zeroRes.LastInsertId()
-	zeroSizeID := int(zid64)
-	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM size WHERE id = ?", zeroSizeID) }()
+	var existingSystem string
+	var existingOrd int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT sku_system, sku_ord FROM size ORDER BY id LIMIT 1`).Scan(&existingSystem, &existingOrd))
+
+	invalidSizeWrites := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{name: "missing contract", query: `INSERT INTO size (name) VALUES (?)`, args: []any{"T17-MISSING"}},
+		{name: "zero ordinal", query: `INSERT INTO size (name, sku_ord, sku_system) VALUES (?, 0, 'apparel')`, args: []any{"T17-ZERO"}},
+		{name: "ordinal over width", query: `INSERT INTO size (name, sku_ord, sku_system) VALUES (?, 100, 'apparel')`, args: []any{"T17-100"}},
+		{name: "free-text system", query: `INSERT INTO size (name, sku_ord, sku_system) VALUES (?, 1, 'free-text')`, args: []any{"T17-FREE"}},
+		{name: "wrong-case system", query: `INSERT INTO size (name, sku_ord, sku_system) VALUES (?, 1, 'APPAREL')`, args: []any{"T17-UPPER"}},
+		{name: "duplicate system ordinal", query: `INSERT INTO size (name, sku_ord, sku_system) VALUES (?, ?, ?)`, args: []any{"T17-DUP", existingOrd, existingSystem}},
+	}
+	for _, tc := range invalidSizeWrites {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := testDB.ExecContext(ctx, tc.query, tc.args...)
+			require.Error(t, err)
+		})
+	}
 
 	di, err := s.Cache().GetDictionaryInfo(ctx)
 	require.NoError(t, err)
 	hf, err := s.Hero().GetHero(ctx)
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
+	var apparelSizeID, shoeSizeID int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&apparelSizeID))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'shoe' ORDER BY sku_ord LIMIT 1`).Scan(&shoeSizeID))
 
 	var langID int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM language").Scan(&langID))
@@ -69,13 +91,14 @@ func TestMintRejectsInvalidOrdinal(t *testing.T) {
 			Prices:           prices,
 		},
 		SizeMeasurements: []entity.SizeWithMeasurementInsert{
-			{ProductSize: entity.VariantInsert{SizeId: zeroSizeID, Quantity: decimal.NewFromInt(5)}},
+			{ProductSize: entity.VariantInsert{SizeId: apparelSizeID, Quantity: decimal.NewFromInt(5)}},
+			{ProductSize: entity.VariantInsert{SizeId: shoeSizeID, Quantity: decimal.NewFromInt(5)}},
 		},
 		MediaIds: []int{mediaID}, Tags: []entity.ColorwayTagInsert{}, Prices: prices,
 	})
-	require.Error(t, err, "a size with no SKU ordinal must fail the mint, not commit a NULL variant SKU")
+	require.ErrorContains(t, err, "mixes size SKU systems")
 
 	var after int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM product").Scan(&after))
-	require.Equal(t, before, after, "the failed create must roll back — no partial product persisted")
+	require.Equal(t, before, after, "the failed mixed-system create must roll back — no partial product persisted")
 }

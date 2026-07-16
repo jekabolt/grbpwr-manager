@@ -35,12 +35,33 @@ type Category struct {
 	CountWomen int
 }
 
-// Size represents the size table
+// SizeSKUSystem is the controlled size family used to interpret an SKU ordinal. It is intentionally
+// closed: adding a family changes the public SKU contract and therefore requires code, proto and DB
+// migrations rather than another free-text value.
+type SizeSKUSystem string
+
+const (
+	SizeSKUSystemApparel     SizeSKUSystem = "apparel"
+	SizeSKUSystemShoe        SizeSKUSystem = "shoe"
+	SizeSKUSystemCompositeTA SizeSKUSystem = "composite_ta"
+	SizeSKUSystemCompositeBO SizeSKUSystem = "composite_bo"
+)
+
+func IsValidSizeSKUSystem(system SizeSKUSystem) bool {
+	switch system {
+	case SizeSKUSystemApparel, SizeSKUSystemShoe, SizeSKUSystemCompositeTA, SizeSKUSystemCompositeBO:
+		return true
+	default:
+		return false
+	}
+}
+
+// Size represents the size table.
 type Size struct {
-	Id         int            `db:"id"`
-	Name       string         `db:"name"`
-	SkuOrd     int            `db:"sku_ord"`    // 2-digit ordinal for the size segment of the variant SKU
-	SkuSystem  sql.NullString `db:"sku_system"` // apparel|shoe|composite_ta|composite_bo
+	Id         int           `db:"id"`
+	Name       string        `db:"name"`
+	SkuOrd     int           `db:"sku_ord"`    // required 1..99 ordinal for the variant SKU segment
+	SkuSystem  SizeSKUSystem `db:"sku_system"` // controlled by SizeSKUSystem/DB CHECK
 	CountMen   int
 	CountWomen int
 }
