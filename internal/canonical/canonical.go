@@ -48,3 +48,25 @@ func Select[T any](items []T, langID func(T) int, isDefault func(int) bool) (T, 
 	}
 	return zero, false
 }
+
+// ProductName applies the shared canonical-language policy to product translations.
+func ProductName(items []entity.ColorwayTranslationInsert, langs []entity.Language) (string, bool) {
+	tr, ok := Select(items,
+		func(t entity.ColorwayTranslationInsert) int { return t.LanguageId },
+		IsDefaultFunc(langs))
+	if !ok {
+		return "", false
+	}
+	return tr.Name, true
+}
+
+// ArchiveHeading applies the same policy to archive translations.
+func ArchiveHeading(items []entity.ArchiveTranslation, langs []entity.Language) (string, bool) {
+	tr, ok := Select(items,
+		func(t entity.ArchiveTranslation) int { return t.LanguageId },
+		IsDefaultFunc(langs))
+	if !ok {
+		return "", false
+	}
+	return tr.Heading, true
+}

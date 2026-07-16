@@ -18,13 +18,13 @@ import (
 // default, then asserts each slug carries the default-language name and is stable across repeated reads.
 func TestCanonicalSlugUsesDefaultLanguage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	cfg := *testCfg
 	cfg.Automigrate = true
 	s, err := NewForTest(ctx, cfg)
 	require.NoError(t, err)
-	defer s.Close()
+	t.Cleanup(s.Close)
 
 	// Two languages, default assigned to the LARGER id so "default != smallest id" is exercised.
 	var l1, l2 int
@@ -40,24 +40,39 @@ func TestCanonicalSlugUsesDefaultLanguage(t *testing.T) {
 	require.GreaterOrEqual(t, len(ids), 2, "need at least two languages")
 	l1, l2 = ids[0], ids[1]
 
-	// Snapshot & restore the default-language flag (the suite shares one DB).
-	var origDefault int
-	_ = testDB.QueryRowContext(ctx, "SELECT id FROM language WHERE is_default = 1 LIMIT 1").Scan(&origDefault)
-	reinit := func() {
-		di, err := s.Cache().GetDictionaryInfo(ctx)
+	// Snapshot & restore every default-language flag (the suite and process cache are shared).
+	origDefaults := make([]int, 0)
+	defaultRows, err := testDB.QueryContext(ctx, "SELECT id FROM language WHERE is_default = 1 ORDER BY id")
+	require.NoError(t, err)
+	for defaultRows.Next() {
+		var id int
+		require.NoError(t, defaultRows.Scan(&id))
+		origDefaults = append(origDefaults, id)
+	}
+	require.NoError(t, defaultRows.Err())
+	require.NoError(t, defaultRows.Close())
+	reinit := func(cacheCtx context.Context) {
+		di, err := s.Cache().GetDictionaryInfo(cacheCtx)
 		require.NoError(t, err)
-		hf, err := s.Hero().GetHero(ctx)
+		hf, err := s.Hero().GetHero(cacheCtx)
 		require.NoError(t, err)
-		require.NoError(t, cache.InitConsts(ctx, di, hf))
+		require.NoError(t, cache.InitConsts(cacheCtx, di, hf))
 	}
 	t.Cleanup(func() {
-		cctx := context.Background()
-		_, _ = testDB.ExecContext(cctx, "UPDATE language SET is_default = (id = ?)", origDefault)
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		_, err := testDB.ExecContext(cctx, "UPDATE language SET is_default = 0")
+		require.NoError(t, err)
+		for _, id := range origDefaults {
+			_, err = testDB.ExecContext(cctx, "UPDATE language SET is_default = 1 WHERE id = ?", id)
+			require.NoError(t, err)
+		}
+		reinit(cctx)
 	})
 
 	_, err = testDB.ExecContext(ctx, "UPDATE language SET is_default = (id = ?)", l2)
 	require.NoError(t, err)
-	reinit() // cache.GetLanguages() now reports l2 as default
+	reinit(ctx) // cache.GetLanguages() now reports l2 as default
 
 	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,

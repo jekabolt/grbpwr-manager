@@ -495,13 +495,11 @@ func convertMediaIds(pbMediaIds []int32) []int {
 // not use Translations[0], whose position depends on SQL row order / insert order and would make the
 // canonical URL unstable across reads (problem 030). The same policy is applied to archives.
 func canonicalProductName(translations []entity.ColorwayTranslationInsert) string {
-	tr, ok := canonical.Select(translations,
-		func(t entity.ColorwayTranslationInsert) int { return t.LanguageId },
-		canonical.IsDefaultFunc(cache.GetLanguages()))
+	name, ok := canonical.ProductName(translations, cache.GetLanguages())
 	if !ok {
 		return ""
 	}
-	return tr.Name
+	return name
 }
 
 func convertTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInsert {

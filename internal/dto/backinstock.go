@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/slug"
 )
@@ -23,10 +24,12 @@ type BackInStock struct {
 
 // ProductFullToBackInStock converts entity.ColorwayFull to BackInStock DTO
 func ProductFullToBackInStock(product *entity.ColorwayFull, sizeId int, buyerName string, email string) *BackInStock {
-	// Get product name from first translation
+	// Use the same default-language canonical name as every public product URL.
 	productName := "Product"
-	if product.Product != nil && len(product.Product.ProductDisplay.ProductBody.Translations) > 0 {
-		productName = product.Product.ProductDisplay.ProductBody.Translations[0].Name
+	if product.Product != nil {
+		if name, ok := canonical.ProductName(product.Product.ProductDisplay.ProductBody.Translations, cache.GetLanguages()); ok {
+			productName = name
+		}
 	}
 
 	// Get brand

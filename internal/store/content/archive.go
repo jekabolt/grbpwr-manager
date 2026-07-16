@@ -26,10 +26,8 @@ func setArchiveSlug(al *entity.ArchiveList) {
 	// Canonical translation heading — deterministic (default language, else the smallest language id),
 	// never the order-dependent Translations[0] (problem 030). Same policy as the product slug.
 	heading := ""
-	if tr, ok := canonical.Select(al.Translations,
-		func(t entity.ArchiveTranslation) int { return t.LanguageId },
-		canonical.IsDefaultFunc(cache.GetLanguages())); ok {
-		heading = tr.Heading
+	if canonicalHeading, ok := canonical.ArchiveHeading(al.Translations, cache.GetLanguages()); ok {
+		heading = canonicalHeading
 	}
 	al.Slug = slug.TimelinePath(heading, al.Code)
 }

@@ -250,10 +250,8 @@ func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity
 	// Name from the canonical translation (default language, else smallest language id) — deterministic,
 	// not the order-dependent Translations[0] (problem 030); same policy as the pretty slug.
 	name := "Product"
-	if tr, ok := canonical.Select(product.Translations,
-		func(t entity.ColorwayTranslationInsert) int { return t.LanguageId },
-		canonical.IsDefaultFunc(cache.GetLanguages())); ok && strings.TrimSpace(tr.Name) != "" {
-		name = strings.TrimSpace(tr.Name)
+	if canonicalName, ok := canonical.ProductName(product.Translations, cache.GetLanguages()); ok && strings.TrimSpace(canonicalName) != "" {
+		name = strings.TrimSpace(canonicalName)
 	}
 	// Minimal header (style_number + name only, both NOT NULL). The garment-level fields
 	// (brand/season/category/fit/...) are written by writeStyleFields once the style exists —

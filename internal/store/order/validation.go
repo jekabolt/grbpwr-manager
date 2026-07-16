@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -24,6 +25,13 @@ func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds
 		return []entity.Colorway{}, nil
 	}
 	return rep.Products().GetProductsByIds(ctx, productIds)
+}
+
+func canonicalProductName(translations []entity.ColorwayTranslationInsert, fallback string) string {
+	if name, ok := canonical.ProductName(translations, cache.GetLanguages()); ok {
+		return name
+	}
+	return fallback
 }
 
 func getProductsSizesByIds(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) ([]entity.Variant, error) {
@@ -178,10 +186,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			item.ProductPriceWithSale = productPrice
 		}
 
-		var productName string
-		if len(productBody.Translations) > 0 {
-			productName = productBody.Translations[0].Name
-		}
+		productName := canonicalProductName(productBody.Translations, "")
 
 		validItem := entity.OrderItem{
 			OrderItemInsert: item,
@@ -273,10 +278,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			})
 			continue
 		}
-		var productName string
-		if len(prd.ProductDisplay.ProductBody.Translations) > 0 {
-			productName = prd.ProductDisplay.ProductBody.Translations[0].Name
-		}
+		productName := canonicalProductName(prd.ProductDisplay.ProductBody.Translations, "")
 		pb := &prd.ProductDisplay.ProductBody
 		validItems = append(validItems, entity.OrderItem{
 			OrderItemInsert: item,

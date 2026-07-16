@@ -159,10 +159,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 	for _, oi := range ois {
 		oi.Translations = translationMap[oi.ProductId]
 
-		productName := "product"
-		if len(translationMap[oi.ProductId]) > 0 {
-			productName = translationMap[oi.ProductId][0].Name
-		}
+		productName := canonicalProductName(translationMap[oi.ProductId], "product")
 
 		oi.Slug = slug.ProductPath(productName, oi.ProductBaseSKU)
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
