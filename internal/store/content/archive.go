@@ -16,19 +16,16 @@ import (
 )
 
 // setArchiveSlug fills al.Slug with the public timeline URL "/timeline/{pretty}-{code}".
-// The pretty part is the kebab of the first translation heading (if any); the resolve
-// key is al.Code. Legacy rows with an empty code (shouldn't happen post-0136) fall back
-// to a code derived from the id so the URL is never code-less.
+// The pretty part is the kebab of the first translation heading (if any); the resolve key is the
+// persisted al.Code. Since archive.code is NOT NULL and format-checked (migration 0148), there is no
+// read-time fallback: an empty code would surface as a broken URL rather than being masked by an
+// id-derived fabrication that the code resolver would 404 on (problem 029).
 func setArchiveSlug(al *entity.ArchiveList) {
-	code := al.Code
-	if code == "" {
-		code = entity.ArchiveCodeFromID(al.Id)
-	}
 	heading := ""
 	if len(al.Translations) > 0 {
 		heading = al.Translations[0].Heading
 	}
-	al.Slug = slug.TimelinePath(heading, code)
+	al.Slug = slug.TimelinePath(heading, al.Code)
 }
 
 // marshalArchiveBody marshals the timeline body, normalising a nil slice to an
@@ -52,23 +49,29 @@ func (s *Store) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int
 	var aid int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (tag, thumbnail_id, body) VALUES (:tag, :thumbnailId, :body)`
+		// Allocate the immutable public code from a dedicated sequence BEFORE the insert — no NULL
+		// window, no MAX(id)+1, concurrency-safe (same AUTO_INCREMENT-table pattern as model_no_seq).
+		// The seq is seeded above the max archive id (migration 0148) so this never collides with the
+		// id-derived backfill. A blank/malformed code is a hard error: nothing is persisted.
+		seqID, err := storeutil.ExecNamedLastId(ctx, rep.DB(),
+			`INSERT INTO archive_code_seq () VALUES ()`, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("failed to allocate archive code: %w", err)
+		}
+		code := entity.ArchiveCodeFromID(seqID)
+		if !entity.ValidArchiveCode(code) {
+			return fmt.Errorf("refusing to persist archive with invalid code %q (seq %d)", code, seqID)
+		}
+
+		query := `INSERT INTO archive (tag, thumbnail_id, body, code) VALUES (:tag, :thumbnailId, :body, :code)`
 		aid, err = storeutil.ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 			"tag":         aNew.Tag,
 			"thumbnailId": aNew.ThumbnailId,
 			"body":        bodyJSON,
+			"code":        code,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
-		}
-
-		// Assign the immutable public code from the freshly-allocated id (same shape as the
-		// 0136 backfill: entity.ArchiveCodeFromID). Set once at creation, never rewritten.
-		_, err = rep.DB().NamedExecContext(ctx,
-			`UPDATE archive SET code = :code WHERE id = :id`,
-			map[string]any{"code": entity.ArchiveCodeFromID(aid), "id": aid})
-		if err != nil {
-			return fmt.Errorf("failed to set archive code: %w", err)
 		}
 
 		// Insert translations

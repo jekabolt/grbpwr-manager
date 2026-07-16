@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,18 @@ func ArchiveCodeFromID(id int) string {
 		b36 = strings.Repeat("0", 4-len(b36)) + b36
 	}
 	return "AR" + b36
+}
+
+// archiveCodeRe is the persisted-format contract for archive.code, kept byte-identical to the
+// chk_archive_code_format CHECK in migration 0148: 'AR' followed by 1..10 upper-case base36 chars
+// (total length 3..12).
+var archiveCodeRe = regexp.MustCompile(`^AR[0-9A-Z]{1,10}$`)
+
+// ValidArchiveCode reports whether code satisfies the persisted public-code format. The store rejects
+// an archive whose generated code is empty or malformed before it is persisted (no NULL/invalid code
+// ever reaches the URL surface).
+func ValidArchiveCode(code string) bool {
+	return archiveCodeRe.MatchString(code)
 }
 
 type ArchiveFull struct {
