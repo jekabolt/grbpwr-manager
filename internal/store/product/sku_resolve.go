@@ -509,27 +509,19 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 	return nil
 }
 
-// disambiguateBase guarantees base SKU uniqueness. Structural guards (unique model_no + the
-// UNIQUE(tech_card_id, color_code) colourway constraint) make a real collision unexpected, so a clash
-// is logged and resolved with a numeric suffix as an emergency last resort (it breaks the fixed
-// length — see the generator doc).
+// disambiguateBase enforces uniqueness without inventing another wire format. Structural guards make
+// a collision unexpected; if one occurs, mint fails and the transaction rolls back so the upstream
+// model/color facts can be fixed. Numeric emergency suffixes are forbidden because they break the
+// fixed-length URL, analytics and readiness contract.
 func disambiguateBase(ctx context.Context, db dependency.DB, base string, productID int) (string, error) {
-	candidate := base
-	for suffix := 2; suffix < 100; suffix++ {
-		taken, err := baseSKUTakenByOther(ctx, db, candidate, productID)
-		if err != nil {
-			return "", err
-		}
-		if !taken {
-			if candidate != base {
-				slog.WarnContext(ctx, "sku: base collision resolved with emergency suffix",
-					slog.String("base", base), slog.String("resolved", candidate), slog.Int("product_id", productID))
-			}
-			return candidate, nil
-		}
-		candidate = fmt.Sprintf("%s%d", base, suffix)
+	taken, err := baseSKUTakenByOther(ctx, db, base, productID)
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("sku: could not disambiguate base %q after 98 attempts", base)
+	if taken {
+		return "", fmt.Errorf("sku: canonical base %q collides with another product; fix model/color facts", base)
+	}
+	return base, nil
 }
 
 func baseSKUTakenByOther(ctx context.Context, db dependency.DB, sku string, productID int) (bool, error) {

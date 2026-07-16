@@ -19,12 +19,12 @@ import "fmt"
 // baseSKUFromItemID returns a BigQuery expression extracting the upper-case base SKU from an
 // item_id column/expression (item_id is upper-case, matching order_item.sku).
 func baseSKUFromItemID(itemIDExpr string) string {
-	return fmt.Sprintf(`REGEXP_EXTRACT(%s, r'([A-Z]{2}[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})')`, itemIDExpr)
+	return fmt.Sprintf(`REGEXP_EXTRACT(%s, r'^((?:SS|FW|PF|RC)[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})(?:-[0-9]{2})?$')`, itemIDExpr)
 }
 
 // baseSKUFromPath returns a BigQuery expression extracting the base SKU from a page_path
 // ("/p/{pretty}-{sku}") and upper-casing it so it aligns with baseSKUFromItemID for joins. The URL
 // sku is lower-case; the pattern is specific enough (a 5-digit run) not to match the pretty slug.
 func baseSKUFromPath(pathExpr string) string {
-	return fmt.Sprintf(`UPPER(REGEXP_EXTRACT(%s, r'([a-z]{2}[0-9]{2}-[0-9]{5}-[a-z0-9]{3})'))`, pathExpr)
+	return fmt.Sprintf(`UPPER(REGEXP_EXTRACT(%s, r'/((?:ss|fw|pf|rc)[0-9]{2}-[0-9]{5}-[a-z0-9]{3})$'))`, pathExpr)
 }
