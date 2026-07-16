@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/shopspring/decimal"
 	analyticsdata "google.golang.org/api/analyticsdata/v1beta"
 	"google.golang.org/api/option"
@@ -496,22 +496,19 @@ func parseDecimal(s string) decimal.Decimal {
 	return d
 }
 
-// baseSKUInPath matches the base-SKU tail of a product URL (/p/{pretty}-{sku}), lowercase in the URL:
-// SSYY-NNNNN-CCC, e.g. ss26-00021-blk. The product.id no longer appears in the path (SKU redesign PR3).
-var baseSKUInPath = regexp.MustCompile(`(?i)([a-z]{2}[0-9]{2}-[0-9]{5}-[a-z0-9]{3})$`)
-
 // extractProductSKUFromPath extracts the uppercased base SKU from a product page path
-// (/p/{pretty}-{sku}). Returns "" when the path is not a product path or carries no SKU.
+// (/p/{pretty}-{sku}). Returns "" when the path is not a product path or carries no SKU. It delegates
+// to slug.ParseProductTail — the single shared strict parser (problem 031) — after normalizing the
+// leading slash GA4 page_path may omit, so analytics and the storefront agree on the grammar.
 func extractProductSKUFromPath(path string) string {
-	path = strings.Trim(path, "/")
-	if !strings.HasPrefix(path, "p/") {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	sku, err := slug.ParseProductTail(path)
+	if err != nil {
 		return ""
 	}
-	m := baseSKUInPath.FindStringSubmatch(path)
-	if m == nil {
-		return ""
-	}
-	return strings.ToUpper(m[1])
+	return sku
 }
 
 // CircuitBreakerState returns the current state of the circuit breaker.

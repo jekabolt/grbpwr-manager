@@ -6,6 +6,7 @@
 package slug
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"unicode"
@@ -14,6 +15,70 @@ import (
 // MaxPrettyLen caps the decorative segment so a long product/archive name can't produce an unbounded
 // path. It only affects the pretty part; the resolve token is appended after.
 const MaxPrettyLen = 80
+
+// Public URL prefixes and the errors the tail parsers return when a path is not a valid tail of the
+// expected kind.
+const (
+	productPrefix  = "/p/"
+	timelinePrefix = "/timeline/"
+)
+
+var (
+	// ErrNotProductTail is returned by ParseProductTail for anything that is not "/p/{pretty-}{base-SKU}".
+	ErrNotProductTail = errors.New("slug: not a product tail")
+	// ErrNotArchiveTail is returned by ParseArchiveTail for anything that is not "/timeline/{pretty-}{code}".
+	ErrNotArchiveTail = errors.New("slug: not an archive tail")
+)
+
+// productTailRe matches a base SKU anchored at the END of the pretty-stripped, upper-cased tail:
+// {SEASON:2}{YY:2}-{MODEL:5}-{COLOR:3} (fixed 14, e.g. SS26-00021-BLK, mirrors product.BuildBaseSKU).
+// The optional greedy `(?:.+-)?` swallows the decorative pretty segment (any number of hyphens, and
+// even SKU-like fragments), so the captured group is always the final triplet. Because the SKU is
+// anchored at `$`, a variant-size suffix (`-04`), an emergency collision suffix (`…2`) or any trailing
+// garbage leaves the string unmatched — those are rejected, not truncated to a base.
+var productTailRe = regexp.MustCompile(`^(?:.+-)?([A-Z]{2}[0-9]{2}-[0-9]{5}-[A-Z0-9]{3})$`)
+
+// archiveTailRe matches an archive code anchored at the end: "AR" + 1..10 upper base36 chars (mirrors
+// entity.ValidArchiveCode / migration 0148). The code carries no hyphen, so the greedy prefix cleanly
+// separates it from the pretty segment.
+var archiveTailRe = regexp.MustCompile(`^(?:.+-)?(AR[0-9A-Z]{1,10})$`)
+
+// ParseProductTail parses a public product URL tail "/p/{pretty-}{base-SKU}" and returns the
+// normalized upper-case base SKU (e.g. SS26-00021-BLK). This is the single shared parser for the
+// storefront cutover and analytics — every consumer must use it instead of ad-hoc splitting, since
+// the pretty segment can itself contain hyphens and SKU-like fragments.
+//
+// It accepts only the exact "/p/" prefix, an optional pretty segment, and the base SKU as the final
+// token; the input is case-normalized. It rejects: a wrong/missing prefix, a query or fragment, a
+// wrong-width season/model/color, a variant-size suffix, a collision suffix, an empty token and any
+// trailing garbage.
+func ParseProductTail(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, productPrefix)
+	if !ok || strings.ContainsAny(rest, "?#") {
+		return "", ErrNotProductTail
+	}
+	m := productTailRe.FindStringSubmatch(strings.ToUpper(rest))
+	if m == nil {
+		return "", ErrNotProductTail
+	}
+	return m[1], nil
+}
+
+// ParseArchiveTail parses a public timeline URL tail "/timeline/{pretty-}{code}" and returns the
+// normalized upper-case archive code (e.g. AR000C). Same contract and guarantees as ParseProductTail:
+// exact "/timeline/" prefix, optional pretty segment, code as the final token, case-normalized;
+// rejects wrong prefix, query/fragment, empty token and trailing garbage.
+func ParseArchiveTail(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, timelinePrefix)
+	if !ok || strings.ContainsAny(rest, "?#") {
+		return "", ErrNotArchiveTail
+	}
+	m := archiveTailRe.FindStringSubmatch(strings.ToUpper(rest))
+	if m == nil {
+		return "", ErrNotArchiveTail
+	}
+	return m[1], nil
+}
 
 var nonKebab = regexp.MustCompile(`[^a-z0-9]+`)
 
