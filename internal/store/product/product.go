@@ -573,7 +573,7 @@ func captureVariantQuantities(ctx context.Context, db dependency.DB, productID i
 	rows, err := storeutil.QueryListNamed[struct {
 		SizeID   int             `db:"size_id"`
 		Quantity decimal.Decimal `db:"quantity"`
-	}](ctx, db, `SELECT size_id, quantity FROM product_size WHERE product_id = :id`, map[string]any{"id": productID})
+	}](ctx, db, `SELECT size_id, quantity FROM product_size WHERE product_id = :id FOR UPDATE`, map[string]any{"id": productID})
 	if err != nil {
 		return nil, fmt.Errorf("can't read current variant quantities: %w", err)
 	}
