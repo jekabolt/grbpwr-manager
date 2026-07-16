@@ -552,7 +552,9 @@ func (c *Client) getEcommerceBatch(
 	startDate, endDate time.Time,
 ) ([]EcommerceMetrics, []ProductConversionMetrics, error) {
 	var ecomRes []EcommerceMetrics
-	var prodRes []ProductConversionMetrics
+	// prodAgg collapses the per-itemId rows GA4 returns down to one row per (date, base SKU) — see
+	// prodAggregator.
+	prodAgg := newProdAggregator()
 
 	const limit = int64(10000)
 	var offset0, offset2 int64
@@ -660,15 +662,17 @@ func (c *Client) getEcommerceBatch(
 						slog.String("err", err.Error()))
 					continue
 				}
-				prodRes = append(prodRes, ProductConversionMetrics{
-					Date:        date,
-					ProductID:   row.DimensionValues[1].Value,
-					ProductName: row.DimensionValues[2].Value,
-					ItemsViewed: parseInt(row.MetricValues[0].Value),
-					AddToCarts:  parseInt(row.MetricValues[1].Value),
-					Purchases:   parseInt(row.MetricValues[2].Value),
-					Revenue:     parseDecimal(row.MetricValues[3].Value),
-				})
+				rawItemID := row.DimensionValues[1].Value
+				ok := prodAgg.add(date, rawItemID, row.DimensionValues[2].Value,
+					parseInt(row.MetricValues[0].Value),
+					parseInt(row.MetricValues[1].Value),
+					parseInt(row.MetricValues[2].Value),
+					parseDecimal(row.MetricValues[3].Value),
+				)
+				if !ok {
+					slog.Default().WarnContext(ctx, "ga4: skipping prod row with unrecognized item id",
+						slog.String("item_id", rawItemID))
+				}
 			}
 			if int64(len(r.Rows)) < limit {
 				more2 = false
@@ -678,5 +682,5 @@ func (c *Client) getEcommerceBatch(
 		}
 	}
 
-	return ecomRes, prodRes, nil
+	return ecomRes, prodAgg.result(), nil
 }
