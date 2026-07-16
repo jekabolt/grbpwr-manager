@@ -43,7 +43,7 @@ func TestColorCodeSurvivesRoundTrip(t *testing.T) {
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
 		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
 		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
-		BlurHash:           sql.NullString{String: "LEHV6nWB2yk8pyo0adR*.7kCMdnj", Valid: true},
+		BlurHash: sql.NullString{String: "LEHV6nWB2yk8pyo0adR*.7kCMdnj", Valid: true},
 	})
 	require.NoError(t, err)
 	prices := make([]entity.ColorwayPriceInsert, 0)
@@ -57,8 +57,8 @@ func TestColorCodeSurvivesRoundTrip(t *testing.T) {
 		return &entity.ColorwayNew{
 			Product: &entity.ColorwayInsert{
 				ProductBodyInsert: entity.ColorwayBodyInsert{
-					Brand: "ACME", Color: colorName, ColorCode: sql.NullString{String: colorCode, Valid: true},
-					ColorHex: "#000000", CountryOfOrigin: "IT",
+					Brand: "ACME", Color: colorName, ColorCode: colorCode,
+					ColorHexOverride: sql.NullString{String: "#000000", Valid: true}, CountryOfOrigin: "IT",
 					TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
 				},
 				ThumbnailMediaID: mediaID,
@@ -79,7 +79,7 @@ func TestColorCodeSurvivesRoundTrip(t *testing.T) {
 	// GET must now return the dictionary color_code (was empty before the fix)
 	got, err := s.Products().GetProductByIdShowHidden(ctx, prodID)
 	require.NoError(t, err)
-	require.Equal(t, colorCode, got.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode.String,
+	require.Equal(t, colorCode, got.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		"GET must return the dictionary color_code")
 
 	var skuBefore, codeBefore string

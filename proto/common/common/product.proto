@@ -96,10 +96,15 @@ message ColorwayBody {
 message ColorwayBodyInsert {
   google.protobuf.Timestamp preorder = 1;
   string brand = 2;
-  string color = 3;
-  string color_hex = 4;
+  reserved 3;
+  reserved "color", "color_hex";
+  // Optional per-colorway shade override. When absent, clients use dictionary_color.hex.
+  optional string color_hex_override = 4;
   string country_of_origin = 5;
-  string color_code = 21; // FK to the colour dictionary (3-char code); drives the SKU colour segment
+  // REQUIRED canonical FK to Dictionary.colors; the sole color/SKU identity on writes.
+  string color_code = 21;
+  // OUTPUT-ONLY resolved dictionary entry. Ignored on write.
+  Color dictionary_color = 22;
   google.type.Decimal sale_percentage = 6;
   int32 top_category_id = 7;
   int32 sub_category_id = 8;

@@ -69,7 +69,10 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColo
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
-	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	// Validate: price sorting requires currency to be specified
 	var priceSortRequested bool

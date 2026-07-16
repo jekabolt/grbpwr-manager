@@ -265,7 +265,10 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
-	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	// Price sorting requires currency; default to base currency when not specified (admin UX)
 	baseCurrency := cache.GetBaseCurrency()

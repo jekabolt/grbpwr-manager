@@ -23,23 +23,8 @@ func TestBuildBaseSKU(t *testing.T) {
 			want: "SS26-00008-RED",
 		},
 		{
-			name: "colour from free-text name (no code) -> translit first 3",
-			in:   SKUSegments{Season: entity.SeasonFW, Year: 2025, ModelNo: 3, ColorName: "navy"},
-			want: "FW25-00003-NAV",
-		},
-		{
-			name: "colour from Cyrillic name",
-			in:   SKUSegments{Season: entity.SeasonSS, Year: 2026, ModelNo: 5, ColorName: "чёрный"},
-			want: "SS26-00005-CHE",
-		},
-		{
-			name: "no colour info -> UNK fallback",
+			name: "invalid missing dictionary code -> defensive UNK",
 			in:   SKUSegments{Season: entity.SeasonSS, Year: 2026, ModelNo: 5},
-			want: "SS26-00005-UNK",
-		},
-		{
-			name: "name too short for 3 letters -> UNK",
-			in:   SKUSegments{Season: entity.SeasonSS, Year: 2026, ModelNo: 5, ColorName: "ab"},
 			want: "SS26-00005-UNK",
 		},
 		{
@@ -96,39 +81,18 @@ func TestBuildVariantSKU(t *testing.T) {
 	}
 }
 
-func TestTranslit(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"navy", "navy"},
-		{"off-white", "offwhite"}, // non-alnum dropped
-		{"чёрный", "chernyy"},
-		{"Красный", "Krasnyy"},
-		{"blue 2", "blue2"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := Translit(tt.in); got != tt.want {
-			t.Errorf("Translit(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestColorSegment(t *testing.T) {
 	tests := []struct {
-		code, name, want string
+		code, want string
 	}{
-		{"BLK", "black", "BLK"},         // code wins
-		{"", "navy", "NAV"},             // translit name
-		{"", "off-white", "OFF"},        // non-alpha dropped, first 3
-		{"", "чёрный", "CHE"},           // cyrillic
-		{"", "", colorFallback},         // nothing -> UNK
-		{"", "ab", colorFallback},       // <3 letters -> UNK
-		{"xy", "green", "GRE"},          // short code ignored, name used
+		{"BLK", "BLK"},
+		{"", colorFallback},
+		{"xy", colorFallback},
+		{"black", colorFallback},
 	}
 	for _, tt := range tests {
-		if got := colorSegment(tt.code, tt.name); got != tt.want {
-			t.Errorf("colorSegment(%q,%q) = %q, want %q", tt.code, tt.name, got, tt.want)
+		if got := colorSegment(tt.code); got != tt.want {
+			t.Errorf("colorSegment(%q) = %q, want %q", tt.code, got, tt.want)
 		}
 	}
 }

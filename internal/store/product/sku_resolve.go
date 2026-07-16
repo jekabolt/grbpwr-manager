@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -15,20 +16,18 @@ import (
 // productSKUFacts is everything MintProductSKUs needs to build a product's SKU. Styled fields come
 // from the linked style (colourway + tech_card); when Styled is false the standalone fields apply.
 type productSKUFacts struct {
-	ID        int            `db:"id"`
-	Season    string         `db:"season"`     // standalone season enum (SS/FW/PF/RC)
-	CreatedYr int            `db:"created_yr"` // YEAR(created_at) — standalone year source
-	Color     string         `db:"color"`      // standalone free-text colour name
-	ColorCode sql.NullString `db:"color_code"` // standalone dictionary code
-	ModelNo   sql.NullInt32  `db:"model_no"`   // standalone model number
-	LockedAt  sql.NullTime   `db:"sku_locked_at"`
+	ID        int           `db:"id"`
+	Season    string        `db:"season"`     // standalone season enum (SS/FW/PF/RC)
+	CreatedYr int           `db:"created_yr"` // YEAR(created_at) — standalone year source
+	ColorCode string        `db:"color_code"` // required standalone dictionary code
+	ModelNo   sql.NullInt32 `db:"model_no"`   // standalone model number
+	LockedAt  sql.NullTime  `db:"sku_locked_at"`
 
 	// styled overrides (all NULL when the product realises no colourway)
 	StyleSeasonCode sql.NullString `db:"style_season_code"`
 	StyleSeasonYear sql.NullInt32  `db:"style_season_year"`
 	StyleModelNo    sql.NullInt32  `db:"style_model_no"`
 	CwColorCode     sql.NullString `db:"cw_color_code"`
-	CwName          sql.NullString `db:"cw_name"`
 	Styled          bool           `db:"styled"`
 }
 
@@ -41,7 +40,6 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 		SELECT p.id AS id,
 		       sty.season_code AS season,
 		       YEAR(p.created_at) AS created_yr,
-		       p.color AS color,
 		       p.color_code AS color_code,
 		       p.model_no AS model_no,
 		       p.sku_locked_at AS sku_locked_at,
@@ -49,7 +47,6 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 		       tc.season_year AS style_season_year,
 		       tc.model_no    AS style_model_no,
 		       cw.color_code  AS cw_color_code,
-		       cw.name        AS cw_name,
 		       (cw.id IS NOT NULL) AS styled
 		FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id
@@ -65,9 +62,8 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 }
 
 // resolveSegments turns the raw facts into the generator's SKUSegments, ensuring a model number
-// exists (allocating one from the shared counter when missing) and resolving the colour code from
-// the dictionary, falling back to the free-text name mapper. It may write model_no back, so it takes
-// db and runs inside the caller's tx.
+// exists (allocating one from the shared counter when missing) and requiring the FK-backed colour
+// dictionary code. It may write model_no back, so it takes db and runs inside the caller's tx.
 func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) (SKUSegments, error) {
 	var seg SKUSegments
 	if f.Styled {
@@ -80,8 +76,13 @@ func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) 
 			return seg, err
 		}
 		seg.ModelNo = modelNo
-		seg.ColorCode = resolveColorCode(f.CwColorCode, f.CwName.String)
-		seg.ColorName = f.CwName.String
+		if !f.CwColorCode.Valid {
+			return seg, fmt.Errorf("styled product %d has no canonical color_code", f.ID)
+		}
+		if err := validateColorCode(f.CwColorCode.String); err != nil {
+			return seg, fmt.Errorf("styled product %d: %w", f.ID, err)
+		}
+		seg.ColorCode = f.CwColorCode.String
 		return seg, nil
 	}
 
@@ -92,22 +93,21 @@ func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) 
 		return seg, err
 	}
 	seg.ModelNo = modelNo
-	seg.ColorCode = resolveColorCode(f.ColorCode, f.Color)
-	seg.ColorName = f.Color
+	if err := validateColorCode(f.ColorCode); err != nil {
+		return seg, fmt.Errorf("product %d: %w", f.ID, err)
+	}
+	seg.ColorCode = f.ColorCode
 	return seg, nil
 }
 
-// resolveColorCode returns the dictionary code to use for the colour segment: the explicit code if
-// set, else the free-text name mapped to a dictionary code, else "" (colorSegment then translits the
-// name or falls back to UNK — never writing a non-dictionary code to color_code).
-func resolveColorCode(code sql.NullString, name string) string {
-	if code.Valid && code.String != "" {
-		return code.String
+func validateColorCode(code string) error {
+	if len(code) != 3 || code != strings.ToUpper(code) || strings.TrimSpace(code) != code {
+		return fmt.Errorf("color_code %q is not canonical", code)
 	}
-	if mapped, ok := cache.MapColorNameToCode(name); ok {
-		return mapped
+	if _, ok := cache.GetColorByCode(code); !ok {
+		return fmt.Errorf("color_code %q is not in the dictionary", code)
 	}
-	return ""
+	return nil
 }
 
 // ensureStyleModelNo returns the style's model number, allocating and persisting one on the tech_card

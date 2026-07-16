@@ -180,9 +180,9 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 type ColorwayBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
-	Color              string              `db:"color" valid:"required"`
-	ColorCode          sql.NullString      `db:"color_code" valid:"-"` // FK color(code); NULL falls back to translit/UNK in the generator
-	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
+	Color              string              `db:"color" valid:"required"` // resolved dictionary name; never accepted from API
+	ColorCode          string              `db:"color_code" valid:"required"`
+	ColorHexOverride   sql.NullString      `db:"color_hex" valid:"-"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
 	TopCategoryId      int                 `db:"top_category_id" valid:"required"`

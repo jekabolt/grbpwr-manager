@@ -121,9 +121,9 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			}
 			args["targetGenders"] = genders
 		}
-		if filterConditions.Color != "" {
-			whereClauses = append(whereClauses, "p.color = :color")
-			args["color"] = filterConditions.Color
+		if len(filterConditions.ColorCodes) > 0 {
+			whereClauses = append(whereClauses, "p.color_code IN (:colorCodes)")
+			args["colorCodes"] = filterConditions.ColorCodes
 		}
 		if len(filterConditions.TopCategoryIds) != 0 {
 			whereClauses = append(whereClauses, "sty.top_category_id IN (:topCategoryIds)")

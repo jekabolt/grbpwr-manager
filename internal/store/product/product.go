@@ -295,7 +295,7 @@ func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b enti
 
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
-	// sizes exist. color_code is the dictionary FK (NULL falls back to translit/UNK in the generator).
+	// sizes exist. color_code is the required dictionary FK and is the sole color identity.
 	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
 	// A cost provided at create time is manual admin input, so stamp its provenance
 	// (source='manual', updated_at=now); no cost leaves the provenance columns NULL.
@@ -305,16 +305,15 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 	query := `
 	INSERT INTO product
 	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, hidden, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :minTier, :costPrice,
+	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
 		"styleId":              styleId,
 		"preorder":             product.ProductBodyInsert.Preorder,
-		"color":                product.ProductBodyInsert.Color,
 		"colorCode":            product.ProductBodyInsert.ColorCode,
-		"colorHex":             product.ProductBodyInsert.ColorHex,
+		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          product.ThumbnailMediaID,
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
@@ -594,9 +593,9 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 	UPDATE product
 	SET
 		preorder = :preorder,
-		color = :color,
+		color = (SELECT c.name FROM color c WHERE c.code = :colorCode),
 		color_code = :colorCode,
-		color_hex = :colorHex,
+		color_hex = :colorHexOverride,
 		country_of_origin = :countryOfOrigin,
 		thumbnail_id = :thumbnailId,
 		secondary_thumbnail_id = :secondaryThumbnailId,
@@ -617,9 +616,8 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 	`
 	if err := storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
-		"color":                prd.ProductBodyInsert.Color,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
-		"colorHex":             prd.ProductBodyInsert.ColorHex,
+		"colorHexOverride":     prd.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
 		"thumbnailId":          prd.ThumbnailMediaID,
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
@@ -883,8 +881,8 @@ type productQueryResult struct {
 	Brand              string              `db:"brand"`
 	SKU                string              `db:"sku"`
 	Color              string              `db:"color"`
-	ColorCode          sql.NullString      `db:"color_code"`
-	ColorHex           string              `db:"color_hex"`
+	ColorCode          string              `db:"color_code"`
+	ColorHexOverride   sql.NullString      `db:"color_hex"`
 	CountryOfOrigin    string              `db:"country_of_origin"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
 	TopCategoryId      int                 `db:"top_category_id"`
@@ -903,32 +901,32 @@ type productQueryResult struct {
 	MinTier               int16 `db:"min_tier"`
 	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
 
-	ThumbnailId                 int                  `db:"thumbnail_id"`
-	SecondaryThumbnailId        sql.NullInt32        `db:"secondary_thumbnail_id"`
-	SecondaryThumbnailCreatedAt sql.NullTime         `db:"secondary_thumbnail_created_at"`
-	ThumbnailFullSize           string               `db:"full_size"`
-	ThumbnailFullSizeW          int                  `db:"full_size_width"`
-	ThumbnailFullSizeH          int                  `db:"full_size_height"`
-	ThumbnailThumb              string               `db:"thumbnail"`
-	ThumbnailThumbW             int                  `db:"thumbnail_width"`
-	ThumbnailThumbH             int                  `db:"thumbnail_height"`
-	ThumbnailCompressed         string               `db:"compressed"`
-	ThumbnailCompressedW        int                  `db:"compressed_width"`
-	ThumbnailCompressedH        int                  `db:"compressed_height"`
-	ThumbnailBlurHash           string               `db:"blur_hash"`
-	SecondaryFullSize           sql.NullString       `db:"secondary_full_size"`
-	SecondaryFullSizeW          sql.NullInt32        `db:"secondary_full_size_width"`
-	SecondaryFullSizeH          sql.NullInt32        `db:"secondary_full_size_height"`
-	SecondaryThumb              sql.NullString       `db:"secondary_thumbnail"`
-	SecondaryThumbW             sql.NullInt32        `db:"secondary_thumbnail_width"`
-	SecondaryThumbH             sql.NullInt32        `db:"secondary_thumbnail_height"`
-	SecondaryCompressed         sql.NullString       `db:"secondary_compressed"`
-	SecondaryCompressedW        sql.NullInt32        `db:"secondary_compressed_width"`
-	SecondaryCompressedH        sql.NullInt32        `db:"secondary_compressed_height"`
-	SecondaryBlurHash           sql.NullString       `db:"secondary_blur_hash"`
-	SoldOut                     bool                 `db:"sold_out"`
+	ThumbnailId                 int                   `db:"thumbnail_id"`
+	SecondaryThumbnailId        sql.NullInt32         `db:"secondary_thumbnail_id"`
+	SecondaryThumbnailCreatedAt sql.NullTime          `db:"secondary_thumbnail_created_at"`
+	ThumbnailFullSize           string                `db:"full_size"`
+	ThumbnailFullSizeW          int                   `db:"full_size_width"`
+	ThumbnailFullSizeH          int                   `db:"full_size_height"`
+	ThumbnailThumb              string                `db:"thumbnail"`
+	ThumbnailThumbW             int                   `db:"thumbnail_width"`
+	ThumbnailThumbH             int                   `db:"thumbnail_height"`
+	ThumbnailCompressed         string                `db:"compressed"`
+	ThumbnailCompressedW        int                   `db:"compressed_width"`
+	ThumbnailCompressedH        int                   `db:"compressed_height"`
+	ThumbnailBlurHash           string                `db:"blur_hash"`
+	SecondaryFullSize           sql.NullString        `db:"secondary_full_size"`
+	SecondaryFullSizeW          sql.NullInt32         `db:"secondary_full_size_width"`
+	SecondaryFullSizeH          sql.NullInt32         `db:"secondary_full_size_height"`
+	SecondaryThumb              sql.NullString        `db:"secondary_thumbnail"`
+	SecondaryThumbW             sql.NullInt32         `db:"secondary_thumbnail_width"`
+	SecondaryThumbH             sql.NullInt32         `db:"secondary_thumbnail_height"`
+	SecondaryCompressed         sql.NullString        `db:"secondary_compressed"`
+	SecondaryCompressedW        sql.NullInt32         `db:"secondary_compressed_width"`
+	SecondaryCompressedH        sql.NullInt32         `db:"secondary_compressed_height"`
+	SecondaryBlurHash           sql.NullString        `db:"secondary_blur_hash"`
+	SoldOut                     bool                  `db:"sold_out"`
 	Status                      entity.ColorwayStatus `db:"status"`
-	StyleId                     int                  `db:"style_id"`
+	StyleId                     int                   `db:"style_id"`
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslationInsert) entity.Colorway {
@@ -974,7 +972,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					Collection:            pqr.Collection,
 					Color:                 pqr.Color,
 					ColorCode:             pqr.ColorCode,
-					ColorHex:              pqr.ColorHex,
+					ColorHexOverride:      pqr.ColorHexOverride,
 					CountryOfOrigin:       pqr.CountryOfOrigin,
 					SalePercentage:        pqr.SalePercentage,
 					TopCategoryId:         pqr.TopCategoryId,

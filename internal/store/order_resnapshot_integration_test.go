@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func TestPaymentResnapshotsLiveSKU(t *testing.T) {
 		p := &entity.ColorwayNew{
 			Product: &entity.ColorwayInsert{
 				ProductBodyInsert: entity.ColorwayBodyInsert{
-					Brand: "ACME", Color: "black", ColorHex: "#000000", CountryOfOrigin: "IT",
+					Brand: "ACME", Color: "black", ColorCode: "BLK", ColorHexOverride: sql.NullString{String: "#000000", Valid: true}, CountryOfOrigin: "IT",
 					TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
 				},
 				ThumbnailMediaID: mediaID,

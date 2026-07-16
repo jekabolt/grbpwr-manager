@@ -3,7 +3,6 @@ package cache
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -29,15 +28,15 @@ type PaymentMethod struct {
 var (
 
 	// Statuses
-	OrderStatusPlaced           = Status{Status: entity.OrderStatus{Name: entity.Placed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED}
-	OrderStatusAwaitingPayment  = Status{Status: entity.OrderStatus{Name: entity.AwaitingPayment}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT}
-	OrderStatusConfirmed        = Status{Status: entity.OrderStatus{Name: entity.Confirmed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED}
-	OrderStatusShipped          = Status{Status: entity.OrderStatus{Name: entity.Shipped}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED}
-	OrderStatusDelivered        = Status{Status: entity.OrderStatus{Name: entity.Delivered}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED}
-	OrderStatusCancelled        = Status{Status: entity.OrderStatus{Name: entity.Cancelled}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED}
-	OrderStatusPendingReturn    = Status{Status: entity.OrderStatus{Name: entity.PendingReturn}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN}
-	OrderStatusRefundInProgress = Status{Status: entity.OrderStatus{Name: entity.RefundInProgress}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS}
-	OrderStatusRefunded         = Status{Status: entity.OrderStatus{Name: entity.Refunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED}
+	OrderStatusPlaced            = Status{Status: entity.OrderStatus{Name: entity.Placed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED}
+	OrderStatusAwaitingPayment   = Status{Status: entity.OrderStatus{Name: entity.AwaitingPayment}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT}
+	OrderStatusConfirmed         = Status{Status: entity.OrderStatus{Name: entity.Confirmed}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED}
+	OrderStatusShipped           = Status{Status: entity.OrderStatus{Name: entity.Shipped}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED}
+	OrderStatusDelivered         = Status{Status: entity.OrderStatus{Name: entity.Delivered}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED}
+	OrderStatusCancelled         = Status{Status: entity.OrderStatus{Name: entity.Cancelled}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED}
+	OrderStatusPendingReturn     = Status{Status: entity.OrderStatus{Name: entity.PendingReturn}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN}
+	OrderStatusRefundInProgress  = Status{Status: entity.OrderStatus{Name: entity.RefundInProgress}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS}
+	OrderStatusRefunded          = Status{Status: entity.OrderStatus{Name: entity.Refunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED}
 	OrderStatusPartiallyRefunded = Status{Status: entity.OrderStatus{Name: entity.PartiallyRefunded}, PB: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED}
 
 	orderStatuses = []*Status{
@@ -98,20 +97,17 @@ var (
 	paymentMethodIdByPbId = map[pb_common.PaymentMethodNameEnum]int{
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:         PaymentMethodCard.Method.Id,
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST:    PaymentMethodCardTest.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE:  PaymentMethodBankInvoice.Method.Id,
-		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:          PaymentMethodCash.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE: PaymentMethodBankInvoice.Method.Id,
+		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH:         PaymentMethodCash.Method.Id,
 	}
 
 	sizeById = map[int]entity.Size{}
 
 	entitySizes = []entity.Size{}
 
-	// Colour dictionary (task 01). colorByCode maps a 3-char code to its entry; colorCodeByName
-	// maps a lowercased free-text colour name to its code (for the free-text->code mapper used by
-	// the SKU generator/backfill). Both guarded by cacheMu.
-	entityColors    = []entity.Color{}
-	colorByCode     = map[string]entity.Color{}
-	colorCodeByName = map[string]string{}
+	// Colour dictionary (task 01). Codes are the only accepted identity; names are display data.
+	entityColors = []entity.Color{}
+	colorByCode  = map[string]entity.Color{}
 
 	entityCollections = []entity.Collection{}
 
@@ -119,24 +115,24 @@ var (
 
 	entityLanguages = []entity.Language{}
 
-	promoCodes                   = make(map[string]entity.PromoCode)
-	promoCodesMu                 sync.RWMutex
-	shipmentCarriersById         = make(map[int]entity.ShipmentCarrier)
-	shipmentCarriersMu           sync.RWMutex
-	entityShipmentCarriers       = []entity.ShipmentCarrier{}
-	hero                         = &entity.HeroFullWithTranslations{}
-	maxOrderItems                = 3
-	siteEnabled                  = true
-	defaultCurrency              = "EUR"
-	bigMenu                      = false
-	backgroundHeroColor          string
-	backgroundHeroColorMu        sync.RWMutex
-	announce                     = &entity.AnnounceWithTranslations{}
-	orderExpirationSeconds       = 0 // 0 = use payment handler default
-	complimentaryShippingPrices  = make(map[string]decimal.Decimal)
+	promoCodes                    = make(map[string]entity.PromoCode)
+	promoCodesMu                  sync.RWMutex
+	shipmentCarriersById          = make(map[int]entity.ShipmentCarrier)
+	shipmentCarriersMu            sync.RWMutex
+	entityShipmentCarriers        = []entity.ShipmentCarrier{}
+	hero                          = &entity.HeroFullWithTranslations{}
+	maxOrderItems                 = 3
+	siteEnabled                   = true
+	defaultCurrency               = "EUR"
+	bigMenu                       = false
+	backgroundHeroColor           string
+	backgroundHeroColorMu         sync.RWMutex
+	announce                      = &entity.AnnounceWithTranslations{}
+	orderExpirationSeconds        = 0 // 0 = use payment handler default
+	complimentaryShippingPrices   = make(map[string]decimal.Decimal)
 	complimentaryShippingPricesMu sync.RWMutex
-	paymentIsProd                = true // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
-	paymentIsProdMu              sync.RWMutex
+	paymentIsProd                 = true // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
+	paymentIsProdMu               sync.RWMutex
 
 	// cacheMu guards the runtime-mutable dictionary, settings and payment-method
 	// state below that is otherwise unsynchronized: the dictionary slices/maps
@@ -341,10 +337,8 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 func loadColors(colors []entity.Color) {
 	entityColors = colors
 	colorByCode = make(map[string]entity.Color, len(colors))
-	colorCodeByName = make(map[string]string, len(colors))
 	for _, c := range colors {
 		colorByCode[c.Code] = c
-		colorCodeByName[strings.ToLower(c.Name)] = c.Code
 	}
 }
 
@@ -695,16 +689,6 @@ func GetColorByCode(code string) (entity.Color, bool) {
 	defer cacheMu.RUnlock()
 	c, ok := colorByCode[code]
 	return c, ok
-}
-
-// MapColorNameToCode maps a free-text colour name (case-insensitive) to a dictionary code. Used by
-// the SKU generator/backfill to resolve a standalone product's legacy free-text colour. Returns
-// ("", false) when the name is not in the dictionary.
-func MapColorNameToCode(name string) (string, bool) {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	code, ok := colorCodeByName[strings.ToLower(strings.TrimSpace(name))]
-	return code, ok
 }
 
 func GetProductTags() []string {

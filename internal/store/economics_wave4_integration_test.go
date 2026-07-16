@@ -70,8 +70,8 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	styleID := seedSpineStyle(ctx, t, "ECO-W4")
 	mkProduct := func(sku string) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
-			(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
-			VALUES (?, 'c', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
+			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
+			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)
@@ -197,8 +197,8 @@ func TestMarginByStyleAndCogsStructure(t *testing.T) {
 	styleID := seedSpineStyle(ctx, t, "ECO-W4-STYLE")
 	mkProduct := func(sku string) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
-			(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
-			VALUES (?, 'c', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
+			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
+			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)
@@ -363,8 +363,8 @@ func TestInventoryValuation(t *testing.T) {
 	styleID := seedSpineStyle(ctx, t, "ECO-W4-INV")
 	mkProduct := func(sku string, cost string, onHand int) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
-			(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
-			VALUES (?, 'c', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
+			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
+			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
 		require.NoError(t, err)
 		id64, err := res.LastInsertId()
 		require.NoError(t, err)
@@ -476,8 +476,8 @@ func TestSeedProductsCostBreakdownFromTechCard(t *testing.T) {
 	require.NoError(t, err)
 	styleID := seedSpineStyle(ctx, t, "ECO-W4-SEED")
 	res, err := testDB.ExecContext(ctx, `INSERT INTO product
-		(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
-		VALUES ('ECO-W4-SEED-BD', 'c', '#000000', 'US', ?, ?)`, mediaID, styleID)
+		(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
+		VALUES ('ECO-W4-SEED-BD', 'c', 'BLK', '#000000', 'US', ?, ?)`, mediaID, styleID)
 	require.NoError(t, err)
 	pid64, err := res.LastInsertId()
 	require.NoError(t, err)

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -73,13 +74,14 @@ func TestFrozenUpdatePreservesVariantSKUs(t *testing.T) {
 		return &entity.ColorwayNew{
 			Product: &entity.ColorwayInsert{
 				ProductBodyInsert: entity.ColorwayBodyInsert{
-					Brand:           "ACME",
-					Color:           "black",
-					ColorHex:        "#000000",
-					CountryOfOrigin: "IT",
-					TopCategoryId:   1,
-					TargetGender:    entity.Unisex,
-					Season:          entity.SeasonSS,
+					Brand:            "ACME",
+					Color:            "black",
+					ColorCode:        "BLK",
+					ColorHexOverride: sql.NullString{String: "#000000", Valid: true},
+					CountryOfOrigin:  "IT",
+					TopCategoryId:    1,
+					TargetGender:     entity.Unisex,
+					Season:           entity.SeasonSS,
 				},
 				ThumbnailMediaID: mediaID,
 				Translations: []entity.ColorwayTranslationInsert{

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -153,6 +154,23 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Colorw
 		return nil, err
 	}
 
+	if len(pbProductBodyInsert.ColorCode) != 3 ||
+		pbProductBodyInsert.ColorCode != strings.ToUpper(pbProductBodyInsert.ColorCode) ||
+		strings.TrimSpace(pbProductBodyInsert.ColorCode) != pbProductBodyInsert.ColorCode {
+		return nil, fmt.Errorf("color_code must be exactly 3 uppercase characters")
+	}
+	dictionaryColor, ok := cache.GetColorByCode(pbProductBodyInsert.ColorCode)
+	if !ok {
+		return nil, fmt.Errorf("color_code %q is not in the color dictionary", pbProductBodyInsert.ColorCode)
+	}
+	var colorHexOverride sql.NullString
+	if pbProductBodyInsert.ColorHexOverride != nil {
+		if !isHexColor(pbProductBodyInsert.GetColorHexOverride()) {
+			return nil, fmt.Errorf("color_hex_override must be #RRGGBB")
+		}
+		colorHexOverride = sql.NullString{String: pbProductBodyInsert.GetColorHexOverride(), Valid: true}
+	}
+
 	var preorderTime sql.NullTime
 	if pbProductBodyInsert.Preorder != nil {
 		preorderTime = sql.NullTime{
@@ -168,9 +186,9 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Colorw
 		ProductBodyInsert: entity.ColorwayBodyInsert{
 			Preorder:           preorderTime,
 			Brand:              pbProductBodyInsert.Brand,
-			Color:              pbProductBodyInsert.Color,
-			ColorCode:          sql.NullString{String: pbProductBodyInsert.ColorCode, Valid: pbProductBodyInsert.ColorCode != ""},
-			ColorHex:           pbProductBodyInsert.ColorHex,
+			Color:              dictionaryColor.Name,
+			ColorCode:          dictionaryColor.Code,
+			ColorHexOverride:   colorHexOverride,
 			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
 			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
 			TopCategoryId:      int(pbProductBodyInsert.TopCategoryId),
@@ -465,12 +483,12 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 	pbProductDisplay := &pb_common.ColorwayDisplay{
 		ProductBody: &pb_common.ColorwayBody{
 			ProductBodyInsert: &pb_common.ColorwayBodyInsert{
-				Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
-				Brand:           productBodyInsert.Brand,
-				Color:           productBodyInsert.Color,
-				ColorCode:       productBodyInsert.ColorCode.String,
-				ColorHex:        productBodyInsert.ColorHex,
-				CountryOfOrigin: productBodyInsert.CountryOfOrigin,
+				Preorder:         timestamppb.New(productBodyInsert.Preorder.Time),
+				Brand:            productBodyInsert.Brand,
+				ColorCode:        productBodyInsert.ColorCode,
+				DictionaryColor:  dictionaryColorToPb(productBodyInsert.ColorCode),
+				ColorHexOverride: optionalStringFromNull(productBodyInsert.ColorHexOverride),
+				CountryOfOrigin:  productBodyInsert.CountryOfOrigin,
 
 				SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
 				TopCategoryId:      int32(productBodyInsert.TopCategoryId),
@@ -768,12 +786,12 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		ProductDisplay: &pb_common.ColorwayDisplay{
 			ProductBody: &pb_common.ColorwayBody{
 				ProductBodyInsert: &pb_common.ColorwayBodyInsert{
-					Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
-					Brand:           productBodyInsert.Brand,
-					Color:           productBodyInsert.Color,
-					ColorCode:       productBodyInsert.ColorCode.String,
-					ColorHex:        productBodyInsert.ColorHex,
-					CountryOfOrigin: productBodyInsert.CountryOfOrigin,
+					Preorder:         timestamppb.New(productBodyInsert.Preorder.Time),
+					Brand:            productBodyInsert.Brand,
+					ColorCode:        productBodyInsert.ColorCode,
+					DictionaryColor:  dictionaryColorToPb(productBodyInsert.ColorCode),
+					ColorHexOverride: optionalStringFromNull(productBodyInsert.ColorHexOverride),
+					CountryOfOrigin:  productBodyInsert.CountryOfOrigin,
 
 					SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
 					TopCategoryId:      int32(productBodyInsert.TopCategoryId),

@@ -53,7 +53,7 @@ type FilterConditions struct {
 	Currency       string // ISO 4217 currency code for price filtering (e.g., USD, EUR, JPY)
 	OnSale         bool
 	Gender         []GenderEnum
-	Color          string
+	ColorCodes     []string
 	TopCategoryIds []int
 	// ExcludeTopCategoryIds lists top category ids to exclude from results
 	// (e.g. hide the "object" category from the men's catalog).

@@ -3,7 +3,6 @@ package product
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
@@ -36,8 +35,7 @@ type SKUSegments struct {
 	Season    entity.SeasonEnum // SS/FW/PF/RC; empty -> seasonFallback
 	Year      int               // full year, e.g. 2026 (only the last two digits are used)
 	ModelNo   int               // 1..99999
-	ColorCode string            // resolved dictionary code (3 chars) when known; else ""
-	ColorName string            // free-text colour name, used to derive a segment when ColorCode==""
+	ColorCode string            // resolved dictionary code (exactly 3 uppercase chars)
 }
 
 // BuildBaseSKU renders the fixed-14 base SKU from resolved segments.
@@ -45,7 +43,7 @@ func BuildBaseSKU(s SKUSegments) string {
 	return fmt.Sprintf("%s-%s-%s",
 		seasonSegment(s.Season, s.Year),
 		modelSegment(s.ModelNo),
-		colorSegment(s.ColorCode, s.ColorName),
+		colorSegment(s.ColorCode),
 	)
 }
 
@@ -86,59 +84,11 @@ func sizeSegment(ord int) string {
 	return fmt.Sprintf("%02d", ord)
 }
 
-// colorSegment resolves the 3-char colour segment: a known dictionary code wins; otherwise the
-// free-text name is transliterated and its first three Latin letters are used; failing that, UNK.
-// NOTE: a transliterated fallback is only ever placed in the SKU string, never written to
-// product.color_code (which is FK-constrained to the dictionary) — see plan review 70 §3.2.
-func colorSegment(code, name string) string {
-	if c := sanitizeAlpha(code); len(c) >= 3 {
-		return c[:3]
-	}
-	if c := sanitizeAlpha(Translit(name)); len(c) >= 3 {
-		return c[:3]
+// colorSegment renders only a canonical dictionary code. Runtime resolution validates the code
+// before calling the builder; UNK remains only as a deterministic guard for direct pure calls.
+func colorSegment(code string) string {
+	if len(code) == 3 && code == strings.ToUpper(code) {
+		return code
 	}
 	return colorFallback
-}
-
-// sanitizeAlpha uppercases s and keeps only ASCII letters A-Z.
-func sanitizeAlpha(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToUpper(s) {
-		if r >= 'A' && r <= 'Z' {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// cyrillicToLatin maps Russian Cyrillic letters to a Latin transliteration (BGN/PCGN-ish, uppercased
-// at call sites). Multi-letter results ( zh, kh, ...) are fine — colorSegment takes the first three.
-var cyrillicToLatin = map[rune]string{
-	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e", 'ж': "zh",
-	'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m", 'н': "n", 'о': "o",
-	'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u", 'ф': "f", 'х': "kh", 'ц': "ts",
-	'ч': "ch", 'ш': "sh", 'щ': "shch", 'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu",
-	'я': "ya",
-}
-
-// Translit transliterates Cyrillic to Latin and drops any character that is neither an ASCII letter
-// nor digit. Latin/digit input passes through unchanged. Used for the colour-name fallback and for
-// any free-text that must reduce to the SKU charset.
-func Translit(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		lower := unicode.ToLower(r)
-		if repl, ok := cyrillicToLatin[lower]; ok {
-			if unicode.IsUpper(r) {
-				b.WriteString(strings.ToUpper(repl))
-			} else {
-				b.WriteString(repl)
-			}
-			continue
-		}
-		if r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }

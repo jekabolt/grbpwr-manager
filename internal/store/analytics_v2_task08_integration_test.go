@@ -60,8 +60,8 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 	// One product with NO product.cost_price — the cost distinction lives on the order_item snapshot.
 	styleID := seedSpineStyle(ctx, t, "T08")
 	pr, err := testDB.ExecContext(ctx, `INSERT INTO product
-		(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
-		VALUES ('T08-P', 'c', '#000000', 'US', ?, ?)`, mediaID, styleID)
+		(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
+		VALUES ('T08-P', 'c', 'BLK', '#000000', 'US', ?, ?)`, mediaID, styleID)
 	require.NoError(t, err)
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)
