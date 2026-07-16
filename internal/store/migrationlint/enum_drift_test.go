@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -142,14 +145,36 @@ func TestSizeSKUSystemDBCheckNoDrift(t *testing.T) {
 }
 
 // TestColorwayStatusDBCheckNoDrift extends the drift test to product lifecycle status
-// (entity.ColorwayStatus/ValidColorwayStatuses), whose DB source of truth is migration 0137's
-// generated column ENUM('active','hidden','archived'). NOTE: R6 plans to replace this generated
-// column with a stored lifecycle_status carrying 2 more values (UNKNOWN/DRAFT) — that migration
-// rebuild is T-A's work; this test tracks the CURRENT schema and must be updated alongside it.
+// (entity.ColorwayStatus/ValidColorwayStatuses). The DB source of truth is migration 0137's stored
+// lifecycle_status with the named `chk_product_lifecycle_status CHECK (... BETWEEN <lo> AND <hi>)`.
+// The entity side must be exactly the contiguous numeric range the CHECK stores — UNKNOWN=0 is a
+// read-only fail-closed sentinel and must NOT be storable.
 func TestColorwayStatusDBCheckNoDrift(t *testing.T) {
 	content := readMigrationFile(t, "0137_product_status.sql")
-	dbValues := extractDBEnumValues(t, content, "status ENUM(", 80)
-	assertSameSet(t, "ColorwayStatus", dbValues, mapKeysAsStrings(entity.ValidColorwayStatuses))
+	m := regexp.MustCompile(
+		`chk_product_lifecycle_status CHECK \(lifecycle_status BETWEEN (\d+) AND (\d+)\)`,
+	).FindStringSubmatch(content)
+	if m == nil {
+		t.Fatal("0137: named CHECK chk_product_lifecycle_status with BETWEEN bounds not found")
+	}
+	lo, _ := strconv.Atoi(m[1])
+	hi, _ := strconv.Atoi(m[2])
+
+	var got []int
+	for s := range entity.ValidColorwayStatuses {
+		got = append(got, int(s))
+	}
+	sort.Ints(got)
+	var want []int
+	for v := lo; v <= hi; v++ {
+		want = append(want, v)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ColorwayStatus drift: entity storable set %v != DB CHECK range %v", got, want)
+	}
+	if entity.ValidColorwayStatuses[entity.ColorwayStatusUnknown] {
+		t.Fatal("ColorwayStatusUnknown must not be storable")
+	}
 }
 
 // TestEnumDriftExtractorsDetectTamperedInput guards the extractor helpers themselves (mirrors

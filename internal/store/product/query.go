@@ -49,13 +49,11 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 	args := make(map[string]interface{})
 
 	if showHidden {
-		// Admin view: everything except soft-deleted (archived) — hidden items still shown.
-		// Equivalent to the old `deleted_at IS NULL`.
-		whereClauses = append(whereClauses, "p.status <> 'archived'")
+		// Admin view: everything except ARCHIVED(4) — draft and hidden colourways are still shown (R6).
+		whereClauses = append(whereClauses, "p.lifecycle_status <> 4")
 	} else {
-		// Storefront: only publicly-visible products. status = 'active' is exactly the old
-		// `hidden = 0 AND deleted_at IS NULL` (PR5-A).
-		whereClauses = append(whereClauses, "p.status = 'active'")
+		// Storefront: only publicly-visible colourways — lifecycle_status ACTIVE(2) (R6).
+		whereClauses = append(whereClauses, "p.lifecycle_status = 2")
 
 		// Tier gating: return ONLY products the viewer is eligible to buy for
 		// their tier (resolved from the auth token; 0 for guests). Hacker-only
@@ -220,9 +218,9 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
-		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -238,7 +236,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (:ids) AND p.status = 'active'`
+	WHERE p.id IN (:ids) AND p.lifecycle_status = 2`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"ids": ids,
@@ -291,9 +289,9 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
-		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -309,7 +307,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
-	WHERE p.status = 'active'
+	WHERE p.lifecycle_status = 2
 		AND ` + productStockExpr + ` BETWEEN 1 AND :threshold
 	ORDER BY ` + productStockExpr + ` ASC
 	LIMIT :limit`
@@ -361,9 +359,9 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
-		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -379,7 +377,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.status = 'active'`
+	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.lifecycle_status = 2`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"tag": tag,
@@ -431,9 +429,9 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
-		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -451,12 +449,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
-	// Lifecycle filter (PR5-A): storefront sees only 'active'; the admin (showHidden) sees everything
-	// except soft-deleted. Equivalent to the old `deleted_at IS NULL [AND hidden = false]`.
+	// Lifecycle filter (R6): storefront sees only ACTIVE(2); the admin (showHidden) sees everything
+	// except ARCHIVED(4) — including drafts and hidden colourways.
 	if showHidden {
-		query += " AND p.status <> 'archived'"
+		query += " AND p.lifecycle_status <> 4"
 	} else {
-		query += " AND p.status = 'active'"
+		query += " AND p.lifecycle_status = 2"
 	}
 
 	type productDetailsResult struct {
@@ -585,9 +583,9 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, p.sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
-		sty.model_wears_height_cm, sty.model_wears_size_id, p.hidden, sty.target_gender,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.season_code AS season, sty.care_instructions, sty.composition, p.thumbnail_id,
-		p.secondary_thumbnail_id, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.status, p.style_id,
+		p.secondary_thumbnail_id, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,

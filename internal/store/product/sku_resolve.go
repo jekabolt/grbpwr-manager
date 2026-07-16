@@ -13,46 +13,34 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// productSKUFacts is everything MintProductSKUs needs to build a product's SKU. Styled fields come
-// from the linked style (colourway + tech_card); when Styled is false the standalone fields apply.
+// productSKUFacts is everything MintProductSKUs needs to build a product's SKU. There is exactly ONE
+// source for every segment: the product carries its own colour (color_code), and the season + model
+// number come from the product's style (product.style_id -> tech_card). The old styled/standalone fork
+// and the tech_card_colorway/MIN(cw.id) detour are gone — a colourway can no longer show one style and
+// mint its SKU from another (fixes the split-brain, problem 011).
 type productSKUFacts struct {
-	ID        int           `db:"id"`
-	Season    string        `db:"season"`     // standalone season enum (SS/FW/PF/RC)
-	CreatedYr int           `db:"created_yr"` // YEAR(created_at) — standalone year source
-	ColorCode string        `db:"color_code"` // required standalone dictionary code
-	ModelNo   sql.NullInt32 `db:"model_no"`   // standalone model number
-	LockedAt  sql.NullTime  `db:"sku_locked_at"`
-
-	// styled overrides (all NULL when the product realises no colourway)
-	StyleSeasonCode sql.NullString `db:"style_season_code"`
-	StyleSeasonYear sql.NullInt32  `db:"style_season_year"`
-	StyleModelNo    sql.NullInt32  `db:"style_model_no"`
-	CwColorCode     sql.NullString `db:"cw_color_code"`
-	Styled          bool           `db:"styled"`
+	ID         int            `db:"id"`
+	StyleID    int            `db:"style_id"`
+	ColorCode  string         `db:"color_code"`    // colourway's dictionary code (on the product)
+	LockedAt   sql.NullTime   `db:"sku_locked_at"`
+	SeasonCode sql.NullString `db:"season_code"` // style sku_season code (SS/FW/PF/RC)
+	SeasonYear sql.NullInt32  `db:"season_year"` // style sku_season year
+	ModelNo    sql.NullInt32  `db:"model_no"`    // style model number (allocated on demand when NULL)
 }
 
-// loadProductSKUFacts reads the facts for one product, LEFT JOINing the (at most one) colourway that
-// realises it and its style. Uses MIN(...) so a product accidentally linked to more than one
-// colourway still yields one deterministic row (the structural UNIQUE guard makes multi-link
-// unexpected, but the query must not fan out).
+// loadProductSKUFacts reads the facts for one product from its single authoritative style link
+// (product.style_id). Every product has a style (NOT NULL since PR6 P1), so this is an inner join.
 func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (*productSKUFacts, error) {
 	const q = `
-		SELECT p.id AS id,
-		       sty.season_code AS season,
-		       YEAR(p.created_at) AS created_yr,
-		       p.color_code AS color_code,
-		       p.model_no AS model_no,
+		SELECT p.id            AS id,
+		       p.style_id      AS style_id,
+		       p.color_code    AS color_code,
 		       p.sku_locked_at AS sku_locked_at,
-		       tc.season_code AS style_season_code,
-		       tc.season_year AS style_season_year,
-		       tc.model_no    AS style_model_no,
-		       cw.color_code  AS cw_color_code,
-		       (cw.id IS NOT NULL) AS styled
+		       sty.season_code AS season_code,
+		       sty.season_year AS season_year,
+		       sty.model_no    AS model_no
 		FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id
-		LEFT JOIN tech_card_colorway cw ON cw.id = (
-		    SELECT MIN(cw2.id) FROM tech_card_colorway cw2 WHERE cw2.product_id = p.id)
-		LEFT JOIN tech_card tc ON tc.id = cw.tech_card_id
 		WHERE p.id = :id`
 	f, err := storeutil.QueryNamedOne[productSKUFacts](ctx, db, q, map[string]any{"id": productID})
 	if err != nil {
@@ -61,45 +49,27 @@ func loadProductSKUFacts(ctx context.Context, db dependency.DB, productID int) (
 	return &f, nil
 }
 
-// resolveSegments turns the raw facts into the generator's SKUSegments, ensuring a model number
-// exists (allocating one from the shared counter when missing) and requiring the FK-backed colour
-// dictionary code. It may write model_no back, so it takes db and runs inside the caller's tx.
+// resolveSegments turns the raw facts into the generator's SKUSegments along the single style path:
+// season + model number from the style (product.style_id), colour from the product. It ensures the
+// style has a model number (allocating one when missing) and requires the FK-backed colour dictionary
+// code. It may write model_no back onto the style, so it takes db and runs inside the caller's tx.
 func resolveSegments(ctx context.Context, db dependency.DB, f *productSKUFacts) (SKUSegments, error) {
 	var seg SKUSegments
-	if f.Styled {
-		if !f.StyleSeasonCode.Valid || !f.StyleSeasonYear.Valid {
-			return seg, fmt.Errorf("styled product %d has no complete sku_season", f.ID)
-		}
-		if err := validateSKUSeason(entity.SeasonEnum(f.StyleSeasonCode.String), int(f.StyleSeasonYear.Int32)); err != nil {
-			return seg, fmt.Errorf("styled product %d: %w", f.ID, err)
-		}
-		seg.Season = entity.SeasonEnum(f.StyleSeasonCode.String)
-		seg.Year = int(f.StyleSeasonYear.Int32)
-		modelNo, err := ensureStyleModelNo(ctx, db, f)
-		if err != nil {
-			return seg, err
-		}
-		seg.ModelNo = modelNo
-		if !f.CwColorCode.Valid {
-			return seg, fmt.Errorf("styled product %d has no canonical color_code", f.ID)
-		}
-		if err := validateColorCode(f.CwColorCode.String); err != nil {
-			return seg, fmt.Errorf("styled product %d: %w", f.ID, err)
-		}
-		seg.ColorCode = f.CwColorCode.String
-		return seg, nil
+	if !f.SeasonCode.Valid || !f.SeasonYear.Valid {
+		return seg, fmt.Errorf("product %d style %d has no complete sku_season", f.ID, f.StyleID)
 	}
+	if err := validateSKUSeason(entity.SeasonEnum(f.SeasonCode.String), int(f.SeasonYear.Int32)); err != nil {
+		return seg, fmt.Errorf("product %d style %d: %w", f.ID, f.StyleID, err)
+	}
+	seg.Season = entity.SeasonEnum(f.SeasonCode.String)
+	seg.Year = int(f.SeasonYear.Int32)
 
-	seg.Season = entity.SeasonEnum(f.Season)
-	seg.Year = f.CreatedYr
-	if err := validateSKUSeason(seg.Season, seg.Year); err != nil {
-		return seg, fmt.Errorf("product %d: %w", f.ID, err)
-	}
-	modelNo, err := ensureProductModelNo(ctx, db, f)
+	modelNo, err := ensureStyleModelNo(ctx, db, f.StyleID, f.ModelNo)
 	if err != nil {
 		return seg, err
 	}
 	seg.ModelNo = modelNo
+
 	if err := validateColorCode(f.ColorCode); err != nil {
 		return seg, fmt.Errorf("product %d: %w", f.ID, err)
 	}
@@ -144,48 +114,15 @@ func logModelNoCeilingAlert(ctx context.Context, productID, modelNo int) {
 	}
 }
 
-// ensureStyleModelNo returns the style's model number, allocating and persisting one on the tech_card
-// if it has none yet (self-healing so minting never emits 00000).
-func ensureStyleModelNo(ctx context.Context, db dependency.DB, f *productSKUFacts) (int, error) {
-	if f.StyleModelNo.Valid {
-		return int(f.StyleModelNo.Int32), nil
+// ensureStyleModelNo returns the style's model number, allocating and persisting one via the
+// crash-idempotent style allocator if the style has none yet (self-healing so minting never emits
+// 00000). current is the value already loaded with the SKU facts; when valid it short-circuits the
+// allocator so no lock is taken on the common path.
+func ensureStyleModelNo(ctx context.Context, db dependency.DB, styleID int, current sql.NullInt32) (int, error) {
+	if current.Valid {
+		return int(current.Int32), nil
 	}
-	// need the style id — re-derive from the colourway link
-	var styleID int
-	row, err := storeutil.QueryNamedOne[struct {
-		TechCardID int `db:"tech_card_id"`
-	}](ctx, db, `SELECT tc.id AS tech_card_id FROM tech_card_colorway cw JOIN tech_card tc ON tc.id = cw.tech_card_id WHERE cw.product_id = :id ORDER BY cw.id LIMIT 1`,
-		map[string]any{"id": f.ID})
-	if err != nil {
-		return 0, fmt.Errorf("resolve style id for product %d: %w", f.ID, err)
-	}
-	styleID = row.TechCardID
-	n, err := storeutil.AllocateModelNo(ctx, db, "tech_card", styleID)
-	if err != nil {
-		return 0, err
-	}
-	if err := storeutil.ExecNamed(ctx, db, `UPDATE tech_card SET model_no = :n WHERE id = :id AND model_no IS NULL`,
-		map[string]any{"n": n, "id": styleID}); err != nil {
-		return 0, fmt.Errorf("persist style model_no: %w", err)
-	}
-	return n, nil
-}
-
-// ensureProductModelNo returns the standalone product's model number, allocating and persisting one
-// if missing.
-func ensureProductModelNo(ctx context.Context, db dependency.DB, f *productSKUFacts) (int, error) {
-	if f.ModelNo.Valid {
-		return int(f.ModelNo.Int32), nil
-	}
-	n, err := storeutil.AllocateModelNo(ctx, db, "product", f.ID)
-	if err != nil {
-		return 0, err
-	}
-	if err := storeutil.ExecNamed(ctx, db, `UPDATE product SET model_no = :n WHERE id = :id AND model_no IS NULL`,
-		map[string]any{"n": n, "id": f.ID}); err != nil {
-		return 0, fmt.Errorf("persist product model_no: %w", err)
-	}
-	return n, nil
+	return storeutil.AllocateStyleModelNo(ctx, db, styleID)
 }
 
 const (

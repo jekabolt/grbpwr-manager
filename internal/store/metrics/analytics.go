@@ -79,7 +79,7 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			COALESCE(ps.units_sold, 0) AS units_sold,
 			DATEDIFF(NOW(), p.created_at) AS days_in_stock,
 			ps.last_sale_date,
-			COALESCE(p.hidden, 0) AS product_hidden,
+			(p.lifecycle_status = 3) AS product_hidden,
 			COALESCE(gv.total_views, 0) AS total_views,
 			COALESCE(ps.unit_cost, p.cost_price) AS unit_cost,
 			COALESCE(ps.revenue_cost, 0) AS revenue_cost
@@ -197,8 +197,7 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 		JOIN product p ON p.id = s.product_id
 		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN returned_by_reason r ON r.product_id = s.product_id
-		WHERE p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+		WHERE p.lifecycle_status = 2
 		ORDER BY s.total_sold DESC, p.id, r.refund_reason
 	`, statusIDs)
 
@@ -352,8 +351,7 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN size s ON s.id = ss.size_id
 		JOIN product_totals pt ON pt.product_id = ss.product_id
-		WHERE p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+		WHERE p.lifecycle_status = 2
 		ORDER BY ss.revenue DESC
 		LIMIT :limit
 	`, orderFactorsCTE, itemAdjGrossExpr)
@@ -427,8 +425,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN last_sales ls ON ls.product_id = ps.product_id AND ls.size_id = ps.size_id
 		WHERE ps.quantity > 0
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 			AND DATEDIFF(:to, COALESCE(ls.last_sale_date, p.created_at)) > 180
 		ORDER BY days_without_sale DESC
 		LIMIT :limit
@@ -500,7 +497,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		LEFT JOIN previous_period pr ON pr.product_id = c.product_id
 		JOIN product p ON p.id = COALESCE(c.product_id, pr.product_id)
 		JOIN tech_card sty ON sty.id = p.style_id
-		WHERE p.deleted_at IS NULL AND (p.hidden IS NULL OR p.hidden = 0)
+		WHERE p.lifecycle_status = 2
 		UNION ALL
 		SELECT
 			pr.product_id,
@@ -515,8 +512,7 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		JOIN product p ON p.id = pr.product_id
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE c.product_id IS NULL
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 		ORDER BY change_pct ASC
 		LIMIT :limit
 	`, orderFactorsCTENamed("order_factors_cur", "from", "to"),

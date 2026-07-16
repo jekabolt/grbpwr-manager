@@ -64,8 +64,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 		LEFT JOIN daily_sales ds ON ds.product_id = ps.product_id AND ds.size_id = ps.size_id
 		LEFT JOIN inventory_target it ON it.product_id = ps.product_id AND it.size_id = ps.size_id
 		WHERE ps.quantity > 0
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 		ORDER BY days_on_hand ASC
 		LIMIT :limit
 	`, statusIDs)
@@ -182,7 +181,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN sold s ON s.product_id = p.id
 		LEFT JOIN stock st ON st.product_id = p.id
-		WHERE p.deleted_at IS NULL
+		WHERE p.lifecycle_status <> 4
 			AND sty.collection IS NOT NULL AND sty.collection <> ''
 		GROUP BY sty.collection
 		ORDER BY revenue DESC
@@ -245,7 +244,7 @@ func (is *inventoryStore) sellThroughTimeline(ctx context.Context, statusIDs str
 		JOIN product p ON oi.product_id = p.id
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE co.order_status_id IN (%s)
-			AND p.deleted_at IS NULL
+			AND p.lifecycle_status <> 4
 			AND sty.collection IS NOT NULL AND sty.collection <> ''
 		GROUP BY sty.collection, DATE(co.placed)
 		ORDER BY sty.collection, d
@@ -337,8 +336,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 		JOIN product p ON p.id = sa.product_id
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE sa.initial_qty > 0
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 		GROUP BY sa.product_id, product_name
 		ORDER BY efficiency_pct DESC
 		LIMIT :limit

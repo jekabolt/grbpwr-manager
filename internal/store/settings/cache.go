@@ -94,8 +94,7 @@ func (s *Store) getProductTags(ctx context.Context) ([]string, error) {
 		SELECT DISTINCT pt.tag AS tag
 		FROM product_tag pt
 		JOIN product p ON pt.product_id = p.id
-		WHERE p.hidden = 0
-			AND p.deleted_at IS NULL
+		WHERE p.lifecycle_status = 2
 			AND pt.tag != ''
 		ORDER BY pt.tag
 	`
@@ -196,21 +195,21 @@ func (s *Store) getCategoriesCountsByGender(ctx context.Context, gender entity.G
 			SELECT DISTINCT sty.top_category_id as category_id, p.id as product_id
 			FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex')
+			WHERE p.lifecycle_status = 2 AND sty.target_gender IN (:gender, 'unisex')
 			
 			UNION
 			
 			SELECT DISTINCT sty.sub_category_id as category_id, p.id as product_id
 			FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex') AND sty.sub_category_id IS NOT NULL
+			WHERE p.lifecycle_status = 2 AND sty.target_gender IN (:gender, 'unisex') AND sty.sub_category_id IS NOT NULL
 			
 			UNION
 			
 			SELECT DISTINCT sty.type_id as category_id, p.id as product_id
 			FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id 
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex') AND sty.type_id IS NOT NULL
+			WHERE p.lifecycle_status = 2 AND sty.target_gender IN (:gender, 'unisex') AND sty.type_id IS NOT NULL
 		) AS category_products
 		GROUP BY category_id
 	`
@@ -283,7 +282,7 @@ func (s *Store) getSizeCountsByGender(ctx context.Context, gender entity.GenderE
 			FROM product_size ps
 			JOIN product p ON ps.product_id = p.id
 		JOIN tech_card sty ON sty.id = p.style_id
-			WHERE p.hidden = 0 AND p.deleted_at IS NULL AND sty.target_gender IN (:gender, 'unisex')
+			WHERE p.lifecycle_status = 2 AND sty.target_gender IN (:gender, 'unisex')
 		) AS size_products
 		GROUP BY size_id
 	`
@@ -316,8 +315,7 @@ func (s *Store) getCollections(ctx context.Context) ([]entity.Collection, error)
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE sty.collection IS NOT NULL 
 			AND sty.collection != ''
-			AND p.hidden = 0 
-			AND p.deleted_at IS NULL
+			AND p.lifecycle_status = 2
 		ORDER BY sty.collection
 	`
 
@@ -368,8 +366,7 @@ func (s *Store) getCollectionCountsByGender(ctx context.Context, gender entity.G
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE sty.collection IS NOT NULL 
 			AND sty.collection != ''
-			AND p.hidden = 0 
-			AND p.deleted_at IS NULL 
+			AND p.lifecycle_status = 2
 			AND sty.target_gender IN (:gender, 'unisex')
 		GROUP BY sty.collection
 	`

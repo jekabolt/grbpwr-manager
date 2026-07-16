@@ -197,7 +197,6 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Colorw
 			TypeId:             sql.NullInt32{Int32: int32(pbProductBodyInsert.TypeId), Valid: pbProductBodyInsert.TypeId != 0},
 			ModelWearsHeightCm: sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsHeightCm), Valid: pbProductBodyInsert.ModelWearsHeightCm != 0},
 			ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsSizeId), Valid: pbProductBodyInsert.ModelWearsSizeId != 0},
-			Hidden:             sql.NullBool{Bool: pbProductBodyInsert.Hidden, Valid: true},
 			TargetGender:       targetGender,
 			Season:             season,
 			CareInstructions:   sql.NullString{String: pbProductBodyInsert.CareInstructions, Valid: pbProductBodyInsert.CareInstructions != ""},
@@ -554,7 +553,6 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 				TypeId:             int32(productBodyInsert.TypeId.Int32),
 				ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
 				ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
-				Hidden:             productBodyInsert.Hidden.Bool,
 				TargetGender:       tg,
 				Season:             sn,
 				CareInstructions:   productBodyInsert.CareInstructions.String,
@@ -588,7 +586,7 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 		ProductDisplay: pbProductDisplay,
 		Prices:         pbPrices, // Prices are in nested Product
 		SoldOut:        soldOut,
-		Status:         string(e.Product.Status),
+		Status:         e.Product.LifecycleStatus.String(),
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
@@ -853,7 +851,6 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 					TypeId:             int32(productBodyInsert.TypeId.Int32),
 					ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
 					ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
-					Hidden:             productBodyInsert.Hidden.Bool,
 					TargetGender:       tg,
 					Season:             sn,
 					CareInstructions:   productBodyInsert.CareInstructions.String,
