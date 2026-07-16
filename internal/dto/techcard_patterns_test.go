@@ -140,11 +140,11 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
 		"usage size_consumption not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
+			Colorways: []*pb_common.TechCardColorway{{Name: "Black", ColorCode: "BLK", Usages: []*pb_common.TechCardColorwayUsage{{
 				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 9, Consumption: &pb_decimal.Decimal{Value: "1"}}},
 			}}}}},
 		"usage size_consumption negative": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
+			Colorways: []*pb_common.TechCardColorway{{Name: "Black", ColorCode: "BLK", Usages: []*pb_common.TechCardColorwayUsage{{
 				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 4, Consumption: &pb_decimal.Decimal{Value: "-1"}}},
 			}}}}},
 	}

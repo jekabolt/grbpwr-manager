@@ -133,7 +133,7 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 		},
 		SizeQuantities: []entity.TechCardSizeQuantity{{SizeId: 4, OrderQty: 100}},
 		BomItems:       []entity.TechCardBomItem{{Section: entity.BomSectionFabric, Name: "shell", UnitPrice: nd("2"), Currency: sql.NullString{String: "EUR", Valid: true}}},
-		Colorways: []entity.TechCardColorway{{Name: "Black", LabDipStatus: entity.LabDipPending, Usages: []entity.TechCardColorwayUsage{
+		Colorways: []entity.TechCardColorway{{Name: "Black", ColorCode: "BLK", LabDipStatus: entity.LabDipPending, Usages: []entity.TechCardColorwayUsage{
 			{BomItemIndex: sql.NullInt32{Int32: 0, Valid: true}, Quantity: nd("3")},
 		}}},
 		Costing: &entity.TechCardCosting{CmtCost: nd("10"), Currency: sql.NullString{String: "EUR", Valid: true}},

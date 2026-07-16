@@ -19,16 +19,17 @@ func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cw
 		c := &cws[i]
 		cwID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_colorway
-				(tech_card_id, code, name, lab_dip_status, product_id, comment, display_order,
+				(tech_card_id, code, name, color_code, lab_dip_status, product_id, comment, display_order,
 				 pantone, pantone_system, hex, swatch_media_id, lab_dip_round,
 				 lab_dip_submitted_at, lab_dip_decided_at, lab_dip_decided_by, lab_dip_reject_reason)
-			VALUES (:tech_card_id, :code, :name, :lab_dip_status, :product_id, :comment, :display_order,
+			VALUES (:tech_card_id, :code, :name, :color_code, :lab_dip_status, :product_id, :comment, :display_order,
 				 :pantone, :pantone_system, :hex, :swatch_media_id, :lab_dip_round,
 				 :lab_dip_submitted_at, :lab_dip_decided_at, :lab_dip_decided_by, :lab_dip_reject_reason)`,
 			map[string]any{
 				"tech_card_id":          tcID,
 				"code":                  c.Code,
 				"name":                  c.Name,
+				"color_code":            c.ColorCode,
 				"lab_dip_status":        string(c.LabDipStatus),
 				"product_id":            c.ProductId,
 				"comment":               c.Comment,
@@ -291,7 +292,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// Colourways grouped per card (in display order). product_id resolves through a LEFT
 	// JOIN that excludes soft-deleted products (a dead SKU surfaces as NULL).
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
-		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment,
+		SELECT c.id, c.tech_card_id, c.code, c.name, c.color_code, c.lab_dip_status, p.id AS product_id, c.comment,
 		       c.pantone, c.pantone_system, c.hex, c.swatch_media_id, c.lab_dip_round,
 		       c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
 		FROM tech_card_colorway c

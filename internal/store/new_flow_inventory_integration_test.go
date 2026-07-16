@@ -404,7 +404,11 @@ func TestTechCardPieces(t *testing.T) {
 	build := func(styleNum string, colorwayNames []string) *entity.TechCardInsert {
 		cws := make([]entity.TechCardColorway, len(colorwayNames))
 		for i, n := range colorwayNames {
-			cws[i] = entity.TechCardColorway{Name: n, LabDipStatus: entity.LabDipPending}
+			colorCode := "BLK"
+			if i > 0 {
+				colorCode = "NAV"
+			}
+			cws[i] = entity.TechCardColorway{Name: n, ColorCode: colorCode, LabDipStatus: entity.LabDipPending}
 		}
 		return &entity.TechCardInsert{
 			Name: "NF Pieces Style", Stage: entity.TechCardStageProto,

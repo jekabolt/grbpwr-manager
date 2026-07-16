@@ -259,6 +259,7 @@ type TechCardColorway struct {
 	Id                 int                  `db:"id"`
 	Code               sql.NullString       `db:"code"`
 	Name               string               `db:"name"`
+	ColorCode          string               `db:"color_code"`
 	LabDipStatus       TechCardLabDipStatus `db:"lab_dip_status"`
 	ProductId          sql.NullInt32        `db:"product_id"`
 	Comment            sql.NullString       `db:"comment"`

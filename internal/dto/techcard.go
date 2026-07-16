@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -839,7 +840,11 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 	// uniq_tech_card_colorway_code); dedupe here so a collision fails as a precise
 	// InvalidArgument, not a misleading style_number/season unique-violation.
 	seenCode := make(map[string]bool, len(pbs))
+	seenColorCode := make(map[string]bool, len(pbs))
 	for _, c := range pbs {
+		if c == nil {
+			return nil, fmt.Errorf("colorway must not be null")
+		}
 		if c.Name == "" {
 			return nil, fmt.Errorf("colorway name is required")
 		}
@@ -855,6 +860,18 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 			}
 			seenCode[c.Code] = true
 		}
+		// color_code is the only colour source accepted by the write contract. Do not derive it
+		// from the internal code, display name, Pantone or free-text hex.
+		if len(c.ColorCode) != 3 || c.ColorCode != strings.ToUpper(c.ColorCode) || strings.TrimSpace(c.ColorCode) != c.ColorCode {
+			return nil, fmt.Errorf("colorway color_code must be exactly 3 uppercase characters")
+		}
+		if _, ok := cache.GetColorByCode(c.ColorCode); !ok {
+			return nil, fmt.Errorf("colorway color_code %q is not in the color dictionary", c.ColorCode)
+		}
+		if seenColorCode[c.ColorCode] {
+			return nil, fmt.Errorf("colorways contain a duplicate color_code: %q", c.ColorCode)
+		}
+		seenColorCode[c.ColorCode] = true
 		if c.ProductId < 0 {
 			return nil, fmt.Errorf("colorway product_id must not be negative")
 		}
@@ -894,6 +911,7 @@ func parseTechCardColorways(pbs []*pb_common.TechCardColorway, productIds []int,
 		out = append(out, entity.TechCardColorway{
 			Code:               nullStringFromPb(c.Code),
 			Name:               c.Name,
+			ColorCode:          c.ColorCode,
 			LabDipStatus:       status,
 			ProductId:          nullInt32FromPb(c.ProductId),
 			Comment:            nullStringFromPb(c.Comment),
@@ -1213,6 +1231,8 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.Tech
 			Id:                 int32(c.Id),
 			Code:               pbStringFromNull(c.Code),
 			Name:               c.Name,
+			ColorCode:          c.ColorCode,
+			DictionaryColor:    dictionaryColorToPb(c.ColorCode),
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
 			ProductId:          pbInt32FromNull(c.ProductId),
 			Comment:            pbStringFromNull(c.Comment),
@@ -1229,6 +1249,30 @@ func techCardColorwaysToPb(cws []entity.TechCardColorway, bomItems []entity.Tech
 		})
 	}
 	return out
+}
+
+func dictionaryColorToPb(code string) *pb_common.Color {
+	color, ok := cache.GetColorByCode(code)
+	if !ok {
+		// The DB foreign key makes this impossible for persisted rows. Keeping the canonical code
+		// in the response is more diagnosable than silently returning an empty object if cache state
+		// is stale during startup or in a unit test.
+		return &pb_common.Color{Code: code}
+	}
+	return &pb_common.Color{
+		Id:   int32(color.ID),
+		Code: color.Code,
+		Name: color.Name,
+		Hex:  color.Hex.String,
+	}
+}
+
+func optionalStringFromNull(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	result := value.String
+	return &result
 }
 
 // techCardUsagesToPb emits a colourway's usages, each with its computed per-garment

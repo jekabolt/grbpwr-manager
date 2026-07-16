@@ -157,12 +157,12 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"version too long":        {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
 		"detail media zero":       {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{0}}}},
 		"detail media dup":        {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{5, 5}}}},
-		"dup colorway code":       {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK"}, {Name: "b", Code: "BLK"}}},
-		"bad hex":                 {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Hex: "red"}}},
-		"bad pantone sys":         {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", PantoneSystem: "XXX"}}},
+		"dup colorway code":       {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", Code: "BLK", ColorCode: "BLK"}, {Name: "b", Code: "BLK", ColorCode: "WHT"}}},
+		"bad hex":                 {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", ColorCode: "BLK", Hex: "red"}}},
+		"bad pantone sys":         {StyleNumber: "x", Name: "y", Colorways: []*pb_common.TechCardColorway{{Name: "a", ColorCode: "BLK", PantoneSystem: "XXX"}}},
 		"release unapproved": {StyleNumber: "x", Name: "y",
 			ApprovalState: pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED,
-			Colorways:     []*pb_common.TechCardColorway{{Name: "Black"}}}, // lab dip defaults to pending
+			Colorways:     []*pb_common.TechCardColorway{{Name: "Black", ColorCode: "BLK"}}}, // lab dip defaults to pending
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
@@ -239,12 +239,12 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", UnitPrice: dec("3"), Currency: "EUR"},
 		},
 		Colorways: []*pb_common.TechCardColorway{
-			{Code: "BLK", Name: "Black", LabDipStatus: pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED,
+			{Code: "BLK", Name: "Black", ColorCode: "BLK", LabDipStatus: pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_APPROVED,
 				Usages: []*pb_common.TechCardColorwayUsage{
 					{BomItemIndex: i32(0), Placement: "  Outer Shell ", Color: "Jet", Consumption: dec("2")},
 					{BomItemIndex: i32(1), Placement: "front", Color: "black", Quantity: dec("1")},
 				}},
-			{Name: "White"}, // unset lab dip -> pending, no usages
+			{Name: "White", ColorCode: "WHT"}, // unset lab dip -> pending, no usages
 		},
 	}
 	got, err := ConvertPbTechCardInsertToEntity(in)
@@ -288,7 +288,7 @@ func TestConvertTechCardColorwayUsages(t *testing.T) {
 	// orphaned usage bom_item_index is rejected.
 	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
 		BomItems:  []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "f"}},
-		Colorways: []*pb_common.TechCardColorway{{Name: "a", Usages: []*pb_common.TechCardColorwayUsage{{BomItemIndex: i32(5)}}}},
+		Colorways: []*pb_common.TechCardColorway{{Name: "a", ColorCode: "BLK", Usages: []*pb_common.TechCardColorwayUsage{{BomItemIndex: i32(5)}}}},
 	}); err == nil {
 		t.Errorf("expected error for orphaned usage bom_item_index")
 	}
@@ -312,7 +312,7 @@ func baseTechCardWithPieces(pieces []*pb_common.TechCardPiece) *pb_common.TechCa
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", UnitPrice: dec("10"), Currency: "EUR"},
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "fusible", UnitPrice: dec("2"), Currency: "EUR"},
 		},
-		Colorways: []*pb_common.TechCardColorway{{Code: "BLK", Name: "Black"}, {Code: "WHT", Name: "White"}},
+		Colorways: []*pb_common.TechCardColorway{{Code: "BLK", Name: "Black", ColorCode: "BLK"}, {Code: "WHT", Name: "White", ColorCode: "WHT"}},
 		Callouts:  []*pb_common.TechCardCallout{{Number: 1, Part: "body"}},
 		Pieces:    pieces,
 	}
@@ -396,11 +396,11 @@ func TestConvertTechCardCosting(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", UnitPrice: dec("3"), Currency: "USD"},
 		},
 		Colorways: []*pb_common.TechCardColorway{
-			{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{
+			{Name: "Black", ColorCode: "BLK", Usages: []*pb_common.TechCardColorwayUsage{
 				{BomItemIndex: i32(0), Quantity: dec("2")}, // 20 EUR
 				{BomItemIndex: i32(1), Quantity: dec("1")}, // 3 USD
 			}},
-			{Name: "White", Usages: []*pb_common.TechCardColorwayUsage{
+			{Name: "White", ColorCode: "WHT", Usages: []*pb_common.TechCardColorwayUsage{
 				{BomItemIndex: i32(0), Quantity: dec("3")}, // 30 EUR
 			}},
 		},
@@ -482,7 +482,7 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", UnitPrice: dec("3"), Currency: "EUR"},
 		},
 		Colorways: []*pb_common.TechCardColorway{
-			{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{
+			{Name: "Black", ColorCode: "BLK", Usages: []*pb_common.TechCardColorwayUsage{
 				// per-size: (1.5×10 + 1.8×20) × 2 = 51 × 2 = 102.
 				{BomItemIndex: i32(0), SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{
 					{SizeId: 4, Consumption: dec("1.5")}, {SizeId: 5, Consumption: dec("1.8")}}},
@@ -654,7 +654,7 @@ func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
 		ReleasedAt:   zero,
 		ApprovedAt:   zero,
 		Revisions:    []*pb_common.TechCardRevision{{Version: "1", RevisionDate: zero}},
-		Colorways:    []*pb_common.TechCardColorway{{Name: "Ecru", LabDipSubmittedAt: zero, LabDipDecidedAt: zero}},
+		Colorways:    []*pb_common.TechCardColorway{{Name: "Ecru", ColorCode: "OFW", LabDipSubmittedAt: zero, LabDipDecidedAt: zero}},
 	}
 	got, err := ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
@@ -701,9 +701,9 @@ func TestColorwayProductAutoSeed(t *testing.T) {
 		MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
 		ProductIds:      []int32{100},
 		Colorways: []*pb_common.TechCardColorway{
-			{Name: "Black", ProductId: 100}, // already listed
-			{Name: "White", ProductId: 200}, // NOT listed → auto-seeded
-			{Name: "Sample"},                // product_id 0 → ignored
+			{Name: "Black", ColorCode: "BLK", ProductId: 100}, // already listed
+			{Name: "White", ColorCode: "WHT", ProductId: 200}, // NOT listed → auto-seeded
+			{Name: "Sample", ColorCode: "UNK"},                // product_id 0 → ignored
 		},
 	}
 	got, err := ConvertPbTechCardInsertToEntity(card)

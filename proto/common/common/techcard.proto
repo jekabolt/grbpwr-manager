@@ -119,8 +119,8 @@ enum TechCardLabDipStatus {
 // distinct from tech_card_product (published catalog SKUs); product_id optionally
 // links the published SKU that realises this colourway.
 message TechCardColorway {
-  string code = 1; // short colourway code, e.g. BLK
-  string name = 2; // colourway name (required)
+  string code = 1; // internal/article colourway code; never used as the SKU colour segment
+  string name = 2; // internal colourway label; never used as the SKU colour source
   TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
   int32 product_id = 4; // FK product(id); 0 = not yet published. Auto-added to the card's product_ids on save (annotation ⊆ the canon tech_card_product list)
   string comment = 5;
@@ -142,6 +142,11 @@ message TechCardColorway {
   // (the server re-points existing sample links by colourway identity, case-folded code+name), so
   // re-read the card and use a fresh id right before linking a sample.
   int32 id = 17;
+  // Canonical controlled-colour dictionary code. REQUIRED on every write; exactly 3 uppercase
+  // characters and must exist in Dictionary.colors. No fallback from code/name/pantone/hex.
+  string color_code = 18;
+  // OUTPUT-ONLY resolved dictionary entry for display. The server ignores it on write.
+  Color dictionary_color = 19;
 }
 
 // TechCardColorwayUsage is one material use inside a colourway: which catalog article
