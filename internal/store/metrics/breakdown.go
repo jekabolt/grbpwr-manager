@@ -313,17 +313,19 @@ func (s *Store) getCrossSellPairs(ctx context.Context, from, to time.Time, limit
 		Count        int    `db:"cnt"`
 	}](ctx, s.DB, fmt.Sprintf(`
 		SELECT oi1.product_id AS product_a_id, oi2.product_id AS product_b_id,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p1.id ORDER BY pt.language_id LIMIT 1), p1.brand) AS product_a_name,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p2.id ORDER BY pt.language_id LIMIT 1), p2.brand) AS product_b_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p1.id ORDER BY pt.language_id LIMIT 1), sty1.brand) AS product_a_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p2.id ORDER BY pt.language_id LIMIT 1), sty2.brand) AS product_b_name,
 			COUNT(DISTINCT oi1.order_id) AS cnt
 		FROM order_item oi1
 		JOIN order_item oi2 ON oi1.order_id = oi2.order_id AND oi1.product_id < oi2.product_id
 		JOIN product p1 ON oi1.product_id = p1.id
 		JOIN product p2 ON oi2.product_id = p2.id
+		JOIN tech_card sty1 ON sty1.id = p1.style_id
+		JOIN tech_card sty2 ON sty2.id = p2.style_id
 		JOIN customer_order co ON oi1.order_id = co.id
 		WHERE co.placed >= :from AND co.placed < :to
 			AND co.order_status_id IN (%s)
-		GROUP BY oi1.product_id, oi2.product_id, p1.brand, p2.brand
+		GROUP BY oi1.product_id, oi2.product_id, sty1.brand, sty2.brand
 		ORDER BY cnt DESC
 		LIMIT :limit
 	`, statusIDs), map[string]any{"from": from, "to": to, "limit": limit})
