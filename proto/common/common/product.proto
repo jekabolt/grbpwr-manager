@@ -45,6 +45,7 @@ message Color {
   string code = 2;
   string name = 3;
   string hex = 4;
+  bool archived = 5; // R9: controlled dictionary; a used code archives, never deletes.
 }
 
 message MeasurementName {
@@ -65,6 +66,33 @@ enum SeasonEnum {
   SEASON_ENUM_FW = 2; // Fall/Winter
   SEASON_ENUM_PF = 3; // Pre-Fall
   SEASON_ENUM_RC = 4; // Resort/Cruise
+}
+
+// ColorwayLifecycleStatus is the stored lifecycle of a colourway (R6). Numbers are fixed and match the
+// DB tinyint + entity.ColorwayStatus. UNKNOWN is rejected on write; an unknown read value fails closed
+// (the colourway is not shown). Only ACTIVE is exposed publicly.
+enum ColorwayLifecycleStatus {
+  COLORWAY_LIFECYCLE_STATUS_UNKNOWN = 0;
+  COLORWAY_LIFECYCLE_STATUS_DRAFT = 1;
+  COLORWAY_LIFECYCLE_STATUS_ACTIVE = 2;
+  COLORWAY_LIFECYCLE_STATUS_HIDDEN = 3;
+  COLORWAY_LIFECYCLE_STATUS_ARCHIVED = 4;
+}
+
+// VariantLifecycleStatus is the stored lifecycle of a variant (R2). Variants archive, never delete.
+enum VariantLifecycleStatus {
+  VARIANT_LIFECYCLE_STATUS_UNKNOWN = 0;
+  VARIANT_LIFECYCLE_STATUS_ACTIVE = 1;
+  VARIANT_LIFECYCLE_STATUS_ARCHIVED = 2;
+}
+
+// ColorwayCostSource records where a colourway's COGS came from (R4), separating cost provenance from
+// the owning style relation.
+enum ColorwayCostSource {
+  COLORWAY_COST_SOURCE_UNKNOWN = 0;
+  COLORWAY_COST_SOURCE_MANUAL = 1;
+  COLORWAY_COST_SOURCE_STYLE = 2;
+  COLORWAY_COST_SOURCE_PRODUCTION_RUN = 3;
 }
 
 message ColorwayNew {
