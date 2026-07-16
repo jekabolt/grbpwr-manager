@@ -17,6 +17,13 @@
 -- the columns still present, so a re-run (or a mid-file retry) is a no-op. Multi-line PREPARE/EXECUTE/
 -- DEALLOCATE — a single line trips 1064 on the managed DSN (0124).
 
+-- Contract is forbidden unless the persisted 0139 reconciliation report is empty. The table is
+-- intentionally retained for audit/rollback evidence; if 0139 stopped on a conflict, 0140 can never
+-- silently discard the source columns on a manual/catch-up run.
+DELETE FROM migration_0139_style_field_guard;
+INSERT INTO migration_0139_style_field_guard (singleton, conflict_count)
+SELECT 1, COUNT(*) FROM migration_0139_style_field_conflict;
+
 -- 1) Drop the category foreign keys (top/sub/type) by resolved name.
 SET @fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'

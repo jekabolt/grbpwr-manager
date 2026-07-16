@@ -92,3 +92,49 @@ func TestMigrationIdempotencyDetectors(t *testing.T) {
 		t.Error("explicit CHECK name should not be flagged")
 	}
 }
+
+// TestDestructiveStyleMigrationIsConflictGated locks the data-safety contract around the PR6
+// expand/backfill/contract chain. These migrations are still pending in production, so a future
+// cleanup must not accidentally restore MIN(product.id)-wins or drop the source before checking the
+// persisted reconciliation report.
+func TestDestructiveStyleMigrationIsConflictGated(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(migrationsDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(body)
+	}
+
+	spine := read("0138_pr6_product_style_id.sql")
+	expand := read("0139_pr6_style_fields_add.sql")
+	contract := read("0140_pr6_drop_product_style_cols.sql")
+
+	for _, token := range []string{"season_code, season_year", "YEAR(p.created_at)"} {
+		if !strings.Contains(spine, token) {
+			t.Errorf("0138 synthetic styles must persist a complete typed season; missing %q", token)
+		}
+	}
+	for _, token := range []string{
+		"migration_0139_style_field_conflict",
+		"'sibling_mismatch'",
+		"'target_mismatch'",
+		"'orphan_reference'",
+		"migration_0139_no_style_field_conflicts",
+		"CAST(a.brand AS BINARY) <=> CAST(b.brand AS BINARY)",
+		"COALESCE(t.brand, p.brand)",
+	} {
+		if !strings.Contains(expand, token) {
+			t.Errorf("0139 must retain its fail-fast reconciliation invariant; missing %q", token)
+		}
+	}
+	for _, token := range []string{
+		"migration_0139_style_field_guard",
+		"COUNT(*) FROM migration_0139_style_field_conflict",
+	} {
+		if !strings.Contains(contract, token) {
+			t.Errorf("0140 must refuse destructive contract with unresolved conflicts; missing %q", token)
+		}
+	}
+}

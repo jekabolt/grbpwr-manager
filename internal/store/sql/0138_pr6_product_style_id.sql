@@ -51,7 +51,8 @@ WHERE p.style_id IS NULL;
 -- 3) Standalone products: synthesise a minimal style. Deterministic style_number 'AUTO-<id>' (globally
 --    unique -> no (style_number, season) clash). Name from the default-language translation, else any,
 --    else 'Product <id>'.
-INSERT INTO tech_card (style_number, name, brand, season, collection, target_gender)
+INSERT INTO tech_card
+    (style_number, name, brand, season, season_code, season_year, collection, target_gender)
 SELECT
     CONCAT('AUTO-', p.id),
     COALESCE(
@@ -61,7 +62,12 @@ SELECT
         CONCAT('Product ', p.id)
     ),
     NULLIF(p.brand, ''),
-    NULLIF(p.season, ''),
+    CASE WHEN p.season IN ('SS', 'FW', 'PF', 'RC') AND YEAR(p.created_at) BETWEEN 2000 AND 2099
+         THEN CONCAT(p.season, LPAD(MOD(YEAR(p.created_at), 100), 2, '0')) END,
+    CASE WHEN p.season IN ('SS', 'FW', 'PF', 'RC') AND YEAR(p.created_at) BETWEEN 2000 AND 2099
+         THEN p.season END,
+    CASE WHEN p.season IN ('SS', 'FW', 'PF', 'RC') AND YEAR(p.created_at) BETWEEN 2000 AND 2099
+         THEN YEAR(p.created_at) END,
     NULLIF(p.collection, ''),
     NULLIF(p.target_gender, '')
 FROM product p
