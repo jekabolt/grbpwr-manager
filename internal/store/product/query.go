@@ -18,8 +18,11 @@ import (
 // can't drift; the Go equivalent for locally-loaded sizes is entity.SoldOutFromSizes (PR5-B).
 const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0)`
 
-// soldOutSelect is the sold_out projection: a product is sold out when its total stock is zero.
-const soldOutSelect = productStockExpr + ` = 0 AS sold_out`
+// soldOutSelect is the sold_out projection: a product is sold out when its total stock is <= 0 (50-B).
+// Uses <=, not just = 0, to agree with entity.SoldOutFromSizes: anomalous data (e.g. a negative total
+// from an oversell race/bug) must still read as sold out on both the SQL and Go paths, not diverge
+// into "not sold out" here while Go says otherwise.
+const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
 
 // GetProductsPaged returns a paged list of products based on provided parameters.
 func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error) {
