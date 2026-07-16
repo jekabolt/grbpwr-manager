@@ -266,7 +266,7 @@ func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity
 func styleFieldParams(b entity.ColorwayBodyInsert) map[string]any {
 	return map[string]any{
 		"brand":              b.Brand,
-		"season":             string(b.Season),
+		"seasonCode":         string(b.Season),
 		"collection":         b.Collection,
 		"targetGender":       string(b.TargetGender),
 		"fit":                b.Fit,
@@ -282,7 +282,9 @@ func styleFieldParams(b entity.ColorwayBodyInsert) map[string]any {
 
 const styleFieldsSet = `
 	brand = :brand,
-	season_code = :season,
+	season_code = :seasonCode,
+	season_year = COALESCE(season_year, YEAR(CURRENT_DATE)),
+	season = CONCAT(:seasonCode, LPAD(MOD(COALESCE(season_year, YEAR(CURRENT_DATE)), 100), 2, '0')),
 	collection = :collection,
 	target_gender = :targetGender,
 	fit = :fit,
