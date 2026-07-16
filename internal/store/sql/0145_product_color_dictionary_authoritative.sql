@@ -21,6 +21,18 @@ SET p.color_code = CASE
     )
 END;
 
+-- Expand before data rewrite: legacy color_hex is NOT NULL. Setting a dictionary-identical value
+-- to NULL first would fail with Error 1048 on every normal row and leave the migration half-applied.
+SET @product_color_hex_required := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
+      AND COLUMN_NAME = 'color_hex' AND IS_NULLABLE = 'NO');
+SET @sql := IF(@product_color_hex_required > 0,
+    'ALTER TABLE product MODIFY COLUMN color_hex VARCHAR(7) NULL',
+    'SELECT 1');
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
+
 -- A stored hex equal to the dictionary base is not an override. Preserve genuinely distinct shades.
 UPDATE product p
 JOIN color c ON c.code = p.color_code
@@ -35,16 +47,6 @@ SET @product_color_code_nullable := (SELECT COUNT(*) FROM information_schema.COL
       AND COLUMN_NAME = 'color_code' AND IS_NULLABLE = 'YES');
 SET @sql := IF(@product_color_code_nullable > 0,
     'ALTER TABLE product MODIFY COLUMN color_code CHAR(3) NOT NULL',
-    'SELECT 1');
-PREPARE s FROM @sql;
-EXECUTE s;
-DEALLOCATE PREPARE s;
-
-SET @product_color_hex_required := (SELECT COUNT(*) FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
-      AND COLUMN_NAME = 'color_hex' AND IS_NULLABLE = 'NO');
-SET @sql := IF(@product_color_hex_required > 0,
-    'ALTER TABLE product MODIFY COLUMN color_hex VARCHAR(7) NULL',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
