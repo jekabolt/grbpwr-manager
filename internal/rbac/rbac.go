@@ -127,17 +127,17 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // of AdminService must appear here or in allowlist; a completeness test enforces
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
-	// products
-	"UpsertProduct":               wr(SectionProducts),
-	"GetProductsPaged":            rd(SectionProducts),
-	"GetProductByID":              rd(SectionProducts),
-	"DeleteProductByID":           wr(SectionProducts),
-	"UpdateProductSizeStock":      wr(SectionProducts),
-	"SyncProductCostFromTechCard": wr(SectionProducts),
-	"GetProductCustoms":           rd(SectionProducts),
-	"SetProductCustoms":           wr(SectionProducts),
-	"ListStockChangeHistory":      rd(SectionProducts),
-	"ListStockChanges":            rd(SectionProducts),
+	// catalog colorways / variants
+	"UpsertColorway":            wr(SectionProducts),
+	"GetColorwaysPaged":         rd(SectionProducts),
+	"GetColorwayByID":           rd(SectionProducts),
+	"DeleteColorwayByID":        wr(SectionProducts),
+	"UpdateVariantStock":        wr(SectionProducts),
+	"SyncColorwayCostFromStyle": wr(SectionProducts),
+	"GetColorwayCustoms":        rd(SectionProducts),
+	"SetColorwayCustoms":        wr(SectionProducts),
+	"ListStockChangeHistory":    rd(SectionProducts),
+	"ListStockChanges":          rd(SectionProducts),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
