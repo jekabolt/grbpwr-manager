@@ -420,19 +420,37 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 }
 
 // freezeAndResnapshotOrderSKUs is the SKU freeze at first sale (task 07/15). It re-snapshots each
-// order line's product_sku from the current product_size.sku (covering any change between checkout
-// and payment), then stamps sku_locked_at on every product in the order so MintProductSKUs treats it
-// as frozen from now on. Idempotent: only fills still-NULL snapshots and stamps still-unlocked
-// products, so a retried OrderPaymentDone is a no-op here.
+// order line's product_sku from the CURRENT product_size.sku — UNCONDITIONALLY, so a live variant SKU
+// that changed in the checkout->payment window (while the colourway was still unlocked) is captured on
+// the paid line — then verifies every line resolved to a live variant SKU, and finally stamps
+// sku_locked_at on every product in the order so the identity is frozen from now on. The frozen order
+// line must equal the frozen catalogue identity (problem 003): the old "only fill NULL" guard left a
+// stale checkout snapshot in place while freezing the product on a different variant.
+//
+// Idempotent: after the first freeze the products are locked and their live variant SKUs are immutable,
+// so a retried OrderPaymentDone copies the identical values and re-stamps nothing (lock guard). Rejects
+// payment if any paid line has no resolvable live variant SKU — the frozen identity would be unknown.
 func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID int) error {
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE order_item oi
 		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
 		SET oi.product_sku = ps.sku
-		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL
-		  AND (oi.product_sku IS NULL OR oi.product_sku = '')`,
+		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"oid": orderID}); err != nil {
 		return fmt.Errorf("re-snapshot order_item.product_sku: %w", err)
+	}
+	// Every paid line must have a live variant SKU (product_size.sku) — else we cannot establish the
+	// identity we are about to freeze. Missing row or NULL/empty SKU both fail via the LEFT JOIN.
+	missing, err := storeutil.QueryCountNamed(ctx, db, `
+		SELECT COUNT(*) FROM order_item oi
+		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		WHERE oi.order_id = :oid AND (ps.sku IS NULL OR ps.sku = '')`,
+		map[string]any{"oid": orderID})
+	if err != nil {
+		return fmt.Errorf("verify order_item live variant SKUs: %w", err)
+	}
+	if missing > 0 {
+		return fmt.Errorf("cannot freeze order %d: %d line(s) have no live variant SKU", orderID, missing)
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE product p
