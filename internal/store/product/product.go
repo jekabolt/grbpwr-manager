@@ -138,6 +138,14 @@ func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id i
 			return fmt.Errorf("can't update product translations: %w", err)
 		}
 
+		// Snapshot the current per-size quantities BEFORE reconciling so the stock history records the
+		// TRUE before/after/delta, not a fabricated 0->new (problem 024). An identity-only save (no
+		// quantity changed) then produces no stock event at all.
+		beforeQty, err := captureVariantQuantities(ctx, rep.DB(), id)
+		if err != nil {
+			return fmt.Errorf("can't snapshot variant quantities: %w", err)
+		}
+
 		// Stably reconcile the colourway's variants: existing sizes keep their row id and (frozen) SKU,
 		// only quantity is refreshed; new sizes are inserted; removed-and-unsold sizes are deleted. A
 		// blind delete+reinsert here would blank every product_size.sku, and because MintProductSKUs is
@@ -153,7 +161,7 @@ func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id i
 			return fmt.Errorf("can't update style size chart: %w", err)
 		}
 
-		if err := recordStockChangeFromSizeMeasurements(ctx, rep, id, prd.SizeMeasurements, entity.StockChangeSourceManualAdjustment, entity.StockChangeReasonCorrection); err != nil {
+		if err := recordStockDeltas(ctx, rep, id, beforeQty, prd.SizeMeasurements, entity.StockChangeSourceManualAdjustment, entity.StockChangeReasonCorrection); err != nil {
 			return fmt.Errorf("can't record stock change history: %w", err)
 		}
 
@@ -557,6 +565,71 @@ func insertTags(ctx context.Context, db dependency.DB, tagsInsert []entity.Color
 	}
 
 	return tags, storeutil.BulkInsert(ctx, db, "product_tag", rows)
+}
+
+// captureVariantQuantities reads the current per-size quantity for a product, keyed by size_id, so an
+// update can compute the true stock delta after the reconcile mutates the rows (problem 024).
+func captureVariantQuantities(ctx context.Context, db dependency.DB, productID int) (map[int]decimal.Decimal, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		SizeID   int             `db:"size_id"`
+		Quantity decimal.Decimal `db:"quantity"`
+	}](ctx, db, `SELECT size_id, quantity FROM product_size WHERE product_id = :id`, map[string]any{"id": productID})
+	if err != nil {
+		return nil, fmt.Errorf("can't read current variant quantities: %w", err)
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.SizeID] = r.Quantity
+	}
+	return out, nil
+}
+
+// recordStockDeltas writes stock-change history for an UPDATE using the TRUE before quantity (from
+// beforeQty, snapshotted pre-reconcile). It records only sizes whose quantity actually changed —
+// including sizes removed by the reconcile (a decrease to 0) — so an identity/style-only save produces
+// no stock event and the history sums to the real stock. This replaces the legacy recorder that always
+// wrote before=0 (problem 024).
+func recordStockDeltas(ctx context.Context, rep dependency.Repository, productID int, beforeQty map[int]decimal.Decimal, sizeMeasurements []entity.SizeWithMeasurementInsert, source entity.StockChangeSource, reason entity.StockChangeReason) error {
+	adminUsername := auth.GetAdminUsername(ctx)
+	want := make(map[int]decimal.Decimal, len(sizeMeasurements))
+	entries := make([]entity.StockChangeInsert, 0)
+	mkEntry := func(sizeID int, before, after decimal.Decimal) entity.StockChangeInsert {
+		e := entity.StockChangeInsert{
+			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
+			SizeId:         sql.NullInt32{Int32: int32(sizeID), Valid: true},
+			QuantityDelta:  after.Sub(before),
+			QuantityBefore: before,
+			QuantityAfter:  after,
+			Source:         string(source),
+			Reason:         sql.NullString{String: string(reason), Valid: true},
+		}
+		if adminUsername != "" {
+			e.AdminUsername = sql.NullString{String: adminUsername, Valid: true}
+		}
+		return e
+	}
+	// new/changed sizes from the payload
+	for _, sm := range sizeMeasurements {
+		after := sm.ProductSize.QuantityDecimal()
+		want[sm.ProductSize.SizeId] = after
+		before := beforeQty[sm.ProductSize.SizeId] // zero value if the size is new
+		if !after.Equal(before) {
+			entries = append(entries, mkEntry(sm.ProductSize.SizeId, before, after))
+		}
+	}
+	// sizes removed by the reconcile — their stock effectively went to 0
+	for sizeID, before := range beforeQty {
+		if _, kept := want[sizeID]; kept {
+			continue
+		}
+		if !before.IsZero() {
+			entries = append(entries, mkEntry(sizeID, before, decimal.Zero))
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return rep.Products().RecordStockChange(ctx, entries)
 }
 
 func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.Repository, productID int, sizeMeasurements []entity.SizeWithMeasurementInsert, source entity.StockChangeSource, reason entity.StockChangeReason) error {
