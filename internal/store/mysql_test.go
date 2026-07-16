@@ -107,6 +107,25 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// seedSpineStyle inserts a minimal tech_card to satisfy product.style_id (NOT NULL since PR6 P1)
+// for integration tests that INSERT INTO product directly, and carries the style-level fields
+// (brand, target_gender, top_category_id) that PR6 moved off the product onto the style — so the
+// analytics queries that now read them from the style see the same values the old product columns
+// held ('b' / 'unisex' / category 1). Registers its own cleanup, which runs AFTER the test's
+// product-deleting defers (t.Cleanup is LIFO and fires after the function's deferred calls), so the
+// style_id FK child (product) is always gone before the spine style is deleted.
+func seedSpineStyle(ctx context.Context, t *testing.T, tag string) int {
+	res, err := testDB.ExecContext(ctx, `INSERT INTO tech_card
+		(style_number, name, brand, target_gender, top_category_id)
+		VALUES (CONCAT(?, '-', UUID_SHORT()), ?, 'b', 'unisex', 1)`, tag, tag)
+	require.NoError(t, err)
+	id64, err := res.LastInsertId()
+	require.NoError(t, err)
+	id := int(id64)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", id) })
+	return id
+}
+
 func getTableNames(db *sql.DB) ([]string, error) {
 	rows, err := db.Query("SHOW TABLES")
 	if err != nil {

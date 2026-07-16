@@ -45,10 +45,11 @@ func TestRunMaterialColorwayAttribution(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	styleID := seedSpineStyle(ctx, t, "NFCW")
 	mkProduct := func(sku string) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
-			(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
-			VALUES (?, 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, sku, mediaID)
+			(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
+			VALUES (?, 'c', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)

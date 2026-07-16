@@ -64,9 +64,10 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
 	})
 	require.NoError(t, err)
+	styleID := seedSpineStyle(ctx, t, "T09")
 	pr, err := testDB.ExecContext(ctx, `INSERT INTO product
-		(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
-		VALUES ('T09-P', 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, mediaID)
+		(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
+		VALUES ('T09-P', 'c', '#000000', 'US', ?, ?)`, mediaID, styleID)
 	require.NoError(t, err)
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)

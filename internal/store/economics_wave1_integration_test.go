@@ -54,9 +54,10 @@ func TestEconomicsWave1CostProvenance(t *testing.T) {
 	require.NoError(t, err)
 
 	// minimal product with no cost yet (category id 1 is seeded by migrations)
+	styleID := seedSpineStyle(ctx, t, "ECOW1")
 	res, err := testDB.ExecContext(ctx, `INSERT INTO product
-		(sku, brand, color, color_hex, country_of_origin, thumbnail_id, top_category_id, target_gender, version)
-		VALUES ('ECOTEST', 'b', 'c', '#000000', 'US', ?, 1, 'unisex', 'v1')`, mediaID)
+		(sku, color, color_hex, country_of_origin, thumbnail_id, style_id)
+		VALUES ('ECOTEST', 'c', '#000000', 'US', ?, ?)`, mediaID, styleID)
 	require.NoError(t, err)
 	pid64, err := res.LastInsertId()
 	require.NoError(t, err)
