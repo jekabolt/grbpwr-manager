@@ -288,6 +288,44 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 	return nil
 }
 
+// ensureVariantSKU guarantees a single variant row (product_id, size_id) has a SKU, minting it from the
+// product's base when absent. It NEVER rewrites an existing SKU (so a frozen variant's identity is
+// preserved), and it HARD-FAILS rather than leave a SKU-less variant when it cannot mint — no base SKU
+// yet, or the size has no ordinal. Stock paths that can materialise a new variant (admin stock edit,
+// production receive) call this right after the upsert so no successful path leaves a NULL/empty SKU.
+func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID int) error {
+	cur, err := storeutil.QueryNamedOne[struct {
+		SKU sql.NullString `db:"sku"`
+	}](ctx, db, `SELECT sku FROM product_size WHERE product_id = :pid AND size_id = :sid`,
+		map[string]any{"pid": productID, "sid": sizeID})
+	if err != nil {
+		return fmt.Errorf("load variant sku (product %d size %d): %w", productID, sizeID, err)
+	}
+	if cur.SKU.Valid && cur.SKU.String != "" {
+		return nil // identity already set — a stock quantity change must never touch it
+	}
+	baseRow, err := storeutil.QueryNamedOne[struct {
+		SKU string `db:"sku"`
+	}](ctx, db, `SELECT sku FROM product WHERE id = :id`, map[string]any{"id": productID})
+	if err != nil {
+		return fmt.Errorf("load base sku for product %d: %w", productID, err)
+	}
+	if baseRow.SKU == "" {
+		return fmt.Errorf("cannot mint variant sku: product %d has no base sku", productID)
+	}
+	sz, ok := cache.GetSizeById(sizeID)
+	if !ok || sz.SkuOrd == 0 {
+		return fmt.Errorf("cannot mint variant sku: size %d has no SKU ordinal", sizeID)
+	}
+	variant := BuildVariantSKU(baseRow.SKU, sz.SkuOrd)
+	if err := storeutil.ExecNamed(ctx, db,
+		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
+		map[string]any{"sku": variant, "pid": productID, "sid": sizeID}); err != nil {
+		return fmt.Errorf("set variant sku (product %d size %d): %w", productID, sizeID, err)
+	}
+	return nil
+}
+
 // disambiguateBase guarantees base SKU uniqueness. Structural guards (unique model_no + the
 // UNIQUE(tech_card_id, color_code) colourway constraint) make a real collision unexpected, so a clash
 // is logged and resolved with a numeric suffix as an emergency last resort (it breaks the fixed

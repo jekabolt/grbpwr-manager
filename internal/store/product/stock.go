@@ -209,6 +209,12 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 	if err != nil {
 		return fmt.Errorf("can't insert product size: %w", err)
 	}
+	// The upsert above can MATERIALISE a new variant row (a size the colourway did not have) with a
+	// NULL SKU. Mint it from the product's base so no stock path leaves a variant without a stable
+	// identity; an existing variant's SKU is left untouched (problem 002).
+	if err := ensureVariantSKU(ctx, s.DB, productId, sz.Id); err != nil {
+		return fmt.Errorf("can't ensure variant sku: %w", err)
+	}
 	return nil
 }
 
