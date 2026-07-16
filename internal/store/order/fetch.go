@@ -171,15 +171,15 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 	return orderItemsMap, nil
 }
 
-func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductTranslationInsert, error) {
+func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ColorwayTranslationInsert, error) {
 	if len(productIds) == 0 {
-		return map[int][]entity.ProductTranslationInsert{}, nil
+		return map[int][]entity.ColorwayTranslationInsert{}, nil
 	}
 
 	query := `SELECT product_id, language_id, name, description FROM product_translation WHERE product_id IN (:productIds) ORDER BY product_id, language_id`
 	type translationRow struct {
 		ProductId int `db:"product_id"`
-		entity.ProductTranslationInsert
+		entity.ColorwayTranslationInsert
 	}
 
 	rows, err := storeutil.QueryListNamed[translationRow](ctx, db, query, map[string]any{
@@ -189,9 +189,9 @@ func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds 
 		return nil, fmt.Errorf("fetch product translations: %w", err)
 	}
 
-	result := make(map[int][]entity.ProductTranslationInsert, len(productIds))
+	result := make(map[int][]entity.ColorwayTranslationInsert, len(productIds))
 	for _, r := range rows {
-		result[r.ProductId] = append(result[r.ProductId], r.ProductTranslationInsert)
+		result[r.ProductId] = append(result[r.ProductId], r.ColorwayTranslationInsert)
 	}
 	return result, nil
 }

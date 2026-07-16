@@ -169,18 +169,18 @@ type ArchiveMediaWithCaptionFull struct {
 }
 
 type ArchiveProductFull struct {
-	Product      *Product                 `json:"product"`
+	Product      *Colorway                 `json:"product"`
 	Translations []ArchiveItemTranslation `json:"translations"`
 }
 
 type ArchiveProductsTagFull struct {
 	Tag          string                   `json:"tag"`
-	Products     []Product                `json:"products"`
+	Products     []Colorway                `json:"products"`
 	Translations []ArchiveItemTranslation `json:"translations"`
 }
 
 type ArchiveProductsManualFull struct {
-	Products     []Product                `json:"products"`
+	Products     []Colorway                `json:"products"`
 	Translations []ArchiveItemTranslation `json:"translations"`
 }
 

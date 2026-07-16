@@ -127,7 +127,7 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 	return decimal.NewFromString(value)
 }
 
-func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ProductBodyInsert) (*entity.ProductBody, error) {
+func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ProductBodyInsert) (*entity.ColorwayBody, error) {
 	if pbProductBodyInsert == nil {
 		return nil, fmt.Errorf("ProductBodyInsert is nil")
 	}
@@ -164,8 +164,8 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 		}
 	}
 
-	pb := &entity.ProductBody{
-		ProductBodyInsert: entity.ProductBodyInsert{
+	pb := &entity.ColorwayBody{
+		ProductBodyInsert: entity.ColorwayBodyInsert{
 			Preorder:           preorderTime,
 			Brand:              pbProductBodyInsert.Brand,
 			Color:              pbProductBodyInsert.Color,
@@ -187,13 +187,13 @@ func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.Produc
 			Fit:                sql.NullString{String: pbProductBodyInsert.Fit, Valid: pbProductBodyInsert.Fit != ""},
 			MinTier:            int16(pbProductBodyInsert.MinTier),
 		},
-		Translations: []entity.ProductTranslationInsert{},
+		Translations: []entity.ColorwayTranslationInsert{},
 	}
 
 	return pb, nil
 }
 
-func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ProductInsert, error) {
+func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ColorwayInsert, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
@@ -205,9 +205,9 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	}
 
 	// Convert translations
-	var translations []entity.ProductTranslationInsert
+	var translations []entity.ColorwayTranslationInsert
 	for _, trans := range pbProductNew.Translations {
-		translations = append(translations, entity.ProductTranslationInsert{
+		translations = append(translations, entity.ColorwayTranslationInsert{
 			LanguageId:  int(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -243,7 +243,7 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 		}
 	}
 
-	return &entity.ProductInsert{
+	return &entity.ColorwayInsert{
 		ProductBodyInsert:         productBody.ProductBodyInsert,
 		ThumbnailMediaID:          int(pbProductNew.ThumbnailMediaId),
 		SecondaryThumbnailMediaID: secondaryThumbnailID,
@@ -253,8 +253,8 @@ func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*ent
 	}, nil
 }
 
-func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPriceInsert {
-	var prices []entity.ProductPriceInsert
+func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ColorwayPriceInsert {
+	var prices []entity.ColorwayPriceInsert
 	for _, pbPrice := range pbPrices {
 		if pbPrice == nil || pbPrice.Price == nil {
 			continue
@@ -264,7 +264,7 @@ func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPri
 			continue
 		}
 		currency := strings.ToUpper(pbPrice.Currency)
-		prices = append(prices, entity.ProductPriceInsert{
+		prices = append(prices, entity.ColorwayPriceInsert{
 			Currency: currency,
 			Price:    RoundForCurrency(priceVal, currency),
 		})
@@ -302,7 +302,7 @@ func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpd
 	return measurements, nil
 }
 
-func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
+func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ColorwayNew, error) {
 	if pbProductNew == nil {
 		return nil, fmt.Errorf("input pbProductNew is nil")
 	}
@@ -316,9 +316,9 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 		return nil, err
 	}
 
-	var translations []entity.ProductTranslationInsert
+	var translations []entity.ColorwayTranslationInsert
 	for _, trans := range pbProductNew.Product.Translations {
-		translations = append(translations, entity.ProductTranslationInsert{
+		translations = append(translations, entity.ColorwayTranslationInsert{
 			LanguageId:  int(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -327,7 +327,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 
 	productBody.Translations = translations
 
-	productInsert := &entity.ProductInsert{
+	productInsert := &entity.ColorwayInsert{
 		ProductBodyInsert: productBody.ProductBodyInsert,
 		ThumbnailMediaID:  int(pbProductNew.Product.ThumbnailMediaId),
 		SecondaryThumbnailMediaID: sql.NullInt32{
@@ -347,7 +347,7 @@ func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.P
 	tags := convertTags(pbProductNew.Tags)
 	prices := convertPrices(pbProductNew.Prices)
 
-	return &entity.ProductNew{
+	return &entity.ColorwayNew{
 		Product:          productInsert,
 		SizeMeasurements: sizeMeasurements,
 		MediaIds:         mediaIds,
@@ -376,7 +376,7 @@ func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurement
 			return nil, fmt.Errorf("failed to convert product size quantity: %w for size id  %v", err, pbSizeMeasurement.ProductSize.SizeId)
 		}
 
-		productSize := &entity.ProductSizeInsert{
+		productSize := &entity.VariantInsert{
 			Quantity: quantity.Round(0),
 			SizeId:   int(pbSizeMeasurement.ProductSize.SizeId),
 		}
@@ -426,17 +426,17 @@ func convertMediaIds(pbMediaIds []int32) []int {
 	return mediaIds
 }
 
-func convertTags(pbTags []*pb_common.ProductTagInsert) []entity.ProductTagInsert {
-	var tags []entity.ProductTagInsert
+func convertTags(pbTags []*pb_common.ProductTagInsert) []entity.ColorwayTagInsert {
+	var tags []entity.ColorwayTagInsert
 	for _, pbTag := range pbTags {
-		tags = append(tags, entity.ProductTagInsert{
+		tags = append(tags, entity.ColorwayTagInsert{
 			Tag: pbTag.Tag,
 		})
 	}
 	return tags
 }
 
-func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, error) {
+func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ProductFull, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -531,7 +531,7 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}, nil
 }
 
-func convertEntityPricesToPb(prices []entity.ProductPrice) []*pb_common.ProductPrice {
+func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.ProductPrice {
 	var pbPrices []*pb_common.ProductPrice
 	for _, price := range prices {
 		pbPrices = append(pbPrices, &pb_common.ProductPrice{
@@ -542,7 +542,7 @@ func convertEntityPricesToPb(prices []entity.ProductPrice) []*pb_common.ProductP
 	return pbPrices
 }
 
-func convertEntitySizesToPbSizes(sizes []entity.ProductSize) []*pb_common.ProductSize {
+func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.ProductSize {
 	var pbSizes []*pb_common.ProductSize
 	for _, size := range sizes {
 		pbSizes = append(pbSizes, &pb_common.ProductSize{
@@ -574,7 +574,7 @@ func convertEntityMeasurementsToPbMeasurements(measurements []entity.ProductMeas
 	return pbMeasurements
 }
 
-func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag {
+func convertEntityTagsToPbTags(tags []entity.ColorwayTag) []*pb_common.ProductTag {
 	var pbTags []*pb_common.ProductTag
 	for _, tag := range tags {
 		pbTags = append(pbTags, &pb_common.ProductTag{
@@ -727,8 +727,8 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	return row
 }
 
-// ConvertEntityProductToCommon converts entity.Product to pb_common.Product
-func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error) {
+// ConvertEntityProductToCommon converts entity.Colorway to pb_common.Product
+func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Product, error) {
 	productBody := &e.ProductDisplay.ProductBody
 	productBodyInsert := &productBody.ProductBodyInsert
 

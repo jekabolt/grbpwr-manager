@@ -26,9 +26,9 @@ type (
 	Products interface {
 		ContextStore
 		// AddProduct adds a new product along with its associated data.
-		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
+		AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error)
 		// AddProduct adds a new product along with its associated data.
-		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
+		UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id int) error
 		// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing)
 		// card of each given product that has no primary yet. Empty ids is a no-op.
 		AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int, productIDs []int) error
@@ -53,27 +53,27 @@ type (
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
-		GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error)
+		GetProductCostInfo(ctx context.Context, id int) (*entity.ColorwayCostInfo, error)
 		// SetProductCustoms sets a product's international-shipping customs data (HS code, ISO-3
 		// origin, declared description); GetProductCustoms reads it back.
-		SetProductCustoms(ctx context.Context, productID int, customs entity.ProductCustoms) error
-		GetProductCustoms(ctx context.Context, productID int) (*entity.ProductCustoms, error)
+		SetProductCustoms(ctx context.Context, productID int, customs entity.ColorwayCustoms) error
+		GetProductCustoms(ctx context.Context, productID int) (*entity.ColorwayCustoms, error)
 		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
 		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
-		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
+		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
-		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error)
+		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Colorway, error)
 		// GetProductsByTag returns a list of products by their tag.
-		GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error)
+		GetProductsByTag(ctx context.Context, tag string) ([]entity.Colorway, error)
 		// GetLowStockProducts returns visible products with total stock in (0, threshold], ordered by ascending stock.
-		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error)
+		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
-		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
-		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.
-		GetProductBySKU(ctx context.Context, sku string) (*entity.ProductFull, error)
+		GetProductBySKU(ctx context.Context, sku string) (*entity.ColorwayFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.

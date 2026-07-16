@@ -47,7 +47,7 @@ func (s *Store) Tx(ctx context.Context, fn func(ctx context.Context, store depen
 var ErrProductInOrders = errors.New("product exists in orders")
 
 // AddProduct adds a new product to the product store.
-func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error) {
+func (s *Store) AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error) {
 	var prdId int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
@@ -125,7 +125,7 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ProductNew) (int, er
 }
 
 // UpdateProduct updates an existing product.
-func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error {
+func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		err := updateProduct(ctx, rep.DB(), prd.Product, id)
 		if err != nil {
@@ -208,19 +208,19 @@ func (s *Store) DeleteProductById(ctx context.Context, id int) error {
 }
 
 // GetProductByIdShowHidden returns a product by its ID, including hidden products.
-func (s *Store) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
+func (s *Store) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error) {
 	return s.getProductDetails(ctx, map[string]any{"id": id}, true)
 }
 
 // GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
-func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error) {
+func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error) {
 	return s.getProductDetails(ctx, map[string]any{"id": id}, false)
 }
 
 // GetProductBySKU returns a product by its base SKU (the public resolve key, case-insensitive since
 // product.sku is stored uppercase and MySQL string compares are case-insensitive), excluding hidden
 // products. This is the storefront resolver for the /p/{pretty}-{sku} URL scheme.
-func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.ProductFull, error) {
+func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.ColorwayFull, error) {
 	return s.getProductDetails(ctx, map[string]any{"sku": strings.ToUpper(sku)}, false)
 }
 
@@ -230,7 +230,7 @@ func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.Produc
 // from the first translation, brand/season/collection/gender). The style_number is 'AUTO-' + a unique
 // suffix (mirrors migration 0138's convention for backfilled standalones); the operator can flesh the
 // style out later. Only style_number + name are NOT NULL on tech_card, the rest default.
-func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity.ProductInsert) (int, error) {
+func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert) (int, error) {
 	name := "Product"
 	if len(product.Translations) > 0 && strings.TrimSpace(product.Translations[0].Name) != "" {
 		name = strings.TrimSpace(product.Translations[0].Name)
@@ -249,7 +249,7 @@ func createSyntheticStyle(ctx context.Context, db dependency.DB, product *entity
 // style owns them and every colourway (product) reads them from here (PR6 P2). Called after
 // createSyntheticStyle on add and from updateProduct on edit — editing any colourway's style-level
 // field updates the style, hence all its colourways, which is the intended semantics.
-func styleFieldParams(b entity.ProductBodyInsert) map[string]any {
+func styleFieldParams(b entity.ColorwayBodyInsert) map[string]any {
 	return map[string]any{
 		"brand":              b.Brand,
 		"season":             string(b.Season),
@@ -280,14 +280,14 @@ const styleFieldsSet = `
 	sub_category_id = :subCategoryId,
 	type_id = :typeId`
 
-func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b entity.ProductBodyInsert) error {
+func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b entity.ColorwayBodyInsert) error {
 	params := styleFieldParams(b)
 	params["styleId"] = styleId
 	return storeutil.ExecNamed(ctx, db,
 		`UPDATE tech_card SET`+styleFieldsSet+` WHERE id = :styleId`, params)
 }
 
-func insertProduct(ctx context.Context, db dependency.DB, product *entity.ProductInsert, styleId int) (int, error) {
+func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
 	// sizes exist. color_code is the dictionary FK (NULL falls back to translit/UNK in the generator).
 	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
@@ -326,7 +326,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 	return id, nil
 }
 
-func insertProductTranslations(ctx context.Context, db dependency.DB, productId int, translations []entity.ProductTranslationInsert) error {
+func insertProductTranslations(ctx context.Context, db dependency.DB, productId int, translations []entity.ColorwayTranslationInsert) error {
 	if len(translations) == 0 {
 		return fmt.Errorf("translations array cannot be empty")
 	}
@@ -441,12 +441,12 @@ func insertMedia(ctx context.Context, db dependency.DB, mediaIds []int, productI
 	return storeutil.BulkInsert(ctx, db, "product_media", rows)
 }
 
-func insertTags(ctx context.Context, db dependency.DB, tagsInsert []entity.ProductTagInsert, productID int) ([]entity.ProductTag, error) {
+func insertTags(ctx context.Context, db dependency.DB, tagsInsert []entity.ColorwayTagInsert, productID int) ([]entity.ColorwayTag, error) {
 	uniqueTags := make(map[string]bool)
-	uniqueTagsSlice := make([]entity.ProductTagInsert, 0)
+	uniqueTagsSlice := make([]entity.ColorwayTagInsert, 0)
 	rows := make([]map[string]any, 0)
 
-	tags := make([]entity.ProductTag, 0)
+	tags := make([]entity.ColorwayTag, 0)
 
 	for _, t := range tagsInsert {
 		if _, exists := uniqueTags[t.Tag]; !exists {
@@ -456,8 +456,8 @@ func insertTags(ctx context.Context, db dependency.DB, tagsInsert []entity.Produ
 	}
 
 	for _, t := range uniqueTagsSlice {
-		tags = append(tags, entity.ProductTag{
-			ProductTagInsert: t,
+		tags = append(tags, entity.ColorwayTag{
+			ColorwayTagInsert: t,
 		})
 		row := map[string]any{
 			"product_id": productID,
@@ -494,7 +494,7 @@ func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.R
 	return rep.Products().RecordStockChange(ctx, entries)
 }
 
-func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductInsert, id int) error {
+func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayInsert, id int) error {
 	// Colourway-level columns only. The garment-level fields (brand/season/collection/target_gender/
 	// fit/composition/care/model_wears/category top-sub-type) live on the STYLE now (PR6 P2) and are
 	// written to tech_card by writeStyleFields below — editing any colourway updates its style, hence
@@ -618,7 +618,7 @@ func (s *Store) SetPrimaryTechCard(ctx context.Context, productID, techCardID in
 // written here: it is a required core product field (set via the product form) that customs reuses
 // as the origin_country — writing it from the customs path would fight the product form and could
 // blank a NOT NULL column.
-func (s *Store) SetProductCustoms(ctx context.Context, productID int, customs entity.ProductCustoms) error {
+func (s *Store) SetProductCustoms(ctx context.Context, productID int, customs entity.ColorwayCustoms) error {
 	return storeutil.ExecNamed(ctx, s.DB,
 		`UPDATE product SET hs_code = :hs, customs_description = :descr WHERE id = :id`,
 		map[string]any{
@@ -631,8 +631,8 @@ func (s *Store) SetProductCustoms(ctx context.Context, productID int, customs en
 // GetProductCustoms returns a product's customs data. country_of_origin is the existing core product
 // field (free-text manufacture country), returned read-only for display. Returns sql.ErrNoRows if
 // the product does not exist.
-func (s *Store) GetProductCustoms(ctx context.Context, productID int) (*entity.ProductCustoms, error) {
-	c, err := storeutil.QueryNamedOne[entity.ProductCustoms](ctx, s.DB,
+func (s *Store) GetProductCustoms(ctx context.Context, productID int) (*entity.ColorwayCustoms, error) {
+	c, err := storeutil.QueryNamedOne[entity.ColorwayCustoms](ctx, s.DB,
 		`SELECT hs_code, country_of_origin, customs_description FROM product WHERE id = :id`,
 		map[string]any{"id": productID})
 	if err != nil {
@@ -643,8 +643,8 @@ func (s *Store) GetProductCustoms(ctx context.Context, productID int) (*entity.P
 
 // GetProductCostInfo returns the confidential COGS/provenance fields of a product (admin
 // surface only). Returns sql.ErrNoRows if the product does not exist.
-func (s *Store) GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error) {
-	ci, err := storeutil.QueryNamedOne[entity.ProductCostInfo](ctx, s.DB,
+func (s *Store) GetProductCostInfo(ctx context.Context, id int) (*entity.ColorwayCostInfo, error) {
+	ci, err := storeutil.QueryNamedOne[entity.ColorwayCostInfo](ctx, s.DB,
 		`SELECT cost_price, cost_price_source, cost_price_tech_card_id, cost_price_updated_at, primary_tech_card_id
 		 FROM product WHERE id = :id`,
 		map[string]any{"id": id})
@@ -667,7 +667,7 @@ func (s *Store) IsProductLinkedToTechCard(ctx context.Context, productID, techCa
 	return len(rows) > 0, nil
 }
 
-func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
+func validateRequiredCurrencies(prices []entity.ColorwayPriceInsert) error {
 	providedCurrencies := make(map[string]bool)
 	var zeroPriceCurrencies []string
 	var belowMinCurrencies []string
@@ -701,7 +701,7 @@ func validateRequiredCurrencies(prices []entity.ProductPriceInsert) error {
 	return nil
 }
 
-func insertProductPrices(ctx context.Context, db dependency.DB, productId int, prices []entity.ProductPriceInsert) error {
+func insertProductPrices(ctx context.Context, db dependency.DB, productId int, prices []entity.ColorwayPriceInsert) error {
 	if len(prices) == 0 {
 		return nil
 	}
@@ -726,7 +726,7 @@ func deleteProductPrices(ctx context.Context, db dependency.DB, productId int) e
 	})
 }
 
-func upsertProductPrices(ctx context.Context, db dependency.DB, productId int, prices []entity.ProductPriceInsert) error {
+func upsertProductPrices(ctx context.Context, db dependency.DB, productId int, prices []entity.ColorwayPriceInsert) error {
 	if err := deleteProductPrices(ctx, db, productId); err != nil {
 		return fmt.Errorf("failed to delete existing prices: %w", err)
 	}
@@ -749,7 +749,7 @@ func updateProductMedia(ctx context.Context, db dependency.DB, productId int, me
 	return nil
 }
 
-func updateProductTags(ctx context.Context, db dependency.DB, productId int, tagsInsert []entity.ProductTagInsert) error {
+func updateProductTags(ctx context.Context, db dependency.DB, productId int, tagsInsert []entity.ColorwayTagInsert) error {
 	query := "DELETE FROM product_tag WHERE product_id = :productId"
 	err := storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"productId": productId,
@@ -833,11 +833,11 @@ type productQueryResult struct {
 	SecondaryCompressedH        sql.NullInt32        `db:"secondary_compressed_height"`
 	SecondaryBlurHash           sql.NullString       `db:"secondary_blur_hash"`
 	SoldOut                     bool                 `db:"sold_out"`
-	Status                      entity.ProductStatus `db:"status"`
+	Status                      entity.ColorwayStatus `db:"status"`
 	StyleId                     int                  `db:"style_id"`
 }
 
-func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslationInsert) entity.Product {
+func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslationInsert) entity.Colorway {
 	var secondaryThumbnail *entity.MediaFull
 	if pqr.SecondaryThumbnailId.Valid {
 		secondaryCreatedAt := pqr.CreatedAt
@@ -862,7 +862,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		}
 	}
 
-	return entity.Product{
+	return entity.Colorway{
 		Id:        pqr.Id,
 		CreatedAt: pqr.CreatedAt,
 		UpdatedAt: pqr.UpdatedAt,
@@ -872,9 +872,9 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 		SoldOut:   pqr.SoldOut,
 		Status:    pqr.Status,
 		StyleId:   pqr.StyleId,
-		ProductDisplay: entity.ProductDisplay{
-			ProductBody: entity.ProductBody{
-				ProductBodyInsert: entity.ProductBodyInsert{
+		ProductDisplay: entity.ColorwayDisplay{
+			ProductBody: entity.ColorwayBody{
+				ProductBodyInsert: entity.ColorwayBodyInsert{
 					Preorder:              pqr.Preorder,
 					Brand:                 pqr.Brand,
 					Collection:            pqr.Collection,
@@ -919,23 +919,23 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 	}
 }
 
-func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductTranslationInsert, error) {
+func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ColorwayTranslationInsert, error) {
 	if len(productIds) == 0 {
-		return map[int][]entity.ProductTranslationInsert{}, nil
+		return map[int][]entity.ColorwayTranslationInsert{}, nil
 	}
 
 	query := `SELECT product_id, language_id, name, description FROM product_translation WHERE product_id IN (:productIds) ORDER BY product_id, language_id`
 
-	translations, err := storeutil.QueryListNamed[entity.ProductTranslation](ctx, db, query, map[string]any{
+	translations, err := storeutil.QueryListNamed[entity.ColorwayTranslation](ctx, db, query, map[string]any{
 		"productIds": productIds,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get product translations: %w", err)
 	}
 
-	translationMap := make(map[int][]entity.ProductTranslationInsert)
+	translationMap := make(map[int][]entity.ColorwayTranslationInsert)
 	for _, t := range translations {
-		translationMap[t.ProductId] = append(translationMap[t.ProductId], entity.ProductTranslationInsert{
+		translationMap[t.ProductId] = append(translationMap[t.ProductId], entity.ColorwayTranslationInsert{
 			LanguageId:  t.LanguageId,
 			Name:        t.Name,
 			Description: t.Description,
@@ -945,21 +945,21 @@ func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds 
 	return translationMap, nil
 }
 
-func fetchProductPrices(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductPrice, error) {
+func fetchProductPrices(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ColorwayPrice, error) {
 	if len(productIds) == 0 {
-		return map[int][]entity.ProductPrice{}, nil
+		return map[int][]entity.ColorwayPrice{}, nil
 	}
 
 	query := `SELECT id, product_id, currency, price, created_at, updated_at FROM product_price WHERE product_id IN (:productIds) ORDER BY product_id, currency`
 
-	prices, err := storeutil.QueryListNamed[entity.ProductPrice](ctx, db, query, map[string]any{
+	prices, err := storeutil.QueryListNamed[entity.ColorwayPrice](ctx, db, query, map[string]any{
 		"productIds": productIds,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	priceMap := make(map[int][]entity.ProductPrice)
+	priceMap := make(map[int][]entity.ColorwayPrice)
 	for _, p := range prices {
 		priceMap[p.ProductId] = append(priceMap[p.ProductId], p)
 	}

@@ -11,9 +11,9 @@ import (
 // present and its price positive; a missing or non-positive price fails the order rather than
 // mispricing it at zero.
 func TestGetProductPrice(t *testing.T) {
-	prd := &entity.Product{
+	prd := &entity.Colorway{
 		Id: 7,
-		Prices: []entity.ProductPrice{
+		Prices: []entity.ColorwayPrice{
 			{Currency: "EUR", Price: decimal.NewFromInt(100)},
 			{Currency: "USD", Price: decimal.Zero},
 		},

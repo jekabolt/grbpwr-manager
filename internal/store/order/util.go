@@ -17,7 +17,7 @@ import (
 // that runs only at write time; re-checking here is defence in depth so a data anomaly (a stray
 // zero price in the order currency) fails the order instead of silently selling at zero. The custom
 // order path intentionally does not use this — it prices from admin-supplied amounts.
-func getProductPrice(prd *entity.Product, currency string) (decimal.Decimal, error) {
+func getProductPrice(prd *entity.Colorway, currency string) (decimal.Decimal, error) {
 	for _, price := range prd.Prices {
 		// Stored currencies are uppercase; compare case-insensitively so a
 		// lowercase/mixed-case client currency does not falsely miss the price.

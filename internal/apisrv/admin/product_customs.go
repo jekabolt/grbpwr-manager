@@ -50,7 +50,7 @@ func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProduct
 	hs := strings.TrimSpace(c.HsCode)
 	descr := strings.TrimSpace(c.CustomsDescription)
 
-	err := s.repo.Products().SetProductCustoms(ctx, int(req.ProductId), entity.ProductCustoms{
+	err := s.repo.Products().SetProductCustoms(ctx, int(req.ProductId), entity.ColorwayCustoms{
 		HSCode:             sql.NullString{String: hs, Valid: hs != ""},
 		CustomsDescription: sql.NullString{String: descr, Valid: descr != ""},
 	})

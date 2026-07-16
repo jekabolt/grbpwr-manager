@@ -235,7 +235,7 @@ func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.
 }
 
 // productCostInfoToPb converts the confidential product cost fields to their admin proto form.
-func productCostInfoToPb(ci *entity.ProductCostInfo) *pb_admin.ProductCostInfo {
+func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ProductCostInfo {
 	if ci == nil {
 		return nil
 	}

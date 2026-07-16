@@ -8,21 +8,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type ProductNew struct {
-	Product          *ProductInsert              `valid:"required"`
+type ColorwayNew struct {
+	Product          *ColorwayInsert             `valid:"required"`
 	SizeMeasurements []SizeWithMeasurementInsert `valid:"required"`
 	MediaIds         []int                       `valid:"required"`
-	Tags             []ProductTagInsert          `valid:"required"`
-	Prices           []ProductPriceInsert        `valid:"required"` // At least one price required
+	Tags             []ColorwayTagInsert         `valid:"required"`
+	Prices           []ColorwayPriceInsert       `valid:"required"` // At least one price required
 }
 
-type ProductFull struct {
-	Product      *Product
-	Sizes        []ProductSize
+type ColorwayFull struct {
+	Product      *Colorway
+	Sizes        []Variant
 	Measurements []ProductMeasurement
 	Media        []MediaFull
-	Tags         []ProductTag
-	Prices       []ProductPrice
+	Tags         []ColorwayTag
+	Prices       []ColorwayPrice
 }
 
 // Category represents a hierarchical category structure
@@ -77,19 +77,19 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
-// ProductStatus is a product's lifecycle state — the single authoritative view of the
+// ColorwayStatus is a product's lifecycle state — the single authoritative view of the
 // (deleted_at, hidden) pair, whose interaction used to be re-expressed ad-hoc in each WHERE clause.
 // It is a STORED generated column (migration 0137, PR5-A): 'archived' when soft-deleted, else
 // 'hidden' when hidden, else 'active'. Read-only from Go — the operator still toggles `hidden` or
 // soft-deletes via `deleted_at` and the status recomputes. It is ORTHOGONAL to preorder, sold_out
 // and hidden_for_non_qualified (availability window / derived stock / tier gating), which are not
 // lifecycle states and are applied independently.
-type ProductStatus string
+type ColorwayStatus string
 
 const (
-	ProductStatusActive   ProductStatus = "active"   // publicly visible on the storefront
-	ProductStatusHidden   ProductStatus = "hidden"   // admin-visible, hidden from storefront, not deleted
-	ProductStatusArchived ProductStatus = "archived" // soft-deleted
+	ProductStatusActive   ColorwayStatus = "active"   // publicly visible on the storefront
+	ProductStatusHidden   ColorwayStatus = "hidden"   // admin-visible, hidden from storefront, not deleted
+	ProductStatusArchived ColorwayStatus = "archived" // soft-deleted
 )
 
 type SeasonEnum string
@@ -177,7 +177,7 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 	Unisex: true,
 }
 
-type ProductBodyInsert struct {
+type ColorwayBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
 	Color              string              `db:"color" valid:"required"`
@@ -203,8 +203,8 @@ type ProductBodyInsert struct {
 	HiddenForNonQualified bool `db:"hidden_for_non_qualified" valid:"-"`
 }
 
-// ProductPrice represents a product price in a specific currency
-type ProductPrice struct {
+// ColorwayPrice represents a product price in a specific currency
+type ColorwayPrice struct {
 	Id        int             `db:"id"`
 	ProductId int             `db:"product_id"`
 	Currency  string          `db:"currency"`
@@ -213,71 +213,71 @@ type ProductPrice struct {
 	UpdatedAt time.Time       `db:"updated_at"`
 }
 
-// ProductPriceInsert for inserting/updating product prices
-type ProductPriceInsert struct {
+// ColorwayPriceInsert for inserting/updating product prices
+type ColorwayPriceInsert struct {
 	Currency string          `db:"currency" valid:"required,length(3|3)"`
 	Price    decimal.Decimal `db:"price" valid:"required"`
 }
 
-type ProductBody struct {
-	ProductBodyInsert ProductBodyInsert          `valid:"required"`
-	Translations      []ProductTranslationInsert `valid:"required"`
+type ColorwayBody struct {
+	ProductBodyInsert ColorwayBodyInsert          `valid:"required"`
+	Translations      []ColorwayTranslationInsert `valid:"required"`
 }
 
-func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
+func (pb *ColorwayBody) SalePercentageDecimal() decimal.Decimal {
 	if pb.ProductBodyInsert.SalePercentage.Valid {
 		return pb.ProductBodyInsert.SalePercentage.Decimal.Round(2)
 	}
 	return decimal.Zero
 }
 
-// Product represents the product table
-type Product struct {
-	Id             int            `db:"id"`
-	CreatedAt      time.Time      `db:"created_at"`
-	UpdatedAt      time.Time      `db:"updated_at"`
-	DeletedAt      sql.NullTime   `db:"deleted_at"`
-	Slug           string         `db:"slug"`
-	SKU            string         `db:"sku"`
-	ModelNo        sql.NullInt32  `db:"model_no"`      // 5-digit standalone model number; NULL for colourway-linked products
-	SkuLockedAt    sql.NullTime   `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
-	ProductDisplay ProductDisplay `valid:"required"`
-	Prices         []ProductPrice // Multi-currency prices
-	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
-	Status         ProductStatus  `db:"status"`   // lifecycle state (generated: active/hidden/archived)
-	StyleId        int            `db:"style_id"` // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
+// Colorway represents the product table
+type Colorway struct {
+	Id             int             `db:"id"`
+	CreatedAt      time.Time       `db:"created_at"`
+	UpdatedAt      time.Time       `db:"updated_at"`
+	DeletedAt      sql.NullTime    `db:"deleted_at"`
+	Slug           string          `db:"slug"`
+	SKU            string          `db:"sku"`
+	ModelNo        sql.NullInt32   `db:"model_no"`      // 5-digit standalone model number; NULL for colourway-linked products
+	SkuLockedAt    sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
+	ProductDisplay ColorwayDisplay `valid:"required"`
+	Prices         []ColorwayPrice // Multi-currency prices
+	SoldOut        bool            // Indicates if product is sold out (all sizes have quantity <= 0)
+	Status         ColorwayStatus  `db:"status"`   // lifecycle state (generated: active/hidden/archived)
+	StyleId        int             `db:"style_id"` // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
 }
 
 // IsPubliclyVisible reports whether the product is exposed on the storefront: only 'active' products
 // are (hidden/archived are not). It is the single Go predicate behind the storefront read filter
 // (status = 'active'); tier gating (HiddenForNonQualified) and stock (SoldOut) are separate axes
 // applied on top of it, not part of this decision.
-func (p *Product) IsPubliclyVisible() bool {
+func (p *Colorway) IsPubliclyVisible() bool {
 	return p.Status == ProductStatusActive
 }
 
-type ProductInsert struct {
-	ProductBodyInsert         ProductBodyInsert          `valid:"required"`
-	ThumbnailMediaID          int                        `db:"thumbnail_media_id" valid:"required"`
-	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
-	Translations              []ProductTranslationInsert `valid:"required"`
-	Prices                    []ProductPriceInsert       `valid:"required"` // At least one price required
+type ColorwayInsert struct {
+	ProductBodyInsert         ColorwayBodyInsert          `valid:"required"`
+	ThumbnailMediaID          int                         `db:"thumbnail_media_id" valid:"required"`
+	SecondaryThumbnailMediaID sql.NullInt32               `db:"secondary_thumbnail_media_id" valid:"-"`
+	Translations              []ColorwayTranslationInsert `valid:"required"`
+	Prices                    []ColorwayPriceInsert       `valid:"required"` // At least one price required
 	// CostPrice is the confidential per-unit cost of goods (COGS) in base currency
 	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
 	// on update. Never serialized on the storefront read path — write-only.
 	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
 }
 
-type ProductDisplay struct {
-	ProductBody        ProductBody `valid:"required"`
-	Thumbnail          MediaFull   `valid:"required"`
-	SecondaryThumbnail *MediaFull  `valid:"-"`
+type ColorwayDisplay struct {
+	ProductBody        ColorwayBody `valid:"required"`
+	Thumbnail          MediaFull    `valid:"required"`
+	SecondaryThumbnail *MediaFull   `valid:"-"`
 }
 
-// ProductCostInfo carries the confidential COGS fields of a product for the admin surface
+// ColorwayCostInfo carries the confidential COGS fields of a product for the admin surface
 // only (never the storefront). Source is "manual" | "tech_card" | "" (unset); the tech-card
 // ids are 0 when absent.
-type ProductCostInfo struct {
+type ColorwayCostInfo struct {
 	CostPrice           decimal.NullDecimal `db:"cost_price"`
 	CostPriceSource     sql.NullString      `db:"cost_price_source"`
 	CostPriceTechCardID sql.NullInt32       `db:"cost_price_tech_card_id"`
@@ -285,12 +285,12 @@ type ProductCostInfo struct {
 	PrimaryTechCardID   sql.NullInt32       `db:"primary_tech_card_id"`
 }
 
-// ProductCustoms carries the per-product customs data used to build an international shipping
+// ColorwayCustoms carries the per-product customs data used to build an international shipping
 // label's customs declaration (Sendcloud). HSCode / CustomsDescription are the optional customs-only
 // fields (a product without them ships domestically/intra-EU fine). CountryOfOrigin is the existing
 // required core product field (free-text manufacture country) surfaced here read-only — it is set
 // via the product form, and resolved to ISO-2 at label build time; SetProductCustoms never writes it.
-type ProductCustoms struct {
+type ColorwayCustoms struct {
 	HSCode             sql.NullString `db:"hs_code"`
 	CountryOfOrigin    sql.NullString `db:"country_of_origin"`
 	CustomsDescription sql.NullString `db:"customs_description"`
@@ -303,17 +303,17 @@ type ProductMeasurementUpdate struct {
 }
 
 type SizeWithMeasurementInsert struct {
-	ProductSize  ProductSizeInsert
+	ProductSize  VariantInsert
 	Measurements []ProductMeasurementInsert
 }
 
 type SizeWithMeasurement struct {
-	ProductSize  ProductSize
+	ProductSize  Variant
 	Measurements []ProductMeasurement
 }
 
 // ProductSizes represents the product_size table
-type ProductSize struct {
+type Variant struct {
 	Id        int             `db:"id"`
 	Quantity  decimal.Decimal `db:"quantity"`
 	ProductId int             `db:"product_id"`
@@ -321,7 +321,7 @@ type ProductSize struct {
 	SKU       sql.NullString  `db:"sku"` // first-class variant SKU (SS26-00021-BLK-04)
 }
 
-func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
+func (ps *Variant) QuantityDecimal() decimal.Decimal {
 	return ps.Quantity.Round(0)
 }
 
@@ -329,7 +329,7 @@ func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
 // when the total available quantity across its sizes is <= 0 (which includes having no sizes). The
 // SQL read path computes the same thing server-side via one shared expression (store/product's
 // soldOutSelect / productStockExpr); keep the two in agreement (PR5-B).
-func SoldOutFromSizes(sizes []ProductSize) bool {
+func SoldOutFromSizes(sizes []Variant) bool {
 	total := decimal.Zero
 	for i := range sizes {
 		total = total.Add(sizes[i].Quantity)
@@ -338,12 +338,12 @@ func SoldOutFromSizes(sizes []ProductSize) bool {
 }
 
 // ProductSizes for insert represents the product_size table
-type ProductSizeInsert struct {
+type VariantInsert struct {
 	Quantity decimal.Decimal `db:"quantity"`
 	SizeId   int             `db:"size_id"`
 }
 
-func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
+func (psi *VariantInsert) QuantityDecimal() decimal.Decimal {
 	return psi.Quantity.Round(0)
 }
 
@@ -364,20 +364,20 @@ type ProductMeasurementInsert struct {
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
-// ProductTag represents the product_tag table
-type ProductTag struct {
+// ColorwayTag represents the product_tag table
+type ColorwayTag struct {
 	Id        int `db:"id"`
 	ProductId int `db:"product_id"`
-	ProductTagInsert
+	ColorwayTagInsert
 }
 
 // ProductTag represents the product_tag table
-type ProductTagInsert struct {
+type ColorwayTagInsert struct {
 	Tag string `db:"tag"`
 }
 
-// ProductTranslation represents the product_translation table
-type ProductTranslation struct {
+// ColorwayTranslation represents the product_translation table
+type ColorwayTranslation struct {
 	Id          int       `db:"id"`
 	ProductId   int       `db:"product_id"`
 	LanguageId  int       `db:"language_id"`
@@ -387,8 +387,8 @@ type ProductTranslation struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 }
 
-// ProductTranslationInsert represents the product_translation table for insert operations
-type ProductTranslationInsert struct {
+// ColorwayTranslationInsert represents the product_translation table for insert operations
+type ColorwayTranslationInsert struct {
 	LanguageId  int    `db:"language_id" json:"language_id" valid:"required"`
 	Name        string `db:"name" json:"name" valid:"required"`
 	Description string `db:"description" json:"description" valid:"required"`

@@ -554,12 +554,12 @@ func hasArchiveText(ts []entity.ArchiveItemTranslation) bool {
 
 // orderProductsByIds returns products ordered to match ids, dropping any id with
 // no corresponding (visible) product.
-func orderProductsByIds(products []entity.Product, ids []int) []entity.Product {
-	byId := make(map[int]entity.Product, len(products))
+func orderProductsByIds(products []entity.Colorway, ids []int) []entity.Colorway {
+	byId := make(map[int]entity.Colorway, len(products))
 	for _, p := range products {
 		byId[p.Id] = p
 	}
-	ordered := make([]entity.Product, 0, len(ids))
+	ordered := make([]entity.Colorway, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := byId[id]; ok {
 			ordered = append(ordered, p)

@@ -22,7 +22,7 @@ const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM pr
 const soldOutSelect = productStockExpr + ` = 0 AS sold_out`
 
 // GetProductsPaged returns a paged list of products based on provided parameters.
-func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error) {
+func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error) {
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
@@ -195,7 +195,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 		return nil, 0, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prds := make([]entity.Product, 0, len(prdResults))
+	prds := make([]entity.Colorway, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -207,9 +207,9 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 }
 
 // GetProductsByIds returns a list of products by their IDs.
-func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error) {
+func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Colorway, error) {
 	if len(ids) == 0 {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	query := `
@@ -254,7 +254,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prdMap := make(map[int]entity.Product)
+	prdMap := make(map[int]entity.Colorway)
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -262,7 +262,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		prdMap[product.Id] = product
 	}
 
-	result := make([]entity.Product, 0, len(ids))
+	result := make([]entity.Colorway, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := prdMap[id]; ok {
 			result = append(result, p)
@@ -275,7 +275,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 // GetLowStockProducts returns visible, non-deleted products whose total stock
 // is in the range (0, threshold], ordered by ascending stock (closest to
 // selling out first), limited to `limit`.
-func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error) {
+func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error) {
 	if threshold <= 0 {
 		threshold = 3
 	}
@@ -319,7 +319,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		return nil, fmt.Errorf("can't get low stock products: %w", err)
 	}
 	if len(prdResults) == 0 {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	ids := make([]int, 0, len(prdResults))
@@ -337,7 +337,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	result := make([]entity.Product, 0, len(prdResults))
+	result := make([]entity.Colorway, 0, len(prdResults))
 	for _, r := range prdResults {
 		product := r.toProduct(translationMap[r.Id])
 		product.Prices = priceMap[r.Id]
@@ -348,9 +348,9 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 }
 
 // GetProductsByTag returns a list of products by their tag.
-func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error) {
+func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colorway, error) {
 	if tag == "" {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	query := `
@@ -400,7 +400,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prds := make([]entity.Product, 0, len(prdResults))
+	prds := make([]entity.Colorway, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -411,8 +411,8 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 	return prds, nil
 }
 
-func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ProductFull, error) {
-	var productInfo entity.ProductFull
+func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ColorwayFull, error) {
+	var productInfo entity.ColorwayFull
 
 	whereClauses := []string{}
 	params := map[string]interface{}{}
@@ -484,12 +484,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	`
 
 	var (
-		translationMap map[int][]entity.ProductTranslationInsert
-		priceMap       map[int][]entity.ProductPrice
-		sizes          []entity.ProductSize
+		translationMap map[int][]entity.ColorwayTranslationInsert
+		priceMap       map[int][]entity.ColorwayPrice
+		sizes          []entity.Variant
 		measurements   []entity.ProductMeasurement
 		media          []entity.MediaFull
-		tags           []entity.ProductTag
+		tags           []entity.ColorwayTag
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -510,7 +510,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if sizes, e = storeutil.QueryListNamed[entity.ProductSize](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
+		if sizes, e = storeutil.QueryListNamed[entity.Variant](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
 			return fmt.Errorf("can't get sizes: %w", e)
 		}
 		return nil
@@ -539,7 +539,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if tags, e = storeutil.QueryListNamed[entity.ProductTag](gctx, s.DB, `SELECT * FROM product_tag WHERE product_id = :id`, idParams); e != nil {
+		if tags, e = storeutil.QueryListNamed[entity.ColorwayTag](gctx, s.DB, `SELECT * FROM product_tag WHERE product_id = :id`, idParams); e != nil {
 			return fmt.Errorf("can't get tags: %w", e)
 		}
 		return nil
@@ -556,7 +556,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	if prices, ok := priceMap[pid]; ok {
 		product.Prices = prices
 	} else {
-		product.Prices = []entity.ProductPrice{}
+		product.Prices = []entity.ColorwayPrice{}
 	}
 
 	product.SoldOut = entity.SoldOutFromSizes(sizes)

@@ -19,24 +19,24 @@ import (
 
 // getProductsByIds uses the Products interface to fetch products, avoiding
 // duplication of the complex product query from the products store.
-func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds []int) ([]entity.Product, error) {
+func getProductsByIds(ctx context.Context, rep dependency.Repository, productIds []int) ([]entity.Colorway, error) {
 	if len(productIds) == 0 {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 	return rep.Products().GetProductsByIds(ctx, productIds)
 }
 
-func getProductsSizesByIds(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+func getProductsSizesByIds(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) ([]entity.Variant, error) {
 	return getProductsSizesByIdsWithLock(ctx, db, items, false)
 }
 
-func getProductsSizesByIdsForUpdate(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) ([]entity.ProductSize, error) {
+func getProductsSizesByIdsForUpdate(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) ([]entity.Variant, error) {
 	return getProductsSizesByIdsWithLock(ctx, db, items, true)
 }
 
-func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert, forUpdate bool) ([]entity.ProductSize, error) {
+func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert, forUpdate bool) ([]entity.Variant, error) {
 	if len(items) == 0 {
-		return []entity.ProductSize{}, nil
+		return []entity.Variant{}, nil
 	}
 
 	var productSizeParams []interface{}
@@ -55,7 +55,7 @@ func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items 
 		query += " FOR UPDATE"
 	}
 
-	var prdSizes []entity.ProductSize
+	var prdSizes []entity.Variant
 	err := db.SelectContext(ctx, &prdSizes, query, productSizeParams...)
 	if err != nil {
 		return nil, fmt.Errorf("get product sizes: %w", err)
@@ -94,13 +94,13 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 		return nil, nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
 
-	prdMap := make(map[int]entity.Product)
+	prdMap := make(map[int]entity.Colorway)
 	for _, prd := range prds {
 		prdMap[prd.Id] = prd
 	}
 
 	db := rep.DB()
-	var prdSizes []entity.ProductSize
+	var prdSizes []entity.Variant
 	if forUpdate {
 		prdSizes, err = getProductsSizesByIdsForUpdate(ctx, db, items)
 	} else {
@@ -110,7 +110,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 		return nil, nil, fmt.Errorf("can't get products sizes by ids: %w", err)
 	}
 
-	prdSizeMap := make(map[string]entity.ProductSize)
+	prdSizeMap := make(map[string]entity.Variant)
 	for _, prdSize := range prdSizes {
 		key := fmt.Sprintf("%d-%d", prdSize.ProductId, prdSize.SizeId)
 		prdSizeMap[key] = prdSize
@@ -214,7 +214,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't get products by ids: %w", err)
 	}
-	prdMap := make(map[int]entity.Product)
+	prdMap := make(map[int]entity.Colorway)
 	for _, prd := range prds {
 		prdMap[prd.Id] = prd
 	}
@@ -223,7 +223,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't get products sizes by ids: %w", err)
 	}
-	prdSizeMap := make(map[string]entity.ProductSize)
+	prdSizeMap := make(map[string]entity.Variant)
 	for _, ps := range prdSizes {
 		prdSizeMap[fmt.Sprintf("%d-%d", ps.ProductId, ps.SizeId)] = ps
 	}

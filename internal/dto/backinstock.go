@@ -21,8 +21,8 @@ type BackInStock struct {
 	EmailB64    string
 }
 
-// ProductFullToBackInStock converts entity.ProductFull to BackInStock DTO
-func ProductFullToBackInStock(product *entity.ProductFull, sizeId int, buyerName string, email string) *BackInStock {
+// ProductFullToBackInStock converts entity.ColorwayFull to BackInStock DTO
+func ProductFullToBackInStock(product *entity.ColorwayFull, sizeId int, buyerName string, email string) *BackInStock {
 	// Get product name from first translation
 	productName := "Product"
 	if product.Product != nil && len(product.Product.ProductDisplay.ProductBody.Translations) > 0 {

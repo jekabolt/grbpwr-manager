@@ -139,7 +139,7 @@ type HeroMainWithTranslations struct {
 }
 
 type HeroFeaturedProductsWithTranslations struct {
-	Products     []Product             `json:"products"`
+	Products     []Colorway             `json:"products"`
 	ExploreLink  string                `json:"explore_link"`
 	Translations []HeroCopyTranslation `json:"translations"`
 }
@@ -172,7 +172,7 @@ type HeroDropWithTranslations struct {
 }
 
 type HeroLastChanceWithTranslations struct {
-	Products     []Product             `json:"products"`
+	Products     []Colorway             `json:"products"`
 	ExploreLink  string                `json:"explore_link"`
 	Translations []HeroCopyTranslation `json:"translations"`
 }
@@ -184,7 +184,7 @@ type HeroMarqueeWithTranslations struct {
 }
 
 type HeroNewArrivalsWithTranslations struct {
-	Products     []Product             `json:"products"`
+	Products     []Colorway             `json:"products"`
 	ExploreLink  string                `json:"explore_link"`
 	Translations []HeroCopyTranslation `json:"translations"`
 }
@@ -201,7 +201,7 @@ type HeroMosaicWithTranslations struct {
 
 type HeroSplitWithTranslations struct {
 	Media     HeroSingleWithTranslations `json:"media"`
-	Products  []Product                  `json:"products"`
+	Products  []Colorway                  `json:"products"`
 	MediaLeft bool                       `json:"media_left"`
 }
 
@@ -216,7 +216,7 @@ type HeroVideoWithTranslations struct {
 }
 
 type HeroProductSpotlightWithTranslations struct {
-	Product      Product               `json:"product"`
+	Product      Colorway               `json:"product"`
 	Media        HeroMediaFull         `json:"media"`
 	ExploreLink  string                `json:"explore_link"`
 	Translations []HeroCopyTranslation `json:"translations"`

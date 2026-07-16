@@ -121,7 +121,7 @@ type OrderItem struct {
 	Id            int                        `db:"id"`
 	OrderId       int                        `db:"order_id"`
 	Thumbnail     string                     `db:"thumbnail"`
-	Translations  []ProductTranslationInsert `db:"translations"`
+	Translations  []ColorwayTranslationInsert `db:"translations"`
 	BlurHash      string                     `db:"blur_hash"`
 	ProductBrand  string                     `db:"product_brand"`
 	Color         string                     `db:"color"`
