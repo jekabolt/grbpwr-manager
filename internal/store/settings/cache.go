@@ -94,7 +94,6 @@ func (s *Store) getProductTags(ctx context.Context) ([]string, error) {
 		SELECT DISTINCT pt.tag AS tag
 		FROM product_tag pt
 		JOIN product p ON pt.product_id = p.id
-		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE p.hidden = 0
 			AND p.deleted_at IS NULL
 			AND pt.tag != ''

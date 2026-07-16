@@ -111,7 +111,6 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 			CAST(COALESCE(SUM(ABS(h.quantity_delta)), 0) AS SIGNED) AS units
 		FROM product_stock_change_history h
 		JOIN product p ON p.id = h.product_id
-		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE h.source = 'manual_adjustment'
 			AND h.reason IN ('damage', 'loss')
 			AND h.quantity_delta < 0
