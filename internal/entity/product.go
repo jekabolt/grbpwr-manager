@@ -195,7 +195,6 @@ type ProductBodyInsert struct {
 	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
 	Season             SeasonEnum          `db:"season" valid:"required"`
-	Version            string              `db:"version" valid:"-"`
 	Collection         string              `db:"collection" valid:"-"`
 	Fit                sql.NullString      `db:"fit" valid:"-"`
 	// MinTier is the minimum loyalty tier code (0/1/2/99) required to purchase.

@@ -298,8 +298,8 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 	// here. This INSERT carries only colourway-level columns (colour, media, price, country, ...).
 	query := `
 	INSERT INTO product
-	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, hidden, version, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :version, :minTier, :costPrice,
+	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, hidden, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :styleId, :preorder, :color, :colorCode, :colorHex, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, :hidden, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
@@ -314,7 +314,6 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Produc
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
 		"hidden":               product.ProductBodyInsert.Hidden,
-		"version":              product.ProductBodyInsert.Version,
 		"minTier":              product.ProductBodyInsert.MinTier,
 		"costPrice":            product.CostPrice,
 	}
@@ -512,7 +511,6 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
 		hidden = :hidden,
-		version = :version,
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
 		-- product edits from the admin panel (which does not carry cost) never wipe it.
@@ -534,7 +532,6 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ProductIns
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
 		"hidden":               prd.ProductBodyInsert.Hidden,
-		"version":              prd.ProductBodyInsert.Version,
 		"minTier":              prd.ProductBodyInsert.MinTier,
 		"costPrice":            prd.CostPrice,
 		"id":                   id,
@@ -803,7 +800,6 @@ type productQueryResult struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id"`
 	CareInstructions   sql.NullString      `db:"care_instructions"`
 	Composition        sql.NullString      `db:"composition"`
-	Version            string              `db:"version"`
 	Hidden             sql.NullBool        `db:"hidden"`
 	TargetGender       entity.GenderEnum   `db:"target_gender"`
 	Season             entity.SeasonEnum   `db:"season"`
@@ -893,7 +889,6 @@ func (pqr *productQueryResult) toProduct(translations []entity.ProductTranslatio
 					ModelWearsSizeId:      pqr.ModelWearsSizeId,
 					CareInstructions:      pqr.CareInstructions,
 					Composition:           pqr.Composition,
-					Version:               pqr.Version,
 					Hidden:                pqr.Hidden,
 					TargetGender:          pqr.TargetGender,
 					Season:                pqr.Season,
