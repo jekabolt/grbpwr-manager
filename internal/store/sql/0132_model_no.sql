@@ -60,9 +60,13 @@ DEALLOCATE PREPARE s;
 
 -- Backfill 1: allocate a number for every tech_card lacking one, in created_at order. INSERT..SELECT
 -- assigns model_no_seq.id sequentially in the ORDER BY order (single-threaded insert).
+-- The NOT EXISTS guard makes the allocation idempotent: model_no_seq has no UNIQUE(ref_type,ref_id), so
+-- without it a mid-file failure (INSERT committed, matching UPDATE not) would re-allocate a SECOND seq
+-- row per tech_card on the next boot's re-run, leaving duplicate provenance rows and gaps in the counter.
 INSERT INTO model_no_seq (ref_type, ref_id)
     SELECT 'tech_card', tc.id FROM tech_card tc
     WHERE tc.model_no IS NULL
+      AND NOT EXISTS (SELECT 1 FROM model_no_seq q WHERE q.ref_type = 'tech_card' AND q.ref_id = tc.id)
     ORDER BY tc.created_at, tc.id;
 UPDATE tech_card tc
     JOIN model_no_seq q ON q.ref_type = 'tech_card' AND q.ref_id = tc.id
@@ -74,6 +78,7 @@ INSERT INTO model_no_seq (ref_type, ref_id)
     SELECT 'product', p.id FROM product p
     WHERE p.model_no IS NULL
       AND NOT EXISTS (SELECT 1 FROM tech_card_colorway cw WHERE cw.product_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM model_no_seq q WHERE q.ref_type = 'product' AND q.ref_id = p.id)
     ORDER BY p.created_at, p.id;
 UPDATE product p
     JOIN model_no_seq q ON q.ref_type = 'product' AND q.ref_id = p.id
