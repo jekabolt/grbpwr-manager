@@ -230,11 +230,14 @@ func openClaimsForOrder(ctx context.Context, db dependency.DB, orderID int) ([]e
 	return rows, nil
 }
 
-// releaseOpenClaimsInTx closes every still-open claim of an order with a 'release' row (no physical
+// ReleaseOpenClaimsInTx closes every still-open claim of an order with a 'release' row (no physical
 // writeoff). Shared by ReleasePackagingForOrder (cancel/refund) and by the consume tail, which
 // releases any claim the ship-time recipe no longer covers so a recipe change can't leak an open
-// claim that would depress available forever.
-func releaseOpenClaimsInTx(ctx context.Context, db dependency.DB, orderID int, username string) error {
+// claim that would depress available forever. Exported (L2 fix, review 04-MAZE-FLYOVER/review-plm-
+// backend.md): store/order's cancelOrder choke point calls this directly instead of duplicating the
+// open-claim SQL — the two definitions had to "stay in sync" by convention; now there is one.
+// Plain statement on the caller's transaction (db), no nested tx — same shape order's own helper had.
+func ReleaseOpenClaimsInTx(ctx context.Context, db dependency.DB, orderID int, username string) error {
 	open, err := openClaimsForOrder(ctx, db, orderID)
 	if err != nil {
 		return err
@@ -276,7 +279,7 @@ func (s *Store) ReservePackagingForOrder(ctx context.Context, orderID int, usern
 // an order with no open claims.
 func (s *Store) ReleasePackagingForOrder(ctx context.Context, orderID int, username string) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		return releaseOpenClaimsInTx(ctx, rep.DB(), orderID, username)
+		return ReleaseOpenClaimsInTx(ctx, rep.DB(), orderID, username)
 	})
 }
 

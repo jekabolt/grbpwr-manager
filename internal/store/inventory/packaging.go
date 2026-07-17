@@ -118,7 +118,7 @@ func (s *Store) ConsumePackagingForOrder(ctx context.Context, orderID, itemCount
 		}
 		// Release any claim the ship-time recipe no longer covers, so a recipe change between placement
 		// and ship can't leak an open claim that would depress available forever.
-		if err := releaseOpenClaimsInTx(ctx, db, orderID, username); err != nil {
+		if err := ReleaseOpenClaimsInTx(ctx, db, orderID, username); err != nil {
 			return err
 		}
 		return storeutil.ExecNamed(ctx, db, `
