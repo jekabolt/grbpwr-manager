@@ -697,8 +697,14 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// recipe (H1 fix) resolved against this style's own BOM items.
 		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
-		// free-text TechCardInsert.composition (which this card doesn't even expose on the wire).
+		// free-text Composition below.
 		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
+		// Style catalogue facts stored on tech_card but written via UpdateStyle — read-only
+		// projections for the constructor (the admin edits them in-place, saving through UpdateStyle).
+		// Composition is already normalized to plain text on read (normalizeLegacyComposition, M1).
+		Fit:              pbStringFromNull(tc.Fit),
+		Composition:      pbStringFromNull(tc.Composition),
+		CareInstructions: pbStringFromNull(tc.CareInstructions),
 	}
 }
 
