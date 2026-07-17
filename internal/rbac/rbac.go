@@ -35,8 +35,15 @@ const (
 	SectionArchive     = "archive"
 	SectionModels      = "models"
 	SectionFittings    = "fittings"
-	SectionTechCards   = "tech_cards"
-	SectionProduction  = "production"
+	// SectionDictionaries governs the controlled merch dictionaries (R9): collection, colour, tag
+	// and the closed ISO country list — their dedicated management screens (List/Create/Update/
+	// Archive/SetActive). Curating a dictionary is a SEPARATE right from editing the catalog that
+	// consumes it (Q5: "создание Collection — отдельное право словарей"), so a catalog editor can no
+	// longer silently pollute the collection/colour vocabulary. Catalog pickers are unaffected: the
+	// flat read used by the product/tech-card UI is the allowlisted GetDictionary, not these RPCs.
+	SectionDictionaries = "dictionaries"
+	SectionTechCards    = "tech_cards"
+	SectionProduction   = "production"
 	// SectionInventory governs the material warehouse (new-flow NF-01): on-hand stock, receipts,
 	// issues, adjustments and the movement ledger. Quantities are gated by this section; the money
 	// on those responses (unit costs, valuation) is additionally gated by SectionCosting — a
@@ -80,6 +87,7 @@ var catalog = []SectionInfo{
 	{SectionArchive, "Archive", "Archive entries."},
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
+	{SectionDictionaries, "Dictionaries", "Controlled merch dictionaries: collections, colours, tags, countries. Managing them is separate from editing the catalog that uses them."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
 	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
 	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
@@ -151,22 +159,24 @@ var methodRequirements = map[string]Requirement{
 	"SetColorwayCustoms":        wr(SectionProducts),
 	"ListStockChangeHistory":    rd(SectionProducts),
 	"ListStockChanges":          rd(SectionProducts),
-	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Catalog-owned
-	// (SectionCosting is field-shaping only and can't gate a method), so they ride the products section.
-	"ListColors":        rd(SectionProducts),
-	"CreateColor":       wr(SectionProducts),
-	"UpdateColor":       wr(SectionProducts),
-	"ArchiveColor":      wr(SectionProducts),
-	"ListCollections":   rd(SectionProducts),
-	"CreateCollection":  wr(SectionProducts),
-	"UpdateCollection":  wr(SectionProducts),
-	"ArchiveCollection": wr(SectionProducts),
-	"ListTags":          rd(SectionProducts),
-	"CreateTag":         wr(SectionProducts),
-	"UpdateTag":         wr(SectionProducts),
-	"ArchiveTag":        wr(SectionProducts),
-	"ListCountries":     rd(SectionProducts),
-	"SetCountryActive":  wr(SectionProducts),
+	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Q5: curating
+	// a dictionary is a right separate from editing the catalog that consumes it, so their dedicated
+	// management RPCs live in SectionDictionaries (reads + writes), not products. Catalog pickers read
+	// the flat dictionary via the allowlisted GetDictionary, so this does not touch catalog editing.
+	"ListColors":        rd(SectionDictionaries),
+	"CreateColor":       wr(SectionDictionaries),
+	"UpdateColor":       wr(SectionDictionaries),
+	"ArchiveColor":      wr(SectionDictionaries),
+	"ListCollections":   rd(SectionDictionaries),
+	"CreateCollection":  wr(SectionDictionaries),
+	"UpdateCollection":  wr(SectionDictionaries),
+	"ArchiveCollection": wr(SectionDictionaries),
+	"ListTags":          rd(SectionDictionaries),
+	"CreateTag":         wr(SectionDictionaries),
+	"UpdateTag":         wr(SectionDictionaries),
+	"ArchiveTag":        wr(SectionDictionaries),
+	"ListCountries":     rd(SectionDictionaries),
+	"SetCountryActive":  wr(SectionDictionaries),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
