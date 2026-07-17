@@ -547,6 +547,8 @@ type (
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
+		// SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}.
+		SuggestStyleNumber(ctx context.Context, seasonCode string, seasonYear int) (string, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)

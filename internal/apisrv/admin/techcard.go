@@ -113,6 +113,24 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
 }
 
+// SuggestStyleNumber proposes the next free style number for a season (Q1). Advisory: the client may
+// accept the proposal (style_number_source=GENERATED) or override it (MANUAL) on the tech-card write.
+func (s *Server) SuggestStyleNumber(ctx context.Context, req *pb_admin.SuggestStyleNumberRequest) (*pb_admin.SuggestStyleNumberResponse, error) {
+	code, year, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season: %v", err)
+	}
+	if code == "" {
+		return nil, status.Error(codes.InvalidArgument, "sku_season (code + year) is required to propose a style number")
+	}
+	proposal, err := s.repo.TechCards().SuggestStyleNumber(ctx, string(code), year)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't suggest style number", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't suggest style number")
+	}
+	return &pb_admin.SuggestStyleNumberResponse{StyleNumber: proposal}, nil
+}
+
 // GetTechCard returns a tech card by id with its nested sections resolved.
 func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardRequest) (*pb_admin.GetTechCardResponse, error) {
 	if req.Id <= 0 {

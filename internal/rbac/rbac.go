@@ -255,6 +255,7 @@ var methodRequirements = map[string]Requirement{
 	"ListSamples":  rd(SectionFittings),
 	// tech cards
 	"CreateTechCard":           wr(SectionTechCards),
+	"SuggestStyleNumber":       rd(SectionTechCards), // Q1: propose the next style number for a season
 	"GetTechCard":              rd(SectionTechCards),
 	"UpdateTechCard":           wr(SectionTechCards),
 	"DeleteTechCard":           wr(SectionTechCards),
