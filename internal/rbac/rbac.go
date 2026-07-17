@@ -145,6 +145,7 @@ var methodRequirements = map[string]Requirement{
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
 	"GetStyleSizeChart":    rd(SectionProducts),
 	"UpdateStyleSizeChart": wr(SectionProducts),
+	"GetStyleCutList":      rd(SectionProducts), // Q6: read-only production cut-list projection (mirror consumer)
 	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
 	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
