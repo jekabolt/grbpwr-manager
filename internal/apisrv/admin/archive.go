@@ -172,7 +172,7 @@ func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 				return fmt.Errorf("archive item %d: %w", i, err)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCT:
-			if it.Product == nil || it.Product.ProductId == 0 {
+			if it.Product == nil || it.Product.ColorwayId == 0 {
 				return fmt.Errorf("archive item %d: product requires a product id", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_TAG:
@@ -180,7 +180,7 @@ func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 				return fmt.Errorf("archive item %d: products_tag requires a tag", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL:
-			if it.ProductsManual == nil || countNonZero(it.ProductsManual.ProductIds) == 0 {
+			if it.ProductsManual == nil || countNonZero(it.ProductsManual.ColorwayIds) == 0 {
 				return fmt.Errorf("archive item %d: products_manual requires at least one product id", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_UNKNOWN:

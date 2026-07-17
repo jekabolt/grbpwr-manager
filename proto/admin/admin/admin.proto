@@ -99,14 +99,14 @@ service AdminService {
     };
   }
 
-  // Retrieves a paginated list of products.
+  // Retrieves a paginated list of colourways.
   rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/products/paged"};
+    option (google.api.http) = {get: "/api/admin/colorways/paged"};
   }
 
-  // Gets a product by its ID.
+  // Gets a colourway by its id.
   rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
-    option (google.api.http) = {get: "/api/admin/product/{id}"};
+    option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}"};
   }
 
   // ArchiveColorwayByID retires a colourway (archive-not-delete, R6/R9): ACTIVE|HIDDEN -> ARCHIVED
@@ -215,13 +215,13 @@ service AdminService {
   // GetColorwayCustoms returns a product's international-shipping customs data (HS code, origin,
   // declared description).
   rpc GetColorwayCustoms(GetColorwayCustomsRequest) returns (GetColorwayCustomsResponse) {
-    option (google.api.http) = {get: "/api/admin/product/{product_id}/customs"};
+    option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}/customs"};
   }
 
-  // SetColorwayCustoms sets a product's customs data used to build international shipping labels.
+  // SetColorwayCustoms sets a colourway's customs data used to build international shipping labels.
   rpc SetColorwayCustoms(SetColorwayCustomsRequest) returns (SetColorwayCustomsResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/customs"
+      post: "/api/admin/colorways/customs"
       body: "*"
     };
   }
@@ -1569,19 +1569,25 @@ message GetColorwaysPagedRequest {
   repeated common.SortFactor sort_factors = 3;
   common.OrderFactor order_factor = 4;
   common.FilterConditions filter_conditions = 5;
-  bool show_hidden = 6;
+  reserved 6; // was bool show_hidden — replaced by an explicit lifecycle-status filter (R6/§14.6)
+  reserved "show_hidden";
+  repeated common.ColorwayLifecycleStatus statuses = 7; // empty = the default admin set (all but ARCHIVED)
 }
 
 message GetColorwaysPagedResponse {
-  repeated common.Colorway products = 1;
+  repeated common.Colorway colorways = 1; // R8: renamed from products
+  reserved "products";
+  int32 total = 2; // total matching colourways ignoring pagination
 }
 
 message GetColorwayByIDRequest {
-  int32 id = 1;
+  int32 colorway_id = 1; // R8: renamed from id
+  reserved "id";
 }
 
 message GetColorwayByIDResponse {
-  common.ColorwayFull product = 1;
+  common.ColorwayFull colorway = 1; // R8: renamed from product
+  reserved "product";
   // cost_info carries the confidential COGS/provenance fields. Admin-only — this lives on the
   // admin GetColorwayByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
@@ -1593,8 +1599,9 @@ message GetColorwayByIDResponse {
 // when absent.
 message ColorwayCostInfo {
   google.type.Decimal cost_price = 1;
-  string cost_price_source = 2;
-  int32 cost_price_tech_card_id = 3;
+  common.ColorwayCostSource cost_price_source = 2; // R4: type change string->enum (same number)
+  int32 cost_source_tech_card_id = 3; // R4: renamed from cost_price_tech_card_id (cost provenance, not ownership)
+  reserved "cost_price_tech_card_id";
   google.protobuf.Timestamp cost_price_updated_at = 4;
   int32 primary_tech_card_id = 5;
 }
@@ -1743,7 +1750,8 @@ message ColorwayCustoms {
 }
 
 message GetColorwayCustomsRequest {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
 }
 
 message GetColorwayCustomsResponse {
@@ -1751,7 +1759,8 @@ message GetColorwayCustomsResponse {
 }
 
 message SetColorwayCustomsRequest {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
   ColorwayCustoms customs = 2;
 }
 
@@ -1872,7 +1881,8 @@ message SetCountryActiveResponse {
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;
   google.protobuf.Timestamp date_to = 2; // inclusive
-  int32 product_id = 3;
+  int32 colorway_id = 3; // R8: renamed from product_id
+  reserved "product_id";
   optional int32 size_id = 4; // Optional: filter by size
   common.StockChangeSource source = 5;
   int32 limit = 6; // 0 = return all records
@@ -1888,7 +1898,8 @@ message ListStockChangeHistoryResponse {
 message ListStockChangesRequest {
   google.protobuf.Timestamp from = 1; // Required: start date (inclusive)
   google.protobuf.Timestamp to = 2; // Required: end date (inclusive)
-  optional int32 product_id = 3; // Optional: filter by product ID
+  optional int32 colorway_id = 3; // R8: renamed from product_id (Optional filter)
+  reserved "product_id";
   common.StockChangeSource source = 4; // Optional: filter by source type (enum, UNSPECIFIED = no filter)
   int32 limit = 5; // Pagination limit: 0=default(100), -1=all, >0=specified (max 10000)
   int32 offset = 6; // Pagination offset (ignored when limit=-1)
@@ -1921,7 +1932,8 @@ message ListStockChangesResponse {
 }
 
 message DeleteProductMediaRequest {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
   int32 media_id = 2;
 }
 

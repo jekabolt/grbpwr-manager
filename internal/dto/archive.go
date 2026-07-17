@@ -84,7 +84,7 @@ func convertPbArchiveItemInsertToEntity(it *pb_common.ArchiveItemInsert) entity.
 	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCT:
 		if b := it.Product; b != nil {
 			out.Product = &entity.ArchiveProductInsert{
-				ProductId:    int(b.ProductId),
+				ProductId:    int(b.ColorwayId), // R8: proto field renamed product_id -> colorway_id
 				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
 			}
 		}
@@ -99,7 +99,7 @@ func convertPbArchiveItemInsertToEntity(it *pb_common.ArchiveItemInsert) entity.
 	case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL:
 		if b := it.ProductsManual; b != nil {
 			out.ProductsManual = &entity.ArchiveProductsManualInsert{
-				ProductIds:   convertMediaIds(b.ProductIds),
+				ProductIds:   convertMediaIds(b.ColorwayIds), // R8: proto field renamed product_ids -> colorway_ids
 				Translations: convertPbArchiveItemTranslationsToEntity(b.Translations),
 			}
 		}

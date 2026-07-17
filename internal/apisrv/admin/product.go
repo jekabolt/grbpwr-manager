@@ -183,7 +183,7 @@ func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway
 
 func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayByIDRequest) (*pb_admin.GetColorwayByIDResponse, error) {
 
-	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.ColorwayId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
@@ -206,7 +206,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 	// and further gated by costing:read (task 19): a scoped account without it gets no cost.
 	var costInfo *pb_admin.ColorwayCostInfo
 	if read, _ := s.costingAccess(ctx); read {
-		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
+		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.ColorwayId)); cerr != nil {
 			slog.Default().ErrorContext(ctx, "can't get product cost info",
 				slog.String("err", cerr.Error()))
 		} else {
@@ -215,7 +215,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 	}
 
 	return &pb_admin.GetColorwayByIDResponse{
-		Product:  pbPrd,
+		Colorway: pbPrd,
 		CostInfo: costInfo,
 	}, nil
 
@@ -280,9 +280,9 @@ func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ColorwayCostInfo
 		return nil
 	}
 	out := &pb_admin.ColorwayCostInfo{
-		CostPriceSource:     ci.CostPriceSource.String,
-		CostPriceTechCardId: ci.CostPriceTechCardID.Int32,
-		PrimaryTechCardId:   ci.PrimaryTechCardID.Int32,
+		CostPriceSource:      costSourceToPb(ci.CostPriceSource), // R4: string -> ColorwayCostSource enum
+		CostSourceTechCardId: ci.CostPriceTechCardID.Int32,       // R4: renamed from cost_price_tech_card_id
+		PrimaryTechCardId:    ci.PrimaryTechCardID.Int32,
 	}
 	if ci.CostPrice.Valid {
 		out.CostPrice = &pb_decimal.Decimal{Value: ci.CostPrice.Decimal.String()}
@@ -291,6 +291,25 @@ func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ColorwayCostInfo
 		out.CostPriceUpdatedAt = timestamppb.New(ci.CostPriceUpdatedAt.Time)
 	}
 	return out
+}
+
+// costSourceToPb maps the stored cost-provenance label to the ColorwayCostSource enum (R4). The
+// legacy "tech_card" provenance is a style-owned cost (the primary card of the owning style), so it
+// maps to STYLE.
+func costSourceToPb(s sql.NullString) pb_common.ColorwayCostSource {
+	if !s.Valid {
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_UNKNOWN
+	}
+	switch s.String {
+	case "manual":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_MANUAL
+	case "tech_card", "style":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_STYLE
+	case "production_run":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_PRODUCTION_RUN
+	default:
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_UNKNOWN
+	}
 }
 
 func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwaysPagedRequest) (*pb_admin.GetColorwaysPagedResponse, error) {
@@ -326,8 +345,12 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 		}
 	}
 
+	// R6/§14.6: show_hidden was replaced by an explicit lifecycle-status filter. Map it onto the store's
+	// showHidden capability (include HIDDEN when the caller asks for it); granular status-set filtering
+	// in the store query is a follow-up. Empty statuses preserves the old default (hide HIDDEN).
+	showHidden := slices.Contains(req.Statuses, pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN)
 	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
-	prds, _, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, req.ShowHidden)
+	prds, total, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, showHidden)
 	if err != nil {
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -352,7 +375,8 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 	}
 
 	return &pb_admin.GetColorwaysPagedResponse{
-		Products: prdsPb,
+		Colorways: prdsPb,
+		Total:     int32(total),
 	}, nil
 }
 
@@ -549,8 +573,8 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 
 func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListStockChangeHistoryRequest) (*pb_admin.ListStockChangeHistoryResponse, error) {
 	var productId, sizeId *int
-	if req.ProductId != 0 {
-		pid := int(req.ProductId)
+	if req.ColorwayId != 0 {
+		pid := int(req.ColorwayId)
 		productId = &pid
 	}
 	if req.SizeId != nil && *req.SizeId != 0 {
@@ -629,8 +653,8 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 
 	// Optional filters
 	var productId *int
-	if req.ProductId != nil {
-		pid := int(*req.ProductId)
+	if req.ColorwayId != nil {
+		pid := int(*req.ColorwayId)
 		productId = &pid
 	}
 

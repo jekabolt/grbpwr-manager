@@ -15,10 +15,10 @@ import (
 
 // GetProductCustoms returns a product's international-shipping customs data.
 func (s *Server) GetColorwayCustoms(ctx context.Context, req *pb_admin.GetColorwayCustomsRequest) (*pb_admin.GetColorwayCustomsResponse, error) {
-	if req.ProductId <= 0 {
+	if req.ColorwayId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
-	c, err := s.repo.Products().GetProductCustoms(ctx, int(req.ProductId))
+	c, err := s.repo.Products().GetProductCustoms(ctx, int(req.ColorwayId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "product not found")
@@ -39,7 +39,7 @@ func (s *Server) GetColorwayCustoms(ctx context.Context, req *pb_admin.GetColorw
 // clear the stored value. country_of_origin is ignored here: it is a core product field set via the
 // product form (and reused as the Sendcloud origin_country); the customs path never writes it.
 func (s *Server) SetColorwayCustoms(ctx context.Context, req *pb_admin.SetColorwayCustomsRequest) (*pb_admin.SetColorwayCustomsResponse, error) {
-	if req.ProductId <= 0 {
+	if req.ColorwayId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
 	c := req.Customs
@@ -50,7 +50,7 @@ func (s *Server) SetColorwayCustoms(ctx context.Context, req *pb_admin.SetColorw
 	hs := strings.TrimSpace(c.HsCode)
 	descr := strings.TrimSpace(c.CustomsDescription)
 
-	err := s.repo.Products().SetProductCustoms(ctx, int(req.ProductId), entity.ColorwayCustoms{
+	err := s.repo.Products().SetProductCustoms(ctx, int(req.ColorwayId), entity.ColorwayCustoms{
 		HSCode:             sql.NullString{String: hs, Valid: hs != ""},
 		CustomsDescription: sql.NullString{String: descr, Valid: descr != ""},
 	})
