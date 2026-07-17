@@ -40,14 +40,18 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // pricing is on costing).
 // season_code/season_year are the normalized SKU-facing season (task 05). The legacy `season`
 // column remains only as a canonical derived label for the existing UNIQUE key/read models.
+// Q1/Q5: version/revision_date and the free-text roles designer/constructor/technologist/approved_by
+// are no longer written — the card's version is its named releases (Rev.N) + the auto-journal, and
+// roles are admin-account assignments. The columns stay until M3; the write path just stops touching
+// them. approved_at/released_at are server-owned timestamps and remain.
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
-	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
-	base_model_id, base_sample_size_id, designer, constructor, technologist,
+	target_gender, stage, status, approval_state, approved_at, released_at,
+	base_model_id, base_sample_size_id,
 	measurement_unit, concept, notes, purpose, output_material_id, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
-	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
-	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
+	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at,
+	:base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
@@ -100,16 +104,10 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 		"stage":               string(tc.Stage),
 		"status":              tc.Status,
 		"approval_state":      string(tc.ApprovalState),
-		"approved_by":         tc.ApprovedBy,
 		"approved_at":         tc.ApprovedAt,
 		"released_at":         tc.ReleasedAt,
-		"version":             tc.Version,
-		"revision_date":       tc.RevisionDate,
 		"base_model_id":       tc.BaseModelId,
 		"base_sample_size_id": tc.BaseSampleSizeId,
-		"designer":            tc.Designer,
-		"constructor":         tc.Constructor,
-		"technologist":        tc.Technologist,
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
@@ -165,7 +163,11 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 		}
 		// A new card's colourways may already link products (they become "styled" and take the
 		// style's season/model + colourway colour) — re-mint their SKUs while unlocked.
-		return remintCardProducts(ctx, rep.DB(), id, nil)
+		if err := remintCardProducts(ctx, rep.DB(), id, nil); err != nil {
+			return err
+		}
+		// Q1: open the auto-journal with the creation event.
+		return appendTechCardRevision(ctx, rep.DB(), id, tc.CreatedBy, "header", "created", "tech card created")
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add tech card: %w", err)
@@ -281,10 +283,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				updated_by = :updated_by,
 				category_id = :category_id,
 				stage = :stage, status = :status, approval_state = :approval_state,
-				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
-				version = :version, revision_date = :revision_date,
+				approved_at = :approved_at, released_at = :released_at,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
-				designer = :designer, constructor = :constructor, technologist = :technologist,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 					purpose = :purpose, output_material_id = :output_material_id
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
@@ -308,9 +308,11 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
 		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
 		// (R1 merge) — they live in product and are managed via CreateColorway.
+		// tech_card_revision is intentionally ABSENT: it is the append-only auto-journal (Q1), not a
+		// client-replaced child, so a save must never wipe the history.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
-			"tech_card_callout", "tech_card_revision", "tech_card_detail",
+			"tech_card_callout", "tech_card_detail",
 			"tech_card_bom_item",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
@@ -326,7 +328,12 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return err
 		}
 		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
-		return remintCardProducts(ctx, rep.DB(), id, prevProductLinks)
+		if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
+			return err
+		}
+		// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
+		action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
+		return appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary)
 	})
 	if err != nil {
 		switch err {
@@ -590,9 +597,8 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardCallouts(ctx, db, id, tc.Callouts); err != nil {
 		return err
 	}
-	if err := insertTechCardRevisions(ctx, db, id, tc.Revisions); err != nil {
-		return err
-	}
+	// Q1: tech_card_revision is a server-stamped auto-journal now, not a client full-replace — it is
+	// appended by AddTechCard/UpdateTechCard (appendTechCardRevision), never written from tc.Revisions.
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
@@ -734,26 +740,36 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 	return nil
 }
 
-func insertTechCardRevisions(ctx context.Context, db dependency.DB, id int, revisions []entity.TechCardRevision) error {
-	if len(revisions) == 0 {
-		return nil
-	}
-	rows := make([]map[string]any, 0, len(revisions))
-	for i, r := range revisions {
-		rows = append(rows, map[string]any{
-			"tech_card_id":  id,
-			"version":       r.Version,
-			"revision_date": r.RevisionDate,
-			"author":        r.Author,
-			"section":       r.Section,
-			"change_note":   r.ChangeNote,
-			"display_order": i,
-		})
-	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_revision", rows); err != nil {
-		return fmt.Errorf("failed to insert tech card revisions: %w", err)
+// appendTechCardRevision writes one server-stamped entry to the auto-journal (Q1): who (author,
+// GetAdminUsername), what (section + action + human summary) and when (created_at DEFAULT now). It is
+// append-only — never a full-replace — so the history of a card's significant transitions accrues.
+func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, author, section, action, summary string) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_revision (tech_card_id, author, section, action, change_note)
+		VALUES (:tech_card_id, :author, :section, :action, :summary)`,
+		map[string]any{
+			"tech_card_id": id,
+			"author":       sql.NullString{String: author, Valid: author != ""},
+			"section":      sql.NullString{String: section, Valid: section != ""},
+			"action":       action,
+			"summary":      sql.NullString{String: summary, Valid: summary != ""},
+		}); err != nil {
+		return fmt.Errorf("failed to append tech card revision: %w", err)
 	}
 	return nil
+}
+
+// revisionActionForUpdate classifies an update into the journal action (Q1): a transition INTO
+// approved/released is recorded as such; any other save is a generic `updated`.
+func revisionActionForUpdate(prev, next entity.TechCardApprovalState) (action, section, summary string) {
+	switch {
+	case next == entity.TechCardApprovalReleased && prev != entity.TechCardApprovalReleased:
+		return "released", "signoff", "released to manufacture"
+	case next == entity.TechCardApprovalApproved && prev != entity.TechCardApprovalApproved:
+		return "approved", "signoff", "approved"
+	default:
+		return "updated", "header", "tech card updated"
+	}
 }
 
 // clampPagination normalizes a client-supplied limit/offset.

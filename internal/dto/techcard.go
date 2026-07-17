@@ -235,11 +235,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		{"brand", pb.Brand, maxVarchar255},
 		{"collection", pb.Collection, maxVarchar255},
 		{"status", pb.Status, maxVarchar255},
-		{"version", pb.Version, maxVarchar64},
-		{"designer", pb.Designer, maxVarchar255},
-		{"constructor", pb.Constructor, maxVarchar255},
-		{"technologist", pb.Technologist, maxVarchar255},
-		{"approved_by", pb.ApprovedBy, maxVarchar255},
 	} {
 		if len(c.val) > c.max {
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
@@ -386,22 +381,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		})
 	}
 
-	revisions := make([]entity.TechCardRevision, 0, len(pb.Revisions))
-	for _, r := range pb.Revisions {
-		if len(r.Version) > maxVarchar64 {
-			return nil, fmt.Errorf("revision version must be at most %d characters", maxVarchar64)
-		}
-		if len(r.Author) > maxVarchar255 || len(r.Section) > maxVarchar255 {
-			return nil, fmt.Errorf("revision author and section must be at most %d characters", maxVarchar255)
-		}
-		revisions = append(revisions, entity.TechCardRevision{
-			Version:      nullStringFromPb(r.Version),
-			RevisionDate: nullDateFromPbTimestamp(r.RevisionDate),
-			Author:       nullStringFromPb(r.Author),
-			Section:      nullStringFromPb(r.Section),
-			ChangeNote:   nullStringFromPb(r.ChangeNote),
-		})
-	}
+	// Q1: revisions are a server-stamped auto-journal, not a client input — they are not parsed here.
 
 	details, err := parseTechCardDetails(pb.Details)
 	if err != nil {
@@ -497,23 +477,16 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Stage:             stage,
 		Status:            nullStringFromPb(pb.Status),
 		ApprovalState:     approvalState,
-		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
 		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
 		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
-		Version:           nullStringFromPb(pb.Version),
-		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
 		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
 		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
-		Designer:          nullStringFromPb(pb.Designer),
-		Constructor:       nullStringFromPb(pb.Constructor),
-		Technologist:      nullStringFromPb(pb.Technologist),
 		MeasurementUnit:   unit,
 		Concept:           nullStringFromPb(pb.Concept),
 		Notes:             nullStringFromPb(pb.Notes),
 		SizeIds:           sizeIds,
 		Media:             media,
 		Callouts:          callouts,
-		Revisions:         revisions,
 		Details:           details,
 		BomItems:          bomItems,
 		Construction:      construction,
@@ -644,17 +617,6 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		})
 	}
 
-	revisions := make([]*pb_common.TechCardRevision, 0, len(tc.Revisions))
-	for _, r := range tc.Revisions {
-		revisions = append(revisions, &pb_common.TechCardRevision{
-			Version:      pbStringFromNull(r.Version),
-			RevisionDate: pbTimestampFromNullTime(r.RevisionDate),
-			Author:       pbStringFromNull(r.Author),
-			Section:      pbStringFromNull(r.Section),
-			ChangeNote:   pbStringFromNull(r.ChangeNote),
-		})
-	}
-
 	sizeIds := intsToInt32(tc.SizeIds)
 
 	return &pb_common.TechCard{
@@ -665,6 +627,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		CreatedBy:       tc.CreatedBy,
 		UpdatedBy:       tc.UpdatedBy,
 		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
+		Revisions:       techCardRevisionsToPb(tc.Revisions),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
@@ -679,16 +642,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Stage:             pbTechCardStage(tc.Stage),
 			Status:            pbStringFromNull(tc.Status),
 			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
-			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
 			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
 			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
-			Version:           pbStringFromNull(tc.Version),
-			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
 			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
 			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
-			Designer:          pbStringFromNull(tc.Designer),
-			Constructor:       pbStringFromNull(tc.Constructor),
-			Technologist:      pbStringFromNull(tc.Technologist),
 			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
 			Concept:           pbStringFromNull(tc.Concept),
 			Notes:             pbStringFromNull(tc.Notes),
@@ -696,7 +653,6 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MoodboardMedia:    moodboardMedia,
 			TechnicalMedia:    technicalMedia,
 			Callouts:          callouts,
-			Revisions:         revisions,
 			Details:           techCardDetailsToPb(tc.Details),
 			BomItems:          techCardBomItemsToPb(tc.BomItems),
 			Construction:      techCardConstructionToPb(tc.Construction),
@@ -715,6 +671,23 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Derived, output-only (R1/§3.3): a style's colourways are its products.
 		Colorways: techCardColorwayRefsToPb(tc.Colorways),
 	}
+}
+
+// techCardRevisionsToPb emits the server-stamped auto-journal (Q1) for display: who/what/when.
+func techCardRevisionsToPb(revs []entity.TechCardRevision) []*pb_common.TechCardRevision {
+	out := make([]*pb_common.TechCardRevision, 0, len(revs))
+	for _, r := range revs {
+		out = append(out, &pb_common.TechCardRevision{
+			Version:      pbStringFromNull(r.Version),
+			RevisionDate: pbTimestampFromNullTime(r.RevisionDate),
+			Author:       pbStringFromNull(r.Author),
+			Section:      pbStringFromNull(r.Section),
+			Action:       pbStringFromNull(r.Action),
+			ChangeNote:   pbStringFromNull(r.ChangeNote),
+			CreatedAt:    pbTimestampFromNullTime(r.CreatedAt),
+		})
+	}
+	return out
 }
 
 // techCardDetailsToPb emits the construction-description aspects (+ media) for display.

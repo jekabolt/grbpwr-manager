@@ -203,13 +203,17 @@ type TechCardCallout struct {
 	PosY        decimal.NullDecimal `db:"pos_y"`
 }
 
-// TechCardRevision is one entry in the revision log.
+// TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
+// card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server;
+// the legacy Version/RevisionDate columns are kept for old rows and dropped in M3.
 type TechCardRevision struct {
-	Version      sql.NullString `db:"version"`
-	RevisionDate sql.NullTime   `db:"revision_date"`
-	Author       sql.NullString `db:"author"`
-	Section      sql.NullString `db:"section"`
-	ChangeNote   sql.NullString `db:"change_note"`
+	Version      sql.NullString `db:"version"`       // DEPRECATED legacy label
+	RevisionDate sql.NullTime   `db:"revision_date"` // DEPRECATED; use CreatedAt
+	Author       sql.NullString `db:"author"`        // server-stamped acting admin username
+	Section      sql.NullString `db:"section"`       // header|sketch|bom|... (enum-valued)
+	Action       sql.NullString `db:"action"`        // created|updated|approved|released|reverted|role_assigned|other
+	ChangeNote   sql.NullString `db:"change_note"`   // human summary
+	CreatedAt    sql.NullTime   `db:"created_at"`    // when the server stamped this entry
 }
 
 // TechCardBomSection groups a BOM line by material family. Mirrors the

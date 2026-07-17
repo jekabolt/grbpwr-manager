@@ -83,11 +83,13 @@ message TechCardCallout {
 // which section, by whom). This is NOT fit history — fitting verdicts and
 // measurements live in the separate fitting feature.
 message TechCardRevision {
-  string version = 1;
-  google.protobuf.Timestamp revision_date = 2;
-  string author = 3;
-  string section = 4; // раздел
-  string change_note = 5; // что изменено
+  string version = 1; // DEPRECATED legacy label (kept for old rows); the auto-journal does not set it
+  google.protobuf.Timestamp revision_date = 2; // DEPRECATED; use created_at
+  string author = 3; // server-stamped acting admin username (GetAdminUsername)
+  string section = 4; // раздел (header|sketch|bom|colorway|pieces|construction|labels|packaging|costing|signoff|other)
+  string change_note = 5; // human summary of what changed
+  string action = 6; // created|updated|approved|released|reverted|role_assigned|other
+  google.protobuf.Timestamp created_at = 7; // when the server stamped this journal entry
 }
 
 // TechCardRole is a responsible-account role on a tech card (PLM-rework Q5). Replaces the free-text
@@ -695,16 +697,15 @@ message TechCardInsert {
   TechCardStage stage = 8; // UNKNOWN defaults to PROTO
   string status = 9; // freeform workflow notes (soft, non-gating)
   TechCardApprovalState approval_state = 35; // UNKNOWN defaults to DRAFT
-  string approved_by = 36; // who approved the current revision
+  // approved_by (36) removed (Q5): approval is the APPROVER role + a server-stamped journal event,
+  // not a free-text name. version (10) / revision_date (11) removed (Q1): the card's version is the
+  // sequence of named releases (Rev.N) + the auto-journal, not a free-text string. designer (14) /
+  // constructor (15) / technologist (16) removed (Q5): roles are admin-account assignments now (see
+  // the role-assignment RPCs). All are dropped from tech_card in M3.
   google.protobuf.Timestamp released_at = 37; // when released to manufacture
   TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to MM
-  string version = 10;
-  google.protobuf.Timestamp revision_date = 11;
   int32 base_model_id = 12; // FK model(id); 0 = unset
   int32 base_sample_size_id = 13; // FK size(id); 0 = unset
-  string designer = 14;
-  string constructor = 15;
-  string technologist = 16;
 
   // construction description (lower block of Sheet «Титул») now lives in details[]; the
   // header targets / currency were removed (pricing is on costing, single brand policy).
@@ -724,7 +725,8 @@ message TechCardInsert {
   repeated TechCardMediaItem moodboard_media = 55;
   repeated TechCardMediaItem technical_media = 56;
   repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
-  repeated TechCardRevision revisions = 34; // revision log
+  // revisions (34) removed as INPUT (Q1): the revision log is a server-stamped auto-journal, not a
+  // client-supplied list — read it on the TechCard message (TechCard.revisions).
 
   // materials (Phase 2): bill of materials (article catalog). Colourways are no longer style
   // children (R1 merge — a colourway is a product); their material recipe lives on the colourway via
@@ -771,7 +773,8 @@ message TechCardInsert {
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
-  reserved 17 to 28, 32, 39, 42, 57 to 99;
+  reserved 10, 11, 14, 15, 16, 17 to 28, 32, 34, 36, 39, 42, 57 to 99;
+  reserved "version", "revision_date", "designer", "constructor", "technologist", "approved_by", "revisions";
 }
 
 // TechCard is a stored tech card with resolved sketch media.
@@ -788,6 +791,9 @@ message TechCard {
   // Responsible-account roles (Q5), read-only here — managed via the role-assignment RPCs, not the
   // tech-card write. Replaces the removed free-text designer/constructor/technologist strings.
   repeated TechCardRoleAssignment role_assignments = 12;
+  // Server-stamped auto-journal (Q1): who/what/when across the card's significant transitions.
+  // Read-only — appended by the server, never client-supplied. Replaces the removed input `revisions`.
+  repeated TechCardRevision revisions = 13;
   // Resolved sketch media (MediaFull), split to mirror the writable lists.
   repeated TechCardMediaFull resolved_moodboard_media = 7;
   repeated TechCardMediaFull resolved_technical_media = 8;
