@@ -72,17 +72,19 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 		slog.Default().ErrorContext(ctx, "style economics: can't list dev expenses", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load development costs")
 	}
-	dev := dto.ComputeTechCardDevCostSummary(card, expenses, fx)
-	econ.DevCost = dev
 
-	// Fitting rounds: number of fittings recorded for the style (each fitting is a round). We only
-	// need the total; passing limit 1 keeps the page cheap.
-	_, rounds, err := s.repo.Fittings().ListFittings(ctx, 1, 0, entity.Descending, 0, 0, tcID)
+	// Fitting rounds: recorded fittings for the style (each fitting is a round). Fetch the rounds
+	// themselves (not just a count) — they carry round_number/outcome/date that drive the dev-cost
+	// round attribution and time-to-approval rollup (Q8/S20).
+	fittings, rounds, err := s.repo.Fittings().ListFittings(ctx, styleEconomicsRunScan, 0, entity.Descending, 0, 0, tcID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't count fittings", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't count fittings")
 	}
 	econ.FittingRounds = int32(rounds)
+
+	dev := dto.ComputeTechCardDevCostSummary(card, expenses, fittings, fx)
+	econ.DevCost = dev
 
 	// Production plan/fact across the style's runs. The material actuals issued from the warehouse
 	// (net of returns, non-cancelled runs) fold into the run-level and now the style-level actual, so
