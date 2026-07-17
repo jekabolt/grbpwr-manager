@@ -69,6 +69,13 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 	require.NoError(t, err)
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)
+	// order_item.variant_id is a NOT NULL FK RESTRICT to product_size(id) as of migration 0153 — every
+	// order line needs a live variant row to anchor to.
+	vr, err := testDB.ExecContext(ctx, `INSERT INTO product_size (product_id, size_id, quantity, sku)
+		VALUES (?, ?, 1, 'T08-P-V')`, productID, sizeID)
+	require.NoError(t, err)
+	variantID, err := vr.LastInsertId()
+	require.NoError(t, err)
 
 	// shipment_carrier lost its own `price` column in migration 0016 (multi-currency prices moved to
 	// shipment_carrier_price); this test drives shipping cost via shipment.actual_cost, so the carrier
@@ -110,10 +117,11 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 		if costPrice >= 0 {
 			cost = costPrice
 		}
-		// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
+		// variant_sku_snapshot is NOT NULL and variant_id is a NOT NULL FK RESTRICT to product_size(id)
+		// as of migration 0153 (immutable variant identity of a sold line).
 		_, err := testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
-			VALUES (?, ?, 100, 100, ?, 0, 1, ?, 'T08-P')`, orderID, productID, cost, sizeID)
+			(order_id, product_id, variant_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, variant_sku_snapshot)
+			VALUES (?, ?, ?, 100, 100, ?, 0, 1, ?, 'T08-P')`, orderID, productID, variantID, cost, sizeID)
 		require.NoError(t, err)
 	}
 

@@ -75,6 +75,13 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 	require.NoError(t, err)
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)
+	// order_item.variant_id is a NOT NULL FK RESTRICT to product_size(id) as of migration 0153 — every
+	// order line needs a live variant row to anchor to.
+	vr, err := testDB.ExecContext(ctx, `INSERT INTO product_size (product_id, size_id, quantity, sku)
+		VALUES (?, ?, 1, 'T09-P-V')`, productID, sizeID)
+	require.NoError(t, err)
+	variantID, err := vr.LastInsertId()
+	require.NoError(t, err)
 
 	// shipment_carrier lost its own `price` column in migration 0016 (multi-currency prices moved to
 	// shipment_carrier_price); this test only needs a valid FK target for shipment.carrier_id.
@@ -108,10 +115,11 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 			(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 			VALUES (?, 'a', 'b', ?, '1234567', ?, ?)`, oid, email, addrID, addrID)
 		require.NoError(t, err)
-		// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
+		// variant_sku_snapshot is NOT NULL and variant_id is a NOT NULL FK RESTRICT to product_size(id)
+		// as of migration 0153 (immutable variant identity of a sold line).
 		_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, product_sale_percentage, quantity, size_id, product_sku)
-			VALUES (?, ?, ?, ?, 0, 1, ?, 'T09-P')`, oid, productID, totalPrice, totalPrice, sizeID)
+			(order_id, product_id, variant_id, product_price, product_price_base, product_sale_percentage, quantity, size_id, variant_sku_snapshot)
+			VALUES (?, ?, ?, ?, ?, 0, 1, ?, 'T09-P')`, oid, productID, variantID, totalPrice, totalPrice, sizeID)
 		require.NoError(t, err)
 		return oid
 	}

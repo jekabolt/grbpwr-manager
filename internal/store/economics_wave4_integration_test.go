@@ -71,6 +71,7 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	// needs its own tech_card. product.uniq_product_style_color (migration 0151) now enforces at
 	// most one product per (style_id, color_code), so sharing one style_id here with the same
 	// hardcoded 'BLK' color_code for both products would collide on the second insert.
+	variantByProduct := map[int]int64{}
 	mkProduct := func(tag, sku string) int {
 		styleID := seedSpineStyle(ctx, t, tag)
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
@@ -78,6 +79,13 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		// order_item.variant_id is a NOT NULL FK RESTRICT to product_size(id) as of migration 0153 —
+		// every order line needs a live variant row to anchor to.
+		vr, err := testDB.ExecContext(ctx, `INSERT INTO product_size (product_id, size_id, quantity, sku)
+			VALUES (?, ?, 1, ?)`, id, sizeID, sku+"-V")
+		require.NoError(t, err)
+		variantByProduct[int(id)], err = vr.LastInsertId()
 		require.NoError(t, err)
 		return int(id)
 	}
@@ -97,12 +105,13 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	require.NoError(t, err)
 
 	// Two lines, €100 base list / €40 base cost each, both snapshots set directly so no
-	// product_price / product.cost_price lookup is needed. product_sku is NOT NULL as of migration
-	// 0150 (immutable variant-SKU snapshot of a sold line).
+	// product_price / product.cost_price lookup is needed. variant_sku_snapshot is NOT NULL and
+	// variant_id is a NOT NULL FK RESTRICT to product_size(id) as of migration 0153 (immutable
+	// variant identity of a sold line).
 	mkItem := func(prodID int, sku string) int64 {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
-			VALUES (?, ?, 100, 100, 40, 0, 1, ?, ?)`, orderID, prodID, sizeID, sku)
+			(order_id, product_id, variant_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, variant_sku_snapshot)
+			VALUES (?, ?, ?, 100, 100, 40, 0, 1, ?, ?)`, orderID, prodID, variantByProduct[prodID], sizeID, sku)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)
@@ -366,6 +375,7 @@ func TestInventoryValuation(t *testing.T) {
 	require.NoError(t, err)
 
 	styleID := seedSpineStyle(ctx, t, "ECO-W4-INV")
+	variantByProduct := map[int]int64{}
 	// Three distinct colorways of the shared style (product.uniq_product_style_color from migration
 	// 0151 allows at most one product per (style_id, color_code), so they can't all share 'BLK').
 	mkProduct := func(sku, colorCode, cost string, onHand int) int {
@@ -380,8 +390,10 @@ func TestInventoryValuation(t *testing.T) {
 			_, err = testDB.ExecContext(ctx, "UPDATE product SET cost_price = ? WHERE id = ?", cost, id)
 			require.NoError(t, err)
 		}
-		_, err = testDB.ExecContext(ctx,
-			"INSERT INTO product_size (product_id, size_id, quantity) VALUES (?, ?, ?)", id, sizeID, onHand)
+		vr, err := testDB.ExecContext(ctx,
+			"INSERT INTO product_size (product_id, size_id, quantity, sku) VALUES (?, ?, ?, ?)", id, sizeID, onHand, sku+"-V")
+		require.NoError(t, err)
+		variantByProduct[id], err = vr.LastInsertId()
 		require.NoError(t, err)
 		return id
 	}
@@ -400,10 +412,11 @@ func TestInventoryValuation(t *testing.T) {
 	require.NoError(t, err)
 	orderID, err = res.LastInsertId()
 	require.NoError(t, err)
-	// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
+	// variant_sku_snapshot is NOT NULL and variant_id is a NOT NULL FK RESTRICT to product_size(id)
+	// as of migration 0153 (immutable variant identity of a sold line).
 	_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
-		(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
-		VALUES (?, ?, 30, 30, 10, 0, 1, ?, 'ECO-W4-INV-A')`, orderID, prodA, sizeID)
+		(order_id, product_id, variant_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, variant_sku_snapshot)
+		VALUES (?, ?, ?, 30, 30, 10, 0, 1, ?, 'ECO-W4-INV-A')`, orderID, prodA, variantByProduct[prodA], sizeID)
 	require.NoError(t, err)
 
 	// Damage write-off: 2 units of A removed in the window.
