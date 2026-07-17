@@ -635,6 +635,14 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 
 	sizeIds := intsToInt32(tc.SizeIds)
 
+	// orderQtyBySize resolves each colourway usage's size_run_total the same way the cost estimate
+	// does (style_cost_estimate.go) — the style's declared per-size order quantity (size_quantities),
+	// 0/absent when the card has none yet.
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+	}
+
 	return &pb_common.TechCard{
 		Id:              int32(tc.Id),
 		LockVersion:     int32(tc.LockVersion),
@@ -685,8 +693,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
-		// Derived, output-only (R1/§3.3): a style's colourways are its products.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways),
+		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
+		// recipe (H1 fix) resolved against this style's own BOM items.
+		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
 	}
 }
 
@@ -1182,8 +1191,13 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
 // (R1/§3.3): a style's colourways are its products, not writable through the style. Full colourway
-// detail (dev/lab-dip, recipe, media, prices) is read via the Colorway RPCs, not here.
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway) []*pb_common.AdminColorwayRef {
+// merchandising detail (dev/lab-dip, media, prices) is read via the Colorway RPCs, not here. The
+// recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
+// colourway's material recipe alongside its identity — the recipe used to be write-only
+// (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
+// resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
+// account without costing:read, same as the rest of the tech-card read).
+func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.AdminColorwayRef {
 	if len(cws) == 0 {
 		return nil
 	}
@@ -1195,6 +1209,7 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway) []*pb_common.AdminC
 			BaseSku:    c.BaseSku.String,
 			ColorCode:  c.ColorCode,
 			Status:     pb_common.ColorwayLifecycleStatus(c.Status),
+			Usages:     ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
 		})
 	}
 	return out
@@ -1224,13 +1239,21 @@ func optionalStringFromNull(value sql.NullString) *string {
 	return &result
 }
 
-// techCardUsagesToPb emits a colourway's usages, each with its computed per-garment
-// line_total and whole-run size_run_total (resolved against the referenced BOM article).
-func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+// ConvertRecipeUsagesToPb emits a colourway's usages, each with its computed per-garment
+// line_total and whole-run size_run_total (resolved against the referenced BOM article). The
+// counterpart read-side of ParseRecipeUsages. Exported: used both by the tech-card read
+// (techCardColorwayRefsToPb, for the constructor view) and directly by GetColorwayByID (H1 fix —
+// recipe is colourway-owned, 01-DOMAIN-MODEL §2.3, so GetColorwayByID is the minimum surface that
+// must return it).
+func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
 	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
 	for i := range usages {
 		u := &usages[i]
-		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
+		// resolveUsageBom prefers the durable bom_item_id FK, falling back to the legacy positional
+		// index (style_cost_estimate.go) — NOT bomItemAtIndex alone: a usage created via bom_line_key
+		// (S2/S3) may round-trip with bom_item_index unset, and bomItemAtIndex would then wrongly show
+		// no line_total/size_run_total even though the FK resolved fine.
+		bom := resolveUsageBom(bomItems, u)
 		var bomItemIndex *int32
 		if u.BomItemIndex.Valid {
 			v := u.BomItemIndex.Int32

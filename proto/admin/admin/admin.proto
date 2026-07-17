@@ -1762,6 +1762,12 @@ message GetColorwayByIDResponse {
   // admin GetColorwayByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
   ColorwayCostInfo cost_info = 2;
+  // usages is this colourway's material recipe (H1 fix: the recipe is colourway-owned — S2/S3,
+  // 01-DOMAIN-MODEL §2.3 — so GetColorwayByID is the minimum surface that must return it; a
+  // full-replace UpdateColorwayRecipe is unsafe to edit-partially without a matching read). Lives
+  // here rather than on the shared common.ColorwayFull so it never reaches the storefront read
+  // path (admin.proto only). Money fields are stripped without costing:read.
+  repeated common.TechCardColorwayUsage usages = 3;
 }
 
 // ColorwayCostInfo is the admin-only view of a product's confidential cost of goods and where

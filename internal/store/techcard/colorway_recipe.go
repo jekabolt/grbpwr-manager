@@ -145,6 +145,45 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 	return newVersion, nil
 }
 
+// GetColorwayRecipe returns a colourway's material recipe (usages, with their per-size
+// consumption), the read side of UpdateColorwayRecipe (H1 fix: `techCardUsagesToPb` existed but was
+// never wired into a read path, A3.4 — a full-replace write with no matching read is unsafe to edit
+// partially). Ordered by display_order, matching write order. Empty (not an error) when the
+// colourway has no recipe yet.
+func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error) {
+	usages, err := storeutil.QueryListNamed[entity.TechCardColorwayUsage](ctx, s.DB, `
+		SELECT id, bom_item_id, piece_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+		FROM tech_card_colorway_usage
+		WHERE colorway_id = :id
+		ORDER BY display_order`, map[string]any{"id": colorwayID})
+	if err != nil {
+		return nil, fmt.Errorf("load colourway %d recipe: %w", colorwayID, err)
+	}
+	if len(usages) == 0 {
+		return usages, nil
+	}
+	usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usages))
+	usageIDs := make([]int, 0, len(usages))
+	for i := range usages {
+		usageByID[usages[i].Id] = &usages[i]
+		usageIDs = append(usageIDs, usages[i].Id)
+	}
+	consRows, err := storeutil.QueryListNamed[techCardUsageConsumptionRow](ctx, s.DB, `
+		SELECT usage_id, size_id, consumption
+		FROM tech_card_colorway_usage_consumption
+		WHERE usage_id IN (:ids)
+		ORDER BY usage_id, display_order`, map[string]any{"ids": usageIDs})
+	if err != nil {
+		return nil, fmt.Errorf("load colourway %d recipe consumption: %w", colorwayID, err)
+	}
+	for _, c := range consRows {
+		if u, ok := usageByID[c.UsageID]; ok {
+			u.SizeConsumptions = append(u.SizeConsumptions, c.TechCardBomSizeConsumption)
+		}
+	}
+	return usages, nil
+}
+
 // resolveUsageBom resolves a usage's BOM reference to a real bom_item id: by stable line_key
 // (preferred), else the legacy positional index, else SQL NULL. An unknown line_key is field-tagged.
 func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (any, error) {

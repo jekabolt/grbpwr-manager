@@ -66,9 +66,30 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 		b.UnitPrice = nil
 		b.Currency = ""
 	}
-	// PR6 R1: colourways (and their usage recipe with per-line cost figures) are no longer part of the
-	// style read payload, so there are no usage LineTotal/SizeRunTotal to strip here. Per-colourway
-	// costing was under Costing.colorway_costs, already dropped by `ins.Costing = nil` above.
+	// H1 fix: colourway refs now carry their recipe (Usages), each with a derived per-line
+	// line_total/size_run_total — money computed from the (now redacted) BOM unit_price. Strip it the
+	// same way GetColorwayByID does for the same message type.
+	for _, c := range tc.Colorways {
+		if c == nil {
+			continue
+		}
+		stripTechCardColorwayUsageCosting(c.Usages)
+	}
+}
+
+// stripTechCardColorwayUsageCosting clears the derived per-line money (line_total/size_run_total) on
+// a colourway recipe for an account without costing:read, keeping the structure (article reference,
+// placement, colour, consumption/quantity) — the same "structure stays, money goes" shape as
+// stripStyleCostEstimate. Shared by stripTechCardCosting (nested under TechCard.colorways) and
+// GetColorwayByID (top-level usages field, H1 fix). Safe on nil entries.
+func stripTechCardColorwayUsageCosting(usages []*pb_common.TechCardColorwayUsage) {
+	for _, u := range usages {
+		if u == nil {
+			continue
+		}
+		u.LineTotal = nil
+		u.SizeRunTotal = nil
+	}
 }
 
 // stripMaterialCosting clears a catalog material's current price. The material's descriptive

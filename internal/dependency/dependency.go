@@ -558,6 +558,11 @@ type (
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
 		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
+		// GetColorwayRecipe returns a colourway's material recipe (usages), the read side of
+		// UpdateColorwayRecipe (H1 fix: the write-path was restored — WS3/S2-S3 — without a matching
+		// read, leaving a full-replace write unsafe to edit partially). Empty, not an error, for a
+		// colourway with no recipe yet.
+		GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error)
 		// SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}.
 		SuggestStyleNumber(ctx context.Context, seasonCode string, seasonYear int) (string, error)
 		// Role assignments (Q5): responsible admin accounts on a card, multi per role.

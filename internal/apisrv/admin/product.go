@@ -252,9 +252,39 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 		}
 	}
 
+	// H1 fix: the recipe is colourway-owned (01-DOMAIN-MODEL §2.3), so GetColorwayByID is the minimum
+	// surface that must return it — UpdateColorwayRecipe is a full-replace write, unsafe to edit
+	// partially with no matching read (A3.4, the recipe used to be write-only). bomItems/orderQtyBySize
+	// come from the owning style, best-effort: a lookup failure degrades to a bare recipe (no derived
+	// line_total/size_run_total) rather than failing the whole colourway read.
+	usages, err := s.repo.TechCards().GetColorwayRecipe(ctx, int(req.ColorwayId))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get colourway recipe",
+			slog.Int("colorway_id", int(req.ColorwayId)), slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get colourway recipe")
+	}
+	var bomItems []entity.TechCardBomItem
+	orderQtyBySize := map[int]int{}
+	if len(usages) > 0 {
+		if styleTC, terr := s.repo.TechCards().GetTechCardById(ctx, pf.Product.StyleId); terr != nil {
+			slog.Default().ErrorContext(ctx, "can't load owning style for colourway recipe pricing",
+				slog.Int("colorway_id", int(req.ColorwayId)), slog.String("err", terr.Error()))
+		} else {
+			bomItems = styleTC.BomItems
+			for _, q := range styleTC.SizeQuantities {
+				orderQtyBySize[q.SizeId] = q.OrderQty
+			}
+		}
+	}
+	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, orderQtyBySize)
+	if read, _ := s.costingAccess(ctx); !read {
+		stripTechCardColorwayUsageCosting(usagesPb)
+	}
+
 	return &pb_admin.GetColorwayByIDResponse{
 		Colorway: pbPrd,
 		CostInfo: costInfo,
+		Usages:   usagesPb,
 	}, nil
 
 }

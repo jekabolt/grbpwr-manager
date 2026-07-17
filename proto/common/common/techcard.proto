@@ -218,6 +218,12 @@ message AdminColorwayRef {
   string base_sku = 2;
   string color_code = 3;
   ColorwayLifecycleStatus status = 4;
+  // usages is this colourway's material recipe (H1 fix, WS3/S2-S3): the constructor view of a
+  // style now shows each colourway's recipe alongside its identity, instead of the recipe being
+  // write-only (UpdateColorwayRecipe persisted usages that no read path ever surfaced). Money
+  // fields (line_total/size_run_total) are stripped for an account without costing:read, same as
+  // the rest of the tech-card read (stripTechCardCosting).
+  repeated TechCardColorwayUsage usages = 5;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
