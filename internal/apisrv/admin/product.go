@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -62,6 +63,33 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	}
 	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+// UpdateColorwayRecipe replaces a colourway's material recipe (usages) — the write-path cut in the R1
+// merge (ColorwayDevelopmentInsert.usages was accepted but never written, A3.4). The recipe is a
+// colourway-owned sub-aggregate: optimistically locked on the shared tech_card.lock_version, each
+// usage references a style BOM line by its stable line_key (S2/S3).
+func (s *Server) UpdateColorwayRecipe(ctx context.Context, req *pb_admin.UpdateColorwayRecipeRequest) (*pb_admin.UpdateColorwayRecipeResponse, error) {
+	if req.GetColorwayId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
+	}
+	usages, err := dto.ParseRecipeUsages(req.GetUsages())
+	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	newVersion, err := s.repo.TechCards().UpdateColorwayRecipe(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), usages)
+	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		slog.Default().ErrorContext(ctx, "can't update colourway recipe",
+			slog.Int("colorway_id", int(req.GetColorwayId())), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't update colourway recipe")
+	}
+	return &pb_admin.UpdateColorwayRecipeResponse{LockVersion: int32(newVersion)}, nil
 }
 
 // colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->

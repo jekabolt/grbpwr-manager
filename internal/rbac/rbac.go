@@ -130,6 +130,7 @@ var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
 	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
 	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorwayRecipe":      wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
 	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
 	"GetColorwaysPaged":         rd(SectionProducts),
 	"GetColorwayByID":           rd(SectionProducts),

@@ -291,9 +291,12 @@ type TechCardColorwayUsage struct {
 	// BomItemId is the real FK to the referenced BOM line (S2/S3). It is the durable reference the
 	// store resolves and writes; BomItemIndex is the legacy positional reference kept during the
 	// transition (dropped in M3). PieceId is the equivalent FK replacing PieceIndex.
-	BomItemId    sql.NullInt64       `db:"bom_item_id"`
-	PieceId      sql.NullInt64       `db:"piece_id"`
-	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
+	BomItemId sql.NullInt64 `db:"bom_item_id"`
+	PieceId   sql.NullInt64 `db:"piece_id"`
+	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
+	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
+	BomLineKey   string        `db:"-"`
+	BomItemIndex sql.NullInt32 `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
 	Placement    sql.NullString      `db:"placement"`
 	Color        sql.NullString      `db:"color"`
 	Pantone      sql.NullString      `db:"pantone"`

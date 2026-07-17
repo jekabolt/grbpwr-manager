@@ -201,6 +201,11 @@ message TechCardColorwayUsage {
   // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this
   // consumption norm is about; unset = whole garment (informational, NF-05).
   optional int32 piece_index = 10;
+  // bom_line_key references the owning style's BOM line by its stable line_key (S2/S3) — the durable
+  // reference the recipe write-path resolves to a real bom_item_id. Preferred over bom_item_index
+  // (which stays for the transition / legacy read). bom_item_id is the resolved FK on read.
+  string bom_line_key = 11;
+  int64 bom_item_id = 12; // OUTPUT: resolved FK to the BOM line
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
