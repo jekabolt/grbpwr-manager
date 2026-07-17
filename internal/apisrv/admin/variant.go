@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -26,7 +27,11 @@ func (s *Server) CreateVariant(ctx context.Context, req *pb_admin.CreateVariantR
 	}
 	v, err := s.repo.Products().CreateVariant(ctx, int(req.ColorwayId), int(req.SizeId))
 	if err != nil {
+		var ve *entity.ValidationError
 		switch {
+		case errors.As(err, &ve):
+			// S10/WS5: size system not permitted for the owning style's category.
+			return nil, apierr.Invalid(ve)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Errorf(codes.NotFound, "colourway %d not found", req.ColorwayId)
 		case errors.Is(err, entity.ErrVariantExists):

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
@@ -557,6 +558,9 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 // insertTechCardChildren inserts the size range, product links, sketch media,
 // callouts and revisions for a tech card (used by both Add and Update).
 func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert) error {
+	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
+		return err
+	}
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
@@ -639,6 +643,45 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		return fmt.Errorf("failed to insert tech card patterns: %w", err)
 	}
 	return nil
+}
+
+// validateTechCardSizeIDs enforces S10/WS5's server-side size-write guard on the style's OWN size
+// range (tech_card_size, "size_ids" on the wire): each requested size must belong to a system
+// permitted for the card's CURRENT category (top/sub/type_id, owned solely by UpdateStyle -- see
+// product/style.go -- so it is read fresh from the row here rather than trusted from tc, which never
+// carries a category on this write path). Returns a field-tagged *entity.ValidationError naming the
+// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. An id the
+// dictionary cache does not recognise is skipped here -- the existing FK on tech_card_size.size_id
+// already turns that into a clear foreign-key error at insert time.
+func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	path, err := loadTechCardCategoryPath(ctx, db, id)
+	if err != nil {
+		return fmt.Errorf("load tech card %d category: %w", id, err)
+	}
+	rules := cache.GetCategorySizeSystems()
+	label := cache.CategoryLabel(path)
+	for i, sid := range sizeIDs {
+		sz, ok := cache.GetSizeById(sid)
+		if !ok {
+			continue
+		}
+		if verr := entity.ValidateSizeAgainstCategory(fmt.Sprintf("size_ids[%d]", i), path, label, rules, sz); verr != nil {
+			return verr
+		}
+	}
+	return nil
+}
+
+// loadTechCardCategoryPath reads a tech card's CURRENT category triple. category (top/sub/type_id) is
+// written exclusively by UpdateStyle (R4/§14.7), never by Add/UpdateTechCard, so this always reflects
+// the latest assigned category regardless of which RPC is mid-flight in the same transaction.
+func loadTechCardCategoryPath(ctx context.Context, db dependency.DB, id int) (entity.StyleCategoryPath, error) {
+	return storeutil.QueryNamedOne[entity.StyleCategoryPath](ctx, db,
+		`SELECT top_category_id, sub_category_id, type_id FROM tech_card WHERE id = :id`,
+		map[string]any{"id": id})
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int, quantities []entity.TechCardSizeQuantity) error {
