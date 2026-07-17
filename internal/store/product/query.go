@@ -44,8 +44,34 @@ const styleCompositionEntriesSelect = `(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_
 		FROM style_composition sc LEFT JOIN fiber f ON f.code = sc.fiber_code
 		WHERE sc.tech_card_id = sty.id)`
 
-// GetProductsPaged returns a paged list of products based on provided parameters.
-func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error) {
+// lifecycleStatusFilter builds the ADMIN paged-list lifecycle WHERE clause from an explicit status set
+// (task: honour the full statuses filter). It returns the clause plus the []int IN-args to bind under
+// :lifecycleStatuses (nil when the clause is self-contained). An empty/nil set defaults to ACTIVE-only,
+// matching the pre-filter admin default; invalid statuses (UNKNOWN or out-of-range) are dropped, and if
+// that empties the set it also falls back to ACTIVE-only (fail-safe — a malformed filter never widens
+// exposure). It NEVER emits storefront tier gating: that is storefront-only and lives in the caller's
+// non-admin branch. []int (not []uint8) is used deliberately so sqlx.In expands it as an IN-list rather
+// than treating a []byte as a single scalar.
+func lifecycleStatusFilter(statuses []entity.ColorwayStatus) (string, []int) {
+	seen := make(map[entity.ColorwayStatus]bool, len(statuses))
+	valid := make([]int, 0, len(statuses))
+	for _, st := range statuses {
+		if st.IsValid() && !seen[st] {
+			seen[st] = true
+			valid = append(valid, int(st))
+		}
+	}
+	if len(valid) == 0 {
+		return "p.lifecycle_status = 2", nil
+	}
+	return "p.lifecycle_status IN (:lifecycleStatuses)", valid
+}
+
+// GetProductsPaged returns a paged list of products based on provided parameters. statuses is the
+// ADMIN-only lifecycle-status filter (see lifecycleStatusFilter) and is consulted ONLY when showHidden is
+// true (the admin path); the storefront path (showHidden=false) ignores it and always returns ACTIVE-only
+// with tier gating.
+func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, statuses []entity.ColorwayStatus, showHidden bool) ([]entity.Colorway, int, error) {
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
@@ -69,10 +95,18 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 	args := make(map[string]interface{})
 
 	if showHidden {
-		// Admin view: everything except ARCHIVED(4) — draft and hidden colourways are still shown (R6).
-		whereClauses = append(whereClauses, "p.lifecycle_status <> 4")
+		// Admin view: honour the explicit lifecycle-status filter (empty = ACTIVE-only default; a set may
+		// include DRAFT/HIDDEN/ARCHIVED and combinations union). NO storefront tier gating is applied here
+		// — the admin catalogue is never filtered by viewer tier. Storefront visibility logic lives solely
+		// in the else branch below and must never leak into or widen the admin path.
+		clause, statusArgs := lifecycleStatusFilter(statuses)
+		whereClauses = append(whereClauses, clause)
+		if statusArgs != nil {
+			args["lifecycleStatuses"] = statusArgs
+		}
 	} else {
-		// Storefront: only publicly-visible colourways — lifecycle_status ACTIVE(2) (R6).
+		// Storefront: only publicly-visible colourways — lifecycle_status ACTIVE(2) (R6). This excludes
+		// HIDDEN(3) and ARCHIVED(4). The admin statuses filter is intentionally ignored on this path.
 		whereClauses = append(whereClauses, "p.lifecycle_status = 2")
 
 		// Tier gating: return ONLY products the viewer is eligible to buy for
@@ -435,7 +469,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 	return prds, nil
 }
 
-func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ColorwayFull, error) {
+func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool, includeArchived bool) (*entity.ColorwayFull, error) {
 	var productInfo entity.ColorwayFull
 
 	whereClauses := []string{}
@@ -473,12 +507,15 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
-	// Lifecycle filter (R6): storefront sees only ACTIVE(2); the admin (showHidden) sees everything
-	// except ARCHIVED(4) — including drafts and hidden colourways.
-	if showHidden {
-		query += " AND p.lifecycle_status <> 4"
-	} else {
+	// Lifecycle filter (R6): storefront sees only ACTIVE(2) — which excludes both HIDDEN(3) and
+	// ARCHIVED(4). The admin (showHidden) sees everything except ARCHIVED(4) — including drafts and
+	// hidden colourways — UNLESS includeArchived is set, in which case an ARCHIVED colourway is also
+	// returned (admin read-only detail of an archived colourway). includeArchived is admin-only and must
+	// never be reachable from a storefront caller (showHidden is always false on the storefront path).
+	if !showHidden {
 		query += " AND p.lifecycle_status = 2"
+	} else if !includeArchived {
+		query += " AND p.lifecycle_status <> 4"
 	}
 
 	type productDetailsResult struct {

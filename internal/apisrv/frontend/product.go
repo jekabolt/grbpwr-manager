@@ -91,7 +91,9 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColo
 
 	limit, offset := clampPagination(int(req.Limit), int(req.Offset), 30, 100)
 
-	prds, count, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, false)
+	// Storefront path: nil statuses + showHidden=false → store returns ACTIVE-only with tier gating
+	// (excludes HIDDEN and ARCHIVED). The admin-only lifecycle-status filter is never populated here.
+	prds, count, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, nil, false)
 	if err != nil {
 		// Check if it's a validation error (should return 4xx, not 5xx)
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {

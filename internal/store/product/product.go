@@ -242,21 +242,25 @@ func (s *Store) DeleteProductById(ctx context.Context, id int) error {
 	})
 }
 
-// GetProductByIdShowHidden returns a product by its ID, including hidden products.
-func (s *Store) GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error) {
-	return s.getProductDetails(ctx, map[string]any{"id": id}, true)
+// GetProductByIdShowHidden returns a product by its ID, including hidden (and draft) products. This is an
+// ADMIN read path. When includeArchived is true it also returns an ARCHIVED colourway (admin read-only
+// detail); when false it keeps the historical behaviour of excluding ARCHIVED. Storefront/frontend callers
+// use GetProductByIdNoHidden / GetProductBySKU instead and are unaffected.
+func (s *Store) GetProductByIdShowHidden(ctx context.Context, id int, includeArchived bool) (*entity.ColorwayFull, error) {
+	return s.getProductDetails(ctx, map[string]any{"id": id}, true, includeArchived)
 }
 
-// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
+// GetProductByIdNoHidden returns a product by its ID, excluding hidden products (and, via ACTIVE-only,
+// archived products). Storefront path — never returns hidden or archived.
 func (s *Store) GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error) {
-	return s.getProductDetails(ctx, map[string]any{"id": id}, false)
+	return s.getProductDetails(ctx, map[string]any{"id": id}, false, false)
 }
 
 // GetProductBySKU returns a product by its base SKU (the public resolve key, case-insensitive since
-// product.sku is stored uppercase and MySQL string compares are case-insensitive), excluding hidden
-// products. This is the storefront resolver for the /p/{pretty}-{sku} URL scheme.
+// product.sku is stored uppercase and MySQL string compares are case-insensitive), excluding hidden (and
+// archived) products. This is the storefront resolver for the /p/{pretty}-{sku} URL scheme.
 func (s *Store) GetProductBySKU(ctx context.Context, sku string) (*entity.ColorwayFull, error) {
-	return s.getProductDetails(ctx, map[string]any{"sku": strings.ToUpper(sku)}, false)
+	return s.getProductDetails(ctx, map[string]any{"sku": strings.ToUpper(sku)}, false, false)
 }
 
 // createSyntheticStyle inserts a minimal tech_card (style) for a newly-created product and returns

@@ -74,16 +74,22 @@ type (
 		GetProductCustoms(ctx context.Context, productID int) (*entity.ColorwayCustoms, error)
 		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
 		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
-		// GetProductsPaged returns a paged list of products based on provided parameters.
-		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error)
+		// GetProductsPaged returns a paged list of products based on provided parameters. statuses is the
+		// ADMIN-only lifecycle-status filter (empty = ACTIVE-only default) and is honoured only on the admin
+		// path (showHidden=true); the storefront path (showHidden=false) ignores it and returns ACTIVE-only
+		// with tier gating. Tier gating is storefront-only and is never applied when showHidden=true.
+		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, statuses []entity.ColorwayStatus, showHidden bool) ([]entity.Colorway, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
 		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Colorway, error)
 		// GetProductsByTag returns a list of products by their tag.
 		GetProductsByTag(ctx context.Context, tag string) ([]entity.Colorway, error)
 		// GetLowStockProducts returns visible products with total stock in (0, threshold], ordered by ascending stock.
 		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error)
-		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
-		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
+		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not (admin read).
+		// includeArchived additionally allows an ARCHIVED colourway to be returned read-only (admin detail);
+		// when false it keeps excluding ARCHIVED. Must only ever be called with includeArchived=true from an
+		// admin surface — the storefront uses GetProductByIdNoHidden/GetProductBySKU.
+		GetProductByIdShowHidden(ctx context.Context, id int, includeArchived bool) (*entity.ColorwayFull, error)
 		// GetVariantByID returns a variant (product_size) by its stable id, sql.ErrNoRows if absent
 		// (variant addressing never implicitly creates a variant, R2/p012).
 		GetVariantByID(ctx context.Context, variantID int) (entity.Variant, error)
@@ -113,8 +119,12 @@ type (
 		HideColorway(ctx context.Context, colorwayID int) error
 		// UnhideColorway transitions HIDDEN->ACTIVE (back onto the storefront).
 		UnhideColorway(ctx context.Context, colorwayID int) error
-		// ArchiveColorway transitions ACTIVE|HIDDEN->ARCHIVED (terminal) and stamps the archival audit.
+		// ArchiveColorway transitions ACTIVE|HIDDEN->ARCHIVED and stamps the archival audit.
 		ArchiveColorway(ctx context.Context, colorwayID int) error
+		// TransitionColorwayToHidden moves a colourway to HIDDEN via the single legal edge from its current
+		// state: hide (ACTIVE->HIDDEN) or restore/unarchive (ARCHIVED->HIDDEN, clearing the deleted_at
+		// tombstone). Any other source state is rejected by the entity state machine (fail-closed).
+		TransitionColorwayToHidden(ctx context.Context, colorwayID int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error

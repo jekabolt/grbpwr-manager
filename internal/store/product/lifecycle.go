@@ -30,11 +30,29 @@ func (s *Store) UnhideColorway(ctx context.Context, colorwayID int) error {
 	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionUnhide)
 }
 
-// ArchiveColorway retires a colourway (ACTIVE|HIDDEN -> ARCHIVED, terminal) and stamps the archival
-// audit time. It does not check order references — the storefront/admin layer decides whether an
+// ArchiveColorway retires a colourway (ACTIVE|HIDDEN -> ARCHIVED) and stamps the archival audit time.
+// It does not check order references — the storefront/admin layer decides whether an
 // archived-with-orders colourway is allowed; the SKU stays frozen and readable.
 func (s *Store) ArchiveColorway(ctx context.Context, colorwayID int) error {
 	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionArchive)
+}
+
+// TransitionColorwayToHidden moves a colourway to HIDDEN via the single legal edge from its current
+// state: hide (ACTIVE -> HIDDEN) when it is live, or restore/unarchive (ARCHIVED -> HIDDEN, clearing the
+// deleted_at tombstone) when it is archived. It is the admin store entry point for the "hide / unarchive"
+// action wired to TransitionColorwayStatus targeting HIDDEN. Any other source state is rejected by the
+// entity state machine (e.g. DRAFT can only publish; HIDDEN has no self-edge), fail-closed. The current
+// status is a hint for edge selection only — transitionColorwayLifecycle re-reads it under the optimistic
+// guard, so a concurrent change is rejected rather than mis-applied.
+func (s *Store) TransitionColorwayToHidden(ctx context.Context, colorwayID int) error {
+	cur, err := loadColorwayLifecycle(ctx, s.DB, colorwayID)
+	if err != nil {
+		return err
+	}
+	if cur == entity.ColorwayStatusArchived {
+		return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionRestore)
+	}
+	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionHide)
 }
 
 func loadColorwayLifecycle(ctx context.Context, db dependency.DB, colorwayID int) (entity.ColorwayStatus, error) {
@@ -69,13 +87,16 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 			return err
 		}
 	}
-	// Side effects on the audit stamps: publish records first publication; archive records retirement.
+	// Side effects on the audit stamps: publish records first publication; archive records retirement;
+	// restore (unarchive-to-hidden) clears the archival tombstone so the row is no longer soft-deleted.
 	extra := ""
 	switch t {
 	case entity.ColorwayTransitionPublish:
 		extra = ", published_at = COALESCE(published_at, NOW())"
 	case entity.ColorwayTransitionArchive:
 		extra = ", deleted_at = COALESCE(deleted_at, NOW())"
+	case entity.ColorwayTransitionRestore:
+		extra = ", deleted_at = NULL"
 	}
 	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
 		`UPDATE product SET lifecycle_status = :next`+extra+` WHERE id = :id AND lifecycle_status = :cur`,

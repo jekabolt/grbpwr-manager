@@ -77,7 +77,7 @@ func TestColorCodeSurvivesRoundTrip(t *testing.T) {
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", prodID) }()
 
 	// GET must now return the dictionary color_code (was empty before the fix)
-	got, err := s.Products().GetProductByIdShowHidden(ctx, prodID)
+	got, err := s.Products().GetProductByIdShowHidden(ctx, prodID, false)
 	require.NoError(t, err)
 	require.Equal(t, colorCode, got.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		"GET must return the dictionary color_code")

@@ -518,7 +518,9 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 			if limit <= 0 {
 				limit = 8
 			}
-			products, _, err := rep.Products().GetProductsPaged(ctx, limit, 0, []entity.SortFactor{entity.CreatedAt}, entity.Descending, nil, false)
+			// Storefront hero (new arrivals): nil statuses + showHidden=false → ACTIVE-only with tier
+			// gating, matching the public catalogue. Never surfaces hidden or archived colourways.
+			products, _, err := rep.Products().GetProductsPaged(ctx, limit, 0, []entity.SortFactor{entity.CreatedAt}, entity.Descending, nil, nil, false)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to get newest products, skipping", slog.String("err", err.Error()))
 				continue

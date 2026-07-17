@@ -56,14 +56,16 @@ func TestColorwayStatusString(t *testing.T) {
 // an unknown (fail-closed) state.
 func TestNextColorwayStatus(t *testing.T) {
 	allTransitions := []ColorwayTransition{
-		ColorwayTransitionPublish, ColorwayTransitionHide, ColorwayTransitionUnhide, ColorwayTransitionArchive,
+		ColorwayTransitionPublish, ColorwayTransitionHide, ColorwayTransitionUnhide, ColorwayTransitionArchive, ColorwayTransitionRestore,
 	}
 	// allowed[from][transition] = expected target
 	allowed := map[ColorwayStatus]map[ColorwayTransition]ColorwayStatus{
 		ColorwayStatusDraft:  {ColorwayTransitionPublish: ColorwayStatusActive},
 		ColorwayStatusActive: {ColorwayTransitionHide: ColorwayStatusHidden, ColorwayTransitionArchive: ColorwayStatusArchived},
 		ColorwayStatusHidden: {ColorwayTransitionUnhide: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
-		// Archived: terminal — no edges.
+		// Archived: soft-terminal — its only edge is restore -> HIDDEN (admin unarchive-to-hidden). It
+		// must NOT be able to go straight to ACTIVE (no restore->ACTIVE), which this table also asserts.
+		ColorwayStatusArchived: {ColorwayTransitionRestore: ColorwayStatusHidden},
 	}
 	states := []ColorwayStatus{
 		ColorwayStatusUnknown, ColorwayStatusDraft, ColorwayStatusActive, ColorwayStatusHidden, ColorwayStatusArchived,

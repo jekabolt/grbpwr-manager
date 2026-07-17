@@ -227,7 +227,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 
 	// Entity-level plumbing (fix: PublishColorwayResponse.colorway.published_at): the fresh read back
 	// through the store must also carry published_at, not just the raw DB row.
-	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID, false)
 	require.NoError(t, err)
 	require.True(t, full.Product.PublishedAt.Valid, "entity.Colorway.PublishedAt must be populated from the fresh read")
 
@@ -440,7 +440,7 @@ func TestPublishColorwayResponsePublishedAtPopulated(t *testing.T) {
 	// No UpdateColorway call — PublishColorway alone mints the base + variant SKUs it needs.
 	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID))
 
-	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID, false)
 	require.NoError(t, err)
 	require.True(t, full.Product.PublishedAt.Valid)
 
