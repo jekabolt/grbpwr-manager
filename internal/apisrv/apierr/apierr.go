@@ -21,7 +21,21 @@ import (
 // clients can bind the failure to the offending input; a message-only ValidationError degrades
 // to a plain InvalidArgument. Never returns nil.
 func Invalid(ve *entity.ValidationError) error {
-	st := status.New(codes.InvalidArgument, ve.Error())
+	return withOptionalFieldDetail(status.New(codes.InvalidArgument, ve.Error()), ve)
+}
+
+// FailedPrecondition maps a ValidationError to a gRPC FailedPrecondition status, with the same
+// field-tagged google.rpc.BadRequest detail as Invalid. Use it (over Invalid) when the request
+// itself is well-formed but the current state of the referenced entities blocks it — e.g. a
+// delete refused because another record still references the target (S24: a readable
+// field+reason+conflicting-entity+how-to-fix, not a raw FK-violation 500). Never returns nil.
+func FailedPrecondition(ve *entity.ValidationError) error {
+	return withOptionalFieldDetail(status.New(codes.FailedPrecondition, ve.Error()), ve)
+}
+
+// withOptionalFieldDetail attaches a google.rpc.BadRequest FieldViolation to st when ve is
+// field-tagged (Field set); a message-only ValidationError is returned as st unchanged.
+func withOptionalFieldDetail(st *status.Status, ve *entity.ValidationError) error {
 	if ve.Field != "" {
 		if enriched, err := st.WithDetails(&errdetails.BadRequest{
 			FieldViolations: []*errdetails.BadRequest_FieldViolation{fieldViolation(ve)},

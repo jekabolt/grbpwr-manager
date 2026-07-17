@@ -439,7 +439,10 @@ func (s *Server) UpsertCostingFxRates(ctx context.Context, req *pb_admin.UpsertC
 	return &pb_admin.UpsertCostingFxRatesResponse{}, nil
 }
 
-// DeleteTechCard deletes a tech card by id (nested sections cascade).
+// DeleteTechCard deletes a tech card by id (nested sections cascade). A readable field-tagged
+// FailedPrecondition (apierr) is returned when the card is still referenced elsewhere — a sample with
+// material movements, a use as an assembly component in another style, or (residual) any other RESTRICT
+// the store guard does not explicitly enumerate — never a raw Internal (P4-flyover M2/S24-regression).
 func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCardRequest) (*pb_admin.DeleteTechCardResponse, error) {
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
@@ -447,6 +450,10 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 	if err := s.repo.TechCards().DeleteTechCard(ctx, int(req.Id)); err != nil {
 		if errors.Is(err, entity.ErrSampleHasMovements) {
 			return nil, status.Error(codes.FailedPrecondition, "a sample of this tech card has material movements; delete/return them first")
+		}
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.FailedPrecondition(ve)
 		}
 		slog.Default().ErrorContext(ctx, "can't delete tech card",
 			slog.String("err", err.Error()),

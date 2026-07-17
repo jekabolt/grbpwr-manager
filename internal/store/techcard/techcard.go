@@ -5,10 +5,12 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -355,8 +357,20 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 
 // DeleteTechCard deletes a tech card by id (child sections cascade). It refuses when any of the
 // card's samples has material stock movements: the sample rows cascade (ON DELETE CASCADE) and would
-// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04).
-// The check and the delete run in one transaction so a concurrent issue cannot slip between them.
+// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04). It
+// also refuses when the card is used as an auxiliary component in another style's assembly bill
+// (style_assembly.component_tech_card_id -> tech_card ON DELETE RESTRICT, 0174) — a raw DB 1451 there
+// would otherwise surface as an unreadable Internal (P4-flyover M2/S24-regression); both checks and the
+// delete run in one transaction so a concurrent issue/assembly write cannot slip between them.
+//
+// sample_substitution.bom_item_id -> tech_card_bom_item is deliberately NOT guarded here: as of 0178 it
+// is ON DELETE SET NULL (P4-flyover M3), so a substitution recorded against one of this card's own BOM
+// lines degrades gracefully (bom_item_id -> NULL, original_material_id snapshot untouched) instead of
+// blocking the delete — no COUNT-guard is needed because that FK can no longer 1451.
+//
+// Any OTHER RESTRICT this does not explicitly enumerate (e.g. the pre-existing product.style_id ->
+// tech_card RESTRICT, 0138 — a style with live colourway products) still raises 1451; the caller
+// (apisrv/admin) maps that residual case to a field-tagged FailedPrecondition rather than Internal.
 func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
@@ -368,8 +382,23 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 		if n > 0 {
 			return entity.ErrSampleHasMovements
 		}
+		asmCount, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("check tech card assembly usage: %w", err)
+		}
+		if asmCount > 0 {
+			return entity.NewFieldViolation("tech_card_id",
+				fmt.Sprintf("used as an assembly component in %d style(s)", asmCount),
+				"style_assembly", "remove it from those assembly bills first")
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2: an un-enumerated RESTRICT
+				return entity.NewFieldViolation("tech_card_id",
+					"still referenced by another record", "", "remove the referencing record first")
+			}
 			return fmt.Errorf("failed to delete tech card: %w", err)
 		}
 		return nil
