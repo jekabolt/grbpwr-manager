@@ -51,6 +51,13 @@ var ErrProductInOrders = errors.New("product exists in orders")
 
 // AddProduct adds a new product to the product store.
 func (s *Store) AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error) {
+	// R9: verify the in-memory dictionary is current before this dictionary-dependent write (the SKU
+	// mint resolves color_code, the label reads country). Runs before the tx on the non-tx repository,
+	// reloading only when another instance bumped a revision — so a colour added elsewhere is visible
+	// here without waiting for the background poll.
+	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
+		return 0, fmt.Errorf("can't refresh dictionary before product create: %w", err)
+	}
 	var prdId int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
@@ -129,6 +136,11 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, e
 
 // UpdateProduct updates an existing product.
 func (s *Store) UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id int) error {
+	// R9: refresh the dictionary before this dictionary-dependent write (re-mint + country), same as
+	// AddProduct — see the note there.
+	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
+		return fmt.Errorf("can't refresh dictionary before product update: %w", err)
+	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		err := updateProduct(ctx, rep.DB(), prd.Product, id)
 		if err != nil {
