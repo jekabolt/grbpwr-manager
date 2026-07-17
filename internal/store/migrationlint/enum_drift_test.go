@@ -196,6 +196,14 @@ func TestMaterialClassDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
 }
 
+// TestMaterialPurposeDBCheckNoDrift extends the drift test to the material purpose mark (#40)
+// (entity.MaterialPurpose/ValidMaterialPurposes) <-> DB CHECK (migration 0184, chk_material_purpose).
+func TestMaterialPurposeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0184_material_image_purpose.sql")
+	dbValues := extractDBEnumValues(t, content, "purpose REGEXP", 120)
+	assertSameSet(t, "MaterialPurpose", dbValues, mapKeysAsStrings(entity.ValidMaterialPurposes))
+}
+
 // TestMaterialPriceSourceDBCheckNoDrift extends the drift test to material_price.source
 // (entity.ValidMaterialPriceSources) <-> DB CHECK (migration 0158, chk_material_price_source).
 func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {

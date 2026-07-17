@@ -324,6 +324,16 @@ enum MaterialClass {
   MATERIAL_CLASS_OTHER = 5;
 }
 
+// MaterialPurpose (#40) marks whether a catalog material is used for samples, production, or both,
+// so the admin can mark and filter materials. Mirrors entity.ValidMaterialPurposes and the DB CHECK
+// chk_material_purpose. UNKNOWN defaults to BOTH on write.
+enum MaterialPurpose {
+  MATERIAL_PURPOSE_UNKNOWN = 0; // defaults to BOTH on write
+  MATERIAL_PURPOSE_SAMPLE = 1;
+  MATERIAL_PURPOSE_PRODUCTION = 2;
+  MATERIAL_PURPOSE_BOTH = 3;
+}
+
 // MaterialFabricAttrs are the typed attributes of a fabric-class material (material_fabric_attr).
 message MaterialFabricAttrs {
   google.type.Decimal width_cm = 1;
@@ -398,6 +408,13 @@ message Material {
   // percent are read (name is resolved server-side from the fibre dictionary). Empty = unset. A
   // shell-fabric material's composition is what a style's derived composition_entries is built from.
   repeated CompositionEntry composition_entries = 25;
+  // Catalog image (#39): image_id is the write-side media reference (FK media(id); 0 = unset); image
+  // is the resolved MediaFull on read (null when unset). Mirrors Model.thumbnail_id / Model.thumbnail.
+  int32 image_id = 26;
+  MediaFull image = 27;
+  // purpose (#40) marks whether the material is used for samples, production, or both. Defaults to
+  // BOTH on write when UNKNOWN, so the admin can mark and filter materials.
+  MaterialPurpose purpose = 28;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

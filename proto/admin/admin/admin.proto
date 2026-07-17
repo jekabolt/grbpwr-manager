@@ -5161,6 +5161,7 @@ message GetMaterialResponse {
 message ListMaterialsRequest {
   string section = 1; // empty = all sections
   bool include_archived = 2;
+  common.MaterialPurpose purpose = 3; // UNKNOWN = all purposes (#40)
 }
 
 message ListMaterialsResponse {

@@ -101,10 +101,17 @@ func (s *Server) ListMaterials(ctx context.Context, req *pb_admin.ListMaterialsR
 		slog.Default().ErrorContext(ctx, "can't list materials", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list materials")
 	}
+	// purpose is an exact-match filter on the material's mark (#40); UNKNOWN = all purposes. The
+	// catalog is already loaded unpaginated per section, so filtering the resolved slice here keeps
+	// the shared store interface unchanged.
+	purposeFilter := req.GetPurpose()
 	read, _ := s.costingAccess(ctx)
 	out := make([]*pb_common.Material, 0, len(materials))
 	for _, m := range materials {
 		pbM := dto.ConvertEntityMaterialToPb(m)
+		if purposeFilter != pb_common.MaterialPurpose_MATERIAL_PURPOSE_UNKNOWN && pbM.Purpose != purposeFilter {
+			continue
+		}
 		if !read {
 			stripMaterialCosting(pbM)
 		}

@@ -30,6 +30,26 @@ var ValidMaterialClasses = map[MaterialClass]bool{
 	MaterialClassOther:     true,
 }
 
+// MaterialPurpose (#40) marks whether a catalog material is used for samples, production, or both —
+// so the admin can mark and filter. Kept as a distinct ~string type mirrored by the DB CHECK
+// (chk_material_purpose, migration 0184) and the proto MaterialPurpose enum.
+type MaterialPurpose string
+
+const (
+	MaterialPurposeSample     MaterialPurpose = "sample"
+	MaterialPurposeProduction MaterialPurpose = "production"
+	MaterialPurposeBoth       MaterialPurpose = "both"
+)
+
+// ValidMaterialPurposes is the storable set — the single source of truth mirrored by the DB CHECK
+// (chk_material_purpose, migration 0184) and the proto MaterialPurpose enum. An empty/unknown purpose
+// is normalised to 'both' on write (a material serves both flows unless explicitly narrowed).
+var ValidMaterialPurposes = map[MaterialPurpose]bool{
+	MaterialPurposeSample:     true,
+	MaterialPurposeProduction: true,
+	MaterialPurposeBoth:       true,
+}
+
 // MaterialFabricAttr are the typed attributes of a fabric-class material (material_fabric_attr).
 type MaterialFabricAttr struct {
 	WidthCm         decimal.NullDecimal `db:"width_cm"`
@@ -83,6 +103,12 @@ type MaterialInsert struct {
 	Pantone  sql.NullString      `db:"pantone" valid:"-"`   // pantone reference
 	MinStock decimal.NullDecimal `db:"min_stock" valid:"-"` // low-stock alert threshold, in Unit
 	Notes    sql.NullString      `db:"notes" valid:"-"`
+	// ImageId is an optional catalog image (#39): FK media(id), NULL when unset. Not resolved here —
+	// the resolved MediaFull is attached on read as Material.Image.
+	ImageId sql.NullInt32 `db:"image_id" valid:"-"`
+	// Purpose marks whether the material is used for samples, production, or both (#40). An empty
+	// value is normalised to 'both' on write (see normalizeMaterialPurpose).
+	Purpose string `db:"purpose" valid:"-"`
 	// CTI typing (S15). MaterialClass is the discriminant; exactly the matching typed attribute
 	// pointer is populated (the rest nil); OtherAttrs is the JSON escape-hatch for class 'other'.
 	// The attribute pointers are not base columns (db:"-") — they are loaded from / written to the
@@ -113,6 +139,8 @@ type Material struct {
 	LockVersion int       `db:"lock_version"`
 	CreatedAt   time.Time `db:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"`
+	// Image is the resolved catalog image (#39), attached on read from ImageId. Nil when unset.
+	Image *MediaFull `db:"-"`
 }
 
 // MaterialPriceSource enumerates how a price point entered the history. (MaterialPriceSourcePurchase
