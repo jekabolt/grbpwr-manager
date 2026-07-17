@@ -14,10 +14,21 @@ FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.
 FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"2\" with name \"product_id\" on message \"NotifyMeRequest\" was deleted.
 FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"3\" with name \"size_id\" on message \"NotifyMeRequest\" was deleted.
+FIELD_SAME_JSON_NAME|proto/admin/admin/admin.proto|Field \"1\" with name \"colorway_id\" on message \"DeleteProductMediaRequest\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_JSON_NAME|proto/admin/admin/admin.proto|Field \"3\" with name \"colorway_id\" on message \"ListStockChangeHistoryRequest\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_JSON_NAME|proto/admin/admin/admin.proto|Field \"3\" with name \"colorway_id\" on message \"ListStockChangesRequest\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_JSON_NAME|proto/common/common/archive.proto|Field \"1\" with name \"colorway_id\" on message \"ArchiveProductInsert\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_JSON_NAME|proto/common/common/archive.proto|Field \"1\" with name \"colorway_ids\" on message \"ArchiveProductsManualInsert\" changed option \"json_name\" from \"productIds\" to \"colorwayIds\".
 FIELD_SAME_JSON_NAME|proto/common/common/order.proto|Field \"14\" with name \"variant_sku_snapshot\" on message \"OrderItem\" changed option \"json_name\" from \"sku\" to \"variantSkuSnapshot\".
 FIELD_SAME_JSON_NAME|proto/common/common/product.proto|Field \"2\" with name \"colorway_id\" on message \"StockChange\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_NAME|proto/admin/admin/admin.proto|Field \"1\" on message \"DeleteProductMediaRequest\" changed name from \"product_id\" to \"colorway_id\".
+FIELD_SAME_NAME|proto/admin/admin/admin.proto|Field \"3\" on message \"ListStockChangeHistoryRequest\" changed name from \"product_id\" to \"colorway_id\".
+FIELD_SAME_NAME|proto/admin/admin/admin.proto|Field \"3\" on message \"ListStockChangesRequest\" changed name from \"product_id\" to \"colorway_id\".
+FIELD_SAME_NAME|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductInsert\" changed name from \"product_id\" to \"colorway_id\".
+FIELD_SAME_NAME|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualInsert\" changed name from \"product_ids\" to \"colorway_ids\".
 FIELD_SAME_NAME|proto/common/common/order.proto|Field \"14\" on message \"OrderItem\" changed name from \"sku\" to \"variant_sku_snapshot\".
 FIELD_SAME_NAME|proto/common/common/product.proto|Field \"2\" on message \"StockChange\" changed name from \"product_id\" to \"colorway_id\".
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"ListStockChangesRequest\" moved from oneof \"_product_id\" to oneof \"_colorway_id\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"2\" on message \"ArchiveProductsTagFull\" changed type from \"common.Product\" to \"common.Colorway\".
@@ -27,10 +38,10 @@ FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroNewA
 FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"1\" on message \"HeroProductSpotlightWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"2\" on message \"HeroSplitWithTranslations\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/order.proto|Field \"17\" on message \"OrderItem\" changed type from \"common.ProductInsertTranslation\" to \"common.ColorwayInsertTranslation\".
-FIELD_SAME_TYPE|proto/common/common/product.proto|Field \"1\" on message \"SizeWithMeasurementInsert\" changed type from \"common.ProductSizeInsert\" to \"common.VariantInsert\".
-FIELD_SAME_TYPE|proto/common/common/product.proto|Field \"1\" on message \"SizeWithMeasurement\" changed type from \"common.ProductSize\" to \"common.Variant\".
 FIELD_SAME_TYPE|proto/common/common/techcard.proto|Field \"101\" on message \"TechCardInsert\" changed type from \"string\" to \"enum\".
 FIELD_SAME_TYPE|proto/common/common/techcard.proto|Field \"14\" on message \"TechCardListItem\" changed type from \"string\" to \"enum\".
+FIELD_SAME_TYPE|proto/frontend/frontend/frontend.proto|Field \"1\" on message \"GetArchiveResponse\" changed type from \"common.ArchiveFull\" to \"frontend.StorefrontArchiveFull\".
+FIELD_SAME_TYPE|proto/frontend/frontend/frontend.proto|Field \"1\" on message \"GetArchivesPagedResponse\" changed type from \"common.ArchiveList\" to \"frontend.StorefrontArchiveList\".
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"DeleteProductByIDRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"DeleteProductByIDResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductByIDRequest\" was deleted from file.
@@ -55,6 +66,9 @@ MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductDisplay\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductFull\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductMeasurementInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductMeasurementUpdate\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductMeasurement\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductNew\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductPriceInsert\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductPrice\" was deleted from file.
@@ -63,11 +77,14 @@ MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductTagInsert\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"ProductTag\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"Product\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"SizeWithMeasurementInsert\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"SizeWithMeasurement\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/techcard.proto|Previously present message \"TechCardColorway\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedResponse\" was deleted from file.
+ONEOF_NO_DELETE|proto/admin/admin/admin.proto|Previously present oneof \"_product_id\" on message \"ListStockChangesRequest\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"DeleteProductByID\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductByID\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductCustoms\" on service \"AdminService\" was deleted.
