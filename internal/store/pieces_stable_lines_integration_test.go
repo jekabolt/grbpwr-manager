@@ -127,6 +127,22 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, c4.Pieces, 2, "the failed delete rolled back; both pieces remain")
 	require.Equal(t, usagePieceID, requireUsagePieceID(t, c4, cwID), "the recipe reference is still intact")
+
+	// A NON-EXISTENT bom_line_key on an operation or a piece material is a field-tagged validation
+	// error, never a silently-NULL link (no-silent-no-op norm; the beta A–L acceptance run caught the
+	// operations case being accepted with 200 — C.10's negative probe). The legacy positional index
+	// keeps its transition tolerance; only the stable-key form is strict.
+	badOpCard := card(piece("PK1", "Front panel"), piece("PK2", "Back"))
+	badOpCard.Operations = []entity.TechCardOperation{{Node: "neg probe", BomLineKey: "does-not-exist"}}
+	err = T.UpdateTechCard(ctx, tcID, badOpCard, c4.LockVersion)
+	require.Error(t, err, "unknown operation bom_line_key must be refused")
+	require.True(t, errors.As(err, &ve), "operation bom_line_key refusal must be field-tagged, got %v", err)
+
+	badPiece := piece("PK1", "Front panel")
+	badPiece.Materials = []entity.TechCardPieceMaterial{{ColorwayID: cwID, BomLineKey: "does-not-exist"}}
+	err = T.UpdateTechCard(ctx, tcID, card(badPiece, piece("PK2", "Back")), c4.LockVersion)
+	require.Error(t, err, "unknown piece-material bom_line_key must be refused")
+	require.True(t, errors.As(err, &ve), "piece-material bom_line_key refusal must be field-tagged, got %v", err)
 }
 
 // requireUsagePieceID returns the (single) recipe usage's resolved piece_id for the given colourway.

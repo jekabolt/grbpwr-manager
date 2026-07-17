@@ -190,8 +190,18 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			if !validColorway[m.ColorwayID] {
 				return fmt.Errorf("tech card piece %q: colorway_id %d is not a colourway of this style", p.Name, m.ColorwayID)
 			}
-			// Resolve the positional refs to real bom_item ids (S2/S3). The legacy *_index columns are
+			// Resolve the refs to real bom_item ids (S2/S3). The legacy *_index columns are
 			// still written for the transition (dropped in M3).
+			fabricBomID, err := resolveBomRef(bomRes, m.BomLineKey, m.BomItemIndex,
+				fmt.Sprintf("pieces[%d].materials[%d].bom_line_key", i, j))
+			if err != nil {
+				return err
+			}
+			fusingBomID, err := resolveBomRef(bomRes, m.FusingBomLineKey, m.FusingBomItemIndex,
+				fmt.Sprintf("pieces[%d].materials[%d].fusing_bom_line_key", i, j))
+			if err != nil {
+				return err
+			}
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_material
 					(piece_id, colorway_id, bom_item_id, fusing_bom_item_id, bom_item_index, fusing_bom_item_index, note, display_order)
@@ -199,8 +209,8 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				map[string]any{
 					"piece_id":              pieceID,
 					"colorway_id":           m.ColorwayID,
-					"bom_item_id":           resolveBomRef(bomRes, m.BomLineKey, m.BomItemIndex),
-					"fusing_bom_item_id":    resolveBomRef(bomRes, m.FusingBomLineKey, m.FusingBomItemIndex),
+					"bom_item_id":           fabricBomID,
+					"fusing_bom_item_id":    fusingBomID,
 					"bom_item_index":        m.BomItemIndex,
 					"fusing_bom_item_index": m.FusingBomItemIndex,
 					"note":                  m.Note,
@@ -266,14 +276,19 @@ func resolveBomID(res bomResolver, idx sql.NullInt32) any {
 // line_key (preferred — positionality off the wire, WS3 follow-up), else the legacy positional index,
 // else SQL NULL. Like resolveBomID, an unknown key / out-of-range index resolves to NULL (the ref was
 // already broken) rather than pointing at the wrong line.
-func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32) any {
+func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField string) (any, error) {
 	if key := strings.TrimSpace(lineKey); key != "" {
 		if id, ok := res.byLineKey[key]; ok {
-			return id
+			return id, nil
 		}
-		return nil
+		// An unknown non-empty line_key is a field-tagged validation error, never a silent NULL —
+		// the no-silent-no-op norm, same as the colourway recipe's resolveUsageBom (found live by
+		// the beta A–L acceptance run: C.10's negative probe was accepted with 200). The legacy
+		// positional index below keeps its transition tolerance (unresolvable -> NULL).
+		return nil, entity.NewFieldViolation(keyField,
+			fmt.Sprintf("no BOM line %q in this tech card", key), "", "reference an existing BOM line by its line_key")
 	}
-	return resolveBomID(res, idx)
+	return resolveBomID(res, idx), nil
 }
 
 type bomExistingRow struct {

@@ -43,6 +43,11 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	}
 	rows := make([]map[string]any, 0, len(ops))
 	for i, o := range ops {
+		bomID, err := resolveBomRef(bomRes, o.BomLineKey, o.BomItemIndex,
+			fmt.Sprintf("operations[%d].bom_line_key", i))
+		if err != nil {
+			return err
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":     tcID,
 			"operation_number": o.OperationNumber,
@@ -60,9 +65,9 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
-			// Resolve by stable line_key (preferred) or the legacy positional index (S2/S3); *_index
-			// kept for the transition.
-			"bom_item_id":    resolveBomRef(bomRes, o.BomLineKey, o.BomItemIndex),
+			// Resolved above by stable line_key (preferred) or the legacy positional index (S2/S3);
+			// *_index kept for the transition.
+			"bom_item_id":    bomID,
 			"bom_item_index": o.BomItemIndex,
 			"callout_number": o.CalloutNumber,
 			"placement":      o.Placement,
