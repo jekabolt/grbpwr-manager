@@ -196,6 +196,15 @@ func (s *Store) GetVariantByID(ctx context.Context, variantID int) (entity.Varia
 		map[string]any{"id": variantID})
 }
 
+// GetVariantBySKU returns a single variant (product_size) by its public variant SKU. Returns
+// sql.ErrNoRows when no such variant exists so storefront callers (NotifyMe) can map that to NOT_FOUND.
+// variant_sku is UNIQUE, so this resolves to exactly one variant.
+func (s *Store) GetVariantBySKU(ctx context.Context, variantSKU string) (entity.Variant, error) {
+	return storeutil.QueryNamedOne[entity.Variant](ctx, s.DB,
+		`SELECT id, quantity, product_id, size_id, sku FROM product_size WHERE sku = :sku`,
+		map[string]any{"sku": variantSKU})
+}
+
 // UpdateProductSizeStock updates the stock quantity for a product size.
 func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
 	sz, ok := cache.GetSizeById(sizeId)

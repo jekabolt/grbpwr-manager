@@ -360,8 +360,11 @@ message UnsubscribeNewsletterResponse {}
 
 message NotifyMeRequest {
   string email = 1;
-  int32 product_id = 2;
-  int32 size_id = 3;
+  // R2/R3/p013: the storefront addresses the variant by its public SKU, never internal ids (identity
+  // change -> old numbers reserved). The server resolves it to the waitlisted variant.
+  reserved 2, 3;
+  reserved "product_id", "size_id";
+  string variant_sku = 4;
 }
 
 message NotifyMeResponse {}
