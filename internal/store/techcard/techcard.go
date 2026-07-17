@@ -47,12 +47,12 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at,
 	base_model_id, base_sample_size_id,
-	measurement_unit, concept, notes, purpose, output_material_id, created_by, updated_by`
+	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at,
 	:base_model_id, :base_sample_size_id,
-	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :created_by, :updated_by`
+	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -93,6 +93,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 		"updated_by":          tc.UpdatedBy,
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
+		"aux_subtype":         tc.AuxSubtype,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              seasonLabel,
@@ -286,7 +287,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 				approved_at = :approved_at, released_at = :released_at,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
-					purpose = :purpose, output_material_id = :output_material_id
+					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)

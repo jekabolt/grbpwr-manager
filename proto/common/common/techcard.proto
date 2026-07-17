@@ -152,6 +152,23 @@ enum TechCardPurpose {
   TECH_CARD_PURPOSE_AUXILIARY = 2;
 }
 
+// TechCardAuxSubtype sub-classifies an AUXILIARY card (purpose=auxiliary) into the concrete kind of
+// non-sold item it produces (WS7). UNKNOWN=0 means unset — a sellable card, or an auxiliary card not yet
+// classified (stored NULL). Only meaningful with purpose=auxiliary.
+enum TechCardAuxSubtype {
+  TECH_CARD_AUX_SUBTYPE_UNKNOWN = 0;
+  TECH_CARD_AUX_SUBTYPE_BRAND_LABEL = 1;
+  TECH_CARD_AUX_SUBTYPE_CARE_LABEL = 2;
+  TECH_CARD_AUX_SUBTYPE_SIZE_LABEL = 3;
+  TECH_CARD_AUX_SUBTYPE_HANGTAG = 4;
+  TECH_CARD_AUX_SUBTYPE_STICKER = 5;
+  TECH_CARD_AUX_SUBTYPE_DUST_BAG = 6;
+  TECH_CARD_AUX_SUBTYPE_BOX = 7;
+  TECH_CARD_AUX_SUBTYPE_INSERT = 8;
+  TECH_CARD_AUX_SUBTYPE_HANGER = 9;
+  TECH_CARD_AUX_SUBTYPE_OTHER = 10;
+}
+
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
 // (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
 // comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
@@ -594,13 +611,24 @@ message TechCardIssue {
 }
 
 // TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
+// TechCardLabel is the garment's label/tag SPEC — one of the three historically-unconnected "label"
+// concepts (S21): (a) THIS spec, (b) the shipment label (common/shipment.proto — a shipping document,
+// deliberately NOT merged, a different domain), (c) the label MATERIAL as a BOM line
+// (tech_card_bom_item, section=label). WS7 unifies (a)↔(c) via bom_item_id below, and classifies the
+// auxiliary item via TechCard.aux_subtype. DEPRECATION (destructive → M3, not done here): once
+// bom_item_id + aux_subtype are adopted, label_type collapses into aux_subtype and the free-text
+// content/placement/attachment/size overlap (also carried structurally by the linked material + the
+// assembly bill's print_note/position_note) is dropped in a guarded migration.
 message TechCardLabel {
-  TechCardLabelType label_type = 1; // required
-  string content = 2; // содержание / артикул
-  string placement = 3; // размещение
-  string attachment = 4; // крепление
+  TechCardLabelType label_type = 1; // required. DEPRECATED-PENDING-M3: to be subsumed by TechCard.aux_subtype.
+  string content = 2; // содержание / артикул. DEPRECATED-PENDING-M3: overlaps the linked BOM material.
+  string placement = 3; // размещение. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
+  string attachment = 4; // крепление. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
   string size = 5; // размер
   string note = 6;
+  // WS7/§2.8 (S21 unification bridge): FK to the physical label material's BOM line
+  // (tech_card_bom_item). 0 = unlinked. Links this free-text label SPEC to the material it prints on.
+  int32 bom_item_id = 7;
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).
@@ -870,6 +898,9 @@ message TechCardInsert {
   int32 output_material_id = 102;
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
+  // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
+  TechCardAuxSubtype aux_subtype = 104;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
@@ -926,4 +957,6 @@ message TechCardListItem {
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
   TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
   SkuSeason sku_season = 15;
+  // WS7: auxiliary sub-type badge for list views (UNKNOWN=unset), mirroring purpose above.
+  TechCardAuxSubtype aux_subtype = 16;
 }

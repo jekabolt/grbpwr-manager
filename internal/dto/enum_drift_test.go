@@ -105,3 +105,27 @@ func TestTechCardPurposeEnumNoDrift(t *testing.T) {
 		t.Errorf("proto purpose values (%d) != entity.ValidTechCardPurposes (%d)", protoValues, len(entity.ValidTechCardPurposes))
 	}
 }
+
+// TestTechCardAuxSubtypeEnumNoDrift is the entity<->proto leg (WS7) for the aux_subtype enum: every
+// non-UNKNOWN proto value maps (via techCardAuxSubtypeFromPb) to a valid entity sub-type, and the three
+// sizes (proto values, mapping table, entity Valid set) all agree. The entity<->DB leg is in
+// internal/store/migrationlint (TestTechCardAuxSubtypeDBCheckNoDrift).
+func TestTechCardAuxSubtypeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardAuxSubtype_name {
+		if pb_common.TechCardAuxSubtype(v) == pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN {
+			continue
+		}
+		protoValues++
+		s := techCardAuxSubtypeFromPb(pb_common.TechCardAuxSubtype(v))
+		if !entity.ValidTechCardAuxSubtypes[s] {
+			t.Errorf("proto TechCardAuxSubtype %s maps to invalid entity sub-type %q", name, s)
+		}
+	}
+	if protoValues != len(auxSubtypePbByEntity) {
+		t.Errorf("proto aux_subtype values (%d) != mapping table size (%d)", protoValues, len(auxSubtypePbByEntity))
+	}
+	if protoValues != len(entity.ValidTechCardAuxSubtypes) {
+		t.Errorf("proto aux_subtype values (%d) != entity.ValidTechCardAuxSubtypes (%d)", protoValues, len(entity.ValidTechCardAuxSubtypes))
+	}
+}

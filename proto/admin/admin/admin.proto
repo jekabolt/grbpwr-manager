@@ -1210,6 +1210,28 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/inventory/packaging-recipe"};
   }
 
+  // UpsertStyleAssembly full-replaces a garment style's ASSEMBLY bill (WS7, §2.8): the auxiliary items
+  // (labels/tags) that physically go on/into it. Distinct from packaging (on the shipment). Empty items
+  // clears the bill. Every component must be an auxiliary tech card.
+  rpc UpsertStyleAssembly(UpsertStyleAssemblyRequest) returns (UpsertStyleAssemblyResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/style-assembly/upsert"
+      body: "*"
+    };
+  }
+  // ListStyleAssembly returns a garment style's assembly bill, resolved with component name/aux_subtype
+  // and the output material (the warehouse material consumed in production).
+  rpc ListStyleAssembly(ListStyleAssemblyRequest) returns (ListStyleAssemblyResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{style_id}/style-assembly"};
+  }
+
+  // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
+  // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
+  // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
+  rpc GetOrderPackingSpec(GetOrderPackingSpecRequest) returns (GetOrderPackingSpecResponse) {
+    option (google.api.http) = {get: "/api/admin/fulfillment/{order_uuid}/packing-spec"};
+  }
+
   // ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D).
   rpc ListMaterialLots(ListMaterialLotsRequest) returns (ListMaterialLotsResponse) {
     option (google.api.http) = {get: "/api/admin/inventory/{material_id}/lots"};
@@ -5215,6 +5237,84 @@ message ListPackagingRecipeRequest {}
 
 message ListPackagingRecipeResponse {
   repeated PackagingRecipeLine items = 1;
+}
+
+// StyleAssemblyLine is one stored line of a garment style's assembly bill (WS7, §2.8): an auxiliary item
+// (labels/tags) on/into the garment, with qty and print/position notes. component_name/component_aux_subtype/
+// output_material_* and size_name are resolved server-side for display and ignored on write.
+message StyleAssemblyLine {
+  int32 id = 1; // read-only
+  int32 style_id = 2;
+  int32 component_tech_card_id = 3; // auxiliary tech card
+  string component_name = 4; // read-only (display)
+  common.TechCardAuxSubtype component_aux_subtype = 5; // read-only (display)
+  int32 size_id = 6; // garment-size scope; 0 = all sizes
+  string size_name = 7; // read-only (display)
+  google.type.Decimal qty = 8; // > 0
+  string print_note = 9; // what to print (artwork ref / text)
+  string position_note = 10; // where/how it is attached
+  bool active = 11;
+  int32 output_material_id = 12; // component's warehouse material (COGS/production link); 0 = none
+  string output_material_name = 13; // read-only (display)
+}
+
+// StyleAssemblyItem is one writable assembly line; the style target is carried by the request.
+message StyleAssemblyItem {
+  int32 component_tech_card_id = 1; // an auxiliary tech card
+  int32 size_id = 2; // garment-size scope; 0 = all sizes
+  google.type.Decimal qty = 3; // > 0
+  string print_note = 4;
+  string position_note = 5;
+  bool active = 6;
+}
+
+// UpsertStyleAssemblyRequest full-replaces one style's assembly bill. Empty items clears it.
+message UpsertStyleAssemblyRequest {
+  int32 style_id = 1;
+  repeated StyleAssemblyItem items = 2;
+}
+
+message UpsertStyleAssemblyResponse {}
+
+message ListStyleAssemblyRequest {
+  int32 style_id = 1;
+}
+
+message ListStyleAssemblyResponse {
+  repeated StyleAssemblyLine items = 1;
+}
+
+// OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
+// and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.
+message OrderPackingSpecItem {
+  int32 order_item_id = 1;
+  int32 product_id = 2;
+  int32 variant_id = 3;
+  int32 style_id = 4;
+  string style_name = 5;
+  string sku = 6;
+  string size_name = 7;
+  google.type.Decimal quantity = 8;
+  repeated StyleAssemblyLine assembly = 9;
+}
+
+// OrderPackingSpecPackaging is one packaging material the order needs (WS2 resolution product → style →
+// global), summed across the order.
+message OrderPackingSpecPackaging {
+  int32 material_id = 1;
+  string material_name = 2;
+  string material_unit = 3;
+  google.type.Decimal qty = 4;
+}
+
+message GetOrderPackingSpecRequest {
+  string order_uuid = 1;
+}
+
+message GetOrderPackingSpecResponse {
+  string order_uuid = 1;
+  repeated OrderPackingSpecItem items = 2;
+  repeated OrderPackingSpecPackaging packaging = 3;
 }
 
 message ListMaterialLotsRequest {

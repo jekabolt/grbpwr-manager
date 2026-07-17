@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -529,6 +530,77 @@ func IsValidTechCardLabelType(t TechCardLabelType) bool {
 	return ValidTechCardLabelTypes[t]
 }
 
+// TechCardAuxSubtype sub-classifies an AUXILIARY tech card (purpose=auxiliary) into the concrete kind
+// of non-sold item it produces. It refines tech_card.purpose (an auxiliary card produces a MATERIAL via
+// output_material_id and has no product row) and is stored nullable in tech_card.aux_subtype. Mirrors the
+// common.TechCardAuxSubtype proto enum and the DB CHECK chk_tech_card_aux_subtype (migration 0173).
+type TechCardAuxSubtype string
+
+const (
+	AuxSubtypeBrandLabel TechCardAuxSubtype = "brand_label"
+	AuxSubtypeCareLabel  TechCardAuxSubtype = "care_label"
+	AuxSubtypeSizeLabel  TechCardAuxSubtype = "size_label"
+	AuxSubtypeHangtag    TechCardAuxSubtype = "hangtag"
+	AuxSubtypeSticker    TechCardAuxSubtype = "sticker"
+	AuxSubtypeDustBag    TechCardAuxSubtype = "dust_bag"
+	AuxSubtypeBox        TechCardAuxSubtype = "box"
+	AuxSubtypeInsert     TechCardAuxSubtype = "insert"
+	AuxSubtypeHanger     TechCardAuxSubtype = "hanger"
+	AuxSubtypeOther      TechCardAuxSubtype = "other"
+)
+
+// ValidTechCardAuxSubtypes is the closed set enforced by the DB CHECK; it backs the entity<->DB drift
+// test (internal/store/migrationlint) against migration 0173's chk_tech_card_aux_subtype.
+var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
+	AuxSubtypeBrandLabel: true,
+	AuxSubtypeCareLabel:  true,
+	AuxSubtypeSizeLabel:  true,
+	AuxSubtypeHangtag:    true,
+	AuxSubtypeSticker:    true,
+	AuxSubtypeDustBag:    true,
+	AuxSubtypeBox:        true,
+	AuxSubtypeInsert:     true,
+	AuxSubtypeHanger:     true,
+	AuxSubtypeOther:      true,
+}
+
+// IsValidTechCardAuxSubtype reports whether s is an accepted auxiliary sub-type.
+func IsValidTechCardAuxSubtype(s TechCardAuxSubtype) bool {
+	return ValidTechCardAuxSubtypes[s]
+}
+
+// AuxSubtypeFromName is the deterministic name → sub-type heuristic used to backfill EXISTING auxiliary
+// cards. It MUST stay identical to migration 0173's backfill CASE (first matching branch wins,
+// most-specific first); ok=false means "no confident match" and the caller leaves aux_subtype NULL rather
+// than guessing. Matching is case-insensitive substring.
+func AuxSubtypeFromName(name string) (TechCardAuxSubtype, bool) {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "dust"):
+		return AuxSubtypeDustBag, true
+	case strings.Contains(n, "hangtag"), strings.Contains(n, "hang tag"), strings.Contains(n, "hang-tag"):
+		return AuxSubtypeHangtag, true
+	case strings.Contains(n, "care"):
+		return AuxSubtypeCareLabel, true
+	case strings.Contains(n, "size label"), strings.Contains(n, "size-label"):
+		return AuxSubtypeSizeLabel, true
+	case strings.Contains(n, "brand"):
+		return AuxSubtypeBrandLabel, true
+	case strings.Contains(n, "sticker"):
+		return AuxSubtypeSticker, true
+	case strings.Contains(n, "hanger"):
+		return AuxSubtypeHanger, true
+	case strings.Contains(n, "insert"):
+		return AuxSubtypeInsert, true
+	case strings.Contains(n, "box"):
+		return AuxSubtypeBox, true
+	case strings.Contains(n, "shopper"), strings.Contains(n, "garment bag"):
+		return AuxSubtypeDustBag, true
+	default:
+		return "", false
+	}
+}
+
 // TechCardConstruction holds general workmanship parameters (Sheet «Обработка», 1:1).
 type TechCardConstruction struct {
 	MainStitchType  sql.NullString `db:"main_stitch_type"`
@@ -709,6 +781,9 @@ type TechCardLabel struct {
 	Attachment sql.NullString    `db:"attachment"`
 	Size       sql.NullString    `db:"size"`
 	Note       sql.NullString    `db:"note"`
+	// BomItemId links this free-text label SPEC to the physical label MATERIAL's BOM line
+	// (tech_card_bom_item), the §2.8 S21-unification bridge. NULL = unlinked. FK ON DELETE SET NULL.
+	BomItemId sql.NullInt32 `db:"bom_item_id"`
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка», 1:1).
@@ -859,7 +934,11 @@ type TechCardInsert struct {
 	// warehouse, and it may not link products.
 	Purpose          TechCardPurpose `db:"purpose"`
 	OutputMaterialId sql.NullInt64   `db:"output_material_id"` // material an auxiliary run receipts into
-	Name             string          `db:"name"`
+	// AuxSubtype sub-classifies an auxiliary card (brand_label/care_label/…/other); NULL for sellable
+	// cards and for unclassified auxiliary ones. Only meaningful when Purpose == auxiliary (DB gate
+	// chk_tech_card_aux_subtype_purpose). Additive (WS7); the sellable path never reads it.
+	AuxSubtype sql.NullString `db:"aux_subtype"`
+	Name       string         `db:"name"`
 	Brand            sql.NullString  `db:"brand"`
 	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
 	// It is never accepted from the public contract.
