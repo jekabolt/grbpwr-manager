@@ -60,10 +60,10 @@ func (s *Store) ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem
 // Within the recipe it stays best-effort for CLEAN per-material refusals — a material short on stock
 // or since deleted is skipped (logged + counted), never failing the ship; those guards fire before any
 // write, so a skip leaves the transaction intact. Any other per-material error aborts the whole consume
-// (rolled back, retried on a future re-ship). Returns the movements booked. itemCount is unused (kept
-// for wire compatibility) — per-item quantities are read from the order's lines during resolution.
+// (rolled back, retried on a future re-ship). Returns the movements booked. itemCount is the flat
+// fallback (order unit count) used only when an order has neither reservation claims nor persisted
+// lines to resolve — otherwise per-material quantities come from the claims / the order's lines.
 func (s *Store) ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error) {
-	_ = itemCount
 	var out []entity.MaterialMovement
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -77,7 +77,7 @@ func (s *Store) ConsumePackagingForOrder(ctx context.Context, orderID, itemCount
 			return nil // already consumed on an earlier ship
 		}
 
-		req, err := resolvePackagingRequirement(ctx, db, orderID)
+		req, err := resolveConsumeRequirement(ctx, db, orderID, itemCount)
 		if err != nil {
 			return err
 		}

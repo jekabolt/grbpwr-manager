@@ -94,6 +94,54 @@ func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID 
 	})
 }
 
+// resolveConsumeRequirement determines what a ship should consume, in priority order:
+//  1. the order's OPEN reservation claims — consume exactly what placement reserved (drift-proof: a
+//     recipe change after placement can't change what this order is billed);
+//  2. a fresh resolution from the order's lines — an unreserved real order (reserve failed / predates
+//     the ledger) still gets its per-product/style packaging;
+//  3. the flat global recipe × itemCount — an order with no persisted lines (a synthetic/legacy order),
+//     preserving the pre-ledger behaviour.
+func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID, itemCount int) (map[int]decimal.Decimal, error) {
+	claims, err := openClaimsForOrder(ctx, db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if len(claims) > 0 {
+		req := make(map[int]decimal.Decimal, len(claims))
+		for _, c := range claims {
+			req[c.MaterialId] = req[c.MaterialId].Add(c.Qty) // one open claim per material (claim_key = order:material)
+		}
+		return req, nil
+	}
+	req, err := resolvePackagingRequirement(ctx, db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if len(req) > 0 {
+		return req, nil
+	}
+	return globalRequirementByItemCount(ctx, db, itemCount)
+}
+
+// globalRequirementByItemCount is the legacy flat computation over the global recipe: qty_per_order
+// once plus qty_per_item × itemCount. Used only as the last-resort fallback for an order with no
+// resolvable lines and no reservation.
+func globalRequirementByItemCount(ctx context.Context, db dependency.DB, itemCount int) (map[int]decimal.Decimal, error) {
+	rows, err := queryRecipeRows(ctx, db, "scope = 'global'", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	req := map[int]decimal.Decimal{}
+	ic := decimal.NewFromInt(int64(itemCount))
+	for _, r := range rows {
+		q := r.QtyPerOrder.Add(r.QtyPerItem.Mul(ic))
+		if q.IsPositive() {
+			req[r.MaterialId] = req[r.MaterialId].Add(q)
+		}
+	}
+	return req, nil
+}
+
 // resolveRecipeRows returns the active recipe rows that win for one colourway, product → style →
 // global, together with a stable identity key for box-once de-duplication.
 func resolveRecipeRows(ctx context.Context, db dependency.DB, productID int, techCardID sql.NullInt32) (resolvedRecipe, error) {
