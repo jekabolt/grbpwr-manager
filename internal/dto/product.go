@@ -586,7 +586,10 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 		ProductDisplay: pbProductDisplay,
 		Prices:         pbPrices, // Prices are in nested Product
 		SoldOut:        soldOut,
-		Status:         e.Product.LifecycleStatus.String(),
+		Status:         pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
+		StyleId:        int32(e.Product.StyleId), // R4: the single style relation
+		ColorCode:      e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		// lock_version (tech_card.lock_version) and published_at need entity plumbing — left unset here.
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)

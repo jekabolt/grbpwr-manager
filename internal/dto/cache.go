@@ -112,6 +112,10 @@ func ConvertEntityToPbPaymentMethod(p entity.PaymentMethodName) (pb_common.Payme
 func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict := &pb_common.Dictionary{}
 
+	// R7: sku_contract_version is sourced from sku.ContractVersion() at the store/settings layer that
+	// assembles Dict (avoids a dto->sku import cycle via store/product's sku_test); countries/tags/
+	// revisions (R9) are likewise populated once the dictionary store lands (T-D). Empty here for now.
+
 	commonDict.Categories = CategorySliceToProto(dict.Categories)
 
 	for _, m := range dict.Measurements {

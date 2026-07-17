@@ -115,6 +115,65 @@ enum TechCardLabDipStatus {
   TECH_CARD_LAB_DIP_STATUS_REJECTED = 4;
 }
 
+// TechCardPurpose is the numeric enum form of a style's purpose (R6). Replaces the free-text
+// `purpose` field; UNKNOWN is rejected on write.
+enum TechCardPurpose {
+  TECH_CARD_PURPOSE_UNKNOWN = 0;
+  TECH_CARD_PURPOSE_SELLABLE = 1;
+  TECH_CARD_PURPOSE_AUXILIARY = 2;
+}
+
+// ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
+// (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
+// comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
+// import (product.proto cannot import techcard.proto). NOTE: `usages` (the material recipe) is keyed by
+// an explicit colorway_id = product.id (R1/§14.3); the positional colorway_index model is gone.
+message ColorwayDevelopmentInsert {
+  string dev_code = 1; // ex TechCardColorway.code (internal article code)
+  string name = 2; // internal colourway label
+  TechCardLabDipStatus lab_dip_status = 3;
+  string comment = 4;
+  string pantone = 5;
+  string pantone_system = 6;
+  string dev_hex = 7; // ex hex; screen approximation #RRGGBB
+  int32 swatch_media_id = 8;
+  int32 lab_dip_round = 9;
+  google.protobuf.Timestamp lab_dip_submitted_at = 10;
+  google.protobuf.Timestamp lab_dip_decided_at = 11;
+  string lab_dip_decided_by = 12;
+  string lab_dip_reject_reason = 13;
+  repeated TechCardColorwayUsage usages = 14; // material recipe (bom_item_index into the owning style's BOM)
+  int32 display_order = 15;
+}
+
+message ColorwayDevelopment {
+  ColorwayDevelopmentInsert development = 1;
+  Color dictionary_color = 2; // output-only resolved dictionary colour
+}
+
+// StyleSizeChart is the style-owned size chart (R5). Written full-replace under the shared
+// tech_card.lock_version; there is no separate chart version.
+message StyleSizeChartCell {
+  int32 size_id = 1;
+  int32 measurement_name_id = 2;
+  google.type.Decimal value = 3;
+}
+
+message StyleSizeChart {
+  int32 style_id = 1;
+  int32 lock_version = 2;
+  repeated StyleSizeChartCell cells = 3;
+}
+
+// AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may
+// return its colourways, but they are not writable through the style).
+message AdminColorwayRef {
+  int32 colorway_id = 1;
+  string base_sku = 2;
+  string color_code = 3;
+  ColorwayLifecycleStatus status = 4;
+}
+
 // TechCardColorway is a development colourway (Sheet «Колористика» columns). It is
 // distinct from tech_card_product (published catalog SKUs); product_id optionally
 // links the published SKU that realises this colourway.
@@ -685,7 +744,8 @@ message TechCardInsert {
   // NF-07 auxiliary items. purpose is "sellable" (default/empty) or "auxiliary"; an auxiliary card
   // produces a packaging material rather than a product, so it may not link products and its run
   // output receipts into output_material_id (required before the first run; 0 = unset).
-  string purpose = 101;
+  TechCardPurpose purpose = 101; // R6: type change string→enum on the same wire number
+
   int32 output_material_id = 102;
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
@@ -729,6 +789,6 @@ message TechCardListItem {
   string preview_url = 13;
   // Card purpose: "sellable" (default) or "auxiliary" (NF-07). Lets a board/list badge auxiliary
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
-  string purpose = 14;
+  TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
   SkuSeason sku_season = 15;
 }

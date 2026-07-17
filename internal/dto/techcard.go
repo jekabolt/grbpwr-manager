@@ -319,8 +319,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	// not carry an output material. output_material_id is only required before the first run (the
 	// service/receive path enforces that), not at save time — a card can be drafted first.
 	purpose := entity.TechCardPurposeSellable
-	if p := strings.ToLower(strings.TrimSpace(pb.Purpose)); p != "" {
-		purpose = entity.TechCardPurpose(p)
+	if pb.Purpose != pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN {
+		purpose = techCardPurposeFromPb(pb.Purpose)
 		if !entity.ValidTechCardPurposes[purpose] {
 			return nil, fmt.Errorf("purpose must be one of sellable|auxiliary")
 		}
@@ -685,7 +685,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:      tc.StyleNumber.String,
-			Purpose:          string(tc.Purpose),
+			Purpose:          techCardPurposeToPb(tc.Purpose),
 			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
@@ -781,7 +781,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		UpdatedAt:     timestamppb.New(tc.UpdatedAt),
 		LockVersion:   int32(tc.LockVersion),
 		PreviewUrl:    tc.PreviewURL,
-		Purpose:       string(tc.Purpose),
+		Purpose:       techCardPurposeToPb(tc.Purpose),
 	}
 }
 
@@ -1673,5 +1673,30 @@ func ConvertTechCardReleaseMetaToPb(m entity.TechCardReleaseMeta) *pb_common.Tec
 		UnitCost:   pbDecimalFromNull(m.UnitCost),
 		Currency:   pbStringFromNull(m.Currency),
 		CreatedAt:  timestamppb.New(m.CreatedAt),
+	}
+}
+
+// techCardPurposeToPb maps the stored purpose string to the R6 numeric enum (UNKNOWN when unset).
+func techCardPurposeToPb(p entity.TechCardPurpose) pb_common.TechCardPurpose {
+	switch p {
+	case entity.TechCardPurposeSellable:
+		return pb_common.TechCardPurpose_TECH_CARD_PURPOSE_SELLABLE
+	case entity.TechCardPurposeAuxiliary:
+		return pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY
+	default:
+		return pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN
+	}
+}
+
+// techCardPurposeFromPb maps the R6 numeric enum to the stored purpose string ("" for UNKNOWN, which
+// the caller rejects via ValidTechCardPurposes).
+func techCardPurposeFromPb(p pb_common.TechCardPurpose) entity.TechCardPurpose {
+	switch p {
+	case pb_common.TechCardPurpose_TECH_CARD_PURPOSE_SELLABLE:
+		return entity.TechCardPurposeSellable
+	case pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY:
+		return entity.TechCardPurposeAuxiliary
+	default:
+		return ""
 	}
 }

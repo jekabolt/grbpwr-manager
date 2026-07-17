@@ -725,8 +725,8 @@ func TestConvertEntityTechCardToListItemPb(t *testing.T) {
 		t.Errorf("list item mismatch: %+v", li)
 	}
 	// #8: purpose is surfaced on the light card so a board can badge auxiliary cards without an N+1 GetTechCard.
-	if li.Purpose != "auxiliary" {
-		t.Errorf("list item purpose = %q, want auxiliary", li.Purpose)
+	if li.Purpose != pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY {
+		t.Errorf("list item purpose = %v, want auxiliary", li.Purpose)
 	}
 }
 

@@ -130,7 +130,7 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 func validateSampleRefs(ctx context.Context, db dependency.DB, techCardID int, colorwayID, sizeID sql.NullInt32) error {
 	if colorwayID.Valid {
 		n, err := storeutil.QueryCountNamed(ctx, db,
-			`SELECT COUNT(*) FROM tech_card_colorway WHERE id = :cw AND tech_card_id = :tc`,
+			`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :tc`,
 			map[string]any{"cw": colorwayID.Int32, "tc": techCardID})
 		if err != nil {
 			return fmt.Errorf("check sample colorway: %w", err)

@@ -164,11 +164,13 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 	return id, nil
 }
 
-// captureCardProductLinks returns the product ids currently linked via this card's colourways.
+// captureCardProductLinks returns the product ids belonging to this style. PR6 R1: after the
+// tech_card_colorway→product merge every colourway is a product (product.style_id = card), so the
+// style's products ARE its colourways.
 func captureCardProductLinks(ctx context.Context, db dependency.DB, tcID int) ([]int, error) {
 	rows, err := storeutil.QueryListNamed[struct {
 		ProductID int `db:"product_id"`
-	}](ctx, db, `SELECT product_id FROM tech_card_colorway WHERE tech_card_id = :id AND product_id IS NOT NULL`,
+	}](ctx, db, `SELECT id AS product_id FROM product WHERE style_id = :id`,
 		map[string]any{"id": tcID})
 	if err != nil {
 		return nil, fmt.Errorf("capture card product links: %w", err)
@@ -280,28 +282,21 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return entity.ErrTechCardConflict
 		}
 
-		// Samples reference colourways by FK with ON DELETE SET NULL, and the full-replace below deletes
-		// and re-inserts colourways with fresh ids — which would silently null every sample's colour-
-		// model link. Capture the links by colourway identity now so they can be restored afterwards.
-		sampleColorwayLinks, err := captureSampleColorwayLinks(ctx, rep.DB(), id)
-		if err != nil {
-			return err
-		}
-
-		// Capture product links before the full-replace so products that get UNLINKED by this save
-		// are still re-minted (reverting to a standalone SKU) alongside the newly-linked ones.
+		// Capture the style's products before the full-replace so a change to the style's SKU facts
+		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
+		// they are NOT part of the tech-card full-replace and keep their stable ids and sample links.
 		prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
 		if err != nil {
 			return err
 		}
 
-		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade
-		// from their parents — colourway usages (+ their per-size consumption) via
-		// tech_card_colorway, and detail media via tech_card_detail.
+		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
+		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
+		// (R1 merge) — they live in product and are managed via CreateColorway.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_revision", "tech_card_detail",
-			"tech_card_bom_item", "tech_card_colorway",
+			"tech_card_bom_item",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 			"tech_card_size_pattern", "tech_card_piece",
@@ -315,10 +310,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
-		if err := relinkSamplesToColorways(ctx, rep.DB(), id, sampleColorwayLinks); err != nil {
-			return err
-		}
-		// Re-mint SKUs for products linked now and those unlinked by this save (revert to standalone).
+		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
 		return remintCardProducts(ctx, rep.DB(), id, prevProductLinks)
 	})
 	if err != nil {
@@ -352,67 +344,6 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 		}
 		return nil
 	})
-}
-
-// colorwayIdentityKey builds a stable key for a colourway across a full-replace (case-folded code +
-// name), so a sample's colour-model link can be matched to the freshly-reinserted colourway.
-func colorwayIdentityKey(code sql.NullString, name string) string {
-	return strings.ToLower(strings.TrimSpace(code.String)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
-}
-
-// captureSampleColorwayLinks returns sample_id → colourway identity key for a card's samples that
-// currently reference a colourway (empty when none), so UpdateTechCard's full-replace of colourways
-// does not silently drop the sample→colour-model link.
-func captureSampleColorwayLinks(ctx context.Context, db dependency.DB, tcID int) (map[int]string, error) {
-	rows, err := storeutil.QueryListNamed[struct {
-		SampleId int            `db:"sample_id"`
-		Code     sql.NullString `db:"code"`
-		Name     string         `db:"name"`
-	}](ctx, db, `
-		SELECT s.id AS sample_id, c.code AS code, c.name AS name
-		FROM sample s JOIN tech_card_colorway c ON c.id = s.colorway_id
-		WHERE s.tech_card_id = :id`, map[string]any{"id": tcID})
-	if err != nil {
-		return nil, fmt.Errorf("capture sample colorway links: %w", err)
-	}
-	out := make(map[int]string, len(rows))
-	for _, r := range rows {
-		out[r.SampleId] = colorwayIdentityKey(r.Code, r.Name)
-	}
-	return out, nil
-}
-
-// relinkSamplesToColorways restores sample→colourway links captured before a full-replace by matching
-// each sample's old colourway identity to a freshly-inserted colourway; an unmatched (removed or
-// renamed) colourway leaves the link NULL, which is the honest result — that colour no longer exists.
-func relinkSamplesToColorways(ctx context.Context, db dependency.DB, tcID int, links map[int]string) error {
-	if len(links) == 0 {
-		return nil
-	}
-	rows, err := storeutil.QueryListNamed[struct {
-		Id   int            `db:"id"`
-		Code sql.NullString `db:"code"`
-		Name string         `db:"name"`
-	}](ctx, db, `SELECT id, code, name FROM tech_card_colorway WHERE tech_card_id = :id`, map[string]any{"id": tcID})
-	if err != nil {
-		return fmt.Errorf("load reinserted colorways: %w", err)
-	}
-	keyToID := make(map[string]int, len(rows))
-	for _, r := range rows {
-		keyToID[colorwayIdentityKey(r.Code, r.Name)] = r.Id
-	}
-	for sampleID, key := range links {
-		var cw any // NULL when the colourway no longer exists
-		if id, ok := keyToID[key]; ok {
-			cw = id
-		}
-		if err := storeutil.ExecNamed(ctx, db,
-			`UPDATE sample SET colorway_id = :cw WHERE id = :id`,
-			map[string]any{"cw": cw, "id": sampleID}); err != nil {
-			return fmt.Errorf("relink sample %d colorway: %w", sampleID, err)
-		}
-	}
-	return nil
 }
 
 // GetTechCardById returns a tech card with its child sections and resolved media.
@@ -635,17 +566,14 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
-	// Materials (Phase 2): colourways (each with its usage recipe) and the BOM article
-	// catalog. A usage's bom_item_index points into the BOM by position, so order is
-	// not load-bearing between the two inserts.
-	if err := insertTechCardColorways(ctx, db, id, tc.Colorways); err != nil {
-		return err
-	}
+	// Materials (Phase 2): the BOM article catalog. PR6 R1: colourways are no longer written here —
+	// they are products managed via CreateColorway, and a usage's bom_item_index still points into
+	// this card's BOM by position.
 	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
 		return err
 	}
-	// Cut-pieces (NF-05): must run AFTER colourways so their per-colourway fabric mapping can
-	// resolve positional colorway_index → the freshly-inserted colorway_id (same tx).
+	// Cut-pieces (NF-05): their per-colourway fabric mapping resolves a positional colorway_index to
+	// the style's products (product.style_id) in display order (see insertTechCardPieces).
 	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
 		return err
 	}

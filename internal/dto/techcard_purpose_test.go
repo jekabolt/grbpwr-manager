@@ -19,7 +19,7 @@ func TestTechCardPurposeValidation(t *testing.T) {
 
 	// auxiliary with an output material, no products → ok.
 	aux, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-2", Name: "Dust bag", Purpose: "auxiliary", OutputMaterialId: 42,
+		StyleNumber: "PURP-2", Name: "Dust bag", Purpose: pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY, OutputMaterialId: 42,
 	})
 	require.NoError(t, err)
 	require.Equal(t, entity.TechCardPurposeAuxiliary, aux.Purpose)
@@ -28,7 +28,7 @@ func TestTechCardPurposeValidation(t *testing.T) {
 
 	// auxiliary + linked products → rejected.
 	_, err = ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-3", Name: "Dust bag", Purpose: "auxiliary", ProductIds: []int32{7},
+		StyleNumber: "PURP-3", Name: "Dust bag", Purpose: pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY, ProductIds: []int32{7},
 	})
 	require.Error(t, err, "auxiliary card cannot link products")
 
@@ -40,7 +40,7 @@ func TestTechCardPurposeValidation(t *testing.T) {
 
 	// unknown purpose → rejected.
 	_, err = ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-5", Name: "Tee", Purpose: "bogus",
+		StyleNumber: "PURP-5", Name: "Tee", Purpose: pb_common.TechCardPurpose(99),
 	})
 	require.Error(t, err)
 }
