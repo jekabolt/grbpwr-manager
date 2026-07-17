@@ -322,10 +322,18 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 	// lifecycle_status starts ACTIVE(2) via this legacy upsert bridge (preserves create-then-visible).
 	// The North Star create (T-B's CreateColorway) instead mints a DRAFT(1) and publishes it through
 	// PublishColorway; a colourway save never changes lifecycle (R6). Merge dev-colourways are DRAFT.
+	// Normalise the free-text manufacture country to its dictionary ISO code (R9). Resolution is
+	// seeded-only, so an unmappable value leaves country_code NULL (allowed) rather than tripping the
+	// FK; the label reads country_code, no longer converting country_of_origin on the fly.
+	countryCode := sql.NullString{}
+	if iso2, ok := entity.ResolveSeededCountryISO2(product.ProductBodyInsert.CountryOfOrigin); ok {
+		countryCode = sql.NullString{String: iso2, Valid: true}
+	}
+
 	query := `
 	INSERT INTO product
-	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :thumbnailId, :secondaryThumbnailId, :salePercentage, 2, :minTier, :costPrice,
+	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
+	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, 2, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
@@ -335,6 +343,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		"colorCode":            product.ProductBodyInsert.ColorCode,
 		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
+		"countryCode":          countryCode,
 		"thumbnailId":          product.ThumbnailMediaID,
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
@@ -681,6 +690,7 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		color_code = :colorCode,
 		color_hex = :colorHexOverride,
 		country_of_origin = :countryOfOrigin,
+		country_code = :countryCode,
 		thumbnail_id = :thumbnailId,
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
@@ -699,11 +709,18 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		cost_price_updated_at = CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE cost_price_updated_at END
 	WHERE id = :id
 	`
+	// Keep country_code in sync with the free-text origin on every save (R9); seeded-only resolution
+	// leaves it NULL for an unmappable value rather than violating the FK.
+	countryCode := sql.NullString{}
+	if iso2, ok := entity.ResolveSeededCountryISO2(prd.ProductBodyInsert.CountryOfOrigin); ok {
+		countryCode = sql.NullString{String: iso2, Valid: true}
+	}
 	if err := storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
 		"colorHexOverride":     prd.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
+		"countryCode":          countryCode,
 		"thumbnailId":          prd.ThumbnailMediaID,
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
@@ -1038,12 +1055,12 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 	}
 
 	return entity.Colorway{
-		Id:        pqr.Id,
-		CreatedAt: pqr.CreatedAt,
-		UpdatedAt: pqr.UpdatedAt,
-		DeletedAt: pqr.DeletedAt,
-		Slug:      pqr.Slug,
-		SKU:       pqr.SKU,
+		Id:              pqr.Id,
+		CreatedAt:       pqr.CreatedAt,
+		UpdatedAt:       pqr.UpdatedAt,
+		DeletedAt:       pqr.DeletedAt,
+		Slug:            pqr.Slug,
+		SKU:             pqr.SKU,
 		SoldOut:         pqr.SoldOut,
 		LifecycleStatus: pqr.LifecycleStatus,
 		StyleId:         pqr.StyleId,

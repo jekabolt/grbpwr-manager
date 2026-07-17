@@ -151,7 +151,7 @@ func TestBuildCustoms(t *testing.T) {
 				ProductPriceWithSale: decimal.RequireFromString("49.90"),
 				WeightGrossGrams:     wgg(500),
 				HSCode:               hs("6109100010"),
-				CountryOfOrigin:      hs("pt"),
+				CountryCode:          hs("PT"),
 				CustomsDescription:   hs("Cotton t-shirt"),
 			},
 		}
@@ -178,7 +178,7 @@ func TestBuildCustoms(t *testing.T) {
 	t.Run("description falls back to SKU", func(t *testing.T) {
 		items := []entity.OrderItemParcel{
 			{ProductId: 1, Quantity: qty(1), SKU: "SKU-9", ProductPriceWithSale: decimal.NewFromInt(10),
-				HSCode: hs("6109100010"), CountryOfOrigin: hs("PT")},
+				HSCode: hs("6109100010"), CountryCode: hs("PT")},
 		}
 		c, err := buildCustoms(items, "EUR")
 		if err != nil {

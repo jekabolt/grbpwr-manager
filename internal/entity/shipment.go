@@ -409,5 +409,8 @@ type OrderItemParcel struct {
 	ProductPriceWithSale decimal.Decimal `db:"product_price_with_sale"`
 	HSCode               sql.NullString  `db:"hs_code"`
 	CountryOfOrigin      sql.NullString  `db:"country_of_origin"`
-	CustomsDescription   sql.NullString  `db:"customs_description"`
+	// CountryCode is the normalised ISO 3166-1 alpha-2 manufacture origin (product.country_code, R9).
+	// It supersedes on-the-fly resolution of CountryOfOrigin for the customs declaration.
+	CountryCode        sql.NullString `db:"country_code"`
+	CustomsDescription sql.NullString `db:"customs_description"`
 }
