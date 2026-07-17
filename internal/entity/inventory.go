@@ -28,6 +28,10 @@ var (
 	ErrMaterialCodeTaken = errors.New("material code already in use")
 	// ErrMaterialNotFound is returned by a warehouse operation whose material id does not exist.
 	ErrMaterialNotFound = errors.New("material not found")
+	// ErrMaterialConflict is returned by UpdateMaterial when the caller's expected lock_version no
+	// longer matches the stored row — the material was modified concurrently (optimistic lock, S25).
+	// The caller should reload and retry (mirrors ErrTechCardConflict).
+	ErrMaterialConflict = errors.New("material was modified concurrently")
 	// ErrExcessiveMaterialReturn is returned when a return exceeds the quantity still outstanding
 	// (issued minus already returned) on the target — returning more than was issued would mint
 	// phantom stock and drive the target's material cost negative.
