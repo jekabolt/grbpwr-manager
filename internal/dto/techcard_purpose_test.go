@@ -19,18 +19,16 @@ func TestTechCardPurposeValidation(t *testing.T) {
 
 	// auxiliary with an output material, no products → ok.
 	aux, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-2", Name: "Dust bag", Purpose: "auxiliary", OutputMaterialId: 42,
+		StyleNumber: "PURP-2", Name: "Dust bag", Purpose: pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY, OutputMaterialId: 42,
 	})
 	require.NoError(t, err)
 	require.Equal(t, entity.TechCardPurposeAuxiliary, aux.Purpose)
 	require.True(t, aux.OutputMaterialId.Valid)
 	require.EqualValues(t, 42, aux.OutputMaterialId.Int64)
 
-	// auxiliary + linked products → rejected.
-	_, err = ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-3", Name: "Dust bag", Purpose: "auxiliary", ProductIds: []int32{7},
-	})
-	require.Error(t, err, "auxiliary card cannot link products")
+	// auxiliary + linked products → rejected: moved to the Colorway RPCs (R1). product_ids left the
+	// tech-card payload, and CreateColorway refuses to attach a colourway to an auxiliary style, so the
+	// gate is enforced where the link is created — re-covered in track T-B step D.
 
 	// sellable + output material → rejected.
 	_, err = ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
@@ -40,7 +38,7 @@ func TestTechCardPurposeValidation(t *testing.T) {
 
 	// unknown purpose → rejected.
 	_, err = ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{
-		StyleNumber: "PURP-5", Name: "Tee", Purpose: "bogus",
+		StyleNumber: "PURP-5", Name: "Tee", Purpose: pb_common.TechCardPurpose(99),
 	})
 	require.Error(t, err)
 }

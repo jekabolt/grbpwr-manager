@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/shopspring/decimal"
 	analyticsdata "google.golang.org/api/analyticsdata/v1beta"
 	"google.golang.org/api/option"
@@ -258,14 +259,14 @@ func (c *Client) getProductPageMetrics(ctx context.Context, startDate, endDate t
 			}
 
 			pagePath := row.DimensionValues[1].Value
-			productID := extractProductIDFromPath(pagePath)
-			if productID == 0 {
+			productSKU := extractProductSKUFromPath(pagePath)
+			if productSKU == "" {
 				continue
 			}
 
 			metrics = append(metrics, ProductPageMetrics{
 				Date:       date,
-				ProductID:  strconv.Itoa(productID),
+				ProductID:  productSKU,
 				PagePath:   pagePath,
 				PageViews:  parseInt(row.MetricValues[0].Value),
 				Sessions:   parseInt(row.MetricValues[1].Value),
@@ -495,19 +496,19 @@ func parseDecimal(s string) decimal.Decimal {
 	return d
 }
 
-// extractProductIDFromPath extracts product ID from URL path.
-// Handles both /product/42 and /product/{gender}/{brand}/{name}/{id} (see dto.GetProductSlug).
-// Returns 0 if path is not a product path or last segment is not numeric.
-func extractProductIDFromPath(path string) int {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 2 || parts[0] != "product" {
-		return 0
+// extractProductSKUFromPath extracts the uppercased base SKU from a product page path
+// (/p/{pretty}-{sku}). Returns "" when the path is not a product path or carries no SKU. It delegates
+// to slug.ParseProductTail — the single shared strict parser (problem 031) — after normalizing the
+// leading slash GA4 page_path may omit, so analytics and the storefront agree on the grammar.
+func extractProductSKUFromPath(path string) string {
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
 	}
-	id, err := strconv.Atoi(parts[len(parts)-1])
+	sku, err := slug.ParseProductTail(path)
 	if err != nil {
-		return 0
+		return ""
 	}
-	return id
+	return sku
 }
 
 // CircuitBreakerState returns the current state of the circuit breaker.
@@ -551,7 +552,9 @@ func (c *Client) getEcommerceBatch(
 	startDate, endDate time.Time,
 ) ([]EcommerceMetrics, []ProductConversionMetrics, error) {
 	var ecomRes []EcommerceMetrics
-	var prodRes []ProductConversionMetrics
+	// prodAgg collapses the per-itemId rows GA4 returns down to one row per (date, base SKU) — see
+	// prodAggregator.
+	prodAgg := newProdAggregator()
 
 	const limit = int64(10000)
 	var offset0, offset2 int64
@@ -659,15 +662,17 @@ func (c *Client) getEcommerceBatch(
 						slog.String("err", err.Error()))
 					continue
 				}
-				prodRes = append(prodRes, ProductConversionMetrics{
-					Date:        date,
-					ProductID:   row.DimensionValues[1].Value,
-					ProductName: row.DimensionValues[2].Value,
-					ItemsViewed: parseInt(row.MetricValues[0].Value),
-					AddToCarts:  parseInt(row.MetricValues[1].Value),
-					Purchases:   parseInt(row.MetricValues[2].Value),
-					Revenue:     parseDecimal(row.MetricValues[3].Value),
-				})
+				rawItemID := row.DimensionValues[1].Value
+				ok := prodAgg.add(date, rawItemID, row.DimensionValues[2].Value,
+					parseInt(row.MetricValues[0].Value),
+					parseInt(row.MetricValues[1].Value),
+					parseInt(row.MetricValues[2].Value),
+					parseDecimal(row.MetricValues[3].Value),
+				)
+				if !ok {
+					slog.Default().WarnContext(ctx, "ga4: skipping prod row with unrecognized item id",
+						slog.String("item_id", rawItemID))
+				}
 			}
 			if int64(len(r.Rows)) < limit {
 				more2 = false
@@ -677,5 +682,5 @@ func (c *Client) getEcommerceBatch(
 		}
 	}
 
-	return ecomRes, prodRes, nil
+	return ecomRes, prodAgg.result(), nil
 }

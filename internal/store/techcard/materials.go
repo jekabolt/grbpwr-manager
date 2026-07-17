@@ -11,88 +11,11 @@ import (
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
 
-// insertTechCardColorways inserts the colourways and, for each, its material recipe
-// (usages + per-size usage consumption). Colourways are the "recipe"; the BOM is a pure
-// article catalog the usage's bom_item_index points into.
-func insertTechCardColorways(ctx context.Context, db dependency.DB, tcID int, cws []entity.TechCardColorway) error {
-	for i := range cws {
-		c := &cws[i]
-		cwID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_colorway
-				(tech_card_id, code, name, lab_dip_status, product_id, comment, display_order,
-				 pantone, pantone_system, hex, swatch_media_id, lab_dip_round,
-				 lab_dip_submitted_at, lab_dip_decided_at, lab_dip_decided_by, lab_dip_reject_reason)
-			VALUES (:tech_card_id, :code, :name, :lab_dip_status, :product_id, :comment, :display_order,
-				 :pantone, :pantone_system, :hex, :swatch_media_id, :lab_dip_round,
-				 :lab_dip_submitted_at, :lab_dip_decided_at, :lab_dip_decided_by, :lab_dip_reject_reason)`,
-			map[string]any{
-				"tech_card_id":          tcID,
-				"code":                  c.Code,
-				"name":                  c.Name,
-				"lab_dip_status":        string(c.LabDipStatus),
-				"product_id":            c.ProductId,
-				"comment":               c.Comment,
-				"display_order":         i,
-				"pantone":               c.Pantone,
-				"pantone_system":        c.PantoneSystem,
-				"hex":                   c.Hex,
-				"swatch_media_id":       c.SwatchMediaId,
-				"lab_dip_round":         c.LabDipRound,
-				"lab_dip_submitted_at":  c.LabDipSubmittedAt,
-				"lab_dip_decided_at":    c.LabDipDecidedAt,
-				"lab_dip_decided_by":    c.LabDipDecidedBy,
-				"lab_dip_reject_reason": c.LabDipRejectReason,
-			})
-		if err != nil {
-			return fmt.Errorf("failed to insert tech card colorway: %w", err)
-		}
-		if err := insertTechCardColorwayUsages(ctx, db, cwID, c.Usages); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// insertTechCardColorwayUsages inserts one colourway's usages and, for each, its per-size
-// consumption rows.
-func insertTechCardColorwayUsages(ctx context.Context, db dependency.DB, cwID int, usages []entity.TechCardColorwayUsage) error {
-	for j := range usages {
-		u := &usages[j]
-		usageID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_colorway_usage
-				(colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index, display_order)
-			VALUES (:colorway_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_index, :display_order)`,
-			map[string]any{
-				"colorway_id":    cwID,
-				"bom_item_index": u.BomItemIndex,
-				"placement":      u.Placement,
-				"color":          u.Color,
-				"pantone":        u.Pantone,
-				"consumption":    u.Consumption,
-				"quantity":       u.Quantity,
-				"piece_index":    u.PieceIndex,
-				"display_order":  j,
-			})
-		if err != nil {
-			return fmt.Errorf("failed to insert tech card colorway usage: %w", err)
-		}
-		if len(u.SizeConsumptions) > 0 {
-			rows := make([]map[string]any, 0, len(u.SizeConsumptions))
-			for k, sc := range u.SizeConsumptions {
-				rows = append(rows, map[string]any{
-					"usage_id":      usageID,
-					"size_id":       sc.SizeId,
-					"consumption":   sc.Consumption,
-					"display_order": k,
-				})
-			}
-			if err := storeutil.BulkInsert(ctx, db, "tech_card_colorway_usage_consumption", rows); err != nil {
-				return fmt.Errorf("failed to insert tech card colorway usage consumption: %w", err)
-			}
-		}
-	}
-	return nil
-}
+// PR6 R1: the colourway write-path (insertTechCardColorways / insertTechCardColorwayUsages) was
+// removed with the tech_card_colorway→product merge. Colourways are now first-class products created
+// via CreateColorway, and a colourway's material recipe (usages, keyed by colorway_id = product.id)
+// moves to the colourway write (ColorwayDevelopmentInsert.usages) in the T-B contract slice. The
+// tech-card save no longer creates or full-replaces colourways; it only reads them for costing.
 
 // insertTechCardPieces inserts the structural cut-pieces and, for each, its per-colourway fabric
 // mapping (NF-05). It runs AFTER insertTechCardColorways in the child flow, so it re-queries the
@@ -102,16 +25,17 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 	if len(pieces) == 0 {
 		return nil
 	}
-	// index → colorway_id, in the same insertion (display) order as insertTechCardColorways used.
+	// PR6 R1/§14.3: a piece material addresses its colourway by explicit colorway_id = product.id.
+	// Validate membership — the colourway must be one of this style's products (product.style_id = card).
 	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
-		SELECT id FROM tech_card_colorway WHERE tech_card_id = :id ORDER BY display_order, id`,
+		SELECT id FROM product WHERE style_id = :id`,
 		map[string]any{"id": tcID})
 	if err != nil {
 		return fmt.Errorf("failed to load colorway ids for pieces: %w", err)
 	}
-	cwIDByIndex := make([]int, len(cwRows))
-	for i, r := range cwRows {
-		cwIDByIndex[i] = r.Id
+	validColorway := make(map[int]bool, len(cwRows))
+	for _, r := range cwRows {
+		validColorway[r.Id] = true
 	}
 
 	for i := range pieces {
@@ -136,8 +60,8 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		}
 		for j := range p.Materials {
 			m := &p.Materials[j]
-			if m.ColorwayIndex < 0 || m.ColorwayIndex >= len(cwIDByIndex) {
-				return fmt.Errorf("tech card piece %q: colorway_index %d out of range (have %d colorways)", p.Name, m.ColorwayIndex, len(cwIDByIndex))
+			if !validColorway[m.ColorwayID] {
+				return fmt.Errorf("tech card piece %q: colorway_id %d is not a colourway of this style", p.Name, m.ColorwayID)
 			}
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_material
@@ -145,7 +69,7 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				VALUES (:piece_id, :colorway_id, :bom_item_index, :fusing_bom_item_index, :note, :display_order)`,
 				map[string]any{
 					"piece_id":              pieceID,
-					"colorway_id":           cwIDByIndex[m.ColorwayIndex],
+					"colorway_id":           m.ColorwayID,
 					"bom_item_index":        m.BomItemIndex,
 					"fusing_bom_item_index": m.FusingBomItemIndex,
 					"note":                  m.Note,
@@ -266,13 +190,12 @@ type techCardPieceRow struct {
 }
 
 type techCardPieceMaterialRow struct {
-	PieceID    int `db:"piece_id"`
-	ColorwayID int `db:"colorway_id"`
+	PieceID int `db:"piece_id"`
 	entity.TechCardPieceMaterial
 }
 
-// techCardPieceColorwayIDRow carries a colourway id when resolving positional colorway_index →
-// colorway_id at insert time.
+// techCardPieceColorwayIDRow carries a colourway id when validating that a piece material's explicit
+// colorway_id belongs to the owning style (product.style_id = card).
 type techCardPieceColorwayIDRow struct {
 	Id int `db:"id"`
 }
@@ -288,16 +211,19 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		ids = append(ids, cards[i].Id)
 	}
 
-	// Colourways grouped per card (in display order). product_id resolves through a LEFT
-	// JOIN that excludes soft-deleted products (a dead SKU surfaces as NULL).
+	// Colourways grouped per card (in display order). PR6 R1: tech_card_colorway was merged into
+	// product, so a card's colourways are its products (product.style_id = card). PLM fields live on
+	// product (dev_code/dev_name/dev_comment/dev_hex ← ex code/name/comment/hex). product_id keeps
+	// its "dead SKU → NULL" contract: an archived colourway surfaces product_id = NULL.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
-		SELECT c.id, c.tech_card_id, c.code, c.name, c.lab_dip_status, p.id AS product_id, c.comment,
-		       c.pantone, c.pantone_system, c.hex, c.swatch_media_id, c.lab_dip_round,
-		       c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
-		FROM tech_card_colorway c
-		LEFT JOIN product p ON p.id = c.product_id AND p.deleted_at IS NULL
-		WHERE c.tech_card_id IN (:ids)
-		ORDER BY c.tech_card_id, c.display_order`, map[string]any{"ids": ids})
+		SELECT c.id, c.style_id AS tech_card_id, c.dev_code AS code, COALESCE(c.dev_name, '') AS name,
+		       c.color_code, c.lab_dip_status, IF(c.lifecycle_status <> 4, c.id, NULL) AS product_id,
+		       COALESCE(c.sku, '') AS sku, c.lifecycle_status,
+		       c.dev_comment AS comment, c.pantone, c.pantone_system, c.dev_hex AS hex, c.swatch_media_id,
+		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
+		FROM product c
+		WHERE c.style_id IN (:ids)
+		ORDER BY c.style_id, c.display_order, c.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card colorways: %w", err)
 	}
@@ -305,17 +231,13 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	for _, r := range cwRows {
 		colorwaysByCard[r.TechCardID] = append(colorwaysByCard[r.TechCardID], r.TechCardColorway)
 	}
-	// Index colourways by id to attach usages; collect ids for the usage query. colorwayIDToIndex
-	// maps a colorway_id back to its 0-based position in the card (colourways are loaded in display
-	// order) — pieces reference colourways positionally, so this resolves colorway_id → index.
+	// Index colourways by id to attach usages; collect ids for the usage query.
 	colorwayByID := make(map[int]*entity.TechCardColorway, len(cwRows))
-	colorwayIDToIndex := make(map[int]int, len(cwRows))
 	colorwayIDs := make([]int, 0, len(cwRows))
 	for card := range colorwaysByCard {
 		cws := colorwaysByCard[card]
 		for i := range cws {
 			colorwayByID[cws[i].Id] = &cws[i]
-			colorwayIDToIndex[cws[i].Id] = i
 			colorwayIDs = append(colorwayIDs, cws[i].Id)
 		}
 	}
@@ -417,7 +339,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 
 	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
-	// colorway_id is resolved back to its positional colorway_index via colorwayIDToIndex.
+	// colorway_id is surfaced directly (R1/§14.3 — no positional colorway_index anymore).
 	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
 		SELECT id, tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note
 		FROM tech_card_piece
@@ -453,9 +375,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			if !ok {
 				continue
 			}
-			m := r.TechCardPieceMaterial
-			m.ColorwayIndex = colorwayIDToIndex[r.ColorwayID]
-			p.Materials = append(p.Materials, m)
+			p.Materials = append(p.Materials, r.TechCardPieceMaterial)
 		}
 	}
 

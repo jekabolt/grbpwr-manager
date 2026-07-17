@@ -43,6 +43,9 @@ message ArchiveList {
   string slug = 4;
   google.protobuf.Timestamp created_at = 5;
   common.MediaFull thumbnail = 6;
+  // code is the stable, immutable public identifier used in the /timeline URL tail
+  // and by GetArchive to resolve the archive (id is no longer the public key).
+  string code = 7;
 }
 
 // ─── read side (resolved timeline blocks) ────────────────────────────────────
@@ -81,20 +84,20 @@ message ArchiveMediaWithCaptionFull {
 
 // PRODUCT: a single product. Optional caption in translations.caption.
 message ArchiveProductFull {
-  common.Product product = 1;
+  common.Colorway product = 1;
   repeated common.ArchiveItemTranslation translations = 2;
 }
 
 // PRODUCTS_TAG: products resolved by tag. Optional caption in translations.caption.
 message ArchiveProductsTagFull {
   string tag = 1;
-  repeated common.Product products = 2;
+  repeated common.Colorway products = 2;
   repeated common.ArchiveItemTranslation translations = 3;
 }
 
 // PRODUCTS_MANUAL: hand-picked, ordered products. Optional caption.
 message ArchiveProductsManualFull {
-  repeated common.Product products = 1;
+  repeated common.Colorway products = 1;
   repeated common.ArchiveItemTranslation translations = 2;
 }
 
@@ -141,7 +144,8 @@ message ArchiveMediaWithCaptionInsert {
 }
 
 message ArchiveProductInsert {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id (admin write)
+  reserved "product_id";
   repeated common.ArchiveItemTranslation translations = 2; // optional caption
 }
 
@@ -152,7 +156,8 @@ message ArchiveProductsTagInsert {
 }
 
 message ArchiveProductsManualInsert {
-  repeated int32 product_ids = 1;
+  repeated int32 colorway_ids = 1; // R8: renamed from product_ids (admin write)
+  reserved "product_ids";
   repeated common.ArchiveItemTranslation translations = 2; // optional caption
 }
 

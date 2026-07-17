@@ -26,7 +26,8 @@ message FilterConditions {
   string currency = 3; // ISO 4217 currency code for price filtering/sorting (e.g., USD, EUR, JPY, CNY, KRW)
   bool on_sale = 4;
   repeated common.GenderEnum gender = 5;
-  string color = 6;
+  reserved 6;
+  reserved "color";
   repeated int32 top_category_ids = 7;
   repeated int32 sub_category_ids = 8;
   repeated int32 type_ids = 9;
@@ -36,4 +37,5 @@ message FilterConditions {
   repeated string collections = 13;
   repeated common.SeasonEnum seasons = 14;
   repeated int32 exclude_top_category_ids = 15; // top category ids to exclude from results (e.g. hide "object" category in men's catalog)
+  repeated string color_codes = 16; // canonical Dictionary.colors codes; free-text color filtering is not supported
 }

@@ -1,0 +1,45 @@
+name: Proto contracts
+
+on:
+  pull_request:
+    paths:
+      - "proto/**"
+      - "scripts/check-proto-contracts.sh"
+      - "Makefile"
+      - ".github/workflows/proto-contracts.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "proto/**"
+      - "scripts/check-proto-contracts.sh"
+      - "Makefile"
+      - ".github/workflows/proto-contracts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out backend with release history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Keep this ref synchronized with proto/contracts/mirror-git-ref.txt.
+      - name: Check out pinned public proto mirror
+        uses: actions/checkout@v4
+        with:
+          repository: jekabolt/grbpwr-proto
+          ref: 9468c12a04ddd12f999492125857d3cf9ebf1eb0
+          path: proto-mirror
+
+      - name: Install Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.28.0
+
+      - name: Verify format, build, lint, breaking and mirror parity
+        run: make check-proto-contracts PROTO_MIRROR_DIR="$GITHUB_WORKSPACE/proto-mirror"

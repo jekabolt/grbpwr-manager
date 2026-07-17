@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 )
 
 // BackInStock represents the data needed for back-in-stock email notifications
@@ -20,12 +22,14 @@ type BackInStock struct {
 	EmailB64    string
 }
 
-// ProductFullToBackInStock converts entity.ProductFull to BackInStock DTO
-func ProductFullToBackInStock(product *entity.ProductFull, sizeId int, buyerName string, email string) *BackInStock {
-	// Get product name from first translation
+// ProductFullToBackInStock converts entity.ColorwayFull to BackInStock DTO
+func ProductFullToBackInStock(product *entity.ColorwayFull, sizeId int, buyerName string, email string) *BackInStock {
+	// Use the same default-language canonical name as every public product URL.
 	productName := "Product"
-	if product.Product != nil && len(product.Product.ProductDisplay.ProductBody.Translations) > 0 {
-		productName = product.Product.ProductDisplay.ProductBody.Translations[0].Name
+	if product.Product != nil {
+		if name, ok := canonical.ProductName(product.Product.ProductDisplay.ProductBody.Translations, cache.GetLanguages()); ok {
+			productName = name
+		}
 	}
 
 	// Get brand
@@ -47,16 +51,10 @@ func ProductFullToBackInStock(product *entity.ProductFull, sizeId int, buyerName
 		thumbnail = product.Product.ProductDisplay.Thumbnail.ThumbnailMediaURL
 	}
 
-	// Generate product URL
+	// Generate product URL (/p/{pretty}-{base-sku})
 	productURL := ""
 	if product.Product != nil {
-		gender := product.Product.ProductDisplay.ProductBody.ProductBodyInsert.TargetGender.String()
-		productURL = fmt.Sprintf("https://grbpwr.com%s", GetProductSlug(
-			product.Product.Id,
-			brand,
-			productName,
-			gender,
-		))
+		productURL = fmt.Sprintf("https://grbpwr.com%s", slug.ProductPath(productName, product.Product.SKU))
 	}
 
 	return &BackInStock{

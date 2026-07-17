@@ -20,9 +20,9 @@ func TestMergeCountryDemand(t *testing.T) {
 	sessions := []entity.GeographySessionMetric{
 		{Country: "Germany", Sessions: 100},
 		{Country: "United States", Sessions: 200},
-		{Country: "Italy", Sessions: 50},       // maps to IT but has NO orders → orderless-but-trafficked
+		{Country: "Italy", Sessions: 50},      // maps to IT but has NO orders → orderless-but-trafficked
 		{Country: "Nowhereland", Sessions: 7}, // no ISO mapping → unmatched
-		{Country: "Atlantis", Sessions: 0},     // zero sessions ignored
+		{Country: "Atlantis", Sessions: 0},    // zero sessions ignored
 	}
 
 	rows := mergeCountryDemand(base, sessions, true)

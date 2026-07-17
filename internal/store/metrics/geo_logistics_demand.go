@@ -292,25 +292,26 @@ func (s *Store) getCountryTopCategories(ctx context.Context, from, to time.Time,
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT a.country AS country, p.top_category_id AS category_id, c.name AS category_name,
+		SELECT a.country AS country, sty.top_category_id AS category_id, c.name AS category_name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt
 		FROM order_item oi
 		JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		JOIN category c ON p.top_category_id = c.id
+		JOIN category c ON sty.top_category_id = c.id
 		JOIN buyer b ON b.order_id = oi.order_id
 		JOIN address a ON b.shipping_address_id = a.id
-		GROUP BY a.country, p.top_category_id, c.name
+		GROUP BY a.country, sty.top_category_id, c.name
 		ORDER BY a.country, value DESC
 	`, orderFactorsCTE, itemAdjExpr)
 	rows, err := storeutil.QueryListNamed[struct {
-		Country             string          `db:"country"`
-		CategoryId          int             `db:"category_id"`
-		CategoryName        string          `db:"category_name"`
-		Value               decimal.Decimal `db:"value"`
-		Count               int             `db:"cnt"`
+		Country      string          `db:"country"`
+		CategoryId   int             `db:"category_id"`
+		CategoryName string          `db:"category_name"`
+		Value        decimal.Decimal `db:"value"`
+		Count        int             `db:"cnt"`
 	}](ctx, s.DB, query, map[string]any{
 		"from": from, "to": to, "baseCurrency": baseCurrency, "statusIds": cache.OrderStatusIDsForNetRevenue(),
 	})

@@ -115,34 +115,70 @@ enum TechCardLabDipStatus {
   TECH_CARD_LAB_DIP_STATUS_REJECTED = 4;
 }
 
-// TechCardColorway is a development colourway (Sheet «Колористика» columns). It is
-// distinct from tech_card_product (published catalog SKUs); product_id optionally
-// links the published SKU that realises this colourway.
-message TechCardColorway {
-  string code = 1; // short colourway code, e.g. BLK
-  string name = 2; // colourway name (required)
-  TechCardLabDipStatus lab_dip_status = 3; // UNKNOWN defaults to PENDING
-  int32 product_id = 4; // FK product(id); 0 = not yet published. Auto-added to the card's product_ids on save (annotation ⊆ the canon tech_card_product list)
-  string comment = 5;
-  string pantone = 6; // headline Pantone code
-  string pantone_system = 7; // TCX|TPX|TPG|C|U (Pantone book)
-  string hex = 8; // screen approximation #RRGGBB
-  int32 swatch_media_id = 9; // FK media(id); approved physical swatch; 0 = none
-  int32 lab_dip_round = 10; // submission round (1, 2, …); 0 = unset
-  google.protobuf.Timestamp lab_dip_submitted_at = 11;
-  google.protobuf.Timestamp lab_dip_decided_at = 12;
-  string lab_dip_decided_by = 13;
-  string lab_dip_reject_reason = 14;
-  // the colour's material recipe: which catalog article (bom_item_index) goes on which
-  // garment part, in what colour, at what consumption. Per-colourway divergence lives here.
-  repeated TechCardColorwayUsage usages = 16;
-  reserved 15; // was `materials` (OUTPUT-ONLY); usages + bom_items resolve it now
-  // OUTPUT-ONLY stable row id (B-10): set on Get/List so a sample can be linked to a colourway
-  // (Sample.colorway_id). Ignored on write — a card save full-replaces colourways with fresh ids
-  // (the server re-points existing sample links by colourway identity, case-folded code+name), so
-  // re-read the card and use a fresh id right before linking a sample.
-  int32 id = 17;
+// TechCardPurpose is the numeric enum form of a style's purpose (R6). Replaces the free-text
+// `purpose` field; UNKNOWN is rejected on write.
+enum TechCardPurpose {
+  TECH_CARD_PURPOSE_UNKNOWN = 0;
+  TECH_CARD_PURPOSE_SELLABLE = 1;
+  TECH_CARD_PURPOSE_AUXILIARY = 2;
 }
+
+// ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
+// (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
+// comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
+// import (product.proto cannot import techcard.proto). NOTE: `usages` (the material recipe) is keyed by
+// an explicit colorway_id = product.id (R1/§14.3); the positional colorway_index model is gone.
+message ColorwayDevelopmentInsert {
+  string dev_code = 1; // ex TechCardColorway.code (internal article code)
+  string name = 2; // internal colourway label
+  TechCardLabDipStatus lab_dip_status = 3;
+  string comment = 4;
+  string pantone = 5;
+  string pantone_system = 6;
+  string dev_hex = 7; // ex hex; screen approximation #RRGGBB
+  int32 swatch_media_id = 8;
+  int32 lab_dip_round = 9;
+  google.protobuf.Timestamp lab_dip_submitted_at = 10;
+  google.protobuf.Timestamp lab_dip_decided_at = 11;
+  string lab_dip_decided_by = 12;
+  string lab_dip_reject_reason = 13;
+  repeated TechCardColorwayUsage usages = 14; // material recipe (bom_item_index into the owning style's BOM)
+  int32 display_order = 15;
+}
+
+message ColorwayDevelopment {
+  ColorwayDevelopmentInsert development = 1;
+  Color dictionary_color = 2; // output-only resolved dictionary colour
+}
+
+// StyleSizeChart is the style-owned size chart (R5). Written full-replace under the shared
+// tech_card.lock_version; there is no separate chart version.
+message StyleSizeChartCell {
+  int32 size_id = 1;
+  int32 measurement_name_id = 2;
+  google.type.Decimal value = 3;
+}
+
+message StyleSizeChart {
+  int32 style_id = 1;
+  int32 lock_version = 2;
+  repeated StyleSizeChartCell cells = 3;
+}
+
+// AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may
+// return its colourways, but they are not writable through the style).
+message AdminColorwayRef {
+  int32 colorway_id = 1;
+  string base_sku = 2;
+  string color_code = 3;
+  ColorwayLifecycleStatus status = 4;
+}
+
+// TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
+// (tech_card_colorway → product): the colourway is now a product, and its PLM/lab-dip fields live in
+// ColorwayDevelopment{,Insert} (above) reached through the Colorway read/write path. Its material
+// recipe (usages) is carried by ColorwayDevelopmentInsert.usages, keyed by an explicit colorway_id.
+// Listed in the removed-registry (breaking fixture); the name is not reused.
 
 // TechCardColorwayUsage is one material use inside a colourway: which catalog article
 // (bom_item_index) goes on which garment part (placement), the colour it takes HERE, and
@@ -155,7 +191,7 @@ message TechCardColorwayUsage {
   string placement = 2; // garment part: outer / inner collar / lining / sleeve …
   // matched (trim+lower) against TechCardOperation.placement
   string color = 3; // material colour in THIS colourway — material-specific,
-  // independent of TechCardColorway.pantone (the swatch colour)
+  // independent of the colourway swatch pantone (ColorwayDevelopmentInsert.pantone)
   string pantone = 4; // material Pantone / code in this colourway
   google.type.Decimal consumption = 5; // per-garment rate (measured materials); fallback when size_consumptions empty
   google.type.Decimal quantity = 6; // count (countable trims)
@@ -479,7 +515,9 @@ message TechCardCostLine {
 // articles (CMT/hardware/…) are shared across colourways, so unit_cost folds them in. All
 // figures are per GARMENT except order_cost (whole run). No FX conversion.
 message TechCardColorwayCost {
-  int32 colorway_index = 1; // 0-based index into TechCardInsert.colorways
+  reserved 1; // was `colorway_index` (positional into the removed TechCardInsert.colorways, R1)
+  reserved "colorway_index";
+  int64 colorway_id = 10; // explicit colourway id = product.id (R1/§14.3); OUTPUT-ONLY
   repeated TechCardCostLine materials_total = 2; // per-unit material cost grouped by article currency
   google.type.Decimal materials_per_unit = 6; // Σ per-garment usage cost in costing.currency (and currency-less)
   google.type.Decimal unit_cost = 7; // (materials_per_unit + shared manual articles) × (1 + defect/100), per garment
@@ -533,7 +571,7 @@ message TechCardCosting {
 }
 
 // TechCardInsert is the writable payload for a tech card. Nested lists are full
-// replacements on update (like ProductNew).
+// replacements on update (like ColorwayNew).
 // TechCardSignoffSection is the sheet a sign-off covers.
 enum TechCardSignoffSection {
   TECH_CARD_SIGNOFF_SECTION_UNKNOWN = 0;
@@ -566,11 +604,13 @@ message TechCardSignoff {
 }
 
 // TechCardPieceColorwayMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE
-// colourway. colorway_index is positional into TechCardInsert.colorways (full-replace recreates
-// colourway ids, so the link is by position — mirrors bom_item_index / operation refs). The BOM
-// refs are positional into TechCardInsert.bom_items.
+// colourway. The colourway is addressed by an explicit colorway_id = product.id (R1/§14.3); the old
+// positional colorway_index into TechCardInsert.colorways is gone (colourways are no longer style
+// children). The BOM refs remain positional into TechCardInsert.bom_items.
 message TechCardPieceColorwayMaterial {
-  int32 colorway_index = 1; // 0-based index into TechCardInsert.colorways
+  reserved 1; // was `colorway_index` (positional into the removed TechCardInsert.colorways, R1)
+  reserved "colorway_index";
+  int64 colorway_id = 5; // explicit colourway id = product.id (R1/§14.3)
   optional int32 bom_item_index = 2; // 0-based index into TechCardInsert.bom_items (the fabric)
   optional int32 fusing_bom_item_index = 3; // 0-based index into bom_items (the fusing / клеевая), if any
   string note = 4;
@@ -590,6 +630,14 @@ message TechCardPiece {
   repeated TechCardPieceColorwayMaterial materials = 8; // per-colourway fabric mapping
 }
 
+// SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers
+// either omit the whole message (early draft/idea) or provide both a known code and a 2000..2099
+// year. Free-text season labels are not part of the contract.
+message SkuSeason {
+  SeasonEnum code = 1;
+  int32 year = 2;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
@@ -598,7 +646,8 @@ message TechCardInsert {
   string style_number = 1;
   string name = 2; // Название изделия (required)
   string brand = 3;
-  string season = 4;
+  reserved 4;
+  reserved "season";
   string collection = 5;
   int32 category_id = 6; // FK category(id); 0 = unset
   GenderEnum target_gender = 7; // UNKNOWN = unset
@@ -622,7 +671,8 @@ message TechCardInsert {
 
   // children (full-replace on update)
   repeated int32 size_ids = 30; // size range / grade (FK size(id))
-  repeated int32 product_ids = 31; // linked catalog products (FK product(id)); the CANON product↔style link every consumer reads (cost seed, GetMarginByStyle). Colourway product_ids are auto-unioned in on save
+  reserved 31; // was `product_ids`; the product↔style link is now derived from product.style_id (R1/R4), never client-supplied. Read GetStyle.colorways (AdminColorwayRef) for a style's colourways.
+  reserved "product_ids";
   // Sketch media split into two INDEPENDENT lists (replaces the single `media = 32`):
   //   moodboard_media — mood / inspiration / reference / fabric-swatch photos (design intent)
   //   technical_media — flat sketches used in construction (front / back / detail / lining / preview)
@@ -635,17 +685,18 @@ message TechCardInsert {
   repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
   repeated TechCardRevision revisions = 34; // revision log
 
-  // materials (Phase 2): bill of materials (article catalog) and colourways (recipes).
-  // CONTRACT (nf05-01): downstream references into bom_items and colorways are POSITIONAL, by index,
-  // and every write is a full replace (there are no stable ids to reference across a save). So when a
-  // BOM line or colourway is removed or reordered, the client MUST renumber all downstream indices in
-  // the SAME payload — colorway usages' bom_item_index, operations' bom_item_index, and pieces'
-  // colorway_index / bom_item_index / fusing_bom_item_index. An index left pointing at a shifted row
-  // silently maps a detail to the wrong material/colourway (data that goes to the factory); an
-  // out-of-range index is rejected, but an in-range-but-wrong one is not. The server range-checks but
-  // cannot detect a wrong-but-valid index.
+  // materials (Phase 2): bill of materials (article catalog). Colourways are no longer style
+  // children (R1 merge — a colourway is a product); their material recipe lives on the colourway via
+  // ColorwayDevelopmentInsert.usages, keyed by an explicit colorway_id = product.id.
+  // CONTRACT (nf05-01): downstream references into bom_items are POSITIONAL, by index, and every
+  // write is a full replace (bom_items have no stable ids across a save). So when a BOM line is
+  // removed or reordered, the client MUST renumber all downstream bom_item_index / fusing_bom_item_index
+  // in the SAME payload (operations, pieces). An out-of-range index is rejected; an in-range-but-wrong
+  // one is not — the server range-checks but cannot detect a wrong-but-valid index. Pieces address
+  // their colourway by explicit colorway_id (not a positional index).
   repeated TechCardBomItem bom_items = 40;
-  repeated TechCardColorway colorways = 41;
+  reserved 41; // was `colorways`; colourways are products now (R1), addressed by colorway_id
+  reserved "colorways";
 
   // production (Phase 3): construction, operations, labels, packaging, costing.
   TechCardConstruction construction = 43; // 1:1; null = unset
@@ -671,8 +722,10 @@ message TechCardInsert {
   // NF-07 auxiliary items. purpose is "sellable" (default/empty) or "auxiliary"; an auxiliary card
   // produces a packaging material rather than a product, so it may not link products and its run
   // output receipts into output_material_id (required before the first run; 0 = unset).
-  string purpose = 101;
+  TechCardPurpose purpose = 101; // R6: type change string→enum on the same wire number
+
   int32 output_material_id = 102;
+  SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
@@ -690,6 +743,9 @@ message TechCard {
   // Resolved sketch media (MediaFull), split to mirror the writable lists.
   repeated TechCardMediaFull resolved_moodboard_media = 7;
   repeated TechCardMediaFull resolved_technical_media = 8;
+  // OUTPUT-ONLY derived colourways of this style (R1/§3.3): a style's colourways are its products.
+  // Not writable through the style — created/relinked via the Colorway RPCs.
+  repeated AdminColorwayRef colorways = 9;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
@@ -702,7 +758,8 @@ message TechCardListItem {
   TechCardStage stage = 5;
   string status = 6;
   GenderEnum target_gender = 7;
-  string season = 8;
+  reserved 8;
+  reserved "season";
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   TechCardApprovalState approval_state = 11;
@@ -713,5 +770,6 @@ message TechCardListItem {
   string preview_url = 13;
   // Card purpose: "sellable" (default) or "auxiliary" (NF-07). Lets a board/list badge auxiliary
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
-  string purpose = 14;
+  TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
+  SkuSeason sku_season = 15;
 }

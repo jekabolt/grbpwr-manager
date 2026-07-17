@@ -54,10 +54,6 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err != nil {
 		return err
 	}
-	products, err := s.productIdsByTechCardIds(ctx, ids)
-	if err != nil {
-		return err
-	}
 	mediaItems, mediaFull, err := s.mediaByTechCardIds(ctx, ids)
 	if err != nil {
 		return err
@@ -79,7 +75,6 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 		id := cards[i].Id
 		cards[i].SizeIds = sizes[id]
 		cards[i].SizeQuantities = sizeQty[id]
-		cards[i].ProductIds = products[id]
 		cards[i].Media = mediaItems[id]
 		cards[i].ResolvedMedia = mediaFull[id]
 		cards[i].Callouts = callouts[id]
@@ -110,30 +105,6 @@ func (s *Store) idListByTechCardIds(ctx context.Context, table, column string, i
 		ORDER BY tech_card_id, display_order`, column, table), map[string]any{"ids": ids})
 	if err != nil {
 		return nil, fmt.Errorf("can't load %s: %w", table, err)
-	}
-	out := make(map[int][]int, len(ids))
-	for _, r := range rows {
-		out[r.TechCardID] = append(out[r.TechCardID], r.Value)
-	}
-	return out, nil
-}
-
-// productIdsByTechCardIds loads linked product ids per tech card, excluding
-// soft-deleted products. Products are soft-deleted (deleted_at), so the ON DELETE
-// CASCADE on tech_card_product never fires and a dead link would otherwise keep
-// surfacing a product that no longer exists for the storefront.
-func (s *Store) productIdsByTechCardIds(ctx context.Context, ids []int) (map[int][]int, error) {
-	if len(ids) == 0 {
-		return map[int][]int{}, nil
-	}
-	rows, err := storeutil.QueryListNamed[techCardIDRow](ctx, s.DB, `
-		SELECT tcp.tech_card_id, tcp.product_id AS value
-		FROM tech_card_product tcp
-		JOIN product p ON p.id = tcp.product_id
-		WHERE tcp.tech_card_id IN (:ids) AND p.deleted_at IS NULL
-		ORDER BY tcp.tech_card_id, tcp.display_order`, map[string]any{"ids": ids})
-	if err != nil {
-		return nil, fmt.Errorf("can't load tech card products: %w", err)
 	}
 	out := make(map[int][]int, len(ids))
 	for _, r := range rows {

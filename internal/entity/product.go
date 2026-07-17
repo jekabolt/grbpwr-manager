@@ -7,21 +7,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type ProductNew struct {
-	Product          *ProductInsert              `valid:"required"`
+type ColorwayNew struct {
+	Product          *ColorwayInsert             `valid:"required"`
 	SizeMeasurements []SizeWithMeasurementInsert `valid:"required"`
 	MediaIds         []int                       `valid:"required"`
-	Tags             []ProductTagInsert          `valid:"required"`
-	Prices           []ProductPriceInsert        `valid:"required"` // At least one price required
+	Tags             []ColorwayTagInsert         `valid:"required"`
+	Prices           []ColorwayPriceInsert       `valid:"required"` // At least one price required
 }
 
-type ProductFull struct {
-	Product      *Product
-	Sizes        []ProductSize
+type ColorwayFull struct {
+	Product      *Colorway
+	Sizes        []Variant
 	Measurements []ProductMeasurement
 	Media        []MediaFull
-	Tags         []ProductTag
-	Prices       []ProductPrice
+	Tags         []ColorwayTag
+	Prices       []ColorwayPrice
 }
 
 // Category represents a hierarchical category structure
@@ -35,12 +35,52 @@ type Category struct {
 	CountWomen int
 }
 
-// Size represents the size table
+// SizeSKUSystem is the controlled size family used to interpret an SKU ordinal. It is intentionally
+// closed: adding a family changes the public SKU contract and therefore requires code, proto and DB
+// migrations rather than another free-text value.
+type SizeSKUSystem string
+
+const (
+	SizeSKUSystemApparel     SizeSKUSystem = "apparel"
+	SizeSKUSystemShoe        SizeSKUSystem = "shoe"
+	SizeSKUSystemCompositeTA SizeSKUSystem = "composite_ta"
+	SizeSKUSystemCompositeBO SizeSKUSystem = "composite_bo"
+)
+
+// ValidSizeSKUSystems is the canonical set of size families, mirroring ValidSeasons/
+// ValidProductTargetGenders below. It backs both IsValidSizeSKUSystem and the entity<->DB CHECK
+// drift test (problem 033/50-F — internal/store/migrationlint) against migration 0147's
+// chk_size_sku_contract.
+var ValidSizeSKUSystems = map[SizeSKUSystem]bool{
+	SizeSKUSystemApparel:     true,
+	SizeSKUSystemShoe:        true,
+	SizeSKUSystemCompositeTA: true,
+	SizeSKUSystemCompositeBO: true,
+}
+
+func IsValidSizeSKUSystem(system SizeSKUSystem) bool {
+	return ValidSizeSKUSystems[system]
+}
+
+// Size represents the size table.
 type Size struct {
-	Id         int    `db:"id"`
-	Name       string `db:"name"`
+	Id         int           `db:"id"`
+	Name       string        `db:"name"`
+	SkuOrd     int           `db:"sku_ord"`    // required 1..99 ordinal for the variant SKU segment
+	SkuSystem  SizeSKUSystem `db:"sku_system"` // controlled by SizeSKUSystem/DB CHECK
 	CountMen   int
 	CountWomen int
+}
+
+// Color is a controlled colour dictionary entry. Code is exactly 3 chars and unique; it feeds the
+// colour segment of the SKU and is referenced by product.color_code and tech_card_colorway.color_code.
+// Hex is the base shade; product.color_hex may override it per product.
+type Color struct {
+	ID         int            `db:"id"`
+	Code       string         `db:"code"`
+	Name       string         `db:"name"`
+	Hex        sql.NullString `db:"hex"`
+	ArchivedAt sql.NullTime   `db:"archived_at"`
 }
 
 // Collection represents a product collection with counts
@@ -63,6 +103,26 @@ const (
 	Female GenderEnum = "female"
 	Unisex GenderEnum = "unisex"
 )
+
+// ColorwayStatus (the stored product.lifecycle_status) and its lifecycle state machine live in
+// colorway_lifecycle.go. It is ORTHOGONAL to preorder, sold_out and hidden_for_non_qualified
+// (availability window / derived stock / tier gating), which are not lifecycle states.
+
+// ValidColorwayStatuses is the canonical set of STORABLE statuses, mirroring
+// ValidSeasons/ValidProductTargetGenders. It backs the entity<->DB CHECK drift test
+// (internal/store/migrationlint) against migration 0137's stored lifecycle_status
+// `chk_product_lifecycle_status CHECK (BETWEEN 1 AND 4)`. UNKNOWN=0 is deliberately absent:
+// it is never written (fail-closed read sentinel only).
+var ValidColorwayStatuses = map[ColorwayStatus]bool{
+	ColorwayStatusDraft:    true,
+	ColorwayStatusActive:   true,
+	ColorwayStatusHidden:   true,
+	ColorwayStatusArchived: true,
+}
+
+func IsValidColorwayStatus(status ColorwayStatus) bool {
+	return status.IsValid()
+}
 
 type SeasonEnum string
 
@@ -125,11 +185,12 @@ var ValidProductTargetGenders = map[GenderEnum]bool{
 	Unisex: true,
 }
 
-type ProductBodyInsert struct {
+type ColorwayBodyInsert struct {
 	Preorder           sql.NullTime        `db:"preorder" valid:"-"`
 	Brand              string              `db:"brand" valid:"required"`
-	Color              string              `db:"color" valid:"required"`
-	ColorHex           string              `db:"color_hex" valid:"required,hexcolor"`
+	Color              string              `db:"color" valid:"required"` // resolved dictionary name; never accepted from API
+	ColorCode          string              `db:"color_code" valid:"required"`
+	ColorHexOverride   sql.NullString      `db:"color_hex" valid:"-"`
 	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
 	TopCategoryId      int                 `db:"top_category_id" valid:"required"`
@@ -139,10 +200,8 @@ type ProductBodyInsert struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id" valid:"-"`
 	CareInstructions   sql.NullString      `db:"care_instructions" valid:"-"`
 	Composition        sql.NullString      `db:"composition" valid:"-"`
-	Hidden             sql.NullBool        `db:"hidden" valid:"-"`
 	TargetGender       GenderEnum          `db:"target_gender"`
 	Season             SeasonEnum          `db:"season" valid:"required"`
-	Version            string              `db:"version" valid:"-"`
 	Collection         string              `db:"collection" valid:"-"`
 	Fit                sql.NullString      `db:"fit" valid:"-"`
 	// MinTier is the minimum loyalty tier code (0/1/2/99) required to purchase.
@@ -151,8 +210,8 @@ type ProductBodyInsert struct {
 	HiddenForNonQualified bool `db:"hidden_for_non_qualified" valid:"-"`
 }
 
-// ProductPrice represents a product price in a specific currency
-type ProductPrice struct {
+// ColorwayPrice represents a product price in a specific currency
+type ColorwayPrice struct {
 	Id        int             `db:"id"`
 	ProductId int             `db:"product_id"`
 	Currency  string          `db:"currency"`
@@ -161,59 +220,88 @@ type ProductPrice struct {
 	UpdatedAt time.Time       `db:"updated_at"`
 }
 
-// ProductPriceInsert for inserting/updating product prices
-type ProductPriceInsert struct {
+// ColorwayPriceInsert for inserting/updating product prices
+type ColorwayPriceInsert struct {
 	Currency string          `db:"currency" valid:"required,length(3|3)"`
 	Price    decimal.Decimal `db:"price" valid:"required"`
 }
 
-type ProductBody struct {
-	ProductBodyInsert ProductBodyInsert          `valid:"required"`
-	Translations      []ProductTranslationInsert `valid:"required"`
+type ColorwayBody struct {
+	ProductBodyInsert ColorwayBodyInsert          `valid:"required"`
+	Translations      []ColorwayTranslationInsert `valid:"required"`
 }
 
-func (pb *ProductBody) SalePercentageDecimal() decimal.Decimal {
+// StylePatch is the set of catalogue-style facts written ONLY by UpdateStyle (R4/§14.7): the garment
+// facts invariant across a style's colourways. It mirrors the style-owned subset of ColorwayBodyInsert
+// and drives the shared styleFieldsSet SQL. category_id stays a PLM/UpdateTechCard fact and is not here.
+type StylePatch struct {
+	Brand              string
+	Season             SeasonEnum
+	Collection         string
+	TargetGender       GenderEnum
+	Fit                sql.NullString
+	Composition        sql.NullString
+	CareInstructions   sql.NullString
+	ModelWearsHeightCm sql.NullInt32
+	ModelWearsSizeId   sql.NullInt32
+	TopCategoryId      int
+	SubCategoryId      sql.NullInt32
+	TypeId             sql.NullInt32
+}
+
+func (pb *ColorwayBody) SalePercentageDecimal() decimal.Decimal {
 	if pb.ProductBodyInsert.SalePercentage.Valid {
 		return pb.ProductBodyInsert.SalePercentage.Decimal.Round(2)
 	}
 	return decimal.Zero
 }
 
-// Product represents the product table
-type Product struct {
-	Id             int            `db:"id"`
-	CreatedAt      time.Time      `db:"created_at"`
-	UpdatedAt      time.Time      `db:"updated_at"`
-	DeletedAt      sql.NullTime   `db:"deleted_at"`
-	Slug           string         `db:"slug"`
-	SKU            string         `db:"sku"`
-	ProductDisplay ProductDisplay `valid:"required"`
-	Prices         []ProductPrice // Multi-currency prices
-	SoldOut        bool           // Indicates if product is sold out (all sizes have quantity <= 0)
+// Colorway represents the product table
+type Colorway struct {
+	Id             int             `db:"id"`
+	CreatedAt      time.Time       `db:"created_at"`
+	UpdatedAt      time.Time       `db:"updated_at"`
+	DeletedAt      sql.NullTime    `db:"deleted_at"`
+	Slug           string          `db:"slug"`
+	SKU            string          `db:"sku"`
+	SkuLockedAt    sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
+	ProductDisplay ColorwayDisplay `valid:"required"`
+	Prices         []ColorwayPrice // Multi-currency prices
+	SoldOut         bool           // Indicates if product is sold out (all sizes have quantity <= 0)
+	LifecycleStatus ColorwayStatus `db:"lifecycle_status"` // stored lifecycle: draft/active/hidden/archived (R6)
+	StyleId         int            `db:"style_id"`         // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
 }
 
-type ProductInsert struct {
-	ProductBodyInsert         ProductBodyInsert          `valid:"required"`
-	ThumbnailMediaID          int                        `db:"thumbnail_media_id" valid:"required"`
-	SecondaryThumbnailMediaID sql.NullInt32              `db:"secondary_thumbnail_media_id" valid:"-"`
-	Translations              []ProductTranslationInsert `valid:"required"`
-	Prices                    []ProductPriceInsert       `valid:"required"` // At least one price required
+// IsPubliclyVisible reports whether the product is exposed on the storefront: only ACTIVE colourways
+// are (draft/hidden/archived are not). It is the single Go predicate behind the storefront read filter
+// (lifecycle_status = 2); tier gating (HiddenForNonQualified) and stock (SoldOut) are separate axes
+// applied on top of it, not part of this decision.
+func (p *Colorway) IsPubliclyVisible() bool {
+	return p.LifecycleStatus == ColorwayStatusActive
+}
+
+type ColorwayInsert struct {
+	ProductBodyInsert         ColorwayBodyInsert          `valid:"required"`
+	ThumbnailMediaID          int                         `db:"thumbnail_media_id" valid:"required"`
+	SecondaryThumbnailMediaID sql.NullInt32               `db:"secondary_thumbnail_media_id" valid:"-"`
+	Translations              []ColorwayTranslationInsert `valid:"required"`
+	Prices                    []ColorwayPriceInsert       `valid:"required"` // At least one price required
 	// CostPrice is the confidential per-unit cost of goods (COGS) in base currency
 	// (EUR), used for margin analytics. Invalid/NULL leaves the stored value unchanged
 	// on update. Never serialized on the storefront read path — write-only.
 	CostPrice decimal.NullDecimal `db:"cost_price" valid:"-"`
 }
 
-type ProductDisplay struct {
-	ProductBody        ProductBody `valid:"required"`
-	Thumbnail          MediaFull   `valid:"required"`
-	SecondaryThumbnail *MediaFull  `valid:"-"`
+type ColorwayDisplay struct {
+	ProductBody        ColorwayBody `valid:"required"`
+	Thumbnail          MediaFull    `valid:"required"`
+	SecondaryThumbnail *MediaFull   `valid:"-"`
 }
 
-// ProductCostInfo carries the confidential COGS fields of a product for the admin surface
+// ColorwayCostInfo carries the confidential COGS fields of a product for the admin surface
 // only (never the storefront). Source is "manual" | "tech_card" | "" (unset); the tech-card
 // ids are 0 when absent.
-type ProductCostInfo struct {
+type ColorwayCostInfo struct {
 	CostPrice           decimal.NullDecimal `db:"cost_price"`
 	CostPriceSource     sql.NullString      `db:"cost_price_source"`
 	CostPriceTechCardID sql.NullInt32       `db:"cost_price_tech_card_id"`
@@ -221,12 +309,12 @@ type ProductCostInfo struct {
 	PrimaryTechCardID   sql.NullInt32       `db:"primary_tech_card_id"`
 }
 
-// ProductCustoms carries the per-product customs data used to build an international shipping
+// ColorwayCustoms carries the per-product customs data used to build an international shipping
 // label's customs declaration (Sendcloud). HSCode / CustomsDescription are the optional customs-only
 // fields (a product without them ships domestically/intra-EU fine). CountryOfOrigin is the existing
 // required core product field (free-text manufacture country) surfaced here read-only — it is set
 // via the product form, and resolved to ISO-2 at label build time; SetProductCustoms never writes it.
-type ProductCustoms struct {
+type ColorwayCustoms struct {
 	HSCode             sql.NullString `db:"hs_code"`
 	CountryOfOrigin    sql.NullString `db:"country_of_origin"`
 	CustomsDescription sql.NullString `db:"customs_description"`
@@ -239,38 +327,53 @@ type ProductMeasurementUpdate struct {
 }
 
 type SizeWithMeasurementInsert struct {
-	ProductSize  ProductSizeInsert
+	ProductSize  VariantInsert
 	Measurements []ProductMeasurementInsert
 }
 
 type SizeWithMeasurement struct {
-	ProductSize  ProductSize
+	ProductSize  Variant
 	Measurements []ProductMeasurement
 }
 
 // ProductSizes represents the product_size table
-type ProductSize struct {
+type Variant struct {
 	Id        int             `db:"id"`
 	Quantity  decimal.Decimal `db:"quantity"`
 	ProductId int             `db:"product_id"`
 	SizeId    int             `db:"size_id"`
+	SKU       sql.NullString  `db:"sku"`    // first-class variant SKU (SS26-00021-BLK-04)
+	Status    uint8           `db:"status"` // VariantStatus: 1=active, 2=archived (R2, migration 0155)
 }
 
-func (ps *ProductSize) QuantityDecimal() decimal.Decimal {
+func (ps *Variant) QuantityDecimal() decimal.Decimal {
 	return ps.Quantity.Round(0)
 }
 
+// SoldOutFromSizes is the single Go definition of the derived sold_out flag: a product is sold out
+// when the total available quantity across its sizes is <= 0 (which includes having no sizes). The
+// SQL read path computes the same thing server-side via one shared expression (store/product's
+// soldOutSelect / productStockExpr); keep the two in agreement (PR5-B).
+func SoldOutFromSizes(sizes []Variant) bool {
+	total := decimal.Zero
+	for i := range sizes {
+		total = total.Add(sizes[i].Quantity)
+	}
+	return total.LessThanOrEqual(decimal.Zero)
+}
+
 // ProductSizes for insert represents the product_size table
-type ProductSizeInsert struct {
+type VariantInsert struct {
 	Quantity decimal.Decimal `db:"quantity"`
 	SizeId   int             `db:"size_id"`
 }
 
-func (psi *ProductSizeInsert) QuantityDecimal() decimal.Decimal {
+func (psi *VariantInsert) QuantityDecimal() decimal.Decimal {
 	return psi.Quantity.Round(0)
 }
 
-// SizeMeasurement represents the size_measurement table
+// ProductMeasurement is the per-colourway view of a size-chart entry, reconstructed from the
+// style-level tech_card_size_measurement (PR6 P3) joined to the colourway's product_size.
 type ProductMeasurement struct {
 	Id                int             `db:"id"`
 	ProductId         int             `db:"product_id"`
@@ -279,26 +382,27 @@ type ProductMeasurement struct {
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
-// SizeMeasurement represents the size_measurement table
+// ProductMeasurementInsert is one measurement value in a size-chart write (persisted to the
+// style-level tech_card_size_measurement, PR6 P3).
 type ProductMeasurementInsert struct {
 	MeasurementNameId int             `db:"measurement_name_id"`
 	MeasurementValue  decimal.Decimal `db:"measurement_value"`
 }
 
-// ProductTag represents the product_tag table
-type ProductTag struct {
+// ColorwayTag represents the product_tag table
+type ColorwayTag struct {
 	Id        int `db:"id"`
 	ProductId int `db:"product_id"`
-	ProductTagInsert
+	ColorwayTagInsert
 }
 
 // ProductTag represents the product_tag table
-type ProductTagInsert struct {
+type ColorwayTagInsert struct {
 	Tag string `db:"tag"`
 }
 
-// ProductTranslation represents the product_translation table
-type ProductTranslation struct {
+// ColorwayTranslation represents the product_translation table
+type ColorwayTranslation struct {
 	Id          int       `db:"id"`
 	ProductId   int       `db:"product_id"`
 	LanguageId  int       `db:"language_id"`
@@ -308,8 +412,8 @@ type ProductTranslation struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 }
 
-// ProductTranslationInsert represents the product_translation table for insert operations
-type ProductTranslationInsert struct {
+// ColorwayTranslationInsert represents the product_translation table for insert operations
+type ColorwayTranslationInsert struct {
 	LanguageId  int    `db:"language_id" json:"language_id" valid:"required"`
 	Name        string `db:"name" json:"name" valid:"required"`
 	Description string `db:"description" json:"description" valid:"required"`
@@ -412,6 +516,17 @@ type StockAdjustmentDirection string
 const (
 	StockAdjustmentDirectionIncrease StockAdjustmentDirection = "increase"
 	StockAdjustmentDirectionDecrease StockAdjustmentDirection = "decrease"
+)
+
+// StockUpdateMode selects how UpdateProductSizeStockWithHistory interprets its amount argument. Set
+// treats amount as the absolute final quantity; Adjust treats it as a signed delta applied to the
+// row-locked current quantity, so concurrent adjustments compose instead of clobbering each other
+// (problem 025).
+type StockUpdateMode int
+
+const (
+	StockUpdateModeSet    StockUpdateMode = iota // amount is the absolute final quantity
+	StockUpdateModeAdjust                        // amount is a signed delta on the current quantity
 )
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.

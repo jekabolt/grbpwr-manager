@@ -242,8 +242,8 @@ func TestGetProduct(t *testing.T) {
 	mockProducts := mocks.NewProducts(t)
 	mockRepo.EXPECT().Products().Return(mockProducts)
 
-	// Setup mock for GetProductByIdNoHidden
-	mockProducts.EXPECT().GetProductByIdNoHidden(mock.Anything, 1).Return(mockProduct, nil)
+	// Setup mock for GetProductBySKU (product resolves by base SKU under the /p/{pretty}-{sku} scheme)
+	mockProducts.EXPECT().GetProductBySKU(mock.Anything, "TST123").Return(mockProduct, nil)
 
 	// Setup mock mailer
 	mockMailer := mocks.NewMailer(t)
@@ -266,8 +266,8 @@ func TestGetProduct(t *testing.T) {
 	)
 
 	// Call the function being tested
-	resp, err := server.GetProduct(ctx, &pb_frontend.GetProductRequest{
-		Id: 1,
+	resp, err := server.GetProduct(ctx, &pb_frontend.GetColorwayRequest{
+		Sku: "TST123",
 	})
 
 	// Assert expectations
@@ -404,7 +404,7 @@ func TestGetProductsPaged(t *testing.T) {
 	)
 
 	// Call the function being tested
-	resp, err := server.GetProductsPaged(ctx, &pb_frontend.GetProductsPagedRequest{
+	resp, err := server.GetProductsPaged(ctx, &pb_frontend.GetColorwaysPagedRequest{
 		Limit:       10,
 		Offset:      0,
 		SortFactors: []pb_common.SortFactor{pb_common.SortFactor_SORT_FACTOR_PRICE},

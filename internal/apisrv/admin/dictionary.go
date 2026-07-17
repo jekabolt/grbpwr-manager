@@ -32,6 +32,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			IsProd:                      cache.GetPaymentIsProd(),
 			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
 			ProductTags:                 cache.GetProductTags(),
+			Colors:                      cache.GetColors(),
 		}),
 	}, nil
 }

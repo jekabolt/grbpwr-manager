@@ -223,3 +223,21 @@ func TestClient_GetCountryMetrics_Integration(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("GetCountryMetrics returned %d rows", len(metrics))
 }
+
+func TestExtractProductSKUFromPath(t *testing.T) {
+	cases := []struct{ path, want string }{
+		{"/p/black-summer-shirt-ss26-00021-blk", "SS26-00021-BLK"},
+		{"/p/ss26-00021-blk", "SS26-00021-BLK"},
+		{"p/palto-fw25-00003-nav", "FW25-00003-NAV"},
+		{"/p/black-summer-shirt-ss26-00021-blk?utm=x", ""}, // query not stripped here -> no tail match
+		{"/product/male/brand/name/42", ""},                // old scheme no longer matches
+		{"/", ""},
+		{"/p/", ""},
+		{"/catalog/ss26-00021-blk", ""}, // not a /p/ path
+	}
+	for _, c := range cases {
+		if got := extractProductSKUFromPath(c.path); got != c.want {
+			t.Errorf("extractProductSKUFromPath(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}

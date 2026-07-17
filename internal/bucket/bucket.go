@@ -25,6 +25,25 @@ type Config struct {
 	SubdomainEndpoint string `mapstructure:"subdomain_endpoint"`
 }
 
+// String renders the config with the S3 credentials redacted so an accidental %v/%+v/%s of the bucket
+// config — in a log line, an error, or a test print — can never leak the access/secret keys (problem
+// 007). fmt routes %v, %+v and %s through Stringer, so all three are covered.
+func (c Config) String() string {
+	return fmt.Sprintf("bucket.Config{S3AccessKey:%s S3SecretAccessKey:%s S3Endpoint:%s S3BucketName:%s "+
+		"S3BucketLocation:%s BaseFolder:%s SubdomainEndpoint:%s}",
+		redactSecret(c.S3AccessKey), redactSecret(c.S3SecretAccessKey), c.S3Endpoint, c.S3BucketName,
+		c.S3BucketLocation, c.BaseFolder, c.SubdomainEndpoint)
+}
+
+// redactSecret masks a secret value while preserving whether it was set (empty stays empty so an
+// unconfigured field is still visible as such).
+func redactSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "***REDACTED***"
+}
+
 type Bucket struct {
 	*minio.Client
 	*Config

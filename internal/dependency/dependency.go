@@ -25,10 +25,24 @@ type (
 	}
 	Products interface {
 		ContextStore
-		// AddProduct adds a new product along with its associated data.
-		AddProduct(ctx context.Context, prd *entity.ProductNew) (int, error)
-		// AddProduct adds a new product along with its associated data.
-		UpdateProduct(ctx context.Context, prd *entity.ProductNew, id int) error
+		// CreateColorway creates a DRAFT colourway attached to an existing style (R2/R4 write
+		// decomposition): colourway-owned data only (merch row, translations, media, tags, prices), no
+		// style facts, variants or size chart. sql.ErrNoRows when the style is absent;
+		// entity.ErrColorwayColorExists on a duplicate (style_id, color_code). Returns the colourway id.
+		CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		// UpdateColorway patches a colourway's own fields under an optimistic guard on the shared
+		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).
+		// Never touches style facts, variants, stock or the chart. Returns the new shared lock_version.
+		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		// UpdateStyle is the sole writer of a style's catalogue facts (R4/§14.7), optimistically locked on
+		// the shared tech_card.lock_version. A SKU-fact (season) change re-mints unfrozen siblings, or is
+		// refused (entity.ErrStyleFrozenSiblings) if any sibling is SKU-frozen. Returns the new lock_version.
+		UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch) (int, error)
+		// AddProduct is the legacy coupled create, retained as a store-level test fixture (no RPC surface
+		// after UpsertColorway was decomposed).
+		AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error)
+		// UpdateProduct is the legacy coupled update, retained as a store-level test fixture.
+		UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id int) error
 		// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing)
 		// card of each given product that has no primary yet. Empty ids is a no-op.
 		AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int, productIDs []int) error
@@ -53,27 +67,54 @@ type (
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
-		GetProductCostInfo(ctx context.Context, id int) (*entity.ProductCostInfo, error)
+		GetProductCostInfo(ctx context.Context, id int) (*entity.ColorwayCostInfo, error)
 		// SetProductCustoms sets a product's international-shipping customs data (HS code, ISO-3
 		// origin, declared description); GetProductCustoms reads it back.
-		SetProductCustoms(ctx context.Context, productID int, customs entity.ProductCustoms) error
-		GetProductCustoms(ctx context.Context, productID int) (*entity.ProductCustoms, error)
+		SetProductCustoms(ctx context.Context, productID int, customs entity.ColorwayCustoms) error
+		GetProductCustoms(ctx context.Context, productID int) (*entity.ColorwayCustoms, error)
 		// IsProductLinkedToTechCard reports whether a product is currently linked to the card.
 		IsProductLinkedToTechCard(ctx context.Context, productID, techCardID int) (bool, error)
 		// GetProductsPaged returns a paged list of products based on provided parameters.
-		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error)
+		GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error)
 		// GetProductsByIds returns a list of products by their IDs.
-		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error)
+		GetProductsByIds(ctx context.Context, ids []int) ([]entity.Colorway, error)
 		// GetProductsByTag returns a list of products by their tag.
-		GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error)
+		GetProductsByTag(ctx context.Context, tag string) ([]entity.Colorway, error)
 		// GetLowStockProducts returns visible products with total stock in (0, threshold], ordered by ascending stock.
-		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error)
+		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
-		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
+		// GetVariantByID returns a variant (product_size) by its stable id, sql.ErrNoRows if absent
+		// (variant addressing never implicitly creates a variant, R2/p012).
+		GetVariantByID(ctx context.Context, variantID int) (entity.Variant, error)
+		// GetVariantBySKU returns a variant (product_size) by its public variant SKU, sql.ErrNoRows if
+		// absent (storefront NotifyMe resolve, R2/R3/p013).
+		GetVariantBySKU(ctx context.Context, variantSKU string) (entity.Variant, error)
+		// CreateVariant adds a new variant (size) to a colourway at zero stock, ACTIVE, minting its
+		// variant SKU (R2). Rejects an absent (sql.ErrNoRows) or archived colourway and a duplicate size.
+		CreateVariant(ctx context.Context, colorwayID, sizeID int) (entity.Variant, error)
+		// SetVariantStatus applies a lifecycle status to a variant under an optimistic guard (R2:
+		// archive-not-delete). Returns sql.ErrNoRows if the variant is absent; size_id/SKU are immutable.
+		SetVariantStatus(ctx context.Context, variantID int, target entity.VariantStatus) (entity.Variant, error)
+		// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4), guarded on both sides'
+		// shared lock_version, re-minting its SKU. entity.ErrColorwayNotDraft if not draft,
+		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent.
+		RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
-		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ProductFull, error)
+		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
+		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.
+		GetProductBySKU(ctx context.Context, sku string) (*entity.ColorwayFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
+		// PublishColorway transitions a colourway DRAFT->ACTIVE (R6), enforcing the sellable
+		// preconditions and an optimistic guard on the current lifecycle_status.
+		PublishColorway(ctx context.Context, colorwayID int) error
+		// HideColorway transitions ACTIVE->HIDDEN (kept admin-visible, off the storefront).
+		HideColorway(ctx context.Context, colorwayID int) error
+		// UnhideColorway transitions HIDDEN->ACTIVE (back onto the storefront).
+		UnhideColorway(ctx context.Context, colorwayID int) error
+		// ArchiveColorway transitions ACTIVE|HIDDEN->ARCHIVED (terminal) and stamps the archival audit.
+		ArchiveColorway(ctx context.Context, colorwayID int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
@@ -84,8 +125,9 @@ type (
 		RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
-		// UpdateProductSizeStockWithHistory updates stock and records to product_stock_change_history.
-		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, quantity int, reason string, comment string) error
+		// UpdateProductSizeStockWithHistory applies a stock change (mode Set=absolute, Adjust=signed
+		// delta) and records history atomically under a row lock, returning the committed before/after.
+		UpdateProductSizeStockWithHistory(ctx context.Context, productId int, sizeId int, mode entity.StockUpdateMode, amount int, reason string, comment string) (before decimal.Decimal, after decimal.Decimal, err error)
 		// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 		GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error)
 		// AddToWaitlist adds an email to the waitlist for a specific product/size combination.
@@ -441,6 +483,7 @@ type (
 		GetArchivesPaged(ctx context.Context, limit int, offset int, orderFactor entity.OrderFactor) ([]entity.ArchiveList, int, error)
 		DeleteArchiveById(ctx context.Context, id int) error
 		GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error)
+		GetArchiveByCode(ctx context.Context, code string) (*entity.ArchiveFull, error)
 		GetArchiveTranslations(ctx context.Context, id int) ([]entity.ArchiveTranslation, error)
 	}
 
@@ -510,6 +553,12 @@ type (
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
 		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
+		// sql.ErrNoRows when the style is absent.
+		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)
+		// UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5,
+		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
@@ -822,6 +871,7 @@ type (
 		Samples() Samples
 		Admin() Admin
 		Cache() Cache
+		Dictionary() Dictionary
 		Mail() Mail
 		Archive() Archive
 		GA4Data() GA4DataStore
@@ -851,6 +901,31 @@ type (
 
 	Cache interface {
 		GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, error)
+	}
+
+	// Dictionary is the write/manage surface for the controlled merch dictionaries (R9). Every mutation
+	// carries an optimistic expected_version (0 opts out) and returns the namespace's new
+	// dictionary_revision, bumped in the same transaction as the change.
+	Dictionary interface {
+		GetDictionaryRevisions(ctx context.Context) (map[entity.DictionaryNamespace]int64, error)
+
+		ListColors(ctx context.Context, includeArchived bool) ([]entity.Color, error)
+		CreateColor(ctx context.Context, code, name, hex string, expectedVersion int64) (entity.Color, int64, error)
+		UpdateColor(ctx context.Context, code, name, hex string, expectedVersion int64) (int64, error)
+		ArchiveColor(ctx context.Context, code string, expectedVersion int64) (int64, error)
+
+		ListCollections(ctx context.Context, includeArchived bool) ([]entity.CollectionDict, error)
+		CreateCollection(ctx context.Context, name string, expectedVersion int64) (entity.CollectionDict, int64, error)
+		UpdateCollection(ctx context.Context, id int, name string, expectedVersion int64) (int64, error)
+		ArchiveCollection(ctx context.Context, id int, expectedVersion int64) (int64, error)
+
+		ListTags(ctx context.Context, includeArchived bool) ([]entity.TagDict, error)
+		CreateTag(ctx context.Context, name string, expectedVersion int64) (entity.TagDict, int64, error)
+		UpdateTag(ctx context.Context, id int, name string, expectedVersion int64) (int64, error)
+		ArchiveTag(ctx context.Context, id int, expectedVersion int64) (int64, error)
+
+		ListCountries(ctx context.Context, activeOnly bool) ([]entity.Country, error)
+		SetCountryActive(ctx context.Context, code string, active bool, expectedVersion int64) (int64, error)
 	}
 
 	// DB represents database interface.

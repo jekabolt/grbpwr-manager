@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
-	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -18,22 +18,22 @@ import (
 )
 
 const (
-	testStorefrontSecret  = "test-access-jwt-secret-32bytes!!"
-	testLoginPepper       = "test-login-pepper-at-least-32-bytes!"
-	testRefreshPepper     = "test-refresh-pepper-at-least-32-bytes!"
-	testMagicLinkBaseURL  = "https://example.com/login"
-	testEmail             = "user@example.com"
+	testStorefrontSecret = "test-access-jwt-secret-32bytes!!"
+	testLoginPepper      = "test-login-pepper-at-least-32-bytes!"
+	testRefreshPepper    = "test-refresh-pepper-at-least-32-bytes!"
+	testMagicLinkBaseURL = "https://example.com/login"
+	testEmail            = "user@example.com"
 )
 
 func storefrontConfig() *storefront.Config {
 	return &storefront.Config{
-		AccessJWTSecret:             testStorefrontSecret,
-		AccessJWTTTL:                "15m",
-		RefreshTTL:                  "24h",
-		LoginChallengeTTL:            "10m",
-		LoginPepper:                 testLoginPepper,
-		RefreshPepper:               testRefreshPepper,
-		MagicLinkBaseURL:            testMagicLinkBaseURL,
+		AccessJWTSecret:            testStorefrontSecret,
+		AccessJWTTTL:               "15m",
+		RefreshTTL:                 "24h",
+		LoginChallengeTTL:          "10m",
+		LoginPepper:                testLoginPepper,
+		RefreshPepper:              testRefreshPepper,
+		MagicLinkBaseURL:           testMagicLinkBaseURL,
 		AccessJtiRevocationEnabled: false,
 	}
 }

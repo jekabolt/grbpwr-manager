@@ -419,6 +419,53 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 	return payment, nil
 }
 
+// freezeAndResnapshotOrderSKUs is the SKU freeze at first sale (task 07/15). It re-snapshots each
+// order line's variant_sku_snapshot from the CURRENT product_size.sku — UNCONDITIONALLY, so a live variant SKU
+// that changed in the checkout->payment window (while the colourway was still unlocked) is captured on
+// the paid line — then verifies every line resolved to a live variant SKU, and finally stamps
+// sku_locked_at on every product in the order so the identity is frozen from now on. The frozen order
+// line must equal the frozen catalogue identity (problem 003): the old "only fill NULL" guard left a
+// stale checkout snapshot in place while freezing the product on a different variant.
+//
+// Idempotent: after the first freeze the products are locked and their live variant SKUs are immutable,
+// so a retried OrderPaymentDone copies the identical values and re-stamps nothing (lock guard). Rejects
+// payment if any paid line has no resolvable live variant SKU — the frozen identity would be unknown.
+func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE order_item oi
+		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		JOIN product p ON p.id = oi.product_id
+		SET oi.variant_id = ps.id,
+		    oi.variant_sku_snapshot = ps.sku,
+		    oi.base_sku_snapshot = COALESCE(p.sku, oi.base_sku_snapshot)
+		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL AND ps.sku != ''`,
+		map[string]any{"oid": orderID}); err != nil {
+		return fmt.Errorf("re-snapshot order_item variant identity: %w", err)
+	}
+	// Every paid line must have a live variant SKU (product_size.sku) — else we cannot establish the
+	// identity we are about to freeze. Missing row or NULL/empty SKU both fail via the LEFT JOIN.
+	missing, err := storeutil.QueryCountNamed(ctx, db, `
+		SELECT COUNT(*) FROM order_item oi
+		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		WHERE oi.order_id = :oid AND (ps.sku IS NULL OR ps.sku = '')`,
+		map[string]any{"oid": orderID})
+	if err != nil {
+		return fmt.Errorf("verify order_item live variant SKUs: %w", err)
+	}
+	if missing > 0 {
+		return fmt.Errorf("cannot freeze order %d: %d line(s) have no live variant SKU", orderID, missing)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE product p
+		JOIN order_item oi ON oi.product_id = p.id
+		SET p.sku_locked_at = NOW()
+		WHERE oi.order_id = :oid AND p.sku_locked_at IS NULL`,
+		map[string]any{"oid": orderID}); err != nil {
+		return fmt.Errorf("stamp product.sku_locked_at: %w", err)
+	}
+	return nil
+}
+
 // OrderPaymentDone marks an order payment as done and transitions to Confirmed.
 func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (bool, error) {
 	wasUpdated := false
@@ -462,6 +509,13 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 		err = updateOrderPayment(ctx, txDB, order.Id, p.PaymentInsert)
 		if err != nil {
 			return fmt.Errorf("can't update order payment: %w", err)
+		}
+
+		// First sale is a freeze point for the SKU (task 07/15): re-snapshot each line's variant SKU
+		// from the live product_size.sku (it may have changed between checkout and payment), then
+		// stamp sku_locked_at on the order's products so their SKUs are never rebuilt again.
+		if err := freezeAndResnapshotOrderSKUs(ctx, txDB, order.Id); err != nil {
+			return fmt.Errorf("can't freeze order SKUs: %w", err)
 		}
 
 		wasUpdated = true

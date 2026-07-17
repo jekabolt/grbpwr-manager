@@ -12,8 +12,20 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// productStockExpr is the single SQL scalar for a product's total available stock: the sum of its
+// sizes' quantities (0 when it has none), correlated on p.id. soldOutSelect derives the sold_out
+// flag from it. Both are reused across every product list/detail/low-stock query so the definition
+// can't drift; the Go equivalent for locally-loaded sizes is entity.SoldOutFromSizes (PR5-B).
+const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0)`
+
+// soldOutSelect is the sold_out projection: a product is sold out when its total stock is <= 0 (50-B).
+// Uses <=, not just = 0, to agree with entity.SoldOutFromSizes: anomalous data (e.g. a negative total
+// from an oversell race/bug) must still read as sold out on both the SQL and Go paths, not diverge
+// into "not sold out" here while Go says otherwise.
+const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
+
 // GetProductsPaged returns a paged list of products based on provided parameters.
-func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Product, int, error) {
+func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error) {
 	if len(sortFactors) > 0 {
 		for _, sf := range sortFactors {
 			if !entity.IsValidSortFactor(string(sf)) {
@@ -36,11 +48,12 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 	var whereClauses []string
 	args := make(map[string]interface{})
 
-	whereClauses = append(whereClauses, "p.deleted_at IS NULL")
-
-	if !showHidden {
-		whereClauses = append(whereClauses, "p.hidden = :isHidden")
-		args["isHidden"] = 0
+	if showHidden {
+		// Admin view: everything except ARCHIVED(4) — draft and hidden colourways are still shown (R6).
+		whereClauses = append(whereClauses, "p.lifecycle_status <> 4")
+	} else {
+		// Storefront: only publicly-visible colourways — lifecycle_status ACTIVE(2) (R6).
+		whereClauses = append(whereClauses, "p.lifecycle_status = 2")
 
 		// Tier gating: return ONLY products the viewer is eligible to buy for
 		// their tier (resolved from the auth token; 0 for guests). Hacker-only
@@ -102,31 +115,31 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			whereClauses = append(whereClauses, "p.sale_percentage > 0")
 		}
 		if len(filterConditions.Gender) != 0 {
-			whereClauses = append(whereClauses, "p.target_gender IN (:targetGenders)")
+			whereClauses = append(whereClauses, "sty.target_gender IN (:targetGenders)")
 			genders := make([]string, len(filterConditions.Gender))
 			for i, g := range filterConditions.Gender {
 				genders[i] = string(g)
 			}
 			args["targetGenders"] = genders
 		}
-		if filterConditions.Color != "" {
-			whereClauses = append(whereClauses, "p.color = :color")
-			args["color"] = filterConditions.Color
+		if len(filterConditions.ColorCodes) > 0 {
+			whereClauses = append(whereClauses, "p.color_code IN (:colorCodes)")
+			args["colorCodes"] = filterConditions.ColorCodes
 		}
 		if len(filterConditions.TopCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.top_category_id IN (:topCategoryIds)")
+			whereClauses = append(whereClauses, "sty.top_category_id IN (:topCategoryIds)")
 			args["topCategoryIds"] = filterConditions.TopCategoryIds
 		}
 		if len(filterConditions.ExcludeTopCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.top_category_id NOT IN (:excludeTopCategoryIds)")
+			whereClauses = append(whereClauses, "sty.top_category_id NOT IN (:excludeTopCategoryIds)")
 			args["excludeTopCategoryIds"] = filterConditions.ExcludeTopCategoryIds
 		}
 		if len(filterConditions.SubCategoryIds) != 0 {
-			whereClauses = append(whereClauses, "p.sub_category_id IN (:subCategoryIds)")
+			whereClauses = append(whereClauses, "sty.sub_category_id IN (:subCategoryIds)")
 			args["subCategoryIds"] = filterConditions.SubCategoryIds
 		}
 		if len(filterConditions.TypeIds) != 0 {
-			whereClauses = append(whereClauses, "p.type_id IN (:typeIds)")
+			whereClauses = append(whereClauses, "sty.type_id IN (:typeIds)")
 			args["typeIds"] = filterConditions.TypeIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
@@ -141,7 +154,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			args["tag"] = filterConditions.ByTag
 		}
 		if len(filterConditions.Collections) != 0 {
-			whereClauses = append(whereClauses, "p.collection IN (:collections)")
+			whereClauses = append(whereClauses, "sty.collection IN (:collections)")
 			args["collections"] = filterConditions.Collections
 		}
 		if len(filterConditions.Seasons) != 0 {
@@ -149,7 +162,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			for i, ss := range filterConditions.Seasons {
 				seasons[i] = string(ss)
 			}
-			whereClauses = append(whereClauses, "p.season IN (:seasons)")
+			whereClauses = append(whereClauses, "sty.season_code IN (:seasons)")
 			args["seasons"] = seasons
 		}
 	}
@@ -183,7 +196,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 		return nil, 0, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prds := make([]entity.Product, 0, len(prdResults))
+	prds := make([]entity.Colorway, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -195,19 +208,19 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 }
 
 // GetProductsByIds returns a list of products by their IDs.
-func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Product, error) {
+func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Colorway, error) {
 	if len(ids) == 0 {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
-		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -218,11 +231,12 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (:ids) AND p.hidden = 0 AND p.deleted_at IS NULL`
+	WHERE p.id IN (:ids) AND p.lifecycle_status = 2`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"ids": ids,
@@ -241,7 +255,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prdMap := make(map[int]entity.Product)
+	prdMap := make(map[int]entity.Colorway)
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -249,7 +263,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 		prdMap[product.Id] = product
 	}
 
-	result := make([]entity.Product, 0, len(ids))
+	result := make([]entity.Colorway, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := prdMap[id]; ok {
 			result = append(result, p)
@@ -262,7 +276,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Produ
 // GetLowStockProducts returns visible, non-deleted products whose total stock
 // is in the range (0, threshold], ordered by ascending stock (closest to
 // selling out first), limited to `limit`.
-func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Product, error) {
+func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error) {
 	if threshold <= 0 {
 		threshold = 3
 	}
@@ -272,12 +286,12 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 
 	query := `
 	SELECT
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
-		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -288,13 +302,14 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
-	WHERE p.hidden = 0 AND p.deleted_at IS NULL
-		AND COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) BETWEEN 1 AND :threshold
-	ORDER BY COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) ASC
+	WHERE p.lifecycle_status = 2
+		AND ` + productStockExpr + ` BETWEEN 1 AND :threshold
+	ORDER BY ` + productStockExpr + ` ASC
 	LIMIT :limit`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
@@ -305,7 +320,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		return nil, fmt.Errorf("can't get low stock products: %w", err)
 	}
 	if len(prdResults) == 0 {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	ids := make([]int, 0, len(prdResults))
@@ -323,7 +338,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	result := make([]entity.Product, 0, len(prdResults))
+	result := make([]entity.Colorway, 0, len(prdResults))
 	for _, r := range prdResults {
 		product := r.toProduct(translationMap[r.Id])
 		product.Prices = priceMap[r.Id]
@@ -334,19 +349,19 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 }
 
 // GetProductsByTag returns a list of products by their tag.
-func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Product, error) {
+func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colorway, error) {
 	if tag == "" {
-		return []entity.Product{}, nil
+		return []entity.Colorway{}, nil
 	}
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
-		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -357,11 +372,12 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id 
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id 
-	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.hidden = 0 AND p.deleted_at IS NULL`
+	WHERE p.id IN (SELECT ptag.product_id FROM product_tag ptag WHERE ptag.tag = :tag) AND p.lifecycle_status = 2`
 
 	prdResults, err := storeutil.QueryListNamed[productQueryResult](ctx, s.DB, query, map[string]any{
 		"tag": tag,
@@ -385,7 +401,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 		return nil, fmt.Errorf("can't get product prices: %w", err)
 	}
 
-	prds := make([]entity.Product, 0, len(prdResults))
+	prds := make([]entity.Colorway, 0, len(prdResults))
 	for _, prdResult := range prdResults {
 		translations := translationMap[prdResult.Id]
 		product := prdResult.toProduct(translations)
@@ -396,8 +412,8 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Prod
 	return prds, nil
 }
 
-func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ProductFull, error) {
-	var productInfo entity.ProductFull
+func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, showHidden bool) (*entity.ColorwayFull, error) {
+	var productInfo entity.ColorwayFull
 
 	whereClauses := []string{}
 	params := map[string]interface{}{}
@@ -410,12 +426,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 
 	query := fmt.Sprintf(`
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
-		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.care_instructions, p.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		p.version, p.collection, p.season, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
+		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -428,14 +444,17 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
-	query += " AND p.deleted_at IS NULL"
-
-	if !showHidden {
-		query += " AND p.hidden = false"
+	// Lifecycle filter (R6): storefront sees only ACTIVE(2); the admin (showHidden) sees everything
+	// except ARCHIVED(4) — including drafts and hidden colourways.
+	if showHidden {
+		query += " AND p.lifecycle_status <> 4"
+	} else {
+		query += " AND p.lifecycle_status = 2"
 	}
 
 	type productDetailsResult struct {
@@ -466,12 +485,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	`
 
 	var (
-		translationMap map[int][]entity.ProductTranslationInsert
-		priceMap       map[int][]entity.ProductPrice
-		sizes          []entity.ProductSize
+		translationMap map[int][]entity.ColorwayTranslationInsert
+		priceMap       map[int][]entity.ColorwayPrice
+		sizes          []entity.Variant
 		measurements   []entity.ProductMeasurement
 		media          []entity.MediaFull
-		tags           []entity.ProductTag
+		tags           []entity.ColorwayTag
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -492,14 +511,22 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if sizes, e = storeutil.QueryListNamed[entity.ProductSize](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
+		if sizes, e = storeutil.QueryListNamed[entity.Variant](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
 			return fmt.Errorf("can't get sizes: %w", e)
 		}
 		return nil
 	})
 	g.Go(func() error {
 		var e error
-		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, `SELECT * FROM size_measurement WHERE product_id = :id`, idParams); e != nil {
+		// The size chart lives on the style now (PR6 P3): reconstruct the per-colourway view by joining
+		// the style's chart to this product's sizes, preserving the product_size_id the frontend keys on.
+		measurementQuery := `
+			SELECT ssm.id AS id, p.id AS product_id, ps.id AS product_size_id,
+			       ssm.measurement_name_id, ssm.measurement_value
+			FROM tech_card_size_measurement ssm
+			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
+			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id`
+		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, measurementQuery, idParams); e != nil {
 			return fmt.Errorf("can't get measurements: %w", e)
 		}
 		return nil
@@ -513,7 +540,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if tags, e = storeutil.QueryListNamed[entity.ProductTag](gctx, s.DB, `SELECT * FROM product_tag WHERE product_id = :id`, idParams); e != nil {
+		if tags, e = storeutil.QueryListNamed[entity.ColorwayTag](gctx, s.DB, `SELECT * FROM product_tag WHERE product_id = :id`, idParams); e != nil {
 			return fmt.Errorf("can't get tags: %w", e)
 		}
 		return nil
@@ -530,14 +557,10 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	if prices, ok := priceMap[pid]; ok {
 		product.Prices = prices
 	} else {
-		product.Prices = []entity.ProductPrice{}
+		product.Prices = []entity.ColorwayPrice{}
 	}
 
-	totalQuantity := decimal.Zero
-	for _, size := range sizes {
-		totalQuantity = totalQuantity.Add(size.Quantity)
-	}
-	product.SoldOut = totalQuantity.LessThanOrEqual(decimal.Zero)
+	product.SoldOut = entity.SoldOutFromSizes(sizes)
 
 	productInfo.Product = &product
 	productInfo.Sizes = sizes
@@ -557,12 +580,12 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 
 	baseQuery := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, p.brand, p.sku,
-		p.color, p.color_hex, p.country_of_origin, p.sale_percentage,
-		p.top_category_id, p.sub_category_id, p.type_id,
-		p.model_wears_height_cm, p.model_wears_size_id, p.hidden, p.target_gender,
-		p.season, p.care_instructions, p.composition, p.thumbnail_id,
-		p.secondary_thumbnail_id, p.version, p.collection, p.fit, p.min_tier, p.hidden_for_non_qualified,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
+		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
+		sty.season_code AS season, sty.care_instructions, sty.composition, p.thumbnail_id,
+		p.secondary_thumbnail_id, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
 		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
@@ -573,12 +596,14 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
-		COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0) = 0 AS sold_out
+		` + soldOutSelect + `
 	FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id
 	JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
-	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p 
+	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p
+	JOIN tech_card sty ON sty.id = p.style_id 
 		JOIN media m ON p.thumbnail_id = m.id
 		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 

@@ -18,11 +18,11 @@ import (
 // product_zoom custom events (event_params.product_id) for zoom counts, and
 // time_on_page events (event_params.visible_time_seconds) for avg time on page.
 //
-// All CTEs use the 10-digit product ID extracted via REGEXP_EXTRACT:
-// - product_views: extracts from item.item_id SKU (e.g., BOT-NAV-F1773009533-SS26 → 1773009533)
-// - product_scrolls: extracts from page_path trailing segment (e.g., /product/.../1773009533 → 1773009533)
-// - product_zoom_counts: uses event_params.product_id directly (already numeric string)
-// - product_time_on_page: extracts from page_path, takes last heartbeat per visit, caps at 1800s
+// All CTEs identify a product by its base SKU (see sku.go — the numeric 10-digit id is gone):
+// - product_views: base SKU from item.item_id variant SKU (e.g., SS26-00021-BLK-04 → SS26-00021-BLK)
+// - product_scrolls: base SKU from the /p/{pretty}-{sku} page_path (upper-cased to match item_id)
+// - product_zoom_counts: uses event_params.product_id directly (frontend-supplied key)
+// - product_time_on_page: base SKU from page_path, takes last heartbeat per visit, caps at 1800s
 func (c *Client) GetProductEngagement(
 	ctx context.Context,
 	startDate, endDate time.Time,
@@ -50,27 +50,29 @@ func (c *Client) getProductEngagement(
 	if err != nil {
 		return nil, fmt.Errorf("GetProductEngagement: %w", err)
 	}
+	// Product identity: base SKU from the variant item_id (%[3]s) and from the /p/{pretty}-{sku}
+	// page_path (%[4]s). See sku.go.
+	pagePathExpr := `(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path')`
+	itemBase := baseSKUFromItemID("item.item_id")
+	pathBase := baseSKUFromPath(pagePathExpr)
 	sql := fmt.Sprintf(`
 		WITH product_views AS (
 			SELECT
 				DATE(TIMESTAMP_MICROS(e.event_timestamp)) AS event_date,
-				REGEXP_EXTRACT(item.item_id, r'(\d{10})') AS product_id,
+				%[3]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name,
 				COUNT(*) AS view_count
 			FROM %[1]s AS e, UNNEST(e.items) AS item
 			WHERE %[2]s
 				AND e.event_name = 'view_item'
 				AND item.item_id IS NOT NULL
-				AND REGEXP_EXTRACT(item.item_id, r'(\d{10})') IS NOT NULL
+				AND %[3]s IS NOT NULL
 			GROUP BY event_date, product_id
 		),
 		product_scrolls AS (
 			SELECT
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
-				REGEXP_EXTRACT(
-					(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-					r'/(\d{10})/?$'
-				) AS product_id,
+				%[4]s AS product_id,
 				COUNTIF((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') >= 75
 					AND (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'percent_scrolled') < 100
 				) AS scroll_75,
@@ -80,13 +82,10 @@ func (c *Client) getProductEngagement(
 			WHERE %[2]s
 				AND event_name IN ('scroll', 'scroll_depth')
 				AND REGEXP_CONTAINS(
-					IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), ''),
-					r'/product[s]?/'
+					IFNULL(%[5]s, ''),
+					r'/p/'
 				)
-				AND REGEXP_EXTRACT(
-					(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-					r'/(\d{10})/?$'
-				) IS NOT NULL
+				AND %[4]s IS NOT NULL
 			GROUP BY event_date, product_id
 		),
 		product_zoom_counts AS (
@@ -110,33 +109,24 @@ func (c *Client) getProductEngagement(
 					DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 					user_pseudo_id,
 					(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS session_id,
-					REGEXP_EXTRACT(
-						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-						r'/(\d{10})/?$'
-					) AS product_id,
+					%[4]s AS product_id,
 					SAFE_CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'visible_time_seconds') AS FLOAT64) AS visible_time,
 					ROW_NUMBER() OVER (
 						PARTITION BY
 							DATE(TIMESTAMP_MICROS(event_timestamp)),
 							user_pseudo_id,
 							(SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id'),
-							REGEXP_EXTRACT(
-								(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-								r'/(\d{10})/?$'
-							)
+							%[4]s
 						ORDER BY event_timestamp DESC
 					) AS rn
 				FROM %[1]s
 				WHERE %[2]s
 					AND event_name = 'time_on_page'
 					AND REGEXP_CONTAINS(
-						IFNULL((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'), ''),
-						r'/product[s]?/'
+						IFNULL(%[5]s, ''),
+						r'/p/'
 					)
-					AND REGEXP_EXTRACT(
-						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path'),
-						r'/(\d{10})/?$'
-					) IS NOT NULL
+					AND %[4]s IS NOT NULL
 			)
 			WHERE rn = 1
 				AND visible_time IS NOT NULL
@@ -162,7 +152,7 @@ func (c *Client) getProductEngagement(
 		LEFT JOIN product_time_on_page pt
 			ON pv.event_date = pt.event_date
 			AND pv.product_id = pt.product_id
-	`, src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), itemBase, pathBase, pagePathExpr)
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -242,19 +232,19 @@ func (c *Client) getSizeConfidence(
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				event_name
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name IN ('size_guide_view', 'size_selected')
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[3]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[1]s AS e, UNNEST(e.items) AS item
+			WHERE %[2]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		)
 		SELECT
 			sc.event_date,
@@ -266,7 +256,7 @@ func (c *Client) getSizeConfidence(
 		LEFT JOIN product_names pn ON pn.product_id = sc.product_id
 		GROUP BY sc.event_date, sc.product_id, product_name
 		ORDER BY sc.event_date, size_guide_views DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {

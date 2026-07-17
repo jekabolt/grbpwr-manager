@@ -3,11 +3,13 @@ package dto
 import (
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -127,134 +129,152 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 	return decimal.NewFromString(value)
 }
 
-func convertProductBodyInsertToProductBody(pbProductBodyInsert *pb_common.ProductBodyInsert) (*entity.ProductBody, error) {
-	if pbProductBodyInsert == nil {
-		return nil, fmt.Errorf("ProductBodyInsert is nil")
+// convertMerchInsertToEntity converts the colourway-owned merchandising write message (R2/R4/R8) into
+// the colourway subset of entity.ColorwayBodyInsert. The style facts (brand/season/collection/gender/
+// fit/composition/care/model-wears/categories) were stripped from this message (§1.5) — they are the
+// Style's now and left zero here (written only through UpdateStyle). It validates color_code (3
+// uppercase chars, in the dictionary) and the optional hex override. countryCode (ISO, R9) is carried
+// into CountryOfOrigin, which the store resolves to the ISO country_code column.
+func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string) (entity.ColorwayBodyInsert, error) {
+	if m == nil {
+		return entity.ColorwayBodyInsert{}, fmt.Errorf("merchandising is nil")
 	}
 
 	var salePercentage decimal.Decimal
 	var salePercentageValid bool
-	if pbProductBodyInsert.SalePercentage != nil {
+	if m.SalePercentage != nil {
 		var err error
-		salePercentage, err = convertDecimal(pbProductBodyInsert.SalePercentage.Value)
+		salePercentage, err = convertDecimal(m.SalePercentage.Value)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert product sale percentage: %w", err)
+			return entity.ColorwayBodyInsert{}, fmt.Errorf("failed to convert sale percentage: %w", err)
 		}
-		salePercentageValid = pbProductBodyInsert.SalePercentage.Value != ""
+		salePercentageValid = m.SalePercentage.Value != ""
 	}
 
-	targetGender, err := ConvertPbGenderEnumToEntityGenderEnum(pbProductBodyInsert.TargetGender)
-	if err != nil {
-		return nil, err
+	if len(m.ColorCode) != 3 ||
+		m.ColorCode != strings.ToUpper(m.ColorCode) ||
+		strings.TrimSpace(m.ColorCode) != m.ColorCode {
+		return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code must be exactly 3 uppercase characters")
 	}
-
-	season, err := ConvertPbSeasonEnumToEntitySeasonEnum(pbProductBodyInsert.Season)
-	if err != nil {
-		return nil, err
+	dictionaryColor, ok := cache.GetColorByCode(m.ColorCode)
+	if !ok {
+		return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code %q is not in the color dictionary", m.ColorCode)
+	}
+	var colorHexOverride sql.NullString
+	if m.ColorHexOverride != nil {
+		if !isHexColor(m.GetColorHexOverride()) {
+			return entity.ColorwayBodyInsert{}, fmt.Errorf("color_hex_override must be #RRGGBB")
+		}
+		colorHexOverride = sql.NullString{String: m.GetColorHexOverride(), Valid: true}
 	}
 
 	var preorderTime sql.NullTime
-	if pbProductBodyInsert.Preorder != nil {
-		preorderTime = sql.NullTime{
-			Time:  pbProductBodyInsert.Preorder.AsTime(),
-			Valid: pbProductBodyInsert.Preorder.IsValid(),
-		}
+	if m.Preorder != nil {
+		preorderTime = sql.NullTime{Time: m.Preorder.AsTime(), Valid: m.Preorder.IsValid()}
 		if preorderTime.Valid && preorderTime.Time.Year() < time.Now().UTC().Year() {
 			preorderTime.Valid = false
 		}
 	}
 
-	pb := &entity.ProductBody{
-		ProductBodyInsert: entity.ProductBodyInsert{
-			Preorder:           preorderTime,
-			Brand:              pbProductBodyInsert.Brand,
-			Color:              pbProductBodyInsert.Color,
-			ColorHex:           pbProductBodyInsert.ColorHex,
-			CountryOfOrigin:    pbProductBodyInsert.CountryOfOrigin,
-			SalePercentage:     decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
-			TopCategoryId:      int(pbProductBodyInsert.TopCategoryId),
-			SubCategoryId:      sql.NullInt32{Int32: int32(pbProductBodyInsert.SubCategoryId), Valid: pbProductBodyInsert.SubCategoryId != 0},
-			TypeId:             sql.NullInt32{Int32: int32(pbProductBodyInsert.TypeId), Valid: pbProductBodyInsert.TypeId != 0},
-			ModelWearsHeightCm: sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsHeightCm), Valid: pbProductBodyInsert.ModelWearsHeightCm != 0},
-			ModelWearsSizeId:   sql.NullInt32{Int32: int32(pbProductBodyInsert.ModelWearsSizeId), Valid: pbProductBodyInsert.ModelWearsSizeId != 0},
-			Hidden:             sql.NullBool{Bool: pbProductBodyInsert.Hidden, Valid: true},
-			TargetGender:       targetGender,
-			Season:             season,
-			CareInstructions:   sql.NullString{String: pbProductBodyInsert.CareInstructions, Valid: pbProductBodyInsert.CareInstructions != ""},
-			Composition:        sql.NullString{String: pbProductBodyInsert.Composition, Valid: pbProductBodyInsert.Composition != ""},
-			Version:            pbProductBodyInsert.Version,
-			Collection:         pbProductBodyInsert.Collection,
-			Fit:                sql.NullString{String: pbProductBodyInsert.Fit, Valid: pbProductBodyInsert.Fit != ""},
-			MinTier:            int16(pbProductBodyInsert.MinTier),
-		},
-		Translations: []entity.ProductTranslationInsert{},
-	}
-
-	return pb, nil
-}
-
-func ConvertPbProductInsertToEntity(pbProductNew *pb_common.ProductInsert) (*entity.ProductInsert, error) {
-	if pbProductNew == nil {
-		return nil, fmt.Errorf("input pbProductNew is nil")
-	}
-
-	// Create a ProductBody from ProductBodyInsert
-	productBody, err := convertProductBodyInsertToProductBody(pbProductNew.ProductBodyInsert)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert translations
-	var translations []entity.ProductTranslationInsert
-	for _, trans := range pbProductNew.Translations {
-		translations = append(translations, entity.ProductTranslationInsert{
-			LanguageId:  int(trans.LanguageId),
-			Name:        trans.Name,
-			Description: trans.Description,
-		})
-	}
-
-	// Set translations on the product body
-	productBody.Translations = translations
-
-	var secondaryThumbnailID sql.NullInt32
-	if pbProductNew.SecondaryThumbnailMediaId != 0 {
-		secondaryThumbnailID = sql.NullInt32{
-			Int32: pbProductNew.SecondaryThumbnailMediaId,
-			Valid: true,
-		}
-	}
-
-	// Convert prices
-	prices := convertPrices(pbProductNew.Prices)
-
-	// cost_price is optional COGS in base currency. When absent/empty it stays invalid so
-	// the store leaves the stored value unchanged (COALESCE on update). Negatives are
-	// rejected (treated as unset) rather than persisted.
-	costPrice, err := nullDecimalFromPb(pbProductNew.CostPrice)
-	if err != nil {
-		return nil, fmt.Errorf("invalid cost_price: %w", err)
-	}
-	if costPrice.Valid {
-		if costPrice.Decimal.IsNegative() {
-			costPrice = decimal.NullDecimal{}
-		} else {
-			costPrice.Decimal = roundMoney(costPrice.Decimal)
-		}
-	}
-
-	return &entity.ProductInsert{
-		ProductBodyInsert:         productBody.ProductBodyInsert,
-		ThumbnailMediaID:          int(pbProductNew.ThumbnailMediaId),
-		SecondaryThumbnailMediaID: secondaryThumbnailID,
-		Translations:              translations,
-		Prices:                    prices,
-		CostPrice:                 costPrice,
+	return entity.ColorwayBodyInsert{
+		Preorder:         preorderTime,
+		Color:            dictionaryColor.Name,
+		ColorCode:        dictionaryColor.Code,
+		ColorHexOverride: colorHexOverride,
+		CountryOfOrigin:  countryCode,
+		SalePercentage:   decimal.NullDecimal{Decimal: salePercentage, Valid: salePercentageValid},
+		MinTier:          int16(m.MinTier),
 	}, nil
 }
 
-func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPriceInsert {
-	var prices []entity.ProductPriceInsert
+// BuildColorwayInsertEntity assembles the colourway-owned write entity from the decomposed
+// CreateColorway/UpdateColorway request fields (merchandising + thumbnails + merch translations +
+// cost). Style facts are never part of it (R4). cost_price is optional COGS: absent/negative stays
+// invalid so the store leaves the stored value unchanged (COALESCE on update).
+func BuildColorwayInsertEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string, thumbnailMediaID, secondaryThumbnailMediaID int32, translations []*pb_common.ColorwayInsertTranslation, costPrice *pb_decimal.Decimal) (*entity.ColorwayInsert, error) {
+	body, err := convertMerchInsertToEntity(m, countryCode)
+	if err != nil {
+		return nil, err
+	}
+	var secondaryThumbnailID sql.NullInt32
+	if secondaryThumbnailMediaID != 0 {
+		secondaryThumbnailID = sql.NullInt32{Int32: secondaryThumbnailMediaID, Valid: true}
+	}
+	var trans []entity.ColorwayTranslationInsert
+	for _, t := range translations {
+		if t == nil {
+			continue
+		}
+		trans = append(trans, entity.ColorwayTranslationInsert{
+			LanguageId:  int(t.LanguageId),
+			Name:        t.Name,
+			Description: t.Description,
+		})
+	}
+	cost, err := nullDecimalFromPb(costPrice)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cost_price: %w", err)
+	}
+	if cost.Valid {
+		if cost.Decimal.IsNegative() {
+			cost = decimal.NullDecimal{}
+		} else {
+			cost.Decimal = roundMoney(cost.Decimal)
+		}
+	}
+	return &entity.ColorwayInsert{
+		ProductBodyInsert:         body,
+		ThumbnailMediaID:          int(thumbnailMediaID),
+		SecondaryThumbnailMediaID: secondaryThumbnailID,
+		Translations:              trans,
+		CostPrice:                 cost,
+	}, nil
+}
+
+// ConvertColorwayTags maps the tag write messages to entity tags.
+func ConvertColorwayTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInsert {
+	return convertTags(pbTags)
+}
+
+// ConvertColorwayPrices maps the price write messages to entity prices.
+func ConvertColorwayPrices(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayPriceInsert {
+	return convertPrices(pbPrices)
+}
+
+// ConvertColorwayMediaIDs maps the media-id list to ints.
+func ConvertColorwayMediaIDs(ids []int32) []int {
+	return convertMediaIds(ids)
+}
+
+// ConvertPbStylePatchToEntity converts the admin StylePatch write message into entity.StylePatch — the
+// catalogue-style facts owned solely by UpdateStyle (R4/§14.7).
+func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, collection string, targetGender pb_common.GenderEnum, fit, composition, careInstructions string, modelWearsHeightCm, modelWearsSizeID, topCategoryID, subCategoryID, typeID int32) (entity.StylePatch, error) {
+	tg, err := ConvertPbGenderEnumToEntityGenderEnum(targetGender)
+	if err != nil {
+		return entity.StylePatch{}, err
+	}
+	sn, err := ConvertPbSeasonEnumToEntitySeasonEnum(season)
+	if err != nil {
+		return entity.StylePatch{}, err
+	}
+	return entity.StylePatch{
+		Brand:              brand,
+		Season:             sn,
+		Collection:         collection,
+		TargetGender:       tg,
+		Fit:                sql.NullString{String: fit, Valid: fit != ""},
+		Composition:        sql.NullString{String: composition, Valid: composition != ""},
+		CareInstructions:   sql.NullString{String: careInstructions, Valid: careInstructions != ""},
+		ModelWearsHeightCm: sql.NullInt32{Int32: modelWearsHeightCm, Valid: modelWearsHeightCm != 0},
+		ModelWearsSizeId:   sql.NullInt32{Int32: modelWearsSizeID, Valid: modelWearsSizeID != 0},
+		TopCategoryId:      int(topCategoryID),
+		SubCategoryId:      sql.NullInt32{Int32: subCategoryID, Valid: subCategoryID != 0},
+		TypeId:             sql.NullInt32{Int32: typeID, Valid: typeID != 0},
+	}, nil
+}
+
+func convertPrices(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayPriceInsert {
+	var prices []entity.ColorwayPriceInsert
 	for _, pbPrice := range pbPrices {
 		if pbPrice == nil || pbPrice.Price == nil {
 			continue
@@ -264,158 +284,12 @@ func convertPrices(pbPrices []*pb_common.ProductPriceInsert) []entity.ProductPri
 			continue
 		}
 		currency := strings.ToUpper(pbPrice.Currency)
-		prices = append(prices, entity.ProductPriceInsert{
+		prices = append(prices, entity.ColorwayPriceInsert{
 			Currency: currency,
 			Price:    RoundForCurrency(priceVal, currency),
 		})
 	}
 	return prices
-}
-
-func ConvertPbMeasurementsUpdateToEntity(mUpd []*pb_common.ProductMeasurementUpdate) ([]entity.ProductMeasurementUpdate, error) {
-	if mUpd == nil {
-		return nil, fmt.Errorf("input pbProductMeasurementUpdate is nil")
-	}
-
-	var measurements []entity.ProductMeasurementUpdate
-	for _, pbMeasurement := range mUpd {
-		if pbMeasurement == nil {
-			continue
-		}
-
-		if pbMeasurement.MeasurementValue == nil {
-			return nil, fmt.Errorf("MeasurementValue is nil for measurement name id %v", pbMeasurement.MeasurementNameId)
-		}
-
-		measurementValue, err := convertDecimal(pbMeasurement.MeasurementValue.Value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert product measurement value: %w", err)
-		}
-
-		measurements = append(measurements, entity.ProductMeasurementUpdate{
-			SizeId:            int(pbMeasurement.SizeId),
-			MeasurementNameId: int(pbMeasurement.MeasurementNameId),
-			MeasurementValue:  measurementValue,
-		})
-	}
-
-	return measurements, nil
-}
-
-func ConvertCommonProductToEntity(pbProductNew *pb_common.ProductNew) (*entity.ProductNew, error) {
-	if pbProductNew == nil {
-		return nil, fmt.Errorf("input pbProductNew is nil")
-	}
-
-	if pbProductNew.Product == nil {
-		return nil, fmt.Errorf("pbProductNew.Product is nil")
-	}
-
-	productBody, err := convertProductBodyInsertToProductBody(pbProductNew.Product.ProductBodyInsert)
-	if err != nil {
-		return nil, err
-	}
-
-	var translations []entity.ProductTranslationInsert
-	for _, trans := range pbProductNew.Product.Translations {
-		translations = append(translations, entity.ProductTranslationInsert{
-			LanguageId:  int(trans.LanguageId),
-			Name:        trans.Name,
-			Description: trans.Description,
-		})
-	}
-
-	productBody.Translations = translations
-
-	productInsert := &entity.ProductInsert{
-		ProductBodyInsert: productBody.ProductBodyInsert,
-		ThumbnailMediaID:  int(pbProductNew.Product.ThumbnailMediaId),
-		SecondaryThumbnailMediaID: sql.NullInt32{
-			Int32: pbProductNew.Product.SecondaryThumbnailMediaId,
-			Valid: pbProductNew.Product.SecondaryThumbnailMediaId != 0,
-		},
-		Translations: translations,
-		Prices:       convertPrices(pbProductNew.Prices),
-	}
-
-	sizeMeasurements, err := convertSizeMeasurements(pbProductNew.SizeMeasurements)
-	if err != nil {
-		return nil, err
-	}
-
-	mediaIds := convertMediaIds(pbProductNew.MediaIds)
-	tags := convertTags(pbProductNew.Tags)
-	prices := convertPrices(pbProductNew.Prices)
-
-	return &entity.ProductNew{
-		Product:          productInsert,
-		SizeMeasurements: sizeMeasurements,
-		MediaIds:         mediaIds,
-		Tags:             tags,
-		Prices:           prices,
-	}, nil
-}
-
-func convertSizeMeasurements(pbSizeMeasurements []*pb_common.SizeWithMeasurementInsert) ([]entity.SizeWithMeasurementInsert, error) {
-	var sizeMeasurements []entity.SizeWithMeasurementInsert
-	for _, pbSizeMeasurement := range pbSizeMeasurements {
-		if pbSizeMeasurement == nil {
-			continue
-		}
-
-		if pbSizeMeasurement.ProductSize == nil {
-			return nil, fmt.Errorf("ProductSize is nil in SizeWithMeasurementInsert")
-		}
-
-		if pbSizeMeasurement.ProductSize.Quantity == nil {
-			return nil, fmt.Errorf("ProductSize.Quantity is nil for size id %v", pbSizeMeasurement.ProductSize.SizeId)
-		}
-
-		quantity, err := convertDecimal(pbSizeMeasurement.ProductSize.Quantity.Value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert product size quantity: %w for size id  %v", err, pbSizeMeasurement.ProductSize.SizeId)
-		}
-
-		productSize := &entity.ProductSizeInsert{
-			Quantity: quantity.Round(0),
-			SizeId:   int(pbSizeMeasurement.ProductSize.SizeId),
-		}
-
-		measurements, err := convertMeasurements(pbSizeMeasurement.Measurements)
-		if err != nil {
-			return nil, err
-		}
-
-		sizeMeasurements = append(sizeMeasurements, entity.SizeWithMeasurementInsert{
-			ProductSize:  *productSize,
-			Measurements: measurements,
-		})
-	}
-	return sizeMeasurements, nil
-}
-
-func convertMeasurements(pbMeasurements []*pb_common.ProductMeasurementInsert) ([]entity.ProductMeasurementInsert, error) {
-	var measurements []entity.ProductMeasurementInsert
-	for _, pbMeasurement := range pbMeasurements {
-		if pbMeasurement == nil {
-			continue
-		}
-
-		if pbMeasurement.MeasurementValue == nil {
-			return nil, fmt.Errorf("MeasurementValue is nil for measurement name id %v", pbMeasurement.MeasurementNameId)
-		}
-
-		measurementValue, err := convertDecimal(pbMeasurement.MeasurementValue.Value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert product measurement value: %w for measurement name id %v", err, pbMeasurement.MeasurementNameId)
-		}
-
-		measurements = append(measurements, entity.ProductMeasurementInsert{
-			MeasurementNameId: int(pbMeasurement.MeasurementNameId),
-			MeasurementValue:  measurementValue,
-		})
-	}
-	return measurements, nil
 }
 
 func convertMediaIds(pbMediaIds []int32) []int {
@@ -426,31 +300,41 @@ func convertMediaIds(pbMediaIds []int32) []int {
 	return mediaIds
 }
 
-func convertTags(pbTags []*pb_common.ProductTagInsert) []entity.ProductTagInsert {
-	var tags []entity.ProductTagInsert
+// canonicalProductName returns the name of the product's canonical translation — the default-language
+// translation, or the smallest language id when none is default — for pretty-slug generation. It must
+// not use Translations[0], whose position depends on SQL row order / insert order and would make the
+// canonical URL unstable across reads (problem 030). The same policy is applied to archives.
+func canonicalProductName(translations []entity.ColorwayTranslationInsert) string {
+	name, ok := canonical.ProductName(translations, cache.GetLanguages())
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+func convertTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInsert {
+	var tags []entity.ColorwayTagInsert
 	for _, pbTag := range pbTags {
-		tags = append(tags, entity.ProductTagInsert{
+		tags = append(tags, entity.ColorwayTagInsert{
 			Tag: pbTag.Tag,
 		})
 	}
 	return tags
 }
 
-func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, error) {
-	if e == nil {
-		return nil, nil
-	}
+// buildColorwayDisplayPb builds the admin/internal ColorwayDisplay read projection (R8): the resolved
+// merchandising (colourway merch + style-resolved garment facts, output-only) plus merch translation
+// overrides and thumbnails. The old product_body/ColorwayBody wrapper was removed with the write
+// decomposition; the storefront uses its own StorefrontColorway (R3), never this admin projection.
+func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.ColorwayDisplay {
+	body := &display.ProductBody
+	bi := &body.ProductBodyInsert
+	tg, _ := ConvertEntityGenderToPbGenderEnum(bi.TargetGender)
+	sn, _ := ConvertEntitySeasonToPbSeasonEnum(bi.Season)
 
-	productBody := &e.Product.ProductDisplay.ProductBody
-	productBodyInsert := &productBody.ProductBodyInsert
-
-	tg, _ := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
-	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
-
-	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
-	for _, trans := range productBody.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
+	var pbTranslations []*pb_common.ColorwayInsertTranslation
+	for _, trans := range body.Translations {
+		pbTranslations = append(pbTranslations, &pb_common.ColorwayInsertTranslation{
 			LanguageId:  int32(trans.LanguageId),
 			Name:        trans.Name,
 			Description: trans.Description,
@@ -458,90 +342,88 @@ func ConvertToPbProductFull(e *entity.ProductFull) (*pb_common.ProductFull, erro
 	}
 
 	var pbSecondaryThumbnail *pb_common.MediaFull
-	if e.Product.ProductDisplay.SecondaryThumbnail != nil {
-		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.Product.ProductDisplay.SecondaryThumbnail)
+	if display.SecondaryThumbnail != nil {
+		pbSecondaryThumbnail = ConvertEntityToCommonMedia(display.SecondaryThumbnail)
 	}
 
-	pbProductDisplay := &pb_common.ProductDisplay{
-		ProductBody: &pb_common.ProductBody{
-			ProductBodyInsert: &pb_common.ProductBodyInsert{
-				Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
-				Brand:           productBodyInsert.Brand,
-				Color:           productBodyInsert.Color,
-				ColorHex:        productBodyInsert.ColorHex,
-				CountryOfOrigin: productBodyInsert.CountryOfOrigin,
-
-				SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
-				TopCategoryId:      int32(productBodyInsert.TopCategoryId),
-				SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),
-				TypeId:             int32(productBodyInsert.TypeId.Int32),
-				ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
-				ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
-				Hidden:             productBodyInsert.Hidden.Bool,
-				TargetGender:       tg,
-				Season:             sn,
-				CareInstructions:   productBodyInsert.CareInstructions.String,
-				Composition:        productBodyInsert.Composition.String,
-				Version:            productBodyInsert.Version,
-				Collection:         productBodyInsert.Collection,
-				Fit:                productBodyInsert.Fit.String,
-				MinTier:            int32(productBodyInsert.MinTier),
-			},
-			Translations: pbTranslations,
-		},
-		Thumbnail:          ConvertEntityToCommonMedia(&e.Product.ProductDisplay.Thumbnail),
+	return &pb_common.ColorwayDisplay{
+		Thumbnail:          ConvertEntityToCommonMedia(&display.Thumbnail),
 		SecondaryThumbnail: pbSecondaryThumbnail,
+		Merchandising: &pb_common.ColorwayMerchandising{
+			Preorder:           timestamppb.New(bi.Preorder.Time),
+			Brand:              bi.Brand,
+			ColorCode:          bi.ColorCode,
+			DictionaryColor:    dictionaryColorToPb(bi.ColorCode),
+			ColorHexOverride:   optionalStringFromNull(bi.ColorHexOverride),
+			CountryOfOrigin:    bi.CountryOfOrigin,
+			SalePercentage:     &pb_decimal.Decimal{Value: bi.SalePercentage.Decimal.String()},
+			TopCategoryId:      int32(bi.TopCategoryId),
+			SubCategoryId:      int32(bi.SubCategoryId.Int32),
+			TypeId:             int32(bi.TypeId.Int32),
+			ModelWearsHeightCm: int32(bi.ModelWearsHeightCm.Int32),
+			ModelWearsSizeId:   int32(bi.ModelWearsSizeId.Int32),
+			TargetGender:       tg,
+			Season:             sn,
+			CareInstructions:   bi.CareInstructions.String,
+			Composition:        bi.Composition.String,
+			Collection:         bi.Collection,
+			Fit:                bi.Fit.String,
+			MinTier:            int32(bi.MinTier),
+		},
+		Translations: pbTranslations,
 	}
+}
+
+func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, error) {
+	if e == nil {
+		return nil, nil
+	}
+
+	pbProductDisplay := buildColorwayDisplayPb(&e.Product.ProductDisplay)
 
 	// Convert prices - place prices inside nested Product
 	pbPrices := convertEntityPricesToPb(e.Prices)
 
-	// Get first translation for slug generation (or empty strings if no translations)
-	var firstTranslationName string
-	if len(productBody.Translations) > 0 {
-		firstTranslationName = productBody.Translations[0].Name
-	}
+	// Canonical translation name for the pretty slug — deterministic (default language, else the
+	// smallest language id), never the order-dependent Translations[0] (problem 030).
+	firstTranslationName := canonicalProductName(e.Product.ProductDisplay.ProductBody.Translations)
 
-	// Calculate sold_out from sizes: product is sold out if it has no sizes OR all sizes have quantity <= 0
-	soldOut := true
-	if len(e.Sizes) > 0 {
-		for _, size := range e.Sizes {
-			if size.Quantity.GreaterThan(decimal.Zero) {
-				soldOut = false
-				break
-			}
-		}
-	}
+	// sold_out is derived from the sizes' total stock — one shared definition (PR5-B).
+	soldOut := entity.SoldOutFromSizes(e.Sizes)
 
-	pbProduct := &pb_common.Product{
-		Id:             int32(e.Product.Id),
-		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
-		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           GetProductSlug(e.Product.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
-		Sku:            e.Product.SKU,
-		ProductDisplay: pbProductDisplay,
-		Prices:         pbPrices, // Prices are in nested Product
-		SoldOut:        soldOut,
+	pbProduct := &pb_common.Colorway{
+		Id:        int32(e.Product.Id),
+		CreatedAt: timestamppb.New(e.Product.CreatedAt),
+		UpdatedAt: timestamppb.New(e.Product.UpdatedAt),
+		Slug:      slug.ProductPath(firstTranslationName, e.Product.SKU),
+		BaseSku:   e.Product.SKU, // R8: renamed from Sku
+		Display:   pbProductDisplay, // R8: renamed from ProductDisplay
+		Prices:    pbPrices, // Prices are in nested Product
+		SoldOut:   soldOut,
+		Status:    pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
+		StyleId:   int32(e.Product.StyleId), // R4: the single style relation
+		ColorCode: e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		// lock_version (tech_card.lock_version) and published_at need entity plumbing — left unset here.
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
-	pbMeasurements := convertEntityMeasurementsToPbMeasurements(e.Measurements)
 	pbMedia := ConvertEntityMediaListToPbMedia(e.Media)
 	pbTags := convertEntityTagsToPbTags(e.Tags)
 
-	return &pb_common.ProductFull{
-		Product:      pbProduct,
-		Sizes:        pbSizes,
-		Measurements: pbMeasurements,
-		Media:        pbMedia,
-		Tags:         pbTags,
+	// R5: the size chart is style-owned now (StyleSizeChart); ColorwayFull no longer carries per-colourway
+	// measurements. e.Measurements is not serialised here.
+	return &pb_common.ColorwayFull{
+		Colorway: pbProduct, // R8: renamed from Product
+		Variants: pbSizes, // R8: renamed from Sizes
+		Media:    pbMedia,
+		Tags:     pbTags,
 	}, nil
 }
 
-func convertEntityPricesToPb(prices []entity.ProductPrice) []*pb_common.ProductPrice {
-	var pbPrices []*pb_common.ProductPrice
+func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.ColorwayPrice {
+	var pbPrices []*pb_common.ColorwayPrice
 	for _, price := range prices {
-		pbPrices = append(pbPrices, &pb_common.ProductPrice{
+		pbPrices = append(pbPrices, &pb_common.ColorwayPrice{
 			Currency: price.Currency,
 			Price:    &pb_decimal.Decimal{Value: price.Price.String()},
 		})
@@ -549,43 +431,36 @@ func convertEntityPricesToPb(prices []entity.ProductPrice) []*pb_common.ProductP
 	return pbPrices
 }
 
-func convertEntitySizesToPbSizes(sizes []entity.ProductSize) []*pb_common.ProductSize {
-	var pbSizes []*pb_common.ProductSize
+// ConvertEntityVariantToPb projects a single variant (product_size) to the admin/common wire message,
+// carrying its stored lifecycle status (R2). The variant SKU/size/colourway id are admin-facing here;
+// the storefront never sees these internal ids (it gets a StorefrontVariant, R3).
+func ConvertEntityVariantToPb(v entity.Variant) *pb_common.Variant {
+	return &pb_common.Variant{
+		VariantId: int32(v.Id), // R8: renamed from Id
+		Quantity: &pb_decimal.Decimal{
+			Value: v.Quantity.String(),
+		},
+		ColorwayId: int32(v.ProductId), // R8: renamed from ProductId
+		SizeId:     int32(v.SizeId),
+		VariantSku: v.SKU.String, // R8: renamed from Sku
+		Status:     pb_common.VariantLifecycleStatus(v.Status),
+	}
+}
+
+func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.Variant {
+	var pbSizes []*pb_common.Variant
 	for _, size := range sizes {
-		pbSizes = append(pbSizes, &pb_common.ProductSize{
-			Id: int32(size.Id),
-			Quantity: &pb_decimal.Decimal{
-				Value: size.Quantity.String(),
-			},
-			ProductId: int32(size.ProductId),
-			SizeId:    int32(size.SizeId),
-		})
+		pbSizes = append(pbSizes, ConvertEntityVariantToPb(size))
 	}
 	return pbSizes
 }
 
-func convertEntityMeasurementsToPbMeasurements(measurements []entity.ProductMeasurement) []*pb_common.ProductMeasurement {
-	var pbMeasurements []*pb_common.ProductMeasurement
-	for _, measurement := range measurements {
-		pbMeasurements = append(pbMeasurements, &pb_common.ProductMeasurement{
-			Id:                int32(measurement.Id),
-			ProductId:         int32(measurement.ProductId),
-			ProductSizeId:     int32(measurement.ProductSizeId),
-			MeasurementNameId: int32(measurement.MeasurementNameId),
-			MeasurementValue: &pb_decimal.Decimal{
-				Value: measurement.MeasurementValue.String(),
-			},
-		})
-	}
-	return pbMeasurements
-}
-
-func convertEntityTagsToPbTags(tags []entity.ProductTag) []*pb_common.ProductTag {
-	var pbTags []*pb_common.ProductTag
+func convertEntityTagsToPbTags(tags []entity.ColorwayTag) []*pb_common.ColorwayTag {
+	var pbTags []*pb_common.ColorwayTag
 	for _, tag := range tags {
-		pbTags = append(pbTags, &pb_common.ProductTag{
+		pbTags = append(pbTags, &pb_common.ColorwayTag{
 			Id: int32(tag.Id),
-			ProductTagInsert: &pb_common.ProductTagInsert{
+			TagInsert: &pb_common.ColorwayTagInsert{ // R8: renamed from ProductTagInsert
 				Tag: tag.Tag,
 			},
 		})
@@ -610,7 +485,7 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 	}
 	return &pb_common.StockChange{
 		Id:             int32(e.Id),
-		ProductId:      int32(e.ProductId),
+		ColorwayId:     int32(e.ProductId), // R8: renamed from ProductId
 		SizeId:         int32(e.SizeId),
 		QuantityDelta:  &pb_decimal.Decimal{Value: e.QuantityDelta.String()},
 		QuantityBefore: &pb_decimal.Decimal{Value: e.QuantityBefore.String()},
@@ -621,49 +496,6 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 		CreatedAt:      timestamppb.New(e.CreatedAt),
 		AdminUsername:  e.AdminUsername,
 	}
-}
-
-var reg = regexp.MustCompile("[^a-zA-Z0-9]+")
-
-func GetProductSlug(id int, brand, name, gender string) string {
-	clean := func(part string) string {
-		// Replace all non-alphanumeric characters with an empty string
-		return reg.ReplaceAllString(part, "")
-	}
-
-	// Use strings.Builder for efficient string concatenation
-	var sb strings.Builder
-	sb.WriteString("/product/")
-	sb.WriteString(gender)
-	sb.WriteString("/")
-	sb.WriteString(clean(brand))
-	sb.WriteString("/")
-	sb.WriteString(clean(name))
-	sb.WriteString("/")
-	sb.WriteString(fmt.Sprint(id))
-
-	return sb.String()
-}
-
-// FormatSKUWithSize formats SKU with 5-character padded size suffix using dash separator.
-// Removes decimal points from numeric sizes and pads to 5 characters with leading zeros.
-// Examples:
-//   - "HOO-BLA-M1763463513" + "xxl" -> "HOO-BLA-M1763463513-00XXL"
-//   - "PAN-PIN-M1768402195" + "xs" -> "PAN-PIN-M1768402195-00XXS"
-//   - "SHO-WHI-U1234567890" + "35.5" -> "SHO-WHI-U1234567890-03550"
-//   - "SHO-WHI-U1234567890" + "26" -> "SHO-WHI-U1234567890-00026"
-func FormatSKUWithSize(sku string, sizeName string) string {
-	// Remove decimal points from size (35.5 -> 355)
-	sizeClean := strings.ReplaceAll(sizeName, ".", "")
-
-	// Pad to exactly 5 characters with leading zeros
-	paddedSize := fmt.Sprintf("%05s", sizeClean)
-
-	// Uppercase the size
-	paddedSize = strings.ToUpper(paddedSize)
-
-	// Use dash separator
-	return sku + "-" + paddedSize
 }
 
 // MapStockChangeSourceToAPI maps internal source types to API-friendly names.
@@ -710,11 +542,9 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 		return nil
 	}
 
-	// Format SKU with size (or use "SHIPPING" if it's a shipping entry)
+	// e.SKU is already the variant SKU (product_size.sku) from the stock-history query, or SHIPPING
+	// for a shipping-only entry. No size suffix to append.
 	formattedSKU := e.SKU
-	if e.SKU != "SHIPPING" && e.SizeName != "" {
-		formattedSKU = FormatSKUWithSize(e.SKU, e.SizeName)
-	}
 
 	// Map source to API-friendly name
 	apiSource := MapStockChangeSourceToAPI(e.Source)
@@ -778,75 +608,24 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 	return row
 }
 
-// ConvertEntityProductToCommon converts entity.Product to pb_common.Product
-func ConvertEntityProductToCommon(e *entity.Product) (*pb_common.Product, error) {
-	productBody := &e.ProductDisplay.ProductBody
-	productBodyInsert := &productBody.ProductBodyInsert
+// ConvertEntityProductToCommon converts entity.Colorway to pb_common.Colorway
+func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, error) {
+	// Canonical translation name for the pretty slug — deterministic (default language, else the
+	// smallest language id), never the order-dependent Translations[0] (problem 030).
+	firstTranslationName := canonicalProductName(e.ProductDisplay.ProductBody.Translations)
 
-	tg, _ := ConvertEntityGenderToPbGenderEnum(productBodyInsert.TargetGender)
-	sn, _ := ConvertEntitySeasonToPbSeasonEnum(productBodyInsert.Season)
-
-	// Convert translations to protobuf format
-	var pbTranslations []*pb_common.ProductInsertTranslation
-	for _, trans := range productBody.Translations {
-		pbTranslations = append(pbTranslations, &pb_common.ProductInsertTranslation{
-			LanguageId:  int32(trans.LanguageId),
-			Name:        trans.Name,
-			Description: trans.Description,
-		})
-	}
-
-	// Get first translation for slug generation (or empty strings if no translations)
-	var firstTranslationName string
-	if len(productBody.Translations) > 0 {
-		firstTranslationName = productBody.Translations[0].Name
-	}
-
-	var pbSecondaryThumbnail *pb_common.MediaFull
-	if e.ProductDisplay.SecondaryThumbnail != nil {
-		pbSecondaryThumbnail = ConvertEntityToCommonMedia(e.ProductDisplay.SecondaryThumbnail)
-	}
-
-	// Convert prices
-	pbPrices := convertEntityPricesToPb(e.Prices)
-
-	pbProduct := &pb_common.Product{
+	pbProduct := &pb_common.Colorway{
 		Id:        int32(e.Id),
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
-		Slug:      GetProductSlug(e.Id, productBodyInsert.Brand, firstTranslationName, productBodyInsert.TargetGender.String()),
-		Sku:       e.SKU,
-		ProductDisplay: &pb_common.ProductDisplay{
-			ProductBody: &pb_common.ProductBody{
-				ProductBodyInsert: &pb_common.ProductBodyInsert{
-					Preorder:        timestamppb.New(productBodyInsert.Preorder.Time),
-					Brand:           productBodyInsert.Brand,
-					Color:           productBodyInsert.Color,
-					ColorHex:        productBodyInsert.ColorHex,
-					CountryOfOrigin: productBodyInsert.CountryOfOrigin,
-
-					SalePercentage:     &pb_decimal.Decimal{Value: productBodyInsert.SalePercentage.Decimal.String()},
-					TopCategoryId:      int32(productBodyInsert.TopCategoryId),
-					SubCategoryId:      int32(productBodyInsert.SubCategoryId.Int32),
-					TypeId:             int32(productBodyInsert.TypeId.Int32),
-					ModelWearsHeightCm: int32(productBodyInsert.ModelWearsHeightCm.Int32),
-					ModelWearsSizeId:   int32(productBodyInsert.ModelWearsSizeId.Int32),
-					Hidden:             productBodyInsert.Hidden.Bool,
-					TargetGender:       tg,
-					Season:             sn,
-					CareInstructions:   productBodyInsert.CareInstructions.String,
-					Composition:        productBodyInsert.Composition.String,
-					Version:            productBodyInsert.Version,
-					Collection:         productBodyInsert.Collection,
-					Fit:                productBodyInsert.Fit.String,
-				},
-				Translations: pbTranslations,
-			},
-			Thumbnail:          ConvertEntityToCommonMedia(&e.ProductDisplay.Thumbnail),
-			SecondaryThumbnail: pbSecondaryThumbnail,
-		},
-		Prices:  pbPrices,
-		SoldOut: e.SoldOut,
+		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
+		BaseSku:   e.SKU, // R8: renamed from Sku
+		Display:   buildColorwayDisplayPb(&e.ProductDisplay), // R8: renamed from ProductDisplay
+		Prices:    convertEntityPricesToPb(e.Prices),
+		SoldOut:   e.SoldOut,
+		Status:    pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
+		StyleId:   int32(e.StyleId),
+		ColorCode: e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 	}
 
 	return pbProduct, nil

@@ -48,7 +48,10 @@ func TestAnalyticsV2Task03OrderValueBands(t *testing.T) {
 		require.NoError(t, err)
 		oid, err := r.LastInsertId()
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+		// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+		// Cleanups), which would make this DELETE a no-op and leak the row into later tests sharing
+		// this date window.
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 	}
 
 	// Band €0–50: 30 + 40 (2 orders, 70). Band €50–100: 75. Band €500+: 600.

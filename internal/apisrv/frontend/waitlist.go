@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	v "github.com/asaskevich/govalidator"
-	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
@@ -15,9 +14,6 @@ import (
 )
 
 func (s *Server) NotifyMe(ctx context.Context, req *pb_frontend.NotifyMeRequest) (*pb_frontend.NotifyMeResponse, error) {
-	productId := int(req.ProductId)
-	sizeId := int(req.SizeId)
-
 	email := normalizeEmail(req.Email)
 	if email == "" || !v.IsEmail(email) {
 		return nil, status.Errorf(codes.InvalidArgument, "valid email is required")
@@ -27,9 +23,24 @@ func (s *Server) NotifyMe(ctx context.Context, req *pb_frontend.NotifyMeRequest)
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
 
-	// Validate product exists and is not hidden/deleted
-	_, err := s.repo.Products().GetProductByIdNoHidden(ctx, productId)
+	// R2/R3/p013: the storefront supplies the public variant SKU; resolve it to the internal variant
+	// (product_id, size_id) the waitlist keys on. Unknown SKU -> NOT_FOUND.
+	if req.VariantSku == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "variant_sku is required")
+	}
+	variant, err := s.repo.Products().GetVariantBySKU(ctx, req.VariantSku)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "variant not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't resolve variant", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't resolve variant")
+	}
+	productId := variant.ProductId
+	sizeId := variant.SizeId
+
+	// Validate the colourway exists and is not hidden/deleted
+	if _, err := s.repo.Products().GetProductByIdNoHidden(ctx, productId); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
 		}
@@ -38,12 +49,6 @@ func (s *Server) NotifyMe(ctx context.Context, req *pb_frontend.NotifyMeRequest)
 			slog.Int("productId", productId),
 		)
 		return nil, status.Errorf(codes.Internal, "can't get product")
-	}
-
-	// Validate size exists
-	_, ok := cache.GetSizeById(sizeId)
-	if !ok {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid size_id")
 	}
 
 	// Add to waitlist (this also ensures subscriber exists)

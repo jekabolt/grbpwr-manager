@@ -9,11 +9,28 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
+
+// setArchiveSlug fills al.Slug with the public timeline URL "/timeline/{pretty}-{code}".
+// The pretty part is the kebab of the first translation heading (if any); the resolve key is the
+// persisted al.Code. Since archive.code is NOT NULL and format-checked (migration 0148), there is no
+// read-time fallback: an empty code would surface as a broken URL rather than being masked by an
+// id-derived fabrication that the code resolver would 404 on (problem 029).
+func setArchiveSlug(al *entity.ArchiveList) {
+	// Canonical translation heading — deterministic (default language, else the smallest language id),
+	// never the order-dependent Translations[0] (problem 030). Same policy as the product slug.
+	heading := ""
+	if canonicalHeading, ok := canonical.ArchiveHeading(al.Translations, cache.GetLanguages()); ok {
+		heading = canonicalHeading
+	}
+	al.Slug = slug.TimelinePath(heading, al.Code)
+}
 
 // marshalArchiveBody marshals the timeline body, normalising a nil slice to an
 // empty JSON array ("[]") instead of "null", so the stored shape is consistent.
@@ -36,11 +53,26 @@ func (s *Store) AddArchive(ctx context.Context, aNew *entity.ArchiveInsert) (int
 	var aid int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 
-		query := `INSERT INTO archive (tag, thumbnail_id, body) VALUES (:tag, :thumbnailId, :body)`
+		// Allocate the immutable public code from a dedicated sequence BEFORE the insert — no NULL
+		// window, no MAX(id)+1, concurrency-safe (same AUTO_INCREMENT-table pattern as model_no_seq).
+		// The seq is seeded above the max archive id (migration 0148) so this never collides with the
+		// id-derived backfill. A blank/malformed code is a hard error: nothing is persisted.
+		seqID, err := storeutil.ExecNamedLastId(ctx, rep.DB(),
+			`INSERT INTO archive_code_seq () VALUES ()`, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("failed to allocate archive code: %w", err)
+		}
+		code := entity.ArchiveCodeFromID(seqID)
+		if !entity.ValidArchiveCode(code) {
+			return fmt.Errorf("refusing to persist archive with invalid code %q (seq %d)", code, seqID)
+		}
+
+		query := `INSERT INTO archive (tag, thumbnail_id, body, code) VALUES (:tag, :thumbnailId, :body, :code)`
 		aid, err = storeutil.ExecNamedLastId(ctx, rep.DB(), query, map[string]any{
 			"tag":         aNew.Tag,
 			"thumbnailId": aNew.ThumbnailId,
 			"body":        bodyJSON,
+			"code":        code,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add archive: %w", err)
@@ -157,8 +189,8 @@ func (s *Store) GetArchivesPaged(ctx context.Context, limit, offset int, orderFa
 
 	// Query for paged archives with joined media
 	query := `
-	SELECT 
-		a.id, a.tag, a.created_at,
+	SELECT
+		a.id, COALESCE(a.code, '') AS code, a.tag, a.created_at,
 		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash
 	FROM archive a
 	LEFT JOIN media mt ON a.thumbnail_id = mt.id
@@ -183,7 +215,7 @@ func (s *Store) GetArchivesPaged(ctx context.Context, limit, offset int, orderFa
 		var thumbnailBlurHash sql.NullString
 
 		err := rows.Scan(
-			&al.Id, &al.Tag, &al.CreatedAt,
+			&al.Id, &al.Code, &al.Tag, &al.CreatedAt,
 			&thumbnail.Id,
 			&thumbnail.MediaItem.FullSizeMediaURL, &thumbnail.MediaItem.FullSizeWidth, &thumbnail.MediaItem.FullSizeHeight, &thumbnail.MediaItem.ThumbnailMediaURL, &thumbnail.MediaItem.ThumbnailWidth, &thumbnail.MediaItem.ThumbnailHeight, &thumbnail.MediaItem.CompressedMediaURL, &thumbnail.MediaItem.CompressedWidth, &thumbnail.MediaItem.CompressedHeight, &thumbnailBlurHash,
 		)
@@ -211,13 +243,7 @@ func (s *Store) GetArchivesPaged(ctx context.Context, limit, offset int, orderFa
 			return nil, 0, fmt.Errorf("failed to get translations for archive %d: %w", archives[i].Id, err)
 		}
 		archives[i].Translations = translations
-
-		// Generate slug using first translation's heading if available
-		if len(translations) > 0 {
-			archives[i].Slug = dto.GetArchiveSlug(archives[i].Id, translations[0].Heading, archives[i].Tag)
-		} else {
-			archives[i].Slug = dto.GetArchiveSlug(archives[i].Id, "", archives[i].Tag)
-		}
+		setArchiveSlug(&archives[i])
 	}
 
 	// Trim to limit if we fetched extra records
@@ -262,7 +288,7 @@ func (s *Store) DeleteArchiveById(ctx context.Context, id int) error {
 func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull, error) {
 	query := `
 	SELECT
-		a.id, a.tag, a.created_at, a.thumbnail_id, a.body,
+		a.id, COALESCE(a.code, '') AS code, a.tag, a.created_at, a.thumbnail_id, a.body,
 		mt.id AS thumbnail_id, mt.full_size AS thumbnail_full_size, mt.full_size_width AS thumbnail_full_size_width, mt.full_size_height AS thumbnail_full_size_height, mt.thumbnail AS thumbnail_thumbnail, mt.thumbnail_width AS thumbnail_thumbnail_width, mt.thumbnail_height AS thumbnail_thumbnail_height, mt.compressed AS thumbnail_compressed, mt.compressed_width AS thumbnail_compressed_width, mt.compressed_height AS thumbnail_compressed_height, mt.blur_hash AS thumbnail_blur_hash
 	FROM archive a
 	LEFT JOIN media mt ON a.thumbnail_id = mt.id
@@ -290,7 +316,7 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 	var thumbnail entity.MediaFull
 	var body []byte
 	err = rows.Scan(
-		&al.Id, &al.Tag, &al.CreatedAt, &thumbnail.Id, &body,
+		&al.Id, &al.Code, &al.Tag, &al.CreatedAt, &thumbnail.Id, &body,
 		&thumbnail.Id, &thumbnail.MediaItem.FullSizeMediaURL, &thumbnail.MediaItem.FullSizeWidth, &thumbnail.MediaItem.FullSizeHeight, &thumbnail.MediaItem.ThumbnailMediaURL, &thumbnail.MediaItem.ThumbnailWidth, &thumbnail.MediaItem.ThumbnailHeight, &thumbnail.MediaItem.CompressedMediaURL, &thumbnail.MediaItem.CompressedWidth, &thumbnail.MediaItem.CompressedHeight, &thumbnail.MediaItem.BlurHash,
 	)
 	if err != nil {
@@ -304,13 +330,7 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 		return nil, fmt.Errorf("failed to get translations for archive %d: %w", id, err)
 	}
 	al.Translations = translations
-
-	// Generate slug using first translation's heading if available
-	if len(translations) > 0 {
-		al.Slug = dto.GetArchiveSlug(al.Id, translations[0].Heading, al.Tag)
-	} else {
-		al.Slug = dto.GetArchiveSlug(al.Id, "", al.Tag)
-	}
+	setArchiveSlug(&al)
 
 	// Decode the stored timeline body (typed blocks) and resolve it. A malformed
 	// blob degrades to an empty timeline rather than failing the read: GetArchiveById
@@ -336,6 +356,28 @@ func (s *Store) GetArchiveById(ctx context.Context, id int) (*entity.ArchiveFull
 		ArchiveList: al,
 		Items:       items,
 	}, nil
+}
+
+// GetArchiveByCode resolves an archive by its stable public code (the /timeline URL tail).
+// It looks up the id for the code and delegates to GetArchiveById so both paths share the
+// same body-resolution and boot-resilience behaviour. A missing code maps to sql.ErrNoRows
+// (→ 404 for callers using errors.Is).
+func (s *Store) GetArchiveByCode(ctx context.Context, code string) (*entity.ArchiveFull, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return nil, fmt.Errorf("empty archive code: %w", sql.ErrNoRows)
+	}
+
+	var id int
+	err := s.DB.GetContext(ctx, &id, `SELECT id FROM archive WHERE code = ?`, code)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("archive %q not found: %w", code, sql.ErrNoRows)
+		}
+		return nil, fmt.Errorf("failed to look up archive by code %q: %w", code, err)
+	}
+
+	return s.GetArchiveById(ctx, id)
 }
 
 // resolveArchiveItems resolves stored timeline blocks (Insert form) into their
@@ -519,12 +561,12 @@ func hasArchiveText(ts []entity.ArchiveItemTranslation) bool {
 
 // orderProductsByIds returns products ordered to match ids, dropping any id with
 // no corresponding (visible) product.
-func orderProductsByIds(products []entity.Product, ids []int) []entity.Product {
-	byId := make(map[int]entity.Product, len(products))
+func orderProductsByIds(products []entity.Colorway, ids []int) []entity.Colorway {
+	byId := make(map[int]entity.Colorway, len(products))
 	for _, p := range products {
 		byId[p.Id] = p
 	}
-	ordered := make([]entity.Product, 0, len(ids))
+	ordered := make([]entity.Colorway, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := byId[id]; ok {
 			ordered = append(ordered, p)
@@ -538,7 +580,8 @@ func (s *Store) GetArchiveTranslations(ctx context.Context, id int) ([]entity.Ar
 	SELECT
 		at.language_id, at.heading
 	FROM archive_translation at
-	WHERE at.archive_id = :id`
+	WHERE at.archive_id = :id
+	ORDER BY at.language_id`
 	translations, err := storeutil.QueryListNamed[entity.ArchiveTranslation](ctx, s.DB, query, map[string]any{"id": id})
 	if err != nil {
 		return nil, err

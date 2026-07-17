@@ -9,12 +9,10 @@ import (
 	"strings"
 	"time"
 
-	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
-	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -25,109 +23,177 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (s *Server) UpsertProduct(ctx context.Context, req *pb_admin.UpsertProductRequest) (*pb_admin.UpsertProductResponse, error) {
-
-	if _, write := s.costingAccess(ctx); !write && productInsertHasCostPrice(req.GetProduct().GetProduct()) {
-		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a product cost_price")
+// CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
+// decomposition, replacing the coupled UpsertColorway). It writes only colourway-owned data — no style
+// facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The colourway
+// starts DRAFT and goes live through PublishColorway.
+func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwayRequest) (*pb_admin.CreateColorwayResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-
-	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
+	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("can't convert proto product to entity product: %v", err))
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
-
-	_, err = v.ValidateStruct(prdNew)
+	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "validation add product request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("validation add product request failed: %v", err))
+		return nil, colorwayWriteError(ctx, "create", 0, err)
 	}
+	s.afterColorwayWrite(ctx, id)
+	return &pb_admin.CreateColorwayResponse{ColorwayId: int32(id)}, nil
+}
 
-	id := int(req.Id)
-	// new product
-	if req.Id == 0 {
-		id, err = s.repo.Products().AddProduct(ctx, prdNew)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't create a product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't create a product: %v", err)
-		}
+// UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
+// never touches style facts, variants, stock or the size chart.
+func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-
-	// update product
-	if req.Id != 0 {
-		err := s.repo.Products().UpdateProduct(ctx, prdNew, int(req.Id))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't update a product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't update a product: %v", err)
-		}
-	}
-
-	err = s.repo.Hero().RefreshHero(ctx)
+	// Translations/media/tags/prices are a sparse update in the store (empty slice = leave unchanged).
+	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't refresh hero: %v", err)
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
-
-	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
-			slog.String("err", err.Error()),
-		)
+		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
+	}
+	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
+	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+// colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->
+// NotFound; a stale optimistic version -> Aborted; a business precondition (duplicate colour, frozen)
+// -> FailedPrecondition; else Internal.
+func colorwayWriteError(ctx context.Context, op string, id int, err error) error {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return status.Errorf(codes.NotFound, "colourway/style not found")
+	case errors.Is(err, entity.ErrTechCardConflict):
+		return status.Errorf(codes.Aborted, "colourway %d was modified concurrently; reload and retry", id)
+	case errors.Is(err, entity.ErrColorwayColorExists):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	slog.Default().ErrorContext(ctx, "colourway write failed", slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
+	return status.Errorf(codes.Internal, "can't %s colourway: %v", op, err)
+}
+
+// afterColorwayWrite refreshes the server-side hero cache and dictionary counts and triggers storefront
+// revalidation after a colourway create/update (matches the legacy UpsertColorway side effects).
+func (s *Server) afterColorwayWrite(ctx context.Context, id int) {
+	if err := s.repo.Hero().RefreshHero(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh hero", slog.String("err", err.Error()))
+	}
+	s.afterColorwayLifecycleChange(ctx, id)
+}
+
+// ArchiveColorwayByID retires a colourway (archive-not-delete, R6): ACTIVE|HIDDEN -> ARCHIVED. Was
+// DeleteColorwayByID (hard delete). The SKU stays frozen and readable; order history is unaffected.
+func (s *Server) ArchiveColorwayByID(ctx context.Context, req *pb_admin.ArchiveColorwayByIDRequest) (*pb_admin.ArchiveColorwayByIDResponse, error) {
+	if err := s.repo.Products().ArchiveColorway(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, "archive", int(req.ColorwayId), err)
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	return &pb_admin.ArchiveColorwayByIDResponse{}, nil
+}
+
+// PublishColorway transitions a DRAFT colourway to ACTIVE (R6). The store enforces the sellable
+// preconditions and an optimistic guard on the current lifecycle_status.
+func (s *Server) PublishColorway(ctx context.Context, req *pb_admin.PublishColorwayRequest) (*pb_admin.PublishColorwayResponse, error) {
+	if err := s.repo.Products().PublishColorway(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, "publish", int(req.ColorwayId), err)
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	cw, err := s.getPbColorway(ctx, int(req.ColorwayId))
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.PublishColorwayResponse{Colorway: cw}, nil
+}
+
+// TransitionColorwayStatus applies a non-publish lifecycle edge (R6): ACTIVE<->HIDDEN and
+// ACTIVE|HIDDEN->ARCHIVED. DRAFT->ACTIVE uses PublishColorway (it carries preconditions). The store
+// validates the edge through the entity state machine, so an illegal target is rejected there.
+func (s *Server) TransitionColorwayStatus(ctx context.Context, req *pb_admin.TransitionColorwayStatusRequest) (*pb_admin.TransitionColorwayStatusResponse, error) {
+	p := s.repo.Products()
+	var op string
+	var fn func(context.Context, int) error
+	switch req.Target {
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN:
+		op, fn = "hide", p.HideColorway
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ACTIVE:
+		op, fn = "unhide", p.UnhideColorway // ACTIVE via transition = HIDDEN->ACTIVE (unhide); DRAFT->ACTIVE is PublishColorway
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ARCHIVED:
+		op, fn = "archive", p.ArchiveColorway
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported transition target %v (DRAFT->ACTIVE uses PublishColorway)", req.Target)
+	}
+	if err := fn(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, op, int(req.ColorwayId), err)
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	cw, err := s.getPbColorway(ctx, int(req.ColorwayId))
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.TransitionColorwayStatusResponse{Colorway: cw}, nil
+}
+
+// colorwayTransitionError maps a store lifecycle error to a gRPC status. The store returns descriptive
+// wrapped errors (invalid edge, failed preconditions, concurrent change); missing colourway surfaces
+// sql.ErrNoRows through the chain.
+func colorwayTransitionError(ctx context.Context, op string, id int, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return status.Errorf(codes.NotFound, "colourway %d not found", id)
+	}
+	slog.Default().ErrorContext(ctx, "colourway lifecycle transition failed",
+		slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
+	// Domain refusals (invalid edge, unmet publish preconditions, non-draft relink, frozen siblings)
+	// are FailedPrecondition; anything else is infrastructure and must surface as Internal, not a
+	// client-fixable precondition (review finding backend-003).
+	if errors.Is(err, entity.ErrColorwayNotDraft) ||
+		errors.Is(err, entity.ErrStyleFrozenSiblings) ||
+		errors.Is(err, entity.ErrColorwayColorExists) ||
+		strings.Contains(err.Error(), "transition") ||
+		strings.Contains(err.Error(), "precondition") {
+		return status.Errorf(codes.FailedPrecondition, "cannot %s colourway %d: %v", op, id, err)
+	}
+	return status.Errorf(codes.Internal, "cannot %s colourway %d: %v", op, id, err)
+}
+
+// afterColorwayLifecycleChange refreshes dictionary counts and triggers storefront revalidation after
+// a colourway's visibility changes.
+func (s *Server) afterColorwayLifecycleChange(ctx context.Context, id int) {
+	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts", slog.String("err", err.Error()))
 	} else {
 		cache.RefreshDictionary(di)
 	}
-
-	s.revalidateAsync(&dto.RevalidationData{
-		Products: []int{id},
-		Hero:     true,
-	})
-
-	return &pb_admin.UpsertProductResponse{
-		Id: int32(id),
-	}, nil
+	s.revalidateAsync(&dto.RevalidationData{Products: []int{id}, Hero: true})
 }
 
-func (s *Server) DeleteProductByID(ctx context.Context, req *pb_admin.DeleteProductByIDRequest) (*pb_admin.DeleteProductByIDResponse, error) {
-	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
+// getPbColorway loads a colourway and projects the admin Colorway (the nested message of ColorwayFull)
+// for a transition response.
+func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway, error) {
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, id)
 	if err != nil {
-		if errors.Is(err, store.ErrProductInOrders) {
-			return nil, status.Errorf(codes.FailedPrecondition, "cannot delete product: it exists in one or more orders")
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "colourway %d not found", id)
 		}
-		slog.Default().ErrorContext(ctx, "can't delete product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't delete product")
+		return nil, status.Errorf(codes.Internal, "can't load colourway %d: %v", id, err)
 	}
-
-	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	pb, err := dto.ConvertToPbProductFull(pf)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
-			slog.String("err", err.Error()),
-		)
-	} else {
-		cache.RefreshDictionary(di)
+		return nil, status.Errorf(codes.Internal, "can't convert colourway %d: %v", id, err)
 	}
-
-	s.revalidateAsync(&dto.RevalidationData{
-		Products: []int{int(req.Id)},
-		Hero:     true,
-	})
-	return &pb_admin.DeleteProductByIDResponse{}, nil
+	return pb.GetColorway(), nil
 }
 
-func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByIDRequest) (*pb_admin.GetProductByIDResponse, error) {
+func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayByIDRequest) (*pb_admin.GetColorwayByIDResponse, error) {
 
-	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.Id))
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.ColorwayId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
@@ -148,9 +214,9 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 
 	// Confidential cost/provenance — admin surface only, on a field of the admin response,
 	// and further gated by costing:read (task 19): a scoped account without it gets no cost.
-	var costInfo *pb_admin.ProductCostInfo
+	var costInfo *pb_admin.ColorwayCostInfo
 	if read, _ := s.costingAccess(ctx); read {
-		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.Id)); cerr != nil {
+		if ci, cerr := s.repo.Products().GetProductCostInfo(ctx, int(req.ColorwayId)); cerr != nil {
 			slog.Default().ErrorContext(ctx, "can't get product cost info",
 				slog.String("err", cerr.Error()))
 		} else {
@@ -158,8 +224,8 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 		}
 	}
 
-	return &pb_admin.GetProductByIDResponse{
-		Product:  pbPrd,
+	return &pb_admin.GetColorwayByIDResponse{
+		Colorway: pbPrd,
 		CostInfo: costInfo,
 	}, nil
 
@@ -169,80 +235,64 @@ func (s *Server) GetProductByID(ctx context.Context, req *pb_admin.GetProductByI
 // card, overriding any manual value. tech_card_id (when > 0) repoints the product's primary
 // card before seeding; otherwise the product's existing primary card is used. The card must
 // currently link the product and have a computable unit cost in the base currency.
-func (s *Server) SyncProductCostFromTechCard(ctx context.Context, req *pb_admin.SyncProductCostFromTechCardRequest) (*pb_admin.SyncProductCostFromTechCardResponse, error) {
+func (s *Server) SyncColorwayCostFromOwningStyle(ctx context.Context, req *pb_admin.SyncColorwayCostFromOwningStyleRequest) (*pb_admin.SyncColorwayCostFromOwningStyleResponse, error) {
 	if _, write := s.costingAccess(ctx); !write {
-		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a product cost from a tech card")
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a colourway cost from its owning style")
 	}
-	if req.ProductId <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	colorwayID := int(req.ColorwayId)
+	if colorwayID <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
 	}
-	ci, err := s.repo.Products().GetProductCostInfo(ctx, int(req.ProductId))
+	ci, err := s.repo.Products().GetProductCostInfo(ctx, colorwayID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Error(codes.NotFound, "product not found")
+			return nil, status.Error(codes.NotFound, "colourway not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get product cost info", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't get product")
+		slog.Default().ErrorContext(ctx, "can't get colourway cost info", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get colourway")
 	}
 
-	techCardID := int(req.TechCardId)
-	if techCardID <= 0 {
-		if !ci.PrimaryTechCardID.Valid {
-			return nil, status.Error(codes.InvalidArgument, "product has no primary tech card; pass tech_card_id")
-		}
-		techCardID = int(ci.PrimaryTechCardID.Int32)
+	// R4/p019: cost provenance is separated from ownership. The style is derived from the owner relation
+	// (the colourway's primary card) and is NEVER repointed by a cost sync — tech_card_id is gone.
+	if !ci.PrimaryTechCardID.Valid {
+		return nil, status.Error(codes.FailedPrecondition, "colourway has no owning style (primary card) to source cost from")
 	}
-
-	linked, err := s.repo.Products().IsProductLinkedToTechCard(ctx, int(req.ProductId), techCardID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't check product-tech-card link", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't verify tech card link")
-	}
-	if !linked {
-		return nil, status.Error(codes.InvalidArgument, "tech card does not link this product")
-	}
+	techCardID := int(ci.PrimaryTechCardID.Int32)
 
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
 	if err != nil || card == nil {
-		return nil, status.Error(codes.NotFound, "tech card not found")
+		return nil, status.Error(codes.NotFound, "owning style not found")
 	}
 	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
 	if !unit.Valid {
 		return nil, status.Error(codes.FailedPrecondition,
-			"tech card has no base-currency unit cost — check the costing and its FX rates")
+			"owning style has no base-currency unit cost — check the costing and its FX rates")
 	}
 	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"tech card unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
+			"style unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
 	}
-
-	// Repoint the primary card only when an explicit, different card was requested.
-	if int(req.TechCardId) > 0 && (!ci.PrimaryTechCardID.Valid || int(ci.PrimaryTechCardID.Int32) != techCardID) {
-		if err := s.repo.Products().SetPrimaryTechCard(ctx, int(req.ProductId), techCardID); err != nil {
-			slog.Default().ErrorContext(ctx, "can't set primary tech card", slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "can't set primary tech card")
-		}
+	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal); err != nil {
+		slog.Default().ErrorContext(ctx, "can't sync colourway cost from owning style", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't sync colourway cost")
 	}
-	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, int(req.ProductId), techCardID, unit.Decimal); err != nil {
-		slog.Default().ErrorContext(ctx, "can't sync product cost from tech card", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't sync product cost")
-	}
-	return &pb_admin.SyncProductCostFromTechCardResponse{
+	return &pb_admin.SyncColorwayCostFromOwningStyleResponse{
 		CostPrice:  &pb_decimal.Decimal{Value: unit.Decimal.String()},
 		Currency:   currency,
 		TechCardId: int32(techCardID),
+		Source:     pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_STYLE,
 	}, nil
 }
 
 // productCostInfoToPb converts the confidential product cost fields to their admin proto form.
-func productCostInfoToPb(ci *entity.ProductCostInfo) *pb_admin.ProductCostInfo {
+func productCostInfoToPb(ci *entity.ColorwayCostInfo) *pb_admin.ColorwayCostInfo {
 	if ci == nil {
 		return nil
 	}
-	out := &pb_admin.ProductCostInfo{
-		CostPriceSource:     ci.CostPriceSource.String,
-		CostPriceTechCardId: ci.CostPriceTechCardID.Int32,
-		PrimaryTechCardId:   ci.PrimaryTechCardID.Int32,
+	out := &pb_admin.ColorwayCostInfo{
+		CostPriceSource:      costSourceToPb(ci.CostPriceSource), // R4: string -> ColorwayCostSource enum
+		CostSourceTechCardId: ci.CostPriceTechCardID.Int32,       // R4: renamed from cost_price_tech_card_id
+		PrimaryTechCardId:    ci.PrimaryTechCardID.Int32,
 	}
 	if ci.CostPrice.Valid {
 		out.CostPrice = &pb_decimal.Decimal{Value: ci.CostPrice.Decimal.String()}
@@ -253,7 +303,26 @@ func productCostInfoToPb(ci *entity.ProductCostInfo) *pb_admin.ProductCostInfo {
 	return out
 }
 
-func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProductsPagedRequest) (*pb_admin.GetProductsPagedResponse, error) {
+// costSourceToPb maps the stored cost-provenance label to the ColorwayCostSource enum (R4). The
+// legacy "tech_card" provenance is a style-owned cost (the primary card of the owning style), so it
+// maps to STYLE.
+func costSourceToPb(s sql.NullString) pb_common.ColorwayCostSource {
+	if !s.Valid {
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_UNKNOWN
+	}
+	switch s.String {
+	case "manual":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_MANUAL
+	case "tech_card", "style":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_STYLE
+	case "production_run":
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_PRODUCTION_RUN
+	default:
+		return pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_UNKNOWN
+	}
+}
+
+func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwaysPagedRequest) (*pb_admin.GetColorwaysPagedResponse, error) {
 
 	sfs := make([]entity.SortFactor, 0, len(req.SortFactors))
 	for _, sf := range req.SortFactors {
@@ -265,7 +334,10 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
-	fc := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	// Price sorting requires currency; default to base currency when not specified (admin UX)
 	baseCurrency := cache.GetBaseCurrency()
@@ -283,8 +355,12 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		}
 	}
 
+	// R6/§14.6: show_hidden was replaced by an explicit lifecycle-status filter. Map it onto the store's
+	// showHidden capability (include HIDDEN when the caller asks for it); granular status-set filtering
+	// in the store query is a follow-up. Empty statuses preserves the old default (hide HIDDEN).
+	showHidden := slices.Contains(req.Statuses, pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN)
 	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
-	prds, _, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, req.ShowHidden)
+	prds, total, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, showHidden)
 	if err != nil {
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -295,7 +371,7 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
 	}
 
-	prdsPb := make([]*pb_common.Product, 0, len(prds))
+	prdsPb := make([]*pb_common.Colorway, 0, len(prds))
 	for _, prd := range prds {
 		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
 		if err != nil {
@@ -308,23 +384,35 @@ func (s *Server) GetProductsPaged(ctx context.Context, req *pb_admin.GetProducts
 		prdsPb = append(prdsPb, pbPrd)
 	}
 
-	return &pb_admin.GetProductsPagedResponse{
-		Products: prdsPb,
+	return &pb_admin.GetColorwaysPagedResponse{
+		Colorways: prdsPb,
+		Total:     int32(total),
 	}, nil
 }
 
-func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.UpdateProductSizeStockRequest) (*pb_admin.UpdateProductSizeStockResponse, error) {
-	productId := int(req.ProductId)
-	sizeId := int(req.SizeId)
+func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVariantStockRequest) (*pb_admin.UpdateVariantStockResponse, error) {
 	quantity := int(req.Quantity)
 
-	// Validate required fields
-	if productId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	// R2/p012: stock is addressed by the stable variant id (product_size.id) and NEVER creates a variant.
+	// Resolve it to the denormalised (product_id, size_id) the stock path keys on; an unknown variant is
+	// NOT_FOUND, not a silent implicit insert.
+	if req.VariantId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "variant_id is required")
 	}
-	if sizeId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "size_id is required")
+	variant, err := s.repo.Products().GetVariantByID(ctx, int(req.VariantId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "variant %d not found", req.VariantId)
+		}
+		slog.Default().ErrorContext(ctx, "can't resolve variant for stock update", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't resolve variant")
 	}
+	// R2/0155: an archived variant is retired — its stock is frozen and it rejects stock writes.
+	if variant.Status == uint8(entity.VariantStatusArchived) {
+		return nil, status.Errorf(codes.FailedPrecondition, "variant %d is archived", req.VariantId)
+	}
+	productId := variant.ProductId
+	sizeId := variant.SizeId
 
 	// Validate mode
 	if req.Mode == pb_common.StockAdjustmentMode_STOCK_ADJUSTMENT_MODE_UNSPECIFIED {
@@ -444,45 +532,37 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		}
 	}
 
-	// compute new quantity
-
-	// Get previous quantity to detect stock transition and compute final value
-	previousQuantity, _, err := s.repo.Products().GetProductSizeStock(ctx, productId, sizeId)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't get previous product size quantity",
-			slog.String("err", err.Error()),
-		)
-		// Continue anyway, we'll just skip waitlist notifications
-		previousQuantity = decimal.Zero
-	}
-
-	var newQuantity int
+	// Resolve the operation into mode + amount for the store, which reads+computes+writes atomically
+	// under a row lock (problem 025): mode=set passes the absolute value, mode=adjust passes a signed
+	// delta so concurrent adjustments compose instead of both overwriting a stale-read absolute.
+	var mode entity.StockUpdateMode
+	var amount int
 	if isSetMode {
-		// mode="set": quantity IS the final stock value
-		newQuantity = quantity
+		mode = entity.StockUpdateModeSet
+		amount = quantity
 	} else {
-		// mode="adjust": compute final value from direction + quantity
-		prevQtyInt := int(previousQuantity.IntPart())
+		mode = entity.StockUpdateModeAdjust
 		if req.Direction == pb_common.StockAdjustmentDirection_STOCK_ADJUSTMENT_DIRECTION_INCREASE {
-			newQuantity = prevQtyInt + quantity
+			amount = quantity
 		} else {
-			newQuantity = prevQtyInt - quantity
-			if newQuantity < 0 {
-				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("adjustment would result in negative stock (%d - %d = %d)", prevQtyInt, quantity, newQuantity))
-			}
+			amount = -quantity
 		}
 	}
 
-	err = s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, newQuantity, reason, comment)
+	previousQuantity, newQuantityDecimal, err := s.repo.Products().UpdateProductSizeStockWithHistory(ctx, productId, sizeId, mode, amount, reason, comment)
 	if err != nil {
+		var verr *entity.ValidationError
+		if errors.As(err, &verr) {
+			return nil, status.Error(codes.InvalidArgument, verr.Message)
+		}
 		slog.Default().ErrorContext(ctx, "can't update product size stock",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't update product size stock")
 	}
 
-	// Check if stock transitioned from 0 to >0
-	newQuantityDecimal := decimal.NewFromInt(int64(newQuantity))
+	// Waitlist notification from the REAL committed transition (0 -> >0), using the store's locked
+	// before/after — not a pre-read value that a concurrent adjustment could have invalidated.
 	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
 		// Trigger waitlist notifications asynchronously. This is a detached,
 		// best-effort side effect; a panic inside it (DB, DTO render, mail) must
@@ -498,13 +578,13 @@ func (s *Server) UpdateProductSizeStock(ctx context.Context, req *pb_admin.Updat
 		Products: []int{productId},
 		Hero:     true,
 	})
-	return &pb_admin.UpdateProductSizeStockResponse{}, nil
+	return &pb_admin.UpdateVariantStockResponse{}, nil
 }
 
 func (s *Server) ListStockChangeHistory(ctx context.Context, req *pb_admin.ListStockChangeHistoryRequest) (*pb_admin.ListStockChangeHistoryResponse, error) {
 	var productId, sizeId *int
-	if req.ProductId != 0 {
-		pid := int(req.ProductId)
+	if req.ColorwayId != 0 {
+		pid := int(req.ColorwayId)
 		productId = &pid
 	}
 	if req.SizeId != nil && *req.SizeId != 0 {
@@ -583,8 +663,8 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 
 	// Optional filters
 	var productId *int
-	if req.ProductId != nil {
-		pid := int(*req.ProductId)
+	if req.ColorwayId != nil {
+		pid := int(*req.ColorwayId)
 		productId = &pid
 	}
 

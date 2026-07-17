@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -70,8 +71,6 @@ func (s *Server) DeleteShipmentCarrier(ctx context.Context, req *pb_admin.Delete
 	return &pb_admin.DeleteShipmentCarrierResponse{}, nil
 }
 
-var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW"}
-
 func validateShipmentCarrierRequest(carrier, trackingURL string, prices map[string]*decimalpb.Decimal, allowedRegions []pb_common.ShippingRegion) error {
 	if strings.TrimSpace(carrier) == "" {
 		return fmt.Errorf("carrier name is required")
@@ -83,13 +82,11 @@ func validateShipmentCarrierRequest(carrier, trackingURL string, prices map[stri
 		return fmt.Errorf("tracking_url must contain %%s placeholder for tracking code")
 	}
 	provided := make(map[string]bool)
-	for currency := range prices {
-		provided[strings.ToUpper(currency)] = true
+	for c := range prices {
+		provided[strings.ToUpper(c)] = true
 	}
-	for _, c := range requiredCurrencies {
-		if !provided[c] {
-			return fmt.Errorf("missing required currency: %s", c)
-		}
+	if missing := currency.MissingRequired(provided); len(missing) > 0 {
+		return fmt.Errorf("missing required currency: %s", missing[0])
 	}
 	// Validate each price is non-negative (zero allowed for free shipping)
 	for currency, pbPrice := range prices {

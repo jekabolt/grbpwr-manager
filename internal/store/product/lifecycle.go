@@ -1,0 +1,162 @@
+package product
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+)
+
+// PublishColorway, HideColorway, UnhideColorway and ArchiveColorway are the ONLY ways a colourway's
+// lifecycle_status changes (contract decision R6) — a colourway save never touches it. Each validates
+// the edge through the entity state machine (entity.NextColorwayStatus) and applies it under an
+// optimistic guard on the current value, so a concurrent transition is rejected (RowsAffected != 1)
+// rather than silently lost. Publish additionally enforces the sellable-colourway preconditions.
+func (s *Store) PublishColorway(ctx context.Context, colorwayID int) error {
+	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionPublish)
+}
+
+// HideColorway takes an ACTIVE colourway off the storefront (ACTIVE -> HIDDEN); it stays admin-visible.
+func (s *Store) HideColorway(ctx context.Context, colorwayID int) error {
+	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionHide)
+}
+
+// UnhideColorway returns a HIDDEN colourway to the storefront (HIDDEN -> ACTIVE).
+func (s *Store) UnhideColorway(ctx context.Context, colorwayID int) error {
+	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionUnhide)
+}
+
+// ArchiveColorway retires a colourway (ACTIVE|HIDDEN -> ARCHIVED, terminal) and stamps the archival
+// audit time. It does not check order references — the storefront/admin layer decides whether an
+// archived-with-orders colourway is allowed; the SKU stays frozen and readable.
+func (s *Store) ArchiveColorway(ctx context.Context, colorwayID int) error {
+	return s.transitionColorwayLifecycle(ctx, colorwayID, entity.ColorwayTransitionArchive)
+}
+
+func loadColorwayLifecycle(ctx context.Context, db dependency.DB, colorwayID int) (entity.ColorwayStatus, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		Status uint8 `db:"lifecycle_status"`
+	}](ctx, db, `SELECT lifecycle_status FROM product WHERE id = :id`, map[string]any{"id": colorwayID})
+	if err != nil {
+		return entity.ColorwayStatusUnknown, fmt.Errorf("load colourway %d lifecycle: %w", colorwayID, err)
+	}
+	return entity.ColorwayStatus(row.Status), nil
+}
+
+func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int, t entity.ColorwayTransition) error {
+	cur, err := loadColorwayLifecycle(ctx, s.DB, colorwayID)
+	if err != nil {
+		return err
+	}
+	next, err := entity.NextColorwayStatus(cur, t)
+	if err != nil {
+		return fmt.Errorf("colourway %d: %w", colorwayID, err)
+	}
+	if t == entity.ColorwayTransitionPublish {
+		if err := checkColorwayPublishPreconditions(ctx, s.DB, colorwayID); err != nil {
+			return err
+		}
+	}
+	// Side effects on the audit stamps: publish records first publication; archive records retirement.
+	extra := ""
+	switch t {
+	case entity.ColorwayTransitionPublish:
+		extra = ", published_at = COALESCE(published_at, NOW())"
+	case entity.ColorwayTransitionArchive:
+		extra = ", deleted_at = COALESCE(deleted_at, NOW())"
+	}
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
+		`UPDATE product SET lifecycle_status = :next`+extra+` WHERE id = :id AND lifecycle_status = :cur`,
+		map[string]any{"next": uint8(next), "cur": uint8(cur), "id": colorwayID})
+	if err != nil {
+		return fmt.Errorf("apply %s to colourway %d: %w", t, colorwayID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("colourway %d lifecycle changed concurrently (expected %s); retry", colorwayID, cur)
+	}
+	return nil
+}
+
+// publishReadiness aggregates the sellable-colourway signals a DRAFT must satisfy before it can go
+// ACTIVE (R6). It is one query so the whole checklist is evaluated together.
+type publishReadiness struct {
+	BaseSKUValid        bool           `db:"base_sku_valid"`
+	ColorCode           string         `db:"color_code"`
+	CountryOfOrigin     string         `db:"country_of_origin"`
+	SeasonCode          sql.NullString `db:"season_code"`
+	SeasonYear          sql.NullInt32  `db:"season_year"`
+	ModelNo             sql.NullInt32  `db:"model_no"`
+	ValidVariants       int            `db:"valid_variants"`
+	PriceCount          int            `db:"price_count"`
+	DefaultTranslations int            `db:"default_translations"`
+}
+
+// checkColorwayPublishPreconditions enforces R6's DRAFT->ACTIVE rules: the colourway must be a fully
+// identified, sellable unit — a built base SKU, at least one variant with a valid SKU, a complete
+// sellable style (sku_season + model_no), a dictionary colour, a country, at least one price and a
+// default-language translation. All misses are collected so the operator sees the whole checklist.
+//
+// Deliberately NOT gated here (documented deviation from the R6 checklist): customs (hs_code /
+// customs_description) is optional by design — it is only required for cross-border shipments and is
+// enforced at label build time (0127), so requiring it at publish would wrongly block EU-only
+// colourways. Media presence is guaranteed structurally (product.thumbnail_id is NOT NULL).
+func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, colorwayID int) error {
+	r, err := storeutil.QueryNamedOne[publishReadiness](ctx, db, `
+		SELECT
+		  REGEXP_LIKE(COALESCE(p.sku, ''), :base_pattern, 'c') AS base_sku_valid,
+		  p.color_code       AS color_code,
+		  p.country_of_origin AS country_of_origin,
+		  sty.season_code    AS season_code,
+		  sty.season_year    AS season_year,
+		  sty.model_no       AS model_no,
+		  (SELECT COUNT(*) FROM product_size ps
+		     WHERE ps.product_id = p.id AND ps.sku IS NOT NULL
+		       AND REGEXP_LIKE(ps.sku, :variant_pattern, 'c')) AS valid_variants,
+		  (SELECT COUNT(*) FROM product_price pp WHERE pp.product_id = p.id) AS price_count,
+		  (SELECT COUNT(*) FROM product_translation pt JOIN language l ON l.id = pt.language_id
+		     WHERE pt.product_id = p.id AND l.is_default = TRUE) AS default_translations
+		FROM product p JOIN tech_card sty ON sty.id = p.style_id
+		WHERE p.id = :id`,
+		map[string]any{
+			"id":              colorwayID,
+			"base_pattern":    baseSKUInvariantPattern,
+			"variant_pattern": variantSKUInvariantPattern,
+		})
+	if err != nil {
+		return fmt.Errorf("load publish preconditions for colourway %d: %w", colorwayID, err)
+	}
+
+	var missing []string
+	if !r.BaseSKUValid {
+		missing = append(missing, "base SKU is not built")
+	}
+	if r.ValidVariants < 1 {
+		missing = append(missing, "no variant has a valid SKU")
+	}
+	if !r.SeasonCode.Valid || !r.SeasonYear.Valid {
+		missing = append(missing, "style has no complete sku_season")
+	}
+	if !r.ModelNo.Valid {
+		missing = append(missing, "style has no model number")
+	}
+	if err := validateColorCode(r.ColorCode); err != nil {
+		missing = append(missing, "colour code is not a valid dictionary code")
+	}
+	if strings.TrimSpace(r.CountryOfOrigin) == "" {
+		missing = append(missing, "country of origin is empty")
+	}
+	if r.PriceCount < 1 {
+		missing = append(missing, "no price is set")
+	}
+	if r.DefaultTranslations < 1 {
+		missing = append(missing, "no default-language translation")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("cannot publish colourway %d: %s", colorwayID, strings.Join(missing, "; "))
+	}
+	return nil
+}

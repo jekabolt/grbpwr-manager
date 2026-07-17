@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
-	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -113,6 +113,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			oi.id,
 			oi.order_id,
 			oi.product_id,
+			oi.variant_id,
 			oi.quantity,
 			oi.size_id,
 			oi.product_price,
@@ -120,16 +121,18 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
 			m.blur_hash,
-			p.brand AS product_brand,
-			p.sku AS product_sku,
+			sty.brand AS product_brand,
+			oi.variant_sku_snapshot AS variant_sku_snapshot,
+			COALESCE(oi.base_sku_snapshot, '') AS base_sku_snapshot,
 			p.color AS color,
-			p.top_category_id AS top_category_id,
-			p.sub_category_id AS sub_category_id,
-			p.type_id AS type_id,
-			p.target_gender AS target_gender,
+			sty.top_category_id AS top_category_id,
+			sty.sub_category_id AS sub_category_id,
+			sty.type_id AS type_id,
+			sty.target_gender AS target_gender,
 			p.preorder AS preorder
         FROM order_item oi
         JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN media m ON p.thumbnail_id = m.id
         WHERE oi.order_id IN (:orderIds)
     `
@@ -156,27 +159,24 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 	for _, oi := range ois {
 		oi.Translations = translationMap[oi.ProductId]
 
-		productName := "product"
-		if len(translationMap[oi.ProductId]) > 0 {
-			productName = translationMap[oi.ProductId][0].Name
-		}
+		productName := canonicalProductName(translationMap[oi.ProductId], "product")
 
-		oi.Slug = dto.GetProductSlug(oi.ProductId, oi.ProductBrand, productName, oi.TargetGender.String())
+		oi.Slug = slug.ProductPath(productName, oi.ProductBaseSKU)
 		orderItemsMap[oi.OrderId] = append(orderItemsMap[oi.OrderId], oi)
 	}
 
 	return orderItemsMap, nil
 }
 
-func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ProductTranslationInsert, error) {
+func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds []int) (map[int][]entity.ColorwayTranslationInsert, error) {
 	if len(productIds) == 0 {
-		return map[int][]entity.ProductTranslationInsert{}, nil
+		return map[int][]entity.ColorwayTranslationInsert{}, nil
 	}
 
 	query := `SELECT product_id, language_id, name, description FROM product_translation WHERE product_id IN (:productIds) ORDER BY product_id, language_id`
 	type translationRow struct {
 		ProductId int `db:"product_id"`
-		entity.ProductTranslationInsert
+		entity.ColorwayTranslationInsert
 	}
 
 	rows, err := storeutil.QueryListNamed[translationRow](ctx, db, query, map[string]any{
@@ -186,9 +186,9 @@ func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds 
 		return nil, fmt.Errorf("fetch product translations: %w", err)
 	}
 
-	result := make(map[int][]entity.ProductTranslationInsert, len(productIds))
+	result := make(map[int][]entity.ColorwayTranslationInsert, len(productIds))
 	for _, r := range rows {
-		result[r.ProductId] = append(result[r.ProductId], r.ProductTranslationInsert)
+		result[r.ProductId] = append(result[r.ProductId], r.ColorwayTranslationInsert)
 	}
 	return result, nil
 }

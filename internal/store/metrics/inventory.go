@@ -44,7 +44,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			ps.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			ps.size_id,
 			s.name AS size_name,
@@ -59,12 +59,12 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			it.lead_time_days
 		FROM product_size ps
 		JOIN product p ON p.id = ps.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN daily_sales ds ON ds.product_id = ps.product_id AND ds.size_id = ps.size_id
 		LEFT JOIN inventory_target it ON it.product_id = ps.product_id AND it.size_id = ps.size_id
 		WHERE ps.quantity > 0
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 		ORDER BY days_on_hand ASC
 		LIMIT :limit
 	`, statusIDs)
@@ -164,7 +164,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			GROUP BY product_id
 		)
 		SELECT
-			p.collection,
+			sty.collection,
 			COUNT(DISTINCT p.id) AS product_count,
 			COALESCE(SUM(s.units_sold), 0) AS units_sold,
 			COALESCE(SUM(st.units_remaining), 0) AS units_remaining,
@@ -178,11 +178,12 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 				ELSE 0
 			END AS sell_through_pct
 		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
 		LEFT JOIN sold s ON s.product_id = p.id
 		LEFT JOIN stock st ON st.product_id = p.id
-		WHERE p.deleted_at IS NULL
-			AND p.collection IS NOT NULL AND p.collection <> ''
-		GROUP BY p.collection
+		WHERE p.lifecycle_status <> 4
+			AND sty.collection IS NOT NULL AND sty.collection <> ''
+		GROUP BY sty.collection
 		ORDER BY revenue DESC
 		LIMIT :limit
 	`, statusIDs)
@@ -237,15 +238,16 @@ func (is *inventoryStore) sellThroughTimeline(ctx context.Context, statusIDs str
 		Date       time.Time `db:"d"`
 		Units      int64     `db:"units"`
 	}](ctx, is.DB, fmt.Sprintf(`
-		SELECT p.collection AS collection, DATE(co.placed) AS d, SUM(oi.quantity) AS units
+		SELECT sty.collection AS collection, DATE(co.placed) AS d, SUM(oi.quantity) AS units
 		FROM order_item oi
 		JOIN customer_order co ON oi.order_id = co.id
 		JOIN product p ON oi.product_id = p.id
+		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE co.order_status_id IN (%s)
-			AND p.deleted_at IS NULL
-			AND p.collection IS NOT NULL AND p.collection <> ''
-		GROUP BY p.collection, DATE(co.placed)
-		ORDER BY p.collection, d
+			AND p.lifecycle_status <> 4
+			AND sty.collection IS NOT NULL AND sty.collection <> ''
+		GROUP BY sty.collection, DATE(co.placed)
+		ORDER BY sty.collection, d
 	`, statusIDs), map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("sell-through timeline: %w", err)
@@ -318,7 +320,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			sa.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				p.brand
+				sty.brand
 			) AS product_name,
 			COUNT(*) AS total_sizes,
 			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) AS sold_through_sizes,
@@ -332,9 +334,9 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			END AS sell_through_pct
 		FROM size_analysis sa
 		JOIN product p ON p.id = sa.product_id
+		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE sa.initial_qty > 0
-			AND p.deleted_at IS NULL
-			AND (p.hidden IS NULL OR p.hidden = 0)
+			AND p.lifecycle_status = 2
 		GROUP BY sa.product_id, product_name
 		ORDER BY efficiency_pct DESC
 		LIMIT :limit

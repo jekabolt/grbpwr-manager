@@ -177,8 +177,9 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	// A received line without a product, with a product not in the card, or with a size outside the
 	// card's grid is rejected. This is the friendly early check; the store re-validates the grid
 	// against freshly-read lines under the run lock (concurrency), and recomputes cost_price there.
-	validProduct := make(map[int]bool, len(card.ProductIds))
-	for _, id := range card.ProductIds {
+	linkedProducts := card.LinkedProductIDs()
+	validProduct := make(map[int]bool, len(linkedProducts))
+	for _, id := range linkedProducts {
 		validProduct[id] = true
 	}
 	validSize := make(map[int]bool, len(card.SizeIds))

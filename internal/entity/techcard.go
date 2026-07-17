@@ -259,6 +259,7 @@ type TechCardColorway struct {
 	Id                 int                  `db:"id"`
 	Code               sql.NullString       `db:"code"`
 	Name               string               `db:"name"`
+	ColorCode          string               `db:"color_code"`
 	LabDipStatus       TechCardLabDipStatus `db:"lab_dip_status"`
 	ProductId          sql.NullInt32        `db:"product_id"`
 	Comment            sql.NullString       `db:"comment"`
@@ -271,6 +272,10 @@ type TechCardColorway struct {
 	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
 	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
 	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
+	// BaseSku and Status are populated on the style read path (enrichMaterials) so GetStyle can emit
+	// the derived AdminColorwayRef (R1/§3.3). BaseSku is NULL for an unminted draft colourway.
+	BaseSku sql.NullString `db:"sku"`
+	Status  ColorwayStatus `db:"lifecycle_status"`
 	// Usages is the colour's material recipe (in-memory; persisted to
 	// tech_card_colorway_usage). Each entry binds a catalog BOM article to a garment
 	// part, the colour it takes in this colourway, and its consumption.
@@ -736,12 +741,12 @@ var ValidTechCardGrainlines = map[string]bool{
 }
 
 // TechCardPieceMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE colourway.
-// ColorwayIndex is positional into the card's colourways (full-replace recreates colourway ids, so
-// the store resolves index↔id at the transaction boundary). BOM refs are positional into bom_items,
+// ColorwayID is the explicit colourway id = product.id (R1/§14.3); the old positional colorway_index
+// is gone (colourways are no longer style children). BOM refs stay positional into bom_items,
 // consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
 type TechCardPieceMaterial struct {
 	Id                 int            `db:"id"`
-	ColorwayIndex      int            `db:"-"`                     // 0-based index into the card's colorways
+	ColorwayID         int            `db:"colorway_id"`           // explicit colourway id = product.id
 	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
 	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
 	Note               sql.NullString `db:"note"`
@@ -771,34 +776,50 @@ type TechCardInsert struct {
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
-	Purpose          TechCardPurpose         `db:"purpose"`
-	OutputMaterialId sql.NullInt64           `db:"output_material_id"` // material an auxiliary run receipts into
-	Name             string                  `db:"name"`
-	Brand            sql.NullString          `db:"brand"`
-	Season           sql.NullString          `db:"season"`
-	Collection       sql.NullString          `db:"collection"`
-	CategoryId       sql.NullInt32           `db:"category_id"`
-	TargetGender     sql.NullString          `db:"target_gender"`
-	Stage            TechCardStage           `db:"stage"`
-	Status           sql.NullString          `db:"status"`
-	ApprovalState    TechCardApprovalState   `db:"approval_state"`
-	ApprovedBy       sql.NullString          `db:"approved_by"`
-	ApprovedAt       sql.NullTime            `db:"approved_at"`
-	ReleasedAt       sql.NullTime            `db:"released_at"`
-	Version          sql.NullString          `db:"version"`
-	RevisionDate     sql.NullTime            `db:"revision_date"`
-	BaseModelId      sql.NullInt32           `db:"base_model_id"`
-	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
-	Designer         sql.NullString          `db:"designer"`
-	Constructor      sql.NullString          `db:"constructor"`
-	Technologist     sql.NullString          `db:"technologist"`
-	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
-	Concept          sql.NullString          `db:"concept"` // design concept / intent (designer)
-	Notes            sql.NullString          `db:"notes"`
+	Purpose          TechCardPurpose `db:"purpose"`
+	OutputMaterialId sql.NullInt64   `db:"output_material_id"` // material an auxiliary run receipts into
+	Name             string          `db:"name"`
+	Brand            sql.NullString  `db:"brand"`
+	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
+	// It is never accepted from the public contract.
+	SeasonLabel  sql.NullString `db:"season"`
+	SeasonCode   sql.NullString `db:"season_code"`
+	SeasonYear   sql.NullInt32  `db:"season_year"`
+	Collection   sql.NullString `db:"collection"`
+	CategoryId   sql.NullInt32  `db:"category_id"`
+	TargetGender sql.NullString `db:"target_gender"`
+	// Garment-level catalogue fields (PR6 P2): invariant across a style's colourways (one
+	// pattern, colour is the only axis that varies), so they live on the STYLE. Colourways
+	// (products) read them from here; the duplicated product columns are dropped in step 3.
+	// top/sub/type_category mirror the product taxonomy (all → category(id)); the legacy
+	// single category_id above is a separate optional tag and is untouched.
+	Fit                sql.NullString          `db:"fit"`
+	Composition        sql.NullString          `db:"composition"` // JSON column
+	CareInstructions   sql.NullString          `db:"care_instructions"`
+	ModelWearsHeightCm sql.NullInt32           `db:"model_wears_height_cm"`
+	ModelWearsSizeId   sql.NullInt32           `db:"model_wears_size_id"`
+	TopCategoryId      sql.NullInt32           `db:"top_category_id"`
+	SubCategoryId      sql.NullInt32           `db:"sub_category_id"`
+	TypeId             sql.NullInt32           `db:"type_id"`
+	Stage              TechCardStage           `db:"stage"`
+	Status             sql.NullString          `db:"status"`
+	ApprovalState      TechCardApprovalState   `db:"approval_state"`
+	ApprovedBy         sql.NullString          `db:"approved_by"`
+	ApprovedAt         sql.NullTime            `db:"approved_at"`
+	ReleasedAt         sql.NullTime            `db:"released_at"`
+	Version            sql.NullString          `db:"version"`
+	RevisionDate       sql.NullTime            `db:"revision_date"`
+	BaseModelId        sql.NullInt32           `db:"base_model_id"`
+	BaseSampleSizeId   sql.NullInt32           `db:"base_sample_size_id"`
+	Designer           sql.NullString          `db:"designer"`
+	Constructor        sql.NullString          `db:"constructor"`
+	Technologist       sql.NullString          `db:"technologist"`
+	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
+	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
+	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
-	SizeIds    []int               `db:"-"`
-	ProductIds []int               `db:"-"`
-	Media      []TechCardMediaItem `db:"-"`
+	SizeIds []int               `db:"-"`
+	Media   []TechCardMediaItem `db:"-"`
 	Callouts   []TechCardCallout   `db:"-"`
 	Revisions  []TechCardRevision  `db:"-"`
 	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
@@ -821,12 +842,16 @@ type TechCardInsert struct {
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
 // fields mean "no filter".
 type TechCardListFilter struct {
-	Stage     string // tech_card.stage exact match
-	Gender    string // tech_card.target_gender exact match
-	Brand     string // case-insensitive substring on brand
-	Season    string // case-insensitive substring on season
-	Name      string // case-insensitive substring on name or style_number
-	ProductId int    // only cards linked to this product
+	Stage      string     // tech_card.stage exact match
+	Gender     string     // tech_card.target_gender exact match
+	Brand      string     // case-insensitive substring on brand
+	SeasonCode SeasonEnum // exact normalized pair; empty means no season filter
+	SeasonYear int
+	Name       string // case-insensitive substring on name or style_number
+	ProductId  int    // only cards linked to this product
+	Purpose    string // tech_card.purpose exact match (sellable|auxiliary); "" = no filter.
+	// A product-linking picker passes "sellable" so auxiliary (packaging) cards, which can never
+	// produce a SKU, do not clutter the choice (PR5-E).
 }
 
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
@@ -842,6 +867,20 @@ type TechCard struct {
 	// IDEA card, else the PREVIEW-kind sketch (fallback first technical, then any). Populated only by
 	// ListTechCards; empty elsewhere.
 	PreviewURL string `db:"-"`
+}
+
+// LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's
+// colourways are its products; the old tech_card_product-derived ProductIds is now this projection of
+// the enriched colourways (Colorways[i].ProductId is the id when the colourway is not archived, NULL
+// otherwise — matching the old lifecycle_status <> 4 filter). Requires the card to be enriched.
+func (tc *TechCard) LinkedProductIDs() []int {
+	ids := make([]int, 0, len(tc.Colorways))
+	for i := range tc.Colorways {
+		if tc.Colorways[i].ProductId.Valid {
+			ids = append(ids, int(tc.Colorways[i].ProductId.Int32))
+		}
+	}
+	return ids
 }
 
 // StylePipelineColumn is one lifecycle-stage column of the development board (gap-01): the stage,

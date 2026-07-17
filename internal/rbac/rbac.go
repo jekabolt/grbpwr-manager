@@ -127,17 +127,46 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // of AdminService must appear here or in allowlist; a completeness test enforces
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
-	// products
-	"UpsertProduct":               wr(SectionProducts),
-	"GetProductsPaged":            rd(SectionProducts),
-	"GetProductByID":              rd(SectionProducts),
-	"DeleteProductByID":           wr(SectionProducts),
-	"UpdateProductSizeStock":      wr(SectionProducts),
-	"SyncProductCostFromTechCard": wr(SectionProducts),
-	"GetProductCustoms":           rd(SectionProducts),
-	"SetProductCustoms":           wr(SectionProducts),
-	"ListStockChangeHistory":      rd(SectionProducts),
-	"ListStockChanges":            rd(SectionProducts),
+	// catalog colorways / variants
+	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"GetColorwaysPaged":         rd(SectionProducts),
+	"GetColorwayByID":           rd(SectionProducts),
+	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
+	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
+	"UpdateVariantStock":        wr(SectionProducts),
+	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
+	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
+	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
+	"GetStyleSizeChart":    rd(SectionProducts),
+	"UpdateStyleSizeChart": wr(SectionProducts),
+	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
+	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
+	"GetColorwayCustoms":        rd(SectionProducts),
+	"SetColorwayCustoms":        wr(SectionProducts),
+	"ListStockChangeHistory":    rd(SectionProducts),
+	"ListStockChanges":          rd(SectionProducts),
+	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Catalog-owned
+	// (SectionCosting is field-shaping only and can't gate a method), so they ride the products section.
+	"ListColors":        rd(SectionProducts),
+	"CreateColor":       wr(SectionProducts),
+	"UpdateColor":       wr(SectionProducts),
+	"ArchiveColor":      wr(SectionProducts),
+	"ListCollections":   rd(SectionProducts),
+	"CreateCollection":  wr(SectionProducts),
+	"UpdateCollection":  wr(SectionProducts),
+	"ArchiveCollection": wr(SectionProducts),
+	"ListTags":          rd(SectionProducts),
+	"CreateTag":         wr(SectionProducts),
+	"UpdateTag":         wr(SectionProducts),
+	"ArchiveTag":        wr(SectionProducts),
+	"ListCountries":     rd(SectionProducts),
+	"SetCountryActive":  wr(SectionProducts),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
@@ -195,6 +224,7 @@ var methodRequirements = map[string]Requirement{
 	"UpdateArchive":     wr(SectionArchive),
 	"DeleteArchiveById": wr(SectionArchive),
 	"GetArchiveByID":    rd(SectionArchive),
+	"GetArchivesPaged":  rd(SectionArchive),
 	// models
 	"AddModel":    wr(SectionModels),
 	"GetModel":    rd(SectionModels),

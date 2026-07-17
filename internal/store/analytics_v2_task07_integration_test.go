@@ -40,10 +40,14 @@ func TestAnalyticsV2Task07Profitability(t *testing.T) {
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
 	// Defensive + cleanup: this test's rows are namespaced so a crashed run can't leak into another.
+	// clean is also registered via t.Cleanup below, which runs after the test's own `defer cancel()`
+	// has already cancelled ctx (defers run before Cleanups) — so it must use a fresh context, or the
+	// deferred DELETEs would silently no-op and leak rows into later tests.
 	clean := func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid LIKE 'T07-%'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM channel_spend WHERE utm_campaign = 'T07'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE label = 'T07-rent'")
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid LIKE 'T07-%'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM channel_spend WHERE utm_campaign = 'T07'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM opex_line WHERE label = 'T07-rent'")
 	}
 	clean()
 	t.Cleanup(clean)
@@ -57,7 +61,7 @@ func TestAnalyticsV2Task07Profitability(t *testing.T) {
 	require.NoError(t, err)
 	addrID, err := res.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", addrID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", addrID) })
 
 	mkOrder := func(uuid, email string, total int, placed time.Time) {
 		r, err := testDB.ExecContext(ctx, `INSERT INTO customer_order
@@ -70,7 +74,7 @@ func TestAnalyticsV2Task07Profitability(t *testing.T) {
 			(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 			VALUES (?, 'a', 'b', ?, '1234567', ?, ?)`, oid, email, addrID, addrID)
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 	}
 
 	// --- Scenario A: May 2026, spend + opex present ---

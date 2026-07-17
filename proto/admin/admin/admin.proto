@@ -24,6 +24,7 @@ import "common/support.proto";
 import "common/task.proto";
 import "common/techcard.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
@@ -77,57 +78,172 @@ service AdminService {
 
   // PRODUCTS MANAGER
 
-  // Adds a new product or updates an existing one.
-  rpc UpsertProduct(UpsertProductRequest) returns (UpsertProductResponse) {
+  // CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
+  // decomposition; replaces the coupled UpsertColorway). It writes only colourway-owned fields — no
+  // style facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The
+  // colourway starts DRAFT and is made live through PublishColorway.
+  rpc CreateColorway(CreateColorwayRequest) returns (CreateColorwayResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/upsert"
+      post: "/api/admin/colorways"
       body: "*"
     };
   }
 
-  // Retrieves a paginated list of products.
-  rpc GetProductsPaged(GetProductsPagedRequest) returns (GetProductsPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/products/paged"};
+  // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock
+  // (expected_colorway_version = the shared tech_card.lock_version). It never touches style facts,
+  // variants, stock or the size chart (R2/R4).
+  rpc UpdateColorway(UpdateColorwayRequest) returns (UpdateColorwayResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/colorways/{colorway_id}"
+      body: "*"
+    };
   }
 
-  // Gets a product by its ID.
-  rpc GetProductByID(GetProductByIDRequest) returns (GetProductByIDResponse) {
-    option (google.api.http) = {get: "/api/admin/product/{id}"};
+  // Retrieves a paginated list of colourways.
+  rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/colorways/paged"};
   }
 
-  // Deletes a product by its ID.
-  rpc DeleteProductByID(DeleteProductByIDRequest) returns (DeleteProductByIDResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/{id}"};
+  // Gets a colourway by its id.
+  rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
+    option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}"};
+  }
+
+  // ArchiveColorwayByID retires a colourway (archive-not-delete, R6/R9): ACTIVE|HIDDEN -> ARCHIVED
+  // (terminal). Was DeleteColorwayByID.
+  rpc ArchiveColorwayByID(ArchiveColorwayByIDRequest) returns (ArchiveColorwayByIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/archive"
+      body: "*"
+    };
+  }
+
+  // PublishColorway transitions a DRAFT colourway to ACTIVE (R6), enforcing the sellable
+  // preconditions (built base SKU, ≥1 valid-SKU variant, complete sku_season+model_no, dictionary
+  // colour, country, price, default translation).
+  rpc PublishColorway(PublishColorwayRequest) returns (PublishColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/publish"
+      body: "*"
+    };
+  }
+
+  // TransitionColorwayStatus applies a non-publish lifecycle edge (R6): ACTIVE<->HIDDEN and
+  // ACTIVE|HIDDEN->ARCHIVED, validated through the server state machine. Publish has its own RPC
+  // because it carries preconditions.
+  rpc TransitionColorwayStatus(TransitionColorwayStatusRequest) returns (TransitionColorwayStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/status"
+      body: "*"
+    };
   }
 
   // Updates the stock for a specific product size.
-  rpc UpdateProductSizeStock(UpdateProductSizeStockRequest) returns (UpdateProductSizeStockResponse) {
+  rpc UpdateVariantStock(UpdateVariantStockRequest) returns (UpdateVariantStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/stock/update"
       body: "*"
     };
   }
 
-  // GetProductCustoms returns a product's international-shipping customs data (HS code, origin,
-  // declared description).
-  rpc GetProductCustoms(GetProductCustomsRequest) returns (GetProductCustomsResponse) {
-    option (google.api.http) = {get: "/api/admin/product/{product_id}/customs"};
-  }
-
-  // SetProductCustoms sets a product's customs data used to build international shipping labels.
-  rpc SetProductCustoms(SetProductCustomsRequest) returns (SetProductCustomsResponse) {
+  // CreateVariant adds a new variant (size) to a colourway at zero stock (R2). The size is immutable;
+  // the variant SKU is minted from the colourway's base. Fails if the size already exists or the
+  // colourway is archived.
+  rpc CreateVariant(CreateVariantRequest) returns (CreateVariantResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/customs"
+      post: "/api/admin/colorways/{colorway_id}/variants"
       body: "*"
     };
   }
 
-  // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
-  // any manual value. If tech_card_id is set it also becomes the product's primary card;
-  // otherwise the product's existing primary card is used.
-  rpc SyncProductCostFromTechCard(SyncProductCostFromTechCardRequest) returns (SyncProductCostFromTechCardResponse) {
+  // UpdateVariant patches a variant's mutable state (R2). size_id and the variant SKU are immutable;
+  // only the lifecycle status is writable (archive-not-delete).
+  rpc UpdateVariant(UpdateVariantRequest) returns (UpdateVariantResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/cost/sync-from-tech-card"
+      patch: "/api/admin/variants/{variant_id}"
+      body: "*"
+    };
+  }
+
+  // ArchiveVariant retires a variant (ACTIVE -> ARCHIVED, R2): it drops off the storefront and rejects
+  // stock writes, but its id stays valid for the frozen order/stock references.
+  rpc ArchiveVariant(ArchiveVariantRequest) returns (ArchiveVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/variants/{variant_id}/archive"
+      body: "*"
+    };
+  }
+
+  // UpdateStyle is the SOLE writer of a style's catalogue facts (brand, sku_season, collection,
+  // target_gender, fit, composition, care instructions, model-wears, categories) — R4/§14.7. It is
+  // optimistically locked on expected_lock_version (stale -> ABORTED). Changing a SKU fact (season)
+  // re-mints every unfrozen sibling colourway in one tx; if ANY sibling is SKU-frozen (has order/label
+  // history) the change is refused (FAILED_PRECONDITION) — use CloneStyleForSeason instead. PLM facts
+  // (BOM/POM/ops/lifecycle) stay on UpdateTechCard; no fact is written by both.
+  rpc UpdateStyle(UpdateStyleRequest) returns (UpdateStyleResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/styles/{style_id}"
+      body: "*"
+    };
+  }
+
+  // GetStyleSizeChart returns a style's full size chart plus the shared lock_version (R5). The admin
+  // UI loads the whole chart before editing, because UpdateStyleSizeChart is a full-replace.
+  rpc GetStyleSizeChart(GetStyleSizeChartRequest) returns (GetStyleSizeChartResponse) {
+    option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
+  }
+
+  // UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5). A colourway
+  // save never touches the chart; the chart is style-owned and shared by every colourway of the style.
+  rpc UpdateStyleSizeChart(UpdateStyleSizeChartRequest) returns (UpdateStyleSizeChartResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/styles/{style_id}/size-chart"
+      body: "*"
+    };
+  }
+
+  // CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
+  // (R4 official path for a season change that would otherwise re-mint frozen siblings). The clone
+  // starts as a fresh DRAFT tech card with no colourways; move drafts onto it with RelinkDraftColorway
+  // or create new ones. Optimistically guarded on the source's expected_source_version.
+  rpc CloneStyleForSeason(CloneStyleForSeasonRequest) returns (CloneStyleForSeasonResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/styles/{source_style_id}/clone-for-season"
+      body: "*"
+    };
+  }
+
+  // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
+  // frozen-sibling problem). Only a DRAFT may be relinked; both sides are optimistically locked and the
+  // colourway's SKU is re-minted from the target style's facts.
+  rpc RelinkDraftColorway(RelinkDraftColorwayRequest) returns (RelinkDraftColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/relink"
+      body: "*"
+    };
+  }
+
+  // GetColorwayCustoms returns a product's international-shipping customs data (HS code, origin,
+  // declared description).
+  rpc GetColorwayCustoms(GetColorwayCustomsRequest) returns (GetColorwayCustomsResponse) {
+    option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}/customs"};
+  }
+
+  // SetColorwayCustoms sets a colourway's customs data used to build international shipping labels.
+  rpc SetColorwayCustoms(SetColorwayCustomsRequest) returns (SetColorwayCustomsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/customs"
+      body: "*"
+    };
+  }
+
+  // SyncColorwayCostFromOwningStyle (re)seeds a colourway's confidential cost_price from its owning
+  // style's primary card, overriding any manual value. R4/p019: it derives the style from the owner
+  // relation and never repoints it — cost provenance is separated from ownership. Was
+  // SyncColorwayCostFromStyle.
+  rpc SyncColorwayCostFromOwningStyle(SyncColorwayCostFromOwningStyleRequest) returns (SyncColorwayCostFromOwningStyleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/cost/sync"
       body: "*"
     };
   }
@@ -140,6 +256,89 @@ service AdminService {
   // Lists stock changes with simplified format for reporting.
   rpc ListStockChanges(ListStockChangesRequest) returns (ListStockChangesResponse) {
     option (google.api.http) = {get: "/api/admin/stock-changes"};
+  }
+
+  // DICTIONARY MANAGER (R9)
+  // Controlled merch dictionaries: colour / collection / tag, plus the closed ISO country dictionary.
+  // Every mutation carries expected_version (optimistic concurrency on the namespace's
+  // dictionary_revision, 0 = unconditional) and returns the new revision. There is no delete: an in-use
+  // entry is archived (FK RESTRICT). Country is closed — only activation toggles (the full ISO set is
+  // seeded), so it has no create/rename/archive.
+
+  rpc ListColors(ListColorsRequest) returns (ListColorsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/colors"};
+  }
+  rpc CreateColor(CreateColorRequest) returns (CreateColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors"
+      body: "*"
+    };
+  }
+  rpc UpdateColor(UpdateColorRequest) returns (UpdateColorResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/colors/{code}"
+      body: "*"
+    };
+  }
+  rpc ArchiveColor(ArchiveColorRequest) returns (ArchiveColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors/{code}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/collections"};
+  }
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections"
+      body: "*"
+    };
+  }
+  rpc UpdateCollection(UpdateCollectionRequest) returns (UpdateCollectionResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/collections/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveCollection(ArchiveCollectionRequest) returns (ArchiveCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/tags"};
+  }
+  rpc CreateTag(CreateTagRequest) returns (CreateTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags"
+      body: "*"
+    };
+  }
+  rpc UpdateTag(UpdateTagRequest) returns (UpdateTagResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/tags/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveTag(ArchiveTagRequest) returns (ArchiveTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCountries(ListCountriesRequest) returns (ListCountriesResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/countries"};
+  }
+  rpc SetCountryActive(SetCountryActiveRequest) returns (SetCountryActiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/countries/{code}/active"
+      body: "*"
+    };
   }
 
   // PROMO MANAGER
@@ -418,6 +617,14 @@ service AdminService {
 
   rpc GetArchiveByID(GetArchiveByIDRequest) returns (GetArchiveByIDResponse) {
     option (google.api.http) = {get: "/api/admin/archive/{id}"};
+  }
+
+  // GetArchivesPaged is the ADMIN archive list: unlike the storefront projection it carries the
+  // numeric ids the admin write path (UpdateArchive/DeleteArchiveById/HeroFeaturedArchiveInsert)
+  // keys on (R3: internal ids stay on the admin surface). Registered after GetArchiveByID so the
+  // literal `/paged` GET wins over `/{id}` in grpc-gateway's prepend-mux ordering.
+  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/archive/paged"};
   }
 
   // MODEL MANAGER
@@ -1299,113 +1506,412 @@ message DeleteFromBucketResponse {}
 
 // PRODUCTS MANAGER
 
-message UpsertProductRequest {
-  int32 id = 1;
-  common.ProductNew product = 2;
+// CreateColorway/UpdateColorway/UpdateStyle replace the coupled UpsertColorway (R2/R4 write
+// decomposition, §6). A colourway is created DRAFT against an existing style and carries only
+// colourway-owned fields; the style facts are patched separately through UpdateStyle under a shared
+// optimistic lock.
+message CreateColorwayRequest {
+  int32 style_id = 1; // the single style relation (R4); the colourway attaches to an existing style
+  reserved 2; // color_code is carried by merchandising.color_code (§1.5, the sole write identity)
+  reserved "color_code";
+  common.ColorwayMerchandisingInsert merchandising = 3;
+  common.ColorwayDevelopmentInsert development = 4; // dev/lab-dip; recipe persistence lands with T-A (existing gap)
+  int32 thumbnail_media_id = 5;
+  int32 secondary_thumbnail_media_id = 6;
+  repeated int32 media_ids = 7;
+  repeated common.ColorwayTagInsert tags = 8;
+  repeated common.ColorwayPriceInsert prices = 9;
+  repeated common.ColorwayInsertTranslation translations = 10; // merch translation overrides (R4)
+  google.type.Decimal cost_price = 11; // write-only COGS (costing:write)
+  string country_code = 12; // ISO 3166-1 alpha-2 (R9)
+  // status is server-owned = DRAFT.
 }
 
-message UpsertProductResponse {
-  int32 id = 1;
+message CreateColorwayResponse {
+  int32 colorway_id = 1;
 }
 
-message GetProductsPagedRequest {
+message UpdateColorwayRequest {
+  int32 colorway_id = 1;
+  uint64 expected_colorway_version = 2; // the shared tech_card.lock_version
+  common.ColorwayMerchandisingInsert merchandising = 3;
+  common.ColorwayDevelopmentInsert development = 4;
+  repeated int32 media_ids = 5;
+  repeated common.ColorwayTagInsert tags = 6;
+  repeated common.ColorwayPriceInsert prices = 7;
+  google.protobuf.FieldMask update_mask = 8;
+  int32 thumbnail_media_id = 9;
+  int32 secondary_thumbnail_media_id = 10;
+  google.type.Decimal cost_price = 11; // write-only COGS (costing:write); omit to leave unchanged
+  string country_code = 12; // ISO
+  repeated common.ColorwayInsertTranslation translations = 13; // merch translation overrides (sparse: empty = unchanged)
+  // NOT here: variants/quantity, size chart, style facts.
+}
+
+message UpdateColorwayResponse {
+  int32 lock_version = 1; // the new shared lock_version
+}
+
+// StylePatch is the narrow set of catalogue-style facts UpdateStyle owns (R4/§14.7-8). It deliberately
+// does NOT reuse the heavy TechCardInsert, so a style-catalogue edit can never full-replace the PLM
+// children (BOM/POM/ops). category_id stays a PLM/UpdateTechCard fact; canonical style translations
+// await a dedicated style_translation table (deferred).
+message StylePatch {
+  string brand = 1;
+  common.SeasonEnum season = 2; // sku_season code (the SKU-facing season); the year is preserved
+  string collection = 3;
+  common.GenderEnum target_gender = 4;
+  string fit = 5;
+  string composition = 6;
+  string care_instructions = 7;
+  int32 model_wears_height_cm = 8;
+  int32 model_wears_size_id = 9;
+  int32 top_category_id = 10;
+  int32 sub_category_id = 11;
+  int32 type_id = 12;
+}
+
+message UpdateStyleRequest {
+  int64 style_id = 1;
+  StylePatch patch = 2;
+  uint64 expected_lock_version = 3; // shared tech_card.lock_version; stale -> ABORTED
+  google.protobuf.FieldMask update_mask = 4;
+}
+
+message UpdateStyleResponse {
+  int32 lock_version = 1; // the new shared lock_version
+}
+
+message GetColorwaysPagedRequest {
   int32 limit = 1;
   int32 offset = 2;
   repeated common.SortFactor sort_factors = 3;
   common.OrderFactor order_factor = 4;
   common.FilterConditions filter_conditions = 5;
-  bool show_hidden = 6;
+  reserved 6; // was bool show_hidden — replaced by an explicit lifecycle-status filter (R6/§14.6)
+  reserved "show_hidden";
+  repeated common.ColorwayLifecycleStatus statuses = 7; // empty = the default admin set (all but ARCHIVED)
 }
 
-message GetProductsPagedResponse {
-  repeated common.Product products = 1;
+message GetColorwaysPagedResponse {
+  repeated common.Colorway colorways = 1; // R8: renamed from products
+  reserved "products";
+  int32 total = 2; // total matching colourways ignoring pagination
 }
 
-message GetProductByIDRequest {
-  int32 id = 1;
+message GetColorwayByIDRequest {
+  int32 colorway_id = 1; // R8: renamed from id
+  reserved "id";
 }
 
-message GetProductByIDResponse {
-  common.ProductFull product = 1;
+message GetColorwayByIDResponse {
+  common.ColorwayFull colorway = 1; // R8: renamed from product
+  reserved "product";
   // cost_info carries the confidential COGS/provenance fields. Admin-only — this lives on the
-  // admin GetProductByID response, never on the shared ProductFull, so it cannot leak to the
+  // admin GetColorwayByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
-  ProductCostInfo cost_info = 2;
+  ColorwayCostInfo cost_info = 2;
 }
 
-// ProductCostInfo is the admin-only view of a product's confidential cost of goods and where
+// ColorwayCostInfo is the admin-only view of a product's confidential cost of goods and where
 // that cost came from. source is "manual" | "tech_card" | "" (unset); tech-card ids are 0
 // when absent.
-message ProductCostInfo {
+message ColorwayCostInfo {
   google.type.Decimal cost_price = 1;
-  string cost_price_source = 2;
-  int32 cost_price_tech_card_id = 3;
+  common.ColorwayCostSource cost_price_source = 2; // R4: type change string->enum (same number)
+  int32 cost_source_tech_card_id = 3; // R4: renamed from cost_price_tech_card_id (cost provenance, not ownership)
+  reserved "cost_price_tech_card_id";
   google.protobuf.Timestamp cost_price_updated_at = 4;
   int32 primary_tech_card_id = 5;
 }
 
-message SyncProductCostFromTechCardRequest {
-  int32 product_id = 1;
-  // tech_card_id optionally repoints the product's primary card before seeding; 0 = use the
-  // product's existing primary card.
-  int32 tech_card_id = 2;
+message SyncColorwayCostFromOwningStyleRequest {
+  int64 colorway_id = 1; // R8: renamed from product_id (same FK target = product.id)
+  reserved "product_id";
+  // R4/p019: the style is derived from the owner relation (the colourway's primary card) and is NEVER
+  // repointed by a cost sync — cost provenance is separated from ownership. tech_card_id is removed.
+  reserved 2;
+  reserved "tech_card_id";
+  uint64 expected_version = 3;
 }
 
-message SyncProductCostFromTechCardResponse {
+message SyncColorwayCostFromOwningStyleResponse {
   // the cost_price written, in base currency.
   google.type.Decimal cost_price = 1;
   string currency = 2;
-  // the tech card the cost was sourced from.
+  // the tech card the cost was sourced from (the owning style's primary card).
   int32 tech_card_id = 3;
+  common.ColorwayCostSource source = 4; // R4: where the synced cost came from (STYLE)
 }
 
-message DeleteProductByIDRequest {
-  int32 id = 1;
+// Lifecycle transition requests (R6). expected_version echoes tech_card.lock_version for future
+// optimistic-lock wiring; concurrency today is enforced by the server's lifecycle_status guard (a
+// concurrent transition is rejected, never silently lost).
+message ArchiveColorwayByIDRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+  reserved "id"; // was DeleteColorwayByIDRequest.id
 }
 
-message DeleteProductByIDResponse {}
+message ArchiveColorwayByIDResponse {}
 
-message UpdateProductSizeStockRequest {
+message PublishColorwayRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+}
+
+message PublishColorwayResponse {
+  common.Colorway colorway = 1; // ACTIVE, with the minted base SKU
+}
+
+message TransitionColorwayStatusRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+  common.ColorwayLifecycleStatus target = 3; // HIDDEN | ACTIVE (unhide) | ARCHIVED; DRAFT->ACTIVE uses PublishColorway
+}
+
+message TransitionColorwayStatusResponse {
+  common.Colorway colorway = 1;
+}
+
+message UpdateVariantStockRequest {
   common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta
-  int32 product_id = 2; // Required: product ID
-  int32 size_id = 3; // Required: size ID
+  // R2/p012: stock is addressed by the stable variant id (product_size.id), never the (product_id,
+  // size_id) pair — and it NEVER creates a variant (unknown -> NOT_FOUND). Identity change -> old numbers
+  // reserved.
+  reserved 2, 3;
+  reserved "product_id", "size_id";
   int32 quantity = 4; // Required: final value for "set", delta amount for "adjust" (always unsigned)
   common.StockAdjustmentDirection direction = 5; // Required for "adjust" mode, ignored for "set"
   common.StockChangeReason reason = 6; // Required: reason for stock adjustment
   optional string comment = 7; // Optional, but required for reason=OTHER
+  int64 variant_id = 8; // Required: the variant to adjust (product_size.id)
 }
 
-message UpdateProductSizeStockResponse {}
+message UpdateVariantStockResponse {}
 
-// ProductCustoms is a product's international-shipping customs data. hs_code and
-// customs_description are the customs-only fields set by SetProductCustoms. country_of_origin is the
+// Variant CRUD (R2). A variant is created at zero stock, its size is immutable, and it is archived
+// (never deleted) so the frozen order/stock references stay valid. expected_*_version echoes the
+// shared tech_card.lock_version for future optimistic-lock wiring; concurrency today is enforced by
+// the store's existence + status guards (a concurrent change is rejected, never silently lost).
+message CreateVariantRequest {
+  int64 colorway_id = 1;
+  int32 size_id = 2;
+  uint64 expected_colorway_version = 3;
+}
+
+message CreateVariantResponse {
+  common.Variant variant = 1; // the created variant, at zero stock
+}
+
+message UpdateVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+  VariantPatch patch = 3;
+  google.protobuf.FieldMask update_mask = 4; // size_id / variant_sku are NOT writable
+}
+
+// VariantPatch carries the only mutable variant field: its lifecycle status (archive-not-delete).
+message VariantPatch {
+  common.VariantLifecycleStatus status = 1;
+}
+
+message UpdateVariantResponse {
+  common.Variant variant = 1;
+}
+
+message ArchiveVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+}
+
+message ArchiveVariantResponse {}
+
+// Style size chart (R5, full-replace). The chart is style-owned (tech_card_size_measurement) and shares
+// the style's tech_card.lock_version; there is no separate chart version.
+message GetStyleSizeChartRequest {
+  int32 style_id = 1;
+}
+
+message GetStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1;
+}
+
+message UpdateStyleSizeChartRequest {
+  int32 style_id = 1;
+  uint64 expected_lock_version = 2;
+  repeated common.StyleSizeChartCell cells = 3; // the WHOLE chart; anything omitted is deleted
+}
+
+message UpdateStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1; // the stored chart with the bumped lock_version
+}
+
+// RelinkDraftColorway (R4): move a DRAFT colourway onto target_style_id. Both expected versions echo the
+// respective styles' shared tech_card.lock_version (stale -> ABORTED).
+message RelinkDraftColorwayRequest {
+  int64 colorway_id = 1;
+  int64 target_style_id = 2;
+  uint64 expected_colorway_version = 3;
+  uint64 expected_target_style_version = 4;
+}
+
+message RelinkDraftColorwayResponse {}
+
+message CloneStyleForSeasonRequest {
+  int64 source_style_id = 1;
+  common.SkuSeason sku_season = 2; // the new season for the clone (its SKU-facing season)
+  uint64 expected_source_version = 3; // the source style's lock_version (stale -> ABORTED)
+}
+
+message CloneStyleForSeasonResponse {
+  int32 new_style_id = 1;
+}
+
+// ColorwayCustoms is a product's international-shipping customs data. hs_code and
+// customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the
 // existing core product field (free-text manufacture country) returned read-only for display and
-// reused as the Sendcloud origin_country — SetProductCustoms ignores it (edit it on the product form).
-message ProductCustoms {
+// reused as the Sendcloud origin_country — SetColorwayCustoms ignores it (edit it on the product form).
+message ColorwayCustoms {
   string hs_code = 1;
   string country_of_origin = 2; // read-only; core product field, resolved to ISO-2 at label time
   string customs_description = 3;
 }
 
-message GetProductCustomsRequest {
-  int32 product_id = 1;
+message GetColorwayCustomsRequest {
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
 }
 
-message GetProductCustomsResponse {
-  ProductCustoms customs = 1;
+message GetColorwayCustomsResponse {
+  ColorwayCustoms customs = 1;
 }
 
-message SetProductCustomsRequest {
-  int32 product_id = 1;
-  ProductCustoms customs = 2;
+message SetColorwayCustomsRequest {
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
+  ColorwayCustoms customs = 2;
 }
 
-message SetProductCustomsResponse {}
+message SetColorwayCustomsResponse {}
+
+// ==================== Dictionary CRUD (R9) ====================
+// Controlled merch dictionaries. Every mutation carries expected_version (0 = unconditional) and echoes
+// the new common.DictionaryRevision so a client can advance its cached revision without a round-trip.
+
+message ListColorsRequest {
+  bool include_archived = 1;
+}
+message ListColorsResponse {
+  repeated common.Color colors = 1;
+}
+message CreateColorRequest {
+  string code = 1; // [A-Z0-9]{3}, unique; immutable once created (R9)
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message CreateColorResponse {
+  common.Color color = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateColorRequest {
+  string code = 1; // immutable lookup key — never rewritten (R9); changes name/hex only
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message UpdateColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveColorRequest {
+  string code = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCollectionsRequest {
+  bool include_archived = 1;
+}
+message ListCollectionsResponse {
+  repeated common.Collection collections = 1;
+}
+message CreateCollectionRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateCollectionResponse {
+  common.Collection collection = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateCollectionRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveCollectionRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListTagsRequest {
+  bool include_archived = 1;
+}
+message ListTagsResponse {
+  repeated common.Tag tags = 1;
+}
+message CreateTagRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateTagResponse {
+  common.Tag tag = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateTagRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveTagRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCountriesRequest {
+  bool active_only = 1;
+}
+message ListCountriesResponse {
+  repeated common.Country countries = 1;
+}
+message SetCountryActiveRequest {
+  string code = 1; // ISO 3166-1 alpha-2
+  bool active = 2;
+  uint64 expected_version = 3;
+}
+message SetCountryActiveResponse {
+  common.DictionaryRevision revision = 1;
+}
 
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;
   google.protobuf.Timestamp date_to = 2; // inclusive
-  int32 product_id = 3;
+  int32 colorway_id = 3; // R8: renamed from product_id
+  reserved "product_id";
   optional int32 size_id = 4; // Optional: filter by size
   common.StockChangeSource source = 5;
   int32 limit = 6; // 0 = return all records
@@ -1421,7 +1927,8 @@ message ListStockChangeHistoryResponse {
 message ListStockChangesRequest {
   google.protobuf.Timestamp from = 1; // Required: start date (inclusive)
   google.protobuf.Timestamp to = 2; // Required: end date (inclusive)
-  optional int32 product_id = 3; // Optional: filter by product ID
+  optional int32 colorway_id = 3; // R8: renamed from product_id (Optional filter)
+  reserved "product_id";
   common.StockChangeSource source = 4; // Optional: filter by source type (enum, UNSPECIFIED = no filter)
   int32 limit = 5; // Pagination limit: 0=default(100), -1=all, >0=specified (max 10000)
   int32 offset = 6; // Pagination offset (ignored when limit=-1)
@@ -1454,7 +1961,8 @@ message ListStockChangesResponse {
 }
 
 message DeleteProductMediaRequest {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id
+  reserved "product_id";
   int32 media_id = 2;
 }
 
@@ -2370,6 +2878,17 @@ message DeleteArchiveByIdRequest {
 
 message DeleteArchiveByIdResponse {}
 
+message GetArchivesPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+}
+
+message GetArchivesPagedResponse {
+  repeated common.ArchiveList archives = 1; // id-bearing admin list shape
+  int32 total = 2;
+}
+
 // MODEL MANAGER
 
 message AddModelRequest {
@@ -3013,7 +3532,7 @@ message DeviceFunnelMetric {
   int32 purchase_users = 6;
 }
 
-// --- Analytics: Product Engagement ---
+// --- Analytics: Colorway Engagement ---
 
 message ProductEngagementMetric {
   google.protobuf.Timestamp date = 1;
@@ -3294,7 +3813,7 @@ message SlowMoverRow {
   int64 units_sold = 4;
   double days_in_stock = 5;
   google.protobuf.Timestamp last_sale_date = 6;
-  bool product_hidden = 7; // Product visibility flag (from product.hidden)
+  bool product_hidden = 7; // Colorway visibility flag (from product.hidden)
   int64 total_views = 8; // GA4 page views for period (from ga4_product_page_metrics)
   // Margin fields (mirror ProductMetric). Populated only when the product has a cost_price;
   // has_cost=false ⇒ the cost is unknown, so treat margins as N/A, not as 100%. Computed on
@@ -3495,7 +4014,7 @@ message DeadStockRow {
   google.type.Decimal stock_value = 7;
 }
 
-// --- Analytics: Product Trend ---
+// --- Analytics: Colorway Trend ---
 
 message ProductTrendRow {
   int32 product_id = 1;
@@ -3520,7 +4039,7 @@ message TimeOnPageRow {
   int64 page_views = 6;
 }
 
-// --- Analytics: Product Zoom ---
+// --- Analytics: Colorway Zoom ---
 
 message ProductZoomRow {
   google.protobuf.Timestamp date = 1;
@@ -4118,9 +4637,13 @@ message ListTechCardsRequest {
   common.TechCardStage stage = 4; // UNKNOWN = no filter
   common.GenderEnum gender = 5; // UNKNOWN = no filter
   string brand = 6; // optional case-insensitive substring
-  string season = 7; // optional case-insensitive substring
+  reserved 7;
+  reserved "season";
   string name = 8; // optional case-insensitive substring on name or style_number
   int32 product_id = 9; // optional: only cards linked to this product (0 = no filter)
+  string purpose = 10; // optional exact match: "sellable" | "auxiliary" ("" = no filter). A
+  // product-linking picker passes "sellable" to hide auxiliary/packaging cards.
+  common.SkuSeason sku_season = 11; // optional exact normalized pair; no free-text matching
 }
 
 message ListTechCardsResponse {

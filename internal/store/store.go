@@ -23,6 +23,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
+	"github.com/jekabolt/grbpwr-manager/internal/store/dictionary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fulfillment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
@@ -100,6 +101,7 @@ type MYSQLStore struct {
 	metrics            *metrics.Store
 	content            *content.Store
 	settingsStore      *settings.Store
+	dictionaryStore    *dictionary.Store
 	comm               *communication.Store
 	supportStore       *support.Store
 	adminStore         *admin.Store
@@ -254,6 +256,16 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("can't init consts: %w", err)
 	}
 
+	// SKU redesign task 13: repair eligible identities, then enforce the catalog-wide SKU
+	// postcondition before the store becomes ready. Frozen/deleted rows are included in verification.
+	if err := ss.productStore.BackfillSKUs(ctx); err != nil {
+		c()
+		if closeErr := d.Close(); closeErr != nil {
+			slog.ErrorContext(ctx, "close database after SKU readiness failure", slog.String("err", closeErr.Error()))
+		}
+		return nil, fmt.Errorf("sku readiness check failed: %w", err)
+	}
+
 	go func() {
 		<-ctx.Done()
 		d.Close()
@@ -366,6 +378,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.supportStore = support.New(base)
 	ms.adminStore = admin.New(base, ms.Tx)
 	ms.settingsStore = settings.New(base, ms.Tx, func() dependency.Repository { return ms })
+	ms.dictionaryStore = dictionary.New(base, ms.Tx)
 	ms.productStore = product.New(base, ms.Tx, func() dependency.Repository { return ms })
 	ms.bqcache = bqcache.New(base)
 	ms.ga4 = ga4data.New(base, ms.Tx)
@@ -394,6 +407,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.supportStore = support.New(base)
 	txStore.adminStore = admin.New(base, outerTx)
 	txStore.settingsStore = settings.New(base, outerTx, func() dependency.Repository { return txStore })
+	txStore.dictionaryStore = dictionary.New(base, outerTx)
 	txStore.productStore = product.New(base, outerTx, func() dependency.Repository { return txStore })
 	txStore.bqcache = bqcache.New(base)
 	txStore.ga4 = ga4data.New(base, outerTx)
@@ -469,6 +483,7 @@ func (ms *MYSQLStore) Archive() dependency.Archive               { return ms.con
 func (ms *MYSQLStore) Media() dependency.Media                   { return ms.content }
 func (ms *MYSQLStore) Settings() dependency.Settings             { return ms.settingsStore }
 func (ms *MYSQLStore) Cache() dependency.Cache                   { return ms.settingsStore }
+func (ms *MYSQLStore) Dictionary() dependency.Dictionary         { return ms.dictionaryStore }
 func (ms *MYSQLStore) Mail() dependency.Mail                     { return ms.comm }
 func (ms *MYSQLStore) Subscribers() dependency.Subscribers       { return ms.comm }
 func (ms *MYSQLStore) Support() dependency.Support               { return ms.supportStore }

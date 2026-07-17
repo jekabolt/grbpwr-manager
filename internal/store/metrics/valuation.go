@@ -31,14 +31,15 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 		)
 		SELECT
 			p.id AS product_id,
-			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1), p.brand) AS product_name,
+			COALESCE((SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1), sty.brand) AS product_name,
 			p.cost_price AS cost_price,
 			COALESCE(SUM(ps.quantity), 0) AS on_hand,
 			COALESCE(MAX(sold.units), 0) AS sold_units
 		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
 		JOIN product_size ps ON ps.product_id = p.id
 		LEFT JOIN sold ON sold.product_id = p.id
-		WHERE p.deleted_at IS NULL
+		WHERE p.lifecycle_status <> 4
 		GROUP BY p.id, product_name, p.cost_price
 		HAVING on_hand > 0`
 

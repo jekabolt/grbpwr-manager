@@ -45,6 +45,31 @@ var symbols = map[string]string{
 	"KRW": "₩",
 }
 
+// requiredCurrencies is the ordered set of currencies that every product price list and every
+// shipping-carrier price map MUST provide — the single source of truth for "the price set is
+// complete" checks (previously duplicated as a map in store/product and a slice in
+// apisrv/admin/shipment). It mirrors the keys of minimumAmounts (the supported set); a test asserts
+// the two stay in sync so a currency can't be added to one without the other.
+var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW"}
+
+// RequiredCurrencies returns, as a fresh slice, the currencies every price list must include.
+func RequiredCurrencies() []string {
+	return append([]string(nil), requiredCurrencies...)
+}
+
+// MissingRequired returns the required currencies absent from provided (a case-insensitive set of
+// currency codes the caller has already collected), in canonical order. Empty means the set is
+// complete.
+func MissingRequired(provided map[string]bool) []string {
+	var missing []string
+	for _, c := range requiredCurrencies {
+		if !provided[c] {
+			missing = append(missing, c)
+		}
+	}
+	return missing
+}
+
 // Symbol returns the display symbol for the currency, or the uppercased ISO
 // code when no symbol is known.
 func Symbol(c string) string {

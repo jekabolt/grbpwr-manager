@@ -1,6 +1,10 @@
 package dto
 
 import (
+	"fmt"
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -41,11 +45,11 @@ func ConvertEntityFilterConditionsToPBCommon(fc entity.FilterConditions) *pb_com
 	}
 
 	return &pb_common.FilterConditions{
-		From:           fc.From.String(),
-		To:             fc.To.String(),
+		From:                  fc.From.String(),
+		To:                    fc.To.String(),
 		Currency:              fc.Currency,
 		OnSale:                fc.OnSale,
-		Color:                 fc.Color,
+		ColorCodes:            fc.ColorCodes,
 		TopCategoryIds:        topCategories,
 		ExcludeTopCategoryIds: excludeTopCategories,
 		SubCategoryIds:        subCategories,
@@ -87,9 +91,18 @@ func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFacto
 }
 
 // ConvertPBCommonFilterConditionsToEntity converts FilterConditions from pb_common to entity
-func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *entity.FilterConditions {
+func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) (*entity.FilterConditions, error) {
 	if fc == nil {
-		return nil
+		return nil, nil
+	}
+
+	for i, code := range fc.ColorCodes {
+		if len(code) != 3 || code != strings.ToUpper(code) || strings.TrimSpace(code) != code {
+			return nil, fmt.Errorf("color_codes[%d] must be exactly 3 uppercase characters", i)
+		}
+		if _, ok := cache.GetColorByCode(code); !ok {
+			return nil, fmt.Errorf("color_codes[%d] %q is not in the color dictionary", i, code)
+		}
 	}
 
 	sizes := make([]int, len(fc.SizesIds))
@@ -141,12 +154,12 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 	}
 
 	return &entity.FilterConditions{
-		From:           from,
-		To:             to,
-		Currency:       fc.Currency,
-		OnSale:         fc.OnSale,
+		From:                  from,
+		To:                    to,
+		Currency:              fc.Currency,
+		OnSale:                fc.OnSale,
 		Gender:                genders,
-		Color:                 fc.Color,
+		ColorCodes:            fc.ColorCodes,
 		TopCategoryIds:        topCategories,
 		ExcludeTopCategoryIds: excludeTopCategories,
 		SubCategoryIds:        subCategories,
@@ -156,5 +169,5 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) *en
 		ByTag:                 fc.ByTag,
 		Collections:           fc.Collections,
 		Seasons:               seasons,
-	}
+	}, nil
 }

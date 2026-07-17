@@ -172,7 +172,7 @@ func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 				return fmt.Errorf("archive item %d: %w", i, err)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCT:
-			if it.Product == nil || it.Product.ProductId == 0 {
+			if it.Product == nil || it.Product.ColorwayId == 0 {
 				return fmt.Errorf("archive item %d: product requires a product id", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_TAG:
@@ -180,7 +180,7 @@ func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 				return fmt.Errorf("archive item %d: products_tag requires a tag", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_PRODUCTS_MANUAL:
-			if it.ProductsManual == nil || countNonZero(it.ProductsManual.ProductIds) == 0 {
+			if it.ProductsManual == nil || countNonZero(it.ProductsManual.ColorwayIds) == 0 {
 				return fmt.Errorf("archive item %d: products_manual requires at least one product id", i)
 			}
 		case pb_common.ArchiveItemType_ARCHIVE_ITEM_TYPE_UNKNOWN:
@@ -188,4 +188,34 @@ func (s *Server) validateArchiveItems(ai *pb_common.ArchiveInsert) error {
 		}
 	}
 	return nil
+}
+
+// GetArchivesPaged is the ADMIN archive list. Unlike the storefront projection it returns the full
+// id-bearing shape (R3: internal ids stay on the admin surface) — the admin write path
+// (UpdateArchive/DeleteArchiveById/HeroFeaturedArchiveInsert) keys on those ids, and without this
+// list the admin UI could not recover them after the storefront list went code-keyed (A-final gap).
+func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_admin.GetArchivesPagedRequest) (*pb_admin.GetArchivesPagedResponse, error) {
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
+
+	afs, count, err := s.repo.Archive().GetArchivesPaged(ctx,
+		limit,
+		offset,
+		dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+	)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get archives paged",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to list archives")
+	}
+
+	pbAfs := make([]*pb_common.ArchiveList, 0, len(afs))
+	for i := range afs {
+		pbAfs = append(pbAfs, dto.ConvertEntityToCommonArchiveList(&afs[i]))
+	}
+
+	return &pb_admin.GetArchivesPagedResponse{
+		Archives: pbAfs,
+		Total:    int32(count),
+	}, nil
 }

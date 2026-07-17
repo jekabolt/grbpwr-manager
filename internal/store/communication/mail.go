@@ -11,7 +11,9 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// sendEmailRequestUnsentColumns lists only columns needed by the worker for sending.
+// sendEmailRequestUnsentColumns lists the columns returned for unsent rows: what the worker needs to
+// send, plus error_msg — populated on the withError=true path (GetAllUnsent), which surfaces exhausted
+// / dead rows including why they last failed.
 // Table-qualified for use with JOINs (email_suppression also has id).
 const sendEmailRequestUnsentColumns = `
 	send_email_request.id,
@@ -20,7 +22,8 @@ const sendEmailRequestUnsentColumns = `
 	send_email_request.html,
 	send_email_request.subject,
 	send_email_request.reply_to,
-	send_email_request.send_attempt_count
+	send_email_request.send_attempt_count,
+	send_email_request.error_msg
 `
 
 // AddMail queues a new email to be sent.

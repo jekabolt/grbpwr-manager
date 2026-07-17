@@ -11,6 +11,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
@@ -37,30 +38,53 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
 // targets and the flat construction-description strings are gone (description → details[];
 // pricing is on costing).
-const techCardHeaderColumns = `style_number, name, brand, season, collection, category_id,
+// season_code/season_year are the normalized SKU-facing season (task 05). The legacy `season`
+// column remains only as a canonical derived label for the existing UNIQUE key/read models.
+const techCardHeaderColumns = `style_number, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
 	measurement_unit, concept, notes, purpose, output_material_id`
 
-const techCardHeaderValues = `:style_number, :name, :brand, :season, :collection, :category_id,
+const techCardHeaderValues = `:style_number, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
 
-func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
+func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
 	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
 	purpose := tc.Purpose
 	if purpose == "" {
 		purpose = entity.TechCardPurposeSellable
 	}
+	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
+		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
+	}
+	var seasonLabel sql.NullString
+	if tc.SeasonCode.Valid {
+		code := entity.SeasonEnum(tc.SeasonCode.String)
+		if !entity.IsValidSeason(code) {
+			return nil, fmt.Errorf("sku_season code %q is invalid", tc.SeasonCode.String)
+		}
+		if tc.SeasonYear.Int32 < 2000 || tc.SeasonYear.Int32 > 2099 {
+			return nil, fmt.Errorf("sku_season year must be between 2000 and 2099")
+		}
+		seasonLabel = sql.NullString{
+			String: fmt.Sprintf("%s%02d", code, tc.SeasonYear.Int32%100),
+			Valid:  true,
+		}
+	}
+	// Never trust a caller-provided display label: keep it a projection of the typed pair.
+	tc.SeasonLabel = seasonLabel
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
-		"season":              tc.Season,
+		"season":              seasonLabel,
+		"season_code":         tc.SeasonCode,
+		"season_year":         tc.SeasonYear,
 		"collection":          tc.Collection,
 		"category_id":         tc.CategoryId,
 		"target_gender":       tc.TargetGender,
@@ -80,7 +104,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
-	}
+	}, nil
 }
 
 // stampApprovalTimes makes the server authoritative for approved_at/released_at,
@@ -117,19 +141,66 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		var err error
+		params, err := techCardHeaderParams(tc)
+		if err != nil {
+			return err
+		}
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
 			fmt.Sprintf(`INSERT INTO tech_card (%s) VALUES (%s)`, techCardHeaderColumns, techCardHeaderValues),
-			techCardHeaderParams(tc))
+			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
 		}
-		return insertTechCardChildren(ctx, rep.DB(), id, tc)
+		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
+			return err
+		}
+		// A new card's colourways may already link products (they become "styled" and take the
+		// style's season/model + colourway colour) — re-mint their SKUs while unlocked.
+		return remintCardProducts(ctx, rep.DB(), id, nil)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add tech card: %w", err)
 	}
 	return id, nil
+}
+
+// captureCardProductLinks returns the product ids belonging to this style. PR6 R1: after the
+// tech_card_colorway→product merge every colourway is a product (product.style_id = card), so the
+// style's products ARE its colourways.
+func captureCardProductLinks(ctx context.Context, db dependency.DB, tcID int) ([]int, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		ProductID int `db:"product_id"`
+	}](ctx, db, `SELECT id AS product_id FROM product WHERE style_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return nil, fmt.Errorf("capture card product links: %w", err)
+	}
+	ids := make([]int, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ProductID)
+	}
+	return ids, nil
+}
+
+// remintCardProducts re-mints the SKUs of every product affected by a colourway save: those linked
+// after the save UNION any passed in `previous` (products that were linked before and may now be
+// unlinked, so they revert to a standalone SKU). MintProductSKUs is a no-op for a frozen product.
+func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previous []int) error {
+	current, err := captureCardProductLinks(ctx, db, tcID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[int]struct{}, len(current)+len(previous))
+	for _, id := range append(current, previous...) {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if err := product.MintProductSKUs(ctx, db, id); err != nil {
+			return fmt.Errorf("re-mint product %d after colourway change: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // UpdateTechCard updates a tech card and replaces its child sections. It is
@@ -182,14 +253,23 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
-		params := techCardHeaderParams(tc)
+		params, err := techCardHeaderParams(tc)
+		if err != nil {
+			return err
+		}
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
+		// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
+		// [season/season_code/season_year], collection, target_gender) moved to UpdateStyle so no fact is
+		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
+		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
+		// stays a PLM fact (UpdateStyle does not write it). The unused :brand/:season/... binds remain in
+		// params (sqlx.Named ignores extra keys) so techCardHeaderParams stays shared with the insert.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
-				style_number = :style_number, name = :name, brand = :brand, season = :season,
-				collection = :collection, category_id = :category_id, target_gender = :target_gender,
+				style_number = :style_number, name = :name,
+				category_id = :category_id,
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
 				version = :version, revision_date = :revision_date,
@@ -207,21 +287,21 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return entity.ErrTechCardConflict
 		}
 
-		// Samples reference colourways by FK with ON DELETE SET NULL, and the full-replace below deletes
-		// and re-inserts colourways with fresh ids — which would silently null every sample's colour-
-		// model link. Capture the links by colourway identity now so they can be restored afterwards.
-		sampleColorwayLinks, err := captureSampleColorwayLinks(ctx, rep.DB(), id)
+		// Capture the style's products before the full-replace so a change to the style's SKU facts
+		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
+		// they are NOT part of the tech-card full-replace and keep their stable ids and sample links.
+		prevProductLinks, err := captureCardProductLinks(ctx, rep.DB(), id)
 		if err != nil {
 			return err
 		}
 
-		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade
-		// from their parents — colourway usages (+ their per-size consumption) via
-		// tech_card_colorway, and detail media via tech_card_detail.
+		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
+		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
+		// (R1 merge) — they live in product and are managed via CreateColorway.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_revision", "tech_card_detail",
-			"tech_card_bom_item", "tech_card_colorway",
+			"tech_card_bom_item",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 			"tech_card_size_pattern", "tech_card_piece",
@@ -235,7 +315,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
-		return relinkSamplesToColorways(ctx, rep.DB(), id, sampleColorwayLinks)
+		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
+		return remintCardProducts(ctx, rep.DB(), id, prevProductLinks)
 	})
 	if err != nil {
 		switch err {
@@ -268,67 +349,6 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 		}
 		return nil
 	})
-}
-
-// colorwayIdentityKey builds a stable key for a colourway across a full-replace (case-folded code +
-// name), so a sample's colour-model link can be matched to the freshly-reinserted colourway.
-func colorwayIdentityKey(code sql.NullString, name string) string {
-	return strings.ToLower(strings.TrimSpace(code.String)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
-}
-
-// captureSampleColorwayLinks returns sample_id → colourway identity key for a card's samples that
-// currently reference a colourway (empty when none), so UpdateTechCard's full-replace of colourways
-// does not silently drop the sample→colour-model link.
-func captureSampleColorwayLinks(ctx context.Context, db dependency.DB, tcID int) (map[int]string, error) {
-	rows, err := storeutil.QueryListNamed[struct {
-		SampleId int            `db:"sample_id"`
-		Code     sql.NullString `db:"code"`
-		Name     string         `db:"name"`
-	}](ctx, db, `
-		SELECT s.id AS sample_id, c.code AS code, c.name AS name
-		FROM sample s JOIN tech_card_colorway c ON c.id = s.colorway_id
-		WHERE s.tech_card_id = :id`, map[string]any{"id": tcID})
-	if err != nil {
-		return nil, fmt.Errorf("capture sample colorway links: %w", err)
-	}
-	out := make(map[int]string, len(rows))
-	for _, r := range rows {
-		out[r.SampleId] = colorwayIdentityKey(r.Code, r.Name)
-	}
-	return out, nil
-}
-
-// relinkSamplesToColorways restores sample→colourway links captured before a full-replace by matching
-// each sample's old colourway identity to a freshly-inserted colourway; an unmatched (removed or
-// renamed) colourway leaves the link NULL, which is the honest result — that colour no longer exists.
-func relinkSamplesToColorways(ctx context.Context, db dependency.DB, tcID int, links map[int]string) error {
-	if len(links) == 0 {
-		return nil
-	}
-	rows, err := storeutil.QueryListNamed[struct {
-		Id   int            `db:"id"`
-		Code sql.NullString `db:"code"`
-		Name string         `db:"name"`
-	}](ctx, db, `SELECT id, code, name FROM tech_card_colorway WHERE tech_card_id = :id`, map[string]any{"id": tcID})
-	if err != nil {
-		return fmt.Errorf("load reinserted colorways: %w", err)
-	}
-	keyToID := make(map[string]int, len(rows))
-	for _, r := range rows {
-		keyToID[colorwayIdentityKey(r.Code, r.Name)] = r.Id
-	}
-	for sampleID, key := range links {
-		var cw any // NULL when the colourway no longer exists
-		if id, ok := keyToID[key]; ok {
-			cw = id
-		}
-		if err := storeutil.ExecNamed(ctx, db,
-			`UPDATE sample SET colorway_id = :cw WHERE id = :id`,
-			map[string]any{"cw": cw, "id": sampleID}); err != nil {
-			return fmt.Errorf("relink sample %d colorway: %w", sampleID, err)
-		}
-	}
-	return nil
 }
 
 // GetTechCardById returns a tech card with its child sections and resolved media.
@@ -364,9 +384,10 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		where += " AND brand LIKE :brand"
 		params["brand"] = "%" + escapeLike(filter.Brand) + "%"
 	}
-	if filter.Season != "" {
-		where += " AND season LIKE :season"
-		params["season"] = "%" + escapeLike(filter.Season) + "%"
+	if filter.SeasonCode != "" {
+		where += " AND season_code = :seasonCode AND season_year = :seasonYear"
+		params["seasonCode"] = string(filter.SeasonCode)
+		params["seasonYear"] = filter.SeasonYear
 	}
 	if filter.Name != "" {
 		where += " AND (name LIKE :nameSearch OR style_number LIKE :nameSearch)"
@@ -375,6 +396,10 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 	if filter.ProductId > 0 {
 		where += " AND id IN (SELECT tech_card_id FROM tech_card_product WHERE product_id = :productId)"
 		params["productId"] = filter.ProductId
+	}
+	if filter.Purpose != "" {
+		where += " AND purpose = :purpose"
+		params["purpose"] = filter.Purpose
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
@@ -531,7 +556,15 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
-	if err := insertTechCardProducts(ctx, db, id, tc.ProductIds); err != nil {
+	// PR6 R1/R4: the product↔style link is derived from product.style_id (single source), never
+	// client-supplied. Keep tech_card_product (the denormalised link every cost/margin/inventory
+	// consumer still reads) in sync with the canonical set on every save. On create it is empty
+	// (colourways get their style_id via CreateColorway); on update it re-asserts the current set.
+	productLinks, err := captureCardProductLinks(ctx, db, id)
+	if err != nil {
+		return err
+	}
+	if err := insertTechCardProducts(ctx, db, id, productLinks); err != nil {
 		return err
 	}
 	if err := insertTechCardMedia(ctx, db, id, tc.Media); err != nil {
@@ -546,17 +579,14 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
-	// Materials (Phase 2): colourways (each with its usage recipe) and the BOM article
-	// catalog. A usage's bom_item_index points into the BOM by position, so order is
-	// not load-bearing between the two inserts.
-	if err := insertTechCardColorways(ctx, db, id, tc.Colorways); err != nil {
-		return err
-	}
+	// Materials (Phase 2): the BOM article catalog. PR6 R1: colourways are no longer written here —
+	// they are products managed via CreateColorway, and a usage's bom_item_index still points into
+	// this card's BOM by position.
 	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
 		return err
 	}
-	// Cut-pieces (NF-05): must run AFTER colourways so their per-colourway fabric mapping can
-	// resolve positional colorway_index → the freshly-inserted colorway_id (same tx).
+	// Cut-pieces (NF-05): their per-colourway fabric mapping resolves a positional colorway_index to
+	// the style's products (product.style_id) in display order (see insertTechCardPieces).
 	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
 		return err
 	}

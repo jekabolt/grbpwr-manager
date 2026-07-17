@@ -90,6 +90,22 @@ func ResolveCountryISO3(country string) (string, bool) {
 	return "", false
 }
 
+// ResolveSeededCountryISO2 is ResolveCountryISO2 restricted to codes present in the country dictionary
+// seed (iso2ToISO3 membership). ResolveCountryISO2 can return a code that has no ISO2->ISO3 counterpart
+// (e.g. "XK"/Kosovo via the name map) and therefore is NOT in the seeded country table; storing it in
+// product.country_code would violate the FK. Use this on the write path so an unmappable-but-named
+// origin resolves to ("", false) and the column stays NULL rather than failing the insert.
+func ResolveSeededCountryISO2(country string) (string, bool) {
+	iso2, ok := ResolveCountryISO2(country)
+	if !ok {
+		return "", false
+	}
+	if _, seeded := iso2ToISO3[iso2]; !seeded {
+		return "", false
+	}
+	return iso2, true
+}
+
 // ResolveCountryISO2 normalizes a free-text country value (an alpha-2 code, an alpha-3 code, or a
 // country name as GA4/checkout reports it) to an ISO 3166-1 alpha-2 code — the format Sendcloud
 // requires on label addresses and customs origin_country. Returns ("", false) when the value cannot

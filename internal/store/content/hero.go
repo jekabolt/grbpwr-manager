@@ -313,10 +313,11 @@ func resolveHeroSingleSlice(ctx context.Context, l *mediaLoader, in []entity.Her
 	return out, nil
 }
 
-func filterVisibleProducts(products []entity.Product) []entity.Product {
-	prds := make([]entity.Product, 0, len(products))
+func filterVisibleProducts(products []entity.Colorway) []entity.Colorway {
+	prds := make([]entity.Colorway, 0, len(products))
 	for _, p := range products {
-		if p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Valid && p.ProductDisplay.ProductBody.ProductBodyInsert.Hidden.Bool {
+		// Hero features only publicly-visible colourways (ACTIVE); drafts/hidden/archived are excluded (R6).
+		if !p.IsPubliclyVisible() {
 			continue
 		}
 		prds = append(prds, p)
@@ -575,7 +576,7 @@ func buildHeroData(ctx context.Context, rep dependency.Repository, hfi entity.He
 				slog.ErrorContext(ctx, "failed to resolve split media, skipping", slog.String("err", err.Error()))
 				continue
 			}
-			var prds []entity.Product
+			var prds []entity.Colorway
 			if len(e.Split.ProductIDs) > 0 {
 				products, err := rep.Products().GetProductsByIds(ctx, e.Split.ProductIDs)
 				if err != nil {

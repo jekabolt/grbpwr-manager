@@ -38,7 +38,6 @@ func loadConfig(cfgFile string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
 	}
 
-	fmt.Printf("conf---- %+v", config)
 	return &config, nil
 }
 

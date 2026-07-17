@@ -61,8 +61,8 @@ func (c *Client) getTimeOnPage(
 						(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path')
 					ORDER BY event_timestamp DESC
 				) AS rn
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'time_on_page'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_path') IS NOT NULL
 		)
@@ -156,8 +156,8 @@ func (c *Client) getProductZoom(
 				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'zoom_method'), 'unknown') AS zoom_method
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'product_zoom'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
@@ -184,12 +184,12 @@ func (c *Client) getProductZoom(
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[5]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[3]s AS e, UNNEST(e.items) AS item
+			WHERE %[4]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		)
 		SELECT
 			z.event_date,
@@ -201,7 +201,7 @@ func (c *Client) getProductZoom(
 		LEFT JOIN product_names pn ON pn.product_id = z.product_id
 		GROUP BY z.event_date, z.product_id, product_name, z.zoom_method
 		ORDER BY z.event_date, zoom_count DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -278,8 +278,8 @@ func (c *Client) getImageSwipes(
 				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'swipe_direction'), 'unknown') AS swipe_direction
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'product_image_swipe'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
@@ -306,12 +306,12 @@ func (c *Client) getImageSwipes(
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[5]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[3]s AS e, UNNEST(e.items) AS item
+			WHERE %[4]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		)
 		SELECT
 			s.event_date,
@@ -323,7 +323,7 @@ func (c *Client) getImageSwipes(
 		LEFT JOIN product_names pn ON pn.product_id = s.product_id
 		GROUP BY s.event_date, s.product_id, product_name, s.swipe_direction
 		ORDER BY s.event_date, swipe_count DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -397,19 +397,19 @@ func (c *Client) getSizeGuideClicks(
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE(device_category, 'unknown') AS page_location
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'size_guide_click'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[5]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[3]s AS e, UNNEST(e.items) AS item
+			WHERE %[4]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		)
 		SELECT
 			sg.event_date,
@@ -421,7 +421,7 @@ func (c *Client) getSizeGuideClicks(
 		LEFT JOIN product_names pn ON pn.product_id = sg.product_id
 		GROUP BY sg.event_date, sg.product_id, product_name, sg.page_location
 		ORDER BY sg.event_date, click_count DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -495,19 +495,19 @@ func (c *Client) getDetailsExpansion(
 				DATE(TIMESTAMP_MICROS(event_timestamp)) AS event_date,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'section_name'), 'unknown') AS section_name
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'details_expand'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[5]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[3]s AS e, UNNEST(e.items) AS item
+			WHERE %[4]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		)
 		SELECT
 			de.event_date,
@@ -519,7 +519,7 @@ func (c *Client) getDetailsExpansion(
 		LEFT JOIN product_names pn ON pn.product_id = de.product_id
 		GROUP BY de.event_date, de.product_id, product_name, de.section_name
 		ORDER BY de.event_date, expand_count DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {
@@ -596,8 +596,8 @@ func (c *Client) getNotifyMeIntent(
 				user_pseudo_id,
 				(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') AS product_id,
 				COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'action'), 'unknown') AS action
-			FROM %s
-			WHERE %s
+			FROM %[1]s
+			WHERE %[2]s
 				AND event_name = 'notify_me_intent'
 				AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'product_id') IS NOT NULL
 		),
@@ -624,12 +624,12 @@ func (c *Client) getNotifyMeIntent(
 		),
 		product_names AS (
 			SELECT DISTINCT
-				item.item_id AS product_id,
+				%[5]s AS product_id,
 				ANY_VALUE(item.item_name) AS product_name
-			FROM %s AS e, UNNEST(e.items) AS item
-			WHERE %s
+			FROM %[3]s AS e, UNNEST(e.items) AS item
+			WHERE %[4]s
 				AND item.item_id IS NOT NULL
-			GROUP BY item.item_id
+			GROUP BY product_id
 		),
 		action_counts AS (
 			SELECT
@@ -668,7 +668,7 @@ func (c *Client) getNotifyMeIntent(
 			ON ac.event_date = cr.event_date 
 			AND ac.product_id = cr.product_id
 		ORDER BY ac.event_date, ac.count DESC
-	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate))
+	`, src, c.dateFilterSQL(startDate, endDate), src, c.dateFilterSQL(startDate, endDate), baseSKUFromItemID("item.item_id"))
 
 	query := c.client.Query(sql)
 	if !c.useLiteralDates {

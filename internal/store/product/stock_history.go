@@ -148,6 +148,7 @@ func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time,
 		FROM product_stock_change_history psch
 		LEFT JOIN product p ON p.id = psch.product_id
 		LEFT JOIN size s ON s.id = psch.size_id
+		LEFT JOIN product_size ps ON ps.product_id = psch.product_id AND ps.size_id = psch.size_id
 		WHERE psch.created_at >= :dateFrom
 		AND psch.created_at <= :dateTo
 	`
@@ -186,7 +187,9 @@ func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time,
 	dataQuery := `
 		SELECT
 			psch.created_at,
-			COALESCE(p.sku, 'SHIPPING') as sku,
+			-- variant SKU (product_size.sku) is the canonical per-size code; fall back to the base
+			-- product SKU, then SHIPPING for shipping-only journal entries (no product/size).
+			COALESCE(ps.sku, p.sku, 'SHIPPING') as sku,
 			COALESCE(s.name, '') as size_name,
 			psch.quantity_delta,
 			psch.quantity_after,

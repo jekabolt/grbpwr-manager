@@ -44,7 +44,9 @@ func TestAnalyticsV2Task06RevenueForecast(t *testing.T) {
 
 	// Defensive: clear rows a prior crashed run may have left (shared test DB persists across runs).
 	_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid LIKE 'T06-%'")
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid LIKE 'T06-%'") })
+	// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+	// Cleanups), which would make this DELETE a no-op and leak rows into later tests.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE uuid LIKE 'T06-%'") })
 
 	var confirmedID int
 	require.NoError(t, testDB.QueryRowContext(ctx,

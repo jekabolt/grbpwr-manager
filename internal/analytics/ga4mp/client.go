@@ -90,17 +90,7 @@ func (c *Client) sendPurchaseEvent(ctx context.Context, order entity.OrderFull) 
 	}
 	val, _ := order.Order.TotalPrice.Float64()
 
-	items := make([]mpItem, 0, len(order.OrderItems))
-	for _, oi := range order.OrderItems {
-		price, _ := oi.ProductPriceWithSale.Float64()
-		qty, _ := oi.Quantity.Float64()
-		items = append(items, mpItem{
-			ItemID:   oi.SKU,
-			ItemName: oi.ProductBrand + " " + oi.SKU,
-			Price:    price,
-			Quantity: int(qty),
-		})
-	}
+	items := buildPurchaseItems(order.OrderItems)
 
 	payload := mpPayload{
 		ClientID: clientID,
@@ -167,8 +157,40 @@ type mpPurchaseParams struct {
 }
 
 type mpItem struct {
-	ItemID   string  `json:"item_id"`
-	ItemName string  `json:"item_name"`
-	Price    float64 `json:"price"`
-	Quantity int     `json:"quantity"`
+	ItemID      string  `json:"item_id"`
+	ItemName    string  `json:"item_name"`
+	ItemGroupID string  `json:"item_group_id,omitempty"`
+	ItemVariant string  `json:"item_variant,omitempty"`
+	Price       float64 `json:"price"`
+	Quantity    int     `json:"quantity"`
+}
+
+// buildPurchaseItems converts order lines into GA4 Measurement Protocol items per the R3 item-identity
+// contract (problem 020): item_id is the variant SKU (order fetch resolves oi.SKU to the frozen
+// order_item snapshot), item_group_id is the base SKU and item_variant is the public size ordinal,
+// both derived strictly from that same snapshot string (splitVariantSKU) — never from a live
+// product/size lookup. item_name stays a human label (brand + product name), not the SKU. Pulled out
+// as a pure function so the event contract is unit-testable without an HTTP round trip.
+func buildPurchaseItems(orderItems []entity.OrderItem) []mpItem {
+	items := make([]mpItem, 0, len(orderItems))
+	for _, oi := range orderItems {
+		price, _ := oi.ProductPriceWithSale.Float64()
+		qty, _ := oi.Quantity.Float64()
+		name := oi.ProductBrand
+		if len(oi.Translations) > 0 && oi.Translations[0].Name != "" {
+			name = oi.ProductBrand + " " + oi.Translations[0].Name
+		}
+		item := mpItem{
+			ItemID:   oi.SKU,
+			ItemName: name,
+			Price:    price,
+			Quantity: int(qty),
+		}
+		if base, sizeCode, ok := splitVariantSKU(oi.SKU); ok {
+			item.ItemGroupID = base
+			item.ItemVariant = sizeCode
+		}
+		items = append(items, item)
+	}
+	return items
 }

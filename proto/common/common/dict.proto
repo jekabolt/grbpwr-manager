@@ -8,6 +8,7 @@ import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
 import "common/shipment.proto";
+import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
@@ -32,12 +33,44 @@ message Dictionary {
   // Hero section background color for the storefront (CSS). Empty if unset.
   string background_hero_color = 17;
   repeated string product_tags = 18; // all distinct tags across visible products
+  repeated Color colors = 19; // controlled colour dictionary (SKU colour segment source)
+  repeated Country countries = 20; // R9: ISO 3166-1 alpha-2 controlled dictionary
+  repeated Tag tags = 21; // R9: controlled merchandising tags (product_tags stays until §12 Q4 cutover)
+  string sku_contract_version = 22; // R7: canonical SKU contract version, e.g. "grbpwr-sku-v1"
+  repeated DictionaryRevision revisions = 23; // R9: per-namespace revision snapshot for cache invalidation
 }
 
 message Collection {
   string name = 1;
   int32 count_men = 2;
   int32 count_women = 3;
+  string code = 4; // R9: stable code, FK target for tech_card.collection_id resolution
+  bool archived = 5; // R9: archive-not-delete
+  int32 id = 6; // R9: admin-only dictionary PK (Update/ArchiveCollection address by id); storefront resolves by code/name
+}
+
+// Country is an ISO 3166-1 alpha-2 controlled dictionary (R9). Arbitrary creation is forbidden — the
+// full ISO list is seeded and only activation toggles.
+message Country {
+  string code = 1; // ISO 3166-1 alpha-2, uppercase (public key)
+  string name = 2; // localized display name
+  bool active = 3;
+}
+
+// Tag is a controlled merchandising tag dictionary (R9). Storefront receives tags by code/name; id is
+// admin-only.
+message Tag {
+  string code = 1;
+  string name = 2;
+  bool archived = 3;
+  int32 id = 4; // admin-only
+}
+
+// DictionaryRevision is a per-namespace revision snapshot used for cross-instance cache invalidation (R9).
+message DictionaryRevision {
+  string namespace = 1; // "color" | "collection" | "tag" | "country"
+  uint64 revision = 2;
+  google.protobuf.Timestamp updated_at = 3;
 }
 
 message Genders {

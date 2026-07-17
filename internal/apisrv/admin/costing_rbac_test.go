@@ -52,11 +52,9 @@ func TestStripTechCardCosting(t *testing.T) {
 			BomItems: []*pb_common.TechCardBomItem{
 				{Name: "wool", UnitPrice: dec("12.50"), Currency: "USD"},
 			},
-			Colorways: []*pb_common.TechCardColorway{
-				{Name: "black", Usages: []*pb_common.TechCardColorwayUsage{
-					{Placement: "outer", LineTotal: dec("3.00"), SizeRunTotal: dec("30.00")},
-				}},
-			},
+			// R1: colourways (and their usage recipe with per-line cost figures) left the style read
+			// payload, so there is nothing to strip there anymore — per-colourway costing lived under
+			// Costing.colorway_costs, dropped with the Costing block.
 		},
 	}
 	stripTechCardCosting(tc)
@@ -65,10 +63,6 @@ func TestStripTechCardCosting(t *testing.T) {
 	require.Nil(t, tc.TechCard.BomItems[0].UnitPrice, "bom price removed")
 	require.Empty(t, tc.TechCard.BomItems[0].Currency, "bom currency removed")
 	require.Equal(t, "wool", tc.TechCard.BomItems[0].Name, "bom name kept")
-	u := tc.TechCard.Colorways[0].Usages[0]
-	require.Nil(t, u.LineTotal, "usage line total removed")
-	require.Nil(t, u.SizeRunTotal, "usage run total removed")
-	require.Equal(t, "outer", u.Placement, "usage placement kept")
 
 	stripTechCardCosting(nil)                   // no panic on nil
 	stripTechCardCosting(&pb_common.TechCard{}) // no panic on nil inner
@@ -365,8 +359,7 @@ func TestCostingWriteDetectors(t *testing.T) {
 		BomItems: []*pb_common.TechCardBomItem{{Name: "wool"}},
 	}), "a priceless BOM line is not cost data")
 
-	require.False(t, productInsertHasCostPrice(nil))
-	require.False(t, productInsertHasCostPrice(&pb_common.ProductInsert{}))
-	require.False(t, productInsertHasCostPrice(&pb_common.ProductInsert{CostPrice: dec("")}), "empty = leave unchanged")
-	require.True(t, productInsertHasCostPrice(&pb_common.ProductInsert{CostPrice: dec("9.99")}))
+	require.False(t, costPriceProvided(nil))
+	require.False(t, costPriceProvided(dec("")), "empty = leave unchanged")
+	require.True(t, costPriceProvided(dec("9.99")))
 }

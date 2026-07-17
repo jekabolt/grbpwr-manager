@@ -6,9 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/slug"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
+	"github.com/shopspring/decimal"
 	datepb "google.golang.org/genproto/googleapis/type/date"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var storefrontShoppingEntityPbMap = map[entity.StorefrontShoppingPreference]pb_frontend.ShoppingPreferenceEnum{
@@ -172,4 +178,282 @@ func PbStorefrontSavedAddressToInsert(pb *pb_frontend.StorefrontSavedAddress) *e
 		ins.Phone = sql.NullString{String: phone, Valid: true}
 	}
 	return ins
+}
+
+// ─── Storefront catalogue projections (R3) ──────────────────────────────────────────────────────
+// These build the public colourway shapes that carry NO catalogue primary keys — the storefront's only
+// window onto a colourway. The public identity is base_sku / variant_sku / size code+ordinal.
+
+// storefrontPublicSize resolves a size id to its public shape (code/name/system/ordinal, no DB id).
+func storefrontPublicSize(sizeID int) *pb_frontend.PublicSize {
+	sz, ok := cache.GetSizeById(sizeID)
+	if !ok {
+		return nil
+	}
+	return &pb_frontend.PublicSize{
+		Code:   sz.Name,
+		Name:   sz.Name,
+		System: sizeSKUSystemEntityPBMap[sz.SkuSystem],
+		SkuOrd: int32(sz.SkuOrd),
+	}
+}
+
+// storefrontVariants projects a colourway's variants for the storefront: only ACTIVE variants are
+// exposed, each addressed by its public variant SKU (never an internal id).
+func storefrontVariants(sizes []entity.Variant) []*pb_frontend.StorefrontVariant {
+	out := make([]*pb_frontend.StorefrontVariant, 0, len(sizes))
+	for i := range sizes {
+		v := &sizes[i]
+		if entity.VariantStatus(v.Status) == entity.VariantStatusArchived {
+			continue
+		}
+		out = append(out, &pb_frontend.StorefrontVariant{
+			VariantSku: v.SKU.String,
+			Size:       storefrontPublicSize(v.SizeId),
+			SoldOut:    v.Quantity.LessThanOrEqual(decimal.Zero),
+		})
+	}
+	return out
+}
+
+// storefrontSizeChart projects the resolved per-colourway measurements (from the style chart) as public
+// cells (size code/name + measurement name + value, no ids). Best-effort: absent measurements yield nil.
+func storefrontSizeChart(sizes []entity.Variant, measurements []entity.ProductMeasurement) *pb_frontend.PublicStyleSizeChart {
+	if len(measurements) == 0 {
+		return nil
+	}
+	// Measurements are keyed by product_size.id (the variant); map it back to the size id for PublicSize.
+	sizeByVariant := make(map[int]int, len(sizes))
+	for i := range sizes {
+		sizeByVariant[sizes[i].Id] = sizes[i].SizeId
+	}
+	names := make(map[int]string)
+	for _, mn := range cache.GetMeasurements() {
+		names[mn.Id] = mn.Name
+	}
+	cells := make([]*pb_frontend.PublicMeasurement, 0, len(measurements))
+	for _, m := range measurements {
+		cells = append(cells, &pb_frontend.PublicMeasurement{
+			Size:            storefrontPublicSize(sizeByVariant[m.ProductSizeId]),
+			MeasurementName: names[m.MeasurementNameId],
+			Value:           &pb_decimal.Decimal{Value: m.MeasurementValue.String()},
+		})
+	}
+	return &pb_frontend.PublicStyleSizeChart{Cells: cells}
+}
+
+// storefrontDisplay projects the resolved merchandising + style facts for the storefront (output-only,
+// no ids). Translations are the resolved merch overrides.
+func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDisplay {
+	bi := &c.ProductDisplay.ProductBody.ProductBodyInsert
+	tg, _ := ConvertEntityGenderToPbGenderEnum(bi.TargetGender)
+	var translations []*pb_common.ColorwayInsertTranslation
+	for _, t := range c.ProductDisplay.ProductBody.Translations {
+		translations = append(translations, &pb_common.ColorwayInsertTranslation{
+			LanguageId:  int32(t.LanguageId),
+			Name:        t.Name,
+			Description: t.Description,
+		})
+	}
+	d := &pb_frontend.StorefrontColorwayDisplay{
+		Thumbnail:        ConvertEntityToCommonMedia(&c.ProductDisplay.Thumbnail),
+		Brand:            bi.Brand,
+		CollectionCode:   bi.Collection,
+		TargetGender:     tg,
+		Fit:              bi.Fit.String,
+		Composition:      bi.Composition.String,
+		CareInstructions: bi.CareInstructions.String,
+		Translations:     translations,
+		UpdatedAt:        timestamppb.New(c.UpdatedAt),
+	}
+	if c.ProductDisplay.SecondaryThumbnail != nil {
+		d.SecondaryThumbnail = ConvertEntityToCommonMedia(c.ProductDisplay.SecondaryThumbnail)
+	}
+	// Merchandising facts the PDP/cards render (S-final finding): sale %, preorder window,
+	// model-wears and category labels are public output-only facts — none are catalogue PKs.
+	if bi.SalePercentage.Valid {
+		d.SalePercentage = pbDecimalFromDecimal(bi.SalePercentage.Decimal)
+	}
+	if bi.Preorder.Valid {
+		d.Preorder = timestamppb.New(bi.Preorder.Time)
+	}
+	if bi.ModelWearsHeightCm.Valid {
+		d.ModelWearsHeightCm = bi.ModelWearsHeightCm.Int32
+	}
+	if bi.ModelWearsSizeId.Valid {
+		if sz, ok := cache.GetSizeById(int(bi.ModelWearsSizeId.Int32)); ok {
+			d.ModelWearsSizeCode = sz.Name
+		}
+	}
+	for _, catID := range []sql.NullInt32{{Int32: int32(bi.TopCategoryId), Valid: bi.TopCategoryId != 0}, bi.SubCategoryId, bi.TypeId} {
+		if !catID.Valid {
+			continue
+		}
+		for _, cat := range cache.GetCategories() {
+			if cat.ID == int(catID.Int32) {
+				d.CategoryLabels = append(d.CategoryLabels, cat.Name)
+				break
+			}
+		}
+	}
+	return d
+}
+
+// StorefrontColorwayFromFull projects a full colourway (detail view: variants + media + size chart) for
+// the storefront, with no catalogue primary keys (R3).
+func StorefrontColorwayFromFull(e *entity.ColorwayFull) *pb_frontend.StorefrontColorway {
+	if e == nil || e.Product == nil {
+		return nil
+	}
+	c := e.Product
+	return &pb_frontend.StorefrontColorway{
+		BaseSku:   c.SKU,
+		Slug:      slug.ProductPath(canonicalProductName(c.ProductDisplay.ProductBody.Translations), c.SKU),
+		Display:   storefrontDisplay(c),
+		Variants:  storefrontVariants(e.Sizes),
+		Prices:    convertEntityPricesToPb(e.Prices),
+		Media:     ConvertEntityMediaListToPbMedia(e.Media),
+		SizeChart: storefrontSizeChart(e.Sizes, e.Measurements),
+		ColorCode: c.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		SoldOut:   entity.SoldOutFromSizes(e.Sizes),
+		Status:    pb_common.ColorwayLifecycleStatus(c.LifecycleStatus),
+	}
+}
+
+// StorefrontColorwayFromColorway projects a colourway header (list/paged view: no variants/media/chart)
+// for the storefront, with no catalogue primary keys (R3).
+func StorefrontColorwayFromColorway(e *entity.Colorway) *pb_frontend.StorefrontColorway {
+	if e == nil {
+		return nil
+	}
+	return &pb_frontend.StorefrontColorway{
+		BaseSku:   e.SKU,
+		Slug:      slug.ProductPath(canonicalProductName(e.ProductDisplay.ProductBody.Translations), e.SKU),
+		Display:   storefrontDisplay(e),
+		Prices:    convertEntityPricesToPb(e.Prices),
+		ColorCode: e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		SoldOut:   e.SoldOut,
+		Status:    pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
+	}
+}
+
+// ─── Storefront archive projections (R3, §7.6) ──────────────────────────────────────────────────
+// Same shape as the admin archive read, but the product blocks carry StorefrontColorway (no catalogue
+// PKs) and ArchiveList drops its id. The media/text/embed blocks carry no catalogue PKs and reuse the
+// common pb types + their converters.
+
+func storefrontArchiveList(al *entity.ArchiveList) *pb_frontend.StorefrontArchiveList {
+	if al == nil {
+		return nil
+	}
+	translations := make([]*pb_common.ArchiveInsertTranslation, 0, len(al.Translations))
+	for _, t := range al.Translations {
+		translations = append(translations, &pb_common.ArchiveInsertTranslation{
+			LanguageId: int32(t.LanguageId),
+			Heading:    t.Heading,
+		})
+	}
+	return &pb_frontend.StorefrontArchiveList{
+		Translations: translations,
+		Tag:          al.Tag,
+		Slug:         al.Slug,
+		CreatedAt:    timestamppb.New(al.CreatedAt),
+		Thumbnail:    ConvertEntityToCommonMedia(&al.Thumbnail),
+		Code:         al.Code,
+	}
+}
+
+func storefrontColorwaysFromList(products []entity.Colorway) []*pb_frontend.StorefrontColorway {
+	out := make([]*pb_frontend.StorefrontColorway, 0, len(products))
+	for i := range products {
+		out = append(out, StorefrontColorwayFromColorway(&products[i]))
+	}
+	return out
+}
+
+func storefrontArchiveItem(it *entity.ArchiveItemFull) *pb_frontend.StorefrontArchiveItemFull {
+	if it == nil {
+		return nil
+	}
+	out := &pb_frontend.StorefrontArchiveItemFull{Type: pb_common.ArchiveItemType(it.Type)}
+	switch it.Type {
+	case entity.ArchiveItemTypeMainMedia:
+		if b := it.MainMedia; b != nil {
+			out.MainMedia = &pb_common.ArchiveMainMediaFull{
+				Media:       ConvertEntityToCommonMedia(&b.Media),
+				AspectRatio: pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
+			}
+		}
+	case entity.ArchiveItemTypeMediaLine:
+		if b := it.MediaLine; b != nil {
+			out.MediaLine = &pb_common.ArchiveMediaLineFull{
+				Media:       ConvertEntityMediaListToPbMedia(b.Media),
+				AspectRatio: pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
+			}
+		}
+	case entity.ArchiveItemTypeText:
+		if b := it.Text; b != nil {
+			out.Text = &pb_common.ArchiveTextFull{Translations: convertEntityArchiveItemTranslationsToPb(b.Translations)}
+		}
+	case entity.ArchiveItemTypeEmbed:
+		if b := it.Embed; b != nil {
+			out.Embed = &pb_common.ArchiveEmbedFull{
+				EmbedUrl:     b.EmbedUrl,
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeMediaWithCaption:
+		if b := it.MediaWithCaption; b != nil {
+			out.MediaWithCaption = &pb_common.ArchiveMediaWithCaptionFull{
+				Media:        ConvertEntityToCommonMedia(&b.Media),
+				Link:         b.Link,
+				AspectRatio:  pb_common.ArchiveMediaAspectRatio(b.AspectRatio),
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeProduct:
+		if b := it.Product; b != nil {
+			pf := &pb_frontend.StorefrontArchiveProductFull{Translations: convertEntityArchiveItemTranslationsToPb(b.Translations)}
+			if b.Product != nil {
+				pf.Colorway = StorefrontColorwayFromColorway(b.Product)
+			}
+			out.Product = pf
+		}
+	case entity.ArchiveItemTypeProductsTag:
+		if b := it.ProductsTag; b != nil {
+			out.ProductsTag = &pb_frontend.StorefrontArchiveProductsTagFull{
+				Tag:          b.Tag,
+				Colorways:    storefrontColorwaysFromList(b.Products),
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	case entity.ArchiveItemTypeProductsManual:
+		if b := it.ProductsManual; b != nil {
+			out.ProductsManual = &pb_frontend.StorefrontArchiveProductsManualFull{
+				Colorways:    storefrontColorwaysFromList(b.Products),
+				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
+			}
+		}
+	}
+	return out
+}
+
+// StorefrontArchiveFullFromEntity projects a full archive for the storefront (no catalogue PKs, R3).
+func StorefrontArchiveFullFromEntity(af *entity.ArchiveFull) *pb_frontend.StorefrontArchiveFull {
+	if af == nil {
+		return nil
+	}
+	items := make([]*pb_frontend.StorefrontArchiveItemFull, 0, len(af.Items))
+	for i := range af.Items {
+		items = append(items, storefrontArchiveItem(&af.Items[i]))
+	}
+	return &pb_frontend.StorefrontArchiveFull{
+		ArchiveList: storefrontArchiveList(&af.ArchiveList),
+		Items:       items,
+	}
+}
+
+// StorefrontArchiveListFromEntity projects an archive list row for the storefront (no id, R3).
+func StorefrontArchiveListFromEntity(al *entity.ArchiveList) *pb_frontend.StorefrontArchiveList {
+	return storefrontArchiveList(al)
 }

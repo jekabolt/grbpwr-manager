@@ -14,11 +14,11 @@ import (
 )
 
 // GetProductCustoms returns a product's international-shipping customs data.
-func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProductCustomsRequest) (*pb_admin.GetProductCustomsResponse, error) {
-	if req.ProductId <= 0 {
+func (s *Server) GetColorwayCustoms(ctx context.Context, req *pb_admin.GetColorwayCustomsRequest) (*pb_admin.GetColorwayCustomsResponse, error) {
+	if req.ColorwayId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
-	c, err := s.repo.Products().GetProductCustoms(ctx, int(req.ProductId))
+	c, err := s.repo.Products().GetProductCustoms(ctx, int(req.ColorwayId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "product not found")
@@ -26,8 +26,8 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 		slog.Default().ErrorContext(ctx, "can't get product customs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get product customs")
 	}
-	return &pb_admin.GetProductCustomsResponse{
-		Customs: &pb_admin.ProductCustoms{
+	return &pb_admin.GetColorwayCustomsResponse{
+		Customs: &pb_admin.ColorwayCustoms{
 			HsCode:             c.HSCode.String,
 			CountryOfOrigin:    c.CountryOfOrigin.String,
 			CustomsDescription: c.CustomsDescription.String,
@@ -38,19 +38,19 @@ func (s *Server) GetProductCustoms(ctx context.Context, req *pb_admin.GetProduct
 // SetProductCustoms sets a product's customs data (HS code + declared description). Empty fields
 // clear the stored value. country_of_origin is ignored here: it is a core product field set via the
 // product form (and reused as the Sendcloud origin_country); the customs path never writes it.
-func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProductCustomsRequest) (*pb_admin.SetProductCustomsResponse, error) {
-	if req.ProductId <= 0 {
+func (s *Server) SetColorwayCustoms(ctx context.Context, req *pb_admin.SetColorwayCustomsRequest) (*pb_admin.SetColorwayCustomsResponse, error) {
+	if req.ColorwayId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "product_id is required")
 	}
 	c := req.Customs
 	if c == nil {
-		c = &pb_admin.ProductCustoms{}
+		c = &pb_admin.ColorwayCustoms{}
 	}
 
 	hs := strings.TrimSpace(c.HsCode)
 	descr := strings.TrimSpace(c.CustomsDescription)
 
-	err := s.repo.Products().SetProductCustoms(ctx, int(req.ProductId), entity.ProductCustoms{
+	err := s.repo.Products().SetProductCustoms(ctx, int(req.ColorwayId), entity.ColorwayCustoms{
 		HSCode:             sql.NullString{String: hs, Valid: hs != ""},
 		CustomsDescription: sql.NullString{String: descr, Valid: descr != ""},
 	})
@@ -58,5 +58,5 @@ func (s *Server) SetProductCustoms(ctx context.Context, req *pb_admin.SetProduct
 		slog.Default().ErrorContext(ctx, "can't set product customs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't set product customs")
 	}
-	return &pb_admin.SetProductCustomsResponse{}, nil
+	return &pb_admin.SetColorwayCustomsResponse{}, nil
 }

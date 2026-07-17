@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,10 +30,10 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 		return nil, status.Errorf(codes.Internal, "failed to list archives")
 	}
 
-	pbAfs := make([]*pb_common.ArchiveList, 0, len(afs))
+	pbAfs := make([]*pb_frontend.StorefrontArchiveList, 0, len(afs))
 
-	for _, af := range afs {
-		pbAfs = append(pbAfs, dto.ConvertEntityToCommonArchiveList(&af))
+	for i := range afs {
+		pbAfs = append(pbAfs, dto.StorefrontArchiveListFromEntity(&afs[i]))
 	}
 
 	return &pb_frontend.GetArchivesPagedResponse{
@@ -43,23 +44,43 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 }
 
 func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequest) (*pb_frontend.GetArchiveResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "archive lookup is required")
+	}
 
-	af, err := s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	code := strings.TrimSpace(req.Code)
+	hasLegacyFields := req.Heading != "" || req.Tag != "" || req.Id != 0
+	if code != "" && hasLegacyFields {
+		return nil, status.Error(codes.InvalidArgument, "use either archive code or legacy archive fields, not both")
+	}
+
+	var (
+		af     *entity.ArchiveFull
+		err    error
+		lookup string
+	)
+	switch {
+	case code != "":
+		lookup = "code"
+		af, err = s.repo.Archive().GetArchiveByCode(ctx, code)
+	case req.Id > 0:
+		// Transitional compatibility for the former /archive/{heading}/{tag}/{id} route. Heading and
+		// tag were decorative in the old handler; id was always the actual lookup key.
+		lookup = "legacy_id"
+		af, err = s.repo.Archive().GetArchiveById(ctx, int(req.Id))
+	default:
+		return nil, status.Error(codes.InvalidArgument, "archive code or legacy archive id is required")
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "archive not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get archive by id", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't get archive", slog.String("lookup", lookup), slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 
-	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert archive to pb", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "failed to convert archive")
-	}
-
+	// R3: storefront archive projection (StorefrontColorway product blocks, no ArchiveList.id).
 	return &pb_frontend.GetArchiveResponse{
-		Archive: pbAf,
+		Archive: dto.StorefrontArchiveFullFromEntity(af),
 	}, nil
 }

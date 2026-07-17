@@ -7,7 +7,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // ndFrom builds a valid NullDecimal from a string for tests.
@@ -139,14 +138,8 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "  "}}},
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
-		"usage size_consumption not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
-				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 9, Consumption: &pb_decimal.Decimal{Value: "1"}}},
-			}}}}},
-		"usage size_consumption negative": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Colorways: []*pb_common.TechCardColorway{{Name: "Black", Usages: []*pb_common.TechCardColorwayUsage{{
-				SizeConsumptions: []*pb_common.TechCardBomSizeConsumption{{SizeId: 4, Consumption: &pb_decimal.Decimal{Value: "-1"}}},
-			}}}}},
+		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
+		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}
 	for name, in := range cases {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {

@@ -25,8 +25,8 @@ func convertEntityHeroSingleSliceToCommon(in []entity.HeroSingleWithTranslations
 	return out
 }
 
-func convertEntityProductsToCommon(products []entity.Product) ([]*pb_common.Product, error) {
-	out := make([]*pb_common.Product, len(products))
+func convertEntityProductsToCommon(products []entity.Colorway) ([]*pb_common.Colorway, error) {
+	out := make([]*pb_common.Colorway, len(products))
 	for i := range products {
 		cp, err := ConvertEntityProductToCommon(&products[i])
 		if err != nil {
@@ -427,7 +427,7 @@ func convertEntityHeroFeaturedProductsToCommon(fp *entity.HeroFeaturedProductsWi
 		return nil, nil
 	}
 	result := &pb_common.HeroFeaturedProductsWithTranslations{
-		Products:     make([]*pb_common.Product, len(fp.Products)),
+		Products:     make([]*pb_common.Colorway, len(fp.Products)),
 		ExploreLink:  fp.ExploreLink,
 		Translations: convertEntityHeroCopyTranslationsToCommon(fp.Translations),
 	}

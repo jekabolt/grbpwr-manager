@@ -265,10 +265,14 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // products with no primary yet adopt this card as their primary.
 func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
-	if err != nil || card == nil || len(card.ProductIds) == 0 {
+	if err != nil || card == nil {
 		return
 	}
-	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, card.ProductIds); err != nil {
+	linkedProducts := card.LinkedProductIDs()
+	if len(linkedProducts) == 0 {
+		return
+	}
+	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, linkedProducts); err != nil {
 		slog.Default().ErrorContext(ctx, "can't assign primary tech card to products",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return
@@ -407,13 +411,24 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		gender = string(g)
 	}
 
+	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
+	if purpose != "" && !entity.ValidTechCardPurposes[entity.TechCardPurpose(purpose)] {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid purpose filter: must be sellable|auxiliary")
+	}
+	seasonCode, seasonYear, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season filter: %v", err)
+	}
+
 	filter := entity.TechCardListFilter{
-		Stage:     stage,
-		Gender:    gender,
-		Brand:     strings.TrimSpace(req.Brand),
-		Season:    strings.TrimSpace(req.Season),
-		Name:      strings.TrimSpace(req.Name),
-		ProductId: int(req.ProductId),
+		Stage:      stage,
+		Gender:     gender,
+		Brand:      strings.TrimSpace(req.Brand),
+		SeasonCode: seasonCode,
+		SeasonYear: seasonYear,
+		Name:       strings.TrimSpace(req.Name),
+		ProductId:  int(req.ProductId),
+		Purpose:    purpose,
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

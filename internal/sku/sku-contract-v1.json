@@ -1,0 +1,149 @@
+{
+  "version": "grbpwr-sku-v1",
+  "description": "Canonical SKU contract (R7, finish-rework 01-contract-decisions.md). Single source of truth for the base/variant SKU shape and the size-ordinal dictionaries: internal/store/product's builder implements this table, and any other language's tests (TypeScript storefront/admin/analytics) should read this file rather than re-typing the ordinals by hand.",
+  "base_sku_shape": "{SEASON}{YY}-{MODEL:5}-{COLOR:3}",
+  "base_sku_length": 14,
+  "variant_sku_shape": "{base}-{SIZE_ORD:2}",
+  "variant_sku_length": 17,
+  "season": {
+    "valid_codes": ["SS", "FW", "PF", "RC"],
+    "year_min": 2000,
+    "year_max": 2099
+  },
+  "model_no": {
+    "min": 1,
+    "max": 99999,
+    "warn_threshold": 90000,
+    "critical_threshold": 99000
+  },
+  "color_code": {
+    "pattern": "^[A-Z0-9]{3}$"
+  },
+  "size_ordinal": {
+    "min": 1,
+    "max": 99
+  },
+  "size_systems": {
+    "apparel": {
+      "description": "Letter sizes, gaps of 5, OS lowest (migration 0131).",
+      "ordinals": {
+        "os": 5,
+        "xxs": 10,
+        "xs": 15,
+        "s": 20,
+        "m": 25,
+        "l": 30,
+        "xl": 35,
+        "xxl": 40
+      }
+    },
+    "shoe": {
+      "description": "EU sizes 35..48 in half-steps; ord = 50 + (EU - 35) * 2 (migration 0131). 48 -> 76.",
+      "formula": "50 + (EU - 35) * 2",
+      "ordinals": {
+        "35": 50,
+        "35.5": 51,
+        "36": 52,
+        "36.5": 53,
+        "37": 54,
+        "37.5": 55,
+        "38": 56,
+        "38.5": 57,
+        "39": 58,
+        "39.5": 59,
+        "40": 60,
+        "40.5": 61,
+        "41": 62,
+        "41.5": 63,
+        "42": 64,
+        "42.5": 65,
+        "43": 66,
+        "43.5": 67,
+        "44": 68,
+        "44.5": 69,
+        "45": 70,
+        "45.5": 71,
+        "46": 72,
+        "46.5": 73,
+        "47": 74,
+        "47.5": 75,
+        "48": 76
+      }
+    },
+    "composite_ta": {
+      "description": "Composite tailored sizes: women (_f) then men (_m), gaps of 5 (migration 0131 seed 0131/0147, verbatim — never renumbered).",
+      "ordinals": {
+        "xxs_32ta_f": 10,
+        "xs_34ta_f": 15,
+        "s_36ta_f": 20,
+        "m_38ta_f": 25,
+        "l_40ta_f": 30,
+        "xl_42ta_f": 35,
+        "xxl_44ta_f": 40,
+        "xs_44ta_m": 45,
+        "s_46ta_m": 50,
+        "m_48ta_m": 55,
+        "l_50ta_m": 60,
+        "xl_52ta_m": 65,
+        "xxl_54ta_m": 70
+      }
+    },
+    "composite_bo": {
+      "description": "Composite bottoms sizes: women (_f) then men (_m), gaps of 5 (migration 0131 seed 0131/0147, verbatim — never renumbered).",
+      "ordinals": {
+        "xxs_23bo_f": 10,
+        "xs_25bo_f": 15,
+        "s_27bo_f": 20,
+        "m_29bo_f": 25,
+        "l_31bo_f": 30,
+        "xl_33bo_f": 35,
+        "xxs_26bo_m": 40,
+        "xs_28bo_m": 45,
+        "s_30bo_m": 50,
+        "m_32bo_m": 55,
+        "l_34bo_m": 60,
+        "xl_36bo_m": 65,
+        "xxl_38bo_m": 70
+      }
+    }
+  },
+  "golden_vectors": {
+    "base": [
+      { "season": "SS", "year": 2026, "model_no": 21, "color_code": "BLK", "want": "SS26-00021-BLK", "note": "spec example" },
+      { "season": "SS", "year": 2026, "model_no": 8, "color_code": "RED", "want": "SS26-00008-RED", "note": "styled colourways share model, differ by colour" },
+      { "season": "FW", "year": 2025, "model_no": 1, "color_code": "WHT", "want": "FW25-00001-WHT", "note": "FW season" },
+      { "season": "RC", "year": 2027, "model_no": 99999, "color_code": "OFW", "want": "RC27-99999-OFW", "note": "model ceiling boundary (max, still valid)" },
+      { "season": "PF", "year": 2000, "model_no": 1, "color_code": "A1B", "want": "PF00-00001-A1B", "note": "year floor boundary + alphanumeric colour code" }
+    ],
+    "variant": [
+      { "base": "SS26-00021-BLK", "size_ord": 5, "want": "SS26-00021-BLK-05", "note": "apparel OS" },
+      { "base": "SS26-00021-BLK", "size_ord": 25, "want": "SS26-00021-BLK-25", "note": "apparel M = 25 (canon v1; NOT 04 — see tmp/plans/sku-rework doc-drift fix)" },
+      { "base": "SS26-00021-BLK", "size_ord": 40, "want": "SS26-00021-BLK-40", "note": "apparel XXL" },
+      { "base": "SS26-00021-BLK", "size_ord": 50, "want": "SS26-00021-BLK-50", "note": "shoe EU35" },
+      { "base": "SS26-00021-BLK", "size_ord": 76, "want": "SS26-00021-BLK-76", "note": "shoe EU48 = 76 (canon v1; NOT 77 — see tmp/plans/sku-rework doc-drift fix)" },
+      { "base": "SS26-00021-BLK", "size_ord": 70, "want": "SS26-00021-BLK-70", "note": "composite ceiling shared value (xxl_54ta_m / xxl_38bo_m)" }
+    ]
+  },
+  "negative_vectors": {
+    "base": [
+      { "season": "XX", "year": 2026, "model_no": 21, "color_code": "BLK", "reason": "invalid_season_unknown_mapping" },
+      { "season": "", "year": 2026, "model_no": 21, "color_code": "BLK", "reason": "invalid_season_empty" },
+      { "season": "SS", "year": 1999, "model_no": 21, "color_code": "BLK", "reason": "year_below_2000" },
+      { "season": "SS", "year": 2100, "model_no": 21, "color_code": "BLK", "reason": "year_above_2099" },
+      { "season": "SS", "year": 2026, "model_no": 0, "color_code": "BLK", "reason": "model_zero" },
+      { "season": "SS", "year": 2026, "model_no": -1, "color_code": "BLK", "reason": "model_negative" },
+      { "season": "SS", "year": 2026, "model_no": 100000, "color_code": "BLK", "reason": "model_above_99999" },
+      { "season": "SS", "year": 2026, "model_no": 21, "color_code": "bl", "reason": "color_wrong_length" },
+      { "season": "SS", "year": 2026, "model_no": 21, "color_code": "black", "reason": "color_too_long" },
+      { "season": "SS", "year": 2026, "model_no": 21, "color_code": "bLk", "reason": "color_not_uppercase" },
+      { "season": "SS", "year": 2026, "model_no": 21, "color_code": "B-K", "reason": "color_not_alphanumeric" }
+    ],
+    "variant": [
+      { "base": "SS26-00021-BLK", "size_ord": 0, "reason": "ordinal_zero" },
+      { "base": "SS26-00021-BLK", "size_ord": -1, "reason": "ordinal_negative" },
+      { "base": "SS26-00021-BLK", "size_ord": 100, "reason": "ordinal_above_99" },
+      { "base": "SS26-00021-BL", "size_ord": 25, "reason": "base_shape_too_short" },
+      { "base": "SS26-00021-BLK-05", "size_ord": 25, "reason": "base_shape_too_long_already_a_variant" }
+    ]
+  }
+}

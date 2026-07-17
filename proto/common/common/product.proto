@@ -20,11 +20,32 @@ message Category {
   int32 count_women = 7;
 }
 
+enum SizeSkuSystem {
+  SIZE_SKU_SYSTEM_UNKNOWN = 0;
+  SIZE_SKU_SYSTEM_APPAREL = 1;
+  SIZE_SKU_SYSTEM_SHOE = 2;
+  SIZE_SKU_SYSTEM_COMPOSITE_TA = 3;
+  SIZE_SKU_SYSTEM_COMPOSITE_BO = 4;
+}
+
 message Size {
   int32 id = 1;
   string name = 2;
   int32 count_men = 3;
   int32 count_women = 4;
+  int32 sku_ord = 5; // required 1..99 ordinal for the size segment of the variant SKU
+  reserved 6; // was free-text sku_system
+  SizeSkuSystem sku_system = 7;
+}
+
+// Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the
+// colour segment of the SKU and is referenced by product.color_code.
+message Color {
+  int32 id = 1;
+  string code = 2;
+  string name = 3;
+  string hex = 4;
+  bool archived = 5; // R9: controlled dictionary; a used code archives, never deletes.
 }
 
 message MeasurementName {
@@ -47,44 +68,121 @@ enum SeasonEnum {
   SEASON_ENUM_RC = 4; // Resort/Cruise
 }
 
-message ProductNew {
-  ProductInsert product = 1;
-  repeated SizeWithMeasurementInsert size_measurements = 2;
-  repeated int32 media_ids = 3;
-  repeated ProductTagInsert tags = 4;
-  repeated ProductPriceInsert prices = 5;
+// ColorwayLifecycleStatus is the stored lifecycle of a colourway (R6). Numbers are fixed and match the
+// DB tinyint + entity.ColorwayStatus. UNKNOWN is rejected on write; an unknown read value fails closed
+// (the colourway is not shown). Only ACTIVE is exposed publicly.
+enum ColorwayLifecycleStatus {
+  COLORWAY_LIFECYCLE_STATUS_UNKNOWN = 0;
+  COLORWAY_LIFECYCLE_STATUS_DRAFT = 1;
+  COLORWAY_LIFECYCLE_STATUS_ACTIVE = 2;
+  COLORWAY_LIFECYCLE_STATUS_HIDDEN = 3;
+  COLORWAY_LIFECYCLE_STATUS_ARCHIVED = 4;
 }
 
-message ProductFull {
-  Product product = 1;
-  repeated ProductSize sizes = 2;
-  repeated ProductMeasurement measurements = 3;
+// VariantLifecycleStatus is the stored lifecycle of a variant (R2). Variants archive, never delete.
+enum VariantLifecycleStatus {
+  VARIANT_LIFECYCLE_STATUS_UNKNOWN = 0;
+  VARIANT_LIFECYCLE_STATUS_ACTIVE = 1;
+  VARIANT_LIFECYCLE_STATUS_ARCHIVED = 2;
+}
+
+// ColorwayCostSource records where a colourway's COGS came from (R4), separating cost provenance from
+// the owning style relation.
+enum ColorwayCostSource {
+  COLORWAY_COST_SOURCE_UNKNOWN = 0;
+  COLORWAY_COST_SOURCE_MANUAL = 1;
+  COLORWAY_COST_SOURCE_STYLE = 2;
+  COLORWAY_COST_SOURCE_PRODUCTION_RUN = 3;
+}
+
+// The write-aggregate messages ColorwayNew / ColorwayInsert / ColorwayBody / VariantInsert /
+// SizeWithMeasurement(Insert) / ProductMeasurement(Insert/Update) were removed (R2/R5 write
+// decomposition): the coupled UpsertColorway is replaced by CreateColorway / UpdateColorway /
+// CreateVariant / UpdateStyleSizeChart in admin.proto (§6), and the size chart is style-owned
+// (StyleSizeChart). See the removed-registry in 02-proto-diff-spec §9/§10.
+
+message ColorwayFull {
+  Colorway colorway = 1;
+  repeated Variant variants = 2;
+  reserved 3; // was `measurements` — the size chart is style-owned now (R5, StyleSizeChart)
+  reserved "measurements";
   repeated common.MediaFull media = 4;
-  repeated ProductTag tags = 5;
+  repeated ColorwayTag tags = 5;
+  reserved "product", "sizes"; // R8 renames: product→colorway, sizes→variants
 }
 
-message Product {
+message Colorway {
   int32 id = 1;
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   string slug = 4;
-  string sku = 5;
-  ProductDisplay product_display = 6;
-  repeated ProductPrice prices = 7;
+  string base_sku = 5; // R8: renamed from `sku` (base SKU, SS26-00021-BLK)
+  ColorwayDisplay display = 6; // R8: renamed from `product_display`
+  reserved "sku", "product_display";
+  repeated ColorwayPrice prices = 7;
   bool sold_out = 8;
+  // status is the colourway's stored lifecycle (R6). Type change string→enum on the same wire number
+  // (non-identity, big-bang regen). Only ACTIVE is exposed publicly; an UNKNOWN read fails closed.
+  ColorwayLifecycleStatus status = 9;
+  int32 style_id = 10; // R4: the single style relation (product.style_id)
+  int32 lock_version = 11; // R2/R4: optimistic lock token (shared tech_card.lock_version)
+  string color_code = 12; // R1: colourway-owned colour identity (FK Dictionary.colors)
+  google.protobuf.Timestamp published_at = 13; // R6: audit of first publish (not the status source)
 }
 
-message ProductBody {
-  ProductBodyInsert product_body_insert = 1;
-  repeated ProductInsertTranslation translations = 2;
-}
-
-message ProductBodyInsert {
+// ColorwayMerchandisingInsert (R8: renamed from ColorwayBodyInsert) carries the colourway-owned
+// merchandising fields ONLY. The garment/style facts (brand, season, collection, target_gender, fit,
+// composition, care instructions, model-wears, categories) are owned by the Style and written via
+// UpdateStyle (R4/§14.7) — they are reserved here. The free-text country_of_origin is replaced by the
+// ISO country_code (R9).
+message ColorwayMerchandisingInsert {
   google.protobuf.Timestamp preorder = 1;
-  string brand = 2;
-  string color = 3;
-  string color_hex = 4;
-  string country_of_origin = 5;
+  reserved 2;
+  reserved "brand"; // -> Style (UpdateStyle), R4
+  reserved 3;
+  reserved "color", "color_hex";
+  // Optional per-colorway shade override. When absent, clients use dictionary_color.hex.
+  optional string color_hex_override = 4;
+  reserved 5;
+  reserved "country_of_origin"; // free-text; ISO manufacture country -> country_code=23 (R9)
+  google.type.Decimal sale_percentage = 6;
+  reserved 7, 8, 9;
+  reserved "top_category_id", "sub_category_id", "type_id"; // -> Style (categories), R4
+  reserved 10, 11;
+  reserved "model_wears_height_cm", "model_wears_size_id"; // -> Style, R4
+  reserved 12, 13;
+  reserved "care_instructions", "composition"; // -> Style, R4
+  reserved 14;
+  reserved "hidden"; // R6: visibility only through a lifecycle transition
+  reserved 15;
+  reserved "target_gender"; // -> Style, R4
+  reserved 16; // was `version` — DB/entity version column removed (PR6, problem 032)
+  reserved "version";
+  reserved 17;
+  reserved "collection"; // -> style.collection (R4/R9)
+  reserved 18;
+  reserved "fit"; // -> Style, R4
+  reserved 19;
+  reserved "season"; // -> style.sku_season (R4)
+  // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
+  int32 min_tier = 20;
+  // REQUIRED canonical FK to Dictionary.colors; the sole color/SKU identity on writes.
+  string color_code = 21;
+  // OUTPUT-ONLY resolved dictionary entry. Ignored on write.
+  Color dictionary_color = 22;
+  // country_code is the ISO 3166-1 alpha-2 manufacture country (R9; FK Country dict). Colourway-owned.
+  string country_code = 23;
+}
+
+// ColorwayMerchandising is the admin/internal READ projection of a colourway's display fields: the
+// colourway-owned merchandising PLUS the style-resolved garment facts (output-only), so the admin
+// detail view keeps rendering brand/season/collection/etc even though they are now written on the
+// Style. Never reachable from FrontendService (the storefront uses StorefrontColorway, R3).
+message ColorwayMerchandising {
+  google.protobuf.Timestamp preorder = 1;
+  string brand = 2; // resolved from the style (output-only)
+  optional string color_hex_override = 4;
+  string country_of_origin = 5; // resolved free-text origin (output-only)
   google.type.Decimal sale_percentage = 6;
   int32 top_category_id = 7;
   int32 sub_category_id = 8;
@@ -93,92 +191,53 @@ message ProductBodyInsert {
   int32 model_wears_size_id = 11;
   string care_instructions = 12;
   string composition = 13;
-  bool hidden = 14;
   GenderEnum target_gender = 15;
   SeasonEnum season = 19;
-  string version = 16;
   string collection = 17;
   string fit = 18;
-  // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
   int32 min_tier = 20;
+  string color_code = 21;
+  Color dictionary_color = 22;
+  string country_code = 23;
 }
 
-message ProductInsert {
-  ProductBodyInsert product_body_insert = 1;
-  int32 thumbnail_media_id = 2;
-  repeated common.ProductInsertTranslation translations = 3;
-  int32 secondary_thumbnail_media_id = 4;
-  repeated ProductPriceInsert prices = 5;
-  // cost_price is the confidential per-unit cost of goods (COGS) in base currency (EUR),
-  // used for margin analytics. Omit/empty to leave the stored value unchanged on update.
-  // Deliberately on ProductInsert (write-only) and NOT on ProductBodyInsert, so it is
-  // never serialized on the storefront product read path.
-  google.type.Decimal cost_price = 6;
-}
-
-message ProductDisplay {
-  ProductBody product_body = 1;
+message ColorwayDisplay {
+  reserved 1;
+  reserved "product_body"; // was ColorwayBody (write wrapper) — replaced by the resolved read below
   common.MediaFull thumbnail = 2;
   common.MediaFull secondary_thumbnail = 3;
+  ColorwayMerchandising merchandising = 4; // resolved merch + style facts (output-only, admin/internal)
+  repeated ColorwayInsertTranslation translations = 5; // merch translation overrides (output-only)
 }
 
-message ProductMeasurementUpdate {
-  int32 size_id = 1;
-  int32 measurement_name_id = 2;
-  google.type.Decimal measurement_value = 3;
-}
-
-message SizeWithMeasurementInsert {
-  ProductSizeInsert product_size = 1;
-  repeated ProductMeasurementInsert measurements = 2;
-}
-
-message SizeWithMeasurement {
-  ProductSize product_size = 1;
-  repeated ProductMeasurement measurements = 2;
-}
-
-message ProductSize {
-  int32 id = 1;
+message Variant {
+  int32 variant_id = 1; // R8: renamed from `id` (stable internal variant id = product_size.id)
   google.type.Decimal quantity = 2;
-  int32 product_id = 3;
+  int32 colorway_id = 3; // R8: renamed from `product_id` (same FK target = product.id)
   int32 size_id = 4;
+  string variant_sku = 5; // R8: renamed from `sku` (first-class variant SKU, SS26-00021-BLK-04)
+  reserved "id", "product_id", "sku";
+  VariantLifecycleStatus status = 6; // R2: variants archive, never delete
+  int32 lock_version = 7; // R2: optimistic lock token
 }
 
-message ProductSizeInsert {
-  google.type.Decimal quantity = 1;
-  int32 size_id = 2;
-}
-
-message ProductMeasurement {
+message ColorwayTag {
   int32 id = 1;
-  int32 product_id = 2;
-  int32 product_size_id = 3;
-  int32 measurement_name_id = 4;
-  google.type.Decimal measurement_value = 5;
+  int32 colorway_id = 2; // R8: renamed from `product_id`
+  ColorwayTagInsert tag_insert = 3; // R8: renamed from `product_tag_insert`
+  reserved "product_id", "product_tag_insert";
 }
 
-message ProductMeasurementInsert {
-  int32 measurement_name_id = 1;
-  google.type.Decimal measurement_value = 2;
-}
-
-message ProductTag {
-  int32 id = 1;
-  int32 product_id = 2;
-  ProductTagInsert product_tag_insert = 3;
-}
-
-message ProductTagInsert {
+message ColorwayTagInsert {
   string tag = 1;
 }
 
-message ProductPrice {
+message ColorwayPrice {
   string currency = 1;
   google.type.Decimal price = 2;
 }
 
-message ProductPriceInsert {
+message ColorwayPriceInsert {
   string currency = 1;
   google.type.Decimal price = 2;
 }
@@ -230,8 +289,9 @@ enum StockAdjustmentDirection {
 
 message StockChange {
   int32 id = 1;
-  int32 product_id = 2;
-  int32 size_id = 3;
+  int32 colorway_id = 2; // R8: renamed from `product_id` (denormalised admin/stock-history projection)
+  int32 size_id = 3; // kept: the historical row is denormalised (variant addressed in the request)
+  reserved "product_id";
   google.type.Decimal quantity_delta = 4;
   google.type.Decimal quantity_before = 5;
   google.type.Decimal quantity_after = 6;
@@ -243,4 +303,6 @@ message StockChange {
   string reference_id = 13;
   optional StockChangeReason reason = 14;
   optional string comment = 15;
+  int32 variant_id = 16; // R2: stock-history addresses the stable variant id
+  string variant_sku = 17; // R2: public variant SKU snapshot for the history row
 }

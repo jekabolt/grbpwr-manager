@@ -12,6 +12,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -65,18 +66,9 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 		b.UnitPrice = nil
 		b.Currency = ""
 	}
-	for _, cw := range ins.Colorways {
-		if cw == nil {
-			continue
-		}
-		for _, u := range cw.Usages {
-			if u == nil {
-				continue
-			}
-			u.LineTotal = nil
-			u.SizeRunTotal = nil
-		}
-	}
+	// PR6 R1: colourways (and their usage recipe with per-line cost figures) are no longer part of the
+	// style read payload, so there are no usage LineTotal/SizeRunTotal to strip here. Per-colourway
+	// costing was under Costing.colorway_costs, already dropped by `ins.Costing = nil` above.
 }
 
 // stripMaterialCosting clears a catalog material's current price. The material's descriptive
@@ -266,13 +258,13 @@ func techCardInsertHasCostingData(ins *pb_common.TechCardInsert) bool {
 	return false
 }
 
-// productInsertHasCostPrice reports whether an UpsertProduct payload is trying to SET a
-// product cost_price (a confidential figure). An absent/empty value means "leave the stored
-// cost unchanged" (see nullDecimalFromPb) — not a cost write — so it is not gated. Because
-// cost_price is write-only (never serialized on the product read path), a cost-stripped
-// account's resave omits it and preserves the stored value: no anti-erase logic needed here.
-func productInsertHasCostPrice(p *pb_common.ProductInsert) bool {
-	return strings.TrimSpace(p.GetCostPrice().GetValue()) != ""
+// costPriceProvided reports whether a colourway write payload is trying to SET a product cost_price (a
+// confidential figure). An absent/empty value means "leave the stored cost unchanged" (see
+// nullDecimalFromPb) — not a cost write — so it is not gated. Because cost_price is write-only (never
+// serialized on the product read path), a cost-stripped account's resave omits it and preserves the
+// stored value: no anti-erase logic needed here.
+func costPriceProvided(cost *pb_decimal.Decimal) bool {
+	return strings.TrimSpace(cost.GetValue()) != ""
 }
 
 // preserveStoredCosting restores confidential cost fields onto an incoming tech-card update

@@ -43,14 +43,17 @@ func TestAnalyticsV2Task05PromoSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	promoID, err := pr.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM promo_code WHERE id = ?", promoID) })
+	// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+	// Cleanups), which would make these DELETEs no-ops and leak rows into later tests sharing this
+	// date window.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM promo_code WHERE id = ?", promoID) })
 
 	res, err := testDB.ExecContext(ctx,
 		`INSERT INTO address (country, city, address_line_one, postal_code) VALUES ('US','NY','1 st','10001')`)
 	require.NoError(t, err)
 	addrID, err := res.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", addrID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", addrID) })
 
 	inWindow := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	from := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
@@ -65,7 +68,7 @@ func TestAnalyticsV2Task05PromoSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	oid, err := r.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 	_, err = testDB.ExecContext(ctx, `INSERT INTO buyer
 		(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 		VALUES (?, 'a', 'b', 't05@example.com', '1234567', ?, ?)`, oid, addrID, addrID)

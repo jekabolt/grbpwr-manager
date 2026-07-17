@@ -8,39 +8,40 @@ import (
 )
 
 type Dict struct {
-	Categories       []entity.Category
-	Measurements     []entity.MeasurementName
-	OrderStatuses    []entity.OrderStatus
-	PaymentMethods   []entity.PaymentMethod
-	ShipmentCarriers []entity.ShipmentCarrier
-	Sizes            []entity.Size
-	Collections      []entity.Collection
-	Languages        []entity.Language
-	Genders          []pb_common.Genders
-	SortFactors      []pb_common.SortFactors
-	OrderFactors     []pb_common.OrderFactors
-	SiteEnabled            bool
-	MaxOrderItems          int
-	BaseCurrency           string
-	BigMenu                bool
-	Announce                   *entity.AnnounceWithTranslations
-	OrderExpirationSeconds     int
+	Categories                  []entity.Category
+	Measurements                []entity.MeasurementName
+	OrderStatuses               []entity.OrderStatus
+	PaymentMethods              []entity.PaymentMethod
+	ShipmentCarriers            []entity.ShipmentCarrier
+	Sizes                       []entity.Size
+	Collections                 []entity.Collection
+	Languages                   []entity.Language
+	Genders                     []pb_common.Genders
+	SortFactors                 []pb_common.SortFactors
+	OrderFactors                []pb_common.OrderFactors
+	SiteEnabled                 bool
+	MaxOrderItems               int
+	BaseCurrency                string
+	BigMenu                     bool
+	Announce                    *entity.AnnounceWithTranslations
+	OrderExpirationSeconds      int
 	ComplimentaryShippingPrices map[string]decimal.Decimal
 	IsProd                      bool // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 	BackgroundHeroColor         string
 	ProductTags                 []string
+	Colors                      []entity.Color
 }
 
 var (
 	orderStatusEntityPbMap = map[entity.OrderStatusName]pb_common.OrderStatusEnum{
-		entity.Placed:           pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
-		entity.AwaitingPayment:  pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
-		entity.Confirmed:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
-		entity.Shipped:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
-		entity.Delivered:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
-		entity.Cancelled:        pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
-		entity.PendingReturn:    pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN,
-		entity.RefundInProgress: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS,
+		entity.Placed:            pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PLACED,
+		entity.AwaitingPayment:   pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_AWAITING_PAYMENT,
+		entity.Confirmed:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CONFIRMED,
+		entity.Shipped:           pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_SHIPPED,
+		entity.Delivered:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED,
+		entity.Cancelled:         pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED,
+		entity.PendingReturn:     pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN,
+		entity.RefundInProgress:  pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS,
 		entity.Refunded:          pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED,
 		entity.PartiallyRefunded: pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED,
 	}
@@ -54,7 +55,7 @@ var (
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_CANCELLED:          entity.Cancelled,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PENDING_RETURN:     entity.PendingReturn,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUND_IN_PROGRESS: entity.RefundInProgress,
-		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:            entity.Refunded,
+		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_REFUNDED:           entity.Refunded,
 		pb_common.OrderStatusEnum_ORDER_STATUS_ENUM_PARTIALLY_REFUNDED: entity.PartiallyRefunded,
 	}
 
@@ -66,6 +67,13 @@ var (
 	paymentMethodPbEntityMap = map[pb_common.PaymentMethodNameEnum]entity.PaymentMethodName{
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD:      entity.CARD,
 		pb_common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CARD_TEST: entity.CARD_TEST,
+	}
+
+	sizeSKUSystemEntityPBMap = map[entity.SizeSKUSystem]pb_common.SizeSkuSystem{
+		entity.SizeSKUSystemApparel:     pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_APPAREL,
+		entity.SizeSKUSystemShoe:        pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_SHOE,
+		entity.SizeSKUSystemCompositeTA: pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_COMPOSITE_TA,
+		entity.SizeSKUSystemCompositeBO: pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_COMPOSITE_BO,
 	}
 )
 
@@ -103,6 +111,10 @@ func ConvertEntityToPbPaymentMethod(p entity.PaymentMethodName) (pb_common.Payme
 
 func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict := &pb_common.Dictionary{}
+
+	// R7: sku_contract_version is sourced from sku.ContractVersion() at the store/settings layer that
+	// assembles Dict (avoids a dto->sku import cycle via store/product's sku_test); countries/tags/
+	// revisions (R9) are likewise populated once the dictionary store lands (T-D). Empty here for now.
 
 	commonDict.Categories = CategorySliceToProto(dict.Categories)
 
@@ -176,12 +188,18 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	}
 
 	for _, sz := range dict.Sizes {
+		skuSystem := pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_UNKNOWN
+		if mapped, ok := sizeSKUSystemEntityPBMap[sz.SkuSystem]; ok {
+			skuSystem = mapped
+		}
 		commonDict.Sizes = append(commonDict.Sizes,
 			&pb_common.Size{
 				Id:         int32(sz.Id),
 				Name:       sz.Name,
 				CountMen:   int32(sz.CountMen),
 				CountWomen: int32(sz.CountWomen),
+				SkuOrd:     int32(sz.SkuOrd),
+				SkuSystem:  skuSystem,
 			})
 	}
 
@@ -236,6 +254,15 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	commonDict.IsProd = dict.IsProd
 	commonDict.BackgroundHeroColor = dict.BackgroundHeroColor
 	commonDict.ProductTags = dict.ProductTags
+
+	for _, c := range dict.Colors {
+		commonDict.Colors = append(commonDict.Colors, &pb_common.Color{
+			Id:   int32(c.ID),
+			Code: c.Code,
+			Name: c.Name,
+			Hex:  c.Hex.String,
+		})
+	}
 
 	return commonDict
 }
