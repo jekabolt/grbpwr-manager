@@ -74,7 +74,23 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get colors: %w", err)
 	}
 
+	if dict.CategorySizeSystems, err = s.getCategorySizeSystems(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get category size systems: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getCategorySizeSystems returns the category -> permitted size-system(s) mapping (S10/WS5, migration
+// 0175): the same read backs the admin dictionary (size picker) and, via the cache, server-side
+// size-write validation (entity.ResolveSizeSystemPolicy).
+func (s *Store) getCategorySizeSystems(ctx context.Context) ([]entity.CategorySizeSystem, error) {
+	query := `SELECT id, category_id, type_id, size_system FROM category_size_system`
+	rows, err := storeutil.QueryListNamed[entity.CategorySizeSystem](ctx, s.DB, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get category size systems: %w", err)
+	}
+	return rows, nil
 }
 
 // getColors returns the controlled colour dictionary, ordered by code.

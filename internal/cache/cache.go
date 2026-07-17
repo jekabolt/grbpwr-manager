@@ -59,6 +59,10 @@ var (
 	// Measurements
 
 	entityCategories = []entity.Category{}
+	categoryById     = map[int]entity.Category{}
+
+	// CategorySizeSystems: category -> permitted size-system(s) mapping (S10/WS5, migration 0175).
+	entityCategorySizeSystems = []entity.CategorySizeSystem{}
 
 	entityMeasurements = []entity.MeasurementName{}
 
@@ -203,6 +207,11 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
 	announce = dInfo.Announce
+	entityCategorySizeSystems = dInfo.CategorySizeSystems
+
+	for _, c := range entityCategories {
+		categoryById[c.ID] = c
+	}
 
 	backgroundHeroColorMu.Lock()
 	backgroundHeroColor = dInfo.BackgroundHeroColor
@@ -312,8 +321,8 @@ func UpdateHero(hf *entity.HeroFullWithTranslations) {
 	cacheMu.Unlock()
 }
 
-// RefreshDictionary updates categories, sizes, collections (including CountMen/CountWomen)
-// and product tags in the in-memory cache.
+// RefreshDictionary updates categories, sizes, collections (including CountMen/CountWomen),
+// product tags and the category size-system mapping (S10/WS5) in the in-memory cache.
 // Call after product add/update/delete so counts and tags stay accurate.
 func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	if dInfo == nil {
@@ -325,6 +334,11 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
 	entityProductTags = dInfo.ProductTags
+	entityCategorySizeSystems = dInfo.CategorySizeSystems
+	categoryById = make(map[int]entity.Category, len(entityCategories))
+	for _, c := range entityCategories {
+		categoryById[c.ID] = c
+	}
 	sizeById = make(map[int]entity.Size, len(entitySizes))
 	for _, s := range entitySizes {
 		sizeById[s.Id] = s
@@ -478,6 +492,38 @@ func GetSizeById(id int) (entity.Size, bool) {
 	defer cacheMu.RUnlock()
 	s, ok := sizeById[id]
 	return s, ok
+}
+
+// GetCategoryById returns a single category-tree node by id (S10/WS5): used to resolve a style's
+// most-specific category into a human-readable label for size-system validation errors.
+func GetCategoryById(id int) (entity.Category, bool) {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	c, ok := categoryById[id]
+	return c, ok
+}
+
+// GetCategorySizeSystems returns the category -> permitted size-system(s) mapping (S10/WS5, migration
+// 0175): both the admin dictionary (size picker) and server-side size-write validation
+// (entity.ResolveSizeSystemPolicy) read this same slice, so they can never drift from each other.
+func GetCategorySizeSystems() []entity.CategorySizeSystem {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityCategorySizeSystems
+}
+
+// CategoryLabel returns a human-readable name for a style's most specific set category node (type >
+// sub-category > top-category, S10/WS5), or "" when the style has no category assigned at all.
+func CategoryLabel(path entity.StyleCategoryPath) string {
+	id, ok := path.MostSpecificID()
+	if !ok {
+		return ""
+	}
+	c, ok := GetCategoryById(id)
+	if !ok {
+		return ""
+	}
+	return c.Name
 }
 
 func GetHero() *entity.HeroFullWithTranslations {
