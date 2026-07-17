@@ -39,6 +39,54 @@ type CompositionEntry struct {
 	Percent   decimal.Decimal `db:"percent" json:"percent"`
 }
 
+// materialCompositionTolerance bounds how far a directly-authored material composition may sum from
+// 100. Unlike a BOM-derived style composition (compositionTotalTolerance, a 1-point cross-fabric
+// rounding budget), a catalog material's fibre breakdown is entered as one balanced set, so the
+// tolerance is a tight rounding epsilon.
+var materialCompositionTolerance = decimal.New(1, -2) // 0.01
+
+// NormalizeMaterialComposition validates and canonicalises a catalog material's structural fibre
+// composition (S17, material_composition). Fibre codes are upper-cased/trimmed; each percent must be
+// in [0,100]; a fibre may appear at most once; and a non-empty set must sum to 100 (± a rounding
+// epsilon). An empty input is a valid "no composition" and returns (nil, nil). Errors are field-tagged
+// (NewFieldViolation) so the API binds the failure to the offending entry. It does NOT check that a
+// fibre code exists in the dictionary — that FK check is the store's (checkFibersExist).
+func NormalizeMaterialComposition(entries []CompositionEntry) ([]CompositionEntry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	hundred := decimal.NewFromInt(100)
+	out := make([]CompositionEntry, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	total := decimal.Zero
+	for i := range entries {
+		code := strings.ToUpper(strings.TrimSpace(entries[i].FiberCode))
+		if code == "" {
+			return nil, NewFieldViolation(fmt.Sprintf("composition_entries[%d].fiber_code", i),
+				"fibre code is required", "", "reference a fibre from the dictionary")
+		}
+		if seen[code] {
+			return nil, NewFieldViolation(fmt.Sprintf("composition_entries[%d].fiber_code", i),
+				fmt.Sprintf("fibre %s appears more than once", code), "", "list each fibre at most once")
+		}
+		seen[code] = true
+		p := entries[i].Percent
+		if p.IsNegative() || p.GreaterThan(hundred) {
+			return nil, NewFieldViolation(fmt.Sprintf("composition_entries[%d].percent", i),
+				fmt.Sprintf("fibre %s percent %s is out of range", code, p.String()), "",
+				"percentages must be between 0 and 100")
+		}
+		total = total.Add(p)
+		out = append(out, CompositionEntry{FiberCode: code, Percent: p})
+	}
+	if total.Sub(hundred).Abs().GreaterThan(materialCompositionTolerance) {
+		return nil, NewFieldViolation("composition_entries",
+			fmt.Sprintf("fibre percentages total %s, not 100", total.String()), "",
+			"a material's fibre composition must sum to 100%")
+	}
+	return out, nil
+}
+
 // DeriveStyleComposition aggregates the shell-fabric BOM lines' fibre compositions into the garment
 // composition (source=auto, S17 / acceptance C.11):
 //

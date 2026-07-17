@@ -93,6 +93,10 @@ type MaterialInsert struct {
 	ThreadAttr    *MaterialThreadAttr    `db:"-" valid:"-"`
 	PackagingAttr *MaterialPackagingAttr `db:"-" valid:"-"`
 	OtherAttrs    []byte                 `db:"other_attrs" valid:"-"` // JSON; only for class 'other'
+	// CompositionEntries is the material's structured fibre composition (S17, material_composition):
+	// each fibre's percent share, summing to 100 when set. Not a base column (db:"-") — it is written
+	// to / read from the material_composition side-table separately. Empty means "no composition".
+	CompositionEntries []CompositionEntry `db:"-" valid:"-"`
 	// Username audit stamps (server-set from the JWT, no FK). CreatedBy is written once on create;
 	// UpdatedBy on every write.
 	CreatedBy string `db:"created_by" valid:"-"`
