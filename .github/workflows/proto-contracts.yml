@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jekabolt/grbpwr-proto
-          ref: 9468c12a04ddd12f999492125857d3cf9ebf1eb0
+          ref: e3fb9a3c62eab49bb5bc1039711a722a37c0e84e
           path: proto-mirror
 
       - name: Install Buf
