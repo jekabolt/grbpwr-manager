@@ -46,17 +46,23 @@ func TestRunMaterialColorwayAttribution(t *testing.T) {
 	require.NoError(t, err)
 
 	styleID := seedSpineStyle(ctx, t, "NFCW")
-	mkProduct := func(sku string) int {
+	// Each call is a distinct colour-model under the same style: color_code must differ per product
+	// since 0151 added UNIQUE(style_id, color_code) on product (the post-merge catalog invariant — one
+	// product per style+colour). Cleanup is registered immediately per-row (not batched after every
+	// mkProduct call returns) so an early failure between calls never leaks a row into a later test's
+	// catalog-wide SKU backfill/readiness sweep.
+	mkProduct := func(sku, colorCode string) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
 			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
-			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
+			VALUES (?, 'c', ?, '#000000', 'US', ?, ?)`, sku, colorCode, mediaID, styleID)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", id) })
 		return int(id)
 	}
-	prodA := mkProduct(fmt.Sprintf("NF-CW-A-%d", mediaID))
-	prodB := mkProduct(fmt.Sprintf("NF-CW-B-%d", mediaID))
+	prodA := mkProduct(fmt.Sprintf("NF-CW-A-%d", mediaID), "BLK")
+	prodB := mkProduct(fmt.Sprintf("NF-CW-B-%d", mediaID), "WHT")
 
 	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
 		Name: "NF Colorway Style", Stage: entity.TechCardStageProto,
@@ -84,7 +90,8 @@ func TestRunMaterialColorwayAttribution(t *testing.T) {
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM production_run WHERE id = ?", runID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card WHERE id = ?", tcID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM product WHERE id IN (?, ?)", prodA, prodB)
+		// prodA/prodB/prodC clean themselves up (mkProduct self-registers), so this batch only owns
+		// the run/material/card/media fixtures.
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM media WHERE id = ?", mediaID)
 	})
 
@@ -120,8 +127,7 @@ func TestRunMaterialColorwayAttribution(t *testing.T) {
 
 	// g25-03: attributing an issue to a product that is neither on the run's lines nor linked to its
 	// tech card is rejected — it would seed a by_colorway row another style owns.
-	prodC := mkProduct(fmt.Sprintf("NF-CW-C-%d", mediaID))
-	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", prodC) })
+	prodC := mkProduct(fmt.Sprintf("NF-CW-C-%d", mediaID), "NAV")
 	_, err = MS.IssueMaterialStock(ctx, entity.MaterialIssueInsert{
 		MaterialId: matID, Quantity: decimal.NewFromInt(1), ProductionRunId: runRef,
 		ProductId: sql.NullInt32{Int32: int32(prodC), Valid: true},
