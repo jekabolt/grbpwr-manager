@@ -155,9 +155,12 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 			return err
 		}
 		n, err := storeutil.QueryNamedOne[struct {
-			Next  int `db:"next"`
-			Round int `db:"round"`
-		}](ctx, rep.DB(), `SELECT COALESCE(MAX(number), 0) + 1 AS next, COALESCE(MAX(round_number), 0) + 1 AS round FROM sample WHERE tech_card_id = :tc`,
+			Next   int           `db:"next"`
+			Round  int           `db:"round"`
+			PrevId sql.NullInt32 `db:"prev_id"`
+		}](ctx, rep.DB(), `SELECT COALESCE(MAX(number), 0) + 1 AS next, COALESCE(MAX(round_number), 0) + 1 AS round,
+				(SELECT s2.id FROM sample s2 WHERE s2.tech_card_id = :tc ORDER BY s2.id DESC LIMIT 1) AS prev_id
+			FROM sample WHERE tech_card_id = :tc`,
 			map[string]any{"tc": sm.TechCardId})
 		if err != nil {
 			return fmt.Errorf("next sample number: %w", err)
@@ -165,9 +168,17 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 		params := sampleParams(sm)
 		params["number"] = n.Next
 		// Auto-assign the round (MAX+1 per card, the spine) when the client did not pin one; a manual
-		// round_number is honoured. previous_sample_id is client-set (the iteration it derives from).
+		// round_number is honoured.
 		if !sm.RoundNumber.Valid {
 			params["round_number"] = n.Round
+		}
+		// M2 fix: previous_sample_id=0 (unset) auto-links to the latest prior sample of the same card,
+		// matching the documented proto contract (sample.proto: "0 = server links to the latest prior
+		// sample") — round_number already had this auto-assign behaviour, previous_sample_id did not,
+		// silently breaking the iteration chain for any client that relied on the 0-means-auto contract.
+		// An explicit previous_sample_id is honoured as-is (already validated above).
+		if !sm.PreviousSampleId.Valid && n.PrevId.Valid {
+			params["previous_sample_id"] = n.PrevId
 		}
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
 			INSERT INTO sample (tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note,
