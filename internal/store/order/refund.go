@@ -109,6 +109,34 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		return fmt.Errorf("can't update order status: %w", err)
 	}
 
+	// Release the order's open packaging reservations (PLM rework §2.8, S22) atomically with the stock
+	// restore: a cancelled order will never ship, so its soft packaging holds are returned (no physical
+	// writeoff — on_hand is untouched). This is the single choke point for every stock-restoring cancel
+	// path (admin CancelOrder, user cancel, payment-fail, order-items-validation-fail), so those callers
+	// need not release packaging separately.
+	if err := releaseOpenPackagingClaims(ctx, rep.DB(), order.Id); err != nil {
+		return fmt.Errorf("can't release packaging reservations: %w", err)
+	}
+
+	return nil
+}
+
+// releaseOpenPackagingClaims closes an order's still-open packaging reservation claims (a 'reserve'
+// with no 'consume'/'release') with 'release' rows, idempotently (INSERT IGNORE). It is a plain
+// statement on the caller's transaction so it runs atomically inside cancelOrder without opening a
+// nested transaction. It mirrors the inventory store's releaseOpenClaimsInTx — the two must stay in
+// sync (same open-claim definition and event vocabulary, §2.8).
+func releaseOpenPackagingClaims(ctx context.Context, db dependency.DB, orderID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT IGNORE INTO material_reservation_ledger (material_id, order_id, qty, event, claim_key, created_by)
+		SELECT r.material_id, r.order_id, r.qty, 'release', r.claim_key, ''
+		FROM material_reservation_ledger r
+		WHERE r.order_id = :order_id AND r.event = 'reserve'
+		  AND NOT EXISTS (SELECT 1 FROM material_reservation_ledger x
+		                  WHERE x.claim_key = r.claim_key AND x.event IN ('consume', 'release'))`,
+		map[string]any{"order_id": orderID}); err != nil {
+		return fmt.Errorf("release packaging reservations for order %d: %w", orderID, err)
+	}
 	return nil
 }
 

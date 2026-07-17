@@ -56,6 +56,8 @@ func TestPackagingBomConsumeOnShip(t *testing.T) {
 				_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE id = ?", oid)
 			}
 		}
+		// The global recipe now lives in packaging_recipe (scope='global'); packaging_bom is vestigial.
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM packaging_recipe")
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM packaging_bom")
 		for _, id := range []int{box, bag, shortMat} {
 			_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)

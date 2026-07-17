@@ -282,6 +282,9 @@ var methodRequirements = map[string]Requirement{
 	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
 	"UpsertPackagingBom": wr(SectionInventory),
 	"ListPackagingBom":   rd(SectionInventory),
+	// packaging recipe per product/style + global fallback (PLM rework §2.8, Q3)
+	"UpsertPackagingRecipe": wr(SectionInventory),
+	"ListPackagingRecipe":   rd(SectionInventory),
 	// structured lots / rolls (gap-07 v2 D)
 	"ListMaterialLots": rd(SectionInventory),
 	// tasks (internal team kanban)

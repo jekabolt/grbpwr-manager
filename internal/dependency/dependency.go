@@ -639,9 +639,24 @@ type (
 		UpsertPackagingBom(ctx context.Context, items []entity.PackagingBomItem) error
 		// ListPackagingBom returns the packaging recipe joined with material name/unit.
 		ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem, error)
-		// ConsumePackagingForOrder writes off packaging for a shipped order, idempotently (PK guard) and
-		// best-effort (a short material is skipped, never failing the ship). itemCount = total units.
+		// ConsumePackagingForOrder writes off packaging for a shipped order and closes its reservation
+		// claims, idempotently (PK guard) and best-effort (a short material is skipped, never failing the
+		// ship). itemCount is unused (per-item quantities come from the order's lines).
 		ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error)
+		// ReservePackagingForOrder soft-reserves an order's packaging at placement (S22): resolves the
+		// per-material requirement (product→style→global) and appends idempotent 'reserve' claims. Never
+		// blocks — an oversell is surfaced via available, not refused.
+		ReservePackagingForOrder(ctx context.Context, orderID int, username string) error
+		// ReleasePackagingForOrder closes an order's open packaging claims with 'release' rows (cancel/
+		// refund) — the soft hold is returned without any physical writeoff. Idempotent.
+		ReleasePackagingForOrder(ctx context.Context, orderID int, username string) error
+		// MaterialAvailable returns a material's on_hand, open-reserved and available (on_hand − reserved).
+		MaterialAvailable(ctx context.Context, materialID int) (entity.MaterialAvailability, error)
+		// ListPackagingRecipe returns every packaging recipe (all scopes) joined with material name/unit.
+		ListPackagingRecipe(ctx context.Context) ([]entity.PackagingRecipe, error)
+		// UpsertPackagingRecipe full-replaces one scope target's recipe lines (the whole global set, or
+		// one style's set, or one product's set).
+		UpsertPackagingRecipe(ctx context.Context, scope entity.PackagingRecipeScope, techCardID, productID sql.NullInt32, items []entity.PackagingRecipeInsert, username string) error
 		// ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D), active-only unless
 		// includeArchived. Traceability registry; valuation stays moving-average.
 		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)

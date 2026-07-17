@@ -1140,6 +1140,19 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/inventory/packaging-bom"};
   }
 
+  // UpsertPackagingRecipe full-replaces one scope target's packaging recipe (PLM rework §2.8, Q3): the
+  // whole global set, or one style's set, or one product's set (scope = global|style|product).
+  rpc UpsertPackagingRecipe(UpsertPackagingRecipeRequest) returns (UpsertPackagingRecipeResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/packaging-recipe/upsert"
+      body: "*"
+    };
+  }
+  // ListPackagingRecipe returns every packaging recipe (all scopes) with material name/unit.
+  rpc ListPackagingRecipe(ListPackagingRecipeRequest) returns (ListPackagingRecipeResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory/packaging-recipe"};
+  }
+
   // ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D).
   rpc ListMaterialLots(ListMaterialLotsRequest) returns (ListMaterialLotsResponse) {
     option (google.api.http) = {get: "/api/admin/inventory/{material_id}/lots"};
@@ -5011,6 +5024,49 @@ message ListPackagingBomRequest {}
 
 message ListPackagingBomResponse {
   repeated PackagingBomItem items = 1;
+}
+
+// PackagingRecipeLine is one stored line of a packaging recipe for a scope target (PLM rework §2.8,
+// Q3): a material consumed on ship — qty_per_order once per shipment (a box) plus qty_per_item × the
+// order's unit count (a dust bag). Resolution at order time is product → style → global (first match
+// wins). material_name / material_unit are resolved server-side for display and ignored on write.
+message PackagingRecipeLine {
+  int32 id = 1; // read-only
+  string scope = 2; // global | style | product
+  int32 tech_card_id = 3; // set iff scope=style
+  int32 product_id = 4; // set iff scope=product
+  int32 material_id = 5;
+  string material_name = 6; // read-only (display)
+  string material_unit = 7; // read-only (display)
+  google.type.Decimal qty_per_order = 8; // consumed once per shipped order, >= 0
+  google.type.Decimal qty_per_item = 9; // consumed per unit in the order, >= 0
+  bool active = 10;
+}
+
+// PackagingRecipeItem is one writable recipe line; the scope target is carried by the request.
+message PackagingRecipeItem {
+  int32 material_id = 1;
+  google.type.Decimal qty_per_order = 2; // >= 0
+  google.type.Decimal qty_per_item = 3; // >= 0
+  bool active = 4;
+}
+
+// UpsertPackagingRecipeRequest full-replaces the recipe lines of ONE scope target. scope selects the
+// target: tech_card_id is required iff scope=style, product_id iff scope=product, neither for global.
+// An empty items list clears that target's recipe.
+message UpsertPackagingRecipeRequest {
+  string scope = 1; // global | style | product
+  int32 tech_card_id = 2; // set iff scope=style
+  int32 product_id = 3; // set iff scope=product
+  repeated PackagingRecipeItem items = 4;
+}
+
+message UpsertPackagingRecipeResponse {}
+
+message ListPackagingRecipeRequest {}
+
+message ListPackagingRecipeResponse {
+  repeated PackagingRecipeLine items = 1;
 }
 
 message ListMaterialLotsRequest {
