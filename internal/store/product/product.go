@@ -706,7 +706,7 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		thumbnail_id = :thumbnailId,
 		secondary_thumbnail_id = :secondaryThumbnailId,
 		sale_percentage = :salePercentage,
-		-- lifecycle_status is deliberately NOT written here: a colourway save never changes lifecycle
+		-- lifecycle_status is deliberately NOT written here — a colourway save never changes lifecycle
 		-- (R6). Hide/Unhide/Archive are dedicated transition commands.
 		min_tier = :minTier,
 		-- Preserve the stored cost when the caller omits it (NULL param), so ordinary
