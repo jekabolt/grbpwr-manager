@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -85,10 +86,18 @@ func (s *Server) GetMaterialStock(ctx context.Context, req *pb_admin.GetMaterial
 	return &pb_admin.GetMaterialStockResponse{Stock: pb}, nil
 }
 
+// dbBomSectionFilter normalizes a wire section filter to the db's short form: admin clients send
+// the generated enum-constant string ("TECH_CARD_BOM_SECTION_PACKAGING"), the store compares
+// against the stored short name ("packaging"). Found live by the beta A–L run (H.23: a filtered
+// warehouse list silently returned zero rows). Short/db-form and empty inputs pass through.
+func dbBomSectionFilter(s string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(s)), "TECH_CARD_BOM_SECTION_"))
+}
+
 // ListMaterialStock returns the warehouse list (materials joined with balance + valuation).
 func (s *Server) ListMaterialStock(ctx context.Context, req *pb_admin.ListMaterialStockRequest) (*pb_admin.ListMaterialStockResponse, error) {
 	rows, err := s.repo.MaterialStock().ListMaterialStock(ctx, entity.MaterialStockFilter{
-		Section:       req.GetSection(),
+		Section:       dbBomSectionFilter(req.GetSection()),
 		Query:         req.GetQ(),
 		WithStockOnly: req.GetWithStockOnly(),
 		BelowMinOnly:  req.GetBelowMinOnly(),

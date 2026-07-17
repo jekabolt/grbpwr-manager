@@ -44,8 +44,9 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 
 	var caveats []string
 	noProductNoted, noColorwayNoted := false, false
-	noMaterialNoted := make(map[int]bool) // by bom index
+	noMaterialNoted := make(map[int]bool) // by bom item id
 	noNormNoted := make(map[string]bool)  // by colourway name
+	noBomNoted := make(map[string]bool)   // by colourway name
 
 	for i := range run.Lines {
 		ln := &run.Lines[i]
@@ -69,18 +70,18 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
-			if !u.BomItemIndex.Valid {
+			bom := planBomLine(u, card.BomItems)
+			if bom == nil {
+				if !noBomNoted[cw.Name] {
+					caveats = append(caveats, fmt.Sprintf("colourway %q has a usage with no resolvable BOM line — not counted", cw.Name))
+					noBomNoted[cw.Name] = true
+				}
 				continue
 			}
-			bi := int(u.BomItemIndex.Int32)
-			if bi < 0 || bi >= len(card.BomItems) {
-				continue
-			}
-			bom := &card.BomItems[bi]
 			if !bom.MaterialId.Valid {
-				if !noMaterialNoted[bi] {
+				if !noMaterialNoted[bom.Id] {
 					caveats = append(caveats, fmt.Sprintf("BOM line %q has no linked material — not counted", bom.Name))
-					noMaterialNoted[bi] = true
+					noMaterialNoted[bom.Id] = true
 				}
 				continue
 			}
@@ -139,6 +140,26 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	}
 	out.Caveats = caveats
 	return out
+}
+
+// planBomLine resolves a usage's BOM line for the plan: by the read-resolved FK first (bom_item_id —
+// the stable line_key world, S2/S3), else the legacy positional index. Mirrors the recipe read's
+// resolveUsageBom priority; found live by the beta A–L run (H.22b: a line_key-keyed recipe produced
+// an empty material plan because this compute only understood positional indices).
+func planBomLine(u *entity.TechCardColorwayUsage, items []entity.TechCardBomItem) *entity.TechCardBomItem {
+	if u.BomItemId.Valid {
+		for i := range items {
+			if int64(items[i].Id) == u.BomItemId.Int64 {
+				return &items[i]
+			}
+		}
+	}
+	if u.BomItemIndex.Valid {
+		if bi := int(u.BomItemIndex.Int32); bi >= 0 && bi < len(items) {
+			return &items[bi]
+		}
+	}
+	return nil
 }
 
 // usageNormForSize returns the per-garment material norm of a usage for a given size: the per-size
