@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -118,4 +119,47 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 	}
 	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
 	return &pb_admin.RelinkDraftColorwayResponse{}, nil
+}
+
+// CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
+// (R4). It reuses the proven tech-card converters for a faithful copy and AddTechCard's child
+// insertion; the clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
+// ABORTED; an unknown source is NotFound; a (style_number, season) collision (a same-season clone) is
+// FailedPrecondition.
+func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneStyleForSeasonRequest) (*pb_admin.CloneStyleForSeasonResponse, error) {
+	if req.SourceStyleId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "source_style_id is required")
+	}
+	if req.SkuSeason == nil || req.SkuSeason.Code == pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN || req.SkuSeason.Year == 0 {
+		return nil, status.Error(codes.InvalidArgument, "sku_season (code and year) is required")
+	}
+	card, err := s.repo.TechCards().GetTechCardById(ctx, int(req.SourceStyleId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
+		}
+		slog.Default().ErrorContext(ctx, "can't load source style for clone", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't load source style: %v", err)
+	}
+	if card.LockVersion != int(req.ExpectedSourceVersion) {
+		return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
+	}
+	// Round-trip through the tech-card converters (header + every child) then override the season.
+	pbInsert := dto.ConvertEntityTechCardToPb(card, s.costingFx(ctx)).GetTechCard()
+	pbInsert.SkuSeason = req.SkuSeason
+	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "can't build style clone: %v", err)
+	}
+	// A clone is a fresh design cycle for the new season — reset the PLM freeze so it is editable.
+	insert.ApprovalState = entity.TechCardApprovalDraft
+	newID, err := s.repo.TechCards().AddTechCard(ctx, insert)
+	if err != nil {
+		if s.repo.IsErrUniqueViolation(err) {
+			return nil, status.Errorf(codes.FailedPrecondition, "a style with this style number already exists for that season")
+		}
+		slog.Default().ErrorContext(ctx, "can't create style clone", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't create style clone: %v", err)
+	}
+	return &pb_admin.CloneStyleForSeasonResponse{NewStyleId: int32(newID)}, nil
 }

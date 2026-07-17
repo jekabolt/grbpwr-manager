@@ -202,6 +202,17 @@ service AdminService {
     };
   }
 
+  // CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
+  // (R4 official path for a season change that would otherwise re-mint frozen siblings). The clone
+  // starts as a fresh DRAFT tech card with no colourways; move drafts onto it with RelinkDraftColorway
+  // or create new ones. Optimistically guarded on the source's expected_source_version.
+  rpc CloneStyleForSeason(CloneStyleForSeasonRequest) returns (CloneStyleForSeasonResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/styles/{source_style_id}/clone-for-season"
+      body: "*"
+    };
+  }
+
   // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
   // frozen-sibling problem). Only a DRAFT may be relinked; both sides are optimistically locked and the
   // colourway's SKU is re-minted from the target style's facts.
@@ -1738,6 +1749,16 @@ message RelinkDraftColorwayRequest {
 }
 
 message RelinkDraftColorwayResponse {}
+
+message CloneStyleForSeasonRequest {
+  int64 source_style_id = 1;
+  common.SkuSeason sku_season = 2; // the new season for the clone (its SKU-facing season)
+  uint64 expected_source_version = 3; // the source style's lock_version (stale -> ABORTED)
+}
+
+message CloneStyleForSeasonResponse {
+  int32 new_style_id = 1;
+}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the

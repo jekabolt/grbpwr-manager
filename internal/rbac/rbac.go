@@ -145,6 +145,7 @@ var methodRequirements = map[string]Requirement{
 	"GetStyleSizeChart":    rd(SectionProducts),
 	"UpdateStyleSizeChart": wr(SectionProducts),
 	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
 	"GetColorwayCustoms":        rd(SectionProducts),
 	"SetColorwayCustoms":        wr(SectionProducts),
