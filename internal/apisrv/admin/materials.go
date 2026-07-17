@@ -96,7 +96,7 @@ func (s *Server) GetMaterial(ctx context.Context, req *pb_admin.GetMaterialReque
 
 // ListMaterials returns catalog materials (with current price), optionally filtered by section.
 func (s *Server) ListMaterials(ctx context.Context, req *pb_admin.ListMaterialsRequest) (*pb_admin.ListMaterialsResponse, error) {
-	materials, err := s.repo.TechCards().ListMaterials(ctx, req.GetSection(), req.GetIncludeArchived())
+	materials, err := s.repo.TechCards().ListMaterials(ctx, dbBomSectionFilter(req.GetSection()), req.GetIncludeArchived())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list materials", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list materials")

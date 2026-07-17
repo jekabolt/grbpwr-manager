@@ -19,6 +19,7 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	card.BomItems = []entity.TechCardBomItem{
 		{Name: "Main fabric", MaterialId: mid(100), Unit: sql.NullString{String: "m", Valid: true}, WastagePercent: nd2("5")}, // 5% wastage
 		{Name: "Free-text trim", Unit: sql.NullString{String: "pc", Valid: true}},                                             // no material_id → caveat
+		{Id: 503, Name: "Zipper (FK-keyed)", MaterialId: mid(200), Unit: sql.NullString{String: "pcs", Valid: true}},          // referenced by FK, not index
 	}
 	card.Colorways = []entity.TechCardColorway{
 		{Id: 1, Name: "Black", ProductId: sql.NullInt32{Int32: 55, Valid: true}, Usages: []entity.TechCardColorwayUsage{
@@ -28,6 +29,12 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 		{Id: 2, Name: "Navy", ProductId: sql.NullInt32{Int32: 66, Valid: true}, Usages: []entity.TechCardColorwayUsage{
 			{BomItemIndex: bomIdx(0), Consumption: nd2("2")},
 		}},
+		// A line_key-world recipe: the usage carries ONLY the resolved bom_item_id FK, no positional
+		// index (what UpdateColorwayRecipe writes since S2/S3). The beta A–L run (H.22b) caught the
+		// plan skipping these entirely and returning zero rows.
+		{Id: 3, Name: "Red", ProductId: sql.NullInt32{Int32: 77, Valid: true}, Usages: []entity.TechCardColorwayUsage{
+			{BomItemId: mid(503), Quantity: nd2("1")},
+		}},
 	}
 
 	run := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{
@@ -35,7 +42,8 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 		Lines: []entity.ProductionRunLine{
 			{ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 1, PlannedQty: 10},
 			{ProductId: sql.NullInt32{Int32: 66, Valid: true}, SizeId: 1, PlannedQty: 20},
-			{ProductId: sql.NullInt32{Int32: 99, Valid: true}, SizeId: 1, PlannedQty: 5}, // no matching colourway → caveat
+			{ProductId: sql.NullInt32{Int32: 77, Valid: true}, SizeId: 1, PlannedQty: 10}, // FK-keyed recipe
+			{ProductId: sql.NullInt32{Int32: 99, Valid: true}, SizeId: 1, PlannedQty: 5},  // no matching colourway → caveat
 		},
 	}}
 
@@ -43,7 +51,10 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	issued := map[int]decimal.Decimal{100: d("10")}
 
 	resp := ComputeProductionRunMaterialPlan(run, card, onHand, issued)
-	require.Len(t, resp.Rows, 1, "only material 100 is countable")
+	require.Len(t, resp.Rows, 2, "materials 100 (index-keyed) and 200 (FK-keyed) are countable")
+	fkRow := resp.Rows[1]
+	require.Equal(t, int32(200), fkRow.MaterialId, "the FK-only usage resolves via bom_item_id")
+	require.Equal(t, "10", fkRow.Required.Value, "1 pc × 10 garments, no wastage")
 	row := resp.Rows[0]
 	require.Equal(t, int32(100), row.MaterialId)
 	require.Equal(t, "Main fabric", row.MaterialName)
