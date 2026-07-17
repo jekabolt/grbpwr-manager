@@ -331,6 +331,21 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, fmt.Errorf("output_material_id is only for auxiliary cards")
 	}
 
+	// WS7 aux_subtype: only an auxiliary card may carry one; a sellable card must leave it UNKNOWN. An
+	// auxiliary card with UNKNOWN is allowed (unclassified) and stored NULL — the DB gate
+	// (chk_tech_card_aux_subtype_purpose) enforces the same invariant.
+	var auxSubtype sql.NullString
+	if pb.AuxSubtype != pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN {
+		if purpose != entity.TechCardPurposeAuxiliary {
+			return nil, fmt.Errorf("aux_subtype is only for auxiliary cards")
+		}
+		st := techCardAuxSubtypeFromPb(pb.AuxSubtype)
+		if !entity.ValidTechCardAuxSubtypes[st] {
+			return nil, fmt.Errorf("aux_subtype is invalid")
+		}
+		auxSubtype = sql.NullString{String: string(st), Valid: true}
+	}
+
 	// base_sample_size_id, when set, must be part of the declared size range: the
 	// POM grade radiates from the base size, so a base outside the graded columns
 	// would leave the future measurement chart without an origin. An empty size
@@ -486,6 +501,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		StyleNumber:      nullStringFromPb(styleNumber),
 		Purpose:          purpose,
 		OutputMaterialId: outputMaterialId,
+		AuxSubtype:       auxSubtype,
 		Name:             pb.Name,
 		Brand:            nullStringFromPb(pb.Brand),
 		SeasonCode:       sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
@@ -665,6 +681,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			StyleNumber:      tc.StyleNumber.String,
 			Purpose:          techCardPurposeToPb(tc.Purpose),
 			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
+			AuxSubtype:       techCardAuxSubtypeToPb(tc.AuxSubtype),
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
 			SkuSeason:        skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
@@ -760,6 +777,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		LockVersion:   int32(tc.LockVersion),
 		PreviewUrl:    tc.PreviewURL,
 		Purpose:       techCardPurposeToPb(tc.Purpose),
+		AuxSubtype:    techCardAuxSubtypeToPb(tc.AuxSubtype),
 	}
 }
 
@@ -1620,4 +1638,41 @@ func techCardPurposeFromPb(p pb_common.TechCardPurpose) entity.TechCardPurpose {
 	default:
 		return ""
 	}
+}
+
+// auxSubtypePbByEntity is the single source for the aux_subtype enum<->string mapping, so the two
+// direction helpers below can never drift from each other.
+var auxSubtypePbByEntity = map[entity.TechCardAuxSubtype]pb_common.TechCardAuxSubtype{
+	entity.AuxSubtypeBrandLabel: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BRAND_LABEL,
+	entity.AuxSubtypeCareLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_CARE_LABEL,
+	entity.AuxSubtypeSizeLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_SIZE_LABEL,
+	entity.AuxSubtypeHangtag:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
+	entity.AuxSubtypeSticker:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_STICKER,
+	entity.AuxSubtypeDustBag:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_DUST_BAG,
+	entity.AuxSubtypeBox:        pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BOX,
+	entity.AuxSubtypeInsert:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
+	entity.AuxSubtypeHanger:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
+	entity.AuxSubtypeOther:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_OTHER,
+}
+
+// techCardAuxSubtypeToPb maps the nullable stored aux_subtype to the proto enum (UNKNOWN when NULL/unset).
+func techCardAuxSubtypeToPb(s sql.NullString) pb_common.TechCardAuxSubtype {
+	if !s.Valid {
+		return pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN
+	}
+	if v, ok := auxSubtypePbByEntity[entity.TechCardAuxSubtype(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN
+}
+
+// techCardAuxSubtypeFromPb maps the proto enum to the stored string ("" for UNKNOWN, which the caller
+// rejects via ValidTechCardAuxSubtypes).
+func techCardAuxSubtypeFromPb(p pb_common.TechCardAuxSubtype) entity.TechCardAuxSubtype {
+	for ent, pb := range auxSubtypePbByEntity {
+		if pb == p {
+			return ent
+		}
+	}
+	return ""
 }

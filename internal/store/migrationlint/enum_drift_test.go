@@ -120,6 +120,16 @@ func TestTechCardPurposeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "TechCardPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardPurposes))
 }
 
+// TestTechCardAuxSubtypeDBCheckNoDrift is the WS7 drift guard: entity (TechCardAuxSubtype/
+// ValidTechCardAuxSubtypes) <-> DB CHECK (migration 0173, chk_tech_card_aux_subtype). The value set must
+// stay identical on both sides, and identical again in migration 0173's backfill CASE and
+// entity.AuxSubtypeFromName (that lockstep is asserted in the entity unit test, not here).
+func TestTechCardAuxSubtypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0173_tech_card_aux_subtype.sql")
+	dbValues := extractDBEnumValues(t, content, "aux_subtype REGEXP", 200)
+	assertSameSet(t, "TechCardAuxSubtype", dbValues, mapKeysAsStrings(entity.ValidTechCardAuxSubtypes))
+}
+
 // TestGenderDBCheckNoDrift extends the drift test to gender (entity.ValidProductTargetGenders), whose
 // DB source of truth is migration 0067's tech_card.target_gender CHECK. product.target_gender was
 // dropped by migration 0140 (PR6 style de-dup) so tech_card is the only remaining gender CHECK.

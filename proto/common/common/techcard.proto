@@ -123,6 +123,23 @@ enum TechCardPurpose {
   TECH_CARD_PURPOSE_AUXILIARY = 2;
 }
 
+// TechCardAuxSubtype sub-classifies an AUXILIARY card (purpose=auxiliary) into the concrete kind of
+// non-sold item it produces (WS7). UNKNOWN=0 means unset — a sellable card, or an auxiliary card not yet
+// classified (stored NULL). Only meaningful with purpose=auxiliary.
+enum TechCardAuxSubtype {
+  TECH_CARD_AUX_SUBTYPE_UNKNOWN = 0;
+  TECH_CARD_AUX_SUBTYPE_BRAND_LABEL = 1;
+  TECH_CARD_AUX_SUBTYPE_CARE_LABEL = 2;
+  TECH_CARD_AUX_SUBTYPE_SIZE_LABEL = 3;
+  TECH_CARD_AUX_SUBTYPE_HANGTAG = 4;
+  TECH_CARD_AUX_SUBTYPE_STICKER = 5;
+  TECH_CARD_AUX_SUBTYPE_DUST_BAG = 6;
+  TECH_CARD_AUX_SUBTYPE_BOX = 7;
+  TECH_CARD_AUX_SUBTYPE_INSERT = 8;
+  TECH_CARD_AUX_SUBTYPE_HANGER = 9;
+  TECH_CARD_AUX_SUBTYPE_OTHER = 10;
+}
+
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
 // (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
 // comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
@@ -800,6 +817,9 @@ message TechCardInsert {
   int32 output_material_id = 102;
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
+  // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
+  TechCardAuxSubtype aux_subtype = 104;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
@@ -845,4 +865,6 @@ message TechCardListItem {
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
   TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
   SkuSeason sku_season = 15;
+  // WS7: auxiliary sub-type badge for list views (UNKNOWN=unset), mirroring purpose above.
+  TechCardAuxSubtype aux_subtype = 16;
 }
