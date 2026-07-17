@@ -13,6 +13,14 @@ import (
 // The API layer should convert this to appropriate HTTP/gRPC status codes
 type ValidationError struct {
 	Message string
+	// Field-tagged extensions (S24 / PLM-rework). All optional: when Field is empty the error
+	// behaves exactly like the historic message-only form, so existing `errors.As` call-sites
+	// keep working. When Field is set, the API layer surfaces the structured parts as a
+	// google.rpc.BadRequest FieldViolation — see internal/apisrv/apierr.
+	Field       string // offending input path, e.g. "bom_items[2].material_id"
+	Reason      string // stable machine-readable reason code, e.g. "material_not_found"
+	Conflicting string // the entity that blocks the operation, e.g. `colorway "BLK" recipe`
+	HowToFix    string // actionable guidance for the caller
 }
 
 func (e *ValidationError) Error() string {

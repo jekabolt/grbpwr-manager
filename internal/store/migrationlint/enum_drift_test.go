@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
 )
 
 // This file extends migrationlint's static, database-free guards (see doc.go) to catch enum-value
@@ -175,6 +176,31 @@ func TestColorwayStatusDBCheckNoDrift(t *testing.T) {
 	if entity.ValidColorwayStatuses[entity.ColorwayStatusUnknown] {
 		t.Fatal("ColorwayStatusUnknown must not be storable")
 	}
+}
+
+// TestMaterialClassDBCheckNoDrift extends the drift test to the material CTI discriminant
+// (entity.MaterialClass/ValidMaterialClasses) <-> DB CHECK (migration 0157, chk_material_class).
+func TestMaterialClassDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "material_class REGEXP", 120)
+	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
+}
+
+// TestMaterialPriceSourceDBCheckNoDrift extends the drift test to material_price.source
+// (entity.ValidMaterialPriceSources) <-> DB CHECK (migration 0158, chk_material_price_source).
+func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0158_material_price_source_check.sql")
+	dbValues := extractDBEnumValues(t, content, "source REGEXP", 120)
+	assertSameSet(t, "MaterialPriceSource", dbValues, mapKeysAsStrings(entity.ValidMaterialPriceSources))
+}
+
+// TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
+// matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
+// guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).
+func TestFabricDirectionFixtureVsDBCheck(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "fabric_direction REGEXP", 120)
+	assertSameSet(t, "fabric_direction", dbValues, materialattr.AllowedEnumValues("fabric", "fabric_direction"))
 }
 
 // TestEnumDriftExtractorsDetectTamperedInput guards the extractor helpers themselves (mirrors

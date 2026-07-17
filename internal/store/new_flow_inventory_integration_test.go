@@ -213,15 +213,16 @@ func TestMaterialCatalogV2(t *testing.T) {
 	m2, err := tc.CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")})
 	require.NoError(t, err)
 	ids = append(ids, m2)
-	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}))
+	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}, 0))
 
-	// after a stock movement, the unit of measure is locked.
+	// after a stock movement, the unit of measure is locked. The optimistic-lock version is now 1
+	// (the update above bumped it); pass it so the unit check — not a conflict — is what rejects.
 	_, err = s.MaterialStock().ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: m2, Quantity: decimal.NewFromInt(3)})
 	require.NoError(t, err)
-	err = tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")})
+	err = tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")}, 1)
 	require.ErrorIs(t, err, entity.ErrMaterialUnitLocked)
-	// same unit (no change) still updates fine.
-	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}))
+	// same unit (no change) still updates fine (the rejected update did not bump the version).
+	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}, 1))
 }
 
 // TestTechCardIdeaStage exercises new-flow NF-03 at the store level: an `idea` draft persists with

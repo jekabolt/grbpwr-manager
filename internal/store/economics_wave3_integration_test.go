@@ -82,7 +82,7 @@ func TestMaterialCatalog(t *testing.T) {
 	require.True(t, found, "material present in section list")
 
 	// update descriptive fields
-	require.NoError(t, T.UpdateMaterial(ctx, matID, &entity.MaterialInsert{Name: "Wool 320gsm", Section: "fabric"}))
+	require.NoError(t, T.UpdateMaterial(ctx, matID, &entity.MaterialInsert{Name: "Wool 320gsm", Section: "fabric"}, 0))
 	m, _ = T.GetMaterial(ctx, matID)
 	require.Equal(t, "Wool 320gsm", m.Name)
 
