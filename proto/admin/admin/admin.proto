@@ -756,6 +756,41 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/sample/list"};
   }
 
+  // SAMPLE SUBSTITUTIONS (§2.7): dev-time material deviations on a sample.
+  rpc AddSampleSubstitution(AddSampleSubstitutionRequest) returns (AddSampleSubstitutionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/sample/substitution/add"
+      body: "*"
+    };
+  }
+  rpc DeleteSampleSubstitution(DeleteSampleSubstitutionRequest) returns (DeleteSampleSubstitutionResponse) {
+    option (google.api.http) = {delete: "/api/admin/sample/substitution/{id}"};
+  }
+  rpc ListSampleSubstitutions(ListSampleSubstitutionsRequest) returns (ListSampleSubstitutionsResponse) {
+    option (google.api.http) = {get: "/api/admin/sample/{sample_id}/substitutions"};
+  }
+
+  // FITTING CHANGE REQUESTS (S26): dedicated CRUD (stable id) + the carry-over view.
+  rpc AddFittingChangeRequest(AddFittingChangeRequestRequest) returns (AddFittingChangeRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/change-request/add"
+      body: "*"
+    };
+  }
+  rpc UpdateFittingChangeRequest(UpdateFittingChangeRequestRequest) returns (UpdateFittingChangeRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/change-request/update"
+      body: "*"
+    };
+  }
+  rpc DeleteFittingChangeRequest(DeleteFittingChangeRequestRequest) returns (DeleteFittingChangeRequestResponse) {
+    option (google.api.http) = {delete: "/api/admin/fitting/change-request/{id}"};
+  }
+  // Declared last (see ListModels ordering note) so the fixed /open path is not shadowed.
+  rpc ListOpenFittingChangeRequests(ListOpenFittingChangeRequestsRequest) returns (ListOpenFittingChangeRequestsResponse) {
+    option (google.api.http) = {get: "/api/admin/fitting/change-request/open"};
+  }
+
   // TASK MANAGER
   // Internal team kanban (NOT customer orders). Same list-after-{id} route
   // ordering as fitting/models: GET /task/list is declared AFTER GET /task/{id}
@@ -3084,6 +3119,7 @@ message GetFittingResponse {
 message UpdateFittingRequest {
   int32 id = 1;
   common.FittingInsert fitting = 2;
+  int32 expected_lock_version = 3; // from GetFitting; a mismatch means a concurrent edit -> ABORTED (S25)
 }
 
 message UpdateFittingResponse {}
@@ -3107,9 +3143,70 @@ message AddSampleResponse {
 message UpdateSampleRequest {
   int32 id = 1;
   common.SampleInsert sample = 2;
+  int32 expected_lock_version = 3; // from GetSample; a mismatch means a concurrent edit -> ABORTED (S25)
 }
 
 message UpdateSampleResponse {}
+
+// SAMPLE SUBSTITUTIONS (§2.7): dev-time material deviations recorded on a sample.
+
+message AddSampleSubstitutionRequest {
+  common.SampleSubstitutionInsert substitution = 1;
+}
+
+message AddSampleSubstitutionResponse {
+  int32 id = 1;
+}
+
+message ListSampleSubstitutionsRequest {
+  int32 sample_id = 1;
+}
+
+message ListSampleSubstitutionsResponse {
+  repeated common.SampleSubstitution substitutions = 1;
+}
+
+message DeleteSampleSubstitutionRequest {
+  int32 id = 1;
+}
+
+message DeleteSampleSubstitutionResponse {}
+
+// FITTING CHANGE REQUESTS (S26): dedicated CRUD so items have a STABLE id (carried_from_id / carry-over
+// depend on it), separate from the fitting full-replace.
+
+message AddFittingChangeRequestRequest {
+  common.FittingChangeRequestInsert change_request = 1;
+}
+
+message AddFittingChangeRequestResponse {
+  int32 id = 1;
+}
+
+message UpdateFittingChangeRequestRequest {
+  int32 id = 1;
+  common.FittingChangeRequestInsert change_request = 2;
+}
+
+message UpdateFittingChangeRequestResponse {}
+
+message DeleteFittingChangeRequestRequest {
+  int32 id = 1;
+}
+
+message DeleteFittingChangeRequestResponse {}
+
+// ListOpenFittingChangeRequests returns the OPEN structured remarks from a style's earlier rounds — the
+// carry-over view shown when opening the next round (task 2). before_round scopes to items raised
+// strictly before that round (0 = every round).
+message ListOpenFittingChangeRequestsRequest {
+  int32 tech_card_id = 1; // required; the style
+  int32 before_round = 2; // 0 = all rounds; >0 = only items from rounds < before_round
+}
+
+message ListOpenFittingChangeRequestsResponse {
+  repeated common.FittingChangeRequest change_requests = 1;
+}
 
 message DeleteSampleRequest {
   int32 id = 1;

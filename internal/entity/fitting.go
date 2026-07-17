@@ -2,10 +2,33 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// ErrFittingConflict is returned by UpdateFitting when the caller's expected lock_version does not
+// match the stored one (S25) — a concurrent edit landed between the read and the save. The caller
+// should reload and retry (mirrors ErrTechCardConflict). ABORTED upstream.
+var ErrFittingConflict = errors.New("fitting was modified concurrently")
+
+// FittingChangeStatus is the resolution state of a structured change-request item (S26).
+const (
+	FittingChangeStatusOpen     = "open"
+	FittingChangeStatusResolved = "resolved"
+)
+
+// ValidFittingChangeStatuses is the closed set of change-request statuses (DB CHECK + dto).
+var ValidFittingChangeStatuses = map[string]bool{
+	FittingChangeStatusOpen: true, FittingChangeStatusResolved: true,
+}
+
+// ValidFittingChangeZones mirrors the tech_card_operation.zone dictionary (0076) — the single source
+// of truth for garment zones (§2.7); a change-request zone is one of these or unset.
+var ValidFittingChangeZones = map[string]bool{
+	"unknown": true, "outer": true, "lining": true, "interlining": true, "other": true,
+}
 
 // FittingStatus is the lifecycle state of a fitting session.
 type FittingStatus string
@@ -91,16 +114,24 @@ var ValidFittingChangeTargets = map[string]bool{
 	"pattern": true, "construction": true, "material": true, "grading": true, "other": true,
 }
 
-// FittingChangeRequest is one structured "what to change" item produced by a fitting (task 13):
-// the target area (pattern / construction / material / grading / other), a free note, an optional
-// link to a photo callout pin, and a resolved flag (set when carried into the tech card). It is a
-// full-replace child of the fitting, like callouts.
+// FittingChangeRequest is one structured remark item produced by a fitting (S26, §2.7). target is the
+// change category; zone + PieceId are the structured location; Status (open|resolved) replaces the old
+// boolean resolved; CarriedFromId links this item to the prior-round item it continues. Managed via the
+// dedicated change-request CRUD so its id is STABLE (carry-over depends on it); an initial batch may
+// still be supplied on AddFitting. FittingId/RoundNumber are read context (RoundNumber is populated
+// only on the carry-over projection).
 type FittingChangeRequest struct {
-	Id            int           `db:"id"`
-	Target        string        `db:"target"`
-	Note          string        `db:"note"`
-	CalloutNumber sql.NullInt32 `db:"callout_number"`
-	Resolved      bool          `db:"resolved"`
+	Id            int            `db:"id"`
+	FittingId     int            `db:"fitting_id"`
+	Target        string         `db:"target"`
+	Note          string         `db:"note"`
+	CalloutNumber sql.NullInt32  `db:"callout_number"`
+	Zone          sql.NullString `db:"zone"`
+	PieceId       sql.NullInt32  `db:"piece_id"`
+	Status        string         `db:"status"`
+	CarriedFromId sql.NullInt32  `db:"carried_from_id"`
+	CreatedBy     string         `db:"created_by"`
+	RoundNumber   sql.NullInt32  `db:"round_number"` // carry-over context (derived from the sample); not a column here
 }
 
 // FittingInsert is the writable payload for a fitting session. A fitting anchors
@@ -114,10 +145,12 @@ type FittingInsert struct {
 	Comment        sql.NullString         `db:"comment"`
 	Status         FittingStatus          `db:"status"`
 	Verdict        FittingVerdict         `db:"verdict"`
-	RecordedBy     sql.NullString         `db:"recorded_by"`
-	RoundNumber    sql.NullInt32          `db:"round_number"` // # in the card's try-on sequence; auto-assigned when unset
+	RoundNumber    sql.NullInt32          `db:"round_number"` // legacy per-card try-on #; the authoritative round is now the sample's (§2.7)
 	Outcome        sql.NullString         `db:"outcome"`      // FittingOutcome; NULL = undecided
-	SampleId       sql.NullInt32          `db:"sample_id"`    // the sample this fitting tried on (NF-04)
+	SampleId       sql.NullInt32          `db:"sample_id"`    // the sample this fitting tried on — the primary anchor (§2.7)
+	// Audit stamps (§2.11): server-set from the JWT (replaces the deprecated client-supplied recorded_by).
+	CreatedBy string `db:"created_by"`
+	UpdatedBy string `db:"updated_by"`
 	Sizes          []FittingSize          `db:"-"`
 	MediaIds       []int                  `db:"-"`
 	Patterns       []FittingPattern       `db:"-"`
@@ -129,7 +162,8 @@ type FittingInsert struct {
 type Fitting struct {
 	Id int `db:"id"`
 	FittingInsert
-	Media     []MediaFull `db:"-"`
-	CreatedAt time.Time   `db:"created_at"`
-	UpdatedAt time.Time   `db:"updated_at"`
+	LockVersion int         `db:"lock_version"` // optimistic-lock counter (S25); echoed on UpdateFitting
+	Media       []MediaFull `db:"-"`
+	CreatedAt   time.Time   `db:"created_at"`
+	UpdatedAt   time.Time   `db:"updated_at"`
 }

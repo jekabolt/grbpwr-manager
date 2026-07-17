@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -19,6 +20,8 @@ func (s *Server) AddSample(ctx context.Context, req *pb_admin.AddSampleRequest) 
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	actor := authsrv.GetAdminUsername(ctx)
+	ins.CreatedBy, ins.UpdatedBy = actor, actor
 	id, err := s.repo.Samples().AddSample(ctx, ins)
 	if err != nil {
 		if code := sampleErrCode(s, err); code != codes.OK {
@@ -35,7 +38,9 @@ func (s *Server) AddSample(ctx context.Context, req *pb_admin.AddSampleRequest) 
 // colorway_id is only enforced by FK/ownership checks, so it must surface as InvalidArgument, not 500.
 func sampleErrCode(s *Server, err error) codes.Code {
 	switch {
-	case errors.Is(err, entity.ErrSampleColorwayForeign), errors.Is(err, entity.ErrSampleSizeForeign):
+	case errors.Is(err, entity.ErrSampleColorwayForeign), errors.Is(err, entity.ErrSampleSizeForeign),
+		errors.Is(err, entity.ErrSampleSpecReleaseForeign), errors.Is(err, entity.ErrSamplePreviousForeign),
+		errors.Is(err, entity.ErrSampleSubstitutionBomForeign):
 		return codes.InvalidArgument
 	case s.repo.IsErrForeignKeyViolation(err), s.repo.IsErrUniqueViolation(err):
 		return codes.InvalidArgument
@@ -52,9 +57,13 @@ func (s *Server) UpdateSample(ctx context.Context, req *pb_admin.UpdateSampleReq
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.repo.Samples().UpdateSample(ctx, int(req.GetId()), ins); err != nil {
+	ins.UpdatedBy = authsrv.GetAdminUsername(ctx)
+	if err := s.repo.Samples().UpdateSample(ctx, int(req.GetId()), ins, int(req.GetExpectedLockVersion())); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "sample not found")
+		}
+		if errors.Is(err, entity.ErrSampleConflict) {
+			return nil, status.Error(codes.Aborted, "sample was modified concurrently; reload and retry")
 		}
 		if code := sampleErrCode(s, err); code != codes.OK {
 			return nil, status.Error(code, err.Error())
@@ -119,4 +128,58 @@ func (s *Server) ListSamples(ctx context.Context, req *pb_admin.ListSamplesReque
 		resp.Samples = append(resp.Samples, dto.ConvertEntitySampleToPb(sm))
 	}
 	return resp, nil
+}
+
+// AddSampleSubstitution records a dev-time material substitution on a sample (§2.7). Q2: dev-only,
+// never COGS.
+func (s *Server) AddSampleSubstitution(ctx context.Context, req *pb_admin.AddSampleSubstitutionRequest) (*pb_admin.AddSampleSubstitutionResponse, error) {
+	ins, err := dto.ConvertPbSampleSubstitutionInsertToEntity(req.GetSubstitution())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ins.CreatedBy = authsrv.GetAdminUsername(ctx)
+	id, err := s.repo.Samples().AddSampleSubstitution(ctx, ins)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "sample not found")
+		}
+		if code := sampleErrCode(s, err); code != codes.OK {
+			return nil, status.Error(code, err.Error())
+		}
+		slog.Default().ErrorContext(ctx, "can't add sample substitution", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't add sample substitution")
+	}
+	return &pb_admin.AddSampleSubstitutionResponse{Id: int32(id)}, nil
+}
+
+// ListSampleSubstitutions lists a sample's substitutions.
+func (s *Server) ListSampleSubstitutions(ctx context.Context, req *pb_admin.ListSampleSubstitutionsRequest) (*pb_admin.ListSampleSubstitutionsResponse, error) {
+	if req.GetSampleId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "sample_id is required")
+	}
+	subs, err := s.repo.Samples().ListSampleSubstitutions(ctx, int(req.GetSampleId()))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list sample substitutions", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list sample substitutions")
+	}
+	resp := &pb_admin.ListSampleSubstitutionsResponse{}
+	for _, sub := range subs {
+		resp.Substitutions = append(resp.Substitutions, dto.ConvertEntitySampleSubstitutionToPb(sub))
+	}
+	return resp, nil
+}
+
+// DeleteSampleSubstitution deletes a substitution by id.
+func (s *Server) DeleteSampleSubstitution(ctx context.Context, req *pb_admin.DeleteSampleSubstitutionRequest) (*pb_admin.DeleteSampleSubstitutionResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Samples().DeleteSampleSubstitution(ctx, int(req.GetId())); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "substitution not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't delete sample substitution", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't delete sample substitution")
+	}
+	return &pb_admin.DeleteSampleSubstitutionResponse{}, nil
 }

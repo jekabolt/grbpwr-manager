@@ -53,9 +53,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	if pb.FittingDate == nil {
 		return nil, fmt.Errorf("fitting_date is required")
 	}
-	if len(pb.RecordedBy) > maxVarchar255 {
-		return nil, fmt.Errorf("recorded_by must be at most %d characters", maxVarchar255)
-	}
+	// recorded_by is deprecated (§2.7): the recorder is now the server-stamped created_by. Ignored on write.
 
 	// Default only when explicitly unset; reject any other unmapped value
 	// instead of silently coercing it to the default.
@@ -177,26 +175,11 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 
 	changeRequests := make([]entity.FittingChangeRequest, 0, len(pb.ChangeRequests))
 	for _, cr := range pb.ChangeRequests {
-		target := strings.ToLower(strings.TrimSpace(cr.Target))
-		if !entity.ValidFittingChangeTargets[target] {
-			return nil, fmt.Errorf("fitting change request target must be one of pattern|construction|material|grading|other")
+		e, err := fittingChangeRequestEntity(cr.Target, cr.Note, cr.CalloutNumber, cr.PieceId, cr.CarriedFromId, cr.Zone, cr.Status)
+		if err != nil {
+			return nil, err
 		}
-		note := strings.TrimSpace(cr.Note)
-		if note == "" {
-			return nil, fmt.Errorf("fitting change request note is required")
-		}
-		if len(note) > maxTaskText {
-			return nil, fmt.Errorf("fitting change request note must be at most %d characters", maxTaskText)
-		}
-		if cr.CalloutNumber < 0 {
-			return nil, fmt.Errorf("fitting change request callout_number must not be negative")
-		}
-		changeRequests = append(changeRequests, entity.FittingChangeRequest{
-			Target:        target,
-			Note:          note,
-			CalloutNumber: nullInt32FromPb(cr.CalloutNumber),
-			Resolved:      cr.Resolved,
-		})
+		changeRequests = append(changeRequests, e)
 	}
 
 	// Normalize to a UTC calendar date so storage into the DATE column is
@@ -213,7 +196,6 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		Comment:        nullStringFromPb(pb.Comment),
 		Status:         status,
 		Verdict:        verdict,
-		RecordedBy:     nullStringFromPb(pb.RecordedBy),
 		RoundNumber:    nullInt32FromPb(pb.RoundNumber),
 		Outcome:        outcome,
 		SampleId:       nullInt32FromPb(pb.SampleId),
@@ -257,7 +239,7 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 			Comment:        pbStringFromNull(f.Comment),
 			Status:         fittingStatusEntityToPb[f.Status],
 			Verdict:        fittingVerdictEntityToPb[f.Verdict],
-			RecordedBy:     pbStringFromNull(f.RecordedBy),
+			RecordedBy:     f.CreatedBy, // deprecated field: mirror the server-stamped recorder for back-compat
 			RoundNumber:    pbInt32FromNull(f.RoundNumber),
 			Outcome:        f.Outcome.String,
 			SampleId:       pbInt32FromNull(f.SampleId),
@@ -267,9 +249,12 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 			Callouts:       fittingCalloutsToPb(f.Callouts),
 			ChangeRequests: fittingChangeRequestsToPb(f.ChangeRequests),
 		},
-		Media:     media,
-		CreatedAt: timestamppb.New(f.CreatedAt),
-		UpdatedAt: timestamppb.New(f.UpdatedAt),
+		Media:       media,
+		LockVersion: int32(f.LockVersion),
+		CreatedBy:   f.CreatedBy,
+		UpdatedBy:   f.UpdatedBy,
+		CreatedAt:   timestamppb.New(f.CreatedAt),
+		UpdatedAt:   timestamppb.New(f.UpdatedAt),
 	}
 }
 
@@ -277,15 +262,80 @@ func ConvertEntityFittingToPb(f *entity.Fitting) *pb_common.Fitting {
 func fittingChangeRequestsToPb(crs []entity.FittingChangeRequest) []*pb_common.FittingChangeRequest {
 	out := make([]*pb_common.FittingChangeRequest, 0, len(crs))
 	for _, c := range crs {
-		out = append(out, &pb_common.FittingChangeRequest{
-			Id:            int32(c.Id),
-			Target:        c.Target,
-			Note:          c.Note,
-			CalloutNumber: pbInt32FromNull(c.CalloutNumber),
-			Resolved:      c.Resolved,
-		})
+		out = append(out, ConvertEntityFittingChangeRequestToPb(c))
 	}
 	return out
+}
+
+// ConvertEntityFittingChangeRequestToPb converts one stored change-request item to pb (S26). resolved
+// is a deprecated read-only mirror of status.
+func ConvertEntityFittingChangeRequestToPb(c entity.FittingChangeRequest) *pb_common.FittingChangeRequest {
+	return &pb_common.FittingChangeRequest{
+		Id:            int32(c.Id),
+		FittingId:     int32(c.FittingId),
+		Target:        c.Target,
+		Note:          c.Note,
+		CalloutNumber: pbInt32FromNull(c.CalloutNumber),
+		Zone:          c.Zone.String,
+		PieceId:       pbInt32FromNull(c.PieceId),
+		Status:        c.Status,
+		CarriedFromId: pbInt32FromNull(c.CarriedFromId),
+		CreatedBy:     c.CreatedBy,
+		RoundNumber:   pbInt32FromNull(c.RoundNumber),
+		Resolved:      c.Status == entity.FittingChangeStatusResolved,
+	}
+}
+
+// fittingChangeRequestEntity validates and converts the shared change-request fields (S26), used by
+// both the embedded initial batch (FittingInsert) and the dedicated CRUD.
+func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, carriedFromID int32, zone, status string) (entity.FittingChangeRequest, error) {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if !entity.ValidFittingChangeTargets[t] {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request target must be one of pattern|construction|material|grading|other")
+	}
+	n := strings.TrimSpace(note)
+	if n == "" {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request note is required")
+	}
+	if len(n) > maxTaskText {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request note must be at most %d characters", maxTaskText)
+	}
+	if calloutNumber < 0 || pieceID < 0 || carriedFromID < 0 {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request callout_number, piece_id and carried_from_id must not be negative")
+	}
+	z := strings.ToLower(strings.TrimSpace(zone))
+	if z != "" && !entity.ValidFittingChangeZones[z] {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request zone must be one of unknown|outer|lining|interlining|other")
+	}
+	st := strings.ToLower(strings.TrimSpace(status))
+	if st == "" {
+		st = entity.FittingChangeStatusOpen
+	}
+	if !entity.ValidFittingChangeStatuses[st] {
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request status must be open or resolved")
+	}
+	return entity.FittingChangeRequest{
+		Target:        t,
+		Note:          n,
+		CalloutNumber: nullInt32FromPb(calloutNumber),
+		Zone:          nullStringFromPb(z),
+		PieceId:       nullInt32FromPb(pieceID),
+		Status:        st,
+		CarriedFromId: nullInt32FromPb(carriedFromID),
+	}, nil
+}
+
+// ConvertPbFittingChangeRequestInsertToEntity validates a dedicated change-request write payload (S26).
+func ConvertPbFittingChangeRequestInsertToEntity(pb *pb_common.FittingChangeRequestInsert) (*entity.FittingChangeRequest, error) {
+	if pb == nil {
+		return nil, fmt.Errorf("change_request is required")
+	}
+	e, err := fittingChangeRequestEntity(pb.Target, pb.Note, pb.CalloutNumber, pb.PieceId, pb.CarriedFromId, pb.Zone, pb.Status)
+	if err != nil {
+		return nil, err
+	}
+	e.FittingId = int(pb.FittingId)
+	return &e, nil
 }
 
 // fittingCalloutsToPb emits a fitting's photo callouts for display.

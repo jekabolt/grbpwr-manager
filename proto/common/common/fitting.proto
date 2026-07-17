@@ -41,7 +41,7 @@ message FittingInsert {
   string comment = 4;
   FittingStatus status = 5;
   FittingVerdict verdict = 6;
-  string recorded_by = 7;
+  string recorded_by = 7 [deprecated = true]; // DEPRECATED (§2.7): the recorder is now the server-stamped created_by; ignored on write
   repeated FittingSizeInsert sizes = 8;
   repeated int32 media_ids = 9;
   int32 tech_card_id = 10; // FK tech_card(id); 0 = unset (the style being fitted)
@@ -68,16 +68,39 @@ message FittingInsert {
   int32 sample_id = 16; // 0 = unset; the sample this fitting tried on (new-flow NF-04)
 }
 
-// FittingChangeRequest is one structured change produced by a fitting (task 13): the target area
-// to change, a note, an optional link to a photo callout pin, and a resolved flag (set when the
-// change has been carried into the tech card). The lightweight replacement for the removed POM
-// feedback loop — it records WHY the spec changed without the full point/grade machinery.
+// FittingChangeRequest is one structured remark item produced by a fitting (S26, §2.7). target is the
+// change CATEGORY; zone + piece_id are the structured LOCATION (which replace the front's misuse of
+// target as a free "sleeve/collar" field, A2). status (open|resolved) replaces the old boolean
+// resolved; carried_from_id links this item to the one in the PREVIOUS round it continues, giving a
+// visible carry-over history (acceptance E.15). The free fitting.comment stays a separate free note.
 message FittingChangeRequest {
   int32 id = 1; // output-only, assigned on save
-  string target = 2; // pattern | construction | material | grading | other (required)
+  string target = 2; // change category: pattern | construction | material | grading | other (required)
   string note = 3; // what to change (required)
   int32 callout_number = 4; // optional link to a fitting_callout pin (0 = none)
-  bool resolved = 5; // carried into the tech card
+  bool resolved = 5 [deprecated = true]; // DEPRECATED (S26): replaced by status; read-only mirror of status=="resolved"
+  string zone = 6; // WHERE on the garment: tech_card_operation.zone dictionary (unknown|outer|lining|interlining|other); "" = unspecified
+  int32 piece_id = 7; // FK tech_card_piece(id): which piece; 0 = unset
+  string status = 8; // open | resolved (defaults to open)
+  int32 carried_from_id = 9; // FK fitting_change_request(id): the prior-round item this continues; 0 = none
+  string created_by = 10; // audit: acting admin username (server-stamped, output)
+  int32 fitting_id = 11; // owning fitting (output; set on the carry-over list)
+  int32 round_number = 12; // the development round this item belongs to (output; derived from the sample)
+}
+
+// FittingChangeRequestInsert is the write payload for the dedicated change-request CRUD (S26). Unlike
+// the embedded initial batch on FittingInsert, these items are managed individually so their id is
+// STABLE — which carried_from_id (and the resolve/carry-over flow) depends on. created_by is stamped
+// server-side.
+message FittingChangeRequestInsert {
+  int32 fitting_id = 1; // required on add; the fitting this item belongs to
+  string target = 2; // change category (required): pattern | construction | material | grading | other
+  string note = 3; // what to change (required)
+  int32 callout_number = 4; // optional link to a fitting_callout pin (0 = none)
+  string zone = 5; // optional: tech_card_operation.zone dictionary ("" = unspecified)
+  int32 piece_id = 6; // optional FK tech_card_piece(id) (0 = unset)
+  string status = 7; // open | resolved ("" defaults to open)
+  int32 carried_from_id = 8; // optional FK to the prior-round item this continues (0 = none)
 }
 
 // FittingCallout is a numbered marker pinned to a fitting photo, noting a fit
@@ -108,4 +131,7 @@ message Fitting {
   repeated MediaFull media = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp updated_at = 5;
+  int32 lock_version = 6; // optimistic-lock token (§2.12/S25); echo back on UpdateFitting.expected_lock_version
+  string created_by = 7; // audit: acting admin username, server-stamped once on create
+  string updated_by = 8; // audit: acting admin username, server-stamped on every write
 }

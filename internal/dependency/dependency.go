@@ -496,13 +496,21 @@ type (
 		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, gender, nameSearch string) ([]entity.Model, int, error)
 	}
 
-	// Fittings manages garment try-on sessions with their sizes and media.
+	// Fittings manages garment try-on sessions with their sizes and media, plus the structured S26
+	// change-request items (dedicated CRUD so their id is stable for carry-over).
 	Fittings interface {
 		AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error)
-		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert) error
+		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) error
 		DeleteFitting(ctx context.Context, id int) error
 		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
+		// Structured change requests (S26): individually managed so carried_from_id / carry-over hold.
+		AddFittingChangeRequest(ctx context.Context, cr *entity.FittingChangeRequest) (int, error)
+		UpdateFittingChangeRequest(ctx context.Context, id int, cr *entity.FittingChangeRequest) error
+		DeleteFittingChangeRequest(ctx context.Context, id int) error
+		// ListOpenFittingChangeRequests is the carry-over view: a style's open remark tips from earlier
+		// rounds (beforeRound > 0 scopes to rounds < beforeRound; 0 = all).
+		ListOpenFittingChangeRequests(ctx context.Context, techCardID, beforeRound int) ([]entity.FittingChangeRequest, error)
 	}
 
 	// Tasks manages the internal team kanban (task manager): cards with content,
@@ -635,12 +643,16 @@ type (
 	// a cost composed on read from material issues + the dev-expense journal.
 	Samples interface {
 		AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error)
-		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error
+		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert, expectedLockVersion int) error
 		DeleteSample(ctx context.Context, id int) error
 		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
 		// ListSamples lists samples; techCardID <= 0 spans all styles (cross-style queue), and
 		// status/purpose are optional string filters ("" = any).
 		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int, status, purpose string) ([]entity.Sample, int, error)
+		// Substitutions (§2.7): dev-time material deviations recorded on a sample (Q2: never COGS).
+		AddSampleSubstitution(ctx context.Context, sub *entity.SampleSubstitutionInsert) (int, error)
+		ListSampleSubstitutions(ctx context.Context, sampleID int) ([]entity.SampleSubstitution, error)
+		DeleteSampleSubstitution(ctx context.Context, id int) error
 	}
 
 	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
