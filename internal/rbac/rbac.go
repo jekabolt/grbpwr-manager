@@ -285,6 +285,7 @@ var methodRequirements = map[string]Requirement{
 	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
 	"UpsertStyleAssembly": wr(SectionTechCards),
 	"ListStyleAssembly":   rd(SectionTechCards),
+	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
 	"UpdateProductionRun":          wr(SectionProduction),

@@ -450,6 +450,14 @@ message TechCardDevCostByKind {
   google.type.Decimal amount_base = 2;
 }
 
+// TechCardDevCostByRound is a style's development spend attributed to one fitting round (Q8 — the
+// attribution S20 asked to fix). round_number 0 collects expenses tied to no fitting round.
+message TechCardDevCostByRound {
+  int32 round_number = 1; // fitting round; 0 = not attributed to a round
+  google.type.Decimal amount_base = 2; // Σ amount_base for the round (EUR)
+  int32 expense_count = 3;
+}
+
 // TechCardDevCostSummary is the computed roll-up of a style's development spend (output-only).
 message TechCardDevCostSummary {
   google.type.Decimal total_base = 1; // Σ amount_base over foldable rows (EUR)
@@ -460,6 +468,12 @@ message TechCardDevCostSummary {
   // production unit cost is unavailable. NOT part of cost_price (development is a period cost).
   google.type.Decimal unit_cost_with_dev = 4;
   int32 order_qty = 5; // Σ size order_qty used for amortization
+  // Q8 rollup (read projection, built alongside — never seeded into cost_price):
+  repeated TechCardDevCostByRound by_round = 6; // spend attributed to each fitting round
+  int32 rounds_to_approval = 7; // highest fitting round reached at approval; 0 = not approved yet
+  google.protobuf.Timestamp first_expense_at = 8; // earliest incurred/created dev expense; unset if none
+  google.protobuf.Timestamp approved_at = 9; // date of the approving fitting; unset if not approved
+  int32 days_to_approval = 10; // approved_at − first_expense_at in days; 0 when either is unknown
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM

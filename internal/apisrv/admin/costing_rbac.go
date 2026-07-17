@@ -280,6 +280,44 @@ func stripStyleEconomicsCosting(resp *pb_admin.GetStyleEconomicsResponse) {
 	}
 }
 
+// stripStyleCostEstimate redacts every money figure from a cost-estimate response for an account
+// without costing:read (task 19 / Q4). The material and article STRUCTURE stays — line identity,
+// section, unit, per-garment consumption, and the price-provenance label — so a cost-blind
+// constructor still sees WHAT the estimate is built from, just not the prices, totals, or the
+// plan/fact comparison (which is entirely cost data). Safe on nil.
+func stripStyleCostEstimate(resp *pb_admin.GetStyleCostEstimateResponse) {
+	if resp == nil || resp.Estimate == nil {
+		return
+	}
+	e := resp.Estimate
+	for _, ml := range e.Materials {
+		if ml == nil {
+			continue
+		}
+		ml.UnitPrice = nil
+		ml.Currency = ""
+		ml.LineTotalBase = nil
+		ml.HasBase = false
+		// price_source (a provenance label) and consumption/section/unit stay; price_date is tied to
+		// the redacted catalog price, so drop it too.
+		ml.PriceDate = nil
+	}
+	e.MaterialsPerUnitBase = nil
+	for _, al := range e.Articles {
+		if al == nil {
+			continue
+		}
+		al.Amount = nil
+		al.Currency = ""
+		al.AmountBase = nil
+		al.HasBase = false
+	}
+	e.DefectPct = nil
+	e.UnitCostBase = nil
+	e.OrderCostBase = nil
+	e.Comparison = nil // estimate-vs-actual-vs-snapshot is all money
+}
+
 // techCardInsertHasCostingData reports whether a write payload carries confidential cost
 // input: a costing block, or a BOM line with a purchase price. Used to reject a write
 // from an account without costing:write instead of silently accepting cost changes.

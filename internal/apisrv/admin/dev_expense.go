@@ -27,7 +27,7 @@ func (s *Server) AddTechCardDevExpense(ctx context.Context, req *pb_admin.AddTec
 	dto.FoldTechCardDevExpenseToBase(&e, s.costingFx(ctx))
 	saved, err := s.repo.TechCards().AddTechCardDevExpense(ctx, e)
 	if err != nil {
-		if errors.Is(err, entity.ErrSampleForeignToCard) {
+		if errors.Is(err, entity.ErrSampleForeignToCard) || errors.Is(err, entity.ErrFittingForeignToCard) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
@@ -79,8 +79,20 @@ func (s *Server) ListTechCardDevExpenses(ctx context.Context, req *pb_admin.List
 			slog.Int("tech_card_id", tcID), slog.String("err", err.Error()))
 		card = nil
 	}
+	// Fittings drive the by-round attribution + time-to-approval rollup (Q8). A load failure degrades
+	// to a round-less summary (all spend under round 0) rather than failing the list.
+	fittings, _, err := s.repo.Fittings().ListFittings(ctx, devExpenseFittingScan, 0, entity.Descending, 0, 0, tcID)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "can't load fittings for dev-cost round rollup; rounds omitted",
+			slog.Int("tech_card_id", tcID), slog.String("err", err.Error()))
+		fittings = nil
+	}
 	return &pb_admin.ListTechCardDevExpensesResponse{
 		Expenses: dto.ConvertEntityDevExpensesToPb(expenses),
-		Summary:  dto.ComputeTechCardDevCostSummary(card, expenses, s.costingFx(ctx)),
+		Summary:  dto.ComputeTechCardDevCostSummary(card, expenses, fittings, s.costingFx(ctx)),
 	}, nil
 }
+
+// devExpenseFittingScan caps how many fitting rounds are scanned for the dev-cost round rollup. A
+// style has a handful of rounds; this only asks for a full page rather than the default.
+const devExpenseFittingScan = 100

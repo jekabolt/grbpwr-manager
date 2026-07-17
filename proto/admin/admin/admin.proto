@@ -455,6 +455,17 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/metrics/style-economics"};
   }
 
+  // GetStyleCostEstimate returns the transparent estimated (plan) cost of one style colourway
+  // (Q4): a line-by-line material breakdown resolved via the price ladder
+  // (bom_item.unit_price → latest material_price → base via costing FX), each line carrying its
+  // price source/date/currency, plus the typed cost articles (cmt/hardware/packaging/logistics/
+  // overhead) and defect %, and a plan-vs-fact comparison (estimate vs production-run actual vs
+  // the order-time cost snapshot). All money is costing:read-gated; the estimate is a read
+  // projection and never writes product.cost_price.
+  rpc GetStyleCostEstimate(GetStyleCostEstimateRequest) returns (GetStyleCostEstimateResponse) {
+    option (google.api.http) = {get: "/api/admin/metrics/style-cost-estimate"};
+  }
+
   // GetChannelRoasSettled returns per-channel ROAS/CAC computed from the AUTHORITATIVE settled order
   // revenue (task 20 step 2), attributing orders to channels server-side via the bq_order_channel map
   // (order.ga_client_id → last non-direct UTM). Unlike the GA4-revenue campaign attribution, the
@@ -4027,6 +4038,93 @@ message GetStyleCutListResponse {
   string style_number = 2;
   string name = 3;
   repeated StyleCutListPiece pieces = 4;
+}
+
+// StyleCostPriceSource is the Q4 price-ladder level a material line resolved to.
+enum StyleCostPriceSource {
+  STYLE_COST_PRICE_SOURCE_UNKNOWN = 0;
+  STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT = 1; // plan-1: bom_item.unit_price (the plan snapshot on the line)
+  STYLE_COST_PRICE_SOURCE_CATALOG_LATEST = 2; // plan-2: latest material_price (fallback when the line has no snapshot)
+  STYLE_COST_PRICE_SOURCE_NONE = 3; // no price at all — line understates the estimate
+}
+
+// StyleCostMaterialLine is one BOM material's contribution to the estimated per-garment cost, with
+// full provenance so the operator can see WHERE each number came from (Q4 transparency).
+message StyleCostMaterialLine {
+  int64 bom_item_id = 1;
+  string material_name = 2;
+  string section = 3; // BOM section (fabric|lining|trim|hardware|…)
+  string unit = 4; // metre|piece|…
+  google.type.Decimal consumption = 5; // per-garment usage (measured Consumption or countable Quantity)
+  google.type.Decimal unit_price = 6; // resolved plan unit price, in `currency`
+  string currency = 7;
+  StyleCostPriceSource price_source = 8;
+  google.protobuf.Timestamp price_date = 9; // material_price.valid_from when catalog_latest; unset otherwise
+  google.type.Decimal wastage_pct = 10;
+  google.type.Decimal line_total_base = 11; // per-garment cost folded to base (EUR); set only when convertible
+  bool has_base = 12; // false when the line's currency has no FX rate → excluded from the base total
+}
+
+// StyleCostArticleLine is one typed manual cost article (cmt/hardware/packaging/logistics/overhead).
+message StyleCostArticleLine {
+  string kind = 1; // cmt|hardware|packaging|logistics|overhead
+  google.type.Decimal amount = 2; // per-unit, in the costing currency
+  string currency = 3;
+  google.type.Decimal amount_base = 4; // folded to base (EUR); set only when convertible
+  bool has_base = 5;
+}
+
+// StyleCostKindVariance compares the estimate to the production actual for one cost kind, per unit
+// (base EUR) — the line-by-line plan/fact discrepancy.
+message StyleCostKindVariance {
+  string kind = 1; // materials|cmt|hardware|packaging|logistics|overhead
+  google.type.Decimal estimate_base = 2;
+  google.type.Decimal actual_base = 3;
+  google.type.Decimal variance = 4; // actual − estimate
+  bool has_actual = 5;
+}
+
+// StyleCostComparison ties the plan estimate to the two downstream facts (Q4 scope 2). The three
+// figures are deliberately distinct: an estimate is NOT an actual is NOT the booked COGS snapshot.
+message StyleCostComparison {
+  google.type.Decimal estimate_unit_cost_base = 1; // plan (this estimate)
+  google.type.Decimal actual_unit_cost_base = 2; // production-run actual ÷ received (existing channel, not recomputed)
+  bool has_actual = 3;
+  google.type.Decimal snapshot_cost_base = 4; // current product.cost_price — the order-time COGS basis
+  string snapshot_source = 5; // cost_price_source: manual|tech_card|production_run
+  bool has_snapshot = 6;
+  google.type.Decimal estimate_vs_actual = 7; // actual − estimate
+  google.type.Decimal estimate_vs_snapshot = 8; // snapshot − estimate
+  google.type.Decimal actual_vs_snapshot = 9; // snapshot − actual
+  repeated StyleCostKindVariance by_kind = 10; // per-cost-kind plan/fact discrepancy
+  string caveat = 11;
+}
+
+// StyleCostEstimate is the transparent plan cost of one colourway (Q4).
+message StyleCostEstimate {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  int64 colorway_id = 4; // the colourway priced (primary colourway when the request omitted one)
+  string base_currency = 5;
+  repeated StyleCostMaterialLine materials = 6;
+  google.type.Decimal materials_per_unit_base = 7; // Σ material lines, base EUR
+  repeated StyleCostArticleLine articles = 8; // typed manual articles
+  google.type.Decimal defect_pct = 9;
+  google.type.Decimal unit_cost_base = 10; // (materials + articles) × (1 + defect%/100), base EUR
+  int32 order_qty = 11; // Σ size order_qty (the size run)
+  google.type.Decimal order_cost_base = 12; // unit_cost_base × order_qty
+  string caveat = 13; // catalog fallback used, uncosted line, missing FX, …
+  StyleCostComparison comparison = 14;
+}
+
+message GetStyleCostEstimateRequest {
+  int32 tech_card_id = 1;
+  int64 colorway_id = 2; // 0 = the style's primary colourway
+}
+
+message GetStyleCostEstimateResponse {
+  StyleCostEstimate estimate = 1;
 }
 
 // ChannelSettledRoasRow is one marketing channel's settled-revenue economics over a period (task 20

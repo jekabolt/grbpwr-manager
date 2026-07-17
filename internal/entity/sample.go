@@ -25,6 +25,11 @@ var ErrSampleSizeForeign = errors.New("size is not in the sample's tech card siz
 // style's work/cost to another.
 var ErrSampleForeignToCard = errors.New("sample belongs to a different tech card")
 
+// ErrFittingForeignToCard is returned when a dev-expense's fitting_id points at a fitting anchored on
+// a different tech card (directly, or via its product's style) — attributing it would land one style's
+// R&D spend on another style's round (the S20/Q8 attribution the frontend had dead-coded to 0).
+var ErrFittingForeignToCard = errors.New("fitting belongs to a different tech card")
+
 // Sample purpose (mirrors the tech-card stages that produce a physical sample).
 const (
 	SamplePurposeProto = "proto" // first prototype
