@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/stylenumber"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -27,8 +29,31 @@ import (
 // model, base sample size, size, product or media row.
 const techCardFKMsg = "tech card references a non-existent category, model, size, product, media or fitting"
 
-// techCardDupMsg is returned when style_number collides within the same season.
-const techCardDupMsg = "a tech card with this style_number and season already exists"
+// styleNumberTaken is the field-tagged rejection for a global-UNIQUE(style_number) collision (Q1).
+func styleNumberTaken() error {
+	return apierr.Invalid(entity.NewFieldViolation("style_number", "already_exists", "",
+		"this style number is already used by another style; choose a different one or accept a fresh generated proposal"))
+}
+
+// validateStyleNumberOverride enforces the strict manual-override contract (Q1): when the owner
+// hand-sets the article (style_number_source = manual) the value must be present and pass the strict
+// format validator, else a field-tagged InvalidArgument on style_number. A generated (server-
+// proposed) value is trusted and not re-validated here; the global UNIQUE(style_number) index guards
+// collisions for both paths.
+func validateStyleNumberOverride(tc *entity.TechCardInsert) error {
+	if tc.StyleNumberSource != entity.StyleNumberSourceManual {
+		return nil
+	}
+	v := strings.TrimSpace(tc.StyleNumber.String)
+	if !tc.StyleNumber.Valid || v == "" {
+		return apierr.Invalid(entity.NewFieldViolation("style_number", "required_for_manual_override", "",
+			"a manual override needs a style number; set style_number_source=generated to use the proposal"))
+	}
+	if reason := stylenumber.ValidateManual(v); reason != "" {
+		return apierr.Invalid(entity.NewFieldViolation("style_number", reason, "", stylenumber.ManualHint()))
+	}
+	return nil
+}
 
 // validateCategoryLeaf rejects a non-leaf category_id (one that has child categories): a
 // tech card must be filed under a leaf type, not a parent bucket (plan Q5). An unset/zero
@@ -63,11 +88,17 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
 		return nil, err
 	}
+	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
+	username := authsrv.GetAdminUsername(ctx)
+	tc.CreatedBy, tc.UpdatedBy = username, username
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)
+			return nil, styleNumberTaken()
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
@@ -80,6 +111,24 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	s.seedProductCostsFromTechCard(ctx, id)
 	s.snapshotReleaseIfReleased(ctx, id)
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
+}
+
+// SuggestStyleNumber proposes the next free style number for a season (Q1). Advisory: the client may
+// accept the proposal (style_number_source=GENERATED) or override it (MANUAL) on the tech-card write.
+func (s *Server) SuggestStyleNumber(ctx context.Context, req *pb_admin.SuggestStyleNumberRequest) (*pb_admin.SuggestStyleNumberResponse, error) {
+	code, year, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season: %v", err)
+	}
+	if code == "" {
+		return nil, status.Error(codes.InvalidArgument, "sku_season (code + year) is required to propose a style number")
+	}
+	proposal, err := s.repo.TechCards().SuggestStyleNumber(ctx, string(code), year)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't suggest style number", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't suggest style number")
+	}
+	return &pb_admin.SuggestStyleNumberResponse{StyleNumber: proposal}, nil
 }
 
 // GetTechCard returns a tech card by id with its nested sections resolved.
@@ -120,6 +169,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
 		return nil, err
 	}
+	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	tc.UpdatedBy = authsrv.GetAdminUsername(ctx) // server-stamp; created_by is preserved (not in SET)
 	// A cost-stripped account's full-replace save must not blank the costing it never saw.
 	if !canWriteCosting {
 		s.preserveStoredCosting(ctx, int(req.Id), tc)
@@ -138,7 +191,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardPurposeLocked.Error())
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, techCardDupMsg)
+			return nil, styleNumberTaken()
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)

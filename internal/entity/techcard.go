@@ -64,6 +64,26 @@ var ValidTechCardPurposes = map[TechCardPurpose]bool{
 	TechCardPurposeAuxiliary: true,
 }
 
+// StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
+// proposed it from the season+sequence contract; `manual` = the owner deliberately overrode the
+// proposal (and the value passed the strict format validator). Mirrors the common.StyleNumberSource
+// proto enum; stored in tech_card.style_number_source (CHECK generated|manual, DEFAULT generated).
+type StyleNumberSource string
+
+const (
+	StyleNumberSourceGenerated StyleNumberSource = "generated"
+	StyleNumberSourceManual    StyleNumberSource = "manual"
+)
+
+// ValidStyleNumberSources is the set of accepted provenance values.
+var ValidStyleNumberSources = map[StyleNumberSource]bool{
+	StyleNumberSourceGenerated: true,
+	StyleNumberSourceManual:    true,
+}
+
+// IsValidStyleNumberSource reports whether s is an accepted provenance value.
+func IsValidStyleNumberSource(s StyleNumberSource) bool { return ValidStyleNumberSources[s] }
+
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
 // TechCardStage. It mirrors the common.TechCardApprovalState proto enum and is
 // stored as a string in tech_card.approval_state.
@@ -183,13 +203,17 @@ type TechCardCallout struct {
 	PosY        decimal.NullDecimal `db:"pos_y"`
 }
 
-// TechCardRevision is one entry in the revision log.
+// TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
+// card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server;
+// the legacy Version/RevisionDate columns are kept for old rows and dropped in M3.
 type TechCardRevision struct {
-	Version      sql.NullString `db:"version"`
-	RevisionDate sql.NullTime   `db:"revision_date"`
-	Author       sql.NullString `db:"author"`
-	Section      sql.NullString `db:"section"`
-	ChangeNote   sql.NullString `db:"change_note"`
+	Version      sql.NullString `db:"version"`       // DEPRECATED legacy label
+	RevisionDate sql.NullTime   `db:"revision_date"` // DEPRECATED; use CreatedAt
+	Author       sql.NullString `db:"author"`        // server-stamped acting admin username
+	Section      sql.NullString `db:"section"`       // header|sketch|bom|... (enum-valued)
+	Action       sql.NullString `db:"action"`        // created|updated|approved|released|reverted|role_assigned|other
+	ChangeNote   sql.NullString `db:"change_note"`   // human summary
+	CreatedAt    sql.NullTime   `db:"created_at"`    // when the server stamped this entry
 }
 
 // TechCardBomSection groups a BOM line by material family. Mirrors the
@@ -799,6 +823,15 @@ type TechCardPiece struct {
 type TechCardInsert struct {
 	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
 	StyleNumber sql.NullString `db:"style_number"`
+	// StyleNumberSource is the provenance of StyleNumber (Q1): `generated` (server-proposed) or
+	// `manual` (owner override). A manual override must pass the strict style-number format validator;
+	// global UNIQUE(style_number) is the authority on collisions. Empty defaults to `generated`.
+	StyleNumberSource StyleNumberSource `db:"style_number_source"`
+	// CreatedBy/UpdatedBy are server-stamped audit usernames (norm §2.11, GetAdminUsername). They are
+	// on the writable payload only so the store can persist them; the API never reads them from the
+	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
+	CreatedBy string `db:"created_by"`
+	UpdatedBy string `db:"updated_by"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
@@ -844,11 +877,11 @@ type TechCardInsert struct {
 	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
 	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
-	SizeIds []int               `db:"-"`
-	Media   []TechCardMediaItem `db:"-"`
-	Callouts   []TechCardCallout   `db:"-"`
-	Revisions  []TechCardRevision  `db:"-"`
-	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
+	SizeIds   []int               `db:"-"`
+	Media     []TechCardMediaItem `db:"-"`
+	Callouts  []TechCardCallout   `db:"-"`
+	Revisions []TechCardRevision  `db:"-"`
+	Details   []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
 	// materials (Phase 2)
 	BomItems  []TechCardBomItem  `db:"-"` // article catalog
 	Colorways []TechCardColorway `db:"-"` // colourways carry the usage recipe
@@ -880,6 +913,44 @@ type TechCardListFilter struct {
 	// produce a SKU, do not clutter the choice (PR5-E).
 }
 
+// TechCardRole is a responsible-account role on a tech card (Q5). Mirrors the common.TechCardRole
+// proto enum; stored in tech_card_role_assignment.role (CHECK). Replaces the free-text
+// designer/constructor/technologist/approved_by strings — approval is now the `approver` role plus a
+// server-stamped journal event, not a free-text name.
+type TechCardRole string
+
+const (
+	RoleDesigner     TechCardRole = "designer"
+	RoleConstructor  TechCardRole = "constructor"
+	RoleTechnologist TechCardRole = "technologist"
+	RolePatternMaker TechCardRole = "pattern_maker"
+	RoleGrader       TechCardRole = "grader"
+	RoleApprover     TechCardRole = "approver"
+	RoleOther        TechCardRole = "other"
+)
+
+// ValidTechCardRoles is the set of accepted role keys (mirrors the DB CHECK).
+var ValidTechCardRoles = map[TechCardRole]bool{
+	RoleDesigner: true, RoleConstructor: true, RoleTechnologist: true,
+	RolePatternMaker: true, RoleGrader: true, RoleApprover: true, RoleOther: true,
+}
+
+// IsValidTechCardRole reports whether r is an accepted role.
+func IsValidTechCardRole(r TechCardRole) bool { return ValidTechCardRoles[r] }
+
+// TechCardRoleAssignment is one "this admin account is <role> of this card" record (Q5), multi per
+// role. AdminUsername is resolved from admins on read (never written). AssignedBy/AssignedAt are the
+// audit stamp of who created the assignment.
+type TechCardRoleAssignment struct {
+	Id            int          `db:"id"`
+	TechCardId    int          `db:"tech_card_id"`
+	Role          TechCardRole `db:"role"`
+	AdminId       int          `db:"admin_id"`
+	AdminUsername string       `db:"admin_username"` // resolved via JOIN admins; read-only
+	AssignedBy    string       `db:"assigned_by"`
+	AssignedAt    time.Time    `db:"assigned_at"`
+}
+
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
 type TechCard struct {
 	Id          int `db:"id"`
@@ -887,6 +958,9 @@ type TechCard struct {
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
+	// (GetTechCardById); empty on list views.
+	RoleAssignments []TechCardRoleAssignment `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
@@ -921,13 +995,17 @@ type StylePipelineColumn struct {
 // JSON blob — used for listing a card's releases. UnitCost/Currency are the base-currency
 // planned unit cost frozen at release time (NULL when it could not be folded to base).
 type TechCardReleaseMeta struct {
-	Id         int                 `db:"id"`
-	TechCardId int                 `db:"tech_card_id"`
-	Version    sql.NullString      `db:"version"`
-	ReleasedBy sql.NullString      `db:"released_by"`
-	UnitCost   decimal.NullDecimal `db:"unit_cost"`
-	Currency   sql.NullString      `db:"currency"`
-	CreatedAt  time.Time           `db:"created_at"`
+	Id         int `db:"id"`
+	TechCardId int `db:"tech_card_id"`
+	// ReleaseNumber is the user-facing "Rev.N" the factory reads (Q1): auto MAX+1 per tech card,
+	// assigned by the store on save. This is the tech card's real "version" — the free-text `version`
+	// string it replaces is retired.
+	ReleaseNumber int                 `db:"release_number"`
+	Version       sql.NullString      `db:"version"`
+	ReleasedBy    sql.NullString      `db:"released_by"`
+	UnitCost      decimal.NullDecimal `db:"unit_cost"`
+	Currency      sql.NullString      `db:"currency"`
+	CreatedAt     time.Time           `db:"created_at"`
 }
 
 // TechCardRelease is a full release snapshot: the metadata plus the raw proto-JSON blob of the

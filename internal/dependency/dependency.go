@@ -550,6 +550,12 @@ type (
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
 		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
+		// SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}.
+		SuggestStyleNumber(ctx context.Context, seasonCode string, seasonYear int) (string, error)
+		// Role assignments (Q5): responsible admin accounts on a card, multi per role.
+		AssignTechCardRole(ctx context.Context, a entity.TechCardRoleAssignment) (entity.TechCardRoleAssignment, error)
+		RemoveTechCardRoleAssignment(ctx context.Context, id int) error
+		ListTechCardRoleAssignments(ctx context.Context, techCardID int) ([]entity.TechCardRoleAssignment, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)

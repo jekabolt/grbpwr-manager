@@ -1,0 +1,53 @@
+{
+  "version": "grbpwr-style-number-v1",
+  "description": "Canonical style-number (Артикул) contract (PLM-rework Q1, tmp/plm-rework/01-DOMAIN-MODEL.md §2.1). Single source of truth for the SERVER-PROPOSED style number shape and the STRICT manual-override grammar. The generator proposes {SEASON}{YY}-{SEQ}: a per-(season) monotonic sequence, deterministic and globally unique by construction, using only facts present at creation (season code + year) — model_no is allocated lazily at first SKU mint and is NOT available here, so it is intentionally not a token. A manual override is accepted only when it matches manual_override.pattern; the global UNIQUE(style_number) index is the authority on collisions. Any other language's tests should read this file rather than re-typing the rules.",
+  "template": "{SEASON}{YY}-{SEQ}",
+  "seq_width": 3,
+  "segment_separator": "-",
+  "season": {
+    "valid_codes": ["SS", "FW", "PF", "RC"],
+    "year_min": 2000,
+    "year_max": 2099
+  },
+  "manual_override": {
+    "pattern": "^[A-Z0-9]{2,}(-[A-Z0-9]+)*$",
+    "max_length": 64,
+    "description": "uppercase alphanumeric segments separated by single hyphens; first segment >= 2 chars; no leading/trailing/double hyphens, no lowercase, no spaces or other characters"
+  },
+  "golden_generate": [
+    { "season": "SS", "year": 2026, "seq": 1, "want": "SS26-001", "note": "first of the season" },
+    { "season": "FW", "year": 2025, "seq": 42, "want": "FW25-042" },
+    { "season": "PF", "year": 2000, "seq": 7, "want": "PF00-007", "note": "year floor" },
+    { "season": "RC", "year": 2099, "seq": 999, "want": "RC99-999", "note": "year ceiling" },
+    { "season": "ss", "year": 2026, "seq": 5, "want": "SS26-005", "note": "season code is upper-cased" },
+    { "season": "SS", "year": 2026, "seq": 1234, "want": "SS26-1234", "note": "seq wider than seq_width grows past the minimum padding" }
+  ],
+  "negative_generate": [
+    { "season": "XX", "year": 2026, "seq": 1, "reason": "season_unknown" },
+    { "season": "", "year": 2026, "seq": 1, "reason": "season_empty" },
+    { "season": "SS", "year": 1999, "seq": 1, "reason": "year_below_min" },
+    { "season": "SS", "year": 2100, "seq": 1, "reason": "year_above_max" },
+    { "season": "SS", "year": 2026, "seq": 0, "reason": "seq_below_one" },
+    { "season": "SS", "year": 2026, "seq": -3, "reason": "seq_below_one" }
+  ],
+  "golden_manual": [
+    "SS26-001",
+    "AB12",
+    "JACKET-01",
+    "GRB-SS26-JKT-021",
+    "OFW",
+    "A1B2C3-D4"
+  ],
+  "negative_manual": [
+    { "candidate": "", "reason": "empty" },
+    { "candidate": "   ", "reason": "empty" },
+    { "candidate": "ab12", "reason": "format_invalid" },
+    { "candidate": "A", "reason": "format_invalid" },
+    { "candidate": "AB_12", "reason": "format_invalid" },
+    { "candidate": "AB--12", "reason": "format_invalid" },
+    { "candidate": "-AB12", "reason": "format_invalid" },
+    { "candidate": "AB12-", "reason": "format_invalid" },
+    { "candidate": "AB 12", "reason": "format_invalid" },
+    { "candidate": "ЖК12", "reason": "format_invalid" }
+  ]
+}

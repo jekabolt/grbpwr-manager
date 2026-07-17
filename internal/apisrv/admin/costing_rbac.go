@@ -120,6 +120,46 @@ func stripReleaseMetaCosting(m *pb_common.TechCardReleaseMeta) {
 	m.Currency = ""
 }
 
+// stripProductionRunCosting redacts the confidential money on a production run for an account
+// without costing:read (Q5 RBAC symmetry / A3.2-#3). It closes the last asymmetry in the costing
+// boundary: TechCard/Material/DevExpense money was already field-shaped, but a run's ACTUAL cost
+// (the plan snapshot, the cost articles, and the computed actual/variance/materials-from-stock
+// summary) was gated only by the production section — so a `production:read` role without costing
+// saw more money about the fact than a `tech_cards:read` role without costing saw about the plan.
+// Quantities (planned/received/defect), the defect rate, marker data and provenance flags stay —
+// a production role still sees "how many units / how many defects", just not "at what cost". Safe
+// on nil; symmetric with the strip* helpers above.
+func stripProductionRunCosting(r *pb_common.ProductionRun) {
+	if r == nil {
+		return
+	}
+	r.PlannedUnitCost = nil // frozen plan snapshot (money)
+	r.PlannedCurrency = ""
+	if r.Run != nil {
+		r.Run.Costs = nil // actual cost articles (amount / amount_base) are confidential
+	}
+	stripProductionRunActualsCosting(r.Actuals)
+}
+
+// stripProductionRunActualsCosting clears the money-bearing figures of a run's computed plan/fact
+// summary, keeping the quantity totals, the defect rate and the provenance flags. Safe on nil.
+func stripProductionRunActualsCosting(a *pb_common.ProductionRunActuals) {
+	if a == nil {
+		return
+	}
+	a.ActualTotalBase = nil
+	a.ActualUnitCost = nil
+	a.ByKind = nil
+	a.PlannedTotalBase = nil
+	a.UnitCostVariance = nil
+	a.TotalVariance = nil
+	a.MaterialsFromStockBase = nil
+	a.ByColorway = nil
+	a.UnattributedMaterialsBase = nil
+	// Kept (not money): base_currency, planned/received/defect qty totals, defect_pct_actual,
+	// has_base, mixed_materials_sources, has_uncosted_issues.
+}
+
 // costingRedactedFieldNames are proto field names carrying confidential COGS/margin. They are
 // cleared RECURSIVELY from GetMetrics/GetDashboard responses — a denylist, not a hand-maintained
 // per-report list, because the flat strip missed several reports that also carry these fields
