@@ -309,6 +309,11 @@ func ConvertPbMaterialPriceToEntity(pb *pb_common.MaterialPrice) (entity.Materia
 	if source == "" {
 		source = entity.MaterialPriceSourceManual
 	}
+	if !entity.ValidMaterialPriceSources[source] {
+		return entity.MaterialPrice{}, entity.NewFieldViolation("price.source",
+			fmt.Sprintf("unknown price source %q", source), "",
+			"use one of: manual, production_run, purchase")
+	}
 	return entity.MaterialPrice{
 		MaterialId: int(pb.MaterialId),
 		Price:      price.Decimal,

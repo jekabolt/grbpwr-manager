@@ -111,11 +111,22 @@ type Material struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 }
 
-// MaterialPriceSource enumerates how a price point entered the history.
+// MaterialPriceSource enumerates how a price point entered the history. (MaterialPriceSourcePurchase
+// lives in inventory.go next to the receipt path that writes it.)
 const (
 	MaterialPriceSourceManual        = "manual"
 	MaterialPriceSourceProductionRun = "production_run"
 )
+
+// ValidMaterialPriceSources is the storable set for material_price.source — the single source of
+// truth mirrored by the DB CHECK (chk_material_price_source, migration 0158). source was previously
+// the only PLM field with no validation at all (A3.4), so a typo silently entered the append-only
+// price history.
+var ValidMaterialPriceSources = map[string]bool{
+	MaterialPriceSourceManual:        true,
+	MaterialPriceSourceProductionRun: true,
+	MaterialPriceSourcePurchase:      true,
+}
 
 // MaterialPrice is one point in a material's append-only price history. The latest row with
 // valid_from <= today (per currency) is the current price. Prices are stored in the purchase

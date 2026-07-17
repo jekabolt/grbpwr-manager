@@ -186,6 +186,14 @@ func TestMaterialClassDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
 }
 
+// TestMaterialPriceSourceDBCheckNoDrift extends the drift test to material_price.source
+// (entity.ValidMaterialPriceSources) <-> DB CHECK (migration 0158, chk_material_price_source).
+func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0158_material_price_source_check.sql")
+	dbValues := extractDBEnumValues(t, content, "source REGEXP", 120)
+	assertSameSet(t, "MaterialPriceSource", dbValues, mapKeysAsStrings(entity.ValidMaterialPriceSources))
+}
+
 // TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
 // matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
 // guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).

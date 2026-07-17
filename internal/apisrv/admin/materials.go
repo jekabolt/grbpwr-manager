@@ -120,6 +120,9 @@ func (s *Server) AddMaterialPrice(ctx context.Context, req *pb_admin.AddMaterial
 	}
 	price, err := dto.ConvertPbMaterialPriceToEntity(req.GetPrice())
 	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.repo.TechCards().AddMaterialPrice(ctx, price); err != nil {
