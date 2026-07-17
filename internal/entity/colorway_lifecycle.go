@@ -10,6 +10,16 @@ import (
 // FailedPrecondition.
 var ErrColorwayNotDraft = errors.New("colourway is not a draft")
 
+// ErrStyleFrozenSiblings is returned by UpdateStyle when a change to the style's SKU facts (season)
+// would have to re-mint a colourway whose SKU is frozen (has order/label history, sku_locked_at set).
+// The whole change is refused rather than silently skipping the frozen sibling; the official path is
+// CloneStyleForSeason. The API layer maps it to FailedPrecondition (R4).
+var ErrStyleFrozenSiblings = errors.New("style has SKU-frozen colourways; clone for the new season instead")
+
+// ErrColorwayColorExists is returned by CreateColorway when the (style_id, color_code) pair already
+// exists (UNIQUE, R1). The API layer maps it to FailedPrecondition.
+var ErrColorwayColorExists = errors.New("a colourway with this colour already exists for the style")
+
 // ColorwayStatus is a colourway's (product row's) lifecycle state and the single authoritative source
 // of lifecycle — the legacy (hidden, deleted_at) pair and the generated `status` enum are gone
 // (contract decision R6). It is stored as product.lifecycle_status TINYINT UNSIGNED. The numeric

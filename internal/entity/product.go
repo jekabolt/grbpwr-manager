@@ -231,6 +231,24 @@ type ColorwayBody struct {
 	Translations      []ColorwayTranslationInsert `valid:"required"`
 }
 
+// StylePatch is the set of catalogue-style facts written ONLY by UpdateStyle (R4/§14.7): the garment
+// facts invariant across a style's colourways. It mirrors the style-owned subset of ColorwayBodyInsert
+// and drives the shared styleFieldsSet SQL. category_id stays a PLM/UpdateTechCard fact and is not here.
+type StylePatch struct {
+	Brand              string
+	Season             SeasonEnum
+	Collection         string
+	TargetGender       GenderEnum
+	Fit                sql.NullString
+	Composition        sql.NullString
+	CareInstructions   sql.NullString
+	ModelWearsHeightCm sql.NullInt32
+	ModelWearsSizeId   sql.NullInt32
+	TopCategoryId      int
+	SubCategoryId      sql.NullInt32
+	TypeId             sql.NullInt32
+}
+
 func (pb *ColorwayBody) SalePercentageDecimal() decimal.Decimal {
 	if pb.ProductBodyInsert.SalePercentage.Valid {
 		return pb.ProductBodyInsert.SalePercentage.Decimal.Round(2)

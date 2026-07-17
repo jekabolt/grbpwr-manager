@@ -95,13 +95,11 @@ enum ColorwayCostSource {
   COLORWAY_COST_SOURCE_PRODUCTION_RUN = 3;
 }
 
-message ColorwayNew {
-  ColorwayInsert product = 1;
-  repeated SizeWithMeasurementInsert size_measurements = 2;
-  repeated int32 media_ids = 3;
-  repeated ColorwayTagInsert tags = 4;
-  repeated ColorwayPriceInsert prices = 5;
-}
+// The write-aggregate messages ColorwayNew / ColorwayInsert / ColorwayBody / VariantInsert /
+// SizeWithMeasurement(Insert) / ProductMeasurement(Insert/Update) were removed (R2/R5 write
+// decomposition): the coupled UpsertColorway is replaced by CreateColorway / UpdateColorway /
+// CreateVariant / UpdateStyleSizeChart in admin.proto (§6), and the size chart is style-owned
+// (StyleSizeChart). See the removed-registry in 02-proto-diff-spec §9/§10.
 
 message ColorwayFull {
   Colorway colorway = 1;
@@ -132,23 +130,59 @@ message Colorway {
   google.protobuf.Timestamp published_at = 13; // R6: audit of first publish (not the status source)
 }
 
-message ColorwayBody {
-  ColorwayBodyInsert product_body_insert = 1;
-  repeated ColorwayInsertTranslation translations = 2;
-}
-
-message ColorwayBodyInsert {
+// ColorwayMerchandisingInsert (R8: renamed from ColorwayBodyInsert) carries the colourway-owned
+// merchandising fields ONLY. The garment/style facts (brand, season, collection, target_gender, fit,
+// composition, care instructions, model-wears, categories) are owned by the Style and written via
+// UpdateStyle (R4/§14.7) — they are reserved here. The free-text country_of_origin is replaced by the
+// ISO country_code (R9).
+message ColorwayMerchandisingInsert {
   google.protobuf.Timestamp preorder = 1;
-  string brand = 2;
+  reserved 2;
+  reserved "brand"; // -> Style (UpdateStyle), R4
   reserved 3;
   reserved "color", "color_hex";
   // Optional per-colorway shade override. When absent, clients use dictionary_color.hex.
   optional string color_hex_override = 4;
-  string country_of_origin = 5;
+  reserved 5;
+  reserved "country_of_origin"; // free-text; ISO manufacture country -> country_code=23 (R9)
+  google.type.Decimal sale_percentage = 6;
+  reserved 7, 8, 9;
+  reserved "top_category_id", "sub_category_id", "type_id"; // -> Style (categories), R4
+  reserved 10, 11;
+  reserved "model_wears_height_cm", "model_wears_size_id"; // -> Style, R4
+  reserved 12, 13;
+  reserved "care_instructions", "composition"; // -> Style, R4
+  reserved 14;
+  reserved "hidden"; // R6: visibility only through a lifecycle transition
+  reserved 15;
+  reserved "target_gender"; // -> Style, R4
+  reserved 16; // was `version` — DB/entity version column removed (PR6, problem 032)
+  reserved "version";
+  reserved 17;
+  reserved "collection"; // -> style.collection (R4/R9)
+  reserved 18;
+  reserved "fit"; // -> Style, R4
+  reserved 19;
+  reserved "season"; // -> style.sku_season (R4)
+  // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
+  int32 min_tier = 20;
   // REQUIRED canonical FK to Dictionary.colors; the sole color/SKU identity on writes.
   string color_code = 21;
   // OUTPUT-ONLY resolved dictionary entry. Ignored on write.
   Color dictionary_color = 22;
+  // country_code is the ISO 3166-1 alpha-2 manufacture country (R9; FK Country dict). Colourway-owned.
+  string country_code = 23;
+}
+
+// ColorwayMerchandising is the admin/internal READ projection of a colourway's display fields: the
+// colourway-owned merchandising PLUS the style-resolved garment facts (output-only), so the admin
+// detail view keeps rendering brand/season/collection/etc even though they are now written on the
+// Style. Never reachable from FrontendService (the storefront uses StorefrontColorway, R3).
+message ColorwayMerchandising {
+  google.protobuf.Timestamp preorder = 1;
+  string brand = 2; // resolved from the style (output-only)
+  optional string color_hex_override = 4;
+  string country_of_origin = 5; // resolved free-text origin (output-only)
   google.type.Decimal sale_percentage = 6;
   int32 top_category_id = 7;
   int32 sub_category_id = 8;
@@ -157,52 +191,23 @@ message ColorwayBodyInsert {
   int32 model_wears_size_id = 11;
   string care_instructions = 12;
   string composition = 13;
-  bool hidden = 14;
   GenderEnum target_gender = 15;
   SeasonEnum season = 19;
-  reserved 16; // was `version` — the DB/entity version column was removed (PR6); the store never
-  reserved "version"; // persisted it and it did not round-trip, so it is removed, not stubbed (problem 032)
   string collection = 17;
   string fit = 18;
-  // min_tier is the minimum loyalty tier code required to buy (0/1/2/99).
   int32 min_tier = 20;
-}
-
-message ColorwayInsert {
-  ColorwayBodyInsert product_body_insert = 1;
-  int32 thumbnail_media_id = 2;
-  repeated common.ColorwayInsertTranslation translations = 3;
-  int32 secondary_thumbnail_media_id = 4;
-  // Legacy duplicate of ColorwayNew.prices. New clients must use the top-level field.
-  // Kept during the compatibility window so already generated clients continue to decode.
-  repeated ColorwayPriceInsert prices = 5 [deprecated = true];
-  // cost_price is the confidential per-unit cost of goods (COGS) in base currency (EUR),
-  // used for margin analytics. Omit/empty to leave the stored value unchanged on update.
-  // Deliberately on ColorwayInsert (write-only) and NOT on ColorwayBodyInsert, so it is
-  // never serialized on the storefront product read path.
-  google.type.Decimal cost_price = 6;
+  string color_code = 21;
+  Color dictionary_color = 22;
+  string country_code = 23;
 }
 
 message ColorwayDisplay {
-  ColorwayBody product_body = 1;
+  reserved 1;
+  reserved "product_body"; // was ColorwayBody (write wrapper) — replaced by the resolved read below
   common.MediaFull thumbnail = 2;
   common.MediaFull secondary_thumbnail = 3;
-}
-
-message ProductMeasurementUpdate {
-  int32 size_id = 1;
-  int32 measurement_name_id = 2;
-  google.type.Decimal measurement_value = 3;
-}
-
-message SizeWithMeasurementInsert {
-  VariantInsert product_size = 1;
-  repeated ProductMeasurementInsert measurements = 2;
-}
-
-message SizeWithMeasurement {
-  Variant product_size = 1;
-  repeated ProductMeasurement measurements = 2;
+  ColorwayMerchandising merchandising = 4; // resolved merch + style facts (output-only, admin/internal)
+  repeated ColorwayInsertTranslation translations = 5; // merch translation overrides (output-only)
 }
 
 message Variant {
@@ -214,24 +219,6 @@ message Variant {
   reserved "id", "product_id", "sku";
   VariantLifecycleStatus status = 6; // R2: variants archive, never delete
   int32 lock_version = 7; // R2: optimistic lock token
-}
-
-message VariantInsert {
-  google.type.Decimal quantity = 1;
-  int32 size_id = 2;
-}
-
-message ProductMeasurement {
-  int32 id = 1;
-  int32 product_id = 2;
-  int32 product_size_id = 3;
-  int32 measurement_name_id = 4;
-  google.type.Decimal measurement_value = 5;
-}
-
-message ProductMeasurementInsert {
-  int32 measurement_name_id = 1;
-  google.type.Decimal measurement_value = 2;
 }
 
 message ColorwayTag {

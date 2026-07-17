@@ -6,6 +6,8 @@ import "common/archive.proto";
 import "common/dict.proto";
 import "common/filter.proto";
 import "common/hero.proto";
+import "common/language.proto";
+import "common/media.proto";
 import "common/order.proto";
 import "common/payment.proto";
 import "common/product.proto";
@@ -24,14 +26,14 @@ service FrontendService {
     option (google.api.http) = {get: "/api/frontend/hero"};
   }
 
-  // Get product brand and name
+  // Get a colourway by its public base SKU.
   rpc GetColorway(GetColorwayRequest) returns (GetColorwayResponse) {
-    option (google.api.http) = {get: "/api/frontend/product/{sku}"};
+    option (google.api.http) = {get: "/api/frontend/colorways/{base_sku}"};
   }
 
-  // Get paged products
+  // Get paged colourways.
   rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
-    option (google.api.http) = {get: "/api/frontend/products/paged"};
+    option (google.api.http) = {get: "/api/frontend/colorways/paged"};
   }
 
   // Submit an order
@@ -229,15 +231,17 @@ message GetHeroResponse {
 
 message GetColorwayRequest {
   // Resolve by base SKU (the public product key). The frontend extracts it from the
-  // /p/{pretty}-{sku} URL tail. Fields 1-4 (gender/brand/name/id) are removed — the internal
+  // /p/{pretty}-{base_sku} URL tail. Fields 1-4 (gender/brand/name/id) are removed — the internal
   // product.id is no longer a public key (SKU redesign PR3, breaking, no redirects).
   reserved 1 to 4;
   reserved "gender", "brand", "name", "id";
-  string sku = 5;
+  string base_sku = 5; // R8: renamed from sku
+  reserved "sku";
 }
 
 message GetColorwayResponse {
-  common.ColorwayFull product = 1;
+  StorefrontColorway colorway = 1; // R3/R8: storefront projection (no catalog PKs), renamed from product
+  reserved "product";
 }
 
 message GetColorwaysPagedRequest {
@@ -249,7 +253,8 @@ message GetColorwaysPagedRequest {
 }
 
 message GetColorwaysPagedResponse {
-  repeated common.Colorway products = 1;
+  repeated StorefrontColorway colorways = 1; // R3/R8: storefront projection, renamed from products
+  reserved "products";
   int32 total = 2;
 }
 
@@ -376,7 +381,7 @@ message GetArchivesPagedRequest {
 }
 
 message GetArchivesPagedResponse {
-  repeated common.ArchiveList archives = 1;
+  repeated StorefrontArchiveList archives = 1; // R3: storefront projection (no ArchiveList.id)
   int32 total = 2;
 }
 
@@ -391,7 +396,7 @@ message GetArchiveRequest {
 }
 
 message GetArchiveResponse {
-  common.ArchiveFull archive = 1;
+  StorefrontArchiveFull archive = 1; // R3: storefront projection (no catalog PKs)
 }
 
 message SubmitSupportTicketRequest {
@@ -561,4 +566,105 @@ message ListMyOrdersRequest {
 message ListMyOrdersResponse {
   repeated common.OrderFull orders = 1;
   int32 total = 2;
+}
+
+// ─── Storefront catalogue projections (R3) ──────────────────────────────────────────────────────
+// These are the ONLY colourway shapes exposed to the storefront. They deliberately carry NO catalogue
+// primary keys (no product_id/colorway_id/variant_id/size_id, no Colorway.id/Variant.id) — the public
+// identity is base_sku / variant_sku / archive code. The contract-scan test enforces this over every
+// message transitively reachable from FrontendService.
+
+message PublicSize {
+  string code = 1; // size short code
+  string name = 2;
+  common.SizeSkuSystem system = 3;
+  int32 sku_ord = 4; // the size ordinal (public; part of the variant SKU), not a DB id
+}
+
+message StorefrontVariant {
+  string variant_sku = 1;
+  PublicSize size = 2;
+  bool sold_out = 3;
+}
+
+message PublicMeasurement {
+  PublicSize size = 1;
+  string measurement_name = 2;
+  google.type.Decimal value = 3;
+}
+
+message PublicStyleSizeChart {
+  repeated PublicMeasurement cells = 1;
+}
+
+message StorefrontColorwayDisplay {
+  common.MediaFull thumbnail = 1; // media_id is a documented scan exception
+  common.MediaFull secondary_thumbnail = 2;
+  string brand = 3;
+  string collection_code = 4;
+  common.GenderEnum target_gender = 5;
+  string fit = 6;
+  string composition = 7;
+  string care_instructions = 8;
+  repeated common.ColorwayInsertTranslation translations = 9; // resolved: override -> style -> default
+}
+
+message StorefrontColorway {
+  string base_sku = 1;
+  string slug = 2;
+  StorefrontColorwayDisplay display = 3;
+  repeated StorefrontVariant variants = 4;
+  repeated common.ColorwayPrice prices = 5;
+  repeated common.MediaFull media = 6;
+  PublicStyleSizeChart size_chart = 7;
+  string color_code = 8;
+  bool sold_out = 9;
+  common.ColorwayLifecycleStatus status = 10; // only ACTIVE is served publicly
+}
+
+// ─── Storefront archive projections (R3, §7.6) ──────────────────────────────────────────────────
+// The media/text/embed timeline blocks (ArchiveMainMediaFull/MediaLineFull/TextFull/EmbedFull/
+// MediaWithCaptionFull) carry no catalogue PKs and are reused from common; only the product blocks and
+// ArchiveList (which carries id) need a storefront shape.
+
+message StorefrontArchiveList {
+  repeated common.ArchiveInsertTranslation translations = 1;
+  string tag = 2;
+  string slug = 3;
+  google.protobuf.Timestamp created_at = 4;
+  common.MediaFull thumbnail = 5;
+  string code = 6; // the stable public identifier (no ArchiveList.id, R3)
+}
+
+message StorefrontArchiveProductFull {
+  StorefrontColorway colorway = 1;
+  repeated common.ArchiveItemTranslation translations = 2;
+}
+
+message StorefrontArchiveProductsTagFull {
+  string tag = 1;
+  repeated StorefrontColorway colorways = 2;
+  repeated common.ArchiveItemTranslation translations = 3;
+}
+
+message StorefrontArchiveProductsManualFull {
+  repeated StorefrontColorway colorways = 1;
+  repeated common.ArchiveItemTranslation translations = 2;
+}
+
+message StorefrontArchiveItemFull {
+  common.ArchiveItemType type = 1;
+  common.ArchiveMainMediaFull main_media = 2;
+  common.ArchiveMediaLineFull media_line = 3;
+  common.ArchiveTextFull text = 4;
+  common.ArchiveEmbedFull embed = 5;
+  common.ArchiveMediaWithCaptionFull media_with_caption = 6;
+  StorefrontArchiveProductFull product = 7;
+  StorefrontArchiveProductsTagFull products_tag = 8;
+  StorefrontArchiveProductsManualFull products_manual = 9;
+}
+
+message StorefrontArchiveFull {
+  StorefrontArchiveList archive_list = 1;
+  repeated StorefrontArchiveItemFull items = 4;
 }

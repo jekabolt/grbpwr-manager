@@ -359,8 +359,7 @@ func TestCostingWriteDetectors(t *testing.T) {
 		BomItems: []*pb_common.TechCardBomItem{{Name: "wool"}},
 	}), "a priceless BOM line is not cost data")
 
-	require.False(t, productInsertHasCostPrice(nil))
-	require.False(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{}))
-	require.False(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{CostPrice: dec("")}), "empty = leave unchanged")
-	require.True(t, productInsertHasCostPrice(&pb_common.ColorwayInsert{CostPrice: dec("9.99")}))
+	require.False(t, costPriceProvided(nil))
+	require.False(t, costPriceProvided(dec("")), "empty = leave unchanged")
+	require.True(t, costPriceProvided(dec("9.99")))
 }

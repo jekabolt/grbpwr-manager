@@ -128,7 +128,9 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"UpsertColorway":            wr(SectionProducts),
+	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
 	"GetColorwaysPaged":         rd(SectionProducts),
 	"GetColorwayByID":           rd(SectionProducts),
 	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
@@ -143,6 +145,7 @@ var methodRequirements = map[string]Requirement{
 	"GetStyleSizeChart":    rd(SectionProducts),
 	"UpdateStyleSizeChart": wr(SectionProducts),
 	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
 	"GetColorwayCustoms":        rd(SectionProducts),
 	"SetColorwayCustoms":        wr(SectionProducts),

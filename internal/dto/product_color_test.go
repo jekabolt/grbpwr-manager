@@ -22,31 +22,27 @@ func TestColorwayBodyAcceptsOnlyDictionaryColorIdentity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := convertProductBodyInsertToProductBody(&pb_common.ColorwayBodyInsert{
+			_, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{
 				ColorCode:        tt.code,
 				ColorHexOverride: tt.override,
-				TargetGender:     pb_common.GenderEnum_GENDER_ENUM_UNISEX,
-				Season:           pb_common.SeasonEnum_SEASON_ENUM_SS,
-			})
+			}, "")
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
 
 func TestColorwayBodyResolvesDictionaryDisplayAndKeepsOptionalOverride(t *testing.T) {
-	got, err := convertProductBodyInsertToProductBody(&pb_common.ColorwayBodyInsert{
+	got, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{
 		ColorCode:        "BLK",
 		ColorHexOverride: stringPointer("#010101"),
-		TargetGender:     pb_common.GenderEnum_GENDER_ENUM_UNISEX,
-		Season:           pb_common.SeasonEnum_SEASON_ENUM_SS,
-	})
+	}, "")
 	require.NoError(t, err)
-	require.Equal(t, "BLK", got.ProductBodyInsert.ColorCode)
-	require.Equal(t, "black", got.ProductBodyInsert.Color)
-	require.True(t, got.ProductBodyInsert.ColorHexOverride.Valid)
-	require.Equal(t, "#010101", got.ProductBodyInsert.ColorHexOverride.String)
+	require.Equal(t, "BLK", got.ColorCode)
+	require.Equal(t, "black", got.Color)
+	require.True(t, got.ColorHexOverride.Valid)
+	require.Equal(t, "#010101", got.ColorHexOverride.String)
 
-	resolved := dictionaryColorToPb(got.ProductBodyInsert.ColorCode)
+	resolved := dictionaryColorToPb(got.ColorCode)
 	require.Equal(t, "BLK", resolved.Code)
 	require.Equal(t, "black", resolved.Name)
 	require.Equal(t, "#000000", resolved.Hex)

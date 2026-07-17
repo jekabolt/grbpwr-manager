@@ -144,7 +144,8 @@ message ArchiveMediaWithCaptionInsert {
 }
 
 message ArchiveProductInsert {
-  int32 product_id = 1;
+  int32 colorway_id = 1; // R8: renamed from product_id (admin write)
+  reserved "product_id";
   repeated common.ArchiveItemTranslation translations = 2; // optional caption
 }
 
@@ -155,7 +156,8 @@ message ArchiveProductsTagInsert {
 }
 
 message ArchiveProductsManualInsert {
-  repeated int32 product_ids = 1;
+  repeated int32 colorway_ids = 1; // R8: renamed from product_ids (admin write)
+  reserved "product_ids";
   repeated common.ArchiveItemTranslation translations = 2; // optional caption
 }
 
