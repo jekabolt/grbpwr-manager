@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
 )
 
 // This file extends migrationlint's static, database-free guards (see doc.go) to catch enum-value
@@ -183,6 +184,15 @@ func TestMaterialClassDBCheckNoDrift(t *testing.T) {
 	content := readMigrationFile(t, "0157_material_cti.sql")
 	dbValues := extractDBEnumValues(t, content, "material_class REGEXP", 120)
 	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
+}
+
+// TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
+// matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
+// guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).
+func TestFabricDirectionFixtureVsDBCheck(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "fabric_direction REGEXP", 120)
+	assertSameSet(t, "fabric_direction", dbValues, materialattr.AllowedEnumValues("fabric", "fabric_direction"))
 }
 
 // TestEnumDriftExtractorsDetectTamperedInput guards the extractor helpers themselves (mirrors

@@ -60,6 +60,32 @@ func TestSeasonEnumNoDrift(t *testing.T) {
 	}
 }
 
+// TestMaterialClassEnumNoDrift is the same guard for the S15 MaterialClass enum: every non-UNKNOWN
+// proto value maps (via materialClassPbToEntity) to a valid entity class and the sets match in size.
+func TestMaterialClassEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.MaterialClass_name {
+		if pb_common.MaterialClass(v) == pb_common.MaterialClass_MATERIAL_CLASS_UNKNOWN {
+			continue
+		}
+		protoValues++
+		c, ok := materialClassPbToEntity[pb_common.MaterialClass(v)]
+		if !ok {
+			t.Errorf("proto MaterialClass %s has no entity mapping", name)
+			continue
+		}
+		if !entity.ValidMaterialClasses[c] {
+			t.Errorf("proto MaterialClass %s maps to invalid entity class %q", name, c)
+		}
+	}
+	if protoValues != len(materialClassPbToEntity) {
+		t.Errorf("proto material class values (%d) != entity mapping size (%d)", protoValues, len(materialClassPbToEntity))
+	}
+	if protoValues != len(entity.ValidMaterialClasses) {
+		t.Errorf("proto material class values (%d) != entity.ValidMaterialClasses (%d)", protoValues, len(entity.ValidMaterialClasses))
+	}
+}
+
 // TestTechCardPurposeEnumNoDrift is the same guard for the R6 TechCardPurpose enum: every non-UNKNOWN
 // proto value maps (via techCardPurposeFromPb) to a valid entity purpose and the sets match in size.
 // Closes the entity<->proto leg the T-C purpose drift work left for T-B (handoff item 3).

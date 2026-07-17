@@ -17,6 +17,9 @@ import (
 func (s *Server) CreateMaterial(ctx context.Context, req *pb_admin.CreateMaterialRequest) (*pb_admin.CreateMaterialResponse, error) {
 	ins, err := dto.ConvertPbMaterialToEntityInsert(req.GetMaterial())
 	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	actor := authsrv.GetAdminUsername(ctx)
@@ -40,6 +43,9 @@ func (s *Server) UpdateMaterial(ctx context.Context, req *pb_admin.UpdateMateria
 	}
 	ins, err := dto.ConvertPbMaterialToEntityInsert(m)
 	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	ins.UpdatedBy = authsrv.GetAdminUsername(ctx)

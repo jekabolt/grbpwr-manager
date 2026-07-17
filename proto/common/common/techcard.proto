@@ -242,6 +242,51 @@ message TechCardBomItem {
 
 // Material is a catalog material — shared nomenclature a tech-card BOM line can optionally link
 // to. Descriptive fields only; price lives in the append-only MaterialPrice history.
+// MaterialClass is the class-table-inheritance discriminant (S15): it selects which typed
+// attribute set a material carries. Mirrors entity.MaterialClass and the DB CHECK chk_material_class.
+enum MaterialClass {
+  MATERIAL_CLASS_UNKNOWN = 0; // defaults to OTHER on write
+  MATERIAL_CLASS_FABRIC = 1;
+  MATERIAL_CLASS_HARDWARE = 2;
+  MATERIAL_CLASS_THREAD = 3;
+  MATERIAL_CLASS_PACKAGING = 4;
+  MATERIAL_CLASS_OTHER = 5;
+}
+
+// MaterialFabricAttrs are the typed attributes of a fabric-class material (material_fabric_attr).
+message MaterialFabricAttrs {
+  google.type.Decimal width_cm = 1;
+  google.type.Decimal weight_gsm = 2;
+  string fabric_direction = 3; // lengthwise|crosswise|any (fixture-validated)
+  google.type.Decimal shrinkage_pct = 4;
+  google.type.Decimal roll_length_m = 5;
+}
+
+// MaterialHardwareAttrs are the typed attributes of a hardware-class material (material_hardware_attr).
+message MaterialHardwareAttrs {
+  google.type.Decimal diameter_mm = 1;
+  string dimensions = 2;
+  string finish = 3;
+  string base_material = 4;
+  google.type.Decimal weight_g = 5;
+}
+
+// MaterialThreadAttrs are the typed attributes of a thread-class material (material_thread_attr).
+// Fibre composition is not here — it lives in the structural material_composition (S17).
+message MaterialThreadAttrs {
+  string ticket_tex = 1;
+  google.type.Decimal length_per_cone_m = 2;
+  string needle_reco = 3;
+}
+
+// MaterialPackagingAttrs are the typed attributes of a packaging-class material (material_packaging_attr).
+message MaterialPackagingAttrs {
+  string substrate = 1;
+  string dimensions = 2;
+  google.type.Decimal gsm = 3;
+  string print_method = 4;
+}
+
 message Material {
   int64 id = 1;
   string name = 2; // required
@@ -266,6 +311,17 @@ message Material {
   // lock_version is the optimistic-lock counter (S25, read-only). Echo it back in
   // UpdateMaterialRequest.expected_lock_version; a stale value is rejected (Aborted).
   int32 lock_version = 18;
+  // CTI typing (S15): material_class selects which typed attribute set applies. Exactly one of the
+  // `attributes` oneof is populated for the four typed classes; other_attrs (a JSON object) is the
+  // escape-hatch used only when material_class = MATERIAL_CLASS_OTHER.
+  MaterialClass material_class = 19;
+  oneof attributes {
+    MaterialFabricAttrs fabric_attrs = 20;
+    MaterialHardwareAttrs hardware_attrs = 21;
+    MaterialThreadAttrs thread_attrs = 22;
+    MaterialPackagingAttrs packaging_attrs = 23;
+  }
+  string other_attrs = 24; // JSON object; set only when material_class = MATERIAL_CLASS_OTHER
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

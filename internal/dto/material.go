@@ -1,14 +1,36 @@
 package dto
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// materialClassPbToEntity maps the proto MaterialClass enum to the entity class string. It is the
+// entity<->proto leg of the single-source guard (the entity<->DB leg is migrationlint); a missing
+// mapping surfaces in TestMaterialClassEnumNoDrift.
+var materialClassPbToEntity = map[pb_common.MaterialClass]entity.MaterialClass{
+	pb_common.MaterialClass_MATERIAL_CLASS_FABRIC:    entity.MaterialClassFabric,
+	pb_common.MaterialClass_MATERIAL_CLASS_HARDWARE:  entity.MaterialClassHardware,
+	pb_common.MaterialClass_MATERIAL_CLASS_THREAD:    entity.MaterialClassThread,
+	pb_common.MaterialClass_MATERIAL_CLASS_PACKAGING: entity.MaterialClassPackaging,
+	pb_common.MaterialClass_MATERIAL_CLASS_OTHER:     entity.MaterialClassOther,
+}
+
+func pbMaterialClass(c entity.MaterialClass) pb_common.MaterialClass {
+	for k, v := range materialClassPbToEntity {
+		if v == c {
+			return k
+		}
+	}
+	return pb_common.MaterialClass_MATERIAL_CLASS_UNKNOWN
+}
 
 // ConvertPbMaterialToEntityInsert validates and converts a common.Material into the editable
 // MaterialInsert (server-managed fields — id, archived, latest_price — are ignored).
@@ -62,7 +84,7 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	if minStock.Valid && minStock.Decimal.IsNegative() {
 		return nil, fmt.Errorf("material min_stock must be non-negative")
 	}
-	return &entity.MaterialInsert{
+	ins := &entity.MaterialInsert{
 		Name:            name,
 		Section:         string(section),
 		Supplier:        nullStringFromPb(pb.Supplier),
@@ -77,6 +99,125 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		Pantone:         nullStringFromPb(pb.Pantone),
 		MinStock:        minStock,
 		Notes:           nullStringFromPb(pb.Notes),
+	}
+	if err := applyPbMaterialAttrs(pb, ins); err != nil {
+		return nil, err
+	}
+	// Fixture enum-validation (S15): reject a bad typed-attribute enum value at the app layer with a
+	// field-tagged error, before the DB CHECK would.
+	if err := materialattr.Validate(ins); err != nil {
+		return nil, err
+	}
+	return ins, nil
+}
+
+// applyPbMaterialAttrs maps the proto CTI class + typed attribute oneof (or the other_attrs JSON
+// escape-hatch) onto the entity insert. An UNKNOWN class leaves MaterialClass empty (the store
+// normalises it to 'other').
+func applyPbMaterialAttrs(pb *pb_common.Material, ins *entity.MaterialInsert) error {
+	if mc, ok := materialClassPbToEntity[pb.MaterialClass]; ok {
+		ins.MaterialClass = string(mc)
+	}
+	switch pb.MaterialClass {
+	case pb_common.MaterialClass_MATERIAL_CLASS_FABRIC:
+		if a := pb.GetFabricAttrs(); a != nil {
+			fa, err := pbFabricAttrs(a)
+			if err != nil {
+				return err
+			}
+			ins.FabricAttr = fa
+		}
+	case pb_common.MaterialClass_MATERIAL_CLASS_HARDWARE:
+		if a := pb.GetHardwareAttrs(); a != nil {
+			ha, err := pbHardwareAttrs(a)
+			if err != nil {
+				return err
+			}
+			ins.HardwareAttr = ha
+		}
+	case pb_common.MaterialClass_MATERIAL_CLASS_THREAD:
+		if a := pb.GetThreadAttrs(); a != nil {
+			ta, err := pbThreadAttrs(a)
+			if err != nil {
+				return err
+			}
+			ins.ThreadAttr = ta
+		}
+	case pb_common.MaterialClass_MATERIAL_CLASS_PACKAGING:
+		if a := pb.GetPackagingAttrs(); a != nil {
+			pa, err := pbPackagingAttrs(a)
+			if err != nil {
+				return err
+			}
+			ins.PackagingAttr = pa
+		}
+	case pb_common.MaterialClass_MATERIAL_CLASS_OTHER:
+		if s := strings.TrimSpace(pb.GetOtherAttrs()); s != "" {
+			if !json.Valid([]byte(s)) {
+				return fmt.Errorf("material other_attrs must be a valid JSON object")
+			}
+			ins.OtherAttrs = []byte(s)
+		}
+	}
+	return nil
+}
+
+func pbFabricAttrs(a *pb_common.MaterialFabricAttrs) (*entity.MaterialFabricAttr, error) {
+	width, err := nullDecimalFromPb(a.WidthCm)
+	if err != nil {
+		return nil, fmt.Errorf("fabric_attrs.width_cm: %w", err)
+	}
+	gsm, err := nullDecimalFromPb(a.WeightGsm)
+	if err != nil {
+		return nil, fmt.Errorf("fabric_attrs.weight_gsm: %w", err)
+	}
+	shrink, err := nullDecimalFromPb(a.ShrinkagePct)
+	if err != nil {
+		return nil, fmt.Errorf("fabric_attrs.shrinkage_pct: %w", err)
+	}
+	roll, err := nullDecimalFromPb(a.RollLengthM)
+	if err != nil {
+		return nil, fmt.Errorf("fabric_attrs.roll_length_m: %w", err)
+	}
+	return &entity.MaterialFabricAttr{
+		WidthCm: width, WeightGsm: gsm, FabricDirection: nullStringFromPb(a.FabricDirection),
+		ShrinkagePct: shrink, RollLengthM: roll,
+	}, nil
+}
+
+func pbHardwareAttrs(a *pb_common.MaterialHardwareAttrs) (*entity.MaterialHardwareAttr, error) {
+	dia, err := nullDecimalFromPb(a.DiameterMm)
+	if err != nil {
+		return nil, fmt.Errorf("hardware_attrs.diameter_mm: %w", err)
+	}
+	wg, err := nullDecimalFromPb(a.WeightG)
+	if err != nil {
+		return nil, fmt.Errorf("hardware_attrs.weight_g: %w", err)
+	}
+	return &entity.MaterialHardwareAttr{
+		DiameterMm: dia, Dimensions: nullStringFromPb(a.Dimensions), Finish: nullStringFromPb(a.Finish),
+		BaseMaterial: nullStringFromPb(a.BaseMaterial), WeightG: wg,
+	}, nil
+}
+
+func pbThreadAttrs(a *pb_common.MaterialThreadAttrs) (*entity.MaterialThreadAttr, error) {
+	length, err := nullDecimalFromPb(a.LengthPerConeM)
+	if err != nil {
+		return nil, fmt.Errorf("thread_attrs.length_per_cone_m: %w", err)
+	}
+	return &entity.MaterialThreadAttr{
+		TicketTex: nullStringFromPb(a.TicketTex), LengthPerConeM: length, NeedleReco: nullStringFromPb(a.NeedleReco),
+	}, nil
+}
+
+func pbPackagingAttrs(a *pb_common.MaterialPackagingAttrs) (*entity.MaterialPackagingAttr, error) {
+	gsm, err := nullDecimalFromPb(a.Gsm)
+	if err != nil {
+		return nil, fmt.Errorf("packaging_attrs.gsm: %w", err)
+	}
+	return &entity.MaterialPackagingAttr{
+		Substrate: nullStringFromPb(a.Substrate), Dimensions: nullStringFromPb(a.Dimensions),
+		Gsm: gsm, PrintMethod: nullStringFromPb(a.PrintMethod),
 	}, nil
 }
 
@@ -103,6 +244,41 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 	}
 	if m.LatestPrice != nil {
 		out.LatestPrice = ConvertEntityMaterialPriceToPb(*m.LatestPrice)
+	}
+	out.MaterialClass = pbMaterialClass(entity.MaterialClass(m.MaterialClass))
+	switch entity.MaterialClass(m.MaterialClass) {
+	case entity.MaterialClassFabric:
+		if a := m.FabricAttr; a != nil {
+			out.Attributes = &pb_common.Material_FabricAttrs{FabricAttrs: &pb_common.MaterialFabricAttrs{
+				WidthCm: pbDecimalFromNull(a.WidthCm), WeightGsm: pbDecimalFromNull(a.WeightGsm),
+				FabricDirection: pbStringFromNull(a.FabricDirection),
+				ShrinkagePct:    pbDecimalFromNull(a.ShrinkagePct), RollLengthM: pbDecimalFromNull(a.RollLengthM),
+			}}
+		}
+	case entity.MaterialClassHardware:
+		if a := m.HardwareAttr; a != nil {
+			out.Attributes = &pb_common.Material_HardwareAttrs{HardwareAttrs: &pb_common.MaterialHardwareAttrs{
+				DiameterMm: pbDecimalFromNull(a.DiameterMm), Dimensions: pbStringFromNull(a.Dimensions),
+				Finish: pbStringFromNull(a.Finish), BaseMaterial: pbStringFromNull(a.BaseMaterial),
+				WeightG: pbDecimalFromNull(a.WeightG),
+			}}
+		}
+	case entity.MaterialClassThread:
+		if a := m.ThreadAttr; a != nil {
+			out.Attributes = &pb_common.Material_ThreadAttrs{ThreadAttrs: &pb_common.MaterialThreadAttrs{
+				TicketTex: pbStringFromNull(a.TicketTex), LengthPerConeM: pbDecimalFromNull(a.LengthPerConeM),
+				NeedleReco: pbStringFromNull(a.NeedleReco),
+			}}
+		}
+	case entity.MaterialClassPackaging:
+		if a := m.PackagingAttr; a != nil {
+			out.Attributes = &pb_common.Material_PackagingAttrs{PackagingAttrs: &pb_common.MaterialPackagingAttrs{
+				Substrate: pbStringFromNull(a.Substrate), Dimensions: pbStringFromNull(a.Dimensions),
+				Gsm: pbDecimalFromNull(a.Gsm), PrintMethod: pbStringFromNull(a.PrintMethod),
+			}}
+		}
+	case entity.MaterialClassOther:
+		out.OtherAttrs = string(m.OtherAttrs)
 	}
 	return out
 }
