@@ -9,7 +9,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -31,10 +30,10 @@ func (s *Server) GetArchivesPaged(ctx context.Context, req *pb_frontend.GetArchi
 		return nil, status.Errorf(codes.Internal, "failed to list archives")
 	}
 
-	pbAfs := make([]*pb_common.ArchiveList, 0, len(afs))
+	pbAfs := make([]*pb_frontend.StorefrontArchiveList, 0, len(afs))
 
-	for _, af := range afs {
-		pbAfs = append(pbAfs, dto.ConvertEntityToCommonArchiveList(&af))
+	for i := range afs {
+		pbAfs = append(pbAfs, dto.StorefrontArchiveListFromEntity(&afs[i]))
 	}
 
 	return &pb_frontend.GetArchivesPagedResponse{
@@ -80,13 +79,8 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 		return nil, status.Errorf(codes.Internal, "failed to get archive")
 	}
 
-	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert archive to pb", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "failed to convert archive")
-	}
-
+	// R3: storefront archive projection (StorefrontColorway product blocks, no ArchiveList.id).
 	return &pb_frontend.GetArchiveResponse{
-		Archive: pbAf,
+		Archive: dto.StorefrontArchiveFullFromEntity(af),
 	}, nil
 }

@@ -9,18 +9,17 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func (s *Server) GetColorway(ctx context.Context, req *pb_frontend.GetColorwayRequest) (*pb_frontend.GetColorwayResponse, error) {
-	if req.Sku == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "sku is required")
+	if req.BaseSku == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "base_sku is required")
 	}
 
-	pf, err := s.repo.Products().GetProductBySKU(ctx, req.Sku)
+	pf, err := s.repo.Products().GetProductBySKU(ctx, req.BaseSku)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
@@ -31,16 +30,9 @@ func (s *Server) GetColorway(ctx context.Context, req *pb_frontend.GetColorwayRe
 		return nil, status.Errorf(codes.Internal, "failed to get product")
 	}
 
-	pbPrd, err := dto.ConvertToPbProductFull(pf)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
-	}
-
+	// R3: the storefront gets a projection with no catalogue PKs (base_sku/variant_sku identity only).
 	return &pb_frontend.GetColorwayResponse{
-		Product: pbPrd,
+		Colorway: dto.StorefrontColorwayFromFull(pf),
 	}, nil
 }
 
@@ -114,20 +106,13 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColo
 		return nil, status.Errorf(codes.Internal, "can't get products paged")
 	}
 
-	prdsPb := make([]*pb_common.Colorway, 0, len(prds))
-	for _, prd := range prds {
-		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't convert dto product to proto product")
-		}
-		prdsPb = append(prdsPb, pbPrd)
+	prdsPb := make([]*pb_frontend.StorefrontColorway, 0, len(prds))
+	for i := range prds {
+		prdsPb = append(prdsPb, dto.StorefrontColorwayFromColorway(&prds[i]))
 	}
 
 	return &pb_frontend.GetColorwaysPagedResponse{
-		Products: prdsPb,
-		Total:    int32(count),
+		Colorways: prdsPb,
+		Total:     int32(count),
 	}, nil
 }

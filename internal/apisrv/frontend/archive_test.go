@@ -27,7 +27,7 @@ func TestGetArchiveByPublicCode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.Archive)
-	assert.Equal(t, int32(7), resp.Archive.ArchiveList.Id)
+	// R3: the storefront archive projection carries only the public code (no ArchiveList.id).
 	assert.Equal(t, "AR000001", resp.Archive.ArchiveList.Code)
 }
 
@@ -46,7 +46,7 @@ func TestGetArchiveByLegacyID(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp.Archive)
-	assert.Equal(t, int32(7), resp.Archive.ArchiveList.Id)
+	assert.Equal(t, "AR000001", resp.Archive.ArchiveList.Code)
 }
 
 func TestGetArchiveRejectsMixedLookupVersions(t *testing.T) {
