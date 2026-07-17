@@ -122,7 +122,10 @@ func seedSpineStyle(ctx context.Context, t *testing.T, tag string) int {
 	id64, err := res.LastInsertId()
 	require.NoError(t, err)
 	id := int(id64)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", id) })
+	// Fresh context: the caller's ctx is normally cancelled by its own `defer cancel()` before
+	// t.Cleanup callbacks run (defers run before Cleanups), which would make this DELETE a no-op
+	// and leak the spine style into later tests.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
 	return id
 }
 

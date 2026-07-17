@@ -41,7 +41,10 @@ func TestAnalyticsV2Task02NewVsReturning(t *testing.T) {
 	require.NoError(t, err)
 	addrID, err := res.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", addrID) })
+	// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+	// Cleanups), which would make this DELETE a no-op and leak the row into later tests sharing this
+	// date window.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", addrID) })
 
 	preWindow := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	inWindow := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
@@ -59,7 +62,7 @@ func TestAnalyticsV2Task02NewVsReturning(t *testing.T) {
 			(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 			VALUES (?, 'a', 'b', ?, '1234567', ?, ?)`, oid, email, addrID, addrID)
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 	}
 
 	// alice's FIRST order predates the window → she is a returning customer in-window.

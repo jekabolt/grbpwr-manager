@@ -43,7 +43,9 @@ func TestSettledBaseLoyaltyReconcile(t *testing.T) {
 			(uuid, order_status_id, currency, total_price, total_price_eur, placed)
 			VALUES (?, ?, 'EUR', 100, ?, ?)`, uuid, statusID, eur, placed)
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid = ?", uuid) })
+		// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run
+		// before Cleanups), which would make this DELETE a no-op and leak the row into later tests.
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE uuid = ?", uuid) })
 		return uuid
 	}
 

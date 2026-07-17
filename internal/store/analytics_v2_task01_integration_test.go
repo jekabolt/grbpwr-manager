@@ -48,7 +48,10 @@ func TestAnalyticsV2Task01KPICoreGaps(t *testing.T) {
 	require.NoError(t, err)
 	addrID, err := res.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", addrID) })
+	// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+	// Cleanups), which would make this DELETE a no-op and leak the row into later tests sharing this
+	// date window.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", addrID) })
 
 	day1 := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	day2 := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
@@ -66,7 +69,7 @@ func TestAnalyticsV2Task01KPICoreGaps(t *testing.T) {
 			(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 			VALUES (?, 'a', 'b', ?, '1234567', ?, ?)`, oid, email, addrID, addrID)
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 	}
 
 	// Day 1: alice 100 + bob 50 → day revenue 150, 2 orders.
