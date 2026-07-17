@@ -486,46 +486,46 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		StyleNumber:       nullStringFromPb(styleNumber),
 		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
 		Purpose:           purpose,
-		OutputMaterialId: outputMaterialId,
-		Name:             pb.Name,
-		Brand:            nullStringFromPb(pb.Brand),
-		SeasonCode:       sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
-		SeasonYear:       sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
-		Collection:       nullStringFromPb(pb.Collection),
-		CategoryId:       nullInt32FromPb(pb.CategoryId),
-		TargetGender:     gender,
-		Stage:            stage,
-		Status:           nullStringFromPb(pb.Status),
-		ApprovalState:    approvalState,
-		ApprovedBy:       nullStringFromPb(pb.ApprovedBy),
-		ApprovedAt:       nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:       nullTimeFromPbTimestamp(pb.ReleasedAt),
-		Version:          nullStringFromPb(pb.Version),
-		RevisionDate:     nullDateFromPbTimestamp(pb.RevisionDate),
-		BaseModelId:      nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId: nullInt32FromPb(pb.BaseSampleSizeId),
-		Designer:         nullStringFromPb(pb.Designer),
-		Constructor:      nullStringFromPb(pb.Constructor),
-		Technologist:     nullStringFromPb(pb.Technologist),
-		MeasurementUnit:  unit,
-		Concept:          nullStringFromPb(pb.Concept),
-		Notes:            nullStringFromPb(pb.Notes),
-		SizeIds:          sizeIds,
-		Media:            media,
-		Callouts:         callouts,
-		Revisions:        revisions,
-		Details:          details,
-		BomItems:         bomItems,
-		Construction:     construction,
-		Operations:       operations,
-		Labels:           labels,
-		Packaging:        packaging,
-		Costing:          costing,
-		Issues:           issues,
-		SizeQuantities:   sizeQuantities,
-		Signoffs:         signoffs,
-		Patterns:         patterns,
-		Pieces:           pieces,
+		OutputMaterialId:  outputMaterialId,
+		Name:              pb.Name,
+		Brand:             nullStringFromPb(pb.Brand),
+		SeasonCode:        sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
+		SeasonYear:        sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
+		Collection:        nullStringFromPb(pb.Collection),
+		CategoryId:        nullInt32FromPb(pb.CategoryId),
+		TargetGender:      gender,
+		Stage:             stage,
+		Status:            nullStringFromPb(pb.Status),
+		ApprovalState:     approvalState,
+		ApprovedBy:        nullStringFromPb(pb.ApprovedBy),
+		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
+		Version:           nullStringFromPb(pb.Version),
+		RevisionDate:      nullDateFromPbTimestamp(pb.RevisionDate),
+		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
+		Designer:          nullStringFromPb(pb.Designer),
+		Constructor:       nullStringFromPb(pb.Constructor),
+		Technologist:      nullStringFromPb(pb.Technologist),
+		MeasurementUnit:   unit,
+		Concept:           nullStringFromPb(pb.Concept),
+		Notes:             nullStringFromPb(pb.Notes),
+		SizeIds:           sizeIds,
+		Media:             media,
+		Callouts:          callouts,
+		Revisions:         revisions,
+		Details:           details,
+		BomItems:          bomItems,
+		Construction:      construction,
+		Operations:        operations,
+		Labels:            labels,
+		Packaging:         packaging,
+		Costing:           costing,
+		Issues:            issues,
+		SizeQuantities:    sizeQuantities,
+		Signoffs:          signoffs,
+		Patterns:          patterns,
+		Pieces:            pieces,
 	}, nil
 }
 
@@ -658,56 +658,57 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	sizeIds := intsToInt32(tc.SizeIds)
 
 	return &pb_common.TechCard{
-		Id:          int32(tc.Id),
-		LockVersion: int32(tc.LockVersion),
-		CreatedAt:   timestamppb.New(tc.CreatedAt),
-		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
-		CreatedBy:   tc.CreatedBy,
-		UpdatedBy:   tc.UpdatedBy,
+		Id:              int32(tc.Id),
+		LockVersion:     int32(tc.LockVersion),
+		CreatedAt:       timestamppb.New(tc.CreatedAt),
+		UpdatedAt:       timestamppb.New(tc.UpdatedAt),
+		CreatedBy:       tc.CreatedBy,
+		UpdatedBy:       tc.UpdatedBy,
+		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
 			Purpose:           techCardPurposeToPb(tc.Purpose),
-			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
-			Name:             tc.Name,
-			Brand:            pbStringFromNull(tc.Brand),
-			SkuSeason:        skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
-			Collection:       pbStringFromNull(tc.Collection),
-			CategoryId:       pbInt32FromNull(tc.CategoryId),
-			TargetGender:     pbGenderFromNull(tc.TargetGender),
-			Stage:            pbTechCardStage(tc.Stage),
-			Status:           pbStringFromNull(tc.Status),
-			ApprovalState:    pbTechCardApprovalState(tc.ApprovalState),
-			ApprovedBy:       pbStringFromNull(tc.ApprovedBy),
-			ApprovedAt:       pbTimestampFromNullTime(tc.ApprovedAt),
-			ReleasedAt:       pbTimestampFromNullTime(tc.ReleasedAt),
-			Version:          pbStringFromNull(tc.Version),
-			RevisionDate:     pbTimestampFromNullTime(tc.RevisionDate),
-			BaseModelId:      pbInt32FromNull(tc.BaseModelId),
-			BaseSampleSizeId: pbInt32FromNull(tc.BaseSampleSizeId),
-			Designer:         pbStringFromNull(tc.Designer),
-			Constructor:      pbStringFromNull(tc.Constructor),
-			Technologist:     pbStringFromNull(tc.Technologist),
-			MeasurementUnit:  pbTechCardMeasurementUnit(tc.MeasurementUnit),
-			Concept:          pbStringFromNull(tc.Concept),
-			Notes:            pbStringFromNull(tc.Notes),
-			SizeIds:          sizeIds,
-			MoodboardMedia:   moodboardMedia,
-			TechnicalMedia:   technicalMedia,
-			Callouts:         callouts,
-			Revisions:        revisions,
-			Details:          techCardDetailsToPb(tc.Details),
-			BomItems:         techCardBomItemsToPb(tc.BomItems),
-			Construction:     techCardConstructionToPb(tc.Construction),
-			Operations:       techCardOperationsToPb(tc.Operations),
-			Labels:           techCardLabelsToPb(tc.Labels),
-			Packaging:        techCardPackagingToPb(tc.Packaging),
-			Costing:          techCardCostingToPb(tc, fx),
-			Issues:           techCardIssuesToPb(tc.Issues),
-			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
-			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
-			Patterns:         techCardPatternsToPb(tc.Patterns),
-			Pieces:           techCardPiecesToPb(tc.Pieces),
+			OutputMaterialId:  int32(tc.OutputMaterialId.Int64),
+			Name:              tc.Name,
+			Brand:             pbStringFromNull(tc.Brand),
+			SkuSeason:         skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
+			Collection:        pbStringFromNull(tc.Collection),
+			CategoryId:        pbInt32FromNull(tc.CategoryId),
+			TargetGender:      pbGenderFromNull(tc.TargetGender),
+			Stage:             pbTechCardStage(tc.Stage),
+			Status:            pbStringFromNull(tc.Status),
+			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
+			ApprovedBy:        pbStringFromNull(tc.ApprovedBy),
+			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
+			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
+			Version:           pbStringFromNull(tc.Version),
+			RevisionDate:      pbTimestampFromNullTime(tc.RevisionDate),
+			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
+			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
+			Designer:          pbStringFromNull(tc.Designer),
+			Constructor:       pbStringFromNull(tc.Constructor),
+			Technologist:      pbStringFromNull(tc.Technologist),
+			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
+			Concept:           pbStringFromNull(tc.Concept),
+			Notes:             pbStringFromNull(tc.Notes),
+			SizeIds:           sizeIds,
+			MoodboardMedia:    moodboardMedia,
+			TechnicalMedia:    technicalMedia,
+			Callouts:          callouts,
+			Revisions:         revisions,
+			Details:           techCardDetailsToPb(tc.Details),
+			BomItems:          techCardBomItemsToPb(tc.BomItems),
+			Construction:      techCardConstructionToPb(tc.Construction),
+			Operations:        techCardOperationsToPb(tc.Operations),
+			Labels:            techCardLabelsToPb(tc.Labels),
+			Packaging:         techCardPackagingToPb(tc.Packaging),
+			Costing:           techCardCostingToPb(tc, fx),
+			Issues:            techCardIssuesToPb(tc.Issues),
+			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
+			Patterns:          techCardPatternsToPb(tc.Patterns),
+			Pieces:            techCardPiecesToPb(tc.Pieces),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -1563,6 +1564,53 @@ func styleNumberSourceToPb(s entity.StyleNumberSource) pb_common.StyleNumberSour
 		return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_MANUAL
 	}
 	return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
+}
+
+var techCardRoleToPbMap = map[entity.TechCardRole]pb_common.TechCardRole{
+	entity.RoleDesigner:     pb_common.TechCardRole_TECH_CARD_ROLE_DESIGNER,
+	entity.RoleConstructor:  pb_common.TechCardRole_TECH_CARD_ROLE_CONSTRUCTOR,
+	entity.RoleTechnologist: pb_common.TechCardRole_TECH_CARD_ROLE_TECHNOLOGIST,
+	entity.RolePatternMaker: pb_common.TechCardRole_TECH_CARD_ROLE_PATTERN_MAKER,
+	entity.RoleGrader:       pb_common.TechCardRole_TECH_CARD_ROLE_GRADER,
+	entity.RoleApprover:     pb_common.TechCardRole_TECH_CARD_ROLE_APPROVER,
+	entity.RoleOther:        pb_common.TechCardRole_TECH_CARD_ROLE_OTHER,
+}
+
+// TechCardRoleToPb maps a stored role to its enum (UNKNOWN when unset/unrecognised).
+func TechCardRoleToPb(r entity.TechCardRole) pb_common.TechCardRole {
+	return techCardRoleToPbMap[r]
+}
+
+// TechCardRoleFromPb maps the role enum to the stored string ("" for UNKNOWN, which the caller
+// rejects via entity.ValidTechCardRoles).
+func TechCardRoleFromPb(r pb_common.TechCardRole) entity.TechCardRole {
+	for ent, pb := range techCardRoleToPbMap {
+		if pb == r {
+			return ent
+		}
+	}
+	return ""
+}
+
+// TechCardRoleAssignmentToPb maps one role assignment to the wire (resolved username included).
+func TechCardRoleAssignmentToPb(a entity.TechCardRoleAssignment) *pb_common.TechCardRoleAssignment {
+	return &pb_common.TechCardRoleAssignment{
+		Id:            int32(a.Id),
+		TechCardId:    int32(a.TechCardId),
+		Role:          TechCardRoleToPb(a.Role),
+		AdminId:       int32(a.AdminId),
+		AdminUsername: a.AdminUsername,
+		AssignedBy:    a.AssignedBy,
+		AssignedAt:    timestamppb.New(a.AssignedAt),
+	}
+}
+
+func techCardRoleAssignmentsToPb(as []entity.TechCardRoleAssignment) []*pb_common.TechCardRoleAssignment {
+	out := make([]*pb_common.TechCardRoleAssignment, 0, len(as))
+	for _, a := range as {
+		out = append(out, TechCardRoleAssignmentToPb(a))
+	}
+	return out
 }
 
 // techCardPurposeFromPb maps the R6 numeric enum to the stored purpose string ("" for UNKNOWN, which

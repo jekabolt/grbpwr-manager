@@ -136,29 +136,29 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
-	"GetColorwaysPaged":         rd(SectionProducts),
-	"GetColorwayByID":           rd(SectionProducts),
-	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
-	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
-	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
-	"UpdateVariantStock":        wr(SectionProducts),
-	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
-	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
-	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
+	"CreateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateStyle":              wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"GetColorwaysPaged":        rd(SectionProducts),
+	"GetColorwayByID":          rd(SectionProducts),
+	"ArchiveColorwayByID":      wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"PublishColorway":          wr(SectionProducts), // R6 lifecycle transition
+	"TransitionColorwayStatus": wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
+	"UpdateVariantStock":       wr(SectionProducts),
+	"CreateVariant":            wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":            wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":           wr(SectionProducts), // R2 archive-not-delete
 	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
-	"GetStyleSizeChart":    rd(SectionProducts),
-	"UpdateStyleSizeChart": wr(SectionProducts),
-	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
-	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
+	"GetStyleSizeChart":               rd(SectionProducts),
+	"UpdateStyleSizeChart":            wr(SectionProducts),
+	"RelinkDraftColorway":             wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":             wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
-	"GetColorwayCustoms":        rd(SectionProducts),
-	"SetColorwayCustoms":        wr(SectionProducts),
-	"ListStockChangeHistory":    rd(SectionProducts),
-	"ListStockChanges":          rd(SectionProducts),
+	"GetColorwayCustoms":              rd(SectionProducts),
+	"SetColorwayCustoms":              wr(SectionProducts),
+	"ListStockChangeHistory":          rd(SectionProducts),
+	"ListStockChanges":                rd(SectionProducts),
 	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Q5: curating
 	// a dictionary is a right separate from editing the catalog that consumes it, so their dedicated
 	// management RPCs live in SectionDictionaries (reads + writes), not products. Catalog pickers read
@@ -254,27 +254,32 @@ var methodRequirements = map[string]Requirement{
 	"GetSample":    rd(SectionFittings),
 	"ListSamples":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard":           wr(SectionTechCards),
-	"SuggestStyleNumber":       rd(SectionTechCards), // Q1: propose the next style number for a season
-	"GetTechCard":              rd(SectionTechCards),
-	"UpdateTechCard":           wr(SectionTechCards),
-	"DeleteTechCard":           wr(SectionTechCards),
-	"ListTechCards":            rd(SectionTechCards),
-	"GetStylePipeline":         rd(SectionTechCards),
-	"GetCostingFxRates":        rd(SectionTechCards),
-	"UpsertCostingFxRates":     wr(SectionTechCards),
-	"CreateMaterial":           wr(SectionTechCards),
-	"UpdateMaterial":           wr(SectionTechCards),
-	"ArchiveMaterial":          wr(SectionTechCards),
-	"GetMaterial":              rd(SectionTechCards),
-	"ListMaterials":            rd(SectionTechCards),
-	"AddMaterialPrice":         wr(SectionTechCards),
-	"ListMaterialPrices":       rd(SectionTechCards),
-	"ListTechCardReleases":     rd(SectionTechCards),
-	"GetTechCardRelease":       rd(SectionTechCards),
-	"AddTechCardDevExpense":    wr(SectionTechCards),
-	"DeleteTechCardDevExpense": wr(SectionTechCards),
-	"ListTechCardDevExpenses":  rd(SectionTechCards),
+	"CreateTechCard":     wr(SectionTechCards),
+	"SuggestStyleNumber": rd(SectionTechCards), // Q1: propose the next style number for a season
+	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
+	"AssignTechCardRole":           wr(SectionTechCards),
+	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
+	"ListTechCardRoleAssignments":  rd(SectionTechCards),
+	"ListAdmins":                   rd(SectionTechCards),
+	"GetTechCard":                  rd(SectionTechCards),
+	"UpdateTechCard":               wr(SectionTechCards),
+	"DeleteTechCard":               wr(SectionTechCards),
+	"ListTechCards":                rd(SectionTechCards),
+	"GetStylePipeline":             rd(SectionTechCards),
+	"GetCostingFxRates":            rd(SectionTechCards),
+	"UpsertCostingFxRates":         wr(SectionTechCards),
+	"CreateMaterial":               wr(SectionTechCards),
+	"UpdateMaterial":               wr(SectionTechCards),
+	"ArchiveMaterial":              wr(SectionTechCards),
+	"GetMaterial":                  rd(SectionTechCards),
+	"ListMaterials":                rd(SectionTechCards),
+	"AddMaterialPrice":             wr(SectionTechCards),
+	"ListMaterialPrices":           rd(SectionTechCards),
+	"ListTechCardReleases":         rd(SectionTechCards),
+	"GetTechCardRelease":           rd(SectionTechCards),
+	"AddTechCardDevExpense":        wr(SectionTechCards),
+	"DeleteTechCardDevExpense":     wr(SectionTechCards),
+	"ListTechCardDevExpenses":      rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
 	"UpdateProductionRun":          wr(SectionProduction),

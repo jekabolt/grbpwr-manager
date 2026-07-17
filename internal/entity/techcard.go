@@ -883,6 +883,44 @@ type TechCardListFilter struct {
 	// produce a SKU, do not clutter the choice (PR5-E).
 }
 
+// TechCardRole is a responsible-account role on a tech card (Q5). Mirrors the common.TechCardRole
+// proto enum; stored in tech_card_role_assignment.role (CHECK). Replaces the free-text
+// designer/constructor/technologist/approved_by strings — approval is now the `approver` role plus a
+// server-stamped journal event, not a free-text name.
+type TechCardRole string
+
+const (
+	RoleDesigner     TechCardRole = "designer"
+	RoleConstructor  TechCardRole = "constructor"
+	RoleTechnologist TechCardRole = "technologist"
+	RolePatternMaker TechCardRole = "pattern_maker"
+	RoleGrader       TechCardRole = "grader"
+	RoleApprover     TechCardRole = "approver"
+	RoleOther        TechCardRole = "other"
+)
+
+// ValidTechCardRoles is the set of accepted role keys (mirrors the DB CHECK).
+var ValidTechCardRoles = map[TechCardRole]bool{
+	RoleDesigner: true, RoleConstructor: true, RoleTechnologist: true,
+	RolePatternMaker: true, RoleGrader: true, RoleApprover: true, RoleOther: true,
+}
+
+// IsValidTechCardRole reports whether r is an accepted role.
+func IsValidTechCardRole(r TechCardRole) bool { return ValidTechCardRoles[r] }
+
+// TechCardRoleAssignment is one "this admin account is <role> of this card" record (Q5), multi per
+// role. AdminUsername is resolved from admins on read (never written). AssignedBy/AssignedAt are the
+// audit stamp of who created the assignment.
+type TechCardRoleAssignment struct {
+	Id            int          `db:"id"`
+	TechCardId    int          `db:"tech_card_id"`
+	Role          TechCardRole `db:"role"`
+	AdminId       int          `db:"admin_id"`
+	AdminUsername string       `db:"admin_username"` // resolved via JOIN admins; read-only
+	AssignedBy    string       `db:"assigned_by"`
+	AssignedAt    time.Time    `db:"assigned_at"`
+}
+
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
 type TechCard struct {
 	Id          int `db:"id"`
@@ -890,6 +928,9 @@ type TechCard struct {
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
+	// (GetTechCardById); empty on list views.
+	RoleAssignments []TechCardRoleAssignment `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an

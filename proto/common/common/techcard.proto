@@ -90,6 +90,33 @@ message TechCardRevision {
   string change_note = 5; // что изменено
 }
 
+// TechCardRole is a responsible-account role on a tech card (PLM-rework Q5). Replaces the free-text
+// designer/constructor/technologist/approved_by strings; approval is the APPROVER role plus a
+// server-stamped journal event, not a free-text name.
+enum TechCardRole {
+  TECH_CARD_ROLE_UNKNOWN = 0;
+  TECH_CARD_ROLE_DESIGNER = 1;
+  TECH_CARD_ROLE_CONSTRUCTOR = 2;
+  TECH_CARD_ROLE_TECHNOLOGIST = 3;
+  TECH_CARD_ROLE_PATTERN_MAKER = 4;
+  TECH_CARD_ROLE_GRADER = 5;
+  TECH_CARD_ROLE_APPROVER = 6;
+  TECH_CARD_ROLE_OTHER = 7;
+}
+
+// TechCardRoleAssignment is one "this admin account is <role> of this card" record (Q5), multi per
+// role. Managed via the AssignTechCardRole / RemoveTechCardRoleAssignment / ListTechCardRoleAssignments
+// RPCs, NOT through the tech-card full-replace. admin_username is resolved on read (never written).
+message TechCardRoleAssignment {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  TechCardRole role = 3;
+  int32 admin_id = 4; // FK admins(id)
+  string admin_username = 5; // resolved on read, read-only
+  string assigned_by = 6; // audit: who created the assignment
+  google.protobuf.Timestamp assigned_at = 7;
+}
+
 // TechCardBomSection groups a BOM line by material family (Sheet «Спецификация»).
 enum TechCardBomSection {
   TECH_CARD_BOM_SECTION_UNKNOWN = 0;
@@ -757,6 +784,9 @@ message TechCard {
   // create/update, never accepted from the write payload.
   string created_by = 10;
   string updated_by = 11;
+  // Responsible-account roles (Q5), read-only here — managed via the role-assignment RPCs, not the
+  // tech-card write. Replaces the removed free-text designer/constructor/technologist strings.
+  repeated TechCardRoleAssignment role_assignments = 12;
   // Resolved sketch media (MediaFull), split to mirror the writable lists.
   repeated TechCardMediaFull resolved_moodboard_media = 7;
   repeated TechCardMediaFull resolved_technical_media = 8;

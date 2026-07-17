@@ -372,6 +372,13 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	if err := s.enrich(ctx, cards); err != nil {
 		return nil, err
 	}
+	// Q5: responsible-account roles are their own child collection (managed via dedicated RPCs), so
+	// load them for the single-card read here rather than through the full-replace enrich.
+	roles, err := s.ListTechCardRoleAssignments(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].RoleAssignments = roles
 	return &cards[0], nil
 }
 

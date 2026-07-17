@@ -979,6 +979,33 @@ service AdminService {
     };
   }
 
+  // AssignTechCardRole assigns an admin account a role on a tech card (Q5), multi per role.
+  rpc AssignTechCardRole(AssignTechCardRoleRequest) returns (AssignTechCardRoleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/role/assign"
+      body: "*"
+    };
+  }
+
+  // RemoveTechCardRoleAssignment removes one role assignment by id.
+  rpc RemoveTechCardRoleAssignment(RemoveTechCardRoleAssignmentRequest) returns (RemoveTechCardRoleAssignmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/role/remove"
+      body: "*"
+    };
+  }
+
+  // ListTechCardRoleAssignments lists a card's role assignments with resolved usernames (Q5).
+  rpc ListTechCardRoleAssignments(ListTechCardRoleAssignmentsRequest) returns (ListTechCardRoleAssignmentsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/roles"};
+  }
+
+  // ListAdmins is the lightweight admin-account picker source for role assignment (id + username
+  // only), gated tech_cards:read so a role-assigner need not hold the broader accounts:read.
+  rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse) {
+    option (google.api.http) = {get: "/api/admin/admins/pick"};
+  }
+
   // GetTechCard returns a tech card by id with its nested sections resolved.
   rpc GetTechCard(GetTechCardRequest) returns (GetTechCardResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{id}"};
@@ -4626,6 +4653,42 @@ message SuggestStyleNumberRequest {
 
 message SuggestStyleNumberResponse {
   string style_number = 1; // proposed {SEASON}{YY}-{SEQ}; advisory, subject to the global UNIQUE at write
+}
+
+message AssignTechCardRoleRequest {
+  int32 tech_card_id = 1;
+  common.TechCardRole role = 2;
+  int32 admin_id = 3; // FK admins(id)
+}
+
+message AssignTechCardRoleResponse {
+  common.TechCardRoleAssignment assignment = 1;
+}
+
+message RemoveTechCardRoleAssignmentRequest {
+  int32 id = 1;
+}
+
+message RemoveTechCardRoleAssignmentResponse {}
+
+message ListTechCardRoleAssignmentsRequest {
+  int32 tech_card_id = 1;
+}
+
+message ListTechCardRoleAssignmentsResponse {
+  repeated common.TechCardRoleAssignment assignments = 1;
+}
+
+// AdminRef is a lightweight admin-account reference for the role-assignment picker.
+message AdminRef {
+  int32 id = 1;
+  string username = 2;
+}
+
+message ListAdminsRequest {}
+
+message ListAdminsResponse {
+  repeated AdminRef admins = 1;
 }
 
 message GetTechCardRequest {

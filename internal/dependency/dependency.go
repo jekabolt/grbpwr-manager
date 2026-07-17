@@ -549,6 +549,10 @@ type (
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
 		// SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}.
 		SuggestStyleNumber(ctx context.Context, seasonCode string, seasonYear int) (string, error)
+		// Role assignments (Q5): responsible admin accounts on a card, multi per role.
+		AssignTechCardRole(ctx context.Context, a entity.TechCardRoleAssignment) (entity.TechCardRoleAssignment, error)
+		RemoveTechCardRoleAssignment(ctx context.Context, id int) error
+		ListTechCardRoleAssignments(ctx context.Context, techCardID int) ([]entity.TechCardRoleAssignment, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
