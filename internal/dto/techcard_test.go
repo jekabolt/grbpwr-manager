@@ -329,8 +329,6 @@ func TestConvertTechCardPieces(t *testing.T) {
 			{Name: "Body", PiecesPerGarment: -2}}),
 		"invalid grainline": baseTechCardWithPieces([]*pb_common.TechCardPiece{
 			{Name: "Body", Grainline: "diagonal"}}),
-		"unknown callout_number": baseTechCardWithPieces([]*pb_common.TechCardPiece{
-			{Name: "Body", CalloutNumber: i32(7)}}),
 		// R1/§14.3: colorway_id is required (> 0). Its membership in the style is validated in the store
 		// (the DTO no longer has a payload colourway list to range-check a positional index against).
 		"colorway_id zero": baseTechCardWithPieces([]*pb_common.TechCardPiece{
@@ -347,6 +345,18 @@ func TestConvertTechCardPieces(t *testing.T) {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 			t.Errorf("%s: expected validation error, got nil", name)
 		}
+	}
+
+	// S8 orphan-control: a callout_number with no matching callout is NO LONGER a parse error — it is
+	// carried through and the store marks the piece detached (a piece may have recipe history and must
+	// survive its source callout's removal). Was a hard reject before WS4.
+	orphan := baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: "Body", CalloutNumber: i32(7)}})
+	got3, err := ConvertPbTechCardInsertToEntity(orphan)
+	if err != nil {
+		t.Fatalf("unknown callout_number must parse (store detaches), got err=%v", err)
+	}
+	if len(got3.Pieces) != 1 || !got3.Pieces[0].CalloutNumber.Valid || got3.Pieces[0].CalloutNumber.Int32 != 7 {
+		t.Errorf("callout_number 7 must be carried through for the store to detach: %+v", got3.Pieces)
 	}
 }
 

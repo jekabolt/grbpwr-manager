@@ -601,8 +601,10 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	// Cut-pieces (WS4 / S8): keyed-upsert by line_key (piece ids stable); re-insert each piece's
-	// per-colourway fabric mapping with the resolved bom_item_id.
-	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes); err != nil {
+	// per-colourway fabric mapping with the resolved bom_item_id. calloutSync (built from the same
+	// payload) derives each piece's name from its technical-sketch callout and marks moodboard/orphan
+	// links detached (S6/S7/S8).
+	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc)); err != nil {
 		return err
 	}
 	// production (Phase 3)

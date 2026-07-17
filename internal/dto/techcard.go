@@ -988,11 +988,11 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		}
 		var calloutNumber sql.NullInt32
 		if p.CalloutNumber != nil {
-			n := *p.CalloutNumber
-			if !calloutNumbers[int(n)] {
-				return nil, fmt.Errorf("piece %q callout_number %d does not match any callout", p.Name, n)
-			}
-			calloutNumber = sql.NullInt32{Int32: n, Valid: true}
+			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
+			// orphan-control): the store marks such a piece detached — it may carry recipe history and
+			// must survive its source callout's removal — rather than failing the whole save. The store
+			// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+			calloutNumber = sql.NullInt32{Int32: *p.CalloutNumber, Valid: true}
 		}
 
 		materials := make([]entity.TechCardPieceMaterial, 0, len(p.Materials))

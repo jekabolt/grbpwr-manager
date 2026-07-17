@@ -47,6 +47,62 @@ type pieceExistingRow struct {
 	LineKey string `db:"line_key"`
 }
 
+// calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
+type calloutRef struct {
+	part    string
+	mediaID int
+	pinned  bool // media_id > 0 (anchored on some sketch)
+}
+
+// calloutSync resolves a piece's callout_number against the card's payload (S6/S7/S8): the canonical
+// part name (the single place a detail name is entered, §2.5) and whether the callout is anchored on a
+// TECHNICAL sketch. A moodboard/unanchored callout carries no piece semantics (S7) — a piece pointing
+// at one is marked detached, not name-synced.
+type calloutSync struct {
+	technicalMedia map[int]bool // raw media_id → is a technical sketch of this card
+	byNumber       map[int]calloutRef
+}
+
+// buildCalloutSync indexes the payload's technical sketch media and its callouts. Both live in the same
+// UpdateTechCard payload as the pieces, so no DB read is needed.
+func buildCalloutSync(tc *entity.TechCardInsert) calloutSync {
+	cs := calloutSync{technicalMedia: make(map[int]bool), byNumber: make(map[int]calloutRef, len(tc.Callouts))}
+	for _, m := range tc.Media {
+		if m.Category == entity.TechCardMediaCategoryTechnical {
+			cs.technicalMedia[m.MediaId] = true
+		}
+	}
+	for i := range tc.Callouts {
+		c := &tc.Callouts[i]
+		mediaID := 0
+		if c.MediaId.Valid {
+			mediaID = int(c.MediaId.Int32)
+		}
+		cs.byNumber[c.Number] = calloutRef{part: strings.TrimSpace(c.Part.String), mediaID: mediaID, pinned: mediaID > 0}
+	}
+	return cs
+}
+
+// apply syncs a piece's derived name from its technical-sketch callout and sets its detached flag
+// (S7/S8): a piece linked to a technical callout takes that callout's part as its canonical name; a
+// piece whose callout was removed or is a moodboard/unanchored callout keeps its own name but is
+// marked detached (it has no live technical-sketch source — orphan-control keeps it, does not drop it).
+func (cs calloutSync) apply(p *entity.TechCardPiece) {
+	if !p.CalloutNumber.Valid {
+		p.Detached = false
+		return
+	}
+	ref, ok := cs.byNumber[int(p.CalloutNumber.Int32)]
+	if ok && ref.pinned && cs.technicalMedia[ref.mediaID] {
+		if ref.part != "" {
+			p.Name = ref.part // S8: the detail name lives once, on callout.part; the piece derives it
+		}
+		p.Detached = false
+		return
+	}
+	p.Detached = true
+}
+
 // upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
 // BOM uses (§2.3): a line_key already in the DB is UPDATEd in place (id stable — which is what lets a
 // colourway recipe usage hold a real piece_id FK), a new line_key is INSERTed, and a line_key that
@@ -54,7 +110,7 @@ type pieceExistingRow struct {
 // colourway recipe usage) surfaces as a field-tagged error, not a raw 500 or a silent dangle — the
 // deferred-from-0159 cross-aggregate guard. piece_material was cleared in Phase A, so each kept/new
 // piece just re-inserts its per-colourway mapping with the BOM ids resolved by bomRes.
-func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver) error {
+func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver, cs calloutSync) error {
 	// PR6 R1/§14.3: a piece material addresses its colourway by explicit colorway_id = product.id.
 	// Validate membership — the colourway must be one of this style's products (product.style_id = card).
 	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
@@ -81,6 +137,9 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 	seen := make(map[string]bool, len(pieces))
 	for i := range pieces {
 		p := &pieces[i]
+		// S8/S7: derive the piece name from its technical-sketch callout (canonical part name) and set
+		// detached when the callout is gone or is a moodboard/unanchored callout (no piece semantics).
+		cs.apply(p)
 		key := strings.TrimSpace(p.LineKey)
 		if key == "" {
 			key = newLineKey() // legacy/keyless payload: server assigns a stable key
