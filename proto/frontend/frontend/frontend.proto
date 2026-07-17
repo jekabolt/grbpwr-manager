@@ -111,17 +111,20 @@ service FrontendService {
     };
   }
 
-  // GetArchivesPaged retrieves paged archives.
-  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
-    option (google.api.http) = {get: "/api/frontend/archive/paged"};
-  }
-
   // GetArchive retrieves an archive by its stable public code (the /timeline URL tail).
   rpc GetArchive(GetArchiveRequest) returns (GetArchiveResponse) {
     option (google.api.http) = {
       get: "/api/frontend/archive/{code}"
       additional_bindings {get: "/api/frontend/archive/{heading}/{tag}/{id}"}
     };
+  }
+
+  // GetArchivesPaged retrieves paged archives. NOTE on ordering: grpc-gateway's mux prepends
+  // handlers, so the LAST-declared route for a method wins. The literal `/archive/paged` GET must be
+  // declared AFTER the `/archive/{code}` GET — otherwise {code} captures "paged" (beta smoke caught
+  // exactly that shadowing).
+  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
+    option (google.api.http) = {get: "/api/frontend/archive/paged"};
   }
 
   // Submit a support ticket
