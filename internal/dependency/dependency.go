@@ -977,6 +977,10 @@ type (
 		UpdateTag(ctx context.Context, id int, name string, expectedVersion int64) (int64, error)
 		ArchiveTag(ctx context.Context, id int, expectedVersion int64) (int64, error)
 
+		ListFibers(ctx context.Context, includeArchived bool) ([]entity.Fiber, error)
+		CreateFiber(ctx context.Context, code, name string, expectedVersion int64) (entity.Fiber, int64, error)
+		ArchiveFiber(ctx context.Context, code string, expectedVersion int64) (int64, error)
+
 		ListCountries(ctx context.Context, activeOnly bool) ([]entity.Country, error)
 		SetCountryActive(ctx context.Context, code string, active bool, expectedVersion int64) (int64, error)
 	}

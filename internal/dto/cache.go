@@ -31,6 +31,7 @@ type Dict struct {
 	ProductTags                 []string
 	Colors                      []entity.Color
 	CategorySizeSystems         []entity.CategorySizeSystem
+	Fibers                      []entity.Fiber
 }
 
 var (
@@ -281,6 +282,14 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			pbCS.TypeId = cs.TypeID.Int32
 		}
 		commonDict.CategorySizeSystems = append(commonDict.CategorySizeSystems, pbCS)
+	}
+
+	for _, f := range dict.Fibers {
+		commonDict.Fibers = append(commonDict.Fibers, &pb_common.Fiber{
+			Code:     f.Code,
+			Name:     f.Name,
+			Archived: f.ArchivedAt.Valid,
+		})
 	}
 
 	return commonDict

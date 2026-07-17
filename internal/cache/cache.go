@@ -113,6 +113,9 @@ var (
 	entityColors = []entity.Color{}
 	colorByCode  = map[string]entity.Color{}
 
+	// Fibre dictionary (S17/P0.4): the controlled vocabulary material composition references by code.
+	entityFibers = []entity.Fiber{}
+
 	entityCollections = []entity.Collection{}
 
 	entityProductTags = []string{}
@@ -208,6 +211,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entityLanguages = dInfo.Languages
 	announce = dInfo.Announce
 	entityCategorySizeSystems = dInfo.CategorySizeSystems
+	entityFibers = dInfo.Fibers
 
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -335,6 +339,7 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entityCollections = dInfo.Collections
 	entityProductTags = dInfo.ProductTags
 	entityCategorySizeSystems = dInfo.CategorySizeSystems
+	entityFibers = dInfo.Fibers
 	categoryById = make(map[int]entity.Category, len(entityCategories))
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -735,6 +740,13 @@ func GetColorByCode(code string) (entity.Color, bool) {
 	defer cacheMu.RUnlock()
 	c, ok := colorByCode[code]
 	return c, ok
+}
+
+// GetFibers returns the controlled fibre vocabulary (S17/P0.4).
+func GetFibers() []entity.Fiber {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityFibers
 }
 
 func GetProductTags() []string {
