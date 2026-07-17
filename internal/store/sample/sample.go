@@ -251,7 +251,7 @@ func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInser
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE sample SET lock_version = lock_version + 1, purpose=:purpose, size_id=:size_id, colorway_id=:colorway_id,
 				status=:status, fabric_source=:fabric_source, notes=:notes, started_at=:started_at, finished_at=:finished_at,
-				pattern_url=:pattern_url, pattern_note=:pattern_note, round_number=:round_number,
+				pattern_url=:pattern_url, pattern_note=:pattern_note,
 				spec_release_id=:spec_release_id, previous_sample_id=:previous_sample_id, updated_by=:updated_by
 			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
