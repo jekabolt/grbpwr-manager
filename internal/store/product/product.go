@@ -1050,6 +1050,7 @@ type productQueryResult struct {
 	SoldOut                     bool                  `db:"sold_out"`
 	LifecycleStatus             entity.ColorwayStatus `db:"lifecycle_status"`
 	StyleId                     int                   `db:"style_id"`
+	PublishedAt                 sql.NullTime          `db:"published_at"`
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslationInsert) entity.Colorway {
@@ -1087,6 +1088,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 		SoldOut:         pqr.SoldOut,
 		LifecycleStatus: pqr.LifecycleStatus,
 		StyleId:         pqr.StyleId,
+		PublishedAt:     pqr.PublishedAt,
 		ProductDisplay: entity.ColorwayDisplay{
 			ProductBody: entity.ColorwayBody{
 				ProductBodyInsert: entity.ColorwayBodyInsert{

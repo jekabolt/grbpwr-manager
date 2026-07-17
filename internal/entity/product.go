@@ -258,18 +258,19 @@ func (pb *ColorwayBody) SalePercentageDecimal() decimal.Decimal {
 
 // Colorway represents the product table
 type Colorway struct {
-	Id             int             `db:"id"`
-	CreatedAt      time.Time       `db:"created_at"`
-	UpdatedAt      time.Time       `db:"updated_at"`
-	DeletedAt      sql.NullTime    `db:"deleted_at"`
-	Slug           string          `db:"slug"`
-	SKU            string          `db:"sku"`
-	SkuLockedAt    sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
-	ProductDisplay ColorwayDisplay `valid:"required"`
-	Prices         []ColorwayPrice // Multi-currency prices
-	SoldOut         bool           // Indicates if product is sold out (all sizes have quantity <= 0)
-	LifecycleStatus ColorwayStatus `db:"lifecycle_status"` // stored lifecycle: draft/active/hidden/archived (R6)
-	StyleId         int            `db:"style_id"`         // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
+	Id              int             `db:"id"`
+	CreatedAt       time.Time       `db:"created_at"`
+	UpdatedAt       time.Time       `db:"updated_at"`
+	DeletedAt       sql.NullTime    `db:"deleted_at"`
+	Slug            string          `db:"slug"`
+	SKU             string          `db:"sku"`
+	SkuLockedAt     sql.NullTime    `db:"sku_locked_at"` // freeze marker; non-NULL => SKU never rebuilt (first sale/label)
+	PublishedAt     sql.NullTime    `db:"published_at"`  // R6: audit of first publish (lifecycle.go COALESCE(published_at, NOW()))
+	ProductDisplay  ColorwayDisplay `valid:"required"`
+	Prices          []ColorwayPrice // Multi-currency prices
+	SoldOut         bool            // Indicates if product is sold out (all sizes have quantity <= 0)
+	LifecycleStatus ColorwayStatus  `db:"lifecycle_status"` // stored lifecycle: draft/active/hidden/archived (R6)
+	StyleId         int             `db:"style_id"`         // FK tech_card: every product (colourway) belongs to a style (PR6 P1)
 }
 
 // IsPubliclyVisible reports whether the product is exposed on the storefront: only ACTIVE colourways

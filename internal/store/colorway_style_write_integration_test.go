@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/currency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -51,6 +52,10 @@ func commonWriteTestFixtures(ctx context.Context, t *testing.T, s *MYSQLStore) (
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
 		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
 		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+		// BlurHash must be set (not left NULL): a later product-detail read (getProductDetails) scans
+		// blur_hash into a non-nullable Go string and NULL-scan-fails otherwise — the same pre-existing
+		// hand-built-media-fixture quirk documented in the sibling order_sku_snapshot_integration_test.go.
+		BlurHash: sql.NullString{String: "LEHV6nWB2yk8pyo0adR*.7kCMdnj", Valid: true},
 	})
 	require.NoError(t, err)
 
@@ -159,6 +164,14 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 
 	mediaID, langID, prices := commonWriteTestFixtures(ctx, t, s)
 	styleID := insertSeasonedTestStyle(ctx, t, "TCW2", "SS", "SS26", 2026)
+	// insertSeasonedTestStyle deliberately leaves brand/top_category_id/target_gender/collection NULL
+	// (all nullable, no default); this test reads the colourway back through getProductDetails (below),
+	// whose productQueryResult scans those columns into non-nullable Go fields (string/int/GenderEnum),
+	// so they must be populated here (pre-existing fixture gap, unrelated to this fix, only surfaced now
+	// that this test performs that read). category id 1 is the seeded root category (0001_initial_setup.sql),
+	// used the same way by every other test that sets TopCategoryId.
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET brand = 'ACME', top_category_id = 1, target_gender = 'unisex', collection = 'core' WHERE id = ?", styleID)
+	require.NoError(t, err)
 	var sizeID int
 	require.NoError(t, testDB.QueryRowContext(ctx,
 		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
@@ -211,6 +224,12 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 		Scan(&lifecycleStatus, &publishedAt))
 	require.Equal(t, int(entity.ColorwayStatusActive), lifecycleStatus)
 	require.True(t, publishedAt.Valid)
+
+	// Entity-level plumbing (fix: PublishColorwayResponse.colorway.published_at): the fresh read back
+	// through the store must also carry published_at, not just the raw DB row.
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	require.NoError(t, err)
+	require.True(t, full.Product.PublishedAt.Valid, "entity.Colorway.PublishedAt must be populated from the fresh read")
 
 	// DRAFT -> ACTIVE is a one-way trip through this command; publishing again is refused.
 	require.Error(t, s.Products().PublishColorway(ctx, colorwayID))
@@ -378,4 +397,54 @@ func TestPublishColorwayMintsSKUsWithoutPriorUpdateColorway(t *testing.T) {
 	require.True(t, variantSKU2.Valid)
 	require.Regexp(t, `^SS26-[0-9]{5}-BLK-[0-9]{2}$`, variantSKU1.String)
 	require.Regexp(t, `^SS26-[0-9]{5}-BLK-[0-9]{2}$`, variantSKU2.String)
+}
+
+// TestPublishColorwayResponsePublishedAtPopulated is the acceptance test for the fix to
+// PublishColorwayResponse.colorway.published_at always coming back empty: it exercises the full
+// DB -> entity -> proto chain (lifecycle.go's COALESCE(published_at, NOW()) -> entity.Colorway.
+// PublishedAt -> dto.ConvertToPbProductFull) that the RPC response actually carries over the wire, not
+// just the raw DB row. Uses the realistic Create -> CreateVariant -> Publish sequence (no UpdateColorway
+// needed now that PublishColorway mints its own base+variant SKUs).
+func TestPublishColorwayResponsePublishedAtPopulated(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	mediaID, langID, prices := commonWriteTestFixtures(ctx, t, s)
+	styleID := insertSeasonedTestStyle(ctx, t, "TPAP", "SS", "SS26", 2026)
+	// insertSeasonedTestStyle deliberately leaves brand/top_category_id/target_gender/collection NULL
+	// (all nullable, no default); this test reads the colourway back through getProductDetails (below),
+	// whose productQueryResult scans those columns into non-nullable Go fields (string/int/GenderEnum),
+	// so they must be populated here (pre-existing fixture gap, unrelated to this fix, only surfaced now
+	// that this test performs that read). category id 1 is the seeded root category (0001_initial_setup.sql),
+	// used the same way by every other test that sets TopCategoryId.
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET brand = 'ACME', top_category_id = 1, target_gender = 'unisex', collection = 'core' WHERE id = ?", styleID)
+	require.NoError(t, err)
+	var sizeID int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
+
+	prd := newColorwayInsert("BLK", "black", "TPAP-BLACK", mediaID, langID, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
+
+	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID)
+	require.NoError(t, err)
+
+	// No UpdateColorway call — PublishColorway alone mints the base + variant SKUs it needs.
+	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID))
+
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	require.NoError(t, err)
+	require.True(t, full.Product.PublishedAt.Valid)
+
+	pbFull, err := dto.ConvertToPbProductFull(full)
+	require.NoError(t, err)
+	require.NotNil(t, pbFull.Colorway.PublishedAt, "PublishColorwayResponse.colorway.published_at must be populated, not left unset")
 }
