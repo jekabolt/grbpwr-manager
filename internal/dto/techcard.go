@@ -1526,13 +1526,14 @@ func pbTimestampFromNullTime(nt sql.NullTime) *timestamppb.Timestamp {
 // The JSON blob itself is not carried here — it is parsed separately by the read handler.
 func ConvertTechCardReleaseMetaToPb(m entity.TechCardReleaseMeta) *pb_common.TechCardReleaseMeta {
 	return &pb_common.TechCardReleaseMeta{
-		Id:         int32(m.Id),
-		TechCardId: int32(m.TechCardId),
-		Version:    pbStringFromNull(m.Version),
-		ReleasedBy: pbStringFromNull(m.ReleasedBy),
-		UnitCost:   pbDecimalFromNull(m.UnitCost),
-		Currency:   pbStringFromNull(m.Currency),
-		CreatedAt:  timestamppb.New(m.CreatedAt),
+		Id:            int32(m.Id),
+		TechCardId:    int32(m.TechCardId),
+		ReleaseNumber: int32(m.ReleaseNumber),
+		Version:       pbStringFromNull(m.Version),
+		ReleasedBy:    pbStringFromNull(m.ReleasedBy),
+		UnitCost:      pbDecimalFromNull(m.UnitCost),
+		Currency:      pbStringFromNull(m.Currency),
+		CreatedAt:     timestamppb.New(m.CreatedAt),
 	}
 }
 

@@ -847,11 +847,11 @@ type TechCardInsert struct {
 	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
 	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
-	SizeIds []int               `db:"-"`
-	Media   []TechCardMediaItem `db:"-"`
-	Callouts   []TechCardCallout   `db:"-"`
-	Revisions  []TechCardRevision  `db:"-"`
-	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
+	SizeIds   []int               `db:"-"`
+	Media     []TechCardMediaItem `db:"-"`
+	Callouts  []TechCardCallout   `db:"-"`
+	Revisions []TechCardRevision  `db:"-"`
+	Details   []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
 	// materials (Phase 2)
 	BomItems  []TechCardBomItem  `db:"-"` // article catalog
 	Colorways []TechCardColorway `db:"-"` // colourways carry the usage recipe
@@ -965,13 +965,17 @@ type StylePipelineColumn struct {
 // JSON blob — used for listing a card's releases. UnitCost/Currency are the base-currency
 // planned unit cost frozen at release time (NULL when it could not be folded to base).
 type TechCardReleaseMeta struct {
-	Id         int                 `db:"id"`
-	TechCardId int                 `db:"tech_card_id"`
-	Version    sql.NullString      `db:"version"`
-	ReleasedBy sql.NullString      `db:"released_by"`
-	UnitCost   decimal.NullDecimal `db:"unit_cost"`
-	Currency   sql.NullString      `db:"currency"`
-	CreatedAt  time.Time           `db:"created_at"`
+	Id         int `db:"id"`
+	TechCardId int `db:"tech_card_id"`
+	// ReleaseNumber is the user-facing "Rev.N" the factory reads (Q1): auto MAX+1 per tech card,
+	// assigned by the store on save. This is the tech card's real "version" — the free-text `version`
+	// string it replaces is retired.
+	ReleaseNumber int                 `db:"release_number"`
+	Version       sql.NullString      `db:"version"`
+	ReleasedBy    sql.NullString      `db:"released_by"`
+	UnitCost      decimal.NullDecimal `db:"unit_cost"`
+	Currency      sql.NullString      `db:"currency"`
+	CreatedAt     time.Time           `db:"created_at"`
 }
 
 // TechCardRelease is a full release snapshot: the metadata plus the raw proto-JSON blob of the
