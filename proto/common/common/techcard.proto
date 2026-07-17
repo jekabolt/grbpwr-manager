@@ -951,6 +951,10 @@ message TechCard {
   // OUTPUT-ONLY derived colourways of this style (R1/§3.3): a style's colourways are its products.
   // Not writable through the style — created/relinked via the Colorway RPCs.
   repeated AdminColorwayRef colorways = 9;
+  // composition_entries is the style's structured fibre composition (S17/M1 fix), resolved from
+  // style_composition; empty when the style has no structural composition data yet. Read-only,
+  // admin/constructor view — the storefront's equivalent is StorefrontColorwayDisplay.composition_entries.
+  repeated CompositionEntry composition_entries = 14;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 

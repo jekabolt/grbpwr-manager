@@ -324,8 +324,8 @@ type TechCardColorwayUsage struct {
 	// PieceLineKey is the wire reference to the cut-piece this usage's consumption norm is about: the
 	// stable line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
 	// FK (usage.piece_id RESTRICT). It replaces the positional PieceIndex, kept for the transition.
-	PieceLineKey string        `db:"-"`
-	BomItemIndex sql.NullInt32 `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
+	PieceLineKey string              `db:"-"`
+	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
 	Placement    sql.NullString      `db:"placement"`
 	Color        sql.NullString      `db:"color"`
 	Pantone      sql.NullString      `db:"pantone"`
@@ -877,10 +877,10 @@ type TechCardPieceMaterial struct {
 	// BomItemId / FusingBomItemId are the real FKs to the fabric / fusing BOM lines (S2/S3), resolved
 	// and written by the store; the *Index columns are the legacy positional refs kept for the
 	// transition (dropped in M3).
-	BomItemId          sql.NullInt64  `db:"bom_item_id"`
-	FusingBomItemId    sql.NullInt64  `db:"fusing_bom_item_id"`
-	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
-	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
+	BomItemId          sql.NullInt64 `db:"bom_item_id"`
+	FusingBomItemId    sql.NullInt64 `db:"fusing_bom_item_id"`
+	BomItemIndex       sql.NullInt32 `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
+	FusingBomItemIndex sql.NullInt32 `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
 	// BomLineKey / FusingBomLineKey are the wire references to the fabric / fusing BOM line by stable
 	// line_key (WS3 follow-up); the store resolves them to BomItemId / FusingBomItemId. Not persisted.
 	BomLineKey       string         `db:"-"`
@@ -900,12 +900,12 @@ type TechCardPiece struct {
 	// LineKey is the client-generated ULID assigned when the piece is created in the UI (before the
 	// first save); immutable; the wire identity the upsert-diff keys on. Empty on a legacy/keyless
 	// payload → the store mints one.
-	LineKey          string                  `db:"line_key"`
-	PiecesPerGarment int                     `db:"pieces_per_garment"`
-	Mirrored         bool                    `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
-	Grainline        string                  `db:"grainline"`
-	Fused            bool                    `db:"fused"`
-	CalloutNumber    sql.NullInt32           `db:"callout_number"`
+	LineKey          string        `db:"line_key"`
+	PiecesPerGarment int           `db:"pieces_per_garment"`
+	Mirrored         bool          `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
+	Grainline        string        `db:"grainline"`
+	Fused            bool          `db:"fused"`
+	CalloutNumber    sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -939,7 +939,7 @@ type TechCardInsert struct {
 	// chk_tech_card_aux_subtype_purpose). Additive (WS7); the sellable path never reads it.
 	AuxSubtype sql.NullString `db:"aux_subtype"`
 	Name       string         `db:"name"`
-	Brand            sql.NullString  `db:"brand"`
+	Brand      sql.NullString `db:"brand"`
 	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
 	// It is never accepted from the public contract.
 	SeasonLabel  sql.NullString `db:"season"`
@@ -953,8 +953,10 @@ type TechCardInsert struct {
 	// (products) read them from here; the duplicated product columns are dropped in step 3.
 	// top/sub/type_category mirror the product taxonomy (all → category(id)); the legacy
 	// single category_id above is a separate optional tag and is untouched.
-	Fit                sql.NullString          `db:"fit"`
-	Composition        sql.NullString          `db:"composition"` // JSON column
+	Fit sql.NullString `db:"fit"`
+	// Composition is the legacy free-text column (e.g. "100% Cotton"). M1 fix: always plain text on
+	// the wire — never overloaded with the structured composition, which is TechCard.CompositionEntries.
+	Composition        sql.NullString          `db:"composition"`
 	CareInstructions   sql.NullString          `db:"care_instructions"`
 	ModelWearsHeightCm sql.NullInt32           `db:"model_wears_height_cm"`
 	ModelWearsSizeId   sql.NullInt32           `db:"model_wears_size_id"`
@@ -1062,6 +1064,10 @@ type TechCard struct {
 	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
 	// (GetTechCardById); empty on list views.
 	RoleAssignments []TechCardRoleAssignment `db:"-"`
+	// CompositionEntries is the style's structured fibre composition (S17/M1 fix), populated on the
+	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
+	// instead of it. Empty when the style has no style_composition rows yet.
+	CompositionEntries []CompositionEntry `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an

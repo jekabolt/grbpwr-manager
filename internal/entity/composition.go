@@ -26,6 +26,19 @@ type FiberPercent struct {
 	Percent   decimal.Decimal
 }
 
+// CompositionEntry is one fibre share of a style's structured composition, resolved with its
+// dictionary display name (S17) — the shared shape for BOTH read paths that project
+// style_composition: the style/tech-card read (internal/store/techcard/composition_read.go) and the
+// colourway/storefront read (internal/store/product/query.go, JSON_ARRAYAGG'd in SQL under the same
+// field names below). M1 fix: this is the TYPED wire projection — composition (the free-text legacy
+// column) is never overloaded with it; a client renders CompositionEntries when present and falls
+// back to the plain-text composition otherwise.
+type CompositionEntry struct {
+	FiberCode string          `db:"fiber_code" json:"fiber_code"`
+	Name      string          `db:"name" json:"name"`
+	Percent   decimal.Decimal `db:"percent" json:"percent"`
+}
+
 // DeriveStyleComposition aggregates the shell-fabric BOM lines' fibre compositions into the garment
 // composition (source=auto, S17 / acceptance C.11):
 //

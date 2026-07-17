@@ -696,6 +696,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
 		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
+		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
+		// free-text TechCardInsert.composition (which this card doesn't even expose on the wire).
+		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
 	}
 }
 
@@ -1210,6 +1213,28 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			ColorCode:  c.ColorCode,
 			Status:     pb_common.ColorwayLifecycleStatus(c.Status),
 			Usages:     ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
+		})
+	}
+	return out
+}
+
+// compositionEntriesToPb emits a style's structured fibre composition (S17/M1 fix) — the typed
+// replacement for overloading the free-text composition string with an encoded array of the same
+// data. Shared by the tech-card read (ConvertEntityTechCardToPb) and the storefront/colourway read
+// (dto/storefront.go storefrontDisplay): both project the SAME style_composition rows, just through
+// different store queries (composition_read.go for the style read, query.go's
+// styleCompositionEntriesSelect for the colourway/storefront read).
+func compositionEntriesToPb(entries []entity.CompositionEntry) []*pb_common.CompositionEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.CompositionEntry, 0, len(entries))
+	for i := range entries {
+		e := &entries[i]
+		out = append(out, &pb_common.CompositionEntry{
+			FiberCode: e.FiberCode,
+			Name:      e.Name,
+			Percent:   pbDecimalFromDecimal(e.Percent),
 		})
 	}
 	return out

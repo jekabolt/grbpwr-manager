@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 	"time"
 
@@ -105,12 +104,14 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 	require.Equal(t, "100.00", rows[0].Percent)
 	require.Equal(t, entity.CompositionSourceAuto, rows[0].Source)
 
-	// The tech-card read model surfaces the structured composition (falls back to legacy free-text
-	// otherwise) — smoke-check the read wiring, not the exact JSON shape.
+	// The tech-card read model surfaces the structured composition through its own typed field (M1
+	// fix) — never by overloading the legacy free-text Composition, which this style never set and
+	// which must stay untouched (NULL) rather than silently becoming a JSON encoding of these rows.
 	cardAfter, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)
-	require.True(t, cardAfter.Composition.Valid)
-	require.Contains(t, cardAfter.Composition.String, "COT")
+	require.False(t, cardAfter.Composition.Valid, "legacy free-text composition must not be data-triggered into JSON (M1)")
+	require.Len(t, cardAfter.CompositionEntries, 1)
+	require.Equal(t, "COT", cardAfter.CompositionEntries[0].FiberCode)
 
 	// --- Step 2: a second shell-fabric line gets its own composition -> the style re-derives to an
 	// equal 50/50 split on the next save (re-derived every save, not cached).
@@ -150,6 +151,7 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 
 	cardManual, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)
-	require.True(t, cardManual.Composition.Valid)
-	require.True(t, strings.Contains(cardManual.Composition.String, "SLK"))
+	require.False(t, cardManual.Composition.Valid, "legacy free-text composition stays untouched by the manual override too (M1)")
+	require.Len(t, cardManual.CompositionEntries, 1)
+	require.Equal(t, "SLK", cardManual.CompositionEntries[0].FiberCode)
 }

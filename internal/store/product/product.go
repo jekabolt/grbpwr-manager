@@ -4,6 +4,7 @@ package product
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1016,10 +1017,15 @@ type productQueryResult struct {
 	ModelWearsSizeId   sql.NullInt32       `db:"model_wears_size_id"`
 	CareInstructions   sql.NullString      `db:"care_instructions"`
 	Composition        sql.NullString      `db:"composition"`
-	TargetGender       entity.GenderEnum   `db:"target_gender"`
-	Season             entity.SeasonEnum   `db:"season"`
-	Collection         string              `db:"collection"`
-	Fit                sql.NullString      `db:"fit"`
+	// CompositionEntriesJSON is the styleCompositionEntriesSelect JSON_ARRAYAGG projection (M1 fix):
+	// unmarshalled into entity.ColorwayBodyInsert.CompositionEntries by toProduct, alongside (never
+	// instead of) the legacy plain-text Composition above. NULL/empty when the style has no
+	// style_composition rows yet.
+	CompositionEntriesJSON sql.NullString    `db:"composition_entries"`
+	TargetGender           entity.GenderEnum `db:"target_gender"`
+	Season                 entity.SeasonEnum `db:"season"`
+	Collection             string            `db:"collection"`
+	Fit                    sql.NullString    `db:"fit"`
 
 	MinTier               int16 `db:"min_tier"`
 	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
@@ -1054,6 +1060,18 @@ type productQueryResult struct {
 }
 
 func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslationInsert) entity.Colorway {
+	// M1 fix: unmarshal the structured composition into its own typed slice — never into Composition
+	// (the legacy free-text column above, left exactly as stored). A NULL/empty JSON_ARRAYAGG (no
+	// style_composition rows yet) yields a nil slice, not an error.
+	var compositionEntries []entity.CompositionEntry
+	if pqr.CompositionEntriesJSON.Valid && pqr.CompositionEntriesJSON.String != "" {
+		if err := json.Unmarshal([]byte(pqr.CompositionEntriesJSON.String), &compositionEntries); err != nil {
+			slog.Default().Error("can't decode structured composition JSON",
+				slog.Int("product_id", pqr.Id), slog.String("err", err.Error()))
+			compositionEntries = nil
+		}
+	}
+
 	var secondaryThumbnail *entity.MediaFull
 	if pqr.SecondaryThumbnailId.Valid {
 		secondaryCreatedAt := pqr.CreatedAt
@@ -1107,6 +1125,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					ModelWearsSizeId:      pqr.ModelWearsSizeId,
 					CareInstructions:      pqr.CareInstructions,
 					Composition:           pqr.Composition,
+					CompositionEntries:    compositionEntries,
 					TargetGender:          pqr.TargetGender,
 					Season:                pqr.Season,
 					Fit:                   pqr.Fit,
