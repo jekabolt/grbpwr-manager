@@ -66,12 +66,17 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 		}
 		newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 			INSERT INTO material (name, section, supplier, supplier_ref, composition, spec, unit,
-				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes)
+				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
+				material_class, other_attrs, created_by, updated_by)
 			VALUES (:name, :section, :supplier, :supplier_ref, :composition, :spec, :unit,
-				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes)`,
+				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
+				:material_class, :other_attrs, :created_by, :updated_by)`,
 			materialParams(m))
 		if err != nil {
 			return fmt.Errorf("create material: %w", err)
+		}
+		if err := upsertMaterialAttrs(ctx, rep.DB(), newID, m); err != nil {
+			return fmt.Errorf("create material %d attrs: %w", newID, err)
 		}
 		id = newID
 		return nil
@@ -115,7 +120,8 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 			UPDATE material SET lock_version = lock_version + 1,
 				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes
+				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
+				material_class=:material_class, other_attrs=:other_attrs, updated_by=:updated_by
 			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("update material %d: %w", id, err)
@@ -124,6 +130,9 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		// make the WHERE guard load-bearing, not just the in-Go compare (mirrors tech_card).
 		if rows == 0 {
 			return entity.ErrMaterialConflict
+		}
+		if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
+			return fmt.Errorf("update material %d attrs: %w", id, err)
 		}
 		return nil
 	})
@@ -200,6 +209,9 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 		return nil, fmt.Errorf("get material %d: %w", id, entity.ErrMaterialNotFound)
 	}
 	out := rows[0].toEntity()
+	if err := s.attachMaterialAttrs(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
+		return nil, fmt.Errorf("get material %d attrs: %w", id, err)
+	}
 	return &out, nil
 }
 
@@ -216,8 +228,13 @@ func (s *Store) ListMaterials(ctx context.Context, section string, includeArchiv
 		return nil, fmt.Errorf("list materials: %w", err)
 	}
 	out := make([]entity.MaterialWithPrice, len(rows))
+	ptrs := make([]*entity.MaterialWithPrice, len(rows))
 	for i, r := range rows {
 		out[i] = r.toEntity()
+		ptrs[i] = &out[i]
+	}
+	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
+		return nil, fmt.Errorf("list materials attrs: %w", err)
 	}
 	return out, nil
 }
@@ -259,7 +276,7 @@ func (s *Store) ListMaterialPrices(ctx context.Context, materialID int) ([]entit
 	return rows, nil
 }
 
-// materialParams maps a MaterialInsert to named query params, normalising name and section.
+// materialParams maps a MaterialInsert to named query params, normalising name, section and class.
 func materialParams(m *entity.MaterialInsert) map[string]any {
 	return map[string]any{
 		"name":              strings.TrimSpace(m.Name),
@@ -276,7 +293,167 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"pantone":           m.Pantone,
 		"min_stock":         nullDecimalParam(m.MinStock),
 		"notes":             m.Notes,
+		"material_class":    normalizeMaterialClass(m.MaterialClass),
+		"other_attrs":       nullJSONParam(m.OtherAttrs),
+		"created_by":        m.CreatedBy,
+		"updated_by":        m.UpdatedBy,
 	}
+}
+
+// normalizeMaterialClass lower-cases/trims the class and defaults an empty one to 'other'. An
+// out-of-range value is left as-is for the DB CHECK (chk_material_class) to reject.
+func normalizeMaterialClass(class string) string {
+	c := strings.ToLower(strings.TrimSpace(class))
+	if c == "" {
+		return string(entity.MaterialClassOther)
+	}
+	return c
+}
+
+// nullJSONParam yields nil (SQL NULL) for empty JSON so an unset escape-hatch is not stored as "".
+func nullJSONParam(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// materialAttrTables are the four CTI side-tables, in a stable order for the full-replace clear.
+var materialAttrTables = []string{
+	"material_fabric_attr", "material_hardware_attr", "material_thread_attr", "material_packaging_attr",
+}
+
+// upsertMaterialAttrs full-replaces a material's typed side-tables: it clears all four (so a class
+// change cannot strand stale attributes) and inserts the one row matching the material's class, if
+// attributes were supplied. Runs inside the material write transaction.
+func upsertMaterialAttrs(ctx context.Context, db dependency.DB, id int, m *entity.MaterialInsert) error {
+	for _, tbl := range materialAttrTables {
+		if err := storeutil.ExecNamed(ctx, db,
+			fmt.Sprintf(`DELETE FROM %s WHERE material_id = :id`, tbl), map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+	}
+	switch normalizeMaterialClass(m.MaterialClass) {
+	case string(entity.MaterialClassFabric):
+		if m.FabricAttr == nil {
+			return nil
+		}
+		a := m.FabricAttr
+		return storeutil.ExecNamed(ctx, db, `
+			INSERT INTO material_fabric_attr (material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m)
+			VALUES (:id, :width_cm, :weight_gsm, :fabric_direction, :shrinkage_pct, :roll_length_m)`,
+			map[string]any{"id": id, "width_cm": nullDecimalParam(a.WidthCm), "weight_gsm": nullDecimalParam(a.WeightGsm),
+				"fabric_direction": a.FabricDirection, "shrinkage_pct": nullDecimalParam(a.ShrinkagePct), "roll_length_m": nullDecimalParam(a.RollLengthM)})
+	case string(entity.MaterialClassHardware):
+		if m.HardwareAttr == nil {
+			return nil
+		}
+		a := m.HardwareAttr
+		return storeutil.ExecNamed(ctx, db, `
+			INSERT INTO material_hardware_attr (material_id, diameter_mm, dimensions, finish, base_material, weight_g)
+			VALUES (:id, :diameter_mm, :dimensions, :finish, :base_material, :weight_g)`,
+			map[string]any{"id": id, "diameter_mm": nullDecimalParam(a.DiameterMm), "dimensions": a.Dimensions,
+				"finish": a.Finish, "base_material": a.BaseMaterial, "weight_g": nullDecimalParam(a.WeightG)})
+	case string(entity.MaterialClassThread):
+		if m.ThreadAttr == nil {
+			return nil
+		}
+		a := m.ThreadAttr
+		return storeutil.ExecNamed(ctx, db, `
+			INSERT INTO material_thread_attr (material_id, ticket_tex, length_per_cone_m, needle_reco)
+			VALUES (:id, :ticket_tex, :length_per_cone_m, :needle_reco)`,
+			map[string]any{"id": id, "ticket_tex": a.TicketTex, "length_per_cone_m": nullDecimalParam(a.LengthPerConeM), "needle_reco": a.NeedleReco})
+	case string(entity.MaterialClassPackaging):
+		if m.PackagingAttr == nil {
+			return nil
+		}
+		a := m.PackagingAttr
+		return storeutil.ExecNamed(ctx, db, `
+			INSERT INTO material_packaging_attr (material_id, substrate, dimensions, gsm, print_method)
+			VALUES (:id, :substrate, :dimensions, :gsm, :print_method)`,
+			map[string]any{"id": id, "substrate": a.Substrate, "dimensions": a.Dimensions, "gsm": nullDecimalParam(a.Gsm), "print_method": a.PrintMethod})
+	}
+	return nil // 'other' keeps its attributes in material.other_attrs, not a side-table
+}
+
+type materialFabricAttrRow struct {
+	MaterialID int `db:"material_id"`
+	entity.MaterialFabricAttr
+}
+type materialHardwareAttrRow struct {
+	MaterialID int `db:"material_id"`
+	entity.MaterialHardwareAttr
+}
+type materialThreadAttrRow struct {
+	MaterialID int `db:"material_id"`
+	entity.MaterialThreadAttr
+}
+type materialPackagingAttrRow struct {
+	MaterialID int `db:"material_id"`
+	entity.MaterialPackagingAttr
+}
+
+// attachMaterialAttrs loads each material's typed side-table row (at most one, matching its class)
+// and attaches it. A material with no attributes simply keeps nil pointers.
+func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.MaterialWithPrice) error {
+	if len(mats) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(mats))
+	byID := make(map[int]*entity.MaterialWithPrice, len(mats))
+	for _, m := range mats {
+		ids = append(ids, m.Id)
+		byID[m.Id] = m
+	}
+	fRows, err := storeutil.QueryListNamed[materialFabricAttrRow](ctx, s.DB,
+		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m
+		 FROM material_fabric_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load fabric attrs: %w", err)
+	}
+	for _, r := range fRows {
+		if m, ok := byID[r.MaterialID]; ok {
+			a := r.MaterialFabricAttr
+			m.FabricAttr = &a
+		}
+	}
+	hRows, err := storeutil.QueryListNamed[materialHardwareAttrRow](ctx, s.DB,
+		`SELECT material_id, diameter_mm, dimensions, finish, base_material, weight_g
+		 FROM material_hardware_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load hardware attrs: %w", err)
+	}
+	for _, r := range hRows {
+		if m, ok := byID[r.MaterialID]; ok {
+			a := r.MaterialHardwareAttr
+			m.HardwareAttr = &a
+		}
+	}
+	tRows, err := storeutil.QueryListNamed[materialThreadAttrRow](ctx, s.DB,
+		`SELECT material_id, ticket_tex, length_per_cone_m, needle_reco
+		 FROM material_thread_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load thread attrs: %w", err)
+	}
+	for _, r := range tRows {
+		if m, ok := byID[r.MaterialID]; ok {
+			a := r.MaterialThreadAttr
+			m.ThreadAttr = &a
+		}
+	}
+	pRows, err := storeutil.QueryListNamed[materialPackagingAttrRow](ctx, s.DB,
+		`SELECT material_id, substrate, dimensions, gsm, print_method
+		 FROM material_packaging_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load packaging attrs: %w", err)
+	}
+	for _, r := range pRows {
+		if m, ok := byID[r.MaterialID]; ok {
+			a := r.MaterialPackagingAttr
+			m.PackagingAttr = &a
+		}
+	}
+	return nil
 }
 
 // nullDecimalParam yields nil for an invalid NullDecimal so the column is written NULL.

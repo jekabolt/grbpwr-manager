@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -18,6 +19,8 @@ func (s *Server) CreateMaterial(ctx context.Context, req *pb_admin.CreateMateria
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	actor := authsrv.GetAdminUsername(ctx)
+	ins.CreatedBy, ins.UpdatedBy = actor, actor
 	id, err := s.repo.TechCards().CreateMaterial(ctx, ins)
 	if err != nil {
 		if st, ok := apierr.Status(err); ok {
@@ -39,6 +42,7 @@ func (s *Server) UpdateMaterial(ctx context.Context, req *pb_admin.UpdateMateria
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	ins.UpdatedBy = authsrv.GetAdminUsername(ctx)
 	if err := s.repo.TechCards().UpdateMaterial(ctx, int(m.Id), ins, int(req.GetExpectedLockVersion())); err != nil {
 		if st, ok := apierr.Status(err); ok {
 			return nil, st

@@ -177,6 +177,14 @@ func TestColorwayStatusDBCheckNoDrift(t *testing.T) {
 	}
 }
 
+// TestMaterialClassDBCheckNoDrift extends the drift test to the material CTI discriminant
+// (entity.MaterialClass/ValidMaterialClasses) <-> DB CHECK (migration 0157, chk_material_class).
+func TestMaterialClassDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "material_class REGEXP", 120)
+	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
+}
+
 // TestEnumDriftExtractorsDetectTamperedInput guards the extractor helpers themselves (mirrors
 // TestMigrationIdempotencyDetectors' rationale in idempotency_test.go) so this suite cannot silently
 // pass because a regex stopped matching.
