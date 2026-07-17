@@ -272,6 +272,10 @@ type TechCardColorway struct {
 	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
 	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
 	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
+	// BaseSku and Status are populated on the style read path (enrichMaterials) so GetStyle can emit
+	// the derived AdminColorwayRef (R1/§3.3). BaseSku is NULL for an unminted draft colourway.
+	BaseSku sql.NullString `db:"sku"`
+	Status  ColorwayStatus `db:"lifecycle_status"`
 	// Usages is the colour's material recipe (in-memory; persisted to
 	// tech_card_colorway_usage). Each entry binds a catalog BOM article to a garment
 	// part, the colour it takes in this colourway, and its consumption.
@@ -737,12 +741,12 @@ var ValidTechCardGrainlines = map[string]bool{
 }
 
 // TechCardPieceMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE colourway.
-// ColorwayIndex is positional into the card's colourways (full-replace recreates colourway ids, so
-// the store resolves index↔id at the transaction boundary). BOM refs are positional into bom_items,
+// ColorwayID is the explicit colourway id = product.id (R1/§14.3); the old positional colorway_index
+// is gone (colourways are no longer style children). BOM refs stay positional into bom_items,
 // consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
 type TechCardPieceMaterial struct {
 	Id                 int            `db:"id"`
-	ColorwayIndex      int            `db:"-"`                     // 0-based index into the card's colorways
+	ColorwayID         int            `db:"colorway_id"`           // explicit colourway id = product.id
 	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
 	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
 	Note               sql.NullString `db:"note"`
@@ -814,9 +818,8 @@ type TechCardInsert struct {
 	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
 	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
-	SizeIds    []int               `db:"-"`
-	ProductIds []int               `db:"-"`
-	Media      []TechCardMediaItem `db:"-"`
+	SizeIds []int               `db:"-"`
+	Media   []TechCardMediaItem `db:"-"`
 	Callouts   []TechCardCallout   `db:"-"`
 	Revisions  []TechCardRevision  `db:"-"`
 	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
@@ -864,6 +867,20 @@ type TechCard struct {
 	// IDEA card, else the PREVIEW-kind sketch (fallback first technical, then any). Populated only by
 	// ListTechCards; empty elsewhere.
 	PreviewURL string `db:"-"`
+}
+
+// LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's
+// colourways are its products; the old tech_card_product-derived ProductIds is now this projection of
+// the enriched colourways (Colorways[i].ProductId is the id when the colourway is not archived, NULL
+// otherwise — matching the old lifecycle_status <> 4 filter). Requires the card to be enriched.
+func (tc *TechCard) LinkedProductIDs() []int {
+	ids := make([]int, 0, len(tc.Colorways))
+	for i := range tc.Colorways {
+		if tc.Colorways[i].ProductId.Valid {
+			ids = append(ids, int(tc.Colorways[i].ProductId.Int32))
+		}
+	}
+	return ids
 }
 
 // StylePipelineColumn is one lifecycle-stage column of the development board (gap-01): the stage,

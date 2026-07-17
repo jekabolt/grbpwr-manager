@@ -657,7 +657,7 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, costingCcy, orderQtyBySize, totalOrderQty, fx)
 		unit, order := unitAndOrder(cc.materialsPerUnit)
 		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
-			ColorwayIndex:            int32(ci),
+			ColorwayId:               int64(tc.Colorways[ci].Id),
 			MaterialsTotal:           cc.materialsTotal,
 			MaterialsPerUnit:         pbDecimalFromDecimal(roundMoney(cc.materialsPerUnit)),
 			UnitCost:                 pbDecimalFromDecimal(roundMoney(unit)),

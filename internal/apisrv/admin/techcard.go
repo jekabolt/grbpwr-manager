@@ -265,10 +265,14 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // products with no primary yet adopt this card as their primary.
 func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
-	if err != nil || card == nil || len(card.ProductIds) == 0 {
+	if err != nil || card == nil {
 		return
 	}
-	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, card.ProductIds); err != nil {
+	linkedProducts := card.LinkedProductIDs()
+	if len(linkedProducts) == 0 {
+		return
+	}
+	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, linkedProducts); err != nil {
 		slog.Default().ErrorContext(ctx, "can't assign primary tech card to products",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return
