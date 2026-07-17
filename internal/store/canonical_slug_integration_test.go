@@ -106,7 +106,7 @@ func TestCanonicalSlugUsesDefaultLanguage(t *testing.T) {
 	productSlug := func() string {
 		pb, err := dto.ConvertToPbProductFull(pf)
 		require.NoError(t, err)
-		return pb.GetProduct().GetSlug()
+		return pb.GetColorway().GetSlug() // R8: ColorwayFull.product→colorway
 	}
 	ps := productSlug()
 	require.Contains(t, ps, "beta-default", "product slug must use the default-language name")

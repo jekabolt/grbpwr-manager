@@ -65,18 +65,9 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 		b.UnitPrice = nil
 		b.Currency = ""
 	}
-	for _, cw := range ins.Colorways {
-		if cw == nil {
-			continue
-		}
-		for _, u := range cw.Usages {
-			if u == nil {
-				continue
-			}
-			u.LineTotal = nil
-			u.SizeRunTotal = nil
-		}
-	}
+	// PR6 R1: colourways (and their usage recipe with per-line cost figures) are no longer part of the
+	// style read payload, so there are no usage LineTotal/SizeRunTotal to strip here. Per-colourway
+	// costing was under Costing.colorway_costs, already dropped by `ins.Costing = nil` above.
 }
 
 // stripMaterialCosting clears a catalog material's current price. The material's descriptive

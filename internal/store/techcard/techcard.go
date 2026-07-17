@@ -551,7 +551,15 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
-	if err := insertTechCardProducts(ctx, db, id, tc.ProductIds); err != nil {
+	// PR6 R1/R4: the product↔style link is derived from product.style_id (single source), never
+	// client-supplied. Keep tech_card_product (the denormalised link every cost/margin/inventory
+	// consumer still reads) in sync with the canonical set on every save. On create it is empty
+	// (colourways get their style_id via CreateColorway); on update it re-asserts the current set.
+	productLinks, err := captureCardProductLinks(ctx, db, id)
+	if err != nil {
+		return err
+	}
+	if err := insertTechCardProducts(ctx, db, id, productLinks); err != nil {
 		return err
 	}
 	if err := insertTechCardMedia(ctx, db, id, tc.Media); err != nil {

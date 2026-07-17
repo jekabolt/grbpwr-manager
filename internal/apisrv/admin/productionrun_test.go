@@ -108,7 +108,12 @@ func TestReceiveProductionRunHappyPath(t *testing.T) {
 		},
 	}}
 	card := &entity.TechCard{Id: 7}
-	card.ProductIds = []int{55, 66}
+	// PR6 R1: a style's linked products are its live colourways (product.style_id); LinkedProductIDs()
+	// reads the enriched colourways' ProductId.
+	card.Colorways = []entity.TechCardColorway{
+		{Id: 55, ProductId: sql.NullInt32{Int32: 55, Valid: true}},
+		{Id: 66, ProductId: sql.NullInt32{Int32: 66, Valid: true}},
+	}
 	card.SizeIds = []int{1, 2}
 
 	repo, pr, _ := receiveMocks(t, run, card)
@@ -154,7 +159,7 @@ func TestProductionRunActualUnitCostBase(t *testing.T) {
 
 func TestReceiveProductionRunGuards(t *testing.T) {
 	card := &entity.TechCard{Id: 7}
-	card.ProductIds = []int{55}
+	card.Colorways = []entity.TechCardColorway{{Id: 55, ProductId: sql.NullInt32{Int32: 55, Valid: true}}}
 	recvLines := func(pid int32) []entity.ProductionRunLine {
 		return []entity.ProductionRunLine{{ProductId: sql.NullInt32{Int32: pid, Valid: true}, SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 10, Valid: true}}}
 	}

@@ -104,11 +104,13 @@ message ColorwayNew {
 }
 
 message ColorwayFull {
-  Colorway product = 1;
-  repeated Variant sizes = 2;
-  repeated ProductMeasurement measurements = 3;
+  Colorway colorway = 1;
+  repeated Variant variants = 2;
+  reserved 3; // was `measurements` — the size chart is style-owned now (R5, StyleSizeChart)
+  reserved "measurements";
   repeated common.MediaFull media = 4;
   repeated ColorwayTag tags = 5;
+  reserved "product", "sizes"; // R8 renames: product→colorway, sizes→variants
 }
 
 message Colorway {
@@ -116,8 +118,9 @@ message Colorway {
   google.protobuf.Timestamp created_at = 2;
   google.protobuf.Timestamp updated_at = 3;
   string slug = 4;
-  string sku = 5;
-  ColorwayDisplay product_display = 6;
+  string base_sku = 5; // R8: renamed from `sku` (base SKU, SS26-00021-BLK)
+  ColorwayDisplay display = 6; // R8: renamed from `product_display`
+  reserved "sku", "product_display";
   repeated ColorwayPrice prices = 7;
   bool sold_out = 8;
   // status is the colourway's stored lifecycle (R6). Type change string→enum on the same wire number
@@ -203,11 +206,12 @@ message SizeWithMeasurement {
 }
 
 message Variant {
-  int32 id = 1;
+  int32 variant_id = 1; // R8: renamed from `id` (stable internal variant id = product_size.id)
   google.type.Decimal quantity = 2;
-  int32 product_id = 3;
+  int32 colorway_id = 3; // R8: renamed from `product_id` (same FK target = product.id)
   int32 size_id = 4;
-  string sku = 5; // first-class variant SKU (SS26-00021-BLK-04)
+  string variant_sku = 5; // R8: renamed from `sku` (first-class variant SKU, SS26-00021-BLK-04)
+  reserved "id", "product_id", "sku";
   VariantLifecycleStatus status = 6; // R2: variants archive, never delete
   int32 lock_version = 7; // R2: optimistic lock token
 }
@@ -232,8 +236,9 @@ message ProductMeasurementInsert {
 
 message ColorwayTag {
   int32 id = 1;
-  int32 product_id = 2;
-  ColorwayTagInsert product_tag_insert = 3;
+  int32 colorway_id = 2; // R8: renamed from `product_id`
+  ColorwayTagInsert tag_insert = 3; // R8: renamed from `product_tag_insert`
+  reserved "product_id", "product_tag_insert";
 }
 
 message ColorwayTagInsert {
@@ -297,8 +302,9 @@ enum StockAdjustmentDirection {
 
 message StockChange {
   int32 id = 1;
-  int32 product_id = 2;
-  int32 size_id = 3;
+  int32 colorway_id = 2; // R8: renamed from `product_id` (denormalised admin/stock-history projection)
+  int32 size_id = 3; // kept: the historical row is denormalised (variant addressed in the request)
+  reserved "product_id";
   google.type.Decimal quantity_delta = 4;
   google.type.Decimal quantity_before = 5;
   google.type.Decimal quantity_after = 6;
@@ -310,4 +316,6 @@ message StockChange {
   string reference_id = 13;
   optional StockChangeReason reason = 14;
   optional string comment = 15;
+  int32 variant_id = 16; // R2: stock-history addresses the stable variant id
+  string variant_sku = 17; // R2: public variant SKU snapshot for the history row
 }
