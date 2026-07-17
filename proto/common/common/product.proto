@@ -123,6 +123,10 @@ message Colorway {
   // status is the colourway's stored lifecycle (R6). Type change string→enum on the same wire number
   // (non-identity, big-bang regen). Only ACTIVE is exposed publicly; an UNKNOWN read fails closed.
   ColorwayLifecycleStatus status = 9;
+  int32 style_id = 10; // R4: the single style relation (product.style_id)
+  int32 lock_version = 11; // R2/R4: optimistic lock token (shared tech_card.lock_version)
+  string color_code = 12; // R1: colourway-owned colour identity (FK Dictionary.colors)
+  google.protobuf.Timestamp published_at = 13; // R6: audit of first publish (not the status source)
 }
 
 message ColorwayBody {
@@ -204,6 +208,8 @@ message Variant {
   int32 product_id = 3;
   int32 size_id = 4;
   string sku = 5; // first-class variant SKU (SS26-00021-BLK-04)
+  VariantLifecycleStatus status = 6; // R2: variants archive, never delete
+  int32 lock_version = 7; // R2: optimistic lock token
 }
 
 message VariantInsert {
