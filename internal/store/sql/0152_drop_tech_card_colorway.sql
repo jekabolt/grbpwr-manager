@@ -9,9 +9,10 @@
 -- guarded (IF EXISTS / information_schema), so a retried apply is a no-op once complete.
 
 -- 1) Re-assert 0151's merge preflight is still clean (the named CHECK rejects any non-zero count).
+-- DELETE+INSERT re-asserts the singleton (matches 0151's guard idiom; avoids deprecated VALUES()).
+DELETE FROM migration_0151_merge_guard;
 INSERT INTO migration_0151_merge_guard (singleton, conflict_count)
-SELECT 1, COUNT(*) FROM migration_0151_merge_conflict
-ON DUPLICATE KEY UPDATE conflict_count = VALUES(conflict_count);
+SELECT 1, COUNT(*) FROM migration_0151_merge_conflict;
 
 -- 2) Post-condition: every child that was repointed must now resolve to a real product. A CASCADE
 -- child (usage / bom_colorway / piece_material) with a non-NULL colorway_id outside product(id), or a
@@ -53,7 +54,9 @@ SELECT 1, COUNT(*) FROM migration_0152_orphan_conflict;
 SET @has_src := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'merge_src_colorway_id');
 SET @sql := IF(@has_src > 0, 'ALTER TABLE product DROP COLUMN merge_src_colorway_id', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 4) Drop the merged-away parent. Its own FKs (tech_card_id, product_id, swatch, color_code) go with
 -- it; all children were repointed at product in 0151.

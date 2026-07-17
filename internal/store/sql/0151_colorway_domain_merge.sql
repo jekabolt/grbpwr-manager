@@ -97,7 +97,9 @@ SET @sql := IF(@need_plm,
         ADD COLUMN lab_dip_decided_by   VARCHAR(255) NULL,
         ADD COLUMN lab_dip_reject_reason TEXT        NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- swatch_media_id FK (guarded), mirrors fk_tech_card_colorway_swatch (ON DELETE SET NULL).
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
@@ -107,7 +109,9 @@ SET @sql := IF(@need_fk,
     'ALTER TABLE product ADD CONSTRAINT fk_product_swatch_media
         FOREIGN KEY (swatch_media_id) REFERENCES media(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- ------------------------------------------------------------------------------------------------
 -- 2) product.sku becomes nullable (NULL = unminted draft); the UNIQUE index stays (MySQL allows
@@ -117,12 +121,16 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 SET @sku_notnull := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'sku' AND IS_NULLABLE = 'NO');
 SET @sql := IF(@sku_notnull, 'ALTER TABLE product MODIFY COLUMN sku VARCHAR(64) NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @thumb_notnull := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'thumbnail_id' AND IS_NULLABLE = 'NO');
 SET @sql := IF(@thumb_notnull, 'ALTER TABLE product MODIFY COLUMN thumbnail_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- ------------------------------------------------------------------------------------------------
 -- 3) A temporary back-reference column so a bulk INSERT ... SELECT of draft rows can correlate each
@@ -132,7 +140,9 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 SET @need_src := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND COLUMN_NAME = 'merge_src_colorway_id');
 SET @sql := IF(@need_src, 'ALTER TABLE product ADD COLUMN merge_src_colorway_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- ------------------------------------------------------------------------------------------------
 -- 4) Persistent audit ledger (R1): legacy_id -> product_id, whether the product was linked or
@@ -225,13 +235,17 @@ SET FOREIGN_KEY_CHECKS = 0;
 SET @sql := IF(@old_fk IS NOT NULL,
     'UPDATE tech_card_colorway_usage c JOIN migration_colorway_merge_map m ON c.colorway_id = m.legacy_id SET c.colorway_id = m.product_id',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET FOREIGN_KEY_CHECKS = 1;
 SET @sql := IF(@old_fk IS NOT NULL,
     CONCAT('ALTER TABLE tech_card_colorway_usage DROP FOREIGN KEY ', @old_fk,
            ', ADD CONSTRAINT fk_tccu_colorway_product FOREIGN KEY (colorway_id) REFERENCES product(id) ON DELETE CASCADE'),
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 7b) tech_card_bom_colorway — legacy per-material colour matrix (superseded by usages, kept). CASCADE.
 SET @old_fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
@@ -241,13 +255,17 @@ SET FOREIGN_KEY_CHECKS = 0;
 SET @sql := IF(@old_fk IS NOT NULL,
     'UPDATE tech_card_bom_colorway c JOIN migration_colorway_merge_map m ON c.colorway_id = m.legacy_id SET c.colorway_id = m.product_id',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET FOREIGN_KEY_CHECKS = 1;
 SET @sql := IF(@old_fk IS NOT NULL,
     CONCAT('ALTER TABLE tech_card_bom_colorway DROP FOREIGN KEY ', @old_fk,
            ', ADD CONSTRAINT fk_tcbc_colorway_product FOREIGN KEY (colorway_id) REFERENCES product(id) ON DELETE CASCADE'),
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 7c) tech_card_piece_material — per-piece fabric mapping (fk_tcpm_colorway). CASCADE.
 SET @old_fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
@@ -257,13 +275,17 @@ SET FOREIGN_KEY_CHECKS = 0;
 SET @sql := IF(@old_fk IS NOT NULL,
     'UPDATE tech_card_piece_material c JOIN migration_colorway_merge_map m ON c.colorway_id = m.legacy_id SET c.colorway_id = m.product_id',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET FOREIGN_KEY_CHECKS = 1;
 SET @sql := IF(@old_fk IS NOT NULL,
     CONCAT('ALTER TABLE tech_card_piece_material DROP FOREIGN KEY ', @old_fk,
            ', ADD CONSTRAINT fk_tcpm_colorway_product FOREIGN KEY (colorway_id) REFERENCES product(id) ON DELETE CASCADE'),
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 7d) sample — a physical sample optionally tied to a colourway (fk_sample_colorway). ON DELETE SET NULL.
 SET @old_fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
@@ -273,13 +295,17 @@ SET FOREIGN_KEY_CHECKS = 0;
 SET @sql := IF(@old_fk IS NOT NULL,
     'UPDATE sample c JOIN migration_colorway_merge_map m ON c.colorway_id = m.legacy_id SET c.colorway_id = m.product_id',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 SET FOREIGN_KEY_CHECKS = 1;
 SET @sql := IF(@old_fk IS NOT NULL,
     CONCAT('ALTER TABLE sample DROP FOREIGN KEY ', @old_fk,
            ', ADD CONSTRAINT fk_sample_colorway_product FOREIGN KEY (colorway_id) REFERENCES product(id) ON DELETE SET NULL'),
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- 7e) Fail-fast: no OTHER table may still reference tech_card_colorway(id). If an unexpected child
 -- exists, STOP (the report survives) rather than orphan it when 0152 drops the parent.
@@ -300,12 +326,16 @@ SET @need_uniq := (SELECT COUNT(*) = 0 FROM information_schema.STATISTICS
 SET @sql := IF(@need_uniq,
     'ALTER TABLE product ADD CONSTRAINT uniq_product_style_color UNIQUE (style_id, color_code)',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @drop_old_uniq := (SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_colorway' AND INDEX_NAME = 'uniq_colorway_card_color');
 SET @sql := IF(@drop_old_uniq > 0, 'ALTER TABLE tech_card_colorway DROP INDEX uniq_colorway_card_color', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 -- One-way big-bang merge (R1/R10): rollback is restore-from-backup, not a Down. Intentionally empty.
