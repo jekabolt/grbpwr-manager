@@ -899,7 +899,7 @@ message TechCardInsert {
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
   // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
-  TechCardAuxSubtype aux_subtype = 104;
+  TechCardAuxSubtype aux_subtype = 105;
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into

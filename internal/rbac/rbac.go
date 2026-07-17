@@ -136,26 +136,26 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorwayRecipe":      wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
-	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
-	"GetColorwaysPaged":         rd(SectionProducts),
-	"GetColorwayByID":           rd(SectionProducts),
-	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
-	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
-	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
-	"UpdateVariantStock":        wr(SectionProducts),
-	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
-	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
-	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
+	"CreateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorwayRecipe":     wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
+	"UpdateStyle":              wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"GetColorwaysPaged":        rd(SectionProducts),
+	"GetColorwayByID":          rd(SectionProducts),
+	"ArchiveColorwayByID":      wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"PublishColorway":          wr(SectionProducts), // R6 lifecycle transition
+	"TransitionColorwayStatus": wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
+	"UpdateVariantStock":       wr(SectionProducts),
+	"CreateVariant":            wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":            wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":           wr(SectionProducts), // R2 archive-not-delete
 	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
-	"GetStyleSizeChart":    rd(SectionProducts),
-	"UpdateStyleSizeChart": wr(SectionProducts),
-	"GetStyleCutList":      rd(SectionProducts), // Q6: read-only production cut-list projection (mirror consumer)
-	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
-	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
+	"GetStyleSizeChart":               rd(SectionProducts),
+	"UpdateStyleSizeChart":            wr(SectionProducts),
+	"GetStyleCutList":                 rd(SectionProducts), // Q6: read-only production cut-list projection (mirror consumer)
+	"RelinkDraftColorway":             wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":             wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
 	"GetColorwayCustoms":              rd(SectionProducts),
 	"SetColorwayCustoms":              wr(SectionProducts),
@@ -282,26 +282,6 @@ var methodRequirements = map[string]Requirement{
 	"AddTechCardDevExpense":        wr(SectionTechCards),
 	"DeleteTechCardDevExpense":     wr(SectionTechCards),
 	"ListTechCardDevExpenses":      rd(SectionTechCards),
-	"CreateTechCard":           wr(SectionTechCards),
-	"GetTechCard":              rd(SectionTechCards),
-	"UpdateTechCard":           wr(SectionTechCards),
-	"DeleteTechCard":           wr(SectionTechCards),
-	"ListTechCards":            rd(SectionTechCards),
-	"GetStylePipeline":         rd(SectionTechCards),
-	"GetCostingFxRates":        rd(SectionTechCards),
-	"UpsertCostingFxRates":     wr(SectionTechCards),
-	"CreateMaterial":           wr(SectionTechCards),
-	"UpdateMaterial":           wr(SectionTechCards),
-	"ArchiveMaterial":          wr(SectionTechCards),
-	"GetMaterial":              rd(SectionTechCards),
-	"ListMaterials":            rd(SectionTechCards),
-	"AddMaterialPrice":         wr(SectionTechCards),
-	"ListMaterialPrices":       rd(SectionTechCards),
-	"ListTechCardReleases":     rd(SectionTechCards),
-	"GetTechCardRelease":       rd(SectionTechCards),
-	"AddTechCardDevExpense":    wr(SectionTechCards),
-	"DeleteTechCardDevExpense": wr(SectionTechCards),
-	"ListTechCardDevExpenses":  rd(SectionTechCards),
 	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
 	"UpsertStyleAssembly": wr(SectionTechCards),
 	"ListStyleAssembly":   rd(SectionTechCards),

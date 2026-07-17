@@ -649,7 +649,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
 			Purpose:           techCardPurposeToPb(tc.Purpose),
 			OutputMaterialId:  int32(tc.OutputMaterialId.Int64),
-			AuxSubtype:        auxSubtypeToPb(tc.AuxSubtype),
+			AuxSubtype:        techCardAuxSubtypeToPb(tc.AuxSubtype),
 			Name:              tc.Name,
 			Brand:             pbStringFromNull(tc.Brand),
 			SkuSeason:         skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
