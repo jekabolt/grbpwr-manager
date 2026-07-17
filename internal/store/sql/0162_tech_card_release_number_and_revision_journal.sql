@@ -52,7 +52,7 @@ DEALLOCATE PREPARE s;
 SET @need_action := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_revision' AND COLUMN_NAME = 'action');
 SET @sql := IF(@need_action,
-    "ALTER TABLE tech_card_revision ADD COLUMN action VARCHAR(24) NOT NULL DEFAULT 'other'",
+    'ALTER TABLE tech_card_revision ADD COLUMN action VARCHAR(24) NOT NULL DEFAULT ''other''',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
@@ -61,7 +61,7 @@ DEALLOCATE PREPARE s;
 SET @need_action_chk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_revision' AND CONSTRAINT_NAME = 'chk_tech_card_revision_action');
 SET @sql := IF(@need_action_chk,
-    "ALTER TABLE tech_card_revision ADD CONSTRAINT chk_tech_card_revision_action CHECK (action IN ('created','updated','approved','released','reverted','role_assigned','other'))",
+    'ALTER TABLE tech_card_revision ADD CONSTRAINT chk_tech_card_revision_action CHECK (action IN (''created'',''updated'',''approved'',''released'',''reverted'',''role_assigned'',''other''))',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;

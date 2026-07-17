@@ -24,7 +24,7 @@
 SET @need_sns := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND COLUMN_NAME = 'style_number_source');
 SET @sql := IF(@need_sns,
-    "ALTER TABLE tech_card ADD COLUMN style_number_source VARCHAR(16) NOT NULL DEFAULT 'generated'",
+    'ALTER TABLE tech_card ADD COLUMN style_number_source VARCHAR(16) NOT NULL DEFAULT ''generated''',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
@@ -33,7 +33,7 @@ DEALLOCATE PREPARE s;
 SET @need_sns_chk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND CONSTRAINT_NAME = 'chk_tech_card_style_number_source');
 SET @sql := IF(@need_sns_chk,
-    "ALTER TABLE tech_card ADD CONSTRAINT chk_tech_card_style_number_source CHECK (style_number_source IN ('generated','manual'))",
+    'ALTER TABLE tech_card ADD CONSTRAINT chk_tech_card_style_number_source CHECK (style_number_source IN (''generated'',''manual''))',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
@@ -45,7 +45,7 @@ DEALLOCATE PREPARE s;
 SET @need_cb := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND COLUMN_NAME = 'created_by');
 SET @sql := IF(@need_cb,
-    "ALTER TABLE tech_card ADD COLUMN created_by VARCHAR(255) NOT NULL DEFAULT ''",
+    'ALTER TABLE tech_card ADD COLUMN created_by VARCHAR(255) NOT NULL DEFAULT ''''',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
@@ -54,7 +54,7 @@ DEALLOCATE PREPARE s;
 SET @need_ub := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND COLUMN_NAME = 'updated_by');
 SET @sql := IF(@need_ub,
-    "ALTER TABLE tech_card ADD COLUMN updated_by VARCHAR(255) NOT NULL DEFAULT ''",
+    'ALTER TABLE tech_card ADD COLUMN updated_by VARCHAR(255) NOT NULL DEFAULT ''''',
     'SELECT 1');
 PREPARE s FROM @sql;
 EXECUTE s;
