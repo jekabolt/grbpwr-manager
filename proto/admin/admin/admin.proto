@@ -161,6 +161,21 @@ service AdminService {
     };
   }
 
+  // GetStyleSizeChart returns a style's full size chart plus the shared lock_version (R5). The admin
+  // UI loads the whole chart before editing, because UpdateStyleSizeChart is a full-replace.
+  rpc GetStyleSizeChart(GetStyleSizeChartRequest) returns (GetStyleSizeChartResponse) {
+    option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
+  }
+
+  // UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5). A colourway
+  // save never touches the chart; the chart is style-owned and shared by every colourway of the style.
+  rpc UpdateStyleSizeChart(UpdateStyleSizeChartRequest) returns (UpdateStyleSizeChartResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/styles/{style_id}/size-chart"
+      body: "*"
+    };
+  }
+
   // GetColorwayCustoms returns a product's international-shipping customs data (HS code, origin,
   // declared description).
   rpc GetColorwayCustoms(GetColorwayCustomsRequest) returns (GetColorwayCustomsResponse) {
@@ -1582,6 +1597,26 @@ message ArchiveVariantRequest {
 }
 
 message ArchiveVariantResponse {}
+
+// Style size chart (R5, full-replace). The chart is style-owned (tech_card_size_measurement) and shares
+// the style's tech_card.lock_version; there is no separate chart version.
+message GetStyleSizeChartRequest {
+  int32 style_id = 1;
+}
+
+message GetStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1;
+}
+
+message UpdateStyleSizeChartRequest {
+  int32 style_id = 1;
+  uint64 expected_lock_version = 2;
+  repeated common.StyleSizeChartCell cells = 3; // the WHOLE chart; anything omitted is deleted
+}
+
+message UpdateStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1; // the stored chart with the bumped lock_version
+}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the

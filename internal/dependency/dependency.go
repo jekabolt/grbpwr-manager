@@ -535,6 +535,12 @@ type (
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
 		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
+		// sql.ErrNoRows when the style is absent.
+		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)
+		// UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5,
+		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
