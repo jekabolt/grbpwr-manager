@@ -530,20 +530,31 @@ func TestConvertTechCardOperations(t *testing.T) {
 		t.Errorf("placement mismatch must be accepted (soft): %v", err)
 	}
 
-	// hard errors: out-of-range bom_item_index and unmatched callout_number.
+	// hard errors: out-of-range bom_item_index.
 	bad := map[string]*pb_common.TechCardInsert{
 		"op no node": {StyleNumber: "x", Name: "y", Operations: []*pb_common.TechCardOperation{{SeamType: "x"}}},
 		"bom idx range": {StyleNumber: "x", Name: "y",
 			BomItems:   []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "t"}},
 			Operations: []*pb_common.TechCardOperation{{Node: "n", BomItemIndex: i32(3)}}},
-		"callout unmatched": {StyleNumber: "x", Name: "y",
-			Callouts:   []*pb_common.TechCardCallout{{Number: 1}},
-			Operations: []*pb_common.TechCardOperation{{Node: "n", CalloutNumber: 9}}},
 	}
 	for name, bi := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
 			t.Errorf("case %q: expected error, got nil", name)
 		}
+	}
+
+	// An operation referencing a callout that no longer exists DETACHES (link cleared, op kept) —
+	// S8 parity with the piece callout-sync rules: sketch cleanup (K.31) is never vetoed by a stale
+	// display cross-ref. Changed from a hard error after the beta A–L run hit the veto live.
+	detached := &pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
+		Callouts:   []*pb_common.TechCardCallout{{Number: 1}},
+		Operations: []*pb_common.TechCardOperation{{Node: "n", CalloutNumber: 9}}}
+	ent, err := ConvertPbTechCardInsertToEntity(detached)
+	if err != nil {
+		t.Fatalf("unmatched callout_number must detach, not error: %v", err)
+	}
+	if len(ent.Operations) != 1 || ent.Operations[0].CalloutNumber.Valid {
+		t.Errorf("expected the operation kept with callout_number cleared, got %+v", ent.Operations)
 	}
 }
 

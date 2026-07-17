@@ -189,8 +189,13 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if o.CalloutNumber < 0 {
 			return nil, fmt.Errorf("operation callout_number must not be negative")
 		}
+		calloutNumber := nullInt32FromPb(o.CalloutNumber)
 		if o.CalloutNumber > 0 && !calloutNumbers[int(o.CalloutNumber)] {
-			return nil, fmt.Errorf("operation callout_number %d does not match any callout", o.CalloutNumber)
+			// S8 parity with pieces (callout-sync rules): a reference to a callout that no longer
+			// exists DETACHES — the link is cleared, the operation survives — instead of vetoing the
+			// save. Sketch cleanup (K.31) must not be blocked by a stale display cross-ref; the beta
+			// A–L run caught this path 400-ing where the piece path degrades gracefully.
+			calloutNumber = sql.NullInt32{}
 		}
 		stitches, err := nullDecimalFromPb(o.StitchesPerCm)
 		if err != nil {
@@ -226,7 +231,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Zone:            zone,
 			BomLineKey:      strings.TrimSpace(o.BomLineKey), // stable ref (WS3 follow-up); store prefers it over the index
 			BomItemIndex:    bomItemIndex,
-			CalloutNumber:   nullInt32FromPb(o.CalloutNumber),
+			CalloutNumber:   calloutNumber,
 			Placement:       normalizedPlacementNull(o.Placement),
 		})
 	}
