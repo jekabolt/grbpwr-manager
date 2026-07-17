@@ -39,10 +39,14 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
+	// clean is also registered via t.Cleanup below, which runs after the test's own `defer cancel()`
+	// has already cancelled ctx (defers run before Cleanups) — so it must use a fresh context, or the
+	// deferred DELETEs would silently no-op and leak rows into later tests.
 	clean := func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid LIKE 'T09-%'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE sku = 'T09-P'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM shipment_carrier WHERE carrier = 'T09-carrier'")
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid LIKE 'T09-%'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM product WHERE sku = 'T09-P'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier WHERE carrier = 'T09-carrier'")
 	}
 	clean()
 	t.Cleanup(clean)
@@ -72,8 +76,10 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)
 
-	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, price, tracking_url, allowed)
-		VALUES ('T09-carrier', 0, 'http://x', 1)`)
+	// shipment_carrier lost its own `price` column in migration 0016 (multi-currency prices moved to
+	// shipment_carrier_price); this test only needs a valid FK target for shipment.carrier_id.
+	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, tracking_url, allowed)
+		VALUES ('T09-carrier', 'http://x', 1)`)
 	require.NoError(t, err)
 	carrierID, err := cr.LastInsertId()
 	require.NoError(t, err)
@@ -84,7 +90,7 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 		require.NoError(t, err)
 		id, err := r.LastInsertId()
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", id) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", id) })
 		return id
 	}
 	deAddr, usAddr := addr("DE"), addr("US")
@@ -102,9 +108,10 @@ func TestAnalyticsV2Task09LogisticsDemand(t *testing.T) {
 			(order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
 			VALUES (?, 'a', 'b', ?, '1234567', ?, ?)`, oid, email, addrID, addrID)
 		require.NoError(t, err)
+		// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
 		_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, product_sale_percentage, quantity, size_id)
-			VALUES (?, ?, ?, ?, 0, 1, ?)`, oid, productID, totalPrice, totalPrice, sizeID)
+			(order_id, product_id, product_price, product_price_base, product_sale_percentage, quantity, size_id, product_sku)
+			VALUES (?, ?, ?, ?, 0, 1, ?, 'T09-P')`, oid, productID, totalPrice, totalPrice, sizeID)
 		require.NoError(t, err)
 		return oid
 	}

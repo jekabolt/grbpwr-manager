@@ -40,12 +40,16 @@ func TestAnalyticsV2Task04Delivery(t *testing.T) {
 	shippedStatus := statusID(entity.Shipped)
 	deliveredStatus := statusID(entity.Delivered)
 
-	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, price, tracking_url, allowed)
-		VALUES ('T04-carrier', 5.00, 'http://x', 1)`)
+	// shipment_carrier lost its own `price` column in migration 0016 (multi-currency prices moved to
+	// shipment_carrier_price); this test only needs a valid FK target for shipment.carrier_id.
+	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, tracking_url, allowed)
+		VALUES ('T04-carrier', 'http://x', 1)`)
 	require.NoError(t, err)
 	carrierID, err := cr.LastInsertId()
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM shipment_carrier WHERE id = ?", carrierID) })
+	// Fresh context: the test's ctx is already cancelled by its `defer cancel()` (defers run before
+	// Cleanups), which would make this DELETE a no-op and leak the row into later tests.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM shipment_carrier WHERE id = ?", carrierID) })
 
 	placed := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 	from := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -59,7 +63,7 @@ func TestAnalyticsV2Task04Delivery(t *testing.T) {
 		require.NoError(t, err)
 		oid, err := r.LastInsertId()
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE id = ?", oid) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM customer_order WHERE id = ?", oid) })
 		return int(oid)
 	}
 	mkHistory := func(orderID, statusID int, at time.Time) {

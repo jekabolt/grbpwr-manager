@@ -37,10 +37,14 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
+	// clean is also registered via t.Cleanup below, which runs after the test's own `defer cancel()`
+	// has already cancelled ctx (defers run before Cleanups) — so it must use a fresh context, or the
+	// deferred DELETEs would silently no-op and leak rows into later tests.
 	clean := func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM customer_order WHERE uuid LIKE 'T08-%'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE sku = 'T08-P'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM shipment_carrier WHERE carrier = 'T08-carrier'")
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid LIKE 'T08-%'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM product WHERE sku = 'T08-P'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier WHERE carrier = 'T08-carrier'")
 	}
 	clean()
 	t.Cleanup(clean)
@@ -66,8 +70,11 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 	productID, err := pr.LastInsertId()
 	require.NoError(t, err)
 
-	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, price, tracking_url, allowed)
-		VALUES ('T08-carrier', 0, 'http://x', 1)`)
+	// shipment_carrier lost its own `price` column in migration 0016 (multi-currency prices moved to
+	// shipment_carrier_price); this test drives shipping cost via shipment.actual_cost, so the carrier
+	// row is only needed as a valid FK target.
+	cr, err := testDB.ExecContext(ctx, `INSERT INTO shipment_carrier (carrier, tracking_url, allowed)
+		VALUES ('T08-carrier', 'http://x', 1)`)
 	require.NoError(t, err)
 	carrierID, err := cr.LastInsertId()
 	require.NoError(t, err)
@@ -78,7 +85,7 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 		require.NoError(t, err)
 		id, err := r.LastInsertId()
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM address WHERE id = ?", id) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM address WHERE id = ?", id) })
 		return id
 	}
 	deAddr, usAddr := addr("DE"), addr("US")
@@ -103,9 +110,10 @@ func TestAnalyticsV2Task08CountryEconomics(t *testing.T) {
 		if costPrice >= 0 {
 			cost = costPrice
 		}
+		// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
 		_, err := testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id)
-			VALUES (?, ?, 100, 100, ?, 0, 1, ?)`, orderID, productID, cost, sizeID)
+			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
+			VALUES (?, ?, 100, 100, ?, 0, 1, ?, 'T08-P')`, orderID, productID, cost, sizeID)
 		require.NoError(t, err)
 	}
 

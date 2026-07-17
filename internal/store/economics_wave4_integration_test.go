@@ -67,8 +67,12 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	styleID := seedSpineStyle(ctx, t, "ECO-W4")
-	mkProduct := func(sku string) int {
+	// Coat and t-shirt are different garment styles, not two colorways of the same style — each
+	// needs its own tech_card. product.uniq_product_style_color (migration 0151) now enforces at
+	// most one product per (style_id, color_code), so sharing one style_id here with the same
+	// hardcoded 'BLK' color_code for both products would collide on the second insert.
+	mkProduct := func(tag, sku string) int {
+		styleID := seedSpineStyle(ctx, t, tag)
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
 			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
 			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
@@ -77,8 +81,8 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 		require.NoError(t, err)
 		return int(id)
 	}
-	coatID = mkProduct("ECO-W4-COAT")
-	tshirtID = mkProduct("ECO-W4-TSHIRT")
+	coatID = mkProduct("ECO-W4-COAT", "ECO-W4-COAT")
+	tshirtID = mkProduct("ECO-W4-TSHIRT", "ECO-W4-TSHIRT")
 
 	// A partially_refunded order (a net-revenue status) placed inside the window.
 	// total_settled_base == the reconstructed base (200) so the FX factor is exactly 1;
@@ -93,18 +97,19 @@ func TestRefundLineLevelApportionment(t *testing.T) {
 	require.NoError(t, err)
 
 	// Two lines, €100 base list / €40 base cost each, both snapshots set directly so no
-	// product_price / product.cost_price lookup is needed.
-	mkItem := func(prodID int) int64 {
+	// product_price / product.cost_price lookup is needed. product_sku is NOT NULL as of migration
+	// 0150 (immutable variant-SKU snapshot of a sold line).
+	mkItem := func(prodID int, sku string) int64 {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO order_item
-			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id)
-			VALUES (?, ?, 100, 100, 40, 0, 1, ?)`, orderID, prodID, sizeID)
+			(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
+			VALUES (?, ?, 100, 100, 40, 0, 1, ?, ?)`, orderID, prodID, sizeID, sku)
 		require.NoError(t, err)
 		id, err := res.LastInsertId()
 		require.NoError(t, err)
 		return id
 	}
-	coatItemID := mkItem(coatID)
-	_ = mkItem(tshirtID)
+	coatItemID := mkItem(coatID, "ECO-W4-COAT")
+	_ = mkItem(tshirtID, "ECO-W4-TSHIRT")
 
 	// The coat is fully returned (1 of 1 unit); the t-shirt is kept.
 	_, err = testDB.ExecContext(ctx, `INSERT INTO refunded_order_item
@@ -361,10 +366,12 @@ func TestInventoryValuation(t *testing.T) {
 	require.NoError(t, err)
 
 	styleID := seedSpineStyle(ctx, t, "ECO-W4-INV")
-	mkProduct := func(sku string, cost string, onHand int) int {
+	// Three distinct colorways of the shared style (product.uniq_product_style_color from migration
+	// 0151 allows at most one product per (style_id, color_code), so they can't all share 'BLK').
+	mkProduct := func(sku, colorCode, cost string, onHand int) int {
 		res, err := testDB.ExecContext(ctx, `INSERT INTO product
 			(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
-			VALUES (?, 'c', 'BLK', '#000000', 'US', ?, ?)`, sku, mediaID, styleID)
+			VALUES (?, 'c', ?, '#000000', 'US', ?, ?)`, sku, colorCode, mediaID, styleID)
 		require.NoError(t, err)
 		id64, err := res.LastInsertId()
 		require.NoError(t, err)
@@ -378,9 +385,9 @@ func TestInventoryValuation(t *testing.T) {
 		require.NoError(t, err)
 		return id
 	}
-	prodA = mkProduct("ECO-W4-INV-A", "10", 5) // costed, sells → not dead
-	prodB = mkProduct("ECO-W4-INV-B", "20", 3) // costed, no sale → dead stock
-	prodC = mkProduct("ECO-W4-INV-C", "", 4)   // uncosted
+	prodA = mkProduct("ECO-W4-INV-A", "BLK", "10", 5) // costed, sells → not dead
+	prodB = mkProduct("ECO-W4-INV-B", "WHT", "20", 3) // costed, no sale → dead stock
+	prodC = mkProduct("ECO-W4-INV-C", "NAV", "", 4)   // uncosted
 
 	// Window: sale of A + the write-off both fall inside it; B has no sale.
 	winStart := time.Date(2026, 2, 12, 0, 0, 0, 0, time.UTC)
@@ -393,9 +400,10 @@ func TestInventoryValuation(t *testing.T) {
 	require.NoError(t, err)
 	orderID, err = res.LastInsertId()
 	require.NoError(t, err)
+	// product_sku is NOT NULL as of migration 0150 (immutable variant-SKU snapshot of a sold line).
 	_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
-		(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id)
-		VALUES (?, ?, 30, 30, 10, 0, 1, ?)`, orderID, prodA, sizeID)
+		(order_id, product_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, product_sku)
+		VALUES (?, ?, 30, 30, 10, 0, 1, ?, 'ECO-W4-INV-A')`, orderID, prodA, sizeID)
 	require.NoError(t, err)
 
 	// Damage write-off: 2 units of A removed in the window.
