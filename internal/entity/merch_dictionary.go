@@ -20,6 +20,11 @@ const (
 	DictNamespaceCountry     DictionaryNamespace = "country"
 	DictNamespaceSize        DictionaryNamespace = "size"
 	DictNamespaceMeasurement DictionaryNamespace = "measurement"
+	// DictNamespaceCategorySizeSystem covers the category -> size-system mapping (S10/WS5, migration
+	// 0175). Seeded once with revision=1; no CRUD path bumps it yet (the table is migration-seeded,
+	// not admin-editable in WS5) -- the namespace row exists so a future editable mapping does not
+	// need a follow-up migration to register it.
+	DictNamespaceCategorySizeSystem DictionaryNamespace = "category_size_system"
 )
 
 // CollectionDict is a controlled collection dictionary entry (R9). Code is a stable unique slug; an

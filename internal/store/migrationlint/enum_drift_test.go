@@ -204,6 +204,17 @@ func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "MaterialPriceSource", dbValues, mapKeysAsStrings(entity.ValidMaterialPriceSources))
 }
 
+// TestCategorySizeSystemDBCheckNoDrift extends the drift test to category_size_system.size_system
+// (S10/WS5): it must accept exactly entity.ValidSizeSKUSystems, the SAME set migration 0147's
+// chk_size_sku_contract already enforces on size.sku_system (TestSizeSKUSystemDBCheckNoDrift above) --
+// the two CHECKs are independent constraints on different tables and must not drift from each other
+// or from the entity enum.
+func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0175_category_size_system.sql")
+	dbValues := extractDBEnumValues(t, content, "chk_category_size_system_system", 200)
+	assertSameSet(t, "CategorySizeSystem.size_system", dbValues, mapKeysAsStrings(entity.ValidSizeSKUSystems))
+}
+
 // TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
 // matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
 // guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).

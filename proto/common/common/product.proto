@@ -38,6 +38,19 @@ message Size {
   SizeSkuSystem sku_system = 7;
 }
 
+// CategorySizeSystem maps a category-tree node to a permitted SizeSkuSystem (S10/WS5, migration
+// 0175). A row targets EITHER category_id (a broad category/sub-category node) OR type_id (a specific
+// leaf type) -- never both set; 0 means unset. The admin size picker resolves a style's category
+// chain against this table (most specific match wins: type_id, then category_id) to filter which
+// size systems/sizes it offers; CreateVariant and the style's size-range write (UpdateTechCard)
+// enforce the same rule server-side.
+message CategorySizeSystem {
+  int32 id = 1;
+  int32 category_id = 2; // 0 = unset (matches on type_id instead); FK Category.id
+  int32 type_id = 3; // 0 = unset (matches on category_id instead); FK Category.id
+  SizeSkuSystem sku_system = 4;
+}
+
 // Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the
 // colour segment of the SKU and is referenced by product.color_code.
 message Color {

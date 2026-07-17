@@ -97,6 +97,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve)
+		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, styleNumberTaken()
 		}
@@ -178,6 +182,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		s.preserveStoredCosting(ctx, int(req.Id), tc)
 	}
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
 		}
