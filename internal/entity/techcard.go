@@ -64,6 +64,26 @@ var ValidTechCardPurposes = map[TechCardPurpose]bool{
 	TechCardPurposeAuxiliary: true,
 }
 
+// StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
+// proposed it from the season+sequence contract; `manual` = the owner deliberately overrode the
+// proposal (and the value passed the strict format validator). Mirrors the common.StyleNumberSource
+// proto enum; stored in tech_card.style_number_source (CHECK generated|manual, DEFAULT generated).
+type StyleNumberSource string
+
+const (
+	StyleNumberSourceGenerated StyleNumberSource = "generated"
+	StyleNumberSourceManual    StyleNumberSource = "manual"
+)
+
+// ValidStyleNumberSources is the set of accepted provenance values.
+var ValidStyleNumberSources = map[StyleNumberSource]bool{
+	StyleNumberSourceGenerated: true,
+	StyleNumberSourceManual:    true,
+}
+
+// IsValidStyleNumberSource reports whether s is an accepted provenance value.
+func IsValidStyleNumberSource(s StyleNumberSource) bool { return ValidStyleNumberSources[s] }
+
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
 // TechCardStage. It mirrors the common.TechCardApprovalState proto enum and is
 // stored as a string in tech_card.approval_state.
@@ -773,6 +793,15 @@ type TechCardPiece struct {
 type TechCardInsert struct {
 	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
 	StyleNumber sql.NullString `db:"style_number"`
+	// StyleNumberSource is the provenance of StyleNumber (Q1): `generated` (server-proposed) or
+	// `manual` (owner override). A manual override must pass the strict style-number format validator;
+	// global UNIQUE(style_number) is the authority on collisions. Empty defaults to `generated`.
+	StyleNumberSource StyleNumberSource `db:"style_number_source"`
+	// CreatedBy/UpdatedBy are server-stamped audit usernames (norm §2.11, GetAdminUsername). They are
+	// on the writable payload only so the store can persist them; the API never reads them from the
+	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
+	CreatedBy string `db:"created_by"`
+	UpdatedBy string `db:"updated_by"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.

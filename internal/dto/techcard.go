@@ -483,8 +483,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	return &entity.TechCardInsert{
-		StyleNumber:      nullStringFromPb(styleNumber),
-		Purpose:          purpose,
+		StyleNumber:       nullStringFromPb(styleNumber),
+		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
+		Purpose:           purpose,
 		OutputMaterialId: outputMaterialId,
 		Name:             pb.Name,
 		Brand:            nullStringFromPb(pb.Brand),
@@ -661,9 +662,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		LockVersion: int32(tc.LockVersion),
 		CreatedAt:   timestamppb.New(tc.CreatedAt),
 		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
+		CreatedBy:   tc.CreatedBy,
+		UpdatedBy:   tc.UpdatedBy,
 		TechCard: &pb_common.TechCardInsert{
-			StyleNumber:      tc.StyleNumber.String,
-			Purpose:          techCardPurposeToPb(tc.Purpose),
+			StyleNumber:       tc.StyleNumber.String,
+			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
+			Purpose:           techCardPurposeToPb(tc.Purpose),
 			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
 			Name:             tc.Name,
 			Brand:            pbStringFromNull(tc.Brand),
@@ -1541,6 +1545,24 @@ func techCardPurposeToPb(p entity.TechCardPurpose) pb_common.TechCardPurpose {
 	default:
 		return pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN
 	}
+}
+
+// styleNumberSourceFromPb maps the provenance enum to the stored string; UNKNOWN defaults to
+// `generated` (the server-proposed default). An explicit MANUAL survives so the handler enforces
+// the strict override contract.
+func styleNumberSourceFromPb(s pb_common.StyleNumberSource) entity.StyleNumberSource {
+	if s == pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_MANUAL {
+		return entity.StyleNumberSourceManual
+	}
+	return entity.StyleNumberSourceGenerated
+}
+
+// styleNumberSourceToPb maps the stored provenance string back to the enum (default GENERATED).
+func styleNumberSourceToPb(s entity.StyleNumberSource) pb_common.StyleNumberSource {
+	if s == entity.StyleNumberSourceManual {
+		return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_MANUAL
+	}
+	return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
 }
 
 // techCardPurposeFromPb maps the R6 numeric enum to the stored purpose string ("" for UNKNOWN, which

@@ -638,12 +638,25 @@ message SkuSeason {
   int32 year = 2;
 }
 
+// StyleNumberSource records how a tech card's style_number was set (PLM-rework Q1): GENERATED = the
+// server proposed it from the season+sequence contract (SuggestStyleNumber); MANUAL = the owner
+// overrode the proposal (the value then passes the strict format validator). UNKNOWN defaults to
+// GENERATED on write.
+enum StyleNumberSource {
+  STYLE_NUMBER_SOURCE_UNKNOWN = 0;
+  STYLE_NUMBER_SOURCE_GENERATED = 1;
+  STYLE_NUMBER_SOURCE_MANUAL = 2;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
   // is by definition pre-article (NF-03/B-2). Moving a card out of IDEA without a real style
-  // number is rejected with InvalidArgument.
+  // number is rejected with InvalidArgument. A hand-typed override must set style_number_source =
+  // MANUAL and pass the strict format validator; the global UNIQUE(style_number) index is the
+  // authority on collisions (Q1). Use SuggestStyleNumber to get the server proposal.
   string style_number = 1;
+  StyleNumberSource style_number_source = 104; // provenance; UNKNOWN defaults to GENERATED
   string name = 2; // Название изделия (required)
   string brand = 3;
   reserved 4;
@@ -740,6 +753,10 @@ message TechCard {
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
   int32 lock_version = 6; // optimistic-lock token; echo into UpdateTechCardRequest.expected_lock_version
+  // Server-stamped audit usernames (norm §2.11, GetAdminUsername). Read-only: set by the server on
+  // create/update, never accepted from the write payload.
+  string created_by = 10;
+  string updated_by = 11;
   // Resolved sketch media (MediaFull), split to mirror the writable lists.
   repeated TechCardMediaFull resolved_moodboard_media = 7;
   repeated TechCardMediaFull resolved_technical_media = 8;

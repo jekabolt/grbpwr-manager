@@ -40,15 +40,15 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // pricing is on costing).
 // season_code/season_year are the normalized SKU-facing season (task 05). The legacy `season`
 // column remains only as a canonical derived label for the existing UNIQUE key/read models.
-const techCardHeaderColumns = `style_number, name, brand, season, season_code, season_year, collection, category_id,
+const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
 	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	measurement_unit, concept, notes, purpose, output_material_id`
+	measurement_unit, concept, notes, purpose, output_material_id, created_by, updated_by`
 
-const techCardHeaderValues = `:style_number, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
+const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
 	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
+	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -56,6 +56,12 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	purpose := tc.Purpose
 	if purpose == "" {
 		purpose = entity.TechCardPurposeSellable
+	}
+	// Default an unset provenance to `generated` so a direct entity insert satisfies the
+	// chk_tech_card_style_number_source CHECK (the dto defaults it too; this covers store callers).
+	styleNumberSource := tc.StyleNumberSource
+	if styleNumberSource == "" {
+		styleNumberSource = entity.StyleNumberSourceGenerated
 	}
 	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
 		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
@@ -78,6 +84,9 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	tc.SeasonLabel = seasonLabel
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
+		"style_number_source": string(styleNumberSource),
+		"created_by":          tc.CreatedBy,
+		"updated_by":          tc.UpdatedBy,
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
 		"name":                tc.Name,
@@ -268,7 +277,8 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
-				style_number = :style_number, name = :name,
+				style_number = :style_number, style_number_source = :style_number_source, name = :name,
+				updated_by = :updated_by,
 				category_id = :category_id,
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
