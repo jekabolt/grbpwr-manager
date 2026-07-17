@@ -6,9 +6,16 @@ FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" w
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"2\" with name \"size_id\" on message \"OrderItemAdjustment\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"CustomOrderItemInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"OrderItemInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"10\" with name \"version\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"11\" with name \"revision_date\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"14\" with name \"designer\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"15\" with name \"constructor\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"16\" with name \"technologist\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardColorwayCost\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardPieceColorwayMaterial\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"31\" with name \"product_ids\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"34\" with name \"revisions\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"36\" with name \"approved_by\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"41\" with name \"colorways\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.
