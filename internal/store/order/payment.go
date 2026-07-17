@@ -394,6 +394,12 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 			return fmt.Errorf("can't restore stock: %w", err)
 		}
 
+		// Payment expiry cancels outside cancelOrder's choke point — release the order's open
+		// packaging claims here too (WS2 residual #1): an expired order never ships.
+		if err := releaseOpenPackagingClaims(ctx, txDB, order.Id); err != nil {
+			return fmt.Errorf("can't release packaging reservations: %w", err)
+		}
+
 		statusCancelled, ok := cache.GetOrderStatusByName(entity.Cancelled)
 		if !ok {
 			return fmt.Errorf("can't get order status by name %s", entity.Cancelled)

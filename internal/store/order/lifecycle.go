@@ -295,6 +295,12 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 			return fmt.Errorf("restore stock: %w", err)
 		}
 
+		// A Confirmed-order full refund restores stock without passing through cancelOrder —
+		// release the order's open packaging claims as well (WS2 residual #1): it will not ship.
+		if err := releaseOpenPackagingClaims(ctx, rep.DB(), order.Id); err != nil {
+			return fmt.Errorf("release packaging reservations: %w", err)
+		}
+
 		refundedByItem := make(map[int]int64)
 		for _, r := range itemsToRefund {
 			refundedByItem[r.OrderItemId] += r.OrderItemInsert.Quantity.IntPart()
