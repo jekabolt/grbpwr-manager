@@ -234,10 +234,12 @@ func buildCustoms(items []entity.OrderItemParcel, currency string) (*entity.Labe
 	var missing []int32
 	out := &entity.LabelCustoms{Purpose: "merchandise"}
 	for _, it := range items {
-		// country_of_origin is the core product field (free-text manufacture country, e.g. a name or
-		// code); resolve it to the ISO-2 Sendcloud requires. A missing HS code or an unresolvable
-		// origin flags the product as lacking customs data.
-		originISO2, originOK := entity.ResolveCountryISO2(it.CountryOfOrigin.String)
+		// product.country_code is the normalised ISO-3166-1 alpha-2 origin, populated by the 0151
+		// backfill (fail-fast on any unmappable value) and by the product write path. Read it directly:
+		// the label no longer resolves free-text country on the fly (R9). A missing HS code or a
+		// NULL/empty origin code flags the product as lacking customs data.
+		originISO2 := strings.ToUpper(strings.TrimSpace(it.CountryCode.String))
+		originOK := it.CountryCode.Valid && originISO2 != ""
 		if !it.HSCode.Valid || strings.TrimSpace(it.HSCode.String) == "" || !originOK {
 			missing = append(missing, int32(it.ProductId))
 			continue

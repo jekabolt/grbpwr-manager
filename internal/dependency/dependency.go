@@ -826,6 +826,7 @@ type (
 		Samples() Samples
 		Admin() Admin
 		Cache() Cache
+		Dictionary() Dictionary
 		Mail() Mail
 		Archive() Archive
 		GA4Data() GA4DataStore
@@ -855,6 +856,31 @@ type (
 
 	Cache interface {
 		GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, error)
+	}
+
+	// Dictionary is the write/manage surface for the controlled merch dictionaries (R9). Every mutation
+	// carries an optimistic expected_version (0 opts out) and returns the namespace's new
+	// dictionary_revision, bumped in the same transaction as the change.
+	Dictionary interface {
+		GetDictionaryRevisions(ctx context.Context) (map[entity.DictionaryNamespace]int64, error)
+
+		ListColors(ctx context.Context, includeArchived bool) ([]entity.Color, error)
+		CreateColor(ctx context.Context, code, name, hex string, expectedVersion int64) (entity.Color, int64, error)
+		UpdateColor(ctx context.Context, code, name, hex string, expectedVersion int64) (int64, error)
+		ArchiveColor(ctx context.Context, code string, expectedVersion int64) (int64, error)
+
+		ListCollections(ctx context.Context, includeArchived bool) ([]entity.CollectionDict, error)
+		CreateCollection(ctx context.Context, name string, expectedVersion int64) (entity.CollectionDict, int64, error)
+		UpdateCollection(ctx context.Context, id int, name string, expectedVersion int64) (int64, error)
+		ArchiveCollection(ctx context.Context, id int, expectedVersion int64) (int64, error)
+
+		ListTags(ctx context.Context, includeArchived bool) ([]entity.TagDict, error)
+		CreateTag(ctx context.Context, name string, expectedVersion int64) (entity.TagDict, int64, error)
+		UpdateTag(ctx context.Context, id int, name string, expectedVersion int64) (int64, error)
+		ArchiveTag(ctx context.Context, id int, expectedVersion int64) (int64, error)
+
+		ListCountries(ctx context.Context, activeOnly bool) ([]entity.Country, error)
+		SetCountryActive(ctx context.Context, code string, active bool, expectedVersion int64) (int64, error)
 	}
 
 	// DB represents database interface.

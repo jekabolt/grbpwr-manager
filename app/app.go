@@ -106,6 +106,13 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Background dictionary-revision poller (R9 versioned invalidation): every instance reloads its
+	// in-memory merch dictionaries within DefaultDictionaryPollInterval of a colour/collection/tag/
+	// country change made on any instance. ctx is app-lifetime, so it stops on shutdown.
+	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
+		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
+	}
+
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't connect to mailer",

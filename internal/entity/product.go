@@ -76,10 +76,11 @@ type Size struct {
 // colour segment of the SKU and is referenced by product.color_code and tech_card_colorway.color_code.
 // Hex is the base shade; product.color_hex may override it per product.
 type Color struct {
-	ID   int            `db:"id"`
-	Code string         `db:"code"`
-	Name string         `db:"name"`
-	Hex  sql.NullString `db:"hex"`
+	ID         int            `db:"id"`
+	Code       string         `db:"code"`
+	Name       string         `db:"name"`
+	Hex        sql.NullString `db:"hex"`
+	ArchivedAt sql.NullTime   `db:"archived_at"`
 }
 
 // Collection represents a product collection with counts

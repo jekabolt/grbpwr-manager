@@ -121,6 +121,7 @@ func (s *Store) GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.
 		oi.product_sku AS sku,
 		p.hs_code,
 		p.country_of_origin,
+		p.country_code,
 		p.customs_description,
 		tcp.weight_gross_grams,
 		tcp.box_dimensions
