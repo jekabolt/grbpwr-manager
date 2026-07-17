@@ -99,14 +99,16 @@ service AdminService {
     };
   }
 
-  // Retrieves a paginated list of colourways.
-  rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
-    option (google.api.http) = {get: "/api/admin/colorways/paged"};
-  }
-
   // Gets a colourway by its id.
   rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
     option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}"};
+  }
+
+  // Retrieves a paginated list of colourways. NOTE on ordering: grpc-gateway's mux prepends
+  // handlers, so the LAST-declared route wins — the literal `/colorways/paged` GET must be declared
+  // AFTER `/colorways/{colorway_id}` or {colorway_id} captures "paged" (beta seeding caught this).
+  rpc GetColorwaysPaged(GetColorwaysPagedRequest) returns (GetColorwaysPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/colorways/paged"};
   }
 
   // ArchiveColorwayByID retires a colourway (archive-not-delete, R6/R9): ACTIVE|HIDDEN -> ARCHIVED
