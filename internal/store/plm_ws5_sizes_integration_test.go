@@ -41,7 +41,7 @@ func assignStyleCategory(ctx context.Context, t *testing.T, s *MYSQLStore, style
 		Brand: "ACME", Season: entity.SeasonSS, Collection: "core",
 		TargetGender: entity.Unisex, TopCategoryId: categoryID,
 	}
-	v1, err := s.Products().UpdateStyle(ctx, styleID, v0, patch)
+	v1, err := s.Products().UpdateStyle(ctx, styleID, v0, patch, nil)
 	require.NoError(t, err)
 	return v1
 }

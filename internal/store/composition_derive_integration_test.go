@@ -95,7 +95,7 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 		"INSERT INTO bom_item_composition (bom_item_id, fiber_code, percent) VALUES (?, 'COT', 100.00)", fab1ID)
 	require.NoError(t, err)
 
-	newVer, err := P.UpdateStyle(ctx, tcID, card.LockVersion, patch)
+	newVer, err := P.UpdateStyle(ctx, tcID, card.LockVersion, patch, nil)
 	require.NoError(t, err)
 
 	rows := readStyleComposition(t, ctx, tcID)
@@ -119,7 +119,7 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 		"INSERT INTO bom_item_composition (bom_item_id, fiber_code, percent) VALUES (?, 'POL', 100.00)", fab2ID)
 	require.NoError(t, err)
 
-	newVer, err = P.UpdateStyle(ctx, tcID, newVer, patch)
+	newVer, err = P.UpdateStyle(ctx, tcID, newVer, patch, nil)
 	require.NoError(t, err)
 
 	rows = readStyleComposition(t, ctx, tcID)
@@ -140,7 +140,7 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 		"INSERT INTO style_composition (tech_card_id, fiber_code, percent, source) VALUES (?, 'SLK', 100.00, 'manual')", tcID)
 	require.NoError(t, err)
 
-	_, err = P.UpdateStyle(ctx, tcID, newVer, patch)
+	_, err = P.UpdateStyle(ctx, tcID, newVer, patch, nil)
 	require.NoError(t, err)
 
 	rows = readStyleComposition(t, ctx, tcID)

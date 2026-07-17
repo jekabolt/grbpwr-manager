@@ -101,7 +101,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 	_, err = P.UpdateStyle(ctx, tcID, lockVer, entity.StylePatch{
 		TopCategoryId: 1, Season: entity.SeasonEnum("SS"), TargetGender: entity.GenderEnum("unisex"),
 		Composition: sql.NullString{String: apiComposition, Valid: true},
-	})
+	}, nil)
 	require.NoError(t, err, "UpdateStyle must accept plain wire text for composition (JSON_QUOTE, not raw)")
 	pfAPI, err := P.GetProductByIdShowHidden(ctx, cwID)
 	require.NoError(t, err)

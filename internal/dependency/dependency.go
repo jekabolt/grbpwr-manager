@@ -37,7 +37,7 @@ type (
 		// UpdateStyle is the sole writer of a style's catalogue facts (R4/§14.7), optimistically locked on
 		// the shared tech_card.lock_version. A SKU-fact (season) change re-mints unfrozen siblings, or is
 		// refused (entity.ErrStyleFrozenSiblings) if any sibling is SKU-frozen. Returns the new lock_version.
-		UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch) (int, error)
+		UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch, fields []string) (int, error)
 		// AddProduct is the legacy coupled create, retained as a store-level test fixture (no RPC surface
 		// after UpsertColorway was decomposed).
 		AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error)
