@@ -82,6 +82,10 @@ type (
 		// SetVariantStatus applies a lifecycle status to a variant under an optimistic guard (R2:
 		// archive-not-delete). Returns sql.ErrNoRows if the variant is absent; size_id/SKU are immutable.
 		SetVariantStatus(ctx context.Context, variantID int, target entity.VariantStatus) (entity.Variant, error)
+		// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4), guarded on both sides'
+		// shared lock_version, re-minting its SKU. entity.ErrColorwayNotDraft if not draft,
+		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent.
+		RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.

@@ -56,3 +56,28 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	return &pb_admin.UpdateStyleSizeChartResponse{Chart: dto.StyleSizeChartToPb(chart)}, nil
 }
+
+// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4). A non-draft colourway is
+// FailedPrecondition; a stale version on either side is ABORTED; an unknown colourway/target is NotFound.
+func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDraftColorwayRequest) (*pb_admin.RelinkDraftColorwayResponse, error) {
+	if req.ColorwayId <= 0 || req.TargetStyleId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id and target_style_id are required")
+	}
+	err := s.repo.Products().RelinkDraftColorway(ctx, int(req.ColorwayId), int(req.TargetStyleId),
+		int(req.ExpectedColorwayVersion), int(req.ExpectedTargetStyleVersion))
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, status.Errorf(codes.NotFound, "colourway %d or target style %d not found", req.ColorwayId, req.TargetStyleId)
+		case errors.Is(err, entity.ErrColorwayNotDraft):
+			return nil, status.Errorf(codes.FailedPrecondition, "colourway %d is not a draft; only drafts can be relinked", req.ColorwayId)
+		case errors.Is(err, entity.ErrTechCardConflict):
+			return nil, status.Error(codes.Aborted, "the colourway or a style was modified concurrently; reload and retry")
+		default:
+			slog.Default().ErrorContext(ctx, "can't relink draft colourway", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't relink colourway: %v", err)
+		}
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	return &pb_admin.RelinkDraftColorwayResponse{}, nil
+}

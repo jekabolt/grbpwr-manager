@@ -176,6 +176,16 @@ service AdminService {
     };
   }
 
+  // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
+  // frozen-sibling problem). Only a DRAFT may be relinked; both sides are optimistically locked and the
+  // colourway's SKU is re-minted from the target style's facts.
+  rpc RelinkDraftColorway(RelinkDraftColorwayRequest) returns (RelinkDraftColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/relink"
+      body: "*"
+    };
+  }
+
   // GetColorwayCustoms returns a product's international-shipping customs data (HS code, origin,
   // declared description).
   rpc GetColorwayCustoms(GetColorwayCustomsRequest) returns (GetColorwayCustomsResponse) {
@@ -1617,6 +1627,17 @@ message UpdateStyleSizeChartRequest {
 message UpdateStyleSizeChartResponse {
   common.StyleSizeChart chart = 1; // the stored chart with the bumped lock_version
 }
+
+// RelinkDraftColorway (R4): move a DRAFT colourway onto target_style_id. Both expected versions echo the
+// respective styles' shared tech_card.lock_version (stale -> ABORTED).
+message RelinkDraftColorwayRequest {
+  int64 colorway_id = 1;
+  int64 target_style_id = 2;
+  uint64 expected_colorway_version = 3;
+  uint64 expected_target_style_version = 4;
+}
+
+message RelinkDraftColorwayResponse {}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the

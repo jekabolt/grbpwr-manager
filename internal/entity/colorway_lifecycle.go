@@ -1,6 +1,14 @@
 package entity
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrColorwayNotDraft is returned when an operation that is only valid for a DRAFT colourway (e.g.
+// RelinkDraftColorway) targets a colourway in another state. The API layer maps it to
+// FailedPrecondition.
+var ErrColorwayNotDraft = errors.New("colourway is not a draft")
 
 // ColorwayStatus is a colourway's (product row's) lifecycle state and the single authoritative source
 // of lifecycle — the legacy (hidden, deleted_at) pair and the generated `status` enum are gone
