@@ -238,12 +238,21 @@ var methodRequirements = map[string]Requirement{
 	"UpdateFitting": wr(SectionFittings),
 	"DeleteFitting": wr(SectionFittings),
 	"ListFittings":  rd(SectionFittings),
+	// fitting change requests (S26): structured remark items with dedicated CRUD + carry-over
+	"AddFittingChangeRequest":       wr(SectionFittings),
+	"UpdateFittingChangeRequest":    wr(SectionFittings),
+	"DeleteFittingChangeRequest":    wr(SectionFittings),
+	"ListOpenFittingChangeRequests": rd(SectionFittings),
 	// samples (new-flow NF-04) — part of the fitting/try-on cycle
 	"AddSample":    wr(SectionFittings),
 	"UpdateSample": wr(SectionFittings),
 	"DeleteSample": wr(SectionFittings),
 	"GetSample":    rd(SectionFittings),
 	"ListSamples":  rd(SectionFittings),
+	// sample substitutions (§2.7): dev-time material deviations on a sample
+	"AddSampleSubstitution":    wr(SectionFittings),
+	"DeleteSampleSubstitution": wr(SectionFittings),
+	"ListSampleSubstitutions":  rd(SectionFittings),
 	// tech cards
 	"CreateTechCard":           wr(SectionTechCards),
 	"GetTechCard":              rd(SectionTechCards),
