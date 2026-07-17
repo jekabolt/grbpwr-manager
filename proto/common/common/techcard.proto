@@ -571,13 +571,24 @@ message TechCardIssue {
 }
 
 // TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
+// TechCardLabel is the garment's label/tag SPEC — one of the three historically-unconnected "label"
+// concepts (S21): (a) THIS spec, (b) the shipment label (common/shipment.proto — a shipping document,
+// deliberately NOT merged, a different domain), (c) the label MATERIAL as a BOM line
+// (tech_card_bom_item, section=label). WS7 unifies (a)↔(c) via bom_item_id below, and classifies the
+// auxiliary item via TechCard.aux_subtype. DEPRECATION (destructive → M3, not done here): once
+// bom_item_id + aux_subtype are adopted, label_type collapses into aux_subtype and the free-text
+// content/placement/attachment/size overlap (also carried structurally by the linked material + the
+// assembly bill's print_note/position_note) is dropped in a guarded migration.
 message TechCardLabel {
-  TechCardLabelType label_type = 1; // required
-  string content = 2; // содержание / артикул
-  string placement = 3; // размещение
-  string attachment = 4; // крепление
+  TechCardLabelType label_type = 1; // required. DEPRECATED-PENDING-M3: to be subsumed by TechCard.aux_subtype.
+  string content = 2; // содержание / артикул. DEPRECATED-PENDING-M3: overlaps the linked BOM material.
+  string placement = 3; // размещение. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
+  string attachment = 4; // крепление. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
   string size = 5; // размер
   string note = 6;
+  // WS7/§2.8 (S21 unification bridge): FK to the physical label material's BOM line
+  // (tech_card_bom_item). 0 = unlinked. Links this free-text label SPEC to the material it prints on.
+  int32 bom_item_id = 7;
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).

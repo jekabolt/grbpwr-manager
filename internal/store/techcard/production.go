@@ -88,6 +88,7 @@ func insertTechCardLabels(ctx context.Context, db dependency.DB, tcID int, label
 			"attachment":    l.Attachment,
 			"size":          l.Size,
 			"note":          l.Note,
+			"bom_item_id":   l.BomItemId,
 			"display_order": i,
 		})
 	}
@@ -275,7 +276,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `
-		SELECT tech_card_id, label_type, content, placement, attachment, size, note
+		SELECT tech_card_id, label_type, content, placement, attachment, size, note, bom_item_id
 		FROM tech_card_label
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

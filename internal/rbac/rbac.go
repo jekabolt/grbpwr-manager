@@ -265,6 +265,9 @@ var methodRequirements = map[string]Requirement{
 	"AddTechCardDevExpense":    wr(SectionTechCards),
 	"DeleteTechCardDevExpense": wr(SectionTechCards),
 	"ListTechCardDevExpenses":  rd(SectionTechCards),
+	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
+	"UpsertStyleAssembly": wr(SectionTechCards),
+	"ListStyleAssembly":   rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
 	"UpdateProductionRun":          wr(SectionProduction),
@@ -318,6 +321,8 @@ var methodRequirements = map[string]Requirement{
 	"GetShippingOptions":              rd(SectionFulfillment),
 	"VoidShippingLabel":               wr(SectionFulfillment),
 	"SchedulePickup":                  wr(SectionFulfillment),
+	// packer/QC packing spec: order → items + assembly + packaging (read-only projection, WS7 scope 3)
+	"GetOrderPackingSpec": rd(SectionFulfillment),
 	// settings
 	"UpdateSettings":          wr(SectionSettings),
 	"UpsertPaymentMethodFees": wr(SectionSettings),

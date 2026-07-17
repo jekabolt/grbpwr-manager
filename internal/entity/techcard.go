@@ -750,6 +750,9 @@ type TechCardLabel struct {
 	Attachment sql.NullString    `db:"attachment"`
 	Size       sql.NullString    `db:"size"`
 	Note       sql.NullString    `db:"note"`
+	// BomItemId links this free-text label SPEC to the physical label MATERIAL's BOM line
+	// (tech_card_bom_item), the §2.8 S21-unification bridge. NULL = unlinked. FK ON DELETE SET NULL.
+	BomItemId sql.NullInt32 `db:"bom_item_id"`
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка», 1:1).

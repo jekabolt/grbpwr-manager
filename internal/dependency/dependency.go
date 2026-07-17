@@ -550,6 +550,15 @@ type (
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
 		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
+		// ListStyleAssembly returns a garment style's assembly bill: the auxiliary components (labels/
+		// tags) that physically go on/into it, resolved for display (WS7, §2.8).
+		ListStyleAssembly(ctx context.Context, styleID int) ([]entity.StyleAssembly, error)
+		// UpsertStyleAssembly full-replaces a garment style's assembly bill (empty list clears it);
+		// components must be auxiliary cards. Field-tagged errors on a bad payload (WS7, §2.8).
+		UpsertStyleAssembly(ctx context.Context, styleID int, items []entity.StyleAssemblyInsert, username string) error
+		// GetTechCardNames returns id → name for the given tech cards (cheap header-only lookup used by
+		// the packing spec to label garment styles without an N+1 GetTechCardById).
+		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
@@ -657,6 +666,9 @@ type (
 		MaterialAvailable(ctx context.Context, materialID int) (entity.MaterialAvailability, error)
 		// ListPackagingRecipe returns every packaging recipe (all scopes) joined with material name/unit.
 		ListPackagingRecipe(ctx context.Context) ([]entity.PackagingRecipe, error)
+		// ResolveOrderPackaging returns the packaging materials an order needs (product → style → global),
+		// joined with material name/unit, for the read-only packer packing spec (WS7 scope 3).
+		ResolveOrderPackaging(ctx context.Context, orderID int) ([]entity.OrderPackingSpecPackaging, error)
 		// UpsertPackagingRecipe full-replaces one scope target's recipe lines (the whole global set, or
 		// one style's set, or one product's set).
 		UpsertPackagingRecipe(ctx context.Context, scope entity.PackagingRecipeScope, techCardID, productID sql.NullInt32, items []entity.PackagingRecipeInsert, username string) error

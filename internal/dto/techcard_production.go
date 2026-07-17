@@ -252,6 +252,7 @@ func parseTechCardLabels(pbs []*pb_common.TechCardLabel) ([]entity.TechCardLabel
 			Attachment: nullStringFromPb(l.Attachment),
 			Size:       nullStringFromPb(l.Size),
 			Note:       nullStringFromPb(l.Note),
+			BomItemId:  nullInt32FromPb(l.BomItemId), // §2.8 link to the physical label material's BOM line
 		})
 	}
 	return out, nil
@@ -582,6 +583,7 @@ func techCardLabelsToPb(labels []entity.TechCardLabel) []*pb_common.TechCardLabe
 			Attachment: pbStringFromNull(l.Attachment),
 			Size:       pbStringFromNull(l.Size),
 			Note:       pbStringFromNull(l.Note),
+			BomItemId:  l.BomItemId.Int32, // §2.8 link (0 = unlinked)
 		})
 	}
 	return out

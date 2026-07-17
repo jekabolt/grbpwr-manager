@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -322,6 +323,54 @@ func scopePredicate(scope entity.PackagingRecipeScope, techCardID, productID sql
 	default:
 		return "", nil, fmt.Errorf("%w: unknown scope %q", entity.ErrPackagingRecipeInvalid, scope)
 	}
+}
+
+// ResolveOrderPackaging returns, for the packer/QC packing spec (WS7 scope 3), the packaging materials an
+// order needs — resolved product → style → global (the same read the ship-time consume uses) and joined
+// with material name/unit, ordered by material id. READ-ONLY: it neither reserves nor consumes anything
+// (WS2 owns the reservation ledger), so it can never move on_hand or cross the sales/warehouse streams.
+func (s *Store) ResolveOrderPackaging(ctx context.Context, orderID int) ([]entity.OrderPackingSpecPackaging, error) {
+	req, err := resolvePackagingRequirement(ctx, s.DB, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if len(req) == 0 {
+		return nil, nil
+	}
+	ids := make([]int, 0, len(req))
+	for id := range req {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	nameRows, err := storeutil.QueryListNamed[struct {
+		Id   int            `db:"id"`
+		Name string         `db:"name"`
+		Unit sql.NullString `db:"unit"`
+	}](ctx, s.DB, `SELECT id, name, unit FROM material WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("load packaging material names: %w", err)
+	}
+	nameByID := make(map[int]struct {
+		name string
+		unit sql.NullString
+	}, len(nameRows))
+	for _, n := range nameRows {
+		nameByID[n.Id] = struct {
+			name string
+			unit sql.NullString
+		}{n.Name, n.Unit}
+	}
+	out := make([]entity.OrderPackingSpecPackaging, 0, len(ids))
+	for _, id := range ids {
+		info := nameByID[id]
+		out = append(out, entity.OrderPackingSpecPackaging{
+			MaterialId:   id,
+			MaterialName: info.name,
+			MaterialUnit: info.unit,
+			Qty:          req[id],
+		})
+	}
+	return out, nil
 }
 
 // ListPackagingRecipe returns every packaging recipe row (all scopes) joined with material name/unit,
