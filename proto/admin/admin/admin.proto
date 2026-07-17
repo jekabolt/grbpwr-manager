@@ -95,9 +95,33 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/product/{id}"};
   }
 
-  // Deletes a product by its ID.
-  rpc DeleteColorwayByID(DeleteColorwayByIDRequest) returns (DeleteColorwayByIDResponse) {
-    option (google.api.http) = {delete: "/api/admin/product/{id}"};
+  // ArchiveColorwayByID retires a colourway (archive-not-delete, R6/R9): ACTIVE|HIDDEN -> ARCHIVED
+  // (terminal). Was DeleteColorwayByID.
+  rpc ArchiveColorwayByID(ArchiveColorwayByIDRequest) returns (ArchiveColorwayByIDResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/archive"
+      body: "*"
+    };
+  }
+
+  // PublishColorway transitions a DRAFT colourway to ACTIVE (R6), enforcing the sellable
+  // preconditions (built base SKU, ≥1 valid-SKU variant, complete sku_season+model_no, dictionary
+  // colour, country, price, default translation).
+  rpc PublishColorway(PublishColorwayRequest) returns (PublishColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/publish"
+      body: "*"
+    };
+  }
+
+  // TransitionColorwayStatus applies a non-publish lifecycle edge (R6): ACTIVE<->HIDDEN and
+  // ACTIVE|HIDDEN->ARCHIVED, validated through the server state machine. Publish has its own RPC
+  // because it carries preconditions.
+  rpc TransitionColorwayStatus(TransitionColorwayStatusRequest) returns (TransitionColorwayStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/status"
+      body: "*"
+    };
   }
 
   // Updates the stock for a specific product size.
@@ -1359,11 +1383,35 @@ message SyncColorwayCostFromStyleResponse {
   int32 tech_card_id = 3;
 }
 
-message DeleteColorwayByIDRequest {
-  int32 id = 1;
+// Lifecycle transition requests (R6). expected_version echoes tech_card.lock_version for future
+// optimistic-lock wiring; concurrency today is enforced by the server's lifecycle_status guard (a
+// concurrent transition is rejected, never silently lost).
+message ArchiveColorwayByIDRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+  reserved "id"; // was DeleteColorwayByIDRequest.id
 }
 
-message DeleteColorwayByIDResponse {}
+message ArchiveColorwayByIDResponse {}
+
+message PublishColorwayRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+}
+
+message PublishColorwayResponse {
+  common.Colorway colorway = 1; // ACTIVE, with the minted base SKU
+}
+
+message TransitionColorwayStatusRequest {
+  int32 colorway_id = 1;
+  uint64 expected_version = 2;
+  common.ColorwayLifecycleStatus target = 3; // HIDDEN | ACTIVE (unhide) | ARCHIVED; DRAFT->ACTIVE uses PublishColorway
+}
+
+message TransitionColorwayStatusResponse {
+  common.Colorway colorway = 1;
+}
 
 message UpdateVariantStockRequest {
   common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta

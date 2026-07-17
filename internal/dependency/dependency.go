@@ -76,6 +76,15 @@ type (
 		GetProductBySKU(ctx context.Context, sku string) (*entity.ColorwayFull, error)
 		// DeleteProductById deletes a product by its ID.
 		DeleteProductById(ctx context.Context, id int) error
+		// PublishColorway transitions a colourway DRAFT->ACTIVE (R6), enforcing the sellable
+		// preconditions and an optimistic guard on the current lifecycle_status.
+		PublishColorway(ctx context.Context, colorwayID int) error
+		// HideColorway transitions ACTIVE->HIDDEN (kept admin-visible, off the storefront).
+		HideColorway(ctx context.Context, colorwayID int) error
+		// UnhideColorway transitions HIDDEN->ACTIVE (back onto the storefront).
+		UnhideColorway(ctx context.Context, colorwayID int) error
+		// ArchiveColorway transitions ACTIVE|HIDDEN->ARCHIVED (terminal) and stamps the archival audit.
+		ArchiveColorway(ctx context.Context, colorwayID int) error
 		// ReduceStockForProductSizes reduces the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error

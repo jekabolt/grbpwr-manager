@@ -131,7 +131,9 @@ var methodRequirements = map[string]Requirement{
 	"UpsertColorway":            wr(SectionProducts),
 	"GetColorwaysPaged":         rd(SectionProducts),
 	"GetColorwayByID":           rd(SectionProducts),
-	"DeleteColorwayByID":        wr(SectionProducts),
+	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
+	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
 	"UpdateVariantStock":        wr(SectionProducts),
 	"SyncColorwayCostFromStyle": wr(SectionProducts),
 	"GetColorwayCustoms":        rd(SectionProducts),

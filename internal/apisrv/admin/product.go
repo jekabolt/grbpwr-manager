@@ -14,7 +14,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
-	"github.com/jekabolt/grbpwr-manager/internal/store"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -97,32 +96,96 @@ func (s *Server) UpsertColorway(ctx context.Context, req *pb_admin.UpsertColorwa
 	}, nil
 }
 
-func (s *Server) DeleteColorwayByID(ctx context.Context, req *pb_admin.DeleteColorwayByIDRequest) (*pb_admin.DeleteColorwayByIDResponse, error) {
-	err := s.repo.Products().DeleteProductById(ctx, int(req.Id))
-	if err != nil {
-		if errors.Is(err, store.ErrProductInOrders) {
-			return nil, status.Errorf(codes.FailedPrecondition, "cannot delete product: it exists in one or more orders")
-		}
-		slog.Default().ErrorContext(ctx, "can't delete product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't delete product")
+// ArchiveColorwayByID retires a colourway (archive-not-delete, R6): ACTIVE|HIDDEN -> ARCHIVED. Was
+// DeleteColorwayByID (hard delete). The SKU stays frozen and readable; order history is unaffected.
+func (s *Server) ArchiveColorwayByID(ctx context.Context, req *pb_admin.ArchiveColorwayByIDRequest) (*pb_admin.ArchiveColorwayByIDResponse, error) {
+	if err := s.repo.Products().ArchiveColorway(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, "archive", int(req.ColorwayId), err)
 	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	return &pb_admin.ArchiveColorwayByIDResponse{}, nil
+}
 
-	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+// PublishColorway transitions a DRAFT colourway to ACTIVE (R6). The store enforces the sellable
+// preconditions and an optimistic guard on the current lifecycle_status.
+func (s *Server) PublishColorway(ctx context.Context, req *pb_admin.PublishColorwayRequest) (*pb_admin.PublishColorwayResponse, error) {
+	if err := s.repo.Products().PublishColorway(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, "publish", int(req.ColorwayId), err)
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	cw, err := s.getPbColorway(ctx, int(req.ColorwayId))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
-			slog.String("err", err.Error()),
-		)
+		return nil, err
+	}
+	return &pb_admin.PublishColorwayResponse{Colorway: cw}, nil
+}
+
+// TransitionColorwayStatus applies a non-publish lifecycle edge (R6): ACTIVE<->HIDDEN and
+// ACTIVE|HIDDEN->ARCHIVED. DRAFT->ACTIVE uses PublishColorway (it carries preconditions). The store
+// validates the edge through the entity state machine, so an illegal target is rejected there.
+func (s *Server) TransitionColorwayStatus(ctx context.Context, req *pb_admin.TransitionColorwayStatusRequest) (*pb_admin.TransitionColorwayStatusResponse, error) {
+	p := s.repo.Products()
+	var op string
+	var fn func(context.Context, int) error
+	switch req.Target {
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN:
+		op, fn = "hide", p.HideColorway
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ACTIVE:
+		op, fn = "unhide", p.UnhideColorway // ACTIVE via transition = HIDDEN->ACTIVE (unhide); DRAFT->ACTIVE is PublishColorway
+	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ARCHIVED:
+		op, fn = "archive", p.ArchiveColorway
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported transition target %v (DRAFT->ACTIVE uses PublishColorway)", req.Target)
+	}
+	if err := fn(ctx, int(req.ColorwayId)); err != nil {
+		return nil, colorwayTransitionError(ctx, op, int(req.ColorwayId), err)
+	}
+	s.afterColorwayLifecycleChange(ctx, int(req.ColorwayId))
+	cw, err := s.getPbColorway(ctx, int(req.ColorwayId))
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.TransitionColorwayStatusResponse{Colorway: cw}, nil
+}
+
+// colorwayTransitionError maps a store lifecycle error to a gRPC status. The store returns descriptive
+// wrapped errors (invalid edge, failed preconditions, concurrent change); missing colourway surfaces
+// sql.ErrNoRows through the chain.
+func colorwayTransitionError(ctx context.Context, op string, id int, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return status.Errorf(codes.NotFound, "colourway %d not found", id)
+	}
+	slog.Default().ErrorContext(ctx, "colourway lifecycle transition failed",
+		slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
+	return status.Errorf(codes.FailedPrecondition, "cannot %s colourway %d: %v", op, id, err)
+}
+
+// afterColorwayLifecycleChange refreshes dictionary counts and triggers storefront revalidation after
+// a colourway's visibility changes.
+func (s *Server) afterColorwayLifecycleChange(ctx context.Context, id int) {
+	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts", slog.String("err", err.Error()))
 	} else {
 		cache.RefreshDictionary(di)
 	}
+	s.revalidateAsync(&dto.RevalidationData{Products: []int{id}, Hero: true})
+}
 
-	s.revalidateAsync(&dto.RevalidationData{
-		Products: []int{int(req.Id)},
-		Hero:     true,
-	})
-	return &pb_admin.DeleteColorwayByIDResponse{}, nil
+// getPbColorway loads a colourway and projects the admin Colorway (the nested message of ColorwayFull)
+// for a transition response.
+func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway, error) {
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "colourway %d not found", id)
+		}
+		return nil, status.Errorf(codes.Internal, "can't load colourway %d: %v", id, err)
+	}
+	pb, err := dto.ConvertToPbProductFull(pf)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "can't convert colourway %d: %v", id, err)
+	}
+	return pb.GetColorway(), nil
 }
 
 func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayByIDRequest) (*pb_admin.GetColorwayByIDResponse, error) {
