@@ -264,9 +264,37 @@ func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDispla
 		Composition:      bi.Composition.String,
 		CareInstructions: bi.CareInstructions.String,
 		Translations:     translations,
+		UpdatedAt:        timestamppb.New(c.UpdatedAt),
 	}
 	if c.ProductDisplay.SecondaryThumbnail != nil {
 		d.SecondaryThumbnail = ConvertEntityToCommonMedia(c.ProductDisplay.SecondaryThumbnail)
+	}
+	// Merchandising facts the PDP/cards render (S-final finding): sale %, preorder window,
+	// model-wears and category labels are public output-only facts — none are catalogue PKs.
+	if bi.SalePercentage.Valid {
+		d.SalePercentage = pbDecimalFromDecimal(bi.SalePercentage.Decimal)
+	}
+	if bi.Preorder.Valid {
+		d.Preorder = timestamppb.New(bi.Preorder.Time)
+	}
+	if bi.ModelWearsHeightCm.Valid {
+		d.ModelWearsHeightCm = bi.ModelWearsHeightCm.Int32
+	}
+	if bi.ModelWearsSizeId.Valid {
+		if sz, ok := cache.GetSizeById(int(bi.ModelWearsSizeId.Int32)); ok {
+			d.ModelWearsSizeCode = sz.Name
+		}
+	}
+	for _, catID := range []sql.NullInt32{{Int32: int32(bi.TopCategoryId), Valid: bi.TopCategoryId != 0}, bi.SubCategoryId, bi.TypeId} {
+		if !catID.Valid {
+			continue
+		}
+		for _, cat := range cache.GetCategories() {
+			if cat.ID == int(catID.Int32) {
+				d.CategoryLabels = append(d.CategoryLabels, cat.Name)
+				break
+			}
+		}
 	}
 	return d
 }

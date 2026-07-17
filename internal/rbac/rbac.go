@@ -224,6 +224,7 @@ var methodRequirements = map[string]Requirement{
 	"UpdateArchive":     wr(SectionArchive),
 	"DeleteArchiveById": wr(SectionArchive),
 	"GetArchiveByID":    rd(SectionArchive),
+	"GetArchivesPaged":  rd(SectionArchive),
 	// models
 	"AddModel":    wr(SectionModels),
 	"GetModel":    rd(SectionModels),

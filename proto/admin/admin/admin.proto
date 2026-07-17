@@ -619,6 +619,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/archive/{id}"};
   }
 
+  // GetArchivesPaged is the ADMIN archive list: unlike the storefront projection it carries the
+  // numeric ids the admin write path (UpdateArchive/DeleteArchiveById/HeroFeaturedArchiveInsert)
+  // keys on (R3: internal ids stay on the admin surface). Registered after GetArchiveByID so the
+  // literal `/paged` GET wins over `/{id}` in grpc-gateway's prepend-mux ordering.
+  rpc GetArchivesPaged(GetArchivesPagedRequest) returns (GetArchivesPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/archive/paged"};
+  }
+
   // MODEL MANAGER
   // NOTE on ordering: grpc-gateway's mux prepends handlers, so the LAST-declared
   // route for a given method is matched FIRST. The literal `…/list` GET route is
@@ -2869,6 +2877,17 @@ message DeleteArchiveByIdRequest {
 }
 
 message DeleteArchiveByIdResponse {}
+
+message GetArchivesPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.OrderFactor order_factor = 3;
+}
+
+message GetArchivesPagedResponse {
+  repeated common.ArchiveList archives = 1; // id-bearing admin list shape
+  int32 total = 2;
+}
 
 // MODEL MANAGER
 
