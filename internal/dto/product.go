@@ -617,18 +617,26 @@ func convertEntityPricesToPb(prices []entity.ColorwayPrice) []*pb_common.Colorwa
 	return pbPrices
 }
 
+// ConvertEntityVariantToPb projects a single variant (product_size) to the admin/common wire message,
+// carrying its stored lifecycle status (R2). The variant SKU/size/colourway id are admin-facing here;
+// the storefront never sees these internal ids (it gets a StorefrontVariant, R3).
+func ConvertEntityVariantToPb(v entity.Variant) *pb_common.Variant {
+	return &pb_common.Variant{
+		VariantId: int32(v.Id), // R8: renamed from Id
+		Quantity: &pb_decimal.Decimal{
+			Value: v.Quantity.String(),
+		},
+		ColorwayId: int32(v.ProductId), // R8: renamed from ProductId
+		SizeId:     int32(v.SizeId),
+		VariantSku: v.SKU.String, // R8: renamed from Sku
+		Status:     pb_common.VariantLifecycleStatus(v.Status),
+	}
+}
+
 func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.Variant {
 	var pbSizes []*pb_common.Variant
 	for _, size := range sizes {
-		pbSizes = append(pbSizes, &pb_common.Variant{
-			VariantId: int32(size.Id), // R8: renamed from Id
-			Quantity: &pb_decimal.Decimal{
-				Value: size.Quantity.String(),
-			},
-			ColorwayId: int32(size.ProductId), // R8: renamed from ProductId
-			SizeId:     int32(size.SizeId),
-			VariantSku: size.SKU.String, // R8: renamed from Sku
-		})
+		pbSizes = append(pbSizes, ConvertEntityVariantToPb(size))
 	}
 	return pbSizes
 }

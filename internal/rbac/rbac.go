@@ -135,6 +135,9 @@ var methodRequirements = map[string]Requirement{
 	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
 	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
 	"UpdateVariantStock":        wr(SectionProducts),
+	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
 	"GetColorwayCustoms":        rd(SectionProducts),
 	"SetColorwayCustoms":        wr(SectionProducts),

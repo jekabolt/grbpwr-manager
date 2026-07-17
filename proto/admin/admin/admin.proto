@@ -24,6 +24,7 @@ import "common/support.proto";
 import "common/task.proto";
 import "common/techcard.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
@@ -128,6 +129,34 @@ service AdminService {
   rpc UpdateVariantStock(UpdateVariantStockRequest) returns (UpdateVariantStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/stock/update"
+      body: "*"
+    };
+  }
+
+  // CreateVariant adds a new variant (size) to a colourway at zero stock (R2). The size is immutable;
+  // the variant SKU is minted from the colourway's base. Fails if the size already exists or the
+  // colourway is archived.
+  rpc CreateVariant(CreateVariantRequest) returns (CreateVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/variants"
+      body: "*"
+    };
+  }
+
+  // UpdateVariant patches a variant's mutable state (R2). size_id and the variant SKU are immutable;
+  // only the lifecycle status is writable (archive-not-delete).
+  rpc UpdateVariant(UpdateVariantRequest) returns (UpdateVariantResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/variants/{variant_id}"
+      body: "*"
+    };
+  }
+
+  // ArchiveVariant retires a variant (ACTIVE -> ARCHIVED, R2): it drops off the storefront and rejects
+  // stock writes, but its id stays valid for the frozen order/stock references.
+  rpc ArchiveVariant(ArchiveVariantRequest) returns (ArchiveVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/variants/{variant_id}/archive"
       body: "*"
     };
   }
@@ -1516,6 +1545,43 @@ message UpdateVariantStockRequest {
 }
 
 message UpdateVariantStockResponse {}
+
+// Variant CRUD (R2). A variant is created at zero stock, its size is immutable, and it is archived
+// (never deleted) so the frozen order/stock references stay valid. expected_*_version echoes the
+// shared tech_card.lock_version for future optimistic-lock wiring; concurrency today is enforced by
+// the store's existence + status guards (a concurrent change is rejected, never silently lost).
+message CreateVariantRequest {
+  int64 colorway_id = 1;
+  int32 size_id = 2;
+  uint64 expected_colorway_version = 3;
+}
+
+message CreateVariantResponse {
+  common.Variant variant = 1; // the created variant, at zero stock
+}
+
+message UpdateVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+  VariantPatch patch = 3;
+  google.protobuf.FieldMask update_mask = 4; // size_id / variant_sku are NOT writable
+}
+
+// VariantPatch carries the only mutable variant field: its lifecycle status (archive-not-delete).
+message VariantPatch {
+  common.VariantLifecycleStatus status = 1;
+}
+
+message UpdateVariantResponse {
+  common.Variant variant = 1;
+}
+
+message ArchiveVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+}
+
+message ArchiveVariantResponse {}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the

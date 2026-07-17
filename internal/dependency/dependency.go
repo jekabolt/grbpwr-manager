@@ -76,6 +76,12 @@ type (
 		// GetVariantBySKU returns a variant (product_size) by its public variant SKU, sql.ErrNoRows if
 		// absent (storefront NotifyMe resolve, R2/R3/p013).
 		GetVariantBySKU(ctx context.Context, variantSKU string) (entity.Variant, error)
+		// CreateVariant adds a new variant (size) to a colourway at zero stock, ACTIVE, minting its
+		// variant SKU (R2). Rejects an absent (sql.ErrNoRows) or archived colourway and a duplicate size.
+		CreateVariant(ctx context.Context, colorwayID, sizeID int) (entity.Variant, error)
+		// SetVariantStatus applies a lifecycle status to a variant under an optimistic guard (R2:
+		// archive-not-delete). Returns sql.ErrNoRows if the variant is absent; size_id/SKU are immutable.
+		SetVariantStatus(ctx context.Context, variantID int, target entity.VariantStatus) (entity.Variant, error)
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.
