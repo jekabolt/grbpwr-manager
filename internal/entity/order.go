@@ -129,20 +129,29 @@ type OrderItem struct {
 	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
 	TypeId        sql.NullInt32              `db:"type_id"`
 	TargetGender  GenderEnum                 `db:"target_gender"`
-	SKU           string                     `db:"product_sku"`     // variant SKU (snapshot / product_size.sku)
-	ProductBaseSKU string                    `db:"product_base_sku"` // base SKU for the product-page URL
+	SKU           string                     `db:"variant_sku_snapshot"` // R2: frozen variant SKU snapshot (was product_sku)
+	ProductBaseSKU string                    `db:"base_sku_snapshot"`    // R2: frozen base SKU snapshot (= variant SKU [:14])
 	Slug          string
 	Preorder      sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 
 type OrderItemInsert struct {
-	ProductId             int             `db:"product_id" valid:"required"`
+	// ProductId/SizeId are the denormalised pair kept on order_item (stock/metrics/label read them). They
+	// are no longer client-supplied — the server resolves them from the variant addressing below — so the
+	// required tags are gone; resolution/insert enforce a live variant instead.
+	ProductId             int             `db:"product_id"`
 	ProductPrice          decimal.Decimal `db:"product_price"`
 	ProductSalePercentage decimal.Decimal `db:"product_sale_percentage"`
 	ProductPriceWithSale  decimal.Decimal `db:"product_price_with_sale"`
 	Quantity              decimal.Decimal `db:"quantity" valid:"required"`
-	SizeId                int             `db:"size_id" valid:"required"`
+	SizeId                int             `db:"size_id"`
+	// VariantID is the stable variant identity (product_size.id), the canonical order-line reference (R2).
+	VariantID int `db:"variant_id"`
+	// VariantSKU is the public variant code: input addressing on the storefront submit path, and the
+	// resolved value used as the merge key / adjustment identity. Transient — never its own column (the
+	// stored snapshot is OrderItem.SKU = variant_sku_snapshot).
+	VariantSKU string `db:"-"`
 }
 
 func (oii *OrderItemInsert) ProductPriceWithSaleDecimal() decimal.Decimal {
@@ -178,6 +187,7 @@ const (
 type OrderItemAdjustment struct {
 	ProductId         int
 	SizeId            int
+	VariantSKU        string // R2: public identity of the adjusted line (surfaced as variant_sku_snapshot)
 	RequestedQuantity decimal.Decimal
 	AdjustedQuantity  decimal.Decimal // 0 means item was removed
 	Reason            OrderItemAdjustmentReason

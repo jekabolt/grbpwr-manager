@@ -51,8 +51,8 @@ func TestOrderItemSKUSnapshotImmutable(t *testing.T) {
 	uuid := fmt.Sprintf("T23-%d", psID)
 	orderID := exec(`INSERT INTO customer_order (uuid, order_status_id, currency, total_price)
 		VALUES (?, (SELECT MIN(id) FROM order_status), 'EUR', 100)`, uuid)
-	exec(`INSERT INTO order_item (order_id, product_id, product_price, product_price_base, quantity, size_id, product_sku)
-		VALUES (?, ?, 100, 100, 1, ?, 'SNAP-FROZEN')`, orderID, prodID, sizeID)
+	exec(`INSERT INTO order_item (order_id, product_id, variant_id, product_price, product_price_base, quantity, size_id, variant_sku_snapshot)
+		VALUES (?, ?, ?, 100, 100, 1, ?, 'SNAP-FROZEN')`, orderID, prodID, psID, sizeID)
 	// a buyer + addresses so GetOrderFullByUUID's inner joins resolve.
 	addrID := exec(`INSERT INTO address (country, city, address_line_one, postal_code) VALUES ('US', 'X', 'L1', '00000')`)
 	exec(`INSERT INTO buyer (order_id, first_name, last_name, email, phone, billing_address_id, shipping_address_id)
@@ -100,7 +100,7 @@ func TestOrderItemSKUSnapshotImmutable(t *testing.T) {
 
 	// NOT NULL: a line can never be persisted without an identity snapshot.
 	_, err = testDB.ExecContext(ctx,
-		`INSERT INTO order_item (order_id, product_id, product_price, product_price_base, quantity, size_id, product_sku)
-		 VALUES (?, ?, 100, 100, 1, ?, NULL)`, orderID, prodID, sizeID)
-	require.Error(t, err, "a NULL product_sku snapshot must be rejected (NOT NULL)")
+		`INSERT INTO order_item (order_id, product_id, variant_id, product_price, product_price_base, quantity, size_id, variant_sku_snapshot)
+		 VALUES (?, ?, ?, 100, 100, 1, ?, NULL)`, orderID, prodID, psID, sizeID)
+	require.Error(t, err, "a NULL variant_sku_snapshot must be rejected (NOT NULL)")
 }

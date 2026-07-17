@@ -141,18 +141,19 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	// Snapshot each line's variant SKU (product_size.sku) so order history keeps the SKU sold even
 	// if the product is later re-minted (task 15). Re-snapshotted at OrderPaymentDone (the freeze
 	// point) in case it changed between checkout and payment.
-	skuByProductSize, err := fetchVariantSKUs(ctx, db, items)
+	snapByProductSize, err := fetchVariantSnapshots(ctx, db, items)
 	if err != nil {
-		return fmt.Errorf("can't fetch variant SKUs for order-item snapshot: %w", err)
+		return fmt.Errorf("can't fetch variant snapshots for order line: %w", err)
 	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		// The variant SKU snapshot is mandatory and immutable (problem 023): a line must resolve to a
-		// live variant (product_size) that has a non-empty SKU, or the order is rejected here — before
-		// any commit — so order history can never be born without a stable identity. fetchVariantSKUs
-		// omits NULL/empty SKUs, so a missing row (mismatched pair) or a blank SKU both fail this check.
-		sku, ok := skuByProductSize[[2]int{item.ProductId, item.SizeId}]
-		if !ok || sku == "" {
+		// The variant identity snapshot is mandatory and immutable (problems 019/023): a line must
+		// resolve to a live variant (product_size) that has a non-empty SKU, or the order is rejected here
+		// — before any commit — so order history can never be born without a stable identity.
+		// fetchVariantSnapshots omits NULL/empty SKUs, so a missing row (mismatched pair) or a blank SKU
+		// both fail this check. variant_id (product_size.id) is the FK RESTRICT anchor of the line.
+		snap, ok := snapByProductSize[[2]int{item.ProductId, item.SizeId}]
+		if !ok || snap.SKU == "" {
 			return fmt.Errorf("cannot create order line: product %d size %d has no live variant SKU", item.ProductId, item.SizeId)
 		}
 		row := map[string]any{
@@ -162,9 +163,11 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"product_sale_percentage": item.ProductSalePercentageDecimal(),
 			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeId,
+			"variant_id":              snap.VariantID,
 			"cost_price_at_sale":      nil,
 			"product_price_base":      nil,
-			"product_sku":             sku,
+			"variant_sku_snapshot":    snap.SKU,
+			"base_sku_snapshot":       snap.BaseSKU,
 		}
 		if cost, ok := costByProduct[item.ProductId]; ok {
 			row["cost_price_at_sale"] = cost
@@ -178,25 +181,35 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	return storeutil.BulkInsert(ctx, db, "order_item", rows)
 }
 
-// fetchVariantSKUs returns the current variant SKU (product_size.sku) for each (product_id, size_id)
-// referenced by items, keyed by [2]int{productID, sizeID}. Rows with a NULL sku are omitted.
-func fetchVariantSKUs(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[[2]int]string, error) {
+// variantSnapshot is the immutable identity a sold line freezes: the stable variant id (product_size.id,
+// the FK RESTRICT anchor), the variant SKU, and the base SKU (product.sku).
+type variantSnapshot struct {
+	VariantID int    `db:"id"`
+	ProductID int    `db:"product_id"`
+	SizeID    int    `db:"size_id"`
+	SKU       string `db:"variant_sku"`
+	BaseSKU   string `db:"base_sku"`
+}
+
+// fetchVariantSnapshots returns the live variant id + variant SKU (product_size) and base SKU
+// (product.sku) for each (product_id, size_id) referenced by items, keyed by [2]int{productID, sizeID}.
+// Rows with a NULL/empty variant sku are omitted (an order line must pin a minted variant).
+func fetchVariantSnapshots(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[[2]int]variantSnapshot, error) {
 	ids := distinctProductIDs(items)
 	if len(ids) == 0 {
-		return map[[2]int]string{}, nil
+		return map[[2]int]variantSnapshot{}, nil
 	}
-	rows, err := storeutil.QueryListNamed[struct {
-		ProductID int    `db:"product_id"`
-		SizeID    int    `db:"size_id"`
-		SKU       string `db:"sku"`
-	}](ctx, db, `SELECT product_id, size_id, sku FROM product_size WHERE product_id IN (:ids) AND sku IS NOT NULL`,
+	rows, err := storeutil.QueryListNamed[variantSnapshot](ctx, db,
+		`SELECT ps.id, ps.product_id, ps.size_id, ps.sku AS variant_sku, COALESCE(p.sku, '') AS base_sku
+		 FROM product_size ps JOIN product p ON p.id = ps.product_id
+		 WHERE ps.product_id IN (:ids) AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"ids": ids})
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[[2]int]string, len(rows))
+	out := make(map[[2]int]variantSnapshot, len(rows))
 	for _, r := range rows {
-		out[[2]int{r.ProductID, r.SizeID}] = r.SKU
+		out[[2]int{r.ProductID, r.SizeID}] = r
 	}
 	return out, nil
 }

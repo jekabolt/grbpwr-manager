@@ -4,7 +4,7 @@ import "regexp"
 
 // GA4 item identity (problem 020, decision R3): item_id is the variant SKU, item_group_id is the base
 // SKU, item_variant is the public size ordinal. GA4MP reads ONLY the frozen order_item snapshot
-// (order_item.product_sku as of this contract version — entity.OrderItem.SKU) and derives both
+// (order_item.variant_sku_snapshot as of this contract version — entity.OrderItem.SKU) and derives both
 // item_group_id and item_variant strictly from that snapshot string, never from a live product/size
 // lookup, so a re-minted/changed live SKU can never disagree with what was actually sold.
 //
