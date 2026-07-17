@@ -1018,6 +1018,8 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			}
 			materials = append(materials, entity.TechCardPieceMaterial{
 				ColorwayID:         int(m.ColorwayId),
+				BomLineKey:         strings.TrimSpace(m.BomLineKey),       // stable ref (WS3 follow-up); store prefers it over the index
+				FusingBomLineKey:   strings.TrimSpace(m.FusingBomLineKey), //
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
 				Note:               nullStringFromPb(m.Note),
@@ -1298,6 +1300,8 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 				ColorwayId:         int64(m.ColorwayID),
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
+				BomItemId:          m.BomItemId.Int64,       // OUTPUT: resolved FK (S2/S3); 0 = unset
+				FusingBomItemId:    m.FusingBomItemId.Int64, // OUTPUT: resolved FK; 0 = unset
 				Note:               pbStringFromNull(m.Note),
 			})
 		}

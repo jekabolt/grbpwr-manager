@@ -224,6 +224,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Note:            nullStringFromPb(o.Note),
 			OperationType:   opType,
 			Zone:            zone,
+			BomLineKey:      strings.TrimSpace(o.BomLineKey), // stable ref (WS3 follow-up); store prefers it over the index
 			BomItemIndex:    bomItemIndex,
 			CalloutNumber:   nullInt32FromPb(o.CalloutNumber),
 			Placement:       normalizedPlacementNull(o.Placement),
@@ -400,6 +401,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
 			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
 			BomItemIndex:    bomItemIndex,
+			BomItemId:       o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
 			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
 			Placement:       pbStringFromNull(o.Placement),
 		})

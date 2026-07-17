@@ -587,6 +587,9 @@ type TechCardOperation struct {
 	// BomItemId is the real FK to the referenced BOM line (S2/S3), resolved and written by the store;
 	// BomItemIndex is the legacy positional reference kept during the transition (dropped in M3).
 	BomItemId sql.NullInt64 `db:"bom_item_id"`
+	// BomLineKey is the wire reference to that BOM line by its stable line_key (WS3 follow-up:
+	// positionality off the wire). The store resolves it to BomItemId; not persisted (db:"-").
+	BomLineKey string `db:"-"`
 	// BomItemIndex is the 0-based index into the submitted bom_items of the material
 	// this operation applies; NULL = no reference (index 0 is a valid reference). When
 	// set it wins; otherwise the material resolves via Placement against the selected
@@ -779,7 +782,11 @@ type TechCardPieceMaterial struct {
 	FusingBomItemId    sql.NullInt64  `db:"fusing_bom_item_id"`
 	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
 	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
-	Note               sql.NullString `db:"note"`
+	// BomLineKey / FusingBomLineKey are the wire references to the fabric / fusing BOM line by stable
+	// line_key (WS3 follow-up); the store resolves them to BomItemId / FusingBomItemId. Not persisted.
+	BomLineKey       string         `db:"-"`
+	FusingBomLineKey string         `db:"-"`
+	Note             sql.NullString `db:"note"`
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many

@@ -528,6 +528,11 @@ message TechCardOperation {
   TechCardConstructionZone zone = 17; // display-grouping band; UNKNOWN = unset
   string placement = 18; // garment part this operation works on; resolves the real material
   // via the selected colourway's usages (match trim+lower; bom_item_index wins if set)
+  // bom_line_key references the BOM line by its stable line_key (WS3 follow-up: take positionality off
+  // the wire). Preferred over the positional bom_item_index (kept for the transition). The store
+  // resolves it to bom_item_id, the real FK on read.
+  string bom_line_key = 19;
+  int64 bom_item_id = 20; // OUTPUT: resolved FK to the BOM line
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -692,6 +697,13 @@ message TechCardPieceColorwayMaterial {
   optional int32 bom_item_index = 2; // 0-based index into TechCardInsert.bom_items (the fabric)
   optional int32 fusing_bom_item_index = 3; // 0-based index into bom_items (the fusing / клеевая), if any
   string note = 4;
+  // bom_line_key / fusing_bom_line_key reference the fabric / fusing BOM line by its stable line_key
+  // (WS3 follow-up: positionality off the wire). Preferred over the positional *_index (kept for the
+  // transition). The store resolves them to the real FKs bom_item_id / fusing_bom_item_id (output).
+  string bom_line_key = 6;
+  string fusing_bom_line_key = 7;
+  int64 bom_item_id = 8; // OUTPUT: resolved FK to the fabric BOM line
+  int64 fusing_bom_item_id = 9; // OUTPUT: resolved FK to the fusing BOM line
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):

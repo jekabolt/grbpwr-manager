@@ -199,8 +199,8 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				map[string]any{
 					"piece_id":              pieceID,
 					"colorway_id":           m.ColorwayID,
-					"bom_item_id":           resolveBomID(bomRes, m.BomItemIndex),
-					"fusing_bom_item_id":    resolveBomID(bomRes, m.FusingBomItemIndex),
+					"bom_item_id":           resolveBomRef(bomRes, m.BomLineKey, m.BomItemIndex),
+					"fusing_bom_item_id":    resolveBomRef(bomRes, m.FusingBomLineKey, m.FusingBomItemIndex),
 					"bom_item_index":        m.BomItemIndex,
 					"fusing_bom_item_index": m.FusingBomItemIndex,
 					"note":                  m.Note,
@@ -260,6 +260,20 @@ func resolveBomID(res bomResolver, idx sql.NullInt32) any {
 		return id
 	}
 	return nil
+}
+
+// resolveBomRef turns a referrer's BOM reference into a real bom_item id for its FK column: by stable
+// line_key (preferred — positionality off the wire, WS3 follow-up), else the legacy positional index,
+// else SQL NULL. Like resolveBomID, an unknown key / out-of-range index resolves to NULL (the ref was
+// already broken) rather than pointing at the wrong line.
+func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32) any {
+	if key := strings.TrimSpace(lineKey); key != "" {
+		if id, ok := res.byLineKey[key]; ok {
+			return id
+		}
+		return nil
+	}
+	return resolveBomID(res, idx)
 }
 
 type bomExistingRow struct {
