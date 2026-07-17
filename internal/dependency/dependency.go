@@ -25,9 +25,23 @@ type (
 	}
 	Products interface {
 		ContextStore
-		// AddProduct adds a new product along with its associated data.
+		// CreateColorway creates a DRAFT colourway attached to an existing style (R2/R4 write
+		// decomposition): colourway-owned data only (merch row, translations, media, tags, prices), no
+		// style facts, variants or size chart. sql.ErrNoRows when the style is absent;
+		// entity.ErrColorwayColorExists on a duplicate (style_id, color_code). Returns the colourway id.
+		CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		// UpdateColorway patches a colourway's own fields under an optimistic guard on the shared
+		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).
+		// Never touches style facts, variants, stock or the chart. Returns the new shared lock_version.
+		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		// UpdateStyle is the sole writer of a style's catalogue facts (R4/§14.7), optimistically locked on
+		// the shared tech_card.lock_version. A SKU-fact (season) change re-mints unfrozen siblings, or is
+		// refused (entity.ErrStyleFrozenSiblings) if any sibling is SKU-frozen. Returns the new lock_version.
+		UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch) (int, error)
+		// AddProduct is the legacy coupled create, retained as a store-level test fixture (no RPC surface
+		// after UpsertColorway was decomposed).
 		AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, error)
-		// AddProduct adds a new product along with its associated data.
+		// UpdateProduct is the legacy coupled update, retained as a store-level test fixture.
 		UpdateProduct(ctx context.Context, prd *entity.ColorwayNew, id int) error
 		// AssignPrimaryTechCardIfUnset makes techCardID the primary (authoritative-for-costing)
 		// card of each given product that has no primary yet. Empty ids is a no-op.

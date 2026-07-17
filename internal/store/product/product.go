@@ -83,7 +83,10 @@ func (s *Store) AddProduct(ctx context.Context, prd *entity.ColorwayNew) (int, e
 		// product.id is AUTO_INCREMENT: let the DB assign it (no more time.Now().Unix(), which
 		// collided when two products were created in the same second). The SKU is minted after the
 		// sizes exist, from resolved dictionary segments (base + per-size variant).
-		prdId, err = insertProduct(ctx, rep.DB(), prd.Product, styleId)
+		// AddProduct is the legacy coupled create, retained as a store-level test fixture (no RPC surface
+		// after UpsertColorway was decomposed). It creates an ACTIVE product to preserve create-then-visible;
+		// the North Star path (CreateColorway) mints a DRAFT and goes live through PublishColorway.
+		prdId, err = insertProduct(ctx, rep.DB(), prd.Product, styleId, int(entity.ColorwayStatusActive))
 		if err != nil {
 			return fmt.Errorf("can't insert product: %w", err)
 		}
@@ -322,7 +325,7 @@ func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b enti
 		`UPDATE tech_card SET`+styleFieldsSet+` WHERE id = :styleId`, params)
 }
 
-func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId int) (int, error) {
+func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId, lifecycleStatus int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
 	// sizes exist. color_code is the required dictionary FK and is the sole color identity.
 	// style_id (PR6) is the product's style (colourway->style invariant); AddProduct synthesises one.
@@ -345,12 +348,13 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 	query := `
 	INSERT INTO product
 	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, 2, :minTier, :costPrice,
+	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, :lifecycleStatus, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 
 	params := map[string]any{
 		"styleId":              styleId,
+		"lifecycleStatus":      lifecycleStatus,
 		"preorder":             product.ProductBodyInsert.Preorder,
 		"colorCode":            product.ProductBodyInsert.ColorCode,
 		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
@@ -689,11 +693,10 @@ func recordStockChangeFromSizeMeasurements(ctx context.Context, rep dependency.R
 	return rep.Products().RecordStockChange(ctx, entries)
 }
 
-func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayInsert, id int) error {
-	// Colourway-level columns only. The garment-level fields (brand/season/collection/target_gender/
-	// fit/composition/care/model_wears/category top-sub-type) live on the STYLE now (PR6 P2) and are
-	// written to tech_card by writeStyleFields below — editing any colourway updates its style, hence
-	// all the style's colourways, which is the intended invariant.
+// updateColorwayRow writes ONLY the colourway-level columns of the product row (no style facts, no
+// chart) — the style-free update used by the North Star UpdateColorway (R2/R4). The garment-level
+// fields live on the STYLE and are written solely by UpdateStyle.
+func updateColorwayRow(ctx context.Context, db dependency.DB, prd *entity.ColorwayInsert, id int) error {
 	query := `
 	UPDATE product
 	SET
@@ -727,7 +730,7 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 	if iso2, ok := entity.ResolveSeededCountryISO2(prd.ProductBodyInsert.CountryOfOrigin); ok {
 		countryCode = sql.NullString{String: iso2, Valid: true}
 	}
-	if err := storeutil.ExecNamed(ctx, db, query, map[string]any{
+	return storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
 		"colorHexOverride":     prd.ProductBodyInsert.ColorHexOverride,
@@ -739,7 +742,15 @@ func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayIn
 		"minTier":              prd.ProductBodyInsert.MinTier,
 		"costPrice":            prd.CostPrice,
 		"id":                   id,
-	}); err != nil {
+	})
+}
+
+// updateProduct is the legacy coupled colourway update, retained as a store-level test fixture: it
+// writes the colourway row AND the garment-level style fields (writeStyleFields semantics). The
+// production write path is decomposed — UpdateColorway (updateColorwayRow) never touches style facts,
+// UpdateStyle owns them (R4/§14.7).
+func updateProduct(ctx context.Context, db dependency.DB, prd *entity.ColorwayInsert, id int) error {
+	if err := updateColorwayRow(ctx, db, prd, id); err != nil {
 		return err
 	}
 	// Write the garment-level fields onto the product's style. Joined on product.id so we do not need

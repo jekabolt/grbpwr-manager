@@ -78,10 +78,23 @@ service AdminService {
 
   // PRODUCTS MANAGER
 
-  // Adds a new product or updates an existing one.
-  rpc UpsertColorway(UpsertColorwayRequest) returns (UpsertColorwayResponse) {
+  // CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
+  // decomposition; replaces the coupled UpsertColorway). It writes only colourway-owned fields — no
+  // style facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The
+  // colourway starts DRAFT and is made live through PublishColorway.
+  rpc CreateColorway(CreateColorwayRequest) returns (CreateColorwayResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/upsert"
+      post: "/api/admin/colorways"
+      body: "*"
+    };
+  }
+
+  // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock
+  // (expected_colorway_version = the shared tech_card.lock_version). It never touches style facts,
+  // variants, stock or the size chart (R2/R4).
+  rpc UpdateColorway(UpdateColorwayRequest) returns (UpdateColorwayResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/colorways/{colorway_id}"
       body: "*"
     };
   }
@@ -157,6 +170,19 @@ service AdminService {
   rpc ArchiveVariant(ArchiveVariantRequest) returns (ArchiveVariantResponse) {
     option (google.api.http) = {
       post: "/api/admin/variants/{variant_id}/archive"
+      body: "*"
+    };
+  }
+
+  // UpdateStyle is the SOLE writer of a style's catalogue facts (brand, sku_season, collection,
+  // target_gender, fit, composition, care instructions, model-wears, categories) — R4/§14.7. It is
+  // optimistically locked on expected_lock_version (stale -> ABORTED). Changing a SKU fact (season)
+  // re-mints every unfrozen sibling colourway in one tx; if ANY sibling is SKU-frozen (has order/label
+  // history) the change is refused (FAILED_PRECONDITION) — use CloneStyleForSeason instead. PLM facts
+  // (BOM/POM/ops/lifecycle) stay on UpdateTechCard; no fact is written by both.
+  rpc UpdateStyle(UpdateStyleRequest) returns (UpdateStyleResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/styles/{style_id}"
       body: "*"
     };
   }
@@ -1461,13 +1487,80 @@ message DeleteFromBucketResponse {}
 
 // PRODUCTS MANAGER
 
-message UpsertColorwayRequest {
-  int32 id = 1;
-  common.ColorwayNew product = 2;
+// CreateColorway/UpdateColorway/UpdateStyle replace the coupled UpsertColorway (R2/R4 write
+// decomposition, §6). A colourway is created DRAFT against an existing style and carries only
+// colourway-owned fields; the style facts are patched separately through UpdateStyle under a shared
+// optimistic lock.
+message CreateColorwayRequest {
+  int32 style_id = 1; // the single style relation (R4); the colourway attaches to an existing style
+  reserved 2; // color_code is carried by merchandising.color_code (§1.5, the sole write identity)
+  reserved "color_code";
+  common.ColorwayMerchandisingInsert merchandising = 3;
+  common.ColorwayDevelopmentInsert development = 4; // dev/lab-dip; recipe persistence lands with T-A (existing gap)
+  int32 thumbnail_media_id = 5;
+  int32 secondary_thumbnail_media_id = 6;
+  repeated int32 media_ids = 7;
+  repeated common.ColorwayTagInsert tags = 8;
+  repeated common.ColorwayPriceInsert prices = 9;
+  repeated common.ColorwayInsertTranslation translations = 10; // merch translation overrides (R4)
+  google.type.Decimal cost_price = 11; // write-only COGS (costing:write)
+  string country_code = 12; // ISO 3166-1 alpha-2 (R9)
+  // status is server-owned = DRAFT.
 }
 
-message UpsertColorwayResponse {
-  int32 id = 1;
+message CreateColorwayResponse {
+  int32 colorway_id = 1;
+}
+
+message UpdateColorwayRequest {
+  int32 colorway_id = 1;
+  uint64 expected_colorway_version = 2; // the shared tech_card.lock_version
+  common.ColorwayMerchandisingInsert merchandising = 3;
+  common.ColorwayDevelopmentInsert development = 4;
+  repeated int32 media_ids = 5;
+  repeated common.ColorwayTagInsert tags = 6;
+  repeated common.ColorwayPriceInsert prices = 7;
+  google.protobuf.FieldMask update_mask = 8;
+  int32 thumbnail_media_id = 9;
+  int32 secondary_thumbnail_media_id = 10;
+  google.type.Decimal cost_price = 11; // write-only COGS (costing:write); omit to leave unchanged
+  string country_code = 12; // ISO
+  repeated common.ColorwayInsertTranslation translations = 13; // merch translation overrides (sparse: empty = unchanged)
+  // NOT here: variants/quantity, size chart, style facts.
+}
+
+message UpdateColorwayResponse {
+  int32 lock_version = 1; // the new shared lock_version
+}
+
+// StylePatch is the narrow set of catalogue-style facts UpdateStyle owns (R4/§14.7-8). It deliberately
+// does NOT reuse the heavy TechCardInsert, so a style-catalogue edit can never full-replace the PLM
+// children (BOM/POM/ops). category_id stays a PLM/UpdateTechCard fact; canonical style translations
+// await a dedicated style_translation table (deferred).
+message StylePatch {
+  string brand = 1;
+  common.SeasonEnum season = 2; // sku_season code (the SKU-facing season); the year is preserved
+  string collection = 3;
+  common.GenderEnum target_gender = 4;
+  string fit = 5;
+  string composition = 6;
+  string care_instructions = 7;
+  int32 model_wears_height_cm = 8;
+  int32 model_wears_size_id = 9;
+  int32 top_category_id = 10;
+  int32 sub_category_id = 11;
+  int32 type_id = 12;
+}
+
+message UpdateStyleRequest {
+  int64 style_id = 1;
+  StylePatch patch = 2;
+  uint64 expected_lock_version = 3; // shared tech_card.lock_version; stale -> ABORTED
+  google.protobuf.FieldMask update_mask = 4;
+}
+
+message UpdateStyleResponse {
+  int32 lock_version = 1; // the new shared lock_version
 }
 
 message GetColorwaysPagedRequest {

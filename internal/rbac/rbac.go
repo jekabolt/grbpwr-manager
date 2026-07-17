@@ -128,7 +128,9 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"UpsertColorway":            wr(SectionProducts),
+	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
 	"GetColorwaysPaged":         rd(SectionProducts),
 	"GetColorwayByID":           rd(SectionProducts),
 	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)

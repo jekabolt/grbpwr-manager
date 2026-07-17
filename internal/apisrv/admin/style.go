@@ -6,12 +6,50 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// UpdateStyle writes a style's catalogue facts (brand/season/collection/gender/fit/composition/care/
+// model-wears/categories) — the sole writer of those facts (R4/§14.7). A stale expected_lock_version
+// is ABORTED; a SKU-fact (season) change with any SKU-frozen sibling colourway is FailedPrecondition
+// (clone for the new season instead); an unknown style is NotFound.
+func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleRequest) (*pb_admin.UpdateStyleResponse, error) {
+	if req.StyleId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "style_id is required")
+	}
+	p := req.GetPatch()
+	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), p.GetSeason(), p.GetCollection(), p.GetTargetGender(),
+		p.GetFit(), p.GetComposition(), p.GetCareInstructions(),
+		p.GetModelWearsHeightCm(), p.GetModelWearsSizeId(), p.GetTopCategoryId(), p.GetSubCategoryId(), p.GetTypeId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid style patch: %v", err)
+	}
+	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
+		case errors.Is(err, entity.ErrTechCardConflict):
+			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload and retry")
+		case errors.Is(err, entity.ErrStyleFrozenSiblings):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		default:
+			slog.Default().ErrorContext(ctx, "can't update style", slog.String("err", err.Error()))
+			return nil, status.Errorf(codes.Internal, "can't update style: %v", err)
+		}
+	}
+	// A style change re-resolves every colourway of the style; revalidate the storefront broadly.
+	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err == nil {
+		cache.RefreshDictionary(di)
+	}
+	s.revalidateAsync(&dto.RevalidationData{Hero: true})
+	return &pb_admin.UpdateStyleResponse{LockVersion: int32(lockVersion)}, nil
+}
 
 // GetStyleSizeChart returns a style's full size chart (R5). The admin UI loads it before editing
 // because the update is a full-replace of the whole chart.

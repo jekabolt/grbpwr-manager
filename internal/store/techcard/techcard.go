@@ -259,12 +259,17 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		}
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
+		// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
+		// [season/season_code/season_year], collection, target_gender) moved to UpdateStyle so no fact is
+		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
+		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
+		// stays a PLM fact (UpdateStyle does not write it). The unused :brand/:season/... binds remain in
+		// params (sqlx.Named ignores extra keys) so techCardHeaderParams stays shared with the insert.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
-				style_number = :style_number, name = :name, brand = :brand, season = :season,
-				season_code = :season_code, season_year = :season_year,
-				collection = :collection, category_id = :category_id, target_gender = :target_gender,
+				style_number = :style_number, name = :name,
+				category_id = :category_id,
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
 				version = :version, revision_date = :revision_date,

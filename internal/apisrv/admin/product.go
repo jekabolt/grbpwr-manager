@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -24,76 +23,70 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (s *Server) UpsertColorway(ctx context.Context, req *pb_admin.UpsertColorwayRequest) (*pb_admin.UpsertColorwayResponse, error) {
-
-	if _, write := s.costingAccess(ctx); !write && productInsertHasCostPrice(req.GetProduct().GetProduct()) {
-		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a product cost_price")
+// CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
+// decomposition, replacing the coupled UpsertColorway). It writes only colourway-owned data — no style
+// facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The colourway
+// starts DRAFT and goes live through PublishColorway.
+func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwayRequest) (*pb_admin.CreateColorwayResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-
-	prdNew, err := dto.ConvertCommonProductToEntity(req.GetProduct())
+	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't convert proto product to entity product",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("can't convert proto product to entity product: %v", err))
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
-
-	_, err = v.ValidateStruct(prdNew)
+	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "validation add product request failed",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("validation add product request failed: %v", err))
+		return nil, colorwayWriteError(ctx, "create", 0, err)
 	}
+	s.afterColorwayWrite(ctx, id)
+	return &pb_admin.CreateColorwayResponse{ColorwayId: int32(id)}, nil
+}
 
-	id := int(req.Id)
-	// new product
-	if req.Id == 0 {
-		id, err = s.repo.Products().AddProduct(ctx, prdNew)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't create a product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't create a product: %v", err)
-		}
+// UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
+// never touches style facts, variants, stock or the size chart.
+func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
-
-	// update product
-	if req.Id != 0 {
-		err := s.repo.Products().UpdateProduct(ctx, prdNew, int(req.Id))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't update a product",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Internal, "can't update a product: %v", err)
-		}
-	}
-
-	err = s.repo.Hero().RefreshHero(ctx)
+	// Translations/media/tags/prices are a sparse update in the store (empty slice = leave unchanged).
+	prd, err := dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh hero",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "can't refresh hero: %v", err)
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
-
-	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
+	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts",
-			slog.String("err", err.Error()),
-		)
-	} else {
-		cache.RefreshDictionary(di)
+		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
+	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
+	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
 
-	s.revalidateAsync(&dto.RevalidationData{
-		Products: []int{id},
-		Hero:     true,
-	})
+// colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->
+// NotFound; a stale optimistic version -> Aborted; a business precondition (duplicate colour, frozen)
+// -> FailedPrecondition; else Internal.
+func colorwayWriteError(ctx context.Context, op string, id int, err error) error {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return status.Errorf(codes.NotFound, "colourway/style not found")
+	case errors.Is(err, entity.ErrTechCardConflict):
+		return status.Errorf(codes.Aborted, "colourway %d was modified concurrently; reload and retry", id)
+	case errors.Is(err, entity.ErrColorwayColorExists):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	slog.Default().ErrorContext(ctx, "colourway write failed", slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
+	return status.Errorf(codes.Internal, "can't %s colourway: %v", op, err)
+}
 
-	return &pb_admin.UpsertColorwayResponse{
-		Id: int32(id),
-	}, nil
+// afterColorwayWrite refreshes the server-side hero cache and dictionary counts and triggers storefront
+// revalidation after a colourway create/update (matches the legacy UpsertColorway side effects).
+func (s *Server) afterColorwayWrite(ctx context.Context, id int) {
+	if err := s.repo.Hero().RefreshHero(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "can't refresh hero", slog.String("err", err.Error()))
+	}
+	s.afterColorwayLifecycleChange(ctx, id)
 }
 
 // ArchiveColorwayByID retires a colourway (archive-not-delete, R6): ACTIVE|HIDDEN -> ARCHIVED. Was

@@ -12,7 +12,7 @@ import (
 // stub). The store never persisted it and it did not round-trip, so a client sending it must be able to
 // tell the field is unsupported rather than get a discarded success.
 func TestColorwayBodyInsertReservesVersion(t *testing.T) {
-	md := (&pb_common.ColorwayBodyInsert{}).ProtoReflect().Descriptor()
+	md := (&pb_common.ColorwayMerchandisingInsert{}).ProtoReflect().Descriptor()
 
 	// The field must not exist as a live field, by name or by number.
 	if f := md.Fields().ByName("version"); f != nil {
@@ -33,7 +33,7 @@ func TestColorwayBodyInsertReservesVersion(t *testing.T) {
 		}
 	}
 	if !reservedNum {
-		t.Errorf("field number 16 must be reserved on ColorwayBodyInsert")
+		t.Errorf("field number 16 must be reserved on ColorwayMerchandisingInsert")
 	}
 
 	// Name "version" must be reserved.
@@ -46,6 +46,6 @@ func TestColorwayBodyInsertReservesVersion(t *testing.T) {
 		}
 	}
 	if !reservedName {
-		t.Errorf("field name \"version\" must be reserved on ColorwayBodyInsert")
+		t.Errorf("field name \"version\" must be reserved on ColorwayMerchandisingInsert")
 	}
 }
