@@ -99,6 +99,18 @@ service AdminService {
     };
   }
 
+  // UpdateColorwayRecipe replaces a colourway's material recipe (usages) — the write-path cut in the
+  // R1 merge (R2/R4: the recipe is a colourway-owned sub-aggregate with its own concurrency).
+  // Optimistically locked on the shared tech_card.lock_version; each usage references a style BOM
+  // line by its stable line_key (S2/S3), resolved to a real bom_item_id FK. Restores the previously
+  // accepted-but-never-written ColorwayDevelopmentInsert.usages (the silent no-op, A3.4).
+  rpc UpdateColorwayRecipe(UpdateColorwayRecipeRequest) returns (UpdateColorwayRecipeResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/colorways/{colorway_id}/recipe"
+      body: "*"
+    };
+  }
+
   // Gets a colourway by its id.
   rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
     option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}"};
@@ -1565,6 +1577,17 @@ message UpdateColorwayRequest {
 
 message UpdateColorwayResponse {
   int32 lock_version = 1; // the new shared lock_version
+}
+
+message UpdateColorwayRecipeRequest {
+  int32 colorway_id = 1;
+  // expected_colorway_version echoes the shared tech_card.lock_version (R4); a mismatch -> Aborted.
+  int32 expected_colorway_version = 2;
+  repeated common.TechCardColorwayUsage usages = 3; // the full recipe (full-replace for this colourway)
+}
+
+message UpdateColorwayRecipeResponse {
+  int32 lock_version = 1; // the new shared lock_version after the recipe write
 }
 
 // StylePatch is the narrow set of catalogue-style facts UpdateStyle owns (R4/§14.7-8). It deliberately

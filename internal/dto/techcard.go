@@ -889,6 +889,66 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 	return out, nil
 }
 
+// ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
+// parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
+// the store, S2/S3), so there is no positional range check here. size_id membership in the style's
+// range is enforced by the FK / store, not here.
+func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
+	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
+	for i, u := range pbs {
+		if len(u.Placement) > maxVarchar255 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].placement", i), "too long", "", fmt.Sprintf("max %d characters", maxVarchar255))
+		}
+		if len(u.Color) > maxVarchar255 || len(u.Pantone) > maxVarchar64 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].color", i), "color/pantone too long", "", "")
+		}
+		consumption, err := nullDecimalFromPb(u.Consumption)
+		if err != nil {
+			return nil, fmt.Errorf("usages[%d].consumption: %w", i, err)
+		}
+		if err := validateDecimalScale(consumption, "usage consumption", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		quantity, err := nullDecimalFromPb(u.Quantity)
+		if err != nil {
+			return nil, fmt.Errorf("usages[%d].quantity: %w", i, err)
+		}
+		if err := validateDecimalScale(quantity, "usage quantity", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		scs := make([]entity.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
+		for _, sc := range u.SizeConsumptions {
+			c, err := nullDecimalFromPb(sc.Consumption)
+			if err != nil {
+				return nil, fmt.Errorf("usages[%d].size_consumptions: %w", i, err)
+			}
+			if !c.Valid || c.Decimal.IsNegative() {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].size_consumptions", i), "consumption must be a non-negative number", "", "")
+			}
+			scs = append(scs, entity.TechCardBomSizeConsumption{SizeId: int(sc.SizeId), Consumption: c.Decimal})
+		}
+		var bomItemIndex, pieceIndex sql.NullInt32
+		if u.BomItemIndex != nil {
+			bomItemIndex = sql.NullInt32{Int32: *u.BomItemIndex, Valid: true}
+		}
+		if u.PieceIndex != nil {
+			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
+		}
+		out = append(out, entity.TechCardColorwayUsage{
+			BomLineKey:       strings.TrimSpace(u.BomLineKey),
+			BomItemIndex:     bomItemIndex,
+			PieceIndex:       pieceIndex,
+			Placement:        normalizedPlacementNull(u.Placement),
+			Color:            nullStringFromPb(u.Color),
+			Pantone:          nullStringFromPb(u.Pantone),
+			Consumption:      consumption,
+			Quantity:         quantity,
+			SizeConsumptions: scs,
+		})
+	}
+	return out, nil
+}
+
 // parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
 // mapping addresses its colourway by explicit colorway_id = product.id (R1/§14.3; the store validates
 // membership against product.style_id) and the BOM positionally (bom_item_index / fusing_bom_item_index);
@@ -1067,6 +1127,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		}
 
 		out = append(out, entity.TechCardBomItem{
+			// LineKey is the stable client token the server keyed-reconciles by (S2/S3); empty on a
+			// legacy payload, in which case the store mints one. id/material_snapshot are read-only.
+			LineKey:         strings.TrimSpace(b.LineKey),
 			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
@@ -1262,6 +1325,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
+			Id:              int64(b.Id),
+			LineKey:         b.LineKey,
+			MaterialSnapshot: string(b.MaterialSnapshot),
 			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,

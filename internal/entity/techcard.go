@@ -287,8 +287,16 @@ type TechCardColorway struct {
 // how much is consumed (per-garment Consumption/Quantity and/or per-size). The BOM is a
 // pure article catalog; per-colourway divergence lives here.
 type TechCardColorwayUsage struct {
-	Id           int                 `db:"id"`
-	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
+	Id int `db:"id"`
+	// BomItemId is the real FK to the referenced BOM line (S2/S3). It is the durable reference the
+	// store resolves and writes; BomItemIndex is the legacy positional reference kept during the
+	// transition (dropped in M3). PieceId is the equivalent FK replacing PieceIndex.
+	BomItemId sql.NullInt64 `db:"bom_item_id"`
+	PieceId   sql.NullInt64 `db:"piece_id"`
+	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
+	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
+	BomLineKey   string        `db:"-"`
+	BomItemIndex sql.NullInt32 `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
 	Placement    sql.NullString      `db:"placement"`
 	Color        sql.NullString      `db:"color"`
 	Pantone      sql.NullString      `db:"pantone"`
@@ -384,6 +392,16 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
 	Id int `db:"id"`
+	// LineKey is the BOM line's stable wire identity (S2/S3): a client-generated ULID assigned when
+	// the line is first created in the UI (before the first save), immutable thereafter. The server
+	// keyed-reconciles by line_key so the row's id survives edits — that stable id is what lets
+	// operations/pieces/colorway-usages hold a real FK instead of a fragile positional index. Empty
+	// on a legacy payload; the store then generates one on insert.
+	LineKey string `db:"line_key"`
+	// MaterialSnapshot is a read-only JSON snapshot of the linked catalog material's descriptive
+	// fields at save time (S23), so the document is self-contained without copying fields into
+	// editable inputs. NULL for a free-text line with no material link.
+	MaterialSnapshot []byte `db:"material_snapshot"`
 	// MaterialId optionally links this BOM line to a catalog material (task 10). The line still
 	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
 	// catalog entry later changes; the link only powers reverse lookups (which cards use a
@@ -562,6 +580,9 @@ type TechCardOperation struct {
 	// classification + links (Phase 3.5d)
 	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset
 	Zone          TechCardConstructionZone `db:"zone"`           // display-grouping band; "unknown" = unset
+	// BomItemId is the real FK to the referenced BOM line (S2/S3), resolved and written by the store;
+	// BomItemIndex is the legacy positional reference kept during the transition (dropped in M3).
+	BomItemId sql.NullInt64 `db:"bom_item_id"`
 	// BomItemIndex is the 0-based index into the submitted bom_items of the material
 	// this operation applies; NULL = no reference (index 0 is a valid reference). When
 	// set it wins; otherwise the material resolves via Placement against the selected
@@ -745,8 +766,13 @@ var ValidTechCardGrainlines = map[string]bool{
 // is gone (colourways are no longer style children). BOM refs stay positional into bom_items,
 // consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
 type TechCardPieceMaterial struct {
-	Id                 int            `db:"id"`
-	ColorwayID         int            `db:"colorway_id"`           // explicit colourway id = product.id
+	Id         int `db:"id"`
+	ColorwayID int `db:"colorway_id"` // explicit colourway id = product.id
+	// BomItemId / FusingBomItemId are the real FKs to the fabric / fusing BOM lines (S2/S3), resolved
+	// and written by the store; the *Index columns are the legacy positional refs kept for the
+	// transition (dropped in M3).
+	BomItemId          sql.NullInt64  `db:"bom_item_id"`
+	FusingBomItemId    sql.NullInt64  `db:"fusing_bom_item_id"`
 	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
 	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
 	Note               sql.NullString `db:"note"`

@@ -547,6 +547,9 @@ type (
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
+		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
+		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
+		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)

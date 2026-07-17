@@ -201,6 +201,11 @@ message TechCardColorwayUsage {
   // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this
   // consumption norm is about; unset = whole garment (informational, NF-05).
   optional int32 piece_index = 10;
+  // bom_line_key references the owning style's BOM line by its stable line_key (S2/S3) — the durable
+  // reference the recipe write-path resolves to a real bom_item_id. Preferred over bom_item_index
+  // (which stays for the transition / legacy read). bom_item_id is the resolved FK on read.
+  string bom_line_key = 11;
+  int64 bom_item_id = 12; // OUTPUT: resolved FK to the BOM line
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
@@ -235,6 +240,15 @@ message TechCardBomItem {
   // material_id optionally links this line to a catalog Material (task 10). The line keeps its
   // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
   int64 material_id = 23;
+  // id is the stable server-assigned PK (read-only). line_key is the client-generated ULID assigned
+  // when the line is first created in the UI, round-tripped on every save so the server keyed-
+  // reconciles by it (S2/S3) and keeps id stable — which is what lets operations/pieces/recipes hold
+  // a real FK instead of a fragile positional index.
+  int64 id = 24;
+  string line_key = 25;
+  // material_snapshot is a read-only JSON snapshot of the linked material's descriptive fields at
+  // save time (S23), so the document is self-contained.
+  string material_snapshot = 26;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
