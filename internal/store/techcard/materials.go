@@ -28,10 +28,33 @@ import (
 // mapping (NF-05). It runs AFTER insertTechCardColorways in the child flow, so it re-queries the
 // freshly-inserted colourways (in display order, same tx) to resolve each material's positional
 // colorway_index into a real colorway_id — colourways are full-replace, so ids are recreated.
-func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver) error {
-	if len(pieces) == 0 {
-		return nil
+// clearTechCardPieceMaterials removes every piece_material of the card's pieces. It runs BEFORE the
+// BOM upsert (Phase A of the reorder, §D5) so a BOM line the client is deleting is not falsely
+// blocked by an old piece_material → bom_item RESTRICT ref: the fresh mapping is re-inserted by
+// upsertTechCardPieces after the BOM ids resolve. A no-op on create (the card has no pieces yet).
+func clearTechCardPieceMaterials(ctx context.Context, db dependency.DB, tcID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_piece_material
+		WHERE piece_id IN (SELECT id FROM tech_card_piece WHERE tech_card_id = :id)`,
+		map[string]any{"id": tcID}); err != nil {
+		return fmt.Errorf("failed to clear tech card piece materials: %w", err)
 	}
+	return nil
+}
+
+type pieceExistingRow struct {
+	Id      int    `db:"id"`
+	LineKey string `db:"line_key"`
+}
+
+// upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
+// BOM uses (§2.3): a line_key already in the DB is UPDATEd in place (id stable — which is what lets a
+// colourway recipe usage hold a real piece_id FK), a new line_key is INSERTed, and a line_key that
+// vanished from the payload is DELETEd. A DELETE the FK RESTRICT blocks (piece still used by a
+// colourway recipe usage) surfaces as a field-tagged error, not a raw 500 or a silent dangle — the
+// deferred-from-0159 cross-aggregate guard. piece_material was cleared in Phase A, so each kept/new
+// piece just re-inserts its per-colourway mapping with the BOM ids resolved by bomRes.
+func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver) error {
 	// PR6 R1/§14.3: a piece material addresses its colourway by explicit colorway_id = product.id.
 	// Validate membership — the colourway must be one of this style's products (product.style_id = card).
 	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
@@ -45,26 +68,64 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		validColorway[r.Id] = true
 	}
 
+	existingRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load existing pieces: %w", err)
+	}
+	existingByKey := make(map[string]int, len(existingRows))
+	for _, r := range existingRows {
+		existingByKey[r.LineKey] = r.Id
+	}
+
+	seen := make(map[string]bool, len(pieces))
 	for i := range pieces {
 		p := &pieces[i]
-		pieceID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_piece
-				(tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note, display_order)
-			VALUES (:tech_card_id, :name, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :note, :display_order)`,
-			map[string]any{
-				"tech_card_id":       tcID,
-				"name":               p.Name,
-				"pieces_per_garment": p.PiecesPerGarment,
-				"mirrored":           p.Mirrored,
-				"grainline":          p.Grainline,
-				"fused":              p.Fused,
-				"callout_number":     p.CalloutNumber,
-				"note":               p.Note,
-				"display_order":      i,
-			})
-		if err != nil {
-			return fmt.Errorf("failed to insert tech card piece: %w", err)
+		key := strings.TrimSpace(p.LineKey)
+		if key == "" {
+			key = newLineKey() // legacy/keyless payload: server assigns a stable key
 		}
+		if seen[key] {
+			return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].line_key", i),
+				"duplicate line_key within the payload", "", "each cut-piece needs a unique line_key")
+		}
+		params := map[string]any{
+			"tech_card_id":       tcID,
+			"name":               p.Name,
+			"line_key":           key,
+			"pieces_per_garment": p.PiecesPerGarment,
+			"mirrored":           p.Mirrored,
+			"grainline":          p.Grainline,
+			"fused":              p.Fused,
+			"callout_number":     p.CalloutNumber,
+			"detached":           p.Detached,
+			"note":               p.Note,
+			"display_order":      i,
+		}
+		var pieceID int
+		if id, ok := existingByKey[key]; ok {
+			params["id"] = id
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE tech_card_piece SET
+					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
+					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
+				WHERE id=:id`, params); err != nil {
+				return fmt.Errorf("failed to update tech card piece: %w", err)
+			}
+			pieceID = id
+		} else {
+			newID, err := storeutil.ExecNamedLastId(ctx, db, `
+				INSERT INTO tech_card_piece
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :detached, :note, :display_order)`,
+				params)
+			if err != nil {
+				return fmt.Errorf("failed to insert tech card piece: %w", err)
+			}
+			pieceID = newID
+		}
+		seen[key] = true
+
 		for j := range p.Materials {
 			m := &p.Materials[j]
 			if !validColorway[m.ColorwayID] {
@@ -88,6 +149,25 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				}); err != nil {
 				return fmt.Errorf("failed to insert tech card piece material: %w", err)
 			}
+		}
+	}
+
+	// Delete pieces that vanished from the payload. FK RESTRICT (fk_usage_piece) blocks a piece still
+	// referenced by a colourway recipe usage — surface that as an actionable field-tagged error
+	// (the deferred-from-0159 guard, now live because pieces are keyed/stable).
+	for key, id := range existingByKey {
+		if seen[key] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_piece WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2
+				return entity.NewFieldViolation("pieces",
+					fmt.Sprintf("cut-piece %q is still referenced", key), "a colourway recipe usage",
+					"remove that consumption line before deleting the piece")
+			}
+			return fmt.Errorf("failed to delete tech card piece: %w", err)
 		}
 	}
 	return nil
@@ -501,7 +581,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
 	// colorway_id is surfaced directly (R1/§14.3 — no positional colorway_index anymore).
 	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
-		SELECT id, tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note
 		FROM tech_card_piece
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})

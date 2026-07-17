@@ -206,6 +206,11 @@ message TechCardColorwayUsage {
   // (which stays for the transition / legacy read). bom_item_id is the resolved FK on read.
   string bom_line_key = 11;
   int64 bom_item_id = 12; // OUTPUT: resolved FK to the BOM line
+  // piece_line_key references the cut-piece this norm is about by its stable TechCardPiece.line_key
+  // (WS4). The recipe write-path resolves it to the real piece_id FK (usage.piece_id RESTRICT).
+  // Preferred over the positional piece_index (kept for the transition). piece_id is the resolved FK.
+  string piece_line_key = 13;
+  int64 piece_id = 14; // OUTPUT: resolved FK to the cut-piece
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
@@ -695,12 +700,22 @@ message TechCardPieceColorwayMaterial {
 message TechCardPiece {
   string name = 1; // «полочка», «спинка», «обтачка горловины»…
   int32 pieces_per_garment = 2; // how many times cut per garment (default 1)
-  bool mirrored = 3; // paired / mirror piece
+  // Q6: mirrored means the piece is CUT AS A MIRRORED PAIR (left+right), not a decorative flag. The
+  // cut-list (GetStyleCutList) expands a mirrored piece ×2 over pieces_per_garment.
+  bool mirrored = 3;
   string grainline = 4; // долевая: lengthwise|crosswise|bias|any
   bool fused = 5; // клеевая (fused with interlining)
   optional int32 callout_number = 6; // link to a sketch callout pin (like operations)
   string note = 7;
   repeated TechCardPieceColorwayMaterial materials = 8; // per-colourway fabric mapping
+  // line_key is the stable client-generated ULID identity of the cut-piece (S8, mirrors BOM's
+  // line_key): the store keyed-upserts by it so the piece id stays stable across saves, which is what
+  // lets a colourway recipe usage hold a real piece_id FK. Empty on a legacy payload → server mints one.
+  string line_key = 9;
+  // detached is OUTPUT-ONLY: the store sets it when the piece's callout_number no longer resolves to a
+  // callout on the card (its source sketch callout was removed) — the piece survives, visibly
+  // detached, instead of being silently dropped (orphan-control, S8).
+  bool detached = 10;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers

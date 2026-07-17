@@ -295,7 +295,11 @@ type TechCardColorwayUsage struct {
 	PieceId   sql.NullInt64 `db:"piece_id"`
 	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
 	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
-	BomLineKey   string        `db:"-"`
+	BomLineKey string `db:"-"`
+	// PieceLineKey is the wire reference to the cut-piece this usage's consumption norm is about: the
+	// stable line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
+	// FK (usage.piece_id RESTRICT). It replaces the positional PieceIndex, kept for the transition.
+	PieceLineKey string        `db:"-"`
 	BomItemIndex sql.NullInt32 `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
 	Placement    sql.NullString      `db:"placement"`
 	Color        sql.NullString      `db:"color"`
@@ -780,17 +784,28 @@ type TechCardPieceMaterial struct {
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many
 // per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused (клеевая).
-// Materials picks, per colourway, which BOM fabric it is cut from. Full-replace child of the card.
+// Materials picks, per colourway, which BOM fabric it is cut from. Keyed-upserted child of the card:
+// LineKey is the stable client token the store reconciles by (S8, mirrors BOM's line_key in §2.3), so
+// a piece's id stays stable across saves — which is what lets a colourway recipe usage hold a real
+// piece_id FK RESTRICT (the deferred half of 0159).
 type TechCardPiece struct {
-	Id               int                     `db:"id"`
-	Name             string                  `db:"name"`
+	Id   int    `db:"id"`
+	Name string `db:"name"`
+	// LineKey is the client-generated ULID assigned when the piece is created in the UI (before the
+	// first save); immutable; the wire identity the upsert-diff keys on. Empty on a legacy/keyless
+	// payload → the store mints one.
+	LineKey          string                  `db:"line_key"`
 	PiecesPerGarment int                     `db:"pieces_per_garment"`
-	Mirrored         bool                    `db:"mirrored"`
+	Mirrored         bool                    `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
 	Grainline        string                  `db:"grainline"`
 	Fused            bool                    `db:"fused"`
 	CalloutNumber    sql.NullInt32           `db:"callout_number"`
-	Note             sql.NullString          `db:"note"`
-	Materials        []TechCardPieceMaterial `db:"-"`
+	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
+	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
+	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
+	Detached  bool                    `db:"detached"`
+	Note      sql.NullString          `db:"note"`
+	Materials []TechCardPieceMaterial `db:"-"`
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).
