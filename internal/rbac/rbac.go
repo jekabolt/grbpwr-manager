@@ -265,6 +265,9 @@ var methodRequirements = map[string]Requirement{
 	"AddTechCardDevExpense":    wr(SectionTechCards),
 	"DeleteTechCardDevExpense": wr(SectionTechCards),
 	"ListTechCardDevExpenses":  rd(SectionTechCards),
+	// Style cost estimate (Q4): a tech-card costing read; money fields are additionally
+	// field-shaped by SectionCosting (stripStyleCostEstimate), like GetTechCard's costing block.
+	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
 	"UpdateProductionRun":          wr(SectionProduction),
