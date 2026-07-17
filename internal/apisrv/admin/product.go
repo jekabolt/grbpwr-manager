@@ -150,7 +150,17 @@ func colorwayTransitionError(ctx context.Context, op string, id int, err error) 
 	}
 	slog.Default().ErrorContext(ctx, "colourway lifecycle transition failed",
 		slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
-	return status.Errorf(codes.FailedPrecondition, "cannot %s colourway %d: %v", op, id, err)
+	// Domain refusals (invalid edge, unmet publish preconditions, non-draft relink, frozen siblings)
+	// are FailedPrecondition; anything else is infrastructure and must surface as Internal, not a
+	// client-fixable precondition (review finding backend-003).
+	if errors.Is(err, entity.ErrColorwayNotDraft) ||
+		errors.Is(err, entity.ErrStyleFrozenSiblings) ||
+		errors.Is(err, entity.ErrColorwayColorExists) ||
+		strings.Contains(err.Error(), "transition") ||
+		strings.Contains(err.Error(), "precondition") {
+		return status.Errorf(codes.FailedPrecondition, "cannot %s colourway %d: %v", op, id, err)
+	}
+	return status.Errorf(codes.Internal, "cannot %s colourway %d: %v", op, id, err)
 }
 
 // afterColorwayLifecycleChange refreshes dictionary counts and triggers storefront revalidation after

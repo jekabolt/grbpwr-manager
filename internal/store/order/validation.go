@@ -57,7 +57,7 @@ func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items 
 	query := fmt.Sprintf(`
 		SELECT product_id, size_id, quantity
 		FROM product_size
-		WHERE %s`, joinConditions(conditions))
+		WHERE status = 1 AND (%s)`, joinConditions(conditions))
 
 	if forUpdate {
 		query += " FOR UPDATE"

@@ -9,6 +9,7 @@ package admin
 import (
 	"context"
 	"errors"
+	mysql "github.com/go-sql-driver/mysql"
 	"log/slog"
 	"strings"
 
@@ -75,14 +76,18 @@ func dictMutationError(ctx context.Context, op string, err error) error {
 	case errors.Is(err, entity.ErrDictionaryCodeInUse):
 		return status.Errorf(codes.FailedPrecondition, "%s: %v", op, err)
 	}
+	// Typed check first: ER_DUP_ENTRY via the driver error, not error prose — user-controlled
+	// names must not be able to flip the classification (review finding backend-004).
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return status.Errorf(codes.AlreadyExists, "%s: %v", op, err)
+	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "not found"):
 		return status.Errorf(codes.NotFound, "%s: %v", op, err)
 	case strings.Contains(msg, "already archived"):
 		return status.Errorf(codes.FailedPrecondition, "%s: %v", op, err)
-	case strings.Contains(msg, "Duplicate") || strings.Contains(msg, "1062"):
-		return status.Errorf(codes.AlreadyExists, "%s: %v", op, err)
 	case strings.Contains(msg, "required") || strings.Contains(msg, "invalid") || strings.Contains(msg, "no alphanumeric"):
 		return status.Errorf(codes.InvalidArgument, "%s: %v", op, err)
 	}

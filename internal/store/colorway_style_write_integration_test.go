@@ -102,11 +102,11 @@ func TestCreateColorway(t *testing.T) {
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
 	var lifecycleStatus, gotStyleID int
-	var sku string
+	var sku sql.NullString
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status, sku, style_id FROM product WHERE id = ?`, colorwayID).
 		Scan(&lifecycleStatus, &sku, &gotStyleID))
 	require.Equal(t, int(entity.ColorwayStatusDraft), lifecycleStatus, "CreateColorway must mint a DRAFT, never ACTIVE")
-	require.Empty(t, sku, "CreateColorway must never mint a SKU — that's publish's job (base SKU built at publish)")
+	require.False(t, sku.Valid, "CreateColorway must write NULL sku — publish mints; NULL (not '') so two unminted drafts never collide on UNIQUE (T-E-5 finding)")
 	require.Equal(t, styleID, gotStyleID)
 
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.

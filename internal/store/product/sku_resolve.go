@@ -169,7 +169,8 @@ func findSKUInvariantViolations(ctx context.Context, db dependency.DB) ([]skuInv
 		FROM (
 			SELECT 'invalid_base' AS kind, p.id AS product_id, NULL AS variant_id
 			FROM product p
-			WHERE p.sku = '' OR NOT REGEXP_LIKE(p.sku, :base_pattern, 'c')
+			WHERE p.lifecycle_status <> 1
+			  AND (COALESCE(p.sku, '') = '' OR NOT REGEXP_LIKE(COALESCE(p.sku, ''), :base_pattern, 'c'))
 
 			UNION ALL
 
@@ -187,10 +188,11 @@ func findSKUInvariantViolations(ctx context.Context, db dependency.DB) ([]skuInv
 			FROM product_size ps
 			JOIN product p ON p.id = ps.product_id
 			JOIN size s ON s.id = ps.size_id
-			WHERE ps.sku IS NULL
+			WHERE p.lifecycle_status <> 1
+			  AND (ps.sku IS NULL
 			   OR ps.sku = ''
 			   OR NOT REGEXP_LIKE(ps.sku, :variant_pattern, 'c')
-			   OR BINARY ps.sku <> BINARY CONCAT(p.sku, '-', LPAD(s.sku_ord, 2, '0'))
+			   OR BINARY ps.sku <> BINARY CONCAT(p.sku, '-', LPAD(s.sku_ord, 2, '0')))
 
 			UNION ALL
 
@@ -218,9 +220,10 @@ func (s *Store) BackfillSKUs(ctx context.Context) error {
 	}](ctx, s.DB, `
 		SELECT p.id FROM product p
 		WHERE p.sku_locked_at IS NULL
+		  AND p.lifecycle_status <> 1
 		  AND (
-		        p.sku = ''
-		     OR NOT REGEXP_LIKE(p.sku, :base_pattern, 'c')
+		        COALESCE(p.sku, '') = ''
+		     OR NOT REGEXP_LIKE(COALESCE(p.sku, ''), :base_pattern, 'c')
 		     OR EXISTS (
 		          SELECT 1
 		          FROM product_size ps
@@ -404,7 +407,7 @@ func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base 
 func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int) error {
 	baseRow, err := storeutil.QueryNamedOne[struct {
 		SKU string `db:"sku"`
-	}](ctx, db, `SELECT sku FROM product WHERE id = :id`, map[string]any{"id": productID})
+	}](ctx, db, `SELECT COALESCE(sku, '') AS sku FROM product WHERE id = :id`, map[string]any{"id": productID})
 	if err != nil {
 		return fmt.Errorf("load frozen base sku for product %d: %w", productID, err)
 	}
@@ -457,7 +460,7 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 	}
 	baseRow, err := storeutil.QueryNamedOne[struct {
 		SKU string `db:"sku"`
-	}](ctx, db, `SELECT sku FROM product WHERE id = :id`, map[string]any{"id": productID})
+	}](ctx, db, `SELECT COALESCE(sku, '') AS sku FROM product WHERE id = :id`, map[string]any{"id": productID})
 	if err != nil {
 		return fmt.Errorf("load base sku for product %d: %w", productID, err)
 	}

@@ -30,7 +30,8 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 			SET quantity = quantity - :quantity 
 			WHERE product_id = :productId 
 			AND size_id = :sizeId 
-			AND quantity >= :quantity`
+			AND quantity >= :quantity
+			AND status = 1`
 
 		result, err := s.DB.NamedExecContext(ctx, query, map[string]any{
 			"quantity":  item.QuantityDecimal(),

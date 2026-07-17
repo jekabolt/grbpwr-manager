@@ -348,7 +348,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 	query := `
 	INSERT INTO product
 	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
-	VALUES ('', :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, :lifecycleStatus, :minTier, :costPrice,
+	VALUES (NULL, :styleId, :preorder, (SELECT c.name FROM color c WHERE c.code = :colorCode), :colorCode, :colorHexOverride, :countryOfOrigin, :countryCode, :thumbnailId, :secondaryThumbnailId, :salePercentage, :lifecycleStatus, :minTier, :costPrice,
 		CASE WHEN :costPrice IS NOT NULL THEN 'manual' ELSE NULL END,
 		CASE WHEN :costPrice IS NOT NULL THEN NOW() ELSE NULL END)`
 

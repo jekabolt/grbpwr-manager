@@ -107,7 +107,7 @@ type publishReadiness struct {
 func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, colorwayID int) error {
 	r, err := storeutil.QueryNamedOne[publishReadiness](ctx, db, `
 		SELECT
-		  REGEXP_LIKE(p.sku, :base_pattern, 'c') AS base_sku_valid,
+		  REGEXP_LIKE(COALESCE(p.sku, ''), :base_pattern, 'c') AS base_sku_valid,
 		  p.color_code       AS color_code,
 		  p.country_of_origin AS country_of_origin,
 		  sty.season_code    AS season_code,
