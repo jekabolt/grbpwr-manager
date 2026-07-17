@@ -14,6 +14,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 //go:embed sku-contract-v1.json
@@ -118,6 +119,24 @@ type GoldenVectors struct {
 type NegativeVectors struct {
 	Base    []NegativeBaseVector    `json:"base"`
 	Variant []NegativeVariantVector `json:"variant"`
+}
+
+var (
+	versionOnce sync.Once
+	cachedVer   string
+)
+
+// ContractVersion returns the canonical SKU contract version (R7, e.g. "grbpwr-sku-v1") from the single
+// embedded fixture, cached. It is the one source both the SKU builder tests and the Dictionary contract
+// read, so the wire value can never drift from the fixture. Empty only if the embedded fixture fails to
+// decode (contract_test.go guards that it does not).
+func ContractVersion() string {
+	versionOnce.Do(func() {
+		if c, err := Load(); err == nil {
+			cachedVer = c.Version
+		}
+	})
+	return cachedVer
 }
 
 // Load decodes the embedded sku-contract-v1.json fixture.
