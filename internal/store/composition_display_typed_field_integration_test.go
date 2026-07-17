@@ -49,16 +49,19 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 
 	// tech_card.composition is a native MySQL JSON column (migration 0139) — legacy free text is stored
 	// as a JSON string scalar (the only shape a plain "100% Cotton" entry can take in a JSON column).
-	// That is the pre-existing, always-JSON-typed wire value this fix must not disturb: the M1 bug was
-	// COALESCE-ing a DIFFERENT JSON shape (an array of {fiber_code,name,percent} objects) into this same
-	// field once structural data existed — a shape change, not an encoding change.
-	const legacyComposition = `"100% Cotton"`
+	// The WIRE value, however, is the plain text: the read path JSON_UNQUOTEs the scalar
+	// (styleCompositionSelect) and the write path JSON_QUOTEs it back (styleFieldsSet) — writing wire
+	// text raw into the column is invalid JSON and fails with MySQL 3140 (found live by the beta A–L
+	// acceptance run, step B.8). The M1 bug this test pins was COALESCE-ing a DIFFERENT JSON shape (an
+	// array of {fiber_code,name,percent} objects) into this same field once structural data existed.
+	const legacyCompositionStored = `"100% Cotton"` // on-disk JSON scalar
+	const legacyComposition = `100% Cotton`         // wire/plain form every read must return
 	// collection/season_code/season_year are non-nullable on the colourway/product read's scan struct
 	// (unlike GetTechCardById's `SELECT *`, which tolerates NULL via sql.Null* fields) — seedSpineStyle
 	// leaves them unset, so getProductDetails would fail to scan the row without these.
 	_, err = testDB.ExecContext(ctx,
 		"UPDATE tech_card SET composition = ?, collection = '', season_code = 'SS', season_year = 2026, season = 'SS26' WHERE id = ?",
-		legacyComposition, tcID)
+		legacyCompositionStored, tcID)
 	require.NoError(t, err)
 
 	res, err := testDB.ExecContext(ctx, `INSERT INTO product
@@ -88,6 +91,25 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 	require.Len(t, byIds, 1)
 	require.Equal(t, legacyComposition, byIds[0].ProductDisplay.ProductBody.ProductBodyInsert.Composition.String)
 	require.Empty(t, byIds[0].ProductDisplay.ProductBody.ProductBodyInsert.CompositionEntries)
+
+	// --- the store WRITE path: plain wire text must round-trip byte-identical through
+	// UpdateStyle (JSON_QUOTE on write) and the reads above (JSON_UNQUOTE) — the beta A–L run proved
+	// writing it raw 500s (MySQL 3140: invalid JSON for column tech_card.composition). ---
+	var lockVer int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT lock_version FROM tech_card WHERE id = ?", tcID).Scan(&lockVer))
+	const apiComposition = "70% cotton, 30% viscose"
+	_, err = P.UpdateStyle(ctx, tcID, lockVer, entity.StylePatch{
+		TopCategoryId: 1, Season: entity.SeasonEnum("SS"), TargetGender: entity.GenderEnum("unisex"),
+		Composition: sql.NullString{String: apiComposition, Valid: true},
+	})
+	require.NoError(t, err, "UpdateStyle must accept plain wire text for composition (JSON_QUOTE, not raw)")
+	pfAPI, err := P.GetProductByIdShowHidden(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, apiComposition, pfAPI.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.String,
+		"plain wire text round-trips byte-identical through store write+read")
+	// restore the raw legacy scalar so the structural-data half below still exercises the stored form
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET composition = ? WHERE id = ?", legacyCompositionStored, tcID)
+	require.NoError(t, err)
 
 	// --- with structural data: composition MUST STILL be the plain legacy text (not JSON); the
 	// structured rows go ONLY into composition_entries. ---

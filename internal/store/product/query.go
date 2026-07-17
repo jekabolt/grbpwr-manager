@@ -32,7 +32,7 @@ const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
 // JSON-transition is cancelled: composition is the legacy tech_card.composition column, always plain
 // text. The structured projection lives in the separate styleCompositionEntriesSelect below, wired to
 // its own typed field.
-const styleCompositionSelect = `sty.composition`
+const styleCompositionSelect = `JSON_UNQUOTE(sty.composition)`
 
 // styleCompositionEntriesSelect projects a style's structured fibre composition (S17/WS3-Ф5) as a JSON
 // array of {fiber_code,name,percent} objects, for the typed composition_entries wire field (M1 fix) —

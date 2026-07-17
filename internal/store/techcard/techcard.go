@@ -47,6 +47,15 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // are no longer written — the card's version is its named releases (Rev.N) + the auto-journal, and
 // roles are admin-account assignments. The columns stay until M3; the write path just stops touching
 // them. approved_at/released_at are server-owned timestamps and remain.
+// normalizeLegacyComposition maps the stored JSON-scalar form of tech_card.composition to plain
+// wire text (M1) on the `SELECT *` read paths — the SQL projections do this via JSON_UNQUOTE in
+// styleCompositionSelect, these scans must match (see entity.UnquoteLegacyComposition).
+func normalizeLegacyComposition(cards []entity.TechCard) {
+	for i := range cards {
+		cards[i].Composition = entity.UnquoteLegacyComposition(cards[i].Composition)
+	}
+}
+
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at,
 	base_model_id, base_sample_size_id,
@@ -413,6 +422,7 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, fmt.Errorf("failed to get tech card: %w", err)
 	}
 	cards := []entity.TechCard{tc}
+	normalizeLegacyComposition(cards)
 	if err := s.enrich(ctx, cards); err != nil {
 		return nil, err
 	}
@@ -484,6 +494,7 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list tech cards: %w", err)
 	}
+	normalizeLegacyComposition(cards)
 
 	// Resolve a preview thumbnail per card for grid/gallery views (B-9). One batched media query for
 	// the whole page (not N+1); a failure to load media degrades to an empty preview, not a list error.
@@ -595,6 +606,7 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 		if err != nil {
 			return nil, fmt.Errorf("can't list %s tech cards: %w", st, err)
 		}
+		normalizeLegacyComposition(cards)
 		cols = append(cols, entity.StylePipelineColumn{Stage: st, Count: counts[string(st)], Cards: cards})
 		for i := range cards {
 			previewIDs = append(previewIDs, cards[i].Id)
