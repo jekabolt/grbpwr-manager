@@ -99,6 +99,7 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		Pantone:         pbStringFromNull(m.Pantone),
 		MinStock:        pbDecimalFromNull(m.MinStock),
 		Notes:           pbStringFromNull(m.Notes),
+		LockVersion:     int32(m.LockVersion),
 	}
 	if m.LatestPrice != nil {
 		out.LatestPrice = ConvertEntityMaterialPriceToPb(*m.LatestPrice)

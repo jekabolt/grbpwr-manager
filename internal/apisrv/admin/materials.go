@@ -2,11 +2,10 @@ package admin
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -21,8 +20,8 @@ func (s *Server) CreateMaterial(ctx context.Context, req *pb_admin.CreateMateria
 	}
 	id, err := s.repo.TechCards().CreateMaterial(ctx, ins)
 	if err != nil {
-		if errors.Is(err, entity.ErrMaterialCodeTaken) {
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
 		}
 		slog.Default().ErrorContext(ctx, "can't create material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't create material")
@@ -40,9 +39,9 @@ func (s *Server) UpdateMaterial(ctx context.Context, req *pb_admin.UpdateMateria
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.repo.TechCards().UpdateMaterial(ctx, int(m.Id), ins); err != nil {
-		if errors.Is(err, entity.ErrMaterialCodeTaken) || errors.Is(err, entity.ErrMaterialUnitLocked) {
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+	if err := s.repo.TechCards().UpdateMaterial(ctx, int(m.Id), ins, int(req.GetExpectedLockVersion())); err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
 		}
 		slog.Default().ErrorContext(ctx, "can't update material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update material")
@@ -56,6 +55,9 @@ func (s *Server) ArchiveMaterial(ctx context.Context, req *pb_admin.ArchiveMater
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 	if err := s.repo.TechCards().ArchiveMaterial(ctx, int(req.GetId()), req.GetArchived()); err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
 		slog.Default().ErrorContext(ctx, "can't archive material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't archive material")
 	}
@@ -69,6 +71,9 @@ func (s *Server) GetMaterial(ctx context.Context, req *pb_admin.GetMaterialReque
 	}
 	m, err := s.repo.TechCards().GetMaterial(ctx, int(req.GetId()))
 	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
 		slog.Default().ErrorContext(ctx, "can't get material", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get material")
 	}

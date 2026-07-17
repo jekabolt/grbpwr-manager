@@ -263,6 +263,9 @@ message Material {
   string pantone = 15;
   google.type.Decimal min_stock = 16; // low-stock alert threshold, in `unit`
   string notes = 17;
+  // lock_version is the optimistic-lock counter (S25, read-only). Echo it back in
+  // UpdateMaterialRequest.expected_lock_version; a stale value is rejected (Aborted).
+  int32 lock_version = 18;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

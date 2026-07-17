@@ -32,9 +32,12 @@ type MaterialInsert struct {
 type Material struct {
 	Id int `db:"id"`
 	MaterialInsert
-	Archived  bool      `db:"archived"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Archived bool `db:"archived"`
+	// LockVersion is the optimistic-lock counter (S25). UpdateMaterial requires the caller to echo
+	// the version it read and bumps it on success; a stale echo yields ErrMaterialConflict.
+	LockVersion int       `db:"lock_version"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // MaterialPriceSource enumerates how a price point entered the history.

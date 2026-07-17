@@ -82,12 +82,26 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 	return id, nil
 }
 
-// UpdateMaterial updates a catalog material's descriptive fields (not its price history). The unit
-// of measure is locked once the material has stock movements (historical quantities would lose
-// meaning), and the internal code must stay unique among non-archived materials. Both guards and the
-// update run in one transaction so a concurrent movement/create cannot slip past the checks.
-func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error {
+// UpdateMaterial updates a catalog material's descriptive fields (not its price history). It is
+// optimistically locked on expectedLockVersion (entity.ErrMaterialConflict on a mismatch, S25),
+// returns entity.ErrMaterialNotFound when no such material exists, locks the unit of measure once
+// the material has stock movements (historical quantities would lose meaning), and keeps the
+// internal code unique among non-archived materials. The lock load, both guards and the update run
+// in one transaction so a concurrent movement/create/update cannot slip past the checks.
+func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		cur, err := storeutil.QueryNamedOne[struct {
+			LockVersion int `db:"lock_version"`
+		}](ctx, rep.DB(), `SELECT lock_version FROM material WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("update material %d: %w", id, entity.ErrMaterialNotFound)
+			}
+			return fmt.Errorf("load material %d for update: %w", id, err)
+		}
+		if cur.LockVersion != expectedLockVersion {
+			return entity.ErrMaterialConflict
+		}
 		if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, id); err != nil {
 			return err
 		}
@@ -96,16 +110,20 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		}
 		params := materialParams(m)
 		params["id"] = id
+		params["expected_lock_version"] = expectedLockVersion
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
-			UPDATE material SET name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
+			UPDATE material SET lock_version = lock_version + 1,
+				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes
-			WHERE id=:id`, params)
+			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("update material %d: %w", id, err)
 		}
+		// The row provably exists (loaded above), so 0 rows means lock_version moved under us —
+		// make the WHERE guard load-bearing, not just the in-Go compare (mirrors tech_card).
 		if rows == 0 {
-			return fmt.Errorf("material %d not found", id)
+			return entity.ErrMaterialConflict
 		}
 		return nil
 	})
@@ -166,7 +184,7 @@ func (s *Store) ArchiveMaterial(ctx context.Context, id int, archived bool) erro
 		return fmt.Errorf("archive material %d: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("material %d not found", id)
+		return fmt.Errorf("archive material %d: %w", id, entity.ErrMaterialNotFound)
 	}
 	return nil
 }
@@ -179,7 +197,7 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 		return nil, fmt.Errorf("get material %d: %w", id, err)
 	}
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("material %d not found", id)
+		return nil, fmt.Errorf("get material %d: %w", id, entity.ErrMaterialNotFound)
 	}
 	out := rows[0].toEntity()
 	return &out, nil

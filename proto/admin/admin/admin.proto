@@ -4722,6 +4722,10 @@ message CreateMaterialResponse {
 
 message UpdateMaterialRequest {
   common.Material material = 1; // material.id selects the row
+  // expected_lock_version is the material.lock_version the caller last read (optimistic lock,
+  // S25). A mismatch means the row changed underneath the caller — the update is rejected with
+  // Aborted and the caller should reload and retry.
+  int32 expected_lock_version = 2;
 }
 
 message UpdateMaterialResponse {}

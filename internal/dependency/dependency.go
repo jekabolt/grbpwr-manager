@@ -569,7 +569,7 @@ type (
 		// Material catalog (task 10): shared nomenclature a BOM line can optionally link to,
 		// with an append-only price history.
 		CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error)
-		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error
+		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error
 		ArchiveMaterial(ctx context.Context, id int, archived bool) error
 		GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPrice, error)
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
