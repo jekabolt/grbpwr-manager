@@ -35,6 +35,7 @@ message Dictionary {
   repeated string product_tags = 18; // all distinct tags across visible products
   repeated Color colors = 19; // controlled colour dictionary (SKU colour segment source)
   repeated Country countries = 20; // R9: ISO 3166-1 alpha-2 controlled dictionary
+  repeated Fiber fibers = 25; // controlled fibre vocabulary (COT/POL/…) — source for material composition
   repeated Tag tags = 21; // R9: controlled merchandising tags (product_tags stays until §12 Q4 cutover)
   string sku_contract_version = 22; // R7: canonical SKU contract version, e.g. "grbpwr-sku-v1"
   repeated DictionaryRevision revisions = 23; // R9: per-namespace revision snapshot for cache invalidation
@@ -56,6 +57,15 @@ message Country {
   string code = 1; // ISO 3166-1 alpha-2, uppercase (public key)
   string name = 2; // localized display name
   bool active = 3;
+}
+
+// Fiber is one entry of the controlled fibre vocabulary (COT/POL/WOL/…): a material's structural
+// composition references these codes, and a style's composition is derived from its shell-fabric
+// materials' fibres. Authored via the dictionary (CreateFiber/ArchiveFiber).
+message Fiber {
+  string code = 1; // stable short key (public), e.g. COT
+  string name = 2; // display name, e.g. Cotton
+  bool archived = 3;
 }
 
 // Tag is a controlled merchandising tag dictionary (R9). Storefront receives tags by code/name; id is
