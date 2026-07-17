@@ -121,7 +121,11 @@ func (s *Server) GetProductionRun(ctx context.Context, req *pb_admin.GetProducti
 		slog.Default().ErrorContext(ctx, "can't get production run", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get production run")
 	}
-	return &pb_admin.GetProductionRunResponse{Run: dto.ConvertEntityProductionRunToPb(run)}, nil
+	pb := dto.ConvertEntityProductionRunToPb(run)
+	if read, _ := s.costingAccess(ctx); !read {
+		stripProductionRunCosting(pb)
+	}
+	return &pb_admin.GetProductionRunResponse{Run: pb}, nil
 }
 
 // ListProductionRuns returns runs matching the optional tech-card / status filter, newest-first.
@@ -136,9 +140,14 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 		slog.Default().ErrorContext(ctx, "can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list production runs")
 	}
+	read, _ := s.costingAccess(ctx)
 	out := make([]*pb_common.ProductionRun, 0, len(runs))
 	for i := range runs {
-		out = append(out, dto.ConvertEntityProductionRunToPb(&runs[i]))
+		pb := dto.ConvertEntityProductionRunToPb(&runs[i])
+		if !read {
+			stripProductionRunCosting(pb)
+		}
+		out = append(out, pb)
 	}
 	return &pb_admin.ListProductionRunsResponse{Runs: out, Total: int32(total)}, nil
 }
