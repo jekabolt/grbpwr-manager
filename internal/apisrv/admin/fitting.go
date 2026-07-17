@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -81,6 +82,16 @@ func (s *Server) GetFitting(ctx context.Context, req *pb_admin.GetFittingRequest
 func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingRequest) (*pb_admin.UpdateFittingResponse, error) {
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "fitting id is required")
+	}
+	// M3 fix: change_requests used to be a silent no-op here — the store's UpdateFitting never wrote
+	// it (S26: structured remarks are managed by their own dedicated CRUD so ids stay stable for
+	// carried_from_id/carry-over), but a non-empty list on the wire was accepted without error, so a
+	// client round-tripping a GetFitting read straight back into UpdateFitting (or adding an item
+	// through the embedded list) got no error and no write. Reject it instead of ignoring it; existing
+	// change requests are untouched either way (UpdateFitting never reads/writes that child table).
+	if len(req.GetFitting().GetChangeRequests()) > 0 {
+		return nil, apierr.Invalid(entity.NewFieldViolation("fitting.change_requests", "create-only",
+			"", "managed by AddFittingChangeRequest/UpdateFittingChangeRequest/DeleteFittingChangeRequest; not settable on UpdateFitting"))
 	}
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
