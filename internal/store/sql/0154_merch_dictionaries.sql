@@ -459,14 +459,14 @@ WHERE pt.tag_id IS NULL
 -- 6) Backfill country (CLOSED dict) + quarantine report + fail-fast guard
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS migration_0151_country_alias (
+CREATE TABLE IF NOT EXISTS migration_0154_country_alias (
     alias VARCHAR(128) NOT NULL PRIMARY KEY,
     code  CHAR(2)      NOT NULL
 );
-DELETE FROM migration_0151_country_alias;
+DELETE FROM migration_0154_country_alias;
 
 -- Alias rows are generated from the application's own maps, filtered to seeded codes (excludes XK).
-INSERT IGNORE INTO migration_0151_country_alias (alias, code) VALUES
+INSERT IGNORE INTO migration_0154_country_alias (alias, code) VALUES
     ('abw', 'AW'),
     ('ad', 'AD'),
     ('ae', 'AE'),
@@ -1094,7 +1094,7 @@ INSERT IGNORE INTO migration_0151_country_alias (alias, code) VALUES
     ('zwe', 'ZW');
 
 UPDATE product p
-JOIN migration_0151_country_alias a
+JOIN migration_0154_country_alias a
   ON a.alias = LOWER(TRIM(p.country_of_origin))
 SET p.country_code = a.code
 WHERE p.country_code IS NULL
@@ -1103,12 +1103,12 @@ WHERE p.country_code IS NULL
 
 -- Quarantine: a non-empty, non-placeholder manufacture country we could not map to a seeded ISO code.
 -- Empty / 'string' placeholders are NOT quarantined — they are simply "no origin set" (country_code NULL).
-CREATE TABLE IF NOT EXISTS migration_0151_country_quarantine (
+CREATE TABLE IF NOT EXISTS migration_0154_country_quarantine (
     product_id INT         NOT NULL PRIMARY KEY,
     raw_value  VARCHAR(64) NOT NULL
 );
-DELETE FROM migration_0151_country_quarantine;
-INSERT INTO migration_0151_country_quarantine (product_id, raw_value)
+DELETE FROM migration_0154_country_quarantine;
+INSERT INTO migration_0154_country_quarantine (product_id, raw_value)
 SELECT p.id, p.country_of_origin
 FROM product p
 WHERE p.country_code IS NULL
@@ -1117,18 +1117,16 @@ WHERE p.country_code IS NULL
   AND LOWER(TRIM(p.country_of_origin)) <> 'string';
 
 -- Fail-fast: the guard row cannot be inserted while any product sits in quarantine, so a dirty prod
--- dataset halts the migration (and boot) with migration_0151_country_quarantine listing exactly what
+-- dataset halts the migration (and boot) with migration_0154_country_quarantine listing exactly what
 -- to fix — instead of silently shipping products with no country of origin.
-CREATE TABLE IF NOT EXISTS migration_0151_country_guard (
+CREATE TABLE IF NOT EXISTS migration_0154_country_guard (
     singleton        TINYINT NOT NULL PRIMARY KEY,
     quarantine_count INT     NOT NULL,
-    CONSTRAINT migration_0151_no_country_quarantine CHECK (quarantine_count = 0)
+    CONSTRAINT migration_0154_no_country_quarantine CHECK (quarantine_count = 0)
 );
-DELETE FROM migration_0151_country_guard;
-INSERT INTO migration_0151_country_guard (singleton, quarantine_count)
-SELECT 1, COUNT(*) FROM migration_0151_country_quarantine;
-
-DROP TABLE IF EXISTS migration_0151_country_alias;
+DELETE FROM migration_0154_country_guard;
+INSERT INTO migration_0154_country_guard (singleton, quarantine_count)
+SELECT 1, COUNT(*) FROM migration_0154_country_quarantine;
 
 -- ============================================================================
 -- 7) DEFERRED destructive contract step (NOT executed here)
@@ -1140,6 +1138,8 @@ DROP TABLE IF EXISTS migration_0151_country_alias;
 -- code columns. It is intentionally left out of this file so the additive migration is safe to apply on
 -- its own. The guarded drop, once those are ready:
 --
---   ALTER TABLE product     DROP COLUMN country_of_origin;   -- gated on migration_0151_country_guard
+--   ALTER TABLE product     DROP COLUMN country_of_origin;   -- gated on migration_0154_country_guard
 --   ALTER TABLE tech_card   DROP COLUMN collection;
 --   ALTER TABLE product_tag DROP COLUMN tag;
+
+DROP TABLE IF EXISTS migration_0154_country_alias;
