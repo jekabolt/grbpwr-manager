@@ -187,6 +187,15 @@ func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId i
 	return productSize.Quantity, true, nil
 }
 
+// GetVariantByID returns a single variant (product_size) by its stable id. It returns sql.ErrNoRows when
+// no such variant exists so callers can map that to NOT_FOUND — variant addressing (stock, archive)
+// never implicitly creates a variant (R2/p012).
+func (s *Store) GetVariantByID(ctx context.Context, variantID int) (entity.Variant, error) {
+	return storeutil.QueryNamedOne[entity.Variant](ctx, s.DB,
+		`SELECT id, quantity, product_id, size_id, sku FROM product_size WHERE id = :id`,
+		map[string]any{"id": variantID})
+}
+
 // UpdateProductSizeStock updates the stock quantity for a product size.
 func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error {
 	sz, ok := cache.GetSizeById(sizeId)

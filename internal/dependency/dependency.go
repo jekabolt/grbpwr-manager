@@ -70,6 +70,9 @@ type (
 		GetLowStockProducts(ctx context.Context, threshold int, limit int) ([]entity.Colorway, error)
 		// GetProductByIdShowHidden returns a product by its ID no matter hidden they or not.
 		GetProductByIdShowHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
+		// GetVariantByID returns a variant (product_size) by its stable id, sql.ErrNoRows if absent
+		// (variant addressing never implicitly creates a variant, R2/p012).
+		GetVariantByID(ctx context.Context, variantID int) (entity.Variant, error)
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.

@@ -232,68 +232,52 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 // card, overriding any manual value. tech_card_id (when > 0) repoints the product's primary
 // card before seeding; otherwise the product's existing primary card is used. The card must
 // currently link the product and have a computable unit cost in the base currency.
-func (s *Server) SyncColorwayCostFromStyle(ctx context.Context, req *pb_admin.SyncColorwayCostFromStyleRequest) (*pb_admin.SyncColorwayCostFromStyleResponse, error) {
+func (s *Server) SyncColorwayCostFromOwningStyle(ctx context.Context, req *pb_admin.SyncColorwayCostFromOwningStyleRequest) (*pb_admin.SyncColorwayCostFromOwningStyleResponse, error) {
 	if _, write := s.costingAccess(ctx); !write {
-		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a product cost from a tech card")
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to sync a colourway cost from its owning style")
 	}
-	if req.ProductId <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	colorwayID := int(req.ColorwayId)
+	if colorwayID <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
 	}
-	ci, err := s.repo.Products().GetProductCostInfo(ctx, int(req.ProductId))
+	ci, err := s.repo.Products().GetProductCostInfo(ctx, colorwayID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Error(codes.NotFound, "product not found")
+			return nil, status.Error(codes.NotFound, "colourway not found")
 		}
-		slog.Default().ErrorContext(ctx, "can't get product cost info", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't get product")
+		slog.Default().ErrorContext(ctx, "can't get colourway cost info", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get colourway")
 	}
 
-	techCardID := int(req.TechCardId)
-	if techCardID <= 0 {
-		if !ci.PrimaryTechCardID.Valid {
-			return nil, status.Error(codes.InvalidArgument, "product has no primary tech card; pass tech_card_id")
-		}
-		techCardID = int(ci.PrimaryTechCardID.Int32)
+	// R4/p019: cost provenance is separated from ownership. The style is derived from the owner relation
+	// (the colourway's primary card) and is NEVER repointed by a cost sync — tech_card_id is gone.
+	if !ci.PrimaryTechCardID.Valid {
+		return nil, status.Error(codes.FailedPrecondition, "colourway has no owning style (primary card) to source cost from")
 	}
-
-	linked, err := s.repo.Products().IsProductLinkedToTechCard(ctx, int(req.ProductId), techCardID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't check product-tech-card link", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't verify tech card link")
-	}
-	if !linked {
-		return nil, status.Error(codes.InvalidArgument, "tech card does not link this product")
-	}
+	techCardID := int(ci.PrimaryTechCardID.Int32)
 
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
 	if err != nil || card == nil {
-		return nil, status.Error(codes.NotFound, "tech card not found")
+		return nil, status.Error(codes.NotFound, "owning style not found")
 	}
 	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
 	if !unit.Valid {
 		return nil, status.Error(codes.FailedPrecondition,
-			"tech card has no base-currency unit cost — check the costing and its FX rates")
+			"owning style has no base-currency unit cost — check the costing and its FX rates")
 	}
 	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"tech card unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
+			"style unit cost is in %s, not base currency %s", currency, cache.GetBaseCurrency())
 	}
-
-	// Repoint the primary card only when an explicit, different card was requested.
-	if int(req.TechCardId) > 0 && (!ci.PrimaryTechCardID.Valid || int(ci.PrimaryTechCardID.Int32) != techCardID) {
-		if err := s.repo.Products().SetPrimaryTechCard(ctx, int(req.ProductId), techCardID); err != nil {
-			slog.Default().ErrorContext(ctx, "can't set primary tech card", slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "can't set primary tech card")
-		}
+	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal); err != nil {
+		slog.Default().ErrorContext(ctx, "can't sync colourway cost from owning style", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't sync colourway cost")
 	}
-	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, int(req.ProductId), techCardID, unit.Decimal); err != nil {
-		slog.Default().ErrorContext(ctx, "can't sync product cost from tech card", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't sync product cost")
-	}
-	return &pb_admin.SyncColorwayCostFromStyleResponse{
+	return &pb_admin.SyncColorwayCostFromOwningStyleResponse{
 		CostPrice:  &pb_decimal.Decimal{Value: unit.Decimal.String()},
 		Currency:   currency,
 		TechCardId: int32(techCardID),
+		Source:     pb_common.ColorwayCostSource_COLORWAY_COST_SOURCE_STYLE,
 	}, nil
 }
 
@@ -380,17 +364,24 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 }
 
 func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVariantStockRequest) (*pb_admin.UpdateVariantStockResponse, error) {
-	productId := int(req.ProductId)
-	sizeId := int(req.SizeId)
 	quantity := int(req.Quantity)
 
-	// Validate required fields
-	if productId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "product_id is required")
+	// R2/p012: stock is addressed by the stable variant id (product_size.id) and NEVER creates a variant.
+	// Resolve it to the denormalised (product_id, size_id) the stock path keys on; an unknown variant is
+	// NOT_FOUND, not a silent implicit insert.
+	if req.VariantId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "variant_id is required")
 	}
-	if sizeId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "size_id is required")
+	variant, err := s.repo.Products().GetVariantByID(ctx, int(req.VariantId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "variant %d not found", req.VariantId)
+		}
+		slog.Default().ErrorContext(ctx, "can't resolve variant for stock update", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't resolve variant")
 	}
+	productId := variant.ProductId
+	sizeId := variant.SizeId
 
 	// Validate mode
 	if req.Mode == pb_common.StockAdjustmentMode_STOCK_ADJUSTMENT_MODE_UNSPECIFIED {

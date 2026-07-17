@@ -146,12 +146,13 @@ service AdminService {
     };
   }
 
-  // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
-  // any manual value. If tech_card_id is set it also becomes the product's primary card;
-  // otherwise the product's existing primary card is used.
-  rpc SyncColorwayCostFromStyle(SyncColorwayCostFromStyleRequest) returns (SyncColorwayCostFromStyleResponse) {
+  // SyncColorwayCostFromOwningStyle (re)seeds a colourway's confidential cost_price from its owning
+  // style's primary card, overriding any manual value. R4/p019: it derives the style from the owner
+  // relation and never repoints it — cost provenance is separated from ownership. Was
+  // SyncColorwayCostFromStyle.
+  rpc SyncColorwayCostFromOwningStyle(SyncColorwayCostFromOwningStyleRequest) returns (SyncColorwayCostFromOwningStyleResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/cost/sync-from-tech-card"
+      post: "/api/admin/colorways/{colorway_id}/cost/sync"
       body: "*"
     };
   }
@@ -1451,19 +1452,23 @@ message ColorwayCostInfo {
   int32 primary_tech_card_id = 5;
 }
 
-message SyncColorwayCostFromStyleRequest {
-  int32 product_id = 1;
-  // tech_card_id optionally repoints the product's primary card before seeding; 0 = use the
-  // product's existing primary card.
-  int32 tech_card_id = 2;
+message SyncColorwayCostFromOwningStyleRequest {
+  int64 colorway_id = 1; // R8: renamed from product_id (same FK target = product.id)
+  reserved "product_id";
+  // R4/p019: the style is derived from the owner relation (the colourway's primary card) and is NEVER
+  // repointed by a cost sync — cost provenance is separated from ownership. tech_card_id is removed.
+  reserved 2;
+  reserved "tech_card_id";
+  uint64 expected_version = 3;
 }
 
-message SyncColorwayCostFromStyleResponse {
+message SyncColorwayCostFromOwningStyleResponse {
   // the cost_price written, in base currency.
   google.type.Decimal cost_price = 1;
   string currency = 2;
-  // the tech card the cost was sourced from.
+  // the tech card the cost was sourced from (the owning style's primary card).
   int32 tech_card_id = 3;
+  common.ColorwayCostSource source = 4; // R4: where the synced cost came from (STYLE)
 }
 
 // Lifecycle transition requests (R6). expected_version echoes tech_card.lock_version for future
@@ -1498,12 +1503,16 @@ message TransitionColorwayStatusResponse {
 
 message UpdateVariantStockRequest {
   common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta
-  int32 product_id = 2; // Required: product ID
-  int32 size_id = 3; // Required: size ID
+  // R2/p012: stock is addressed by the stable variant id (product_size.id), never the (product_id,
+  // size_id) pair — and it NEVER creates a variant (unknown -> NOT_FOUND). Identity change -> old numbers
+  // reserved.
+  reserved 2, 3;
+  reserved "product_id", "size_id";
   int32 quantity = 4; // Required: final value for "set", delta amount for "adjust" (always unsigned)
   common.StockAdjustmentDirection direction = 5; // Required for "adjust" mode, ignored for "set"
   common.StockChangeReason reason = 6; // Required: reason for stock adjustment
   optional string comment = 7; // Optional, but required for reason=OTHER
+  int64 variant_id = 8; // Required: the variant to adjust (product_size.id)
 }
 
 message UpdateVariantStockResponse {}
