@@ -15,8 +15,10 @@ INSERT INTO migration_0151_merge_guard (singleton, conflict_count)
 SELECT 1, COUNT(*) FROM migration_0151_merge_conflict;
 
 -- 2) Post-condition: every child that was repointed must now resolve to a real product. A CASCADE
--- child (usage / bom_colorway / piece_material) with a non-NULL colorway_id outside product(id), or a
--- SET-NULL child (sample) with a dangling colorway_id, is an orphan — STOP before the parent is gone.
+-- child (usage / piece_material) with a non-NULL colorway_id outside product(id), or the SET-NULL
+-- child (sample) with a dangling colorway_id, is an orphan — STOP before the parent is gone.
+-- tech_card_bom_colorway was dropped for good in 0079 (Up); its orphan probe is guarded on
+-- information_schema so a clean 0001→0152 chain (table absent) is a no-op, not an ERROR 1146.
 CREATE TABLE IF NOT EXISTS migration_0152_orphan_conflict (
     child_table VARCHAR(64) NOT NULL,
     colorway_id INT NOT NULL,
@@ -28,10 +30,16 @@ INSERT INTO migration_0152_orphan_conflict (child_table, colorway_id)
 SELECT 'tech_card_colorway_usage', c.colorway_id FROM tech_card_colorway_usage c
 WHERE c.colorway_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product p WHERE p.id = c.colorway_id)
 GROUP BY c.colorway_id;
-INSERT INTO migration_0152_orphan_conflict (child_table, colorway_id)
-SELECT 'tech_card_bom_colorway', c.colorway_id FROM tech_card_bom_colorway c
-WHERE c.colorway_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product p WHERE p.id = c.colorway_id)
-GROUP BY c.colorway_id;
+-- tech_card_bom_colorway is dead since 0079 (Up drops it; recreated only in the never-run Down). Probe
+-- it only when it actually exists — a static SELECT would ERROR 1146 on a clean 0001→0152 chain.
+SET @has_bom_cw := (SELECT COUNT(*) FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_bom_colorway');
+SET @sql := IF(@has_bom_cw > 0,
+    'INSERT INTO migration_0152_orphan_conflict (child_table, colorway_id) SELECT ''tech_card_bom_colorway'', c.colorway_id FROM tech_card_bom_colorway c WHERE c.colorway_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product p WHERE p.id = c.colorway_id) GROUP BY c.colorway_id',
+    'SELECT 1');
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 INSERT INTO migration_0152_orphan_conflict (child_table, colorway_id)
 SELECT 'tech_card_piece_material', c.colorway_id FROM tech_card_piece_material c
 WHERE c.colorway_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product p WHERE p.id = c.colorway_id)

@@ -223,8 +223,10 @@ WHERE p.merge_src_colorway_id IS NOT NULL
 -- already points at product. Order: remap values with FK checks off, re-enable, then a single ALTER
 -- drops the old FK and adds the new one — MySQL commits the value-remap together with that ALTER, so
 -- a retry either sees the old FK (values still legacy, safe to redo) or the new FK (already done).
--- Live children: tech_card_colorway_usage (CASCADE), tech_card_bom_colorway (CASCADE),
--- tech_card_piece_material (CASCADE), sample (SET NULL).
+-- Live children (3): tech_card_colorway_usage (CASCADE), tech_card_piece_material (CASCADE),
+-- sample (SET NULL). NOTE: tech_card_bom_colorway was dropped for good in 0079 (Up) — block 7b below
+-- is kept only as a defensive information_schema-guarded no-op (its @old_fk resolves to NULL when the
+-- table is absent), consistent with the rest of the chain; it repoints nothing on a clean apply.
 -- ------------------------------------------------------------------------------------------------
 
 -- 7a) tech_card_colorway_usage — the material recipe (costing). ON DELETE CASCADE.
@@ -247,7 +249,8 @@ PREPARE s FROM @sql;
 EXECUTE s;
 DEALLOCATE PREPARE s;
 
--- 7b) tech_card_bom_colorway — legacy per-material colour matrix (superseded by usages, kept). CASCADE.
+-- 7b) tech_card_bom_colorway — dropped for good in 0079 (Up). Guarded no-op: @old_fk is NULL when the
+-- table is absent, so nothing runs on a clean chain. Kept defensively for any DB still carrying it.
 SET @old_fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_bom_colorway'
       AND COLUMN_NAME = 'colorway_id' AND REFERENCED_TABLE_NAME = 'tech_card_colorway' LIMIT 1);
