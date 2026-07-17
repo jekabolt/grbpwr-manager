@@ -431,7 +431,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
 		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
-		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
+		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, p.published_at,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,

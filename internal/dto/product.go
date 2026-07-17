@@ -392,18 +392,19 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 	soldOut := entity.SoldOutFromSizes(e.Sizes)
 
 	pbProduct := &pb_common.Colorway{
-		Id:        int32(e.Product.Id),
-		CreatedAt: timestamppb.New(e.Product.CreatedAt),
-		UpdatedAt: timestamppb.New(e.Product.UpdatedAt),
-		Slug:      slug.ProductPath(firstTranslationName, e.Product.SKU),
-		BaseSku:   e.Product.SKU, // R8: renamed from Sku
-		Display:   pbProductDisplay, // R8: renamed from ProductDisplay
-		Prices:    pbPrices, // Prices are in nested Product
-		SoldOut:   soldOut,
-		Status:    pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
-		StyleId:   int32(e.Product.StyleId), // R4: the single style relation
-		ColorCode: e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
-		// lock_version (tech_card.lock_version) and published_at need entity plumbing — left unset here.
+		Id:          int32(e.Product.Id),
+		CreatedAt:   timestamppb.New(e.Product.CreatedAt),
+		UpdatedAt:   timestamppb.New(e.Product.UpdatedAt),
+		Slug:        slug.ProductPath(firstTranslationName, e.Product.SKU),
+		BaseSku:     e.Product.SKU,    // R8: renamed from Sku
+		Display:     pbProductDisplay, // R8: renamed from ProductDisplay
+		Prices:      pbPrices,         // Prices are in nested Product
+		SoldOut:     soldOut,
+		Status:      pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
+		StyleId:     int32(e.Product.StyleId), // R4: the single style relation
+		ColorCode:   e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		PublishedAt: pbTimestampFromNullTime(e.Product.PublishedAt),
+		// lock_version (tech_card.lock_version) still needs entity plumbing — left unset here.
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
@@ -414,7 +415,7 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 	// measurements. e.Measurements is not serialised here.
 	return &pb_common.ColorwayFull{
 		Colorway: pbProduct, // R8: renamed from Product
-		Variants: pbSizes, // R8: renamed from Sizes
+		Variants: pbSizes,   // R8: renamed from Sizes
 		Media:    pbMedia,
 		Tags:     pbTags,
 	}, nil
@@ -619,7 +620,7 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
 		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
-		BaseSku:   e.SKU, // R8: renamed from Sku
+		BaseSku:   e.SKU,                                     // R8: renamed from Sku
 		Display:   buildColorwayDisplayPb(&e.ProductDisplay), // R8: renamed from ProductDisplay
 		Prices:    convertEntityPricesToPb(e.Prices),
 		SoldOut:   e.SoldOut,

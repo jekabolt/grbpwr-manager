@@ -217,7 +217,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// its "dead SKU → NULL" contract: an archived colourway surfaces product_id = NULL.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
 		SELECT c.id, c.style_id AS tech_card_id, c.dev_code AS code, COALESCE(c.dev_name, '') AS name,
-		       c.color_code, c.lab_dip_status, IF(c.lifecycle_status <> 4, c.id, NULL) AS product_id,
+		       c.color_code, COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, IF(c.lifecycle_status <> 4, c.id, NULL) AS product_id,
 		       COALESCE(c.sku, '') AS sku, c.lifecycle_status,
 		       c.dev_comment AS comment, c.pantone, c.pantone_system, c.dev_hex AS hex, c.swatch_media_id,
 		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
