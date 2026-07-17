@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -15,6 +16,18 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// styleMaskHas reports whether a field-mask path names the given style fact, folding case and
+// underscores so snake_case ("target_gender") and camelCase ("targetGender") both match.
+func styleMaskHas(mask []string, field string) bool {
+	want := strings.ToLower(strings.ReplaceAll(field, "_", ""))
+	for _, m := range mask {
+		if strings.ToLower(strings.ReplaceAll(strings.TrimSpace(m), "_", "")) == want {
+			return true
+		}
+	}
+	return false
+}
 
 // UpdateStyle writes a style's catalogue facts (brand/season/collection/gender/fit/composition/care/
 // model-wears/categories) — the sole writer of those facts (R4/§14.7). A stale expected_lock_version
@@ -27,16 +40,28 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		return nil, status.Error(codes.InvalidArgument, "style_id is required")
 	}
 	p := req.GetPatch()
-	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), p.GetSeason(), p.GetCollection(), p.GetTargetGender(),
+	// A field mask limits the write to the named facts (the tech card owns fit/composition/care, the
+	// colourway card owns model-wears); no mask ⇒ full replace, the legacy behaviour every current
+	// caller relied on. The store honors the mask on the SQL side; here we only make the strict pb→entity
+	// conversion tolerant of the enum facts (gender/season) a partial patch legitimately omits — an
+	// omitted, unmasked enum arrives as UNKNOWN, which the converter rejects, yet it is never written.
+	mask := req.GetUpdateMask().GetPaths()
+	season, gender := p.GetSeason(), p.GetTargetGender()
+	if len(mask) > 0 {
+		if !styleMaskHas(mask, "season") {
+			season = pb_common.SeasonEnum_SEASON_ENUM_SS // placeholder; excluded from the write by the mask
+		}
+		if !styleMaskHas(mask, "targetGender") {
+			gender = pb_common.GenderEnum_GENDER_ENUM_UNISEX // placeholder; excluded from the write by the mask
+		}
+	}
+	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, p.GetCollection(), gender,
 		p.GetFit(), p.GetComposition(), p.GetCareInstructions(),
 		p.GetModelWearsHeightCm(), p.GetModelWearsSizeId(), p.GetTopCategoryId(), p.GetSubCategoryId(), p.GetTypeId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid style patch: %v", err)
 	}
-	// A field mask limits the write to the named facts (the tech card owns fit/composition/care, the
-	// colourway card owns model-wears); no mask ⇒ full replace, the legacy behaviour every current
-	// caller relied on. The store folds path casing, so snake_case or camelCase both match.
-	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch, req.GetUpdateMask().GetPaths())
+	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch, mask)
 	if err != nil {
 		var ve *entity.ValidationError
 		switch {
