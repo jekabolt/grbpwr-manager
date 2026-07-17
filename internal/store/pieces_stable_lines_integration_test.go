@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -28,6 +29,15 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	s, err := NewForTest(ctx, cfg)
 	require.NoError(t, err)
 	defer s.Close()
+	// Warm the in-process dictionary cache: colourway remint validates color_code against it
+	// (same prep as commonWriteTestFixtures).
+	{
+		di, derr := s.Cache().GetDictionaryInfo(ctx)
+		require.NoError(t, derr)
+		hf, herr := s.Hero().GetHero(ctx)
+		require.NoError(t, herr)
+		require.NoError(t, cache.InitConsts(ctx, di, hf))
+	}
 	T := s.TechCards()
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 
@@ -38,7 +48,12 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	card := func(pieces ...entity.TechCardPiece) *entity.TechCardInsert {
 		return &entity.TechCardInsert{
 			Name: "Pieces Stable Style", Stage: entity.TechCardStageProto, StyleNumber: ns("PCS-1"),
+			Purpose: entity.TechCardPurposeSellable,
 			MeasurementUnit: entity.TechCardUnitMm, ApprovalState: entity.TechCardApprovalDraft,
+			// Linked colourways get reminted on card save — the style must carry a complete
+			// sku_season or the remint fails (same fixture class as colorway_style_write tests).
+			SeasonCode: sql.NullString{String: "SS", Valid: true},
+			SeasonYear: sql.NullInt32{Int32: 2026, Valid: true},
 			BomItems: []entity.TechCardBomItem{{LineKey: "FK1", Section: entity.TechCardBomSection("fabric"), Name: "Main Fabric"}},
 			Pieces:   pieces,
 		}
