@@ -324,7 +324,8 @@ type Variant struct {
 	Quantity  decimal.Decimal `db:"quantity"`
 	ProductId int             `db:"product_id"`
 	SizeId    int             `db:"size_id"`
-	SKU       sql.NullString  `db:"sku"` // first-class variant SKU (SS26-00021-BLK-04)
+	SKU       sql.NullString  `db:"sku"`    // first-class variant SKU (SS26-00021-BLK-04)
+	Status    uint8           `db:"status"` // VariantStatus: 1=active, 2=archived (R2, migration 0155)
 }
 
 func (ps *Variant) QuantityDecimal() decimal.Decimal {

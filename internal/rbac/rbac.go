@@ -135,6 +135,14 @@ var methodRequirements = map[string]Requirement{
 	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
 	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
 	"UpdateVariantStock":        wr(SectionProducts),
+	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
+	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
+	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
+	"GetStyleSizeChart":    rd(SectionProducts),
+	"UpdateStyleSizeChart": wr(SectionProducts),
+	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
 	"GetColorwayCustoms":        rd(SectionProducts),
 	"SetColorwayCustoms":        wr(SectionProducts),

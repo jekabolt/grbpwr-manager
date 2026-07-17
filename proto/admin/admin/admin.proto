@@ -24,6 +24,7 @@ import "common/support.proto";
 import "common/task.proto";
 import "common/techcard.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
@@ -128,6 +129,59 @@ service AdminService {
   rpc UpdateVariantStock(UpdateVariantStockRequest) returns (UpdateVariantStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/stock/update"
+      body: "*"
+    };
+  }
+
+  // CreateVariant adds a new variant (size) to a colourway at zero stock (R2). The size is immutable;
+  // the variant SKU is minted from the colourway's base. Fails if the size already exists or the
+  // colourway is archived.
+  rpc CreateVariant(CreateVariantRequest) returns (CreateVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/variants"
+      body: "*"
+    };
+  }
+
+  // UpdateVariant patches a variant's mutable state (R2). size_id and the variant SKU are immutable;
+  // only the lifecycle status is writable (archive-not-delete).
+  rpc UpdateVariant(UpdateVariantRequest) returns (UpdateVariantResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/variants/{variant_id}"
+      body: "*"
+    };
+  }
+
+  // ArchiveVariant retires a variant (ACTIVE -> ARCHIVED, R2): it drops off the storefront and rejects
+  // stock writes, but its id stays valid for the frozen order/stock references.
+  rpc ArchiveVariant(ArchiveVariantRequest) returns (ArchiveVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/variants/{variant_id}/archive"
+      body: "*"
+    };
+  }
+
+  // GetStyleSizeChart returns a style's full size chart plus the shared lock_version (R5). The admin
+  // UI loads the whole chart before editing, because UpdateStyleSizeChart is a full-replace.
+  rpc GetStyleSizeChart(GetStyleSizeChartRequest) returns (GetStyleSizeChartResponse) {
+    option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
+  }
+
+  // UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5). A colourway
+  // save never touches the chart; the chart is style-owned and shared by every colourway of the style.
+  rpc UpdateStyleSizeChart(UpdateStyleSizeChartRequest) returns (UpdateStyleSizeChartResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/styles/{style_id}/size-chart"
+      body: "*"
+    };
+  }
+
+  // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
+  // frozen-sibling problem). Only a DRAFT may be relinked; both sides are optimistically locked and the
+  // colourway's SKU is re-minted from the target style's facts.
+  rpc RelinkDraftColorway(RelinkDraftColorwayRequest) returns (RelinkDraftColorwayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/colorways/{colorway_id}/relink"
       body: "*"
     };
   }
@@ -1516,6 +1570,74 @@ message UpdateVariantStockRequest {
 }
 
 message UpdateVariantStockResponse {}
+
+// Variant CRUD (R2). A variant is created at zero stock, its size is immutable, and it is archived
+// (never deleted) so the frozen order/stock references stay valid. expected_*_version echoes the
+// shared tech_card.lock_version for future optimistic-lock wiring; concurrency today is enforced by
+// the store's existence + status guards (a concurrent change is rejected, never silently lost).
+message CreateVariantRequest {
+  int64 colorway_id = 1;
+  int32 size_id = 2;
+  uint64 expected_colorway_version = 3;
+}
+
+message CreateVariantResponse {
+  common.Variant variant = 1; // the created variant, at zero stock
+}
+
+message UpdateVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+  VariantPatch patch = 3;
+  google.protobuf.FieldMask update_mask = 4; // size_id / variant_sku are NOT writable
+}
+
+// VariantPatch carries the only mutable variant field: its lifecycle status (archive-not-delete).
+message VariantPatch {
+  common.VariantLifecycleStatus status = 1;
+}
+
+message UpdateVariantResponse {
+  common.Variant variant = 1;
+}
+
+message ArchiveVariantRequest {
+  int64 variant_id = 1;
+  uint64 expected_version = 2;
+}
+
+message ArchiveVariantResponse {}
+
+// Style size chart (R5, full-replace). The chart is style-owned (tech_card_size_measurement) and shares
+// the style's tech_card.lock_version; there is no separate chart version.
+message GetStyleSizeChartRequest {
+  int32 style_id = 1;
+}
+
+message GetStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1;
+}
+
+message UpdateStyleSizeChartRequest {
+  int32 style_id = 1;
+  uint64 expected_lock_version = 2;
+  repeated common.StyleSizeChartCell cells = 3; // the WHOLE chart; anything omitted is deleted
+}
+
+message UpdateStyleSizeChartResponse {
+  common.StyleSizeChart chart = 1; // the stored chart with the bumped lock_version
+}
+
+// RelinkDraftColorway (R4): move a DRAFT colourway onto target_style_id. Both expected versions echo the
+// respective styles' shared tech_card.lock_version (stale -> ABORTED).
+message RelinkDraftColorwayRequest {
+  int64 colorway_id = 1;
+  int64 target_style_id = 2;
+  uint64 expected_colorway_version = 3;
+  uint64 expected_target_style_version = 4;
+}
+
+message RelinkDraftColorwayResponse {}
 
 // ColorwayCustoms is a product's international-shipping customs data. hs_code and
 // customs_description are the customs-only fields set by SetColorwayCustoms. country_of_origin is the

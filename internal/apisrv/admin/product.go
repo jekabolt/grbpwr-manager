@@ -380,6 +380,10 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 		slog.Default().ErrorContext(ctx, "can't resolve variant for stock update", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't resolve variant")
 	}
+	// R2/0155: an archived variant is retired — its stock is frozen and it rejects stock writes.
+	if variant.Status == uint8(entity.VariantStatusArchived) {
+		return nil, status.Errorf(codes.FailedPrecondition, "variant %d is archived", req.VariantId)
+	}
 	productId := variant.ProductId
 	sizeId := variant.SizeId
 

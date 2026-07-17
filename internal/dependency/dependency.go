@@ -76,6 +76,16 @@ type (
 		// GetVariantBySKU returns a variant (product_size) by its public variant SKU, sql.ErrNoRows if
 		// absent (storefront NotifyMe resolve, R2/R3/p013).
 		GetVariantBySKU(ctx context.Context, variantSKU string) (entity.Variant, error)
+		// CreateVariant adds a new variant (size) to a colourway at zero stock, ACTIVE, minting its
+		// variant SKU (R2). Rejects an absent (sql.ErrNoRows) or archived colourway and a duplicate size.
+		CreateVariant(ctx context.Context, colorwayID, sizeID int) (entity.Variant, error)
+		// SetVariantStatus applies a lifecycle status to a variant under an optimistic guard (R2:
+		// archive-not-delete). Returns sql.ErrNoRows if the variant is absent; size_id/SKU are immutable.
+		SetVariantStatus(ctx context.Context, variantID int, target entity.VariantStatus) (entity.Variant, error)
+		// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4), guarded on both sides'
+		// shared lock_version, re-minting its SKU. entity.ErrColorwayNotDraft if not draft,
+		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent.
+		RelinkDraftColorway(ctx context.Context, colorwayID, targetStyleID, expectedColorwayVersion, expectedTargetStyleVersion int) error
 		// GetProductByIdNoHidden returns a product by its ID, excluding hidden products.
 		GetProductByIdNoHidden(ctx context.Context, id int) (*entity.ColorwayFull, error)
 		// GetProductBySKU returns a product by its base SKU (public resolve key), excluding hidden.
@@ -529,6 +539,12 @@ type (
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
 		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
+		// sql.ErrNoRows when the style is absent.
+		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)
+		// UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5,
+		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
