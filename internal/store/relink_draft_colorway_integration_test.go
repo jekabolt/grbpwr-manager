@@ -69,7 +69,10 @@ func TestRelinkDraftColorway(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, srcStyleID).Scan(&srcLV))
 
 	// Target style: a bare tech_card with a complete season so the re-mint can build the base SKU.
-	res, err := testDB.ExecContext(ctx, `INSERT INTO tech_card (style_number, name, season_code, season_year) VALUES (CONCAT('AUTO-TGT-', UUID_SHORT()), 'Target', 'SS', 2026)`)
+	// season_code/season_year alone are not enough: 0146's tech_card_season_atomic CHECK also requires
+	// the derived `season` label (CODE + 2-digit year) to be set consistently, or the INSERT is rejected
+	// (MySQL 3819) before resolveSegments ever gets a chance to read season_code/season_year.
+	res, err := testDB.ExecContext(ctx, `INSERT INTO tech_card (style_number, name, season_code, season_year, season) VALUES (CONCAT('AUTO-TGT-', UUID_SHORT()), 'Target', 'SS', 2026, 'SS26')`)
 	require.NoError(t, err)
 	tgtStyleID64, err := res.LastInsertId()
 	require.NoError(t, err)
@@ -96,8 +99,12 @@ func TestRelinkDraftColorway(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&newStyleID))
 	require.Equal(t, tgtStyleID, newStyleID)
 
-	// An unknown target style is sql.ErrNoRows.
+	// An unknown target style is sql.ErrNoRows. prodID now lives on tgtStyleID (the happy path above), and
+	// RelinkDraftColorway never bumps tech_card.lock_version itself (only UPDATE product.style_id + re-mint;
+	// see relink.go's styleLockVersion, a plain SELECT) — so the expected version for prodID's current style
+	// is still the unchanged tgtLV, not tgtLV+1. Passing +1 here would fail the version guard first and
+	// surface entity.ErrTechCardConflict before the unknown-target lookup is ever reached.
 	_, err = testDB.ExecContext(ctx, `UPDATE product SET lifecycle_status = 1 WHERE id = ?`, prodID)
 	require.NoError(t, err)
-	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLV+1, 0), sql.ErrNoRows)
+	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLV, 0), sql.ErrNoRows)
 }
