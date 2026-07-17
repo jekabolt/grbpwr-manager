@@ -57,6 +57,14 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 		return fmt.Errorf("colourway %d: %w", colorwayID, err)
 	}
 	if t == entity.ColorwayTransitionPublish {
+		// Publish must guarantee its own base+variant SKUs: CreateColorway never mints and
+		// CreateVariant's mint is best-effort (the base isn't built yet at that point), so a
+		// colourway published straight after Create+CreateVariant (no UpdateColorway in between)
+		// would otherwise fail the "valid SKU" preconditions below. Mint FIRST so the precondition
+		// check that follows sees the freshly-minted state (R6).
+		if err := MintProductSKUs(ctx, s.DB, colorwayID); err != nil {
+			return fmt.Errorf("mint colourway %d SKUs before publish: %w", colorwayID, err)
+		}
 		if err := checkColorwayPublishPreconditions(ctx, s.DB, colorwayID); err != nil {
 			return err
 		}

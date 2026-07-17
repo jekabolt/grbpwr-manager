@@ -325,3 +325,57 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	_, err = s.Products().UpdateStyle(ctx, 999999999, 0, basePatch)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }
+
+// TestPublishColorwayMintsSKUsWithoutPriorUpdateColorway guards a beta-seed finding: a seeder had to
+// insert a synthetic UpdateColorway call between CreateVariant and Publish only to get SKUs minted.
+// CreateColorway never mints (its doc comment says so explicitly — "no SKU minted until publish") and
+// CreateVariant's mint is best-effort and no-ops because the base isn't built yet, so a colourway
+// published straight after Create -> CreateVariant x2 -> Publish (no UpdateColorway in between) used to
+// fail checkColorwayPublishPreconditions outright. PublishColorway must guarantee its own base+variant
+// SKUs by minting first and only then checking the R6 preconditions.
+func TestPublishColorwayMintsSKUsWithoutPriorUpdateColorway(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	mediaID, langID, prices := commonWriteTestFixtures(ctx, t, s)
+	styleID := insertSeasonedTestStyle(ctx, t, "TPCM", "SS", "SS26", 2026)
+	var sizeID1, sizeID2 int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID1))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1 OFFSET 1`).Scan(&sizeID2))
+
+	prd := newColorwayInsert("BLK", "black", "TPCM-BLACK", mediaID, langID, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
+
+	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID1)
+	require.NoError(t, err)
+	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID2)
+	require.NoError(t, err)
+
+	// No UpdateColorway call anywhere above — PublishColorway alone must mint the base + variant SKUs
+	// (and, as a side effect, allocate the style's model_no) before it can satisfy R6's preconditions.
+	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID))
+
+	var sku string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT sku FROM product WHERE id = ?`, colorwayID).Scan(&sku))
+	require.Regexp(t, `^SS26-[0-9]{5}-BLK$`, sku)
+
+	var variantSKU1, variantSKU2 sql.NullString
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT sku FROM product_size WHERE product_id = ? AND size_id = ?`, colorwayID, sizeID1).Scan(&variantSKU1))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT sku FROM product_size WHERE product_id = ? AND size_id = ?`, colorwayID, sizeID2).Scan(&variantSKU2))
+	require.True(t, variantSKU1.Valid)
+	require.True(t, variantSKU2.Valid)
+	require.Regexp(t, `^SS26-[0-9]{5}-BLK-[0-9]{2}$`, variantSKU1.String)
+	require.Regexp(t, `^SS26-[0-9]{5}-BLK-[0-9]{2}$`, variantSKU2.String)
+}
