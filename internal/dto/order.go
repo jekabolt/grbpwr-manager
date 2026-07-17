@@ -488,6 +488,8 @@ func ConvertEntityShipmentToPbShipment(s entity.Shipment) (*pb_common.Shipment, 
 		ShippingDate:         timestamppb.New(s.ShippingDate.Time),
 		EstimatedArrivalDate: timestamppb.New(s.EstimatedArrivalDate.Time),
 		FreeShipping:         s.FreeShipping,
+		ActualCost:           pbDecimalFromNull(s.ActualCost),
+		ReturnShippingCost:   pbDecimalFromNull(s.ReturnShippingCost),
 	}, nil
 }
 

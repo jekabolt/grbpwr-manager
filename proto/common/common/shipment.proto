@@ -52,4 +52,10 @@ message Shipment {
   google.protobuf.Timestamp shipping_date = 6;
   google.protobuf.Timestamp estimated_arrival_date = 7;
   bool free_shipping = 8; // True when shipping was complimentary (threshold met or promo)
+  // actual_cost is the real carrier invoice for this shipment (EUR), distinct from cost
+  // (the price charged to the customer). NULL until an operator enters it.
+  google.type.Decimal actual_cost = 9;
+  // return_shipping_cost is the reverse-logistics cost of a return (EUR), NULL when the
+  // order was not returned.
+  google.type.Decimal return_shipping_cost = 10;
 }
