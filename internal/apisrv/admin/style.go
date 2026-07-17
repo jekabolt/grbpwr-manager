@@ -33,7 +33,10 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid style patch: %v", err)
 	}
-	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch)
+	// A field mask limits the write to the named facts (the tech card owns fit/composition/care, the
+	// colourway card owns model-wears); no mask ⇒ full replace, the legacy behaviour every current
+	// caller relied on. The store folds path casing, so snake_case or camelCase both match.
+	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch, req.GetUpdateMask().GetPaths())
 	if err != nil {
 		var ve *entity.ValidationError
 		switch {

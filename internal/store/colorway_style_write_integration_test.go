@@ -298,7 +298,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	// A season change re-mints every (unfrozen) sibling's SKU under the shared lock.
 	fwPatch := basePatch
 	fwPatch.Season = entity.SeasonFW
-	newVersion, err := s.Products().UpdateStyle(ctx, styleID, v0, fwPatch)
+	newVersion, err := s.Products().UpdateStyle(ctx, styleID, v0, fwPatch, nil)
 	require.NoError(t, err)
 	require.Equal(t, v0+1, newVersion)
 
@@ -309,7 +309,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	require.Equal(t, skuB0[4:], skuB1[4:], "only the season segment changes — model/colour are untouched")
 
 	// A stale expected version is a conflict.
-	_, err = s.Products().UpdateStyle(ctx, styleID, v0, fwPatch)
+	_, err = s.Products().UpdateStyle(ctx, styleID, v0, fwPatch, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 
 	// Freeze colourway A (simulates order/label history: sku_locked_at set).
@@ -319,7 +319,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	// Another season change is refused outright — a frozen sibling is never silently skipped.
 	pfPatch := basePatch
 	pfPatch.Season = entity.SeasonPF
-	_, err = s.Products().UpdateStyle(ctx, styleID, v0+1, pfPatch)
+	_, err = s.Products().UpdateStyle(ctx, styleID, v0+1, pfPatch, nil)
 	require.ErrorIs(t, err, entity.ErrStyleFrozenSiblings)
 
 	// Refused atomically: the shared lock did not move and no sibling's SKU changed.
@@ -333,7 +333,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	collectionPatch := basePatch
 	collectionPatch.Season = entity.SeasonFW // unchanged from the style's current value
 	collectionPatch.Collection = "core-v2"
-	newVersion2, err := s.Products().UpdateStyle(ctx, styleID, v0+1, collectionPatch)
+	newVersion2, err := s.Products().UpdateStyle(ctx, styleID, v0+1, collectionPatch, nil)
 	require.NoError(t, err)
 	require.Equal(t, v0+2, newVersion2)
 	var collection string
@@ -341,7 +341,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	require.Equal(t, "core-v2", collection)
 
 	// An unknown style is sql.ErrNoRows.
-	_, err = s.Products().UpdateStyle(ctx, 999999999, 0, basePatch)
+	_, err = s.Products().UpdateStyle(ctx, 999999999, 0, basePatch, nil)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
