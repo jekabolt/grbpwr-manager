@@ -353,6 +353,19 @@ service AdminService {
     };
   }
 
+  rpc CreateFiber(CreateFiberRequest) returns (CreateFiberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/fibers"
+      body: "*"
+    };
+  }
+  rpc ArchiveFiber(ArchiveFiberRequest) returns (ArchiveFiberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/fibers/{code}/archive"
+      body: "*"
+    };
+  }
+
   rpc ListCountries(ListCountriesRequest) returns (ListCountriesResponse) {
     option (google.api.http) = {get: "/api/admin/dictionaries/countries"};
   }
@@ -2046,6 +2059,22 @@ message ArchiveTagRequest {
   uint64 expected_version = 2;
 }
 message ArchiveTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+message CreateFiberRequest {
+  string code = 1; // stable short key, uppercased server-side (COT/POL/…)
+  string name = 2; // display name
+  uint64 expected_version = 3;
+}
+message CreateFiberResponse {
+  common.Fiber fiber = 1;
+  common.DictionaryRevision revision = 2;
+}
+message ArchiveFiberRequest {
+  string code = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveFiberResponse {
   common.DictionaryRevision revision = 1;
 }
 

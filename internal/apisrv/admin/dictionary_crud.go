@@ -51,6 +51,14 @@ func pbTagDict(t entity.TagDict) *pb_common.Tag {
 	}
 }
 
+func pbFiber(f entity.Fiber) *pb_common.Fiber {
+	return &pb_common.Fiber{
+		Code:     f.Code,
+		Name:     f.Name,
+		Archived: f.ArchivedAt.Valid,
+	}
+}
+
 func pbCountry(c entity.Country) *pb_common.Country {
 	return &pb_common.Country{
 		Code:   c.Code,
@@ -227,6 +235,26 @@ func (s *Server) ArchiveTag(ctx context.Context, req *pb_admin.ArchiveTagRequest
 	}
 	s.refreshDictionaryCache(ctx)
 	return &pb_admin.ArchiveTagResponse{Revision: pbDictRevision(entity.DictNamespaceTag, rev)}, nil
+}
+
+// ---- Fiber (controlled fibre vocabulary, S17/P0.4) -------------------------
+
+func (s *Server) CreateFiber(ctx context.Context, req *pb_admin.CreateFiberRequest) (*pb_admin.CreateFiberResponse, error) {
+	f, rev, err := s.repo.Dictionary().CreateFiber(ctx, req.GetCode(), req.GetName(), int64(req.GetExpectedVersion()))
+	if err != nil {
+		return nil, dictMutationError(ctx, "create fibre", err)
+	}
+	s.refreshDictionaryCache(ctx)
+	return &pb_admin.CreateFiberResponse{Fiber: pbFiber(f), Revision: pbDictRevision(entity.DictNamespaceFiber, rev)}, nil
+}
+
+func (s *Server) ArchiveFiber(ctx context.Context, req *pb_admin.ArchiveFiberRequest) (*pb_admin.ArchiveFiberResponse, error) {
+	rev, err := s.repo.Dictionary().ArchiveFiber(ctx, req.GetCode(), int64(req.GetExpectedVersion()))
+	if err != nil {
+		return nil, dictMutationError(ctx, "archive fibre", err)
+	}
+	s.refreshDictionaryCache(ctx)
+	return &pb_admin.ArchiveFiberResponse{Revision: pbDictRevision(entity.DictNamespaceFiber, rev)}, nil
 }
 
 // ---- Country (closed dictionary: set-active only) --------------------------

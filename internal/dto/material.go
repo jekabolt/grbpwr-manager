@@ -103,12 +103,43 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	if err := applyPbMaterialAttrs(pb, ins); err != nil {
 		return nil, err
 	}
+	entries, err := pbCompositionEntriesToEntity(pb.GetCompositionEntries())
+	if err != nil {
+		return nil, err
+	}
+	ins.CompositionEntries = entries
 	// Fixture enum-validation (S15): reject a bad typed-attribute enum value at the app layer with a
 	// field-tagged error, before the DB CHECK would.
 	if err := materialattr.Validate(ins); err != nil {
 		return nil, err
 	}
 	return ins, nil
+}
+
+// pbCompositionEntriesToEntity maps the wire composition_entries onto entity rows for a material write
+// (S17): fibre code upper-cased/trimmed, percent parsed. The dictionary display name is a read-only
+// projection and is ignored on write; structural validation (sum/range/duplicates) and dictionary
+// existence are enforced by the store (entity.NormalizeMaterialComposition / checkFibersExist).
+func pbCompositionEntriesToEntity(pbEntries []*pb_common.CompositionEntry) ([]entity.CompositionEntry, error) {
+	if len(pbEntries) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.CompositionEntry, 0, len(pbEntries))
+	for i, e := range pbEntries {
+		pct, err := nullDecimalFromPb(e.GetPercent())
+		if err != nil {
+			return nil, fmt.Errorf("composition_entries[%d].percent: %w", i, err)
+		}
+		if !pct.Valid {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("composition_entries[%d].percent", i),
+				"percent is required", "", "set each fibre's percent")
+		}
+		out = append(out, entity.CompositionEntry{
+			FiberCode: strings.ToUpper(strings.TrimSpace(e.GetFiberCode())),
+			Percent:   pct.Decimal,
+		})
+	}
+	return out, nil
 }
 
 // applyPbMaterialAttrs maps the proto CTI class + typed attribute oneof (or the other_attrs JSON
@@ -245,6 +276,7 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 	if m.LatestPrice != nil {
 		out.LatestPrice = ConvertEntityMaterialPriceToPb(*m.LatestPrice)
 	}
+	out.CompositionEntries = compositionEntriesToPb(m.CompositionEntries)
 	out.MaterialClass = pbMaterialClass(entity.MaterialClass(m.MaterialClass))
 	switch entity.MaterialClass(m.MaterialClass) {
 	case entity.MaterialClassFabric:

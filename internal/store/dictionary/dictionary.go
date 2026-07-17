@@ -327,6 +327,65 @@ func (s *Store) ArchiveTag(ctx context.Context, id int, expectedVersion int64) (
 	})
 }
 
+// ---- Fiber (controlled fibre vocabulary, S17/P0.4) -------------------------
+
+// ListFibers returns fibre dictionary entries; archived entries only when requested.
+func (s *Store) ListFibers(ctx context.Context, includeArchived bool) ([]entity.Fiber, error) {
+	q := `SELECT code, name, archived_at FROM fiber`
+	if !includeArchived {
+		q += ` WHERE archived_at IS NULL`
+	}
+	q += ` ORDER BY code`
+	rows, err := storeutil.QueryListNamed[entity.Fiber](ctx, s.DB, q, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("list fibres: %w", err)
+	}
+	return rows, nil
+}
+
+// CreateFiber inserts a new fibre. The code is normalised (upper-case, trimmed) and validated
+// ([A-Z0-9]{1,8}); uniqueness is enforced by the table primary key. Returns the created entry and the
+// new fibre revision.
+func (s *Store) CreateFiber(ctx context.Context, code, name string, expectedVersion int64) (entity.Fiber, int64, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if err := entity.ValidateFiberCode(code); err != nil {
+		return entity.Fiber{}, 0, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return entity.Fiber{}, 0, fmt.Errorf("fibre name is required")
+	}
+	var created entity.Fiber
+	rev, err := s.mutateWithRevision(ctx, entity.DictNamespaceFiber, expectedVersion, func(ctx context.Context, rep dependency.Repository) error {
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`INSERT INTO fiber (code, name) VALUES (:code, :name)`,
+			map[string]any{"code": code, "name": name}); err != nil {
+			return fmt.Errorf("insert fibre: %w", err)
+		}
+		created = entity.Fiber{Code: code, Name: name}
+		return nil
+	})
+	return created, rev, err
+}
+
+// ArchiveFiber soft-deletes a fibre (R9 archive-not-delete). The row and its composition FK references
+// stay valid; the fibre is simply hidden from selection for new compositions. Returns the new revision.
+func (s *Store) ArchiveFiber(ctx context.Context, code string, expectedVersion int64) (int64, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	return s.mutateWithRevision(ctx, entity.DictNamespaceFiber, expectedVersion, func(ctx context.Context, rep dependency.Repository) error {
+		n, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`UPDATE fiber SET archived_at = NOW() WHERE code = :code AND archived_at IS NULL`,
+			map[string]any{"code": code})
+		if err != nil {
+			return fmt.Errorf("archive fibre: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("fibre %q not found or already archived", code)
+		}
+		return nil
+	})
+}
+
 // ---- Country (closed dictionary: set-active only) --------------------------
 
 // ListCountries returns country dictionary entries; when activeOnly is set, inactive codes are omitted.

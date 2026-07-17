@@ -393,6 +393,11 @@ message Material {
     MaterialPackagingAttrs packaging_attrs = 23;
   }
   string other_attrs = 24; // JSON object; set only when material_class = MATERIAL_CLASS_OTHER
+  // Structural fibre composition (S17): fiber_code + percent, summing to 100 when present. Replaces
+  // the free-text `composition` string (which stays legacy plain text). On write, only fiber_code +
+  // percent are read (name is resolved server-side from the fibre dictionary). Empty = unset. A
+  // shell-fabric material's composition is what a style's derived composition_entries is built from.
+  repeated CompositionEntry composition_entries = 25;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

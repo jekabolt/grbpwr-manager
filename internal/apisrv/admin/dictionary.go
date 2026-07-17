@@ -34,6 +34,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			ProductTags:                 cache.GetProductTags(),
 			Colors:                      cache.GetColors(),
 			CategorySizeSystems:         cache.GetCategorySizeSystems(),
+			Fibers:                      cache.GetFibers(),
 		}),
 	}, nil
 }

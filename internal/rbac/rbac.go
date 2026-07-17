@@ -177,6 +177,8 @@ var methodRequirements = map[string]Requirement{
 	"CreateTag":         wr(SectionDictionaries),
 	"UpdateTag":         wr(SectionDictionaries),
 	"ArchiveTag":        wr(SectionDictionaries),
+	"CreateFiber":       wr(SectionDictionaries),
+	"ArchiveFiber":      wr(SectionDictionaries),
 	"ListCountries":     rd(SectionDictionaries),
 	"SetCountryActive":  wr(SectionDictionaries),
 	// promo

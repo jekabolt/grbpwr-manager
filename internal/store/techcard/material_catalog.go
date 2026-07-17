@@ -59,8 +59,12 @@ const materialWithPriceSelect = `
 // the check — there is no DB-level unique index on code (it must stay unique only among non-archived
 // rows), so the check must hold the read range.
 func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error) {
+	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
+	if err != nil {
+		return 0, err
+	}
 	var id int
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, 0); err != nil {
 			return err
 		}
@@ -78,6 +82,9 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 		if err := upsertMaterialAttrs(ctx, rep.DB(), newID, m); err != nil {
 			return fmt.Errorf("create material %d attrs: %w", newID, err)
 		}
+		if err := writeMaterialComposition(ctx, rep.DB(), newID, composition); err != nil {
+			return err
+		}
 		id = newID
 		return nil
 	})
@@ -94,6 +101,10 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 // internal code unique among non-archived materials. The lock load, both guards and the update run
 // in one transaction so a concurrent movement/create/update cannot slip past the checks.
 func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error {
+	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
+	if err != nil {
+		return err
+	}
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			LockVersion int `db:"lock_version"`
@@ -133,6 +144,9 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		}
 		if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
 			return fmt.Errorf("update material %d attrs: %w", id, err)
+		}
+		if err := writeMaterialComposition(ctx, rep.DB(), id, composition); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -212,6 +226,9 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 	if err := s.attachMaterialAttrs(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
 		return nil, fmt.Errorf("get material %d attrs: %w", id, err)
 	}
+	if err := s.attachMaterialComposition(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
+		return nil, fmt.Errorf("get material %d composition: %w", id, err)
+	}
 	return &out, nil
 }
 
@@ -235,6 +252,9 @@ func (s *Store) ListMaterials(ctx context.Context, section string, includeArchiv
 	}
 	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
 		return nil, fmt.Errorf("list materials attrs: %w", err)
+	}
+	if err := s.attachMaterialComposition(ctx, ptrs); err != nil {
+		return nil, fmt.Errorf("list materials composition: %w", err)
 	}
 	return out, nil
 }
@@ -451,6 +471,98 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 		if m, ok := byID[r.MaterialID]; ok {
 			a := r.MaterialPackagingAttr
 			m.PackagingAttr = &a
+		}
+	}
+	return nil
+}
+
+// materialCompositionRow scans a material_composition row joined with its fibre display name for the
+// batch read (attachMaterialComposition).
+type materialCompositionRow struct {
+	MaterialID int `db:"material_id"`
+	entity.CompositionEntry
+}
+
+// attachMaterialComposition loads each material's structured fibre composition (S17,
+// material_composition) resolved with the fibre dictionary display name, ordered by descending percent
+// then code — the same projection shape as the style read (composition_read.go). A material with no
+// composition simply keeps an empty slice.
+func (s *Store) attachMaterialComposition(ctx context.Context, mats []*entity.MaterialWithPrice) error {
+	if len(mats) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(mats))
+	byID := make(map[int]*entity.MaterialWithPrice, len(mats))
+	for _, m := range mats {
+		ids = append(ids, m.Id)
+		byID[m.Id] = m
+	}
+	rows, err := storeutil.QueryListNamed[materialCompositionRow](ctx, s.DB, `
+		SELECT mc.material_id, mc.fiber_code, COALESCE(f.name, mc.fiber_code) AS name, mc.percent
+		FROM material_composition mc
+		LEFT JOIN fiber f ON f.code = mc.fiber_code
+		WHERE mc.material_id IN (:ids)
+		ORDER BY mc.material_id, mc.percent DESC, mc.fiber_code`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load material composition: %w", err)
+	}
+	for _, r := range rows {
+		if m, ok := byID[r.MaterialID]; ok {
+			m.CompositionEntries = append(m.CompositionEntries, r.CompositionEntry)
+		}
+	}
+	return nil
+}
+
+// writeMaterialComposition full-replaces a material's structured fibre composition (S17): it clears
+// the existing rows (a no-op on create) and, for a non-empty set, verifies every referenced fibre
+// exists (a field-tagged error rather than a raw FK 500) then inserts the entries. entries must
+// already be normalised/validated by entity.NormalizeMaterialComposition. Runs in the write tx.
+func writeMaterialComposition(ctx context.Context, db dependency.DB, materialID int, entries []entity.CompositionEntry) error {
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM material_composition WHERE material_id = :id`, map[string]any{"id": materialID}); err != nil {
+		return fmt.Errorf("clear material %d composition: %w", materialID, err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if err := checkFibersExist(ctx, db, entries); err != nil {
+		return err
+	}
+	for i := range entries {
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT INTO material_composition (material_id, fiber_code, percent)
+			VALUES (:material_id, :fiber_code, :percent)`,
+			map[string]any{"material_id": materialID, "fiber_code": entries[i].FiberCode, "percent": entries[i].Percent}); err != nil {
+			return fmt.Errorf("insert material %d composition: %w", materialID, err)
+		}
+	}
+	return nil
+}
+
+// checkFibersExist verifies every referenced fibre code is present in the dictionary, returning a
+// field-tagged violation naming the first unknown code (clearer than the FK's raw 1452). Archived
+// fibres still exist and are accepted — the composition FK requires existence, not active status.
+func checkFibersExist(ctx context.Context, db dependency.DB, entries []entity.CompositionEntry) error {
+	codes := make([]string, 0, len(entries))
+	for i := range entries {
+		codes = append(codes, entries[i].FiberCode)
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		Code string `db:"code"`
+	}](ctx, db, `SELECT code FROM fiber WHERE code IN (:codes)`, map[string]any{"codes": codes})
+	if err != nil {
+		return fmt.Errorf("check fibres exist: %w", err)
+	}
+	known := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		known[r.Code] = true
+	}
+	for i := range entries {
+		if !known[entries[i].FiberCode] {
+			return entity.NewFieldViolation(fmt.Sprintf("composition_entries[%d].fiber_code", i),
+				fmt.Sprintf("unknown fibre %s", entries[i].FiberCode), "",
+				"reference a fibre from the dictionary")
 		}
 	}
 	return nil

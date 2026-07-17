@@ -78,7 +78,23 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get category size systems: %w", err)
 	}
 
+	if dict.Fibers, err = s.getFibers(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get fibers: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getFibers returns the controlled fibre vocabulary (S17/P0.4), ordered by code. Archived entries are
+// included (flagged via archived_at) so the admin composition editor can show/filter them client-side,
+// mirroring how the colour dictionary surfaces its full set to the picker.
+func (s *Store) getFibers(ctx context.Context) ([]entity.Fiber, error) {
+	query := `SELECT code, name, archived_at FROM fiber ORDER BY code`
+	fibers, err := storeutil.QueryListNamed[entity.Fiber](ctx, s.DB, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get fibers: %w", err)
+	}
+	return fibers, nil
 }
 
 // getCategorySizeSystems returns the category -> permitted size-system(s) mapping (S10/WS5, migration
