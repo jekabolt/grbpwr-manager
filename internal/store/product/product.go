@@ -887,27 +887,24 @@ func (s *Store) IsProductLinkedToTechCard(ctx context.Context, productID, techCa
 	return len(rows) > 0, nil
 }
 
-func validateRequiredCurrencies(prices []entity.ColorwayPriceInsert) error {
-	providedCurrencies := make(map[string]bool)
+// validateColorwayPrices runs the ALWAYS-ON per-price checks: every price that IS provided must be
+// strictly positive and meet its currency's Stripe minimum. It deliberately does NOT enforce
+// required-currency completeness — that gate moved to the colourway →ACTIVE edge (lifecycle.go), so a
+// DRAFT may carry zero or partial prices while any price it does carry stays individually valid.
+func validateColorwayPrices(prices []entity.ColorwayPriceInsert) error {
 	var zeroPriceCurrencies []string
 	var belowMinCurrencies []string
 	for _, price := range prices {
-		currency := strings.ToUpper(price.Currency)
-		providedCurrencies[currency] = true
-
+		cur := strings.ToUpper(price.Currency)
 		if price.Price.LessThanOrEqual(decimal.Zero) {
-			zeroPriceCurrencies = append(zeroPriceCurrencies, currency)
+			zeroPriceCurrencies = append(zeroPriceCurrencies, cur)
 			continue
 		}
 
-		rounded := dto.RoundForCurrency(price.Price, currency)
-		if err := dto.ValidatePriceMeetsMinimum(rounded, currency); err != nil {
+		rounded := dto.RoundForCurrency(price.Price, cur)
+		if err := dto.ValidatePriceMeetsMinimum(rounded, cur); err != nil {
 			belowMinCurrencies = append(belowMinCurrencies, err.Error())
 		}
-	}
-
-	if missingCurrencies := currency.MissingRequired(providedCurrencies); len(missingCurrencies) > 0 {
-		return fmt.Errorf("missing required currencies: %s", strings.Join(missingCurrencies, ", "))
 	}
 
 	if len(zeroPriceCurrencies) > 0 {
@@ -919,6 +916,33 @@ func validateRequiredCurrencies(prices []entity.ColorwayPriceInsert) error {
 	}
 
 	return nil
+}
+
+// validateRequiredCurrenciesPresent is the COMPLETENESS gate: the provided price set must cover every
+// required currency (currency.MissingRequired). It is enforced only when a colourway is, or is
+// becoming, non-DRAFT — the →ACTIVE edge (lifecycle.go) and a price-changing write to an
+// already-published colourway. A DRAFT is exempt so it can be built up incrementally.
+func validateRequiredCurrenciesPresent(prices []entity.ColorwayPriceInsert) error {
+	providedCurrencies := make(map[string]bool, len(prices))
+	for _, price := range prices {
+		providedCurrencies[strings.ToUpper(price.Currency)] = true
+	}
+	if missingCurrencies := currency.MissingRequired(providedCurrencies); len(missingCurrencies) > 0 {
+		return fmt.Errorf("missing required currencies: %s", strings.Join(missingCurrencies, ", "))
+	}
+	return nil
+}
+
+// validateRequiredCurrencies is the FULL price validation — completeness AND per-price — kept for the
+// legacy AddProduct/UpdateProduct paths, which write an ACTIVE product directly and so need the
+// complete required set at write time. The decomposed colourway writers (CreateColorway/
+// UpdateColorway) and the →ACTIVE edge use the two halves separately so a DRAFT can hold partial
+// prices. Completeness is still reported first (unchanged ordering).
+func validateRequiredCurrencies(prices []entity.ColorwayPriceInsert) error {
+	if err := validateRequiredCurrenciesPresent(prices); err != nil {
+		return err
+	}
+	return validateColorwayPrices(prices)
 }
 
 func insertProductPrices(ctx context.Context, db dependency.DB, productId int, prices []entity.ColorwayPriceInsert) error {

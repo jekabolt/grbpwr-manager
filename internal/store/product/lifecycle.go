@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -84,6 +85,16 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 			return fmt.Errorf("mint colourway %d SKUs before publish: %w", colorwayID, err)
 		}
 		if err := checkColorwayPublishPreconditions(ctx, s.DB, colorwayID); err != nil {
+			return err
+		}
+	}
+	// The →ACTIVE edge — publish (DRAFT->ACTIVE) or unhide (HIDDEN->ACTIVE) — is the SINGLE point that
+	// enforces required-currency completeness. The create/update write path deliberately lets a DRAFT
+	// carry partial prices; a colourway must never become publicly sellable without a valid price in
+	// every required currency. Per-price validity of those prices was already checked when they were
+	// written, so only completeness is (re-)verified here, against the persisted price rows.
+	if next == entity.ColorwayStatusActive {
+		if err := checkColorwayRequiredCurrencies(ctx, s.DB, colorwayID); err != nil {
 			return err
 		}
 	}
@@ -186,6 +197,28 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("cannot publish colourway %d: %s", colorwayID, strings.Join(missing, "; "))
+	}
+	return nil
+}
+
+// checkColorwayRequiredCurrencies verifies a colourway's PERSISTED prices cover every required
+// currency (currency.MissingRequired). It is the completeness gate on the →ACTIVE edge
+// (transitionColorwayLifecycle): publish (DRAFT->ACTIVE) and unhide (HIDDEN->ACTIVE) both route through
+// it, so a colourway can never go live missing a required currency. Amount-level validity (positive,
+// above minimum) was enforced at write time and is not re-checked here.
+func checkColorwayRequiredCurrencies(ctx context.Context, db dependency.DB, colorwayID int) error {
+	rows, err := storeutil.QueryListNamed[struct {
+		Currency string `db:"currency"`
+	}](ctx, db, `SELECT currency FROM product_price WHERE product_id = :id`, map[string]any{"id": colorwayID})
+	if err != nil {
+		return fmt.Errorf("load colourway %d prices: %w", colorwayID, err)
+	}
+	provided := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		provided[strings.ToUpper(r.Currency)] = true
+	}
+	if missing := currency.MissingRequired(provided); len(missing) > 0 {
+		return fmt.Errorf("cannot activate colourway %d: missing required currencies: %s", colorwayID, strings.Join(missing, ", "))
 	}
 	return nil
 }
