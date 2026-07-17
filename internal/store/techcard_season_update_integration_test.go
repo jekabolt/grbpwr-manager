@@ -10,10 +10,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUpdateTechCardPersistsNormalizedSeason is the acceptance test for problem 010: UpdateTechCard
-// must persist the normalized season_code/season_year supplied by the structured season contract,
-// so a pair change (SS26 -> FW27) cannot leave the SKU-facing facts stale.
-func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
+// TestTechCardSeasonWriteOwnership is the acceptance test for problem 010's AddTechCard half plus the
+// R4/§14.7 write-decomposition that superseded its UpdateTechCard half (fix(pr6-e), wave 5): AddTechCard
+// still seeds+normalizes season_code/season_year/season from the structured season contract (a style is
+// always born with a season), but season is now a catalogue-style/SKU fact owned SOLELY by UpdateStyle —
+// UpdateTechCard writes PLM facts only and must leave season untouched even when the caller's
+// TechCardInsert carries a different one, so a season change goes through UpdateStyle's frozen-sibling
+// guard (techcard.go's UpdateTechCard doc comment) instead of silently re-minting here. Originally named
+// TestUpdateTechCardPersistsNormalizedSeason and asserted the opposite of its second half; renamed and
+// re-pointed at the current contract rather than reverted, since the ownership split is this wave's
+// intentional design (283ff15), not a regression.
+func TestTechCardSeasonWriteOwnership(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -60,7 +67,10 @@ func TestUpdateTechCardPersistsNormalizedSeason(t *testing.T) {
 
 	require.NoError(t, s.TechCards().UpdateTechCard(ctx, id, mkTC(entity.SeasonFW, 2027), lockVersion))
 
+	// R4/§14.7: season is a style/SKU fact now written SOLELY by UpdateStyle. UpdateTechCard must
+	// leave it exactly as it was, even though this update's TechCardInsert asks for SS26 -> FW27 —
+	// PLM and style facts are never written by the same path.
 	code, year = readSeason()
-	require.Equal(t, "FW", code, "update must re-normalize season_code")
-	require.Equal(t, int64(2027), year, "update must re-normalize season_year")
+	require.Equal(t, "SS", code, "UpdateTechCard must NOT touch season_code — that's UpdateStyle's fact now")
+	require.Equal(t, int64(2026), year, "UpdateTechCard must NOT touch season_year — that's UpdateStyle's fact now")
 }
