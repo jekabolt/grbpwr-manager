@@ -484,7 +484,7 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 	if s, ok := stockChangeSourceToProto[e.Source]; ok {
 		source = s
 	}
-	return &pb_common.StockChange{
+	pb := &pb_common.StockChange{
 		Id:             int32(e.Id),
 		ColorwayId:     int32(e.ProductId), // R8: renamed from ProductId
 		SizeId:         int32(e.SizeId),
@@ -496,7 +496,19 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 		OrderUuid:      e.OrderUUID,
 		CreatedAt:      timestamppb.New(e.CreatedAt),
 		AdminUsername:  e.AdminUsername,
+		ReferenceId:    e.ReferenceId,
 	}
+	// The audit fields the write path persists (reason/comment, J.30) were dropped here — the
+	// history read must return them or the trail is write-only (beta A–L catch).
+	if e.Reason != "" {
+		if r, ok := stockChangeReasonToProto[e.Reason]; ok {
+			pb.Reason = &r
+		}
+	}
+	if e.Comment != "" {
+		pb.Comment = &e.Comment
+	}
+	return pb
 }
 
 // MapStockChangeSourceToAPI maps internal source types to API-friendly names.
