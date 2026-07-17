@@ -140,6 +140,22 @@ var methodRequirements = map[string]Requirement{
 	"SetColorwayCustoms":        wr(SectionProducts),
 	"ListStockChangeHistory":    rd(SectionProducts),
 	"ListStockChanges":          rd(SectionProducts),
+	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Catalog-owned
+	// (SectionCosting is field-shaping only and can't gate a method), so they ride the products section.
+	"ListColors":        rd(SectionProducts),
+	"CreateColor":       wr(SectionProducts),
+	"UpdateColor":       wr(SectionProducts),
+	"ArchiveColor":      wr(SectionProducts),
+	"ListCollections":   rd(SectionProducts),
+	"CreateCollection":  wr(SectionProducts),
+	"UpdateCollection":  wr(SectionProducts),
+	"ArchiveCollection": wr(SectionProducts),
+	"ListTags":          rd(SectionProducts),
+	"CreateTag":         wr(SectionProducts),
+	"UpdateTag":         wr(SectionProducts),
+	"ArchiveTag":        wr(SectionProducts),
+	"ListCountries":     rd(SectionProducts),
+	"SetCountryActive":  wr(SectionProducts),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),

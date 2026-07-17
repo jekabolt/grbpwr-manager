@@ -166,6 +166,89 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/stock-changes"};
   }
 
+  // DICTIONARY MANAGER (R9)
+  // Controlled merch dictionaries: colour / collection / tag, plus the closed ISO country dictionary.
+  // Every mutation carries expected_version (optimistic concurrency on the namespace's
+  // dictionary_revision, 0 = unconditional) and returns the new revision. There is no delete: an in-use
+  // entry is archived (FK RESTRICT). Country is closed — only activation toggles (the full ISO set is
+  // seeded), so it has no create/rename/archive.
+
+  rpc ListColors(ListColorsRequest) returns (ListColorsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/colors"};
+  }
+  rpc CreateColor(CreateColorRequest) returns (CreateColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors"
+      body: "*"
+    };
+  }
+  rpc UpdateColor(UpdateColorRequest) returns (UpdateColorResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/colors/{code}"
+      body: "*"
+    };
+  }
+  rpc ArchiveColor(ArchiveColorRequest) returns (ArchiveColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors/{code}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/collections"};
+  }
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections"
+      body: "*"
+    };
+  }
+  rpc UpdateCollection(UpdateCollectionRequest) returns (UpdateCollectionResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/collections/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveCollection(ArchiveCollectionRequest) returns (ArchiveCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/tags"};
+  }
+  rpc CreateTag(CreateTagRequest) returns (CreateTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags"
+      body: "*"
+    };
+  }
+  rpc UpdateTag(UpdateTagRequest) returns (UpdateTagResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/tags/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveTag(ArchiveTagRequest) returns (ArchiveTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCountries(ListCountriesRequest) returns (ListCountriesResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/countries"};
+  }
+  rpc SetCountryActive(SetCountryActiveRequest) returns (SetCountryActiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/countries/{code}/active"
+      body: "*"
+    };
+  }
+
   // PROMO MANAGER
 
   // Adds a new promotional code
@@ -1449,6 +1532,118 @@ message SetColorwayCustomsRequest {
 }
 
 message SetColorwayCustomsResponse {}
+
+// ==================== Dictionary CRUD (R9) ====================
+// Controlled merch dictionaries. Every mutation carries expected_version (0 = unconditional) and echoes
+// the new common.DictionaryRevision so a client can advance its cached revision without a round-trip.
+
+message ListColorsRequest {
+  bool include_archived = 1;
+}
+message ListColorsResponse {
+  repeated common.Color colors = 1;
+}
+message CreateColorRequest {
+  string code = 1; // [A-Z0-9]{3}, unique; immutable once created (R9)
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message CreateColorResponse {
+  common.Color color = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateColorRequest {
+  string code = 1; // immutable lookup key — never rewritten (R9); changes name/hex only
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message UpdateColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveColorRequest {
+  string code = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCollectionsRequest {
+  bool include_archived = 1;
+}
+message ListCollectionsResponse {
+  repeated common.Collection collections = 1;
+}
+message CreateCollectionRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateCollectionResponse {
+  common.Collection collection = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateCollectionRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveCollectionRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListTagsRequest {
+  bool include_archived = 1;
+}
+message ListTagsResponse {
+  repeated common.Tag tags = 1;
+}
+message CreateTagRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateTagResponse {
+  common.Tag tag = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateTagRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveTagRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCountriesRequest {
+  bool active_only = 1;
+}
+message ListCountriesResponse {
+  repeated common.Country countries = 1;
+}
+message SetCountryActiveRequest {
+  string code = 1; // ISO 3166-1 alpha-2
+  bool active = 2;
+  uint64 expected_version = 3;
+}
+message SetCountryActiveResponse {
+  common.DictionaryRevision revision = 1;
+}
 
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;
