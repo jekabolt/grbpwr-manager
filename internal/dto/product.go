@@ -578,31 +578,31 @@ func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, er
 	soldOut := entity.SoldOutFromSizes(e.Sizes)
 
 	pbProduct := &pb_common.Colorway{
-		Id:             int32(e.Product.Id),
-		CreatedAt:      timestamppb.New(e.Product.CreatedAt),
-		UpdatedAt:      timestamppb.New(e.Product.UpdatedAt),
-		Slug:           slug.ProductPath(firstTranslationName, e.Product.SKU),
-		Sku:            e.Product.SKU,
-		ProductDisplay: pbProductDisplay,
-		Prices:         pbPrices, // Prices are in nested Product
-		SoldOut:        soldOut,
-		Status:         pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
-		StyleId:        int32(e.Product.StyleId), // R4: the single style relation
-		ColorCode:      e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		Id:        int32(e.Product.Id),
+		CreatedAt: timestamppb.New(e.Product.CreatedAt),
+		UpdatedAt: timestamppb.New(e.Product.UpdatedAt),
+		Slug:      slug.ProductPath(firstTranslationName, e.Product.SKU),
+		BaseSku:   e.Product.SKU, // R8: renamed from Sku
+		Display:   pbProductDisplay, // R8: renamed from ProductDisplay
+		Prices:    pbPrices, // Prices are in nested Product
+		SoldOut:   soldOut,
+		Status:    pb_common.ColorwayLifecycleStatus(e.Product.LifecycleStatus),
+		StyleId:   int32(e.Product.StyleId), // R4: the single style relation
+		ColorCode: e.Product.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
 		// lock_version (tech_card.lock_version) and published_at need entity plumbing — left unset here.
 	}
 
 	pbSizes := convertEntitySizesToPbSizes(e.Sizes)
-	pbMeasurements := convertEntityMeasurementsToPbMeasurements(e.Measurements)
 	pbMedia := ConvertEntityMediaListToPbMedia(e.Media)
 	pbTags := convertEntityTagsToPbTags(e.Tags)
 
+	// R5: the size chart is style-owned now (StyleSizeChart); ColorwayFull no longer carries per-colourway
+	// measurements. e.Measurements is not serialised here.
 	return &pb_common.ColorwayFull{
-		Product:      pbProduct,
-		Sizes:        pbSizes,
-		Measurements: pbMeasurements,
-		Media:        pbMedia,
-		Tags:         pbTags,
+		Colorway: pbProduct, // R8: renamed from Product
+		Variants: pbSizes, // R8: renamed from Sizes
+		Media:    pbMedia,
+		Tags:     pbTags,
 	}, nil
 }
 
@@ -621,13 +621,13 @@ func convertEntitySizesToPbSizes(sizes []entity.Variant) []*pb_common.Variant {
 	var pbSizes []*pb_common.Variant
 	for _, size := range sizes {
 		pbSizes = append(pbSizes, &pb_common.Variant{
-			Id: int32(size.Id),
+			VariantId: int32(size.Id), // R8: renamed from Id
 			Quantity: &pb_decimal.Decimal{
 				Value: size.Quantity.String(),
 			},
-			ProductId: int32(size.ProductId),
-			SizeId:    int32(size.SizeId),
-			Sku:       size.SKU.String,
+			ColorwayId: int32(size.ProductId), // R8: renamed from ProductId
+			SizeId:     int32(size.SizeId),
+			VariantSku: size.SKU.String, // R8: renamed from Sku
 		})
 	}
 	return pbSizes
@@ -654,7 +654,7 @@ func convertEntityTagsToPbTags(tags []entity.ColorwayTag) []*pb_common.ColorwayT
 	for _, tag := range tags {
 		pbTags = append(pbTags, &pb_common.ColorwayTag{
 			Id: int32(tag.Id),
-			ProductTagInsert: &pb_common.ColorwayTagInsert{
+			TagInsert: &pb_common.ColorwayTagInsert{ // R8: renamed from ProductTagInsert
 				Tag: tag.Tag,
 			},
 		})
@@ -679,7 +679,7 @@ func StockChangeToProto(e *entity.StockChange) *pb_common.StockChange {
 	}
 	return &pb_common.StockChange{
 		Id:             int32(e.Id),
-		ProductId:      int32(e.ProductId),
+		ColorwayId:     int32(e.ProductId), // R8: renamed from ProductId
 		SizeId:         int32(e.SizeId),
 		QuantityDelta:  &pb_decimal.Decimal{Value: e.QuantityDelta.String()},
 		QuantityBefore: &pb_decimal.Decimal{Value: e.QuantityBefore.String()},
@@ -837,8 +837,8 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		CreatedAt: timestamppb.New(e.CreatedAt),
 		UpdatedAt: timestamppb.New(e.UpdatedAt),
 		Slug:      slug.ProductPath(firstTranslationName, e.SKU),
-		Sku:       e.SKU,
-		ProductDisplay: &pb_common.ColorwayDisplay{
+		BaseSku:   e.SKU, // R8: renamed from Sku
+		Display: &pb_common.ColorwayDisplay{ // R8: renamed from ProductDisplay
 			ProductBody: &pb_common.ColorwayBody{
 				ProductBodyInsert: &pb_common.ColorwayBodyInsert{
 					Preorder:         timestamppb.New(productBodyInsert.Preorder.Time),
