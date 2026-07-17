@@ -394,6 +394,11 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].RoleAssignments = roles
+	// P4-flyover M1: prefer the structured composition (S17) over the legacy free-text column read by
+	// the `SELECT *` above, when the style has any.
+	if err := applyStructuredComposition(ctx, s.DB, &cards[0]); err != nil {
+		return nil, err
+	}
 	return &cards[0], nil
 }
 

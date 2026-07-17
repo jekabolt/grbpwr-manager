@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
@@ -109,6 +110,13 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 					return fmt.Errorf("insert usage consumption: %w", err)
 				}
 			}
+		}
+
+		// P4-flyover M1 (04-MAZE-FLYOVER.md): a recipe write is a mutation of the style aggregate
+		// (Ф5 plan), so re-derive the structural composition (S17) the same way UpdateStyle does — a
+		// manual override already on file is preserved (entity.ReconcileStyleComposition).
+		if err := product.ReconcileStyleCompositionTx(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
 		}
 
 		// Bump the shared lock under the guard — a recipe write is a mutation of the style aggregate,

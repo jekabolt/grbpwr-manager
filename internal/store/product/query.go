@@ -24,6 +24,19 @@ const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM pr
 // into "not sold out" here while Go says otherwise.
 const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
 
+// styleCompositionSelect projects a style's displayed composition (P4-flyover M1, 04-MAZE-FLYOVER.md):
+// the structured style_composition rows (S17/WS3-Ф5), rendered as a JSON array of
+// {fiber_code,name,percent} objects, take priority over the legacy free-text tech_card.composition
+// column. JSON_ARRAYAGG returns NULL over zero rows, so COALESCE falls through to the legacy value
+// automatically for a style with no derived/manual composition yet — the legacy column is the
+// fallback, not dropped here (that is a later guarded M3, after every style is backfilled).
+const styleCompositionSelect = `COALESCE(
+		(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_code', sc.fiber_code, 'name', COALESCE(f.name, sc.fiber_code), 'percent', sc.percent))
+		 FROM style_composition sc LEFT JOIN fiber f ON f.code = sc.fiber_code
+		 WHERE sc.tech_card_id = sty.id),
+		sty.composition
+	)`
+
 // GetProductsPaged returns a paged list of products based on provided parameters.
 func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sortFactors []entity.SortFactor, orderFactor entity.OrderFactor, filterConditions *entity.FilterConditions, showHidden bool) ([]entity.Colorway, int, error) {
 	if len(sortFactors) > 0 {
@@ -219,7 +232,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
-		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, p.thumbnail_id, p.secondary_thumbnail_id,
 		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -290,7 +303,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
-		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, p.thumbnail_id, p.secondary_thumbnail_id,
 		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -360,7 +373,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
-		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, p.thumbnail_id, p.secondary_thumbnail_id,
 		sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
@@ -430,7 +443,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
-		sty.care_instructions, sty.composition, p.thumbnail_id, p.secondary_thumbnail_id,
+		sty.care_instructions, `+styleCompositionSelect+` AS composition, p.thumbnail_id, p.secondary_thumbnail_id,
 		sty.collection, sty.season_code AS season, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, p.published_at,
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
@@ -584,7 +597,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
-		sty.season_code AS season, sty.care_instructions, sty.composition, p.thumbnail_id,
+		sty.season_code AS season, sty.care_instructions, ` + styleCompositionSelect + ` AS composition, p.thumbnail_id,
 		p.secondary_thumbnail_id, sty.collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
