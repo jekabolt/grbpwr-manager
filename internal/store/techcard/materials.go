@@ -2,8 +2,15 @@ package techcard
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base32"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -21,7 +28,7 @@ import (
 // mapping (NF-05). It runs AFTER insertTechCardColorways in the child flow, so it re-queries the
 // freshly-inserted colourways (in display order, same tx) to resolve each material's positional
 // colorway_index into a real colorway_id — colourways are full-replace, so ids are recreated.
-func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece) error {
+func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver) error {
 	if len(pieces) == 0 {
 		return nil
 	}
@@ -63,13 +70,17 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			if !validColorway[m.ColorwayID] {
 				return fmt.Errorf("tech card piece %q: colorway_id %d is not a colourway of this style", p.Name, m.ColorwayID)
 			}
+			// Resolve the positional refs to real bom_item ids (S2/S3). The legacy *_index columns are
+			// still written for the transition (dropped in M3).
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_material
-					(piece_id, colorway_id, bom_item_index, fusing_bom_item_index, note, display_order)
-				VALUES (:piece_id, :colorway_id, :bom_item_index, :fusing_bom_item_index, :note, :display_order)`,
+					(piece_id, colorway_id, bom_item_id, fusing_bom_item_id, bom_item_index, fusing_bom_item_index, note, display_order)
+				VALUES (:piece_id, :colorway_id, :bom_item_id, :fusing_bom_item_id, :bom_item_index, :fusing_bom_item_index, :note, :display_order)`,
 				map[string]any{
 					"piece_id":              pieceID,
 					"colorway_id":           m.ColorwayID,
+					"bom_item_id":           resolveBomID(bomRes, m.BomItemIndex),
+					"fusing_bom_item_id":    resolveBomID(bomRes, m.FusingBomItemIndex),
 					"bom_item_index":        m.BomItemIndex,
 					"fusing_bom_item_index": m.FusingBomItemIndex,
 					"note":                  m.Note,
@@ -82,40 +93,188 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 	return nil
 }
 
-// insertTechCardBom inserts the BOM lines (material-article catalog). Per-colourway colour,
-// placement and consumption now live on the colourway usages, not here.
-func insertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []entity.TechCardBomItem) error {
-	if len(items) == 0 {
+// bomResolver maps a submitted BOM line to its persisted, stable id after an upsert-diff: by its
+// stable line_key (the durable reference) and by its 0-based position in submission/display order
+// (the legacy positional reference that operations/pieces still carry on the wire during the
+// transition). It is how referrers resolve a real bom_item_id (S2/S3).
+type bomResolver struct {
+	byLineKey map[string]int
+	ordered   []int // bom_item.id in submission order (== display_order)
+}
+
+// idForIndex resolves a legacy 0-based bom_item_index to a real id; ok=false when out of range (a
+// dangling ref — the caller leaves the FK NULL rather than pointing at the wrong line).
+func (r bomResolver) idForIndex(idx int) (int, bool) {
+	if idx < 0 || idx >= len(r.ordered) {
+		return 0, false
+	}
+	return r.ordered[idx], true
+}
+
+// resolveBomID turns a legacy positional bom_item_index (NULL-able) into a real bom_item id for a
+// referrer's FK column, or SQL NULL when unset or out of range (a dangling ref).
+func resolveBomID(res bomResolver, idx sql.NullInt32) any {
+	if !idx.Valid {
 		return nil
 	}
-	rows := make([]map[string]any, 0, len(items))
-	for i := range items {
-		b := &items[i]
-		rows = append(rows, map[string]any{
-			"tech_card_id":      tcID,
-			"material_id":       b.MaterialId,
-			"section":           string(b.Section),
-			"name":              b.Name,
-			"supplier":          b.Supplier,
-			"supplier_ref":      b.SupplierRef,
-			"color":             b.Color,
-			"composition":       b.Composition,
-			"spec":              b.Spec,
-			"unit":              b.Unit,
-			"unit_price":        b.UnitPrice,
-			"currency":          b.Currency,
-			"comment":           b.Comment,
-			"display_order":     i,
-			"fabric_width":      b.FabricWidth,
-			"fabric_weight_gsm": b.FabricWeightGsm,
-			"fabric_direction":  b.FabricDirection,
-			"wastage_percent":   b.WastagePercent,
-		})
-	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_bom_item", rows); err != nil {
-		return fmt.Errorf("failed to insert tech card bom item: %w", err)
+	if id, ok := res.idForIndex(int(idx.Int32)); ok {
+		return id
 	}
 	return nil
+}
+
+type bomExistingRow struct {
+	Id      int    `db:"id"`
+	LineKey string `db:"line_key"`
+}
+
+// upsertTechCardBom reconciles a card's BOM lines by line_key in one transaction instead of the old
+// delete-all + reinsert (S2/S3 root): a line_key already in the DB is UPDATEd in place (its id is
+// stable, which is what lets referrers hold a real FK), a new line_key is INSERTed, and a line_key
+// that vanished from the payload is DELETEd — a DELETE the FK RESTRICT blocks (line still used by an
+// operation/piece/colourway recipe) surfaces as a field-tagged error, not a raw 500. Returns a
+// resolver so pieces/operations can turn their reference into a real bom_item_id.
+func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []entity.TechCardBomItem) (bomResolver, error) {
+	res := bomResolver{byLineKey: make(map[string]int, len(items)), ordered: make([]int, 0, len(items))}
+
+	existingRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return res, fmt.Errorf("failed to load existing bom lines: %w", err)
+	}
+	existingByKey := make(map[string]int, len(existingRows))
+	for _, r := range existingRows {
+		existingByKey[r.LineKey] = r.Id
+	}
+
+	seen := make(map[string]bool, len(items))
+	for i := range items {
+		b := &items[i]
+		key := strings.TrimSpace(b.LineKey)
+		if key == "" {
+			key = newLineKey() // legacy/keyless payload: server assigns a stable key
+		}
+		if seen[key] {
+			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].line_key", i),
+				"duplicate line_key within the payload", "", "each BOM line needs a unique line_key")
+		}
+		snapshot, err := bomMaterialSnapshot(b)
+		if err != nil {
+			return res, fmt.Errorf("bom line %q snapshot: %w", b.Name, err)
+		}
+		params := bomItemParams(tcID, b, i, key, snapshot)
+		if id, ok := existingByKey[key]; ok {
+			params["id"] = id
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE tech_card_bom_item SET
+					material_id=:material_id, section=:section, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
+					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
+					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
+					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent, material_snapshot=:material_snapshot
+				WHERE id=:id`, params); err != nil {
+				return res, fmt.Errorf("failed to update bom line: %w", err)
+			}
+			res.ordered = append(res.ordered, id)
+			res.byLineKey[key] = id
+		} else {
+			newID, err := storeutil.ExecNamedLastId(ctx, db, `
+				INSERT INTO tech_card_bom_item
+					(tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec, unit,
+					 unit_price, currency, comment, display_order, fabric_width, fabric_weight_gsm, fabric_direction,
+					 wastage_percent, line_key, material_snapshot)
+				VALUES (:tech_card_id, :material_id, :section, :name, :supplier, :supplier_ref, :color, :composition, :spec, :unit,
+					 :unit_price, :currency, :comment, :display_order, :fabric_width, :fabric_weight_gsm, :fabric_direction,
+					 :wastage_percent, :line_key, :material_snapshot)`, params)
+			if err != nil {
+				return res, fmt.Errorf("failed to insert bom line: %w", err)
+			}
+			res.ordered = append(res.ordered, newID)
+			res.byLineKey[key] = newID
+		}
+		seen[key] = true
+	}
+
+	// Delete lines that vanished from the payload. FK RESTRICT blocks a line still referenced by an
+	// operation/piece/colourway recipe — surface that as an actionable field-tagged error.
+	for key, id := range existingByKey {
+		if seen[key] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_bom_item WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2
+				return res, entity.NewFieldViolation("bom_items",
+					fmt.Sprintf("BOM line %q is still referenced", key), "an operation, piece or colourway recipe",
+					"remove that reference before deleting the BOM line")
+			}
+			return res, fmt.Errorf("failed to delete bom line: %w", err)
+		}
+	}
+	return res, nil
+}
+
+// bomItemParams maps a BOM line to named params for the upsert.
+func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string, snapshot []byte) map[string]any {
+	return map[string]any{
+		"tech_card_id":      tcID,
+		"material_id":       b.MaterialId,
+		"section":           string(b.Section),
+		"name":              b.Name,
+		"supplier":          b.Supplier,
+		"supplier_ref":      b.SupplierRef,
+		"color":             b.Color,
+		"composition":       b.Composition,
+		"spec":              b.Spec,
+		"unit":              b.Unit,
+		"unit_price":        b.UnitPrice,
+		"currency":          b.Currency,
+		"comment":           b.Comment,
+		"display_order":     displayOrder,
+		"fabric_width":      b.FabricWidth,
+		"fabric_weight_gsm": b.FabricWeightGsm,
+		"fabric_direction":  b.FabricDirection,
+		"wastage_percent":   b.WastagePercent,
+		"line_key":          lineKey,
+		"material_snapshot": nullBytesParam(snapshot),
+	}
+}
+
+// bomMaterialSnapshot is the read-only JSON snapshot frozen on the BOM line at save (S23): the line's
+// descriptive state, so the document stays self-contained. NULL for an empty line.
+func bomMaterialSnapshot(b *entity.TechCardBomItem) ([]byte, error) {
+	if b.Name == "" && !b.MaterialId.Valid {
+		return nil, nil
+	}
+	snap := map[string]any{"name": b.Name}
+	if b.MaterialId.Valid {
+		snap["material_id"] = b.MaterialId.Int64
+	}
+	for k, v := range map[string]sql.NullString{
+		"supplier": b.Supplier, "supplier_ref": b.SupplierRef, "composition": b.Composition,
+		"spec": b.Spec, "unit": b.Unit, "color": b.Color,
+	} {
+		if v.Valid && v.String != "" {
+			snap[k] = v.String
+		}
+	}
+	return json.Marshal(snap)
+}
+
+// newLineKey mints a stable 26-char CHAR(26) key (ULID-shaped: base32 of 128 random bits) for a
+// legacy/keyless BOM line so the upsert-diff has a durable handle even before clients send one.
+func newLineKey() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
+}
+
+// nullBytesParam yields nil (SQL NULL) for empty JSON so an unset snapshot is not stored as "".
+func nullBytesParam(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 // insertTechCardDetails inserts the construction-description aspects and, for each, its
@@ -243,7 +402,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+			SELECT id, colorway_id, bom_item_id, piece_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
@@ -288,7 +447,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT id, tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec,
 		       unit, unit_price, currency, comment,
-		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent
+		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent,
+		       COALESCE(line_key, '') AS line_key, material_snapshot
 		FROM tech_card_bom_item
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
@@ -363,7 +523,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(pieceIDs) > 0 {
 		pmRows, err := storeutil.QueryListNamed[techCardPieceMaterialRow](ctx, s.DB, `
-			SELECT id, piece_id, colorway_id, bom_item_index, fusing_bom_item_index, note
+			SELECT id, piece_id, colorway_id, bom_item_id, fusing_bom_item_id, bom_item_index, fusing_bom_item_index, note
 			FROM tech_card_piece_material
 			WHERE piece_id IN (:ids)
 			ORDER BY piece_id, display_order, id`, map[string]any{"ids": pieceIDs})

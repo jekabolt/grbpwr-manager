@@ -298,10 +298,14 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
 		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
 		// (R1 merge) — they live in product and are managed via CreateColorway.
+		// NB: tech_card_bom_item is NOT full-replaced here — it is reconciled by line_key in
+		// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. Referrers
+		// (operation, piece → piece_material CASCADE) are cleared here BEFORE the BOM upsert, so the
+		// only bom_item_id RESTRICT that can fire is from a persistent colourway usage — the intended
+		// cross-aggregate guard.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_revision", "tech_card_detail",
-			"tech_card_bom_item",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 			"tech_card_size_pattern", "tech_card_piece",
@@ -579,22 +583,23 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
-	// Materials (Phase 2): the BOM article catalog. PR6 R1: colourways are no longer written here —
-	// they are products managed via CreateColorway, and a usage's bom_item_index still points into
-	// this card's BOM by position.
-	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
+	// Materials (WS3 / S2-S3): the BOM article catalog is reconciled by line_key (keyed upsert-diff),
+	// not full-replaced, so each line's id is stable — which is what lets pieces/operations/colourway
+	// recipes hold a real bom_item_id FK. The resolver turns a line's key/position into that id.
+	bomRes, err := upsertTechCardBom(ctx, db, id, tc.BomItems)
+	if err != nil {
 		return err
 	}
-	// Cut-pieces (NF-05): their per-colourway fabric mapping resolves a positional colorway_index to
-	// the style's products (product.style_id) in display order (see insertTechCardPieces).
-	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
+	// Cut-pieces (NF-05): resolve each material's positional bom_item_index to a real bom_item_id via
+	// the resolver (their per-colourway mapping addresses the colourway by explicit id).
+	if err := insertTechCardPieces(ctx, db, id, tc.Pieces, bomRes); err != nil {
 		return err
 	}
 	// production (Phase 3)
 	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
 		return err
 	}
-	if err := insertTechCardOperations(ctx, db, id, tc.Operations); err != nil {
+	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardLabels(ctx, db, id, tc.Labels); err != nil {

@@ -1067,6 +1067,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		}
 
 		out = append(out, entity.TechCardBomItem{
+			// LineKey is the stable client token the server keyed-reconciles by (S2/S3); empty on a
+			// legacy payload, in which case the store mints one. id/material_snapshot are read-only.
+			LineKey:         strings.TrimSpace(b.LineKey),
 			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
@@ -1262,6 +1265,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
+			Id:              int64(b.Id),
+			LineKey:         b.LineKey,
+			MaterialSnapshot: string(b.MaterialSnapshot),
 			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,

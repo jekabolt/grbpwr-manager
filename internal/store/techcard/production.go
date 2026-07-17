@@ -37,7 +37,7 @@ func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int,
 	return nil
 }
 
-func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation, bomRes bomResolver) error {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -60,10 +60,12 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
-			"bom_item_index":   o.BomItemIndex,
-			"callout_number":   o.CalloutNumber,
-			"placement":        o.Placement,
-			"display_order":    i,
+			// Resolve the positional ref to a real bom_item_id (S2/S3); *_index kept for the transition.
+			"bom_item_id":    resolveBomID(bomRes, o.BomItemIndex),
+			"bom_item_index": o.BomItemIndex,
+			"callout_number": o.CalloutNumber,
+			"placement":      o.Placement,
+			"display_order":  i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
