@@ -309,10 +309,12 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
 		// (R1 merge) — they live in product and are managed via CreateColorway.
 		// NB: tech_card_bom_item is NOT full-replaced here — it is reconciled by line_key in
-		// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. Referrers
-		// (operation, piece → piece_material CASCADE) are cleared here BEFORE the BOM upsert, so the
-		// only bom_item_id RESTRICT that can fire is from a persistent colourway usage — the intended
-		// cross-aggregate guard.
+		// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. tech_card_piece is
+		// likewise NOT full-replaced (WS4 / S8) — it is keyed-upserted so its ids stay stable for the
+		// usage.piece_id FK; its piece_material grandchildren are cleared in Phase A (see
+		// insertTechCardChildren) rather than here. The operation referrer IS cleared here BEFORE the
+		// BOM upsert, so the only bom_item_id / piece_id RESTRICT that can fire is from a persistent
+		// colourway usage — the intended cross-aggregate guard.
 		// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
 		// (Q1), not a client-replaced child, so a save must never wipe the history.
 		for _, table := range []string{
@@ -320,7 +322,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_callout", "tech_card_detail",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-			"tech_card_size_pattern", "tech_card_piece",
+			"tech_card_size_pattern",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -606,6 +608,14 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
+	// Cut-pieces (WS4 / S8): pieces are keyed-upserted (not full-replaced) so their ids stay stable —
+	// which is what lets a colourway recipe usage hold a real piece_id FK RESTRICT (the deferred half
+	// of 0159). Phase A (§D5): release each piece's OLD piece_material → bom_item refs BEFORE the BOM
+	// upsert, so a BOM line the client is deleting is not falsely blocked by a stale RESTRICT; the
+	// fresh mapping is re-inserted by upsertTechCardPieces once the BOM ids resolve. No-op on create.
+	if err := clearTechCardPieceMaterials(ctx, db, id); err != nil {
+		return err
+	}
 	// Materials (WS3 / S2-S3): the BOM article catalog is reconciled by line_key (keyed upsert-diff),
 	// not full-replaced, so each line's id is stable — which is what lets pieces/operations/colourway
 	// recipes hold a real bom_item_id FK. The resolver turns a line's key/position into that id.
@@ -613,9 +623,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err != nil {
 		return err
 	}
-	// Cut-pieces (NF-05): resolve each material's positional bom_item_index to a real bom_item_id via
-	// the resolver (their per-colourway mapping addresses the colourway by explicit id).
-	if err := insertTechCardPieces(ctx, db, id, tc.Pieces, bomRes); err != nil {
+	// Cut-pieces (WS4 / S8): keyed-upsert by line_key (piece ids stable); re-insert each piece's
+	// per-colourway fabric mapping with the resolved bom_item_id. calloutSync (built from the same
+	// payload) derives each piece's name from its technical-sketch callout and marks moodboard/orphan
+	// links detached (S6/S7/S8).
+	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc)); err != nil {
 		return err
 	}
 	// production (Phase 3)

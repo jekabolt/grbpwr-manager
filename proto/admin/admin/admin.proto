@@ -207,6 +207,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
   }
 
+  // GetStyleCutList is the first real consumer of the piece.mirrored flag (Q6): a read-only cut-list
+  // for production. For each cut-piece it expands the quantity (pieces_per_garment × 2 for a mirrored
+  // pair) and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
+  // projection over the tech card — no marker/CAD export, no mutable table.
+  rpc GetStyleCutList(GetStyleCutListRequest) returns (GetStyleCutListResponse) {
+    option (google.api.http) = {get: "/api/admin/styles/{tech_card_id}/cut-list"};
+  }
+
   // UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5). A colourway
   // save never touches the chart; the chart is style-owned and shared by every colourway of the style.
   rpc UpdateStyleSizeChart(UpdateStyleSizeChartRequest) returns (UpdateStyleSizeChartResponse) {
@@ -3961,6 +3969,42 @@ message GetStyleEconomicsRequest {
 
 message GetStyleEconomicsResponse {
   StyleEconomics economics = 1;
+}
+
+// StyleCutListFabric is, for one colourway, which fabric (and optional fusing / клеевая) BOM line a
+// cut-piece is cut from. Names come from the BOM line so the cut-list is self-contained.
+message StyleCutListFabric {
+  int64 colorway_id = 1; // product.id
+  int64 bom_item_id = 2; // the fabric BOM line (0 = unset)
+  string fabric_name = 3; // the fabric BOM line's name
+  int64 fusing_bom_item_id = 4; // the interlining/клеевая BOM line (0 = none)
+  string fusing_name = 5;
+}
+
+// StyleCutListPiece is one cut-piece expanded for production (Q6): total_per_garment folds the
+// mirrored pair into the count (pieces_per_garment × 2 when mirrored), and fabrics lists the material
+// per colourway.
+message StyleCutListPiece {
+  int32 piece_id = 1;
+  string name = 2;
+  int32 pieces_per_garment = 3;
+  bool mirrored = 4; // cut as a mirrored pair (left+right)
+  int32 total_per_garment = 5; // pieces_per_garment × (mirrored ? 2 : 1)
+  string grainline = 6; // долевая
+  bool fused = 7;
+  repeated StyleCutListFabric fabrics = 8;
+}
+
+message GetStyleCutListRequest {
+  int32 tech_card_id = 1;
+}
+
+// GetStyleCutListResponse is the read-only production cut-list projection over a style's cut-pieces.
+message GetStyleCutListResponse {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  repeated StyleCutListPiece pieces = 4;
 }
 
 // ChannelSettledRoasRow is one marketing channel's settled-revenue economics over a period (task 20

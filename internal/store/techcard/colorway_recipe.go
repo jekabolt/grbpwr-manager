@@ -49,6 +49,22 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			ordered = append(ordered, r.Id)
 		}
 
+		// Resolve the style's cut-pieces the same way (WS4): by stable line_key (preferred) and ordered
+		// for the legacy piece_index ref. This is what lets usage.piece_id carry a real FK now that
+		// pieces are keyed — the recipe write-path never wrote piece_id before (only piece_index).
+		pieceRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, rep.DB(),
+			`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id ORDER BY display_order, id`,
+			map[string]any{"id": cur.StyleID})
+		if err != nil {
+			return fmt.Errorf("load style pieces for recipe: %w", err)
+		}
+		pieceByKey := make(map[string]int, len(pieceRows))
+		pieceOrdered := make([]int, 0, len(pieceRows))
+		for _, r := range pieceRows {
+			pieceByKey[r.LineKey] = r.Id
+			pieceOrdered = append(pieceOrdered, r.Id)
+		}
+
 		// Full-replace this colourway's usages (per-size consumptions cascade on delete).
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM tech_card_colorway_usage WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
@@ -60,10 +76,14 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			if err != nil {
 				return err
 			}
+			pieceID, err := resolveUsagePiece(u, pieceByKey, pieceOrdered, i)
+			if err != nil {
+				return err
+			}
 			usageID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 				INSERT INTO tech_card_colorway_usage
-					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index, display_order)
-				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_index, :display_order)`,
+					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_id, piece_index, display_order)
+				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_id, :piece_index, :display_order)`,
 				map[string]any{
 					"colorway_id":    colorwayID,
 					"bom_item_id":    bomItemID,
@@ -73,6 +93,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 					"pantone":        u.Pantone,
 					"consumption":    u.Consumption,
 					"quantity":       u.Quantity,
+					"piece_id":       pieceID,
 					"piece_index":    u.PieceIndex,
 					"display_order":  i,
 				})
@@ -128,6 +149,25 @@ func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, orde
 	}
 	if u.BomItemIndex.Valid {
 		if idx := int(u.BomItemIndex.Int32); idx >= 0 && idx < len(ordered) {
+			return ordered[idx], nil
+		}
+	}
+	return nil, nil
+}
+
+// resolveUsagePiece turns a usage's cut-piece reference into a real tech_card_piece id for the
+// usage.piece_id FK (WS4): by stable piece line_key (preferred; unknown → field-tagged) or the legacy
+// positional piece_index, else SQL NULL (the norm is about the whole garment, not a specific piece).
+func resolveUsagePiece(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (any, error) {
+	if key := strings.TrimSpace(u.PieceLineKey); key != "" {
+		if id, ok := byKey[key]; ok {
+			return id, nil
+		}
+		return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].piece_line_key", i),
+			fmt.Sprintf("no cut-piece %q in this style", key), "", "reference an existing cut-piece by its line_key")
+	}
+	if u.PieceIndex.Valid {
+		if idx := int(u.PieceIndex.Int32); idx >= 0 && idx < len(ordered) {
 			return ordered[idx], nil
 		}
 	}

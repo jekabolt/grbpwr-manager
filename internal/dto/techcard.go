@@ -914,6 +914,7 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 		}
 		out = append(out, entity.TechCardColorwayUsage{
 			BomLineKey:       strings.TrimSpace(u.BomLineKey),
+			PieceLineKey:     strings.TrimSpace(u.PieceLineKey),
 			BomItemIndex:     bomItemIndex,
 			PieceIndex:       pieceIndex,
 			Placement:        normalizedPlacementNull(u.Placement),
@@ -965,11 +966,11 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		}
 		var calloutNumber sql.NullInt32
 		if p.CalloutNumber != nil {
-			n := *p.CalloutNumber
-			if !calloutNumbers[int(n)] {
-				return nil, fmt.Errorf("piece %q callout_number %d does not match any callout", p.Name, n)
-			}
-			calloutNumber = sql.NullInt32{Int32: n, Valid: true}
+			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
+			// orphan-control): the store marks such a piece detached — it may carry recipe history and
+			// must survive its source callout's removal — rather than failing the whole save. The store
+			// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+			calloutNumber = sql.NullInt32{Int32: *p.CalloutNumber, Valid: true}
 		}
 
 		materials := make([]entity.TechCardPieceMaterial, 0, len(p.Materials))
@@ -995,6 +996,8 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			}
 			materials = append(materials, entity.TechCardPieceMaterial{
 				ColorwayID:         int(m.ColorwayId),
+				BomLineKey:         strings.TrimSpace(m.BomLineKey),       // stable ref (WS3 follow-up); store prefers it over the index
+				FusingBomLineKey:   strings.TrimSpace(m.FusingBomLineKey), //
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
 				Note:               nullStringFromPb(m.Note),
@@ -1003,6 +1006,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 
 		out = append(out, entity.TechCardPiece{
 			Name:             p.Name,
+			LineKey:          strings.TrimSpace(p.LineKey), // stable wire identity (WS4); empty → store mints one
 			PiecesPerGarment: perGarment,
 			Mirrored:         p.Mirrored,
 			Grainline:        grainline,
@@ -1228,6 +1232,7 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
 			BomItemIndex:     bomItemIndex,
+			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
 			Placement:        pbStringFromNull(u.Placement),
 			Color:            pbStringFromNull(u.Color),
 			Pantone:          pbStringFromNull(u.Pantone),
@@ -1235,6 +1240,7 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			Quantity:         pbDecimalFromNull(u.Quantity),
 			SizeConsumptions: sizeCons,
 			PieceIndex:       pieceIndex,
+			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 		})
@@ -1272,16 +1278,20 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 				ColorwayId:         int64(m.ColorwayID),
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
+				BomItemId:          m.BomItemId.Int64,       // OUTPUT: resolved FK (S2/S3); 0 = unset
+				FusingBomItemId:    m.FusingBomItemId.Int64, // OUTPUT: resolved FK; 0 = unset
 				Note:               pbStringFromNull(m.Note),
 			})
 		}
 		out = append(out, &pb_common.TechCardPiece{
 			Name:             p.Name,
+			LineKey:          p.LineKey,
 			PiecesPerGarment: int32(p.PiecesPerGarment),
 			Mirrored:         p.Mirrored,
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			CalloutNumber:    calloutNumber,
+			Detached:         p.Detached,
 			Note:             pbStringFromNull(p.Note),
 			Materials:        materials,
 		})

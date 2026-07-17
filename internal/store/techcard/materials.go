@@ -28,10 +28,89 @@ import (
 // mapping (NF-05). It runs AFTER insertTechCardColorways in the child flow, so it re-queries the
 // freshly-inserted colourways (in display order, same tx) to resolve each material's positional
 // colorway_index into a real colorway_id — colourways are full-replace, so ids are recreated.
-func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver) error {
-	if len(pieces) == 0 {
-		return nil
+// clearTechCardPieceMaterials removes every piece_material of the card's pieces. It runs BEFORE the
+// BOM upsert (Phase A of the reorder, §D5) so a BOM line the client is deleting is not falsely
+// blocked by an old piece_material → bom_item RESTRICT ref: the fresh mapping is re-inserted by
+// upsertTechCardPieces after the BOM ids resolve. A no-op on create (the card has no pieces yet).
+func clearTechCardPieceMaterials(ctx context.Context, db dependency.DB, tcID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_piece_material
+		WHERE piece_id IN (SELECT id FROM tech_card_piece WHERE tech_card_id = :id)`,
+		map[string]any{"id": tcID}); err != nil {
+		return fmt.Errorf("failed to clear tech card piece materials: %w", err)
 	}
+	return nil
+}
+
+type pieceExistingRow struct {
+	Id      int    `db:"id"`
+	LineKey string `db:"line_key"`
+}
+
+// calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
+type calloutRef struct {
+	part    string
+	mediaID int
+	pinned  bool // media_id > 0 (anchored on some sketch)
+}
+
+// calloutSync resolves a piece's callout_number against the card's payload (S6/S7/S8): the canonical
+// part name (the single place a detail name is entered, §2.5) and whether the callout is anchored on a
+// TECHNICAL sketch. A moodboard/unanchored callout carries no piece semantics (S7) — a piece pointing
+// at one is marked detached, not name-synced.
+type calloutSync struct {
+	technicalMedia map[int]bool // raw media_id → is a technical sketch of this card
+	byNumber       map[int]calloutRef
+}
+
+// buildCalloutSync indexes the payload's technical sketch media and its callouts. Both live in the same
+// UpdateTechCard payload as the pieces, so no DB read is needed.
+func buildCalloutSync(tc *entity.TechCardInsert) calloutSync {
+	cs := calloutSync{technicalMedia: make(map[int]bool), byNumber: make(map[int]calloutRef, len(tc.Callouts))}
+	for _, m := range tc.Media {
+		if m.Category == entity.TechCardMediaCategoryTechnical {
+			cs.technicalMedia[m.MediaId] = true
+		}
+	}
+	for i := range tc.Callouts {
+		c := &tc.Callouts[i]
+		mediaID := 0
+		if c.MediaId.Valid {
+			mediaID = int(c.MediaId.Int32)
+		}
+		cs.byNumber[c.Number] = calloutRef{part: strings.TrimSpace(c.Part.String), mediaID: mediaID, pinned: mediaID > 0}
+	}
+	return cs
+}
+
+// apply syncs a piece's derived name from its technical-sketch callout and sets its detached flag
+// (S7/S8): a piece linked to a technical callout takes that callout's part as its canonical name; a
+// piece whose callout was removed or is a moodboard/unanchored callout keeps its own name but is
+// marked detached (it has no live technical-sketch source — orphan-control keeps it, does not drop it).
+func (cs calloutSync) apply(p *entity.TechCardPiece) {
+	if !p.CalloutNumber.Valid {
+		p.Detached = false
+		return
+	}
+	ref, ok := cs.byNumber[int(p.CalloutNumber.Int32)]
+	if ok && ref.pinned && cs.technicalMedia[ref.mediaID] {
+		if ref.part != "" {
+			p.Name = ref.part // S8: the detail name lives once, on callout.part; the piece derives it
+		}
+		p.Detached = false
+		return
+	}
+	p.Detached = true
+}
+
+// upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
+// BOM uses (§2.3): a line_key already in the DB is UPDATEd in place (id stable — which is what lets a
+// colourway recipe usage hold a real piece_id FK), a new line_key is INSERTed, and a line_key that
+// vanished from the payload is DELETEd. A DELETE the FK RESTRICT blocks (piece still used by a
+// colourway recipe usage) surfaces as a field-tagged error, not a raw 500 or a silent dangle — the
+// deferred-from-0159 cross-aggregate guard. piece_material was cleared in Phase A, so each kept/new
+// piece just re-inserts its per-colourway mapping with the BOM ids resolved by bomRes.
+func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver, cs calloutSync) error {
 	// PR6 R1/§14.3: a piece material addresses its colourway by explicit colorway_id = product.id.
 	// Validate membership — the colourway must be one of this style's products (product.style_id = card).
 	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
@@ -45,26 +124,67 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		validColorway[r.Id] = true
 	}
 
+	existingRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load existing pieces: %w", err)
+	}
+	existingByKey := make(map[string]int, len(existingRows))
+	for _, r := range existingRows {
+		existingByKey[r.LineKey] = r.Id
+	}
+
+	seen := make(map[string]bool, len(pieces))
 	for i := range pieces {
 		p := &pieces[i]
-		pieceID, err := storeutil.ExecNamedLastId(ctx, db, `
-			INSERT INTO tech_card_piece
-				(tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note, display_order)
-			VALUES (:tech_card_id, :name, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :note, :display_order)`,
-			map[string]any{
-				"tech_card_id":       tcID,
-				"name":               p.Name,
-				"pieces_per_garment": p.PiecesPerGarment,
-				"mirrored":           p.Mirrored,
-				"grainline":          p.Grainline,
-				"fused":              p.Fused,
-				"callout_number":     p.CalloutNumber,
-				"note":               p.Note,
-				"display_order":      i,
-			})
-		if err != nil {
-			return fmt.Errorf("failed to insert tech card piece: %w", err)
+		// S8/S7: derive the piece name from its technical-sketch callout (canonical part name) and set
+		// detached when the callout is gone or is a moodboard/unanchored callout (no piece semantics).
+		cs.apply(p)
+		key := strings.TrimSpace(p.LineKey)
+		if key == "" {
+			key = newLineKey() // legacy/keyless payload: server assigns a stable key
 		}
+		if seen[key] {
+			return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].line_key", i),
+				"duplicate line_key within the payload", "", "each cut-piece needs a unique line_key")
+		}
+		params := map[string]any{
+			"tech_card_id":       tcID,
+			"name":               p.Name,
+			"line_key":           key,
+			"pieces_per_garment": p.PiecesPerGarment,
+			"mirrored":           p.Mirrored,
+			"grainline":          p.Grainline,
+			"fused":              p.Fused,
+			"callout_number":     p.CalloutNumber,
+			"detached":           p.Detached,
+			"note":               p.Note,
+			"display_order":      i,
+		}
+		var pieceID int
+		if id, ok := existingByKey[key]; ok {
+			params["id"] = id
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE tech_card_piece SET
+					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
+					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
+				WHERE id=:id`, params); err != nil {
+				return fmt.Errorf("failed to update tech card piece: %w", err)
+			}
+			pieceID = id
+		} else {
+			newID, err := storeutil.ExecNamedLastId(ctx, db, `
+				INSERT INTO tech_card_piece
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :detached, :note, :display_order)`,
+				params)
+			if err != nil {
+				return fmt.Errorf("failed to insert tech card piece: %w", err)
+			}
+			pieceID = newID
+		}
+		seen[key] = true
+
 		for j := range p.Materials {
 			m := &p.Materials[j]
 			if !validColorway[m.ColorwayID] {
@@ -79,8 +199,8 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				map[string]any{
 					"piece_id":              pieceID,
 					"colorway_id":           m.ColorwayID,
-					"bom_item_id":           resolveBomID(bomRes, m.BomItemIndex),
-					"fusing_bom_item_id":    resolveBomID(bomRes, m.FusingBomItemIndex),
+					"bom_item_id":           resolveBomRef(bomRes, m.BomLineKey, m.BomItemIndex),
+					"fusing_bom_item_id":    resolveBomRef(bomRes, m.FusingBomLineKey, m.FusingBomItemIndex),
 					"bom_item_index":        m.BomItemIndex,
 					"fusing_bom_item_index": m.FusingBomItemIndex,
 					"note":                  m.Note,
@@ -88,6 +208,25 @@ func insertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 				}); err != nil {
 				return fmt.Errorf("failed to insert tech card piece material: %w", err)
 			}
+		}
+	}
+
+	// Delete pieces that vanished from the payload. FK RESTRICT (fk_usage_piece) blocks a piece still
+	// referenced by a colourway recipe usage — surface that as an actionable field-tagged error
+	// (the deferred-from-0159 guard, now live because pieces are keyed/stable).
+	for key, id := range existingByKey {
+		if seen[key] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_piece WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2
+				return entity.NewFieldViolation("pieces",
+					fmt.Sprintf("cut-piece %q is still referenced", key), "a colourway recipe usage",
+					"remove that consumption line before deleting the piece")
+			}
+			return fmt.Errorf("failed to delete tech card piece: %w", err)
 		}
 	}
 	return nil
@@ -121,6 +260,20 @@ func resolveBomID(res bomResolver, idx sql.NullInt32) any {
 		return id
 	}
 	return nil
+}
+
+// resolveBomRef turns a referrer's BOM reference into a real bom_item id for its FK column: by stable
+// line_key (preferred — positionality off the wire, WS3 follow-up), else the legacy positional index,
+// else SQL NULL. Like resolveBomID, an unknown key / out-of-range index resolves to NULL (the ref was
+// already broken) rather than pointing at the wrong line.
+func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32) any {
+	if key := strings.TrimSpace(lineKey); key != "" {
+		if id, ok := res.byLineKey[key]; ok {
+			return id
+		}
+		return nil
+	}
+	return resolveBomID(res, idx)
 }
 
 type bomExistingRow struct {
@@ -501,7 +654,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
 	// colorway_id is surfaced directly (R1/§14.3 — no positional colorway_index anymore).
 	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
-		SELECT id, tech_card_id, name, pieces_per_garment, mirrored, grainline, fused, callout_number, note
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note
 		FROM tech_card_piece
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})

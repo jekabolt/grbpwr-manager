@@ -60,8 +60,9 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
-			// Resolve the positional ref to a real bom_item_id (S2/S3); *_index kept for the transition.
-			"bom_item_id":    resolveBomID(bomRes, o.BomItemIndex),
+			// Resolve by stable line_key (preferred) or the legacy positional index (S2/S3); *_index
+			// kept for the transition.
+			"bom_item_id":    resolveBomRef(bomRes, o.BomLineKey, o.BomItemIndex),
 			"bom_item_index": o.BomItemIndex,
 			"callout_number": o.CalloutNumber,
 			"placement":      o.Placement,
@@ -262,7 +263,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
 		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
 		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note,
-		       operation_type, zone, bom_item_index, callout_number, placement
+		       operation_type, zone, bom_item_id, bom_item_index, callout_number, placement
 		FROM tech_card_operation
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, operation_number IS NULL, operation_number, display_order`, map[string]any{"ids": ids})
