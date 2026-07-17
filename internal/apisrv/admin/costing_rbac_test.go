@@ -363,3 +363,42 @@ func TestCostingWriteDetectors(t *testing.T) {
 	require.False(t, costPriceProvided(dec("")), "empty = leave unchanged")
 	require.True(t, costPriceProvided(dec("9.99")))
 }
+
+// TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
+// redacted for a non-costing account while its quantities and provenance flags survive.
+func TestStripProductionRunCosting(t *testing.T) {
+	stripProductionRunCosting(nil)                       // no panic
+	stripProductionRunCosting(&pb_common.ProductionRun{}) // no panic on nil nested
+
+	r := &pb_common.ProductionRun{
+		PlannedUnitCost: dec("4.20"),
+		PlannedCurrency: "EUR",
+		Run:             &pb_common.ProductionRunInsert{Costs: []*pb_common.ProductionRunCost{{AmountBase: dec("100")}}},
+		Actuals: &pb_common.ProductionRunActuals{
+			ActualTotalBase:        dec("120"),
+			ActualUnitCost:         dec("6.00"),
+			UnitCostVariance:       dec("1.80"),
+			MaterialsFromStockBase: dec("50"),
+			ByKind:                 []*pb_common.ProductionRunCostByKind{{AmountBase: dec("50")}},
+			ByColorway:             []*pb_common.ProductionRunColorwayCost{{MaterialsFromStockBase: dec("50")}},
+			ReceivedQtyTotal:       20,
+			DefectQtyTotal:         2,
+			BaseCurrency:           "EUR",
+		},
+	}
+	stripProductionRunCosting(r)
+
+	require.Nil(t, r.PlannedUnitCost)
+	require.Empty(t, r.PlannedCurrency)
+	require.Nil(t, r.Run.Costs, "actual cost articles are confidential")
+	require.Nil(t, r.Actuals.ActualTotalBase)
+	require.Nil(t, r.Actuals.ActualUnitCost)
+	require.Nil(t, r.Actuals.UnitCostVariance)
+	require.Nil(t, r.Actuals.MaterialsFromStockBase)
+	require.Nil(t, r.Actuals.ByKind)
+	require.Nil(t, r.Actuals.ByColorway)
+	// Quantities and labels survive — a production role still sees units/defects.
+	require.EqualValues(t, 20, r.Actuals.ReceivedQtyTotal)
+	require.EqualValues(t, 2, r.Actuals.DefectQtyTotal)
+	require.Equal(t, "EUR", r.Actuals.BaseCurrency)
+}

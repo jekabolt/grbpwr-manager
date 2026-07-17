@@ -171,6 +171,51 @@ func (s *Server) ListPackagingBom(ctx context.Context, _ *pb_admin.ListPackaging
 	return &pb_admin.ListPackagingBomResponse{Items: dto.PackagingBomListToPb(items)}, nil
 }
 
+// UpsertPackagingRecipe full-replaces one scope target's packaging recipe (PLM rework §2.8, Q3): the
+// whole global set, or one style's set, or one product's set. scope ↔ key consistency is validated
+// here for a clean InvalidArgument (the DB CHECK is the backstop).
+func (s *Server) UpsertPackagingRecipe(ctx context.Context, req *pb_admin.UpsertPackagingRecipeRequest) (*pb_admin.UpsertPackagingRecipeResponse, error) {
+	scope := entity.PackagingRecipeScope(req.GetScope())
+	if _, ok := entity.ValidPackagingRecipeScopes[scope]; !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "scope must be global, style or product, got %q", req.GetScope())
+	}
+	var techCardID, productID sql.NullInt32
+	switch scope {
+	case entity.PackagingScopeStyle:
+		if req.GetTechCardId() <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "tech_card_id is required for style scope")
+		}
+		techCardID = sql.NullInt32{Int32: req.GetTechCardId(), Valid: true}
+	case entity.PackagingScopeProduct:
+		if req.GetProductId() <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "product_id is required for product scope")
+		}
+		productID = sql.NullInt32{Int32: req.GetProductId(), Valid: true}
+	case entity.PackagingScopeGlobal:
+		if req.GetTechCardId() > 0 || req.GetProductId() > 0 {
+			return nil, status.Error(codes.InvalidArgument, "global scope takes no tech_card_id/product_id")
+		}
+	}
+	items, err := dto.ConvertPbPackagingRecipeToEntity(req.GetItems())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.repo.MaterialStock().UpsertPackagingRecipe(ctx, scope, techCardID, productID, items, authsrv.GetAdminUsername(ctx)); err != nil {
+		return nil, mapInventoryErr(ctx, "upsert packaging recipe", err)
+	}
+	return &pb_admin.UpsertPackagingRecipeResponse{}, nil
+}
+
+// ListPackagingRecipe returns every packaging recipe (all scopes) with material name/unit.
+func (s *Server) ListPackagingRecipe(ctx context.Context, _ *pb_admin.ListPackagingRecipeRequest) (*pb_admin.ListPackagingRecipeResponse, error) {
+	items, err := s.repo.MaterialStock().ListPackagingRecipe(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list packaging recipe", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list packaging recipe")
+	}
+	return &pb_admin.ListPackagingRecipeResponse{Items: dto.PackagingRecipeListToPb(items)}, nil
+}
+
 // ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D). The lot's unit_cost is
 // confidential and stripped without costing:read.
 func (s *Server) ListMaterialLots(ctx context.Context, req *pb_admin.ListMaterialLotsRequest) (*pb_admin.ListMaterialLotsResponse, error) {
@@ -214,6 +259,10 @@ func mapInventoryErr(ctx context.Context, what string, err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, entity.ErrMaterialNotFound):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, entity.ErrPackagingRecipeInvalid):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, entity.ErrMaterialReserved):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	slog.Default().ErrorContext(ctx, "can't "+what, slog.String("err", err.Error()))
 	return status.Error(codes.Internal, "can't "+what)

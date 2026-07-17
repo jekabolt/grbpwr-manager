@@ -114,7 +114,7 @@ func TestComputeTechCardDevCostSummary(t *testing.T) {
 		{Kind: "labour", Amount: dec("50"), Currency: "EUR", AmountBase: nd("50")},
 		{Kind: "materials", Amount: dec("30"), Currency: "USD"}, // no amount_base → unconverted
 	}
-	sum := ComputeTechCardDevCostSummary(card, expenses, CostingFx{Base: "EUR"})
+	sum := ComputeTechCardDevCostSummary(card, expenses, nil, CostingFx{Base: "EUR"})
 
 	if sum.TotalBase.Value != "150" {
 		t.Fatalf("total_base: got %s, want 150 (unconverted row excluded)", sum.TotalBase.Value)

@@ -261,10 +261,12 @@ func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDispla
 		CollectionCode:   bi.Collection,
 		TargetGender:     tg,
 		Fit:              bi.Fit.String,
-		Composition:      bi.Composition.String,
+		Composition:      bi.Composition.String, // legacy plain text ONLY (M1 fix) — see composition_entries below
 		CareInstructions: bi.CareInstructions.String,
 		Translations:     translations,
 		UpdatedAt:        timestamppb.New(c.UpdatedAt),
+		// Structured fibre composition (S17/M1 fix), alongside — never instead of — Composition above.
+		CompositionEntries: compositionEntriesToPb(bi.CompositionEntries),
 	}
 	if c.ProductDisplay.SecondaryThumbnail != nil {
 		d.SecondaryThumbnail = ConvertEntityToCommonMedia(c.ProductDisplay.SecondaryThumbnail)

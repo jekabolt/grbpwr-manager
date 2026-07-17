@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
 )
 
 // This file extends migrationlint's static, database-free guards (see doc.go) to catch enum-value
@@ -119,6 +120,16 @@ func TestTechCardPurposeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "TechCardPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardPurposes))
 }
 
+// TestTechCardAuxSubtypeDBCheckNoDrift is the WS7 drift guard: entity (TechCardAuxSubtype/
+// ValidTechCardAuxSubtypes) <-> DB CHECK (migration 0173, chk_tech_card_aux_subtype). The value set must
+// stay identical on both sides, and identical again in migration 0173's backfill CASE and
+// entity.AuxSubtypeFromName (that lockstep is asserted in the entity unit test, not here).
+func TestTechCardAuxSubtypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0173_tech_card_aux_subtype.sql")
+	dbValues := extractDBEnumValues(t, content, "aux_subtype REGEXP", 200)
+	assertSameSet(t, "TechCardAuxSubtype", dbValues, mapKeysAsStrings(entity.ValidTechCardAuxSubtypes))
+}
+
 // TestGenderDBCheckNoDrift extends the drift test to gender (entity.ValidProductTargetGenders), whose
 // DB source of truth is migration 0067's tech_card.target_gender CHECK. product.target_gender was
 // dropped by migration 0140 (PR6 style de-dup) so tech_card is the only remaining gender CHECK.
@@ -175,6 +186,42 @@ func TestColorwayStatusDBCheckNoDrift(t *testing.T) {
 	if entity.ValidColorwayStatuses[entity.ColorwayStatusUnknown] {
 		t.Fatal("ColorwayStatusUnknown must not be storable")
 	}
+}
+
+// TestMaterialClassDBCheckNoDrift extends the drift test to the material CTI discriminant
+// (entity.MaterialClass/ValidMaterialClasses) <-> DB CHECK (migration 0157, chk_material_class).
+func TestMaterialClassDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "material_class REGEXP", 120)
+	assertSameSet(t, "MaterialClass", dbValues, mapKeysAsStrings(entity.ValidMaterialClasses))
+}
+
+// TestMaterialPriceSourceDBCheckNoDrift extends the drift test to material_price.source
+// (entity.ValidMaterialPriceSources) <-> DB CHECK (migration 0158, chk_material_price_source).
+func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0158_material_price_source_check.sql")
+	dbValues := extractDBEnumValues(t, content, "source REGEXP", 120)
+	assertSameSet(t, "MaterialPriceSource", dbValues, mapKeysAsStrings(entity.ValidMaterialPriceSources))
+}
+
+// TestCategorySizeSystemDBCheckNoDrift extends the drift test to category_size_system.size_system
+// (S10/WS5): it must accept exactly entity.ValidSizeSKUSystems, the SAME set migration 0147's
+// chk_size_sku_contract already enforces on size.sku_system (TestSizeSKUSystemDBCheckNoDrift above) --
+// the two CHECKs are independent constraints on different tables and must not drift from each other
+// or from the entity enum.
+func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0175_category_size_system.sql")
+	dbValues := extractDBEnumValues(t, content, "chk_category_size_system_system", 200)
+	assertSameSet(t, "CategorySizeSystem.size_system", dbValues, mapKeysAsStrings(entity.ValidSizeSKUSystems))
+}
+
+// TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
+// matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
+// guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).
+func TestFabricDirectionFixtureVsDBCheck(t *testing.T) {
+	content := readMigrationFile(t, "0157_material_cti.sql")
+	dbValues := extractDBEnumValues(t, content, "fabric_direction REGEXP", 120)
+	assertSameSet(t, "fabric_direction", dbValues, materialattr.AllowedEnumValues("fabric", "fabric_direction"))
 }
 
 // TestEnumDriftExtractorsDetectTamperedInput guards the extractor helpers themselves (mirrors

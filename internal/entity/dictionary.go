@@ -17,4 +17,8 @@ type DictionaryInfo struct {
 	BackgroundHeroColor         string
 	ProductTags                 []string
 	Colors                      []Color
+	// CategorySizeSystems is the category -> permitted size-system(s) mapping (S10/WS5, migration
+	// 0175), used both by the admin size picker (dictionary output) and, resolved against a style's
+	// category path, by server-side size-write validation (ResolveSizeSystemPolicy).
+	CategorySizeSystems []CategorySizeSystem
 }

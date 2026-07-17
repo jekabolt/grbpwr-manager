@@ -674,8 +674,8 @@ func TestFittingRoundAndChangeRequests(t *testing.T) {
 	f3ins := mkFitting()
 	f3ins.Outcome = sql.NullString{String: "new_round", Valid: true}
 	f3ins.ChangeRequests = []entity.FittingChangeRequest{
-		{Target: "pattern", Note: "raise the hem 2cm", Resolved: false},
-		{Target: "construction", Note: "reinforce the shoulder seam", Resolved: false},
+		{Target: "pattern", Note: "raise the hem 2cm", Status: entity.FittingChangeStatusOpen},
+		{Target: "construction", Note: "reinforce the shoulder seam", Status: entity.FittingChangeStatusOpen},
 	}
 	id3, err := s.Fittings().AddFitting(ctx, f3ins)
 	require.NoError(t, err)
@@ -687,20 +687,25 @@ func TestFittingRoundAndChangeRequests(t *testing.T) {
 	require.Equal(t, "new_round", f3.Outcome.String)
 	require.Len(t, f3.ChangeRequests, 2)
 	require.Equal(t, "pattern", f3.ChangeRequests[0].Target)
-	require.False(t, f3.ChangeRequests[0].Resolved)
+	require.Equal(t, entity.FittingChangeStatusOpen, f3.ChangeRequests[0].Status)
 
-	// Resolve the first change request via a full-replace update (echo the fetched insert,
-	// toggling resolved). round_number is preserved because the update echoes it.
+	// S26: resolve the first change request via the dedicated CRUD (its id is stable — the fitting
+	// full-replace no longer touches change requests).
+	cr0 := f3.ChangeRequests[0]
+	cr0.Status = entity.FittingChangeStatusResolved
+	require.NoError(t, s.Fittings().UpdateFittingChangeRequest(ctx, cr0.Id, &cr0))
+
+	// A fitting full-replace update preserves round_number (it echoes it) and does NOT wipe change
+	// requests (they survive the replace).
 	upd := f3.FittingInsert
-	upd.ChangeRequests[0].Resolved = true
-	require.NoError(t, s.Fittings().UpdateFitting(ctx, id3, &upd))
+	require.NoError(t, s.Fittings().UpdateFitting(ctx, id3, &upd, f3.LockVersion))
 
 	f3b, err := s.Fittings().GetFittingById(ctx, id3)
 	require.NoError(t, err)
 	require.True(t, f3b.RoundNumber.Valid && f3b.RoundNumber.Int32 == 3, "round preserved on update, got %+v", f3b.RoundNumber)
 	require.Len(t, f3b.ChangeRequests, 2)
-	require.True(t, f3b.ChangeRequests[0].Resolved, "first change request resolved")
-	require.False(t, f3b.ChangeRequests[1].Resolved, "second still open")
+	require.Equal(t, entity.FittingChangeStatusResolved, f3b.ChangeRequests[0].Status, "first change request resolved")
+	require.Equal(t, entity.FittingChangeStatusOpen, f3b.ChangeRequests[1].Status, "second still open")
 
 	// A manual round_number is honoured (not overwritten by auto-assign).
 	manual := mkFitting()

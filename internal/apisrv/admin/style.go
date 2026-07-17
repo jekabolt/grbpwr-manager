@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -18,7 +19,9 @@ import (
 // UpdateStyle writes a style's catalogue facts (brand/season/collection/gender/fit/composition/care/
 // model-wears/categories) — the sole writer of those facts (R4/§14.7). A stale expected_lock_version
 // is ABORTED; a SKU-fact (season) change with any SKU-frozen sibling colourway is FailedPrecondition
-// (clone for the new season instead); an unknown style is NotFound.
+// (clone for the new season instead); an unknown style is NotFound. The save also re-derives the
+// structural composition (S17) from the style's shell-fabric BOM — a fabric line whose own composition
+// does not sum to 100 is a field-tagged InvalidArgument (apierr), same as any other bad-input rejection.
 func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleRequest) (*pb_admin.UpdateStyleResponse, error) {
 	if req.StyleId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "style_id is required")
@@ -32,7 +35,10 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 	}
 	lockVersion, err := s.repo.Products().UpdateStyle(ctx, int(req.StyleId), int(req.ExpectedLockVersion), patch)
 	if err != nil {
+		var ve *entity.ValidationError
 		switch {
+		case errors.As(err, &ve):
+			return nil, apierr.Invalid(ve)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):

@@ -5,10 +5,13 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
@@ -40,15 +43,19 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // pricing is on costing).
 // season_code/season_year are the normalized SKU-facing season (task 05). The legacy `season`
 // column remains only as a canonical derived label for the existing UNIQUE key/read models.
-const techCardHeaderColumns = `style_number, name, brand, season, season_code, season_year, collection, category_id,
-	target_gender, stage, status, approval_state, approved_by, approved_at, released_at, version, revision_date,
-	base_model_id, base_sample_size_id, designer, constructor, technologist,
-	measurement_unit, concept, notes, purpose, output_material_id`
+// Q1/Q5: version/revision_date and the free-text roles designer/constructor/technologist/approved_by
+// are no longer written — the card's version is its named releases (Rev.N) + the auto-journal, and
+// roles are admin-account assignments. The columns stay until M3; the write path just stops touching
+// them. approved_at/released_at are server-owned timestamps and remain.
+const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
+	target_gender, stage, status, approval_state, approved_at, released_at,
+	base_model_id, base_sample_size_id,
+	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
-const techCardHeaderValues = `:style_number, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
-	:target_gender, :stage, :status, :approval_state, :approved_by, :approved_at, :released_at, :version, :revision_date,
-	:base_model_id, :base_sample_size_id, :designer, :constructor, :technologist,
-	:measurement_unit, :concept, :notes, :purpose, :output_material_id`
+const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
+	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at,
+	:base_model_id, :base_sample_size_id,
+	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
@@ -56,6 +63,12 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	purpose := tc.Purpose
 	if purpose == "" {
 		purpose = entity.TechCardPurposeSellable
+	}
+	// Default an unset provenance to `generated` so a direct entity insert satisfies the
+	// chk_tech_card_style_number_source CHECK (the dto defaults it too; this covers store callers).
+	styleNumberSource := tc.StyleNumberSource
+	if styleNumberSource == "" {
+		styleNumberSource = entity.StyleNumberSourceGenerated
 	}
 	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
 		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
@@ -78,8 +91,12 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	tc.SeasonLabel = seasonLabel
 	return map[string]any{
 		"style_number":        tc.StyleNumber,
+		"style_number_source": string(styleNumberSource),
+		"created_by":          tc.CreatedBy,
+		"updated_by":          tc.UpdatedBy,
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
+		"aux_subtype":         tc.AuxSubtype,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              seasonLabel,
@@ -91,16 +108,10 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 		"stage":               string(tc.Stage),
 		"status":              tc.Status,
 		"approval_state":      string(tc.ApprovalState),
-		"approved_by":         tc.ApprovedBy,
 		"approved_at":         tc.ApprovedAt,
 		"released_at":         tc.ReleasedAt,
-		"version":             tc.Version,
-		"revision_date":       tc.RevisionDate,
 		"base_model_id":       tc.BaseModelId,
 		"base_sample_size_id": tc.BaseSampleSizeId,
-		"designer":            tc.Designer,
-		"constructor":         tc.Constructor,
-		"technologist":        tc.Technologist,
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
@@ -156,7 +167,11 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 		}
 		// A new card's colourways may already link products (they become "styled" and take the
 		// style's season/model + colourway colour) — re-mint their SKUs while unlocked.
-		return remintCardProducts(ctx, rep.DB(), id, nil)
+		if err := remintCardProducts(ctx, rep.DB(), id, nil); err != nil {
+			return err
+		}
+		// Q1: open the auto-journal with the creation event.
+		return appendTechCardRevision(ctx, rep.DB(), id, tc.CreatedBy, "header", "created", "tech card created")
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add tech card: %w", err)
@@ -268,15 +283,14 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
-				style_number = :style_number, name = :name,
+				style_number = :style_number, style_number_source = :style_number_source, name = :name,
+				updated_by = :updated_by,
 				category_id = :category_id,
 				stage = :stage, status = :status, approval_state = :approval_state,
-				approved_by = :approved_by, approved_at = :approved_at, released_at = :released_at,
-				version = :version, revision_date = :revision_date,
+				approved_at = :approved_at, released_at = :released_at,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
-				designer = :designer, constructor = :constructor, technologist = :technologist,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
-					purpose = :purpose, output_material_id = :output_material_id
+					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
 			WHERE id = :id AND lock_version = :expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("failed to update tech card: %w", err)
@@ -298,13 +312,21 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
 		// parents (detail media via tech_card_detail). Colourways are no longer a child of the card
 		// (R1 merge) — they live in product and are managed via CreateColorway.
+		// NB: tech_card_bom_item is NOT full-replaced here — it is reconciled by line_key in
+		// upsertTechCardBom (S2/S3) so its ids stay stable for the referrer FKs. tech_card_piece is
+		// likewise NOT full-replaced (WS4 / S8) — it is keyed-upserted so its ids stay stable for the
+		// usage.piece_id FK; its piece_material grandchildren are cleared in Phase A (see
+		// insertTechCardChildren) rather than here. The operation referrer IS cleared here BEFORE the
+		// BOM upsert, so the only bom_item_id / piece_id RESTRICT that can fire is from a persistent
+		// colourway usage — the intended cross-aggregate guard.
+		// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
+		// (Q1), not a client-replaced child, so a save must never wipe the history.
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
-			"tech_card_callout", "tech_card_revision", "tech_card_detail",
-			"tech_card_bom_item",
+			"tech_card_callout", "tech_card_detail",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-			"tech_card_size_pattern", "tech_card_piece",
+			"tech_card_size_pattern",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -316,7 +338,12 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			return err
 		}
 		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
-		return remintCardProducts(ctx, rep.DB(), id, prevProductLinks)
+		if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
+			return err
+		}
+		// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
+		action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
+		return appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary)
 	})
 	if err != nil {
 		switch err {
@@ -330,8 +357,20 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 
 // DeleteTechCard deletes a tech card by id (child sections cascade). It refuses when any of the
 // card's samples has material stock movements: the sample rows cascade (ON DELETE CASCADE) and would
-// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04).
-// The check and the delete run in one transaction so a concurrent issue cannot slip between them.
+// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04). It
+// also refuses when the card is used as an auxiliary component in another style's assembly bill
+// (style_assembly.component_tech_card_id -> tech_card ON DELETE RESTRICT, 0174) — a raw DB 1451 there
+// would otherwise surface as an unreadable Internal (P4-flyover M2/S24-regression); both checks and the
+// delete run in one transaction so a concurrent issue/assembly write cannot slip between them.
+//
+// sample_substitution.bom_item_id -> tech_card_bom_item is deliberately NOT guarded here: as of 0178 it
+// is ON DELETE SET NULL (P4-flyover M3), so a substitution recorded against one of this card's own BOM
+// lines degrades gracefully (bom_item_id -> NULL, original_material_id snapshot untouched) instead of
+// blocking the delete — no COUNT-guard is needed because that FK can no longer 1451.
+//
+// Any OTHER RESTRICT this does not explicitly enumerate (e.g. the pre-existing product.style_id ->
+// tech_card RESTRICT, 0138 — a style with live colourway products) still raises 1451; the caller
+// (apisrv/admin) maps that residual case to a field-tagged FailedPrecondition rather than Internal.
 func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
@@ -343,8 +382,23 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 		if n > 0 {
 			return entity.ErrSampleHasMovements
 		}
+		asmCount, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("check tech card assembly usage: %w", err)
+		}
+		if asmCount > 0 {
+			return entity.NewFieldViolation("tech_card_id",
+				fmt.Sprintf("used as an assembly component in %d style(s)", asmCount),
+				"style_assembly", "remove it from those assembly bills first")
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2: an un-enumerated RESTRICT
+				return entity.NewFieldViolation("tech_card_id",
+					"still referenced by another record", "", "remove the referencing record first")
+			}
 			return fmt.Errorf("failed to delete tech card: %w", err)
 		}
 		return nil
@@ -360,6 +414,18 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	}
 	cards := []entity.TechCard{tc}
 	if err := s.enrich(ctx, cards); err != nil {
+		return nil, err
+	}
+	// Q5: responsible-account roles are their own child collection (managed via dedicated RPCs), so
+	// load them for the single-card read here rather than through the full-replace enrich.
+	roles, err := s.ListTechCardRoleAssignments(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].RoleAssignments = roles
+	// M1 fix: load the structured composition (S17) into its own typed field, alongside — never
+	// instead of — the legacy free-text column already read by the `SELECT *` above.
+	if err := loadStructuredComposition(ctx, s.DB, &cards[0]); err != nil {
 		return nil, err
 	}
 	return &cards[0], nil
@@ -553,6 +619,9 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 // insertTechCardChildren inserts the size range, product links, sketch media,
 // callouts and revisions for a tech card (used by both Add and Update).
 func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert) error {
+	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
+		return err
+	}
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
@@ -573,28 +642,38 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardCallouts(ctx, db, id, tc.Callouts); err != nil {
 		return err
 	}
-	if err := insertTechCardRevisions(ctx, db, id, tc.Revisions); err != nil {
-		return err
-	}
+	// Q1: tech_card_revision is a server-stamped auto-journal now, not a client full-replace — it is
+	// appended by AddTechCard/UpdateTechCard (appendTechCardRevision), never written from tc.Revisions.
 	if err := insertTechCardDetails(ctx, db, id, tc.Details); err != nil {
 		return err
 	}
-	// Materials (Phase 2): the BOM article catalog. PR6 R1: colourways are no longer written here —
-	// they are products managed via CreateColorway, and a usage's bom_item_index still points into
-	// this card's BOM by position.
-	if err := insertTechCardBom(ctx, db, id, tc.BomItems); err != nil {
+	// Cut-pieces (WS4 / S8): pieces are keyed-upserted (not full-replaced) so their ids stay stable —
+	// which is what lets a colourway recipe usage hold a real piece_id FK RESTRICT (the deferred half
+	// of 0159). Phase A (§D5): release each piece's OLD piece_material → bom_item refs BEFORE the BOM
+	// upsert, so a BOM line the client is deleting is not falsely blocked by a stale RESTRICT; the
+	// fresh mapping is re-inserted by upsertTechCardPieces once the BOM ids resolve. No-op on create.
+	if err := clearTechCardPieceMaterials(ctx, db, id); err != nil {
 		return err
 	}
-	// Cut-pieces (NF-05): their per-colourway fabric mapping resolves a positional colorway_index to
-	// the style's products (product.style_id) in display order (see insertTechCardPieces).
-	if err := insertTechCardPieces(ctx, db, id, tc.Pieces); err != nil {
+	// Materials (WS3 / S2-S3): the BOM article catalog is reconciled by line_key (keyed upsert-diff),
+	// not full-replaced, so each line's id is stable — which is what lets pieces/operations/colourway
+	// recipes hold a real bom_item_id FK. The resolver turns a line's key/position into that id.
+	bomRes, err := upsertTechCardBom(ctx, db, id, tc.BomItems)
+	if err != nil {
+		return err
+	}
+	// Cut-pieces (WS4 / S8): keyed-upsert by line_key (piece ids stable); re-insert each piece's
+	// per-colourway fabric mapping with the resolved bom_item_id. calloutSync (built from the same
+	// payload) derives each piece's name from its technical-sketch callout and marks moodboard/orphan
+	// links detached (S6/S7/S8).
+	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc)); err != nil {
 		return err
 	}
 	// production (Phase 3)
 	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
 		return err
 	}
-	if err := insertTechCardOperations(ctx, db, id, tc.Operations); err != nil {
+	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardLabels(ctx, db, id, tc.Labels); err != nil {
@@ -634,6 +713,45 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		return fmt.Errorf("failed to insert tech card patterns: %w", err)
 	}
 	return nil
+}
+
+// validateTechCardSizeIDs enforces S10/WS5's server-side size-write guard on the style's OWN size
+// range (tech_card_size, "size_ids" on the wire): each requested size must belong to a system
+// permitted for the card's CURRENT category (top/sub/type_id, owned solely by UpdateStyle -- see
+// product/style.go -- so it is read fresh from the row here rather than trusted from tc, which never
+// carries a category on this write path). Returns a field-tagged *entity.ValidationError naming the
+// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. An id the
+// dictionary cache does not recognise is skipped here -- the existing FK on tech_card_size.size_id
+// already turns that into a clear foreign-key error at insert time.
+func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	path, err := loadTechCardCategoryPath(ctx, db, id)
+	if err != nil {
+		return fmt.Errorf("load tech card %d category: %w", id, err)
+	}
+	rules := cache.GetCategorySizeSystems()
+	label := cache.CategoryLabel(path)
+	for i, sid := range sizeIDs {
+		sz, ok := cache.GetSizeById(sid)
+		if !ok {
+			continue
+		}
+		if verr := entity.ValidateSizeAgainstCategory(fmt.Sprintf("size_ids[%d]", i), path, label, rules, sz); verr != nil {
+			return verr
+		}
+	}
+	return nil
+}
+
+// loadTechCardCategoryPath reads a tech card's CURRENT category triple. category (top/sub/type_id) is
+// written exclusively by UpdateStyle (R4/§14.7), never by Add/UpdateTechCard, so this always reflects
+// the latest assigned category regardless of which RPC is mid-flight in the same transaction.
+func loadTechCardCategoryPath(ctx context.Context, db dependency.DB, id int) (entity.StyleCategoryPath, error) {
+	return storeutil.QueryNamedOne[entity.StyleCategoryPath](ctx, db,
+		`SELECT top_category_id, sub_category_id, type_id FROM tech_card WHERE id = :id`,
+		map[string]any{"id": id})
 }
 
 func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs []int, quantities []entity.TechCardSizeQuantity) error {
@@ -717,26 +835,36 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 	return nil
 }
 
-func insertTechCardRevisions(ctx context.Context, db dependency.DB, id int, revisions []entity.TechCardRevision) error {
-	if len(revisions) == 0 {
-		return nil
-	}
-	rows := make([]map[string]any, 0, len(revisions))
-	for i, r := range revisions {
-		rows = append(rows, map[string]any{
-			"tech_card_id":  id,
-			"version":       r.Version,
-			"revision_date": r.RevisionDate,
-			"author":        r.Author,
-			"section":       r.Section,
-			"change_note":   r.ChangeNote,
-			"display_order": i,
-		})
-	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_revision", rows); err != nil {
-		return fmt.Errorf("failed to insert tech card revisions: %w", err)
+// appendTechCardRevision writes one server-stamped entry to the auto-journal (Q1): who (author,
+// GetAdminUsername), what (section + action + human summary) and when (created_at DEFAULT now). It is
+// append-only — never a full-replace — so the history of a card's significant transitions accrues.
+func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, author, section, action, summary string) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_revision (tech_card_id, author, section, action, change_note)
+		VALUES (:tech_card_id, :author, :section, :action, :summary)`,
+		map[string]any{
+			"tech_card_id": id,
+			"author":       sql.NullString{String: author, Valid: author != ""},
+			"section":      sql.NullString{String: section, Valid: section != ""},
+			"action":       action,
+			"summary":      sql.NullString{String: summary, Valid: summary != ""},
+		}); err != nil {
+		return fmt.Errorf("failed to append tech card revision: %w", err)
 	}
 	return nil
+}
+
+// revisionActionForUpdate classifies an update into the journal action (Q1): a transition INTO
+// approved/released is recorded as such; any other save is a generic `updated`.
+func revisionActionForUpdate(prev, next entity.TechCardApprovalState) (action, section, summary string) {
+	switch {
+	case next == entity.TechCardApprovalReleased && prev != entity.TechCardApprovalReleased:
+		return "released", "signoff", "released to manufacture"
+	case next == entity.TechCardApprovalApproved && prev != entity.TechCardApprovalApproved:
+		return "approved", "signoff", "approved"
+	default:
+		return "updated", "header", "tech card updated"
+	}
 }
 
 // clampPagination normalizes a client-supplied limit/offset.

@@ -37,9 +37,10 @@ func TestOpexV2(t *testing.T) {
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE label LIKE 'NF-OPEX-TEST%' OR month >= '2029-01-01'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_recurring WHERE label LIKE 'NF-OPEX-TEST%'")
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM costing_fx_rate WHERE currency IN ('TSD','TSJ')")
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM opex_line WHERE label LIKE 'NF-OPEX-TEST%' OR month >= '2029-01-01'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM opex_recurring WHERE label LIKE 'NF-OPEX-TEST%'")
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM costing_fx_rate WHERE currency IN ('TSD','TSJ')")
 	})
 
 	mtr := s.Metrics()

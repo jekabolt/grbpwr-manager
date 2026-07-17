@@ -149,6 +149,14 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	// COMMIT RESERVATION: Convert cart reservation to order reservation
 	s.reservationMgr.Commit(ctx, clientSession, order.UUID)
 
+	// Soft-reserve the order's packaging materials (PLM rework §2.8, S22). Best-effort: packaging must
+	// never block a sale — an oversell is surfaced via available, not refused here, and the reservation
+	// is released on cancel (cancelOrder) or closed on ship (consume). A failure is logged, not returned.
+	if rerr := s.repo.MaterialStock().ReservePackagingForOrder(ctx, order.Id, ""); rerr != nil {
+		slog.Default().WarnContext(ctx, "packaging reserve failed on submit",
+			slog.String("order_uuid", order.UUID), slog.String("err", rerr.Error()))
+	}
+
 	if sendEmail {
 		err := s.mailer.QueueNewSubscriber(ctx, s.repo, orderNew.Buyer.Email)
 		if err != nil {

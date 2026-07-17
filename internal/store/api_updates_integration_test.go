@@ -82,7 +82,7 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 			{Number: 1, Note: sql.NullString{String: "a", Valid: true}},
 			{Number: 2, Note: sql.NullString{String: "b", Valid: true}},
 		},
-	}))
+	}, 0))
 	fit, err = s.Fittings().GetFittingById(ctx, fid)
 	require.NoError(t, err)
 	require.Len(t, fit.Callouts, 2)
@@ -178,7 +178,7 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 	require.NoError(t, s.Samples().UpdateSample(ctx, smID, &entity.SampleInsert{
 		TechCardId: tcID, Purpose: entity.SamplePurposeProto, Status: entity.SampleStatusDone,
 		FabricSource: entity.SampleFabricSample, MediaIds: nil,
-	}))
+	}, 0))
 	sm, err = s.Samples().GetSampleById(ctx, smID)
 	require.NoError(t, err)
 	require.Empty(t, sm.Media, "media cleared on full-replace update")

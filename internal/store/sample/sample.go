@@ -36,18 +36,69 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 
 func sampleParams(sm *entity.SampleInsert) map[string]any {
 	return map[string]any{
-		"tech_card_id":  sm.TechCardId,
-		"purpose":       sm.Purpose,
-		"size_id":       sm.SizeId,
-		"colorway_id":   sm.ColorwayId,
-		"status":        sm.Status,
-		"fabric_source": sm.FabricSource,
-		"notes":         sm.Notes,
-		"started_at":    sm.StartedAt,
-		"finished_at":   sm.FinishedAt,
-		"pattern_url":   sm.PatternUrl,
-		"pattern_note":  sm.PatternNote,
+		"tech_card_id":       sm.TechCardId,
+		"purpose":            sm.Purpose,
+		"size_id":            sm.SizeId,
+		"colorway_id":        sm.ColorwayId,
+		"status":             sm.Status,
+		"fabric_source":      sm.FabricSource,
+		"notes":              sm.Notes,
+		"started_at":         sm.StartedAt,
+		"finished_at":        sm.FinishedAt,
+		"pattern_url":        sm.PatternUrl,
+		"pattern_note":       sm.PatternNote,
+		"round_number":       sm.RoundNumber,
+		"spec_release_id":    sm.SpecReleaseId,
+		"previous_sample_id": sm.PreviousSampleId,
+		"created_by":         sm.CreatedBy,
+		"updated_by":         sm.UpdatedBy,
 	}
+}
+
+// sampleColumns is the shared read column list (single source of truth for GetSampleById / ListSamples).
+const sampleColumns = `id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source,
+	notes, started_at, finished_at, pattern_url, pattern_note, round_number, spec_release_id,
+	previous_sample_id, lock_version, created_by, updated_by, created_at, updated_at`
+
+// validateSampleRoundRefs verifies a sample's optional spec_release_id / previous_sample_id belong to
+// its tech card (Q7 chain integrity): a spec snapshot must be one of this style's releases, and the
+// previous sample must be another sample of the same style (and not itself). selfID is the sample being
+// updated (0 on create) so the chain cannot point at itself.
+func validateSampleRoundRefs(ctx context.Context, db dependency.DB, techCardID, selfID int, specReleaseID, previousSampleID sql.NullInt32) error {
+	if specReleaseID.Valid {
+		card, err := storeutil.QueryNamedOne[struct {
+			TechCardId int `db:"tech_card_id"`
+		}](ctx, db, `SELECT tech_card_id FROM tech_card_release WHERE id = :rel`,
+			map[string]any{"rel": specReleaseID.Int32})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return entity.ErrSampleSpecReleaseForeign
+			}
+			return fmt.Errorf("check sample spec release: %w", err)
+		}
+		if card.TechCardId != techCardID {
+			return entity.ErrSampleSpecReleaseForeign
+		}
+	}
+	if previousSampleID.Valid {
+		if selfID != 0 && int(previousSampleID.Int32) == selfID {
+			return entity.ErrSamplePreviousForeign
+		}
+		prev, err := storeutil.QueryNamedOne[struct {
+			TechCardId int `db:"tech_card_id"`
+		}](ctx, db, `SELECT tech_card_id FROM sample WHERE id = :prev`,
+			map[string]any{"prev": previousSampleID.Int32})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return entity.ErrSamplePreviousForeign
+			}
+			return fmt.Errorf("check previous sample: %w", err)
+		}
+		if prev.TechCardId != techCardID {
+			return entity.ErrSamplePreviousForeign
+		}
+	}
+	return nil
 }
 
 // insertSampleMedia bulk-inserts a sample's photo media in submitted order (B-6). Empty is a no-op.
@@ -100,18 +151,40 @@ func (s *Store) AddSample(ctx context.Context, sm *entity.SampleInsert) (int, er
 		if err := validateSampleRefs(ctx, rep.DB(), sm.TechCardId, sm.ColorwayId, sm.SizeId); err != nil {
 			return err
 		}
+		if err := validateSampleRoundRefs(ctx, rep.DB(), sm.TechCardId, 0, sm.SpecReleaseId, sm.PreviousSampleId); err != nil {
+			return err
+		}
 		n, err := storeutil.QueryNamedOne[struct {
-			Next int `db:"next"`
-		}](ctx, rep.DB(), `SELECT COALESCE(MAX(number), 0) + 1 AS next FROM sample WHERE tech_card_id = :tc`,
+			Next   int           `db:"next"`
+			Round  int           `db:"round"`
+			PrevId sql.NullInt32 `db:"prev_id"`
+		}](ctx, rep.DB(), `SELECT COALESCE(MAX(number), 0) + 1 AS next, COALESCE(MAX(round_number), 0) + 1 AS round,
+				(SELECT s2.id FROM sample s2 WHERE s2.tech_card_id = :tc ORDER BY s2.id DESC LIMIT 1) AS prev_id
+			FROM sample WHERE tech_card_id = :tc`,
 			map[string]any{"tc": sm.TechCardId})
 		if err != nil {
 			return fmt.Errorf("next sample number: %w", err)
 		}
 		params := sampleParams(sm)
 		params["number"] = n.Next
+		// Auto-assign the round (MAX+1 per card, the spine) when the client did not pin one; a manual
+		// round_number is honoured.
+		if !sm.RoundNumber.Valid {
+			params["round_number"] = n.Round
+		}
+		// M2 fix: previous_sample_id=0 (unset) auto-links to the latest prior sample of the same card,
+		// matching the documented proto contract (sample.proto: "0 = server links to the latest prior
+		// sample") — round_number already had this auto-assign behaviour, previous_sample_id did not,
+		// silently breaking the iteration chain for any client that relied on the 0-means-auto contract.
+		// An explicit previous_sample_id is honoured as-is (already validated above).
+		if !sm.PreviousSampleId.Valid && n.PrevId.Valid {
+			params["previous_sample_id"] = n.PrevId
+		}
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO sample (tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note)
-			VALUES (:tech_card_id, :number, :purpose, :size_id, :colorway_id, :status, :fabric_source, :notes, :started_at, :finished_at, :pattern_url, :pattern_note)`,
+			INSERT INTO sample (tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note,
+				round_number, spec_release_id, previous_sample_id, created_by, updated_by)
+			VALUES (:tech_card_id, :number, :purpose, :size_id, :colorway_id, :status, :fabric_source, :notes, :started_at, :finished_at, :pattern_url, :pattern_note,
+				:round_number, :spec_release_id, :previous_sample_id, :created_by, :updated_by)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("insert sample: %w", err)
@@ -161,28 +234,43 @@ func validateSampleRefs(ctx context.Context, db dependency.DB, techCardID int, c
 // checked explicitly (a no-op UPDATE affects 0 rows and can't be told from a missing id), and the
 // colorway/size are validated against the sample's own tech card. Returns sql.ErrNoRows when the
 // sample does not exist.
-func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error {
+func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert, expectedLockVersion int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
-			TechCardId int `db:"tech_card_id"`
-		}](ctx, rep.DB(), `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": id})
+			TechCardId  int `db:"tech_card_id"`
+			LockVersion int `db:"lock_version"`
+		}](ctx, rep.DB(), `SELECT tech_card_id, lock_version FROM sample WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return sql.ErrNoRows
 			}
 			return fmt.Errorf("load sample %d: %w", id, err)
 		}
+		// Double-guard optimistic lock (S25, golden standard): in-Go compare + WHERE lock_version guard.
+		if cur.LockVersion != expectedLockVersion {
+			return entity.ErrSampleConflict
+		}
 		if err := validateSampleRefs(ctx, rep.DB(), cur.TechCardId, sm.ColorwayId, sm.SizeId); err != nil {
+			return err
+		}
+		if err := validateSampleRoundRefs(ctx, rep.DB(), cur.TechCardId, id, sm.SpecReleaseId, sm.PreviousSampleId); err != nil {
 			return err
 		}
 		params := sampleParams(sm)
 		params["id"] = id
-		if err := storeutil.ExecNamed(ctx, rep.DB(), `
-			UPDATE sample SET purpose=:purpose, size_id=:size_id, colorway_id=:colorway_id,
+		params["expected_lock_version"] = expectedLockVersion
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			UPDATE sample SET lock_version = lock_version + 1, purpose=:purpose, size_id=:size_id, colorway_id=:colorway_id,
 				status=:status, fabric_source=:fabric_source, notes=:notes, started_at=:started_at, finished_at=:finished_at,
-				pattern_url=:pattern_url, pattern_note=:pattern_note
-			WHERE id=:id`, params); err != nil {
+				pattern_url=:pattern_url, pattern_note=:pattern_note,
+				spec_release_id=:spec_release_id, previous_sample_id=:previous_sample_id, updated_by=:updated_by
+			WHERE id=:id AND lock_version=:expected_lock_version`, params)
+		if err != nil {
 			return fmt.Errorf("can't update sample %d: %w", id, err)
+		}
+		// The row provably exists (loaded above), so 0 rows means lock_version moved under us.
+		if rows == 0 {
+			return entity.ErrSampleConflict
 		}
 		// Full-replace the sample's photo media in the same tx (mirrors fitting media).
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
@@ -221,8 +309,7 @@ func (s *Store) DeleteSample(ctx context.Context, id int) error {
 // GetSampleById returns a sample with its composed cost block, or sql.ErrNoRows when none exists.
 func (s *Store) GetSampleById(ctx context.Context, id int) (*entity.Sample, error) {
 	sm, err := storeutil.QueryNamedOne[entity.Sample](ctx, s.DB,
-		`SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note, created_at, updated_at
-		 FROM sample WHERE id = :id`, map[string]any{"id": id})
+		`SELECT `+sampleColumns+` FROM sample WHERE id = :id`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
@@ -273,7 +360,7 @@ func (s *Store) ListSamples(ctx context.Context, limit, offset int, orderFactor 
 	// Cross-style listing orders by tech_card then number so one style's samples stay grouped; a
 	// single-style listing collapses to just number.
 	rows, err := storeutil.QueryListNamed[entity.Sample](ctx, s.DB, fmt.Sprintf(`
-		SELECT id, tech_card_id, number, purpose, size_id, colorway_id, status, fabric_source, notes, started_at, finished_at, pattern_url, pattern_note, created_at, updated_at
+		SELECT `+sampleColumns+`
 		FROM sample WHERE 1=1%s
 		ORDER BY tech_card_id, number %s LIMIT :limit OFFSET :offset`, where, orderFactor.String()),
 		params)
@@ -345,6 +432,85 @@ func (s *Store) sampleCost(ctx context.Context, sampleID int) (*entity.SampleCos
 	out.ManualBase = out.ManualBase.Round(2)
 	out.TotalBase = out.MaterialsBase.Add(out.ManualBase).Round(2)
 	return out, nil
+}
+
+func substitutionParams(sub *entity.SampleSubstitutionInsert) map[string]any {
+	return map[string]any{
+		"sample_id":               sub.SampleId,
+		"bom_item_id":             sub.BomItemId,
+		"original_material_id":    sub.OriginalMaterialId,
+		"substituted_material_id": sub.SubstitutedMaterialId,
+		"reason":                  sub.Reason,
+		"planned_qty":             sub.PlannedQty,
+		"actual_qty":              sub.ActualQty,
+		"created_by":              sub.CreatedBy,
+	}
+}
+
+// AddSampleSubstitution records a dev-time material substitution on a sample (§2.7). It verifies the
+// sample exists and, when a BOM line is named, that the line belongs to the sample's tech card (a line
+// from another style would be a silent mislink). Q2 invariant: this never touches product cost. Returns
+// sql.ErrNoRows when the sample does not exist.
+func (s *Store) AddSampleSubstitution(ctx context.Context, sub *entity.SampleSubstitutionInsert) (int, error) {
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		card, err := storeutil.QueryNamedOne[struct {
+			TechCardId int `db:"tech_card_id"`
+		}](ctx, rep.DB(), `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": sub.SampleId})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("load sample %d: %w", sub.SampleId, err)
+		}
+		if sub.BomItemId.Valid {
+			n, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM tech_card_bom_item WHERE id = :bi AND tech_card_id = :tc`,
+				map[string]any{"bi": sub.BomItemId.Int32, "tc": card.TechCardId})
+			if err != nil {
+				return fmt.Errorf("check substitution bom line: %w", err)
+			}
+			if n == 0 {
+				return entity.ErrSampleSubstitutionBomForeign
+			}
+		}
+		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
+			INSERT INTO sample_substitution (sample_id, bom_item_id, original_material_id, substituted_material_id, reason, planned_qty, actual_qty, created_by)
+			VALUES (:sample_id, :bom_item_id, :original_material_id, :substituted_material_id, :reason, :planned_qty, :actual_qty, :created_by)`,
+			substitutionParams(sub))
+		if err != nil {
+			return fmt.Errorf("insert sample substitution: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// ListSampleSubstitutions returns a sample's substitutions (oldest first).
+func (s *Store) ListSampleSubstitutions(ctx context.Context, sampleID int) ([]entity.SampleSubstitution, error) {
+	rows, err := storeutil.QueryListNamed[entity.SampleSubstitution](ctx, s.DB, `
+		SELECT id, sample_id, bom_item_id, original_material_id, substituted_material_id, reason, planned_qty, actual_qty, created_by, created_at
+		FROM sample_substitution WHERE sample_id = :id ORDER BY id`, map[string]any{"id": sampleID})
+	if err != nil {
+		return nil, fmt.Errorf("list sample substitutions: %w", err)
+	}
+	return rows, nil
+}
+
+// DeleteSampleSubstitution deletes a substitution by id, returning sql.ErrNoRows when none exists.
+func (s *Store) DeleteSampleSubstitution(ctx context.Context, id int) error {
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
+		`DELETE FROM sample_substitution WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("delete sample substitution %d: %w", id, err)
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func clampPagination(limit, offset int) (int, int) {

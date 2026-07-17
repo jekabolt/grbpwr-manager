@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -109,6 +110,32 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 		return fmt.Errorf("can't update order status: %w", err)
 	}
 
+	// Release the order's open packaging reservations (PLM rework §2.8, S22) atomically with the stock
+	// restore: a cancelled order will never ship, so its soft packaging holds are returned (no physical
+	// writeoff — on_hand is untouched). This is the single choke point for every stock-restoring cancel
+	// path (admin CancelOrder, user cancel, payment-fail, order-items-validation-fail), so those callers
+	// need not release packaging separately.
+	if err := releaseOpenPackagingClaims(ctx, rep.DB(), order.Id); err != nil {
+		return fmt.Errorf("can't release packaging reservations: %w", err)
+	}
+
+	return nil
+}
+
+// releaseOpenPackagingClaims closes an order's still-open packaging reservation claims (a 'reserve'
+// with no 'consume'/'release') with 'release' rows, idempotently. It is a plain statement on the
+// caller's transaction so it runs atomically inside cancelOrder without opening a nested transaction.
+//
+// L2 fix (review-plm-backend.md): this used to duplicate the inventory store's open-claim SQL inline
+// ("the two must stay in sync" by comment convention, a silent-drift risk if the open-claim/event
+// definition ever changed in only one place). It now delegates to the single definition,
+// inventory.ReleaseOpenClaimsInTx, passing "" for the acting username the same way the inline SQL
+// always stamped created_by='' here (every caller of this function is a system-triggered cancel path,
+// not an admin action with a real actor) — same event vocabulary, same idempotency, one implementation.
+func releaseOpenPackagingClaims(ctx context.Context, db dependency.DB, orderID int) error {
+	if err := inventory.ReleaseOpenClaimsInTx(ctx, db, orderID, ""); err != nil {
+		return fmt.Errorf("release packaging reservations for order %d: %w", orderID, err)
+	}
 	return nil
 }
 

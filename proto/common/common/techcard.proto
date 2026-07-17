@@ -83,11 +83,40 @@ message TechCardCallout {
 // which section, by whom). This is NOT fit history — fitting verdicts and
 // measurements live in the separate fitting feature.
 message TechCardRevision {
-  string version = 1;
-  google.protobuf.Timestamp revision_date = 2;
-  string author = 3;
-  string section = 4; // раздел
-  string change_note = 5; // что изменено
+  string version = 1; // DEPRECATED legacy label (kept for old rows); the auto-journal does not set it
+  google.protobuf.Timestamp revision_date = 2; // DEPRECATED; use created_at
+  string author = 3; // server-stamped acting admin username (GetAdminUsername)
+  string section = 4; // раздел (header|sketch|bom|colorway|pieces|construction|labels|packaging|costing|signoff|other)
+  string change_note = 5; // human summary of what changed
+  string action = 6; // created|updated|approved|released|reverted|role_assigned|other
+  google.protobuf.Timestamp created_at = 7; // when the server stamped this journal entry
+}
+
+// TechCardRole is a responsible-account role on a tech card (PLM-rework Q5). Replaces the free-text
+// designer/constructor/technologist/approved_by strings; approval is the APPROVER role plus a
+// server-stamped journal event, not a free-text name.
+enum TechCardRole {
+  TECH_CARD_ROLE_UNKNOWN = 0;
+  TECH_CARD_ROLE_DESIGNER = 1;
+  TECH_CARD_ROLE_CONSTRUCTOR = 2;
+  TECH_CARD_ROLE_TECHNOLOGIST = 3;
+  TECH_CARD_ROLE_PATTERN_MAKER = 4;
+  TECH_CARD_ROLE_GRADER = 5;
+  TECH_CARD_ROLE_APPROVER = 6;
+  TECH_CARD_ROLE_OTHER = 7;
+}
+
+// TechCardRoleAssignment is one "this admin account is <role> of this card" record (Q5), multi per
+// role. Managed via the AssignTechCardRole / RemoveTechCardRoleAssignment / ListTechCardRoleAssignments
+// RPCs, NOT through the tech-card full-replace. admin_username is resolved on read (never written).
+message TechCardRoleAssignment {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  TechCardRole role = 3;
+  int32 admin_id = 4; // FK admins(id)
+  string admin_username = 5; // resolved on read, read-only
+  string assigned_by = 6; // audit: who created the assignment
+  google.protobuf.Timestamp assigned_at = 7;
 }
 
 // TechCardBomSection groups a BOM line by material family (Sheet «Спецификация»).
@@ -121,6 +150,23 @@ enum TechCardPurpose {
   TECH_CARD_PURPOSE_UNKNOWN = 0;
   TECH_CARD_PURPOSE_SELLABLE = 1;
   TECH_CARD_PURPOSE_AUXILIARY = 2;
+}
+
+// TechCardAuxSubtype sub-classifies an AUXILIARY card (purpose=auxiliary) into the concrete kind of
+// non-sold item it produces (WS7). UNKNOWN=0 means unset — a sellable card, or an auxiliary card not yet
+// classified (stored NULL). Only meaningful with purpose=auxiliary.
+enum TechCardAuxSubtype {
+  TECH_CARD_AUX_SUBTYPE_UNKNOWN = 0;
+  TECH_CARD_AUX_SUBTYPE_BRAND_LABEL = 1;
+  TECH_CARD_AUX_SUBTYPE_CARE_LABEL = 2;
+  TECH_CARD_AUX_SUBTYPE_SIZE_LABEL = 3;
+  TECH_CARD_AUX_SUBTYPE_HANGTAG = 4;
+  TECH_CARD_AUX_SUBTYPE_STICKER = 5;
+  TECH_CARD_AUX_SUBTYPE_DUST_BAG = 6;
+  TECH_CARD_AUX_SUBTYPE_BOX = 7;
+  TECH_CARD_AUX_SUBTYPE_INSERT = 8;
+  TECH_CARD_AUX_SUBTYPE_HANGER = 9;
+  TECH_CARD_AUX_SUBTYPE_OTHER = 10;
 }
 
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
@@ -172,6 +218,12 @@ message AdminColorwayRef {
   string base_sku = 2;
   string color_code = 3;
   ColorwayLifecycleStatus status = 4;
+  // usages is this colourway's material recipe (H1 fix, WS3/S2-S3): the constructor view of a
+  // style now shows each colourway's recipe alongside its identity, instead of the recipe being
+  // write-only (UpdateColorwayRecipe persisted usages that no read path ever surfaced). Money
+  // fields (line_total/size_run_total) are stripped for an account without costing:read, same as
+  // the rest of the tech-card read (stripTechCardCosting).
+  repeated TechCardColorwayUsage usages = 5;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
@@ -201,6 +253,16 @@ message TechCardColorwayUsage {
   // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this
   // consumption norm is about; unset = whole garment (informational, NF-05).
   optional int32 piece_index = 10;
+  // bom_line_key references the owning style's BOM line by its stable line_key (S2/S3) — the durable
+  // reference the recipe write-path resolves to a real bom_item_id. Preferred over bom_item_index
+  // (which stays for the transition / legacy read). bom_item_id is the resolved FK on read.
+  string bom_line_key = 11;
+  int64 bom_item_id = 12; // OUTPUT: resolved FK to the BOM line
+  // piece_line_key references the cut-piece this norm is about by its stable TechCardPiece.line_key
+  // (WS4). The recipe write-path resolves it to the real piece_id FK (usage.piece_id RESTRICT).
+  // Preferred over the positional piece_index (kept for the transition). piece_id is the resolved FK.
+  string piece_line_key = 13;
+  int64 piece_id = 14; // OUTPUT: resolved FK to the cut-piece
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
@@ -235,6 +297,15 @@ message TechCardBomItem {
   // material_id optionally links this line to a catalog Material (task 10). The line keeps its
   // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
   int64 material_id = 23;
+  // id is the stable server-assigned PK (read-only). line_key is the client-generated ULID assigned
+  // when the line is first created in the UI, round-tripped on every save so the server keyed-
+  // reconciles by it (S2/S3) and keeps id stable — which is what lets operations/pieces/recipes hold
+  // a real FK instead of a fragile positional index.
+  int64 id = 24;
+  string line_key = 25;
+  // material_snapshot is a read-only JSON snapshot of the linked material's descriptive fields at
+  // save time (S23), so the document is self-contained.
+  string material_snapshot = 26;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -242,6 +313,51 @@ message TechCardBomItem {
 
 // Material is a catalog material — shared nomenclature a tech-card BOM line can optionally link
 // to. Descriptive fields only; price lives in the append-only MaterialPrice history.
+// MaterialClass is the class-table-inheritance discriminant (S15): it selects which typed
+// attribute set a material carries. Mirrors entity.MaterialClass and the DB CHECK chk_material_class.
+enum MaterialClass {
+  MATERIAL_CLASS_UNKNOWN = 0; // defaults to OTHER on write
+  MATERIAL_CLASS_FABRIC = 1;
+  MATERIAL_CLASS_HARDWARE = 2;
+  MATERIAL_CLASS_THREAD = 3;
+  MATERIAL_CLASS_PACKAGING = 4;
+  MATERIAL_CLASS_OTHER = 5;
+}
+
+// MaterialFabricAttrs are the typed attributes of a fabric-class material (material_fabric_attr).
+message MaterialFabricAttrs {
+  google.type.Decimal width_cm = 1;
+  google.type.Decimal weight_gsm = 2;
+  string fabric_direction = 3; // lengthwise|crosswise|any (fixture-validated)
+  google.type.Decimal shrinkage_pct = 4;
+  google.type.Decimal roll_length_m = 5;
+}
+
+// MaterialHardwareAttrs are the typed attributes of a hardware-class material (material_hardware_attr).
+message MaterialHardwareAttrs {
+  google.type.Decimal diameter_mm = 1;
+  string dimensions = 2;
+  string finish = 3;
+  string base_material = 4;
+  google.type.Decimal weight_g = 5;
+}
+
+// MaterialThreadAttrs are the typed attributes of a thread-class material (material_thread_attr).
+// Fibre composition is not here — it lives in the structural material_composition (S17).
+message MaterialThreadAttrs {
+  string ticket_tex = 1;
+  google.type.Decimal length_per_cone_m = 2;
+  string needle_reco = 3;
+}
+
+// MaterialPackagingAttrs are the typed attributes of a packaging-class material (material_packaging_attr).
+message MaterialPackagingAttrs {
+  string substrate = 1;
+  string dimensions = 2;
+  google.type.Decimal gsm = 3;
+  string print_method = 4;
+}
+
 message Material {
   int64 id = 1;
   string name = 2; // required
@@ -263,6 +379,20 @@ message Material {
   string pantone = 15;
   google.type.Decimal min_stock = 16; // low-stock alert threshold, in `unit`
   string notes = 17;
+  // lock_version is the optimistic-lock counter (S25, read-only). Echo it back in
+  // UpdateMaterialRequest.expected_lock_version; a stale value is rejected (Aborted).
+  int32 lock_version = 18;
+  // CTI typing (S15): material_class selects which typed attribute set applies. Exactly one of the
+  // `attributes` oneof is populated for the four typed classes; other_attrs (a JSON object) is the
+  // escape-hatch used only when material_class = MATERIAL_CLASS_OTHER.
+  MaterialClass material_class = 19;
+  oneof attributes {
+    MaterialFabricAttrs fabric_attrs = 20;
+    MaterialHardwareAttrs hardware_attrs = 21;
+    MaterialThreadAttrs thread_attrs = 22;
+    MaterialPackagingAttrs packaging_attrs = 23;
+  }
+  string other_attrs = 24; // JSON object; set only when material_class = MATERIAL_CLASS_OTHER
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -282,7 +412,8 @@ message MaterialPrice {
 message TechCardReleaseMeta {
   int32 id = 1;
   int32 tech_card_id = 2;
-  string version = 3; // tech_card.version at release time
+  string version = 3; // DEPRECATED: legacy free-text label at release time; use release_number (Rev.N)
+  int32 release_number = 8; // user-facing "Rev.N" the factory reads (Q1): auto MAX+1 per card
   string released_by = 4; // acting admin username at release time
   google.type.Decimal unit_cost = 5; // base-currency planned unit cost, if foldable
   string currency = 6; // currency of unit_cost
@@ -325,6 +456,14 @@ message TechCardDevCostByKind {
   google.type.Decimal amount_base = 2;
 }
 
+// TechCardDevCostByRound is a style's development spend attributed to one fitting round (Q8 — the
+// attribution S20 asked to fix). round_number 0 collects expenses tied to no fitting round.
+message TechCardDevCostByRound {
+  int32 round_number = 1; // fitting round; 0 = not attributed to a round
+  google.type.Decimal amount_base = 2; // Σ amount_base for the round (EUR)
+  int32 expense_count = 3;
+}
+
 // TechCardDevCostSummary is the computed roll-up of a style's development spend (output-only).
 message TechCardDevCostSummary {
   google.type.Decimal total_base = 1; // Σ amount_base over foldable rows (EUR)
@@ -335,6 +474,12 @@ message TechCardDevCostSummary {
   // production unit cost is unavailable. NOT part of cost_price (development is a period cost).
   google.type.Decimal unit_cost_with_dev = 4;
   int32 order_qty = 5; // Σ size order_qty used for amortization
+  // Q8 rollup (read projection, built alongside — never seeded into cost_price):
+  repeated TechCardDevCostByRound by_round = 6; // spend attributed to each fitting round
+  int32 rounds_to_approval = 7; // highest fitting round reached at approval; 0 = not approved yet
+  google.protobuf.Timestamp first_expense_at = 8; // earliest incurred/created dev expense; unset if none
+  google.protobuf.Timestamp approved_at = 9; // date of the approving fitting; unset if not approved
+  int32 days_to_approval = 10; // approved_at − first_expense_at in days; 0 when either is unknown
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of one BOM
@@ -450,6 +595,11 @@ message TechCardOperation {
   TechCardConstructionZone zone = 17; // display-grouping band; UNKNOWN = unset
   string placement = 18; // garment part this operation works on; resolves the real material
   // via the selected colourway's usages (match trim+lower; bom_item_index wins if set)
+  // bom_line_key references the BOM line by its stable line_key (WS3 follow-up: take positionality off
+  // the wire). Preferred over the positional bom_item_index (kept for the transition). The store
+  // resolves it to bom_item_id, the real FK on read.
+  string bom_line_key = 19;
+  int64 bom_item_id = 20; // OUTPUT: resolved FK to the BOM line
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -481,13 +631,24 @@ message TechCardIssue {
 }
 
 // TechCardLabel is one label / tag spec (Sheet «Этикетки и упаковка»).
+// TechCardLabel is the garment's label/tag SPEC — one of the three historically-unconnected "label"
+// concepts (S21): (a) THIS spec, (b) the shipment label (common/shipment.proto — a shipping document,
+// deliberately NOT merged, a different domain), (c) the label MATERIAL as a BOM line
+// (tech_card_bom_item, section=label). WS7 unifies (a)↔(c) via bom_item_id below, and classifies the
+// auxiliary item via TechCard.aux_subtype. DEPRECATION (destructive → M3, not done here): once
+// bom_item_id + aux_subtype are adopted, label_type collapses into aux_subtype and the free-text
+// content/placement/attachment/size overlap (also carried structurally by the linked material + the
+// assembly bill's print_note/position_note) is dropped in a guarded migration.
 message TechCardLabel {
-  TechCardLabelType label_type = 1; // required
-  string content = 2; // содержание / артикул
-  string placement = 3; // размещение
-  string attachment = 4; // крепление
+  TechCardLabelType label_type = 1; // required. DEPRECATED-PENDING-M3: to be subsumed by TechCard.aux_subtype.
+  string content = 2; // содержание / артикул. DEPRECATED-PENDING-M3: overlaps the linked BOM material.
+  string placement = 3; // размещение. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
+  string attachment = 4; // крепление. DEPRECATED-PENDING-M3: use StyleAssembly.position_note.
   string size = 5; // размер
   string note = 6;
+  // WS7/§2.8 (S21 unification bridge): FK to the physical label material's BOM line
+  // (tech_card_bom_item). 0 = unlinked. Links this free-text label SPEC to the material it prints on.
+  int32 bom_item_id = 7;
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка»).
@@ -614,6 +775,13 @@ message TechCardPieceColorwayMaterial {
   optional int32 bom_item_index = 2; // 0-based index into TechCardInsert.bom_items (the fabric)
   optional int32 fusing_bom_item_index = 3; // 0-based index into bom_items (the fusing / клеевая), if any
   string note = 4;
+  // bom_line_key / fusing_bom_line_key reference the fabric / fusing BOM line by its stable line_key
+  // (WS3 follow-up: positionality off the wire). Preferred over the positional *_index (kept for the
+  // transition). The store resolves them to the real FKs bom_item_id / fusing_bom_item_id (output).
+  string bom_line_key = 6;
+  string fusing_bom_line_key = 7;
+  int64 bom_item_id = 8; // OUTPUT: resolved FK to the fabric BOM line
+  int64 fusing_bom_item_id = 9; // OUTPUT: resolved FK to the fusing BOM line
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
@@ -622,12 +790,22 @@ message TechCardPieceColorwayMaterial {
 message TechCardPiece {
   string name = 1; // «полочка», «спинка», «обтачка горловины»…
   int32 pieces_per_garment = 2; // how many times cut per garment (default 1)
-  bool mirrored = 3; // paired / mirror piece
+  // Q6: mirrored means the piece is CUT AS A MIRRORED PAIR (left+right), not a decorative flag. The
+  // cut-list (GetStyleCutList) expands a mirrored piece ×2 over pieces_per_garment.
+  bool mirrored = 3;
   string grainline = 4; // долевая: lengthwise|crosswise|bias|any
   bool fused = 5; // клеевая (fused with interlining)
   optional int32 callout_number = 6; // link to a sketch callout pin (like operations)
   string note = 7;
   repeated TechCardPieceColorwayMaterial materials = 8; // per-colourway fabric mapping
+  // line_key is the stable client-generated ULID identity of the cut-piece (S8, mirrors BOM's
+  // line_key): the store keyed-upserts by it so the piece id stays stable across saves, which is what
+  // lets a colourway recipe usage hold a real piece_id FK. Empty on a legacy payload → server mints one.
+  string line_key = 9;
+  // detached is OUTPUT-ONLY: the store sets it when the piece's callout_number no longer resolves to a
+  // callout on the card (its source sketch callout was removed) — the piece survives, visibly
+  // detached, instead of being silently dropped (orphan-control, S8).
+  bool detached = 10;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers
@@ -638,12 +816,25 @@ message SkuSeason {
   int32 year = 2;
 }
 
+// StyleNumberSource records how a tech card's style_number was set (PLM-rework Q1): GENERATED = the
+// server proposed it from the season+sequence contract (SuggestStyleNumber); MANUAL = the owner
+// overrode the proposal (the value then passes the strict format validator). UNKNOWN defaults to
+// GENERATED on write.
+enum StyleNumberSource {
+  STYLE_NUMBER_SOURCE_UNKNOWN = 0;
+  STYLE_NUMBER_SOURCE_GENERATED = 1;
+  STYLE_NUMBER_SOURCE_MANUAL = 2;
+}
+
 message TechCardInsert {
   // identification (Sheet «Титул»)
   // Артикул. Required from the PROTO stage onward; OPTIONAL (empty) while stage == IDEA — an idea
   // is by definition pre-article (NF-03/B-2). Moving a card out of IDEA without a real style
-  // number is rejected with InvalidArgument.
+  // number is rejected with InvalidArgument. A hand-typed override must set style_number_source =
+  // MANUAL and pass the strict format validator; the global UNIQUE(style_number) index is the
+  // authority on collisions (Q1). Use SuggestStyleNumber to get the server proposal.
   string style_number = 1;
+  StyleNumberSource style_number_source = 104; // provenance; UNKNOWN defaults to GENERATED
   string name = 2; // Название изделия (required)
   string brand = 3;
   reserved 4;
@@ -654,16 +845,15 @@ message TechCardInsert {
   TechCardStage stage = 8; // UNKNOWN defaults to PROTO
   string status = 9; // freeform workflow notes (soft, non-gating)
   TechCardApprovalState approval_state = 35; // UNKNOWN defaults to DRAFT
-  string approved_by = 36; // who approved the current revision
+  // approved_by (36) removed (Q5): approval is the APPROVER role + a server-stamped journal event,
+  // not a free-text name. version (10) / revision_date (11) removed (Q1): the card's version is the
+  // sequence of named releases (Rev.N) + the auto-journal, not a free-text string. designer (14) /
+  // constructor (15) / technologist (16) removed (Q5): roles are admin-account assignments now (see
+  // the role-assignment RPCs). All are dropped from tech_card in M3.
   google.protobuf.Timestamp released_at = 37; // when released to manufacture
   TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to MM
-  string version = 10;
-  google.protobuf.Timestamp revision_date = 11;
   int32 base_model_id = 12; // FK model(id); 0 = unset
   int32 base_sample_size_id = 13; // FK size(id); 0 = unset
-  string designer = 14;
-  string constructor = 15;
-  string technologist = 16;
 
   // construction description (lower block of Sheet «Титул») now lives in details[]; the
   // header targets / currency were removed (pricing is on costing, single brand policy).
@@ -683,7 +873,8 @@ message TechCardInsert {
   repeated TechCardMediaItem moodboard_media = 55;
   repeated TechCardMediaItem technical_media = 56;
   repeated TechCardCallout callouts = 33; // sketch callouts (pin onto any moodboard or technical media by media_id)
-  repeated TechCardRevision revisions = 34; // revision log
+  // revisions (34) removed as INPUT (Q1): the revision log is a server-stamped auto-journal, not a
+  // client-supplied list — read it on the TechCard message (TechCard.revisions).
 
   // materials (Phase 2): bill of materials (article catalog). Colourways are no longer style
   // children (R1 merge — a colourway is a product); their material recipe lives on the colourway via
@@ -727,10 +918,14 @@ message TechCardInsert {
   int32 output_material_id = 102;
   SkuSeason sku_season = 103; // optional as a whole; required before a styled product can mint SKU
 
+  // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
+  TechCardAuxSubtype aux_subtype = 105;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
-  reserved 17 to 28, 32, 39, 42, 57 to 99;
+  reserved 10, 11, 14, 15, 16, 17 to 28, 32, 34, 36, 39, 42, 57 to 99;
+  reserved "version", "revision_date", "designer", "constructor", "technologist", "approved_by", "revisions";
 }
 
 // TechCard is a stored tech card with resolved sketch media.
@@ -740,12 +935,26 @@ message TechCard {
   google.protobuf.Timestamp created_at = 3;
   google.protobuf.Timestamp updated_at = 4;
   int32 lock_version = 6; // optimistic-lock token; echo into UpdateTechCardRequest.expected_lock_version
+  // Server-stamped audit usernames (norm §2.11, GetAdminUsername). Read-only: set by the server on
+  // create/update, never accepted from the write payload.
+  string created_by = 10;
+  string updated_by = 11;
+  // Responsible-account roles (Q5), read-only here — managed via the role-assignment RPCs, not the
+  // tech-card write. Replaces the removed free-text designer/constructor/technologist strings.
+  repeated TechCardRoleAssignment role_assignments = 12;
+  // Server-stamped auto-journal (Q1): who/what/when across the card's significant transitions.
+  // Read-only — appended by the server, never client-supplied. Replaces the removed input `revisions`.
+  repeated TechCardRevision revisions = 13;
   // Resolved sketch media (MediaFull), split to mirror the writable lists.
   repeated TechCardMediaFull resolved_moodboard_media = 7;
   repeated TechCardMediaFull resolved_technical_media = 8;
   // OUTPUT-ONLY derived colourways of this style (R1/§3.3): a style's colourways are its products.
   // Not writable through the style — created/relinked via the Colorway RPCs.
   repeated AdminColorwayRef colorways = 9;
+  // composition_entries is the style's structured fibre composition (S17/M1 fix), resolved from
+  // style_composition; empty when the style has no structural composition data yet. Read-only,
+  // admin/constructor view — the storefront's equivalent is StorefrontColorwayDisplay.composition_entries.
+  repeated CompositionEntry composition_entries = 14;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
@@ -772,4 +981,6 @@ message TechCardListItem {
   // cards (dust bags, shoppers…) without an N+1 GetTechCard, mirroring TechCard.purpose.
   TechCardPurpose purpose = 14; // R6: type change string→enum on the same wire number
   SkuSeason sku_season = 15;
+  // WS7: auxiliary sub-type badge for list views (UNKNOWN=unset), mirroring purpose above.
+  TechCardAuxSubtype aux_subtype = 16;
 }

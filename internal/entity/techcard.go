@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -63,6 +64,26 @@ var ValidTechCardPurposes = map[TechCardPurpose]bool{
 	TechCardPurposeSellable:  true,
 	TechCardPurposeAuxiliary: true,
 }
+
+// StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
+// proposed it from the season+sequence contract; `manual` = the owner deliberately overrode the
+// proposal (and the value passed the strict format validator). Mirrors the common.StyleNumberSource
+// proto enum; stored in tech_card.style_number_source (CHECK generated|manual, DEFAULT generated).
+type StyleNumberSource string
+
+const (
+	StyleNumberSourceGenerated StyleNumberSource = "generated"
+	StyleNumberSourceManual    StyleNumberSource = "manual"
+)
+
+// ValidStyleNumberSources is the set of accepted provenance values.
+var ValidStyleNumberSources = map[StyleNumberSource]bool{
+	StyleNumberSourceGenerated: true,
+	StyleNumberSourceManual:    true,
+}
+
+// IsValidStyleNumberSource reports whether s is an accepted provenance value.
+func IsValidStyleNumberSource(s StyleNumberSource) bool { return ValidStyleNumberSources[s] }
 
 // TechCardApprovalState is the gating release state of a tech card, orthogonal to
 // TechCardStage. It mirrors the common.TechCardApprovalState proto enum and is
@@ -183,13 +204,17 @@ type TechCardCallout struct {
 	PosY        decimal.NullDecimal `db:"pos_y"`
 }
 
-// TechCardRevision is one entry in the revision log.
+// TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
+// card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server;
+// the legacy Version/RevisionDate columns are kept for old rows and dropped in M3.
 type TechCardRevision struct {
-	Version      sql.NullString `db:"version"`
-	RevisionDate sql.NullTime   `db:"revision_date"`
-	Author       sql.NullString `db:"author"`
-	Section      sql.NullString `db:"section"`
-	ChangeNote   sql.NullString `db:"change_note"`
+	Version      sql.NullString `db:"version"`       // DEPRECATED legacy label
+	RevisionDate sql.NullTime   `db:"revision_date"` // DEPRECATED; use CreatedAt
+	Author       sql.NullString `db:"author"`        // server-stamped acting admin username
+	Section      sql.NullString `db:"section"`       // header|sketch|bom|... (enum-valued)
+	Action       sql.NullString `db:"action"`        // created|updated|approved|released|reverted|role_assigned|other
+	ChangeNote   sql.NullString `db:"change_note"`   // human summary
+	CreatedAt    sql.NullTime   `db:"created_at"`    // when the server stamped this entry
 }
 
 // TechCardBomSection groups a BOM line by material family. Mirrors the
@@ -287,7 +312,19 @@ type TechCardColorway struct {
 // how much is consumed (per-garment Consumption/Quantity and/or per-size). The BOM is a
 // pure article catalog; per-colourway divergence lives here.
 type TechCardColorwayUsage struct {
-	Id           int                 `db:"id"`
+	Id int `db:"id"`
+	// BomItemId is the real FK to the referenced BOM line (S2/S3). It is the durable reference the
+	// store resolves and writes; BomItemIndex is the legacy positional reference kept during the
+	// transition (dropped in M3). PieceId is the equivalent FK replacing PieceIndex.
+	BomItemId sql.NullInt64 `db:"bom_item_id"`
+	PieceId   sql.NullInt64 `db:"piece_id"`
+	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
+	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
+	BomLineKey string `db:"-"`
+	// PieceLineKey is the wire reference to the cut-piece this usage's consumption norm is about: the
+	// stable line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
+	// FK (usage.piece_id RESTRICT). It replaces the positional PieceIndex, kept for the transition.
+	PieceLineKey string              `db:"-"`
 	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
 	Placement    sql.NullString      `db:"placement"`
 	Color        sql.NullString      `db:"color"`
@@ -384,6 +421,16 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
 	Id int `db:"id"`
+	// LineKey is the BOM line's stable wire identity (S2/S3): a client-generated ULID assigned when
+	// the line is first created in the UI (before the first save), immutable thereafter. The server
+	// keyed-reconciles by line_key so the row's id survives edits — that stable id is what lets
+	// operations/pieces/colorway-usages hold a real FK instead of a fragile positional index. Empty
+	// on a legacy payload; the store then generates one on insert.
+	LineKey string `db:"line_key"`
+	// MaterialSnapshot is a read-only JSON snapshot of the linked catalog material's descriptive
+	// fields at save time (S23), so the document is self-contained without copying fields into
+	// editable inputs. NULL for a free-text line with no material link.
+	MaterialSnapshot []byte `db:"material_snapshot"`
 	// MaterialId optionally links this BOM line to a catalog material (task 10). The line still
 	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
 	// catalog entry later changes; the link only powers reverse lookups (which cards use a
@@ -483,6 +530,77 @@ func IsValidTechCardLabelType(t TechCardLabelType) bool {
 	return ValidTechCardLabelTypes[t]
 }
 
+// TechCardAuxSubtype sub-classifies an AUXILIARY tech card (purpose=auxiliary) into the concrete kind
+// of non-sold item it produces. It refines tech_card.purpose (an auxiliary card produces a MATERIAL via
+// output_material_id and has no product row) and is stored nullable in tech_card.aux_subtype. Mirrors the
+// common.TechCardAuxSubtype proto enum and the DB CHECK chk_tech_card_aux_subtype (migration 0173).
+type TechCardAuxSubtype string
+
+const (
+	AuxSubtypeBrandLabel TechCardAuxSubtype = "brand_label"
+	AuxSubtypeCareLabel  TechCardAuxSubtype = "care_label"
+	AuxSubtypeSizeLabel  TechCardAuxSubtype = "size_label"
+	AuxSubtypeHangtag    TechCardAuxSubtype = "hangtag"
+	AuxSubtypeSticker    TechCardAuxSubtype = "sticker"
+	AuxSubtypeDustBag    TechCardAuxSubtype = "dust_bag"
+	AuxSubtypeBox        TechCardAuxSubtype = "box"
+	AuxSubtypeInsert     TechCardAuxSubtype = "insert"
+	AuxSubtypeHanger     TechCardAuxSubtype = "hanger"
+	AuxSubtypeOther      TechCardAuxSubtype = "other"
+)
+
+// ValidTechCardAuxSubtypes is the closed set enforced by the DB CHECK; it backs the entity<->DB drift
+// test (internal/store/migrationlint) against migration 0173's chk_tech_card_aux_subtype.
+var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
+	AuxSubtypeBrandLabel: true,
+	AuxSubtypeCareLabel:  true,
+	AuxSubtypeSizeLabel:  true,
+	AuxSubtypeHangtag:    true,
+	AuxSubtypeSticker:    true,
+	AuxSubtypeDustBag:    true,
+	AuxSubtypeBox:        true,
+	AuxSubtypeInsert:     true,
+	AuxSubtypeHanger:     true,
+	AuxSubtypeOther:      true,
+}
+
+// IsValidTechCardAuxSubtype reports whether s is an accepted auxiliary sub-type.
+func IsValidTechCardAuxSubtype(s TechCardAuxSubtype) bool {
+	return ValidTechCardAuxSubtypes[s]
+}
+
+// AuxSubtypeFromName is the deterministic name → sub-type heuristic used to backfill EXISTING auxiliary
+// cards. It MUST stay identical to migration 0173's backfill CASE (first matching branch wins,
+// most-specific first); ok=false means "no confident match" and the caller leaves aux_subtype NULL rather
+// than guessing. Matching is case-insensitive substring.
+func AuxSubtypeFromName(name string) (TechCardAuxSubtype, bool) {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "dust"):
+		return AuxSubtypeDustBag, true
+	case strings.Contains(n, "hangtag"), strings.Contains(n, "hang tag"), strings.Contains(n, "hang-tag"):
+		return AuxSubtypeHangtag, true
+	case strings.Contains(n, "care"):
+		return AuxSubtypeCareLabel, true
+	case strings.Contains(n, "size label"), strings.Contains(n, "size-label"):
+		return AuxSubtypeSizeLabel, true
+	case strings.Contains(n, "brand"):
+		return AuxSubtypeBrandLabel, true
+	case strings.Contains(n, "sticker"):
+		return AuxSubtypeSticker, true
+	case strings.Contains(n, "hanger"):
+		return AuxSubtypeHanger, true
+	case strings.Contains(n, "insert"):
+		return AuxSubtypeInsert, true
+	case strings.Contains(n, "box"):
+		return AuxSubtypeBox, true
+	case strings.Contains(n, "shopper"), strings.Contains(n, "garment bag"):
+		return AuxSubtypeDustBag, true
+	default:
+		return "", false
+	}
+}
+
 // TechCardConstruction holds general workmanship parameters (Sheet «Обработка», 1:1).
 type TechCardConstruction struct {
 	MainStitchType  sql.NullString `db:"main_stitch_type"`
@@ -562,6 +680,12 @@ type TechCardOperation struct {
 	// classification + links (Phase 3.5d)
 	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset
 	Zone          TechCardConstructionZone `db:"zone"`           // display-grouping band; "unknown" = unset
+	// BomItemId is the real FK to the referenced BOM line (S2/S3), resolved and written by the store;
+	// BomItemIndex is the legacy positional reference kept during the transition (dropped in M3).
+	BomItemId sql.NullInt64 `db:"bom_item_id"`
+	// BomLineKey is the wire reference to that BOM line by its stable line_key (WS3 follow-up:
+	// positionality off the wire). The store resolves it to BomItemId; not persisted (db:"-").
+	BomLineKey string `db:"-"`
 	// BomItemIndex is the 0-based index into the submitted bom_items of the material
 	// this operation applies; NULL = no reference (index 0 is a valid reference). When
 	// set it wins; otherwise the material resolves via Placement against the selected
@@ -657,6 +781,9 @@ type TechCardLabel struct {
 	Attachment sql.NullString    `db:"attachment"`
 	Size       sql.NullString    `db:"size"`
 	Note       sql.NullString    `db:"note"`
+	// BomItemId links this free-text label SPEC to the physical label MATERIAL's BOM line
+	// (tech_card_bom_item), the §2.8 S21-unification bridge. NULL = unlinked. FK ON DELETE SET NULL.
+	BomItemId sql.NullInt32 `db:"bom_item_id"`
 }
 
 // TechCardPackaging holds the packaging spec (Sheet «Этикетки и упаковка», 1:1).
@@ -745,26 +872,46 @@ var ValidTechCardGrainlines = map[string]bool{
 // is gone (colourways are no longer style children). BOM refs stay positional into bom_items,
 // consistent with usages/operations. It is a grandchild of the card (full-replace via its piece).
 type TechCardPieceMaterial struct {
-	Id                 int            `db:"id"`
-	ColorwayID         int            `db:"colorway_id"`           // explicit colourway id = product.id
-	BomItemIndex       sql.NullInt32  `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
-	FusingBomItemIndex sql.NullInt32  `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
-	Note               sql.NullString `db:"note"`
+	Id         int `db:"id"`
+	ColorwayID int `db:"colorway_id"` // explicit colourway id = product.id
+	// BomItemId / FusingBomItemId are the real FKs to the fabric / fusing BOM lines (S2/S3), resolved
+	// and written by the store; the *Index columns are the legacy positional refs kept for the
+	// transition (dropped in M3).
+	BomItemId          sql.NullInt64 `db:"bom_item_id"`
+	FusingBomItemId    sql.NullInt64 `db:"fusing_bom_item_id"`
+	BomItemIndex       sql.NullInt32 `db:"bom_item_index"`        // 0-based index into bom_items (the fabric); NULL = unset
+	FusingBomItemIndex sql.NullInt32 `db:"fusing_bom_item_index"` // 0-based index into bom_items (the fusing); NULL = none
+	// BomLineKey / FusingBomLineKey are the wire references to the fabric / fusing BOM line by stable
+	// line_key (WS3 follow-up); the store resolves them to BomItemId / FusingBomItemId. Not persisted.
+	BomLineKey       string         `db:"-"`
+	FusingBomLineKey string         `db:"-"`
+	Note             sql.NullString `db:"note"`
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many
 // per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused (клеевая).
-// Materials picks, per colourway, which BOM fabric it is cut from. Full-replace child of the card.
+// Materials picks, per colourway, which BOM fabric it is cut from. Keyed-upserted child of the card:
+// LineKey is the stable client token the store reconciles by (S8, mirrors BOM's line_key in §2.3), so
+// a piece's id stays stable across saves — which is what lets a colourway recipe usage hold a real
+// piece_id FK RESTRICT (the deferred half of 0159).
 type TechCardPiece struct {
-	Id               int                     `db:"id"`
-	Name             string                  `db:"name"`
-	PiecesPerGarment int                     `db:"pieces_per_garment"`
-	Mirrored         bool                    `db:"mirrored"`
-	Grainline        string                  `db:"grainline"`
-	Fused            bool                    `db:"fused"`
-	CalloutNumber    sql.NullInt32           `db:"callout_number"`
-	Note             sql.NullString          `db:"note"`
-	Materials        []TechCardPieceMaterial `db:"-"`
+	Id   int    `db:"id"`
+	Name string `db:"name"`
+	// LineKey is the client-generated ULID assigned when the piece is created in the UI (before the
+	// first save); immutable; the wire identity the upsert-diff keys on. Empty on a legacy/keyless
+	// payload → the store mints one.
+	LineKey          string        `db:"line_key"`
+	PiecesPerGarment int           `db:"pieces_per_garment"`
+	Mirrored         bool          `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
+	Grainline        string        `db:"grainline"`
+	Fused            bool          `db:"fused"`
+	CalloutNumber    sql.NullInt32 `db:"callout_number"`
+	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
+	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
+	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
+	Detached  bool                    `db:"detached"`
+	Note      sql.NullString          `db:"note"`
+	Materials []TechCardPieceMaterial `db:"-"`
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).
@@ -773,13 +920,26 @@ type TechCardPiece struct {
 type TechCardInsert struct {
 	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
 	StyleNumber sql.NullString `db:"style_number"`
+	// StyleNumberSource is the provenance of StyleNumber (Q1): `generated` (server-proposed) or
+	// `manual` (owner override). A manual override must pass the strict style-number format validator;
+	// global UNIQUE(style_number) is the authority on collisions. Empty defaults to `generated`.
+	StyleNumberSource StyleNumberSource `db:"style_number_source"`
+	// CreatedBy/UpdatedBy are server-stamped audit usernames (norm §2.11, GetAdminUsername). They are
+	// on the writable payload only so the store can persist them; the API never reads them from the
+	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
+	CreatedBy string `db:"created_by"`
+	UpdatedBy string `db:"updated_by"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
 	Purpose          TechCardPurpose `db:"purpose"`
 	OutputMaterialId sql.NullInt64   `db:"output_material_id"` // material an auxiliary run receipts into
-	Name             string          `db:"name"`
-	Brand            sql.NullString  `db:"brand"`
+	// AuxSubtype sub-classifies an auxiliary card (brand_label/care_label/…/other); NULL for sellable
+	// cards and for unclassified auxiliary ones. Only meaningful when Purpose == auxiliary (DB gate
+	// chk_tech_card_aux_subtype_purpose). Additive (WS7); the sellable path never reads it.
+	AuxSubtype sql.NullString `db:"aux_subtype"`
+	Name       string         `db:"name"`
+	Brand      sql.NullString `db:"brand"`
 	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
 	// It is never accepted from the public contract.
 	SeasonLabel  sql.NullString `db:"season"`
@@ -793,8 +953,10 @@ type TechCardInsert struct {
 	// (products) read them from here; the duplicated product columns are dropped in step 3.
 	// top/sub/type_category mirror the product taxonomy (all → category(id)); the legacy
 	// single category_id above is a separate optional tag and is untouched.
-	Fit                sql.NullString          `db:"fit"`
-	Composition        sql.NullString          `db:"composition"` // JSON column
+	Fit sql.NullString `db:"fit"`
+	// Composition is the legacy free-text column (e.g. "100% Cotton"). M1 fix: always plain text on
+	// the wire — never overloaded with the structured composition, which is TechCard.CompositionEntries.
+	Composition        sql.NullString          `db:"composition"`
 	CareInstructions   sql.NullString          `db:"care_instructions"`
 	ModelWearsHeightCm sql.NullInt32           `db:"model_wears_height_cm"`
 	ModelWearsSizeId   sql.NullInt32           `db:"model_wears_size_id"`
@@ -818,11 +980,11 @@ type TechCardInsert struct {
 	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
 	Notes              sql.NullString          `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
-	SizeIds []int               `db:"-"`
-	Media   []TechCardMediaItem `db:"-"`
-	Callouts   []TechCardCallout   `db:"-"`
-	Revisions  []TechCardRevision  `db:"-"`
-	Details    []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
+	SizeIds   []int               `db:"-"`
+	Media     []TechCardMediaItem `db:"-"`
+	Callouts  []TechCardCallout   `db:"-"`
+	Revisions []TechCardRevision  `db:"-"`
+	Details   []TechCardDetail    `db:"-"` // construction-description aspects (+ media)
 	// materials (Phase 2)
 	BomItems  []TechCardBomItem  `db:"-"` // article catalog
 	Colorways []TechCardColorway `db:"-"` // colourways carry the usage recipe
@@ -854,6 +1016,44 @@ type TechCardListFilter struct {
 	// produce a SKU, do not clutter the choice (PR5-E).
 }
 
+// TechCardRole is a responsible-account role on a tech card (Q5). Mirrors the common.TechCardRole
+// proto enum; stored in tech_card_role_assignment.role (CHECK). Replaces the free-text
+// designer/constructor/technologist/approved_by strings — approval is now the `approver` role plus a
+// server-stamped journal event, not a free-text name.
+type TechCardRole string
+
+const (
+	RoleDesigner     TechCardRole = "designer"
+	RoleConstructor  TechCardRole = "constructor"
+	RoleTechnologist TechCardRole = "technologist"
+	RolePatternMaker TechCardRole = "pattern_maker"
+	RoleGrader       TechCardRole = "grader"
+	RoleApprover     TechCardRole = "approver"
+	RoleOther        TechCardRole = "other"
+)
+
+// ValidTechCardRoles is the set of accepted role keys (mirrors the DB CHECK).
+var ValidTechCardRoles = map[TechCardRole]bool{
+	RoleDesigner: true, RoleConstructor: true, RoleTechnologist: true,
+	RolePatternMaker: true, RoleGrader: true, RoleApprover: true, RoleOther: true,
+}
+
+// IsValidTechCardRole reports whether r is an accepted role.
+func IsValidTechCardRole(r TechCardRole) bool { return ValidTechCardRoles[r] }
+
+// TechCardRoleAssignment is one "this admin account is <role> of this card" record (Q5), multi per
+// role. AdminUsername is resolved from admins on read (never written). AssignedBy/AssignedAt are the
+// audit stamp of who created the assignment.
+type TechCardRoleAssignment struct {
+	Id            int          `db:"id"`
+	TechCardId    int          `db:"tech_card_id"`
+	Role          TechCardRole `db:"role"`
+	AdminId       int          `db:"admin_id"`
+	AdminUsername string       `db:"admin_username"` // resolved via JOIN admins; read-only
+	AssignedBy    string       `db:"assigned_by"`
+	AssignedAt    time.Time    `db:"assigned_at"`
+}
+
 // TechCard is a stored tech card (tech_card row + child sections + resolved media).
 type TechCard struct {
 	Id          int `db:"id"`
@@ -861,6 +1061,13 @@ type TechCard struct {
 	TechCardInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
+	// (GetTechCardById); empty on list views.
+	RoleAssignments []TechCardRoleAssignment `db:"-"`
+	// CompositionEntries is the style's structured fibre composition (S17/M1 fix), populated on the
+	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
+	// instead of it. Empty when the style has no style_composition rows yet.
+	CompositionEntries []CompositionEntry `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
@@ -895,13 +1102,17 @@ type StylePipelineColumn struct {
 // JSON blob — used for listing a card's releases. UnitCost/Currency are the base-currency
 // planned unit cost frozen at release time (NULL when it could not be folded to base).
 type TechCardReleaseMeta struct {
-	Id         int                 `db:"id"`
-	TechCardId int                 `db:"tech_card_id"`
-	Version    sql.NullString      `db:"version"`
-	ReleasedBy sql.NullString      `db:"released_by"`
-	UnitCost   decimal.NullDecimal `db:"unit_cost"`
-	Currency   sql.NullString      `db:"currency"`
-	CreatedAt  time.Time           `db:"created_at"`
+	Id         int `db:"id"`
+	TechCardId int `db:"tech_card_id"`
+	// ReleaseNumber is the user-facing "Rev.N" the factory reads (Q1): auto MAX+1 per tech card,
+	// assigned by the store on save. This is the tech card's real "version" — the free-text `version`
+	// string it replaces is retired.
+	ReleaseNumber int                 `db:"release_number"`
+	Version       sql.NullString      `db:"version"`
+	ReleasedBy    sql.NullString      `db:"released_by"`
+	UnitCost      decimal.NullDecimal `db:"unit_cost"`
+	Currency      sql.NullString      `db:"currency"`
+	CreatedAt     time.Time           `db:"created_at"`
 }
 
 // TechCardRelease is a full release snapshot: the metadata plus the raw proto-JSON blob of the

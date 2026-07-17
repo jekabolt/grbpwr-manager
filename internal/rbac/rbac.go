@@ -35,8 +35,15 @@ const (
 	SectionArchive     = "archive"
 	SectionModels      = "models"
 	SectionFittings    = "fittings"
-	SectionTechCards   = "tech_cards"
-	SectionProduction  = "production"
+	// SectionDictionaries governs the controlled merch dictionaries (R9): collection, colour, tag
+	// and the closed ISO country list — their dedicated management screens (List/Create/Update/
+	// Archive/SetActive). Curating a dictionary is a SEPARATE right from editing the catalog that
+	// consumes it (Q5: "создание Collection — отдельное право словарей"), so a catalog editor can no
+	// longer silently pollute the collection/colour vocabulary. Catalog pickers are unaffected: the
+	// flat read used by the product/tech-card UI is the allowlisted GetDictionary, not these RPCs.
+	SectionDictionaries = "dictionaries"
+	SectionTechCards    = "tech_cards"
+	SectionProduction   = "production"
 	// SectionInventory governs the material warehouse (new-flow NF-01): on-hand stock, receipts,
 	// issues, adjustments and the movement ledger. Quantities are gated by this section; the money
 	// on those responses (unit costs, valuation) is additionally gated by SectionCosting — a
@@ -80,6 +87,7 @@ var catalog = []SectionInfo{
 	{SectionArchive, "Archive", "Archive entries."},
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
+	{SectionDictionaries, "Dictionaries", "Controlled merch dictionaries: collections, colours, tags, countries. Managing them is separate from editing the catalog that uses them."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
 	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
 	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
@@ -128,45 +136,49 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"CreateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorway":            wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateStyle":               wr(SectionProducts), // R4: sole writer of catalogue-style facts
-	"GetColorwaysPaged":         rd(SectionProducts),
-	"GetColorwayByID":           rd(SectionProducts),
-	"ArchiveColorwayByID":       wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
-	"PublishColorway":           wr(SectionProducts), // R6 lifecycle transition
-	"TransitionColorwayStatus":  wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
-	"UpdateVariantStock":        wr(SectionProducts),
-	"CreateVariant":             wr(SectionProducts), // R2 variant CRUD
-	"UpdateVariant":             wr(SectionProducts), // R2 variant CRUD (status patch)
-	"ArchiveVariant":            wr(SectionProducts), // R2 archive-not-delete
+	"CreateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorwayRecipe":     wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
+	"UpdateStyle":              wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"GetColorwaysPaged":        rd(SectionProducts),
+	"GetColorwayByID":          rd(SectionProducts),
+	"ArchiveColorwayByID":      wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"PublishColorway":          wr(SectionProducts), // R6 lifecycle transition
+	"TransitionColorwayStatus": wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
+	"UpdateVariantStock":       wr(SectionProducts),
+	"CreateVariant":            wr(SectionProducts), // R2 variant CRUD
+	"UpdateVariant":            wr(SectionProducts), // R2 variant CRUD (status patch)
+	"ArchiveVariant":           wr(SectionProducts), // R2 archive-not-delete
 	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
-	"GetStyleSizeChart":    rd(SectionProducts),
-	"UpdateStyleSizeChart": wr(SectionProducts),
-	"RelinkDraftColorway":  wr(SectionProducts), // R4: move a draft colourway to another style
-	"CloneStyleForSeason":  wr(SectionProducts), // R4: deep-clone a style under a new season
+	"GetStyleSizeChart":               rd(SectionProducts),
+	"UpdateStyleSizeChart":            wr(SectionProducts),
+	"GetStyleCutList":                 rd(SectionProducts), // Q6: read-only production cut-list projection (mirror consumer)
+	"RelinkDraftColorway":             wr(SectionProducts), // R4: move a draft colourway to another style
+	"CloneStyleForSeason":             wr(SectionProducts), // R4: deep-clone a style under a new season
 	"SyncColorwayCostFromOwningStyle": wr(SectionProducts),
-	"GetColorwayCustoms":        rd(SectionProducts),
-	"SetColorwayCustoms":        wr(SectionProducts),
-	"ListStockChangeHistory":    rd(SectionProducts),
-	"ListStockChanges":          rd(SectionProducts),
-	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Catalog-owned
-	// (SectionCosting is field-shaping only and can't gate a method), so they ride the products section.
-	"ListColors":        rd(SectionProducts),
-	"CreateColor":       wr(SectionProducts),
-	"UpdateColor":       wr(SectionProducts),
-	"ArchiveColor":      wr(SectionProducts),
-	"ListCollections":   rd(SectionProducts),
-	"CreateCollection":  wr(SectionProducts),
-	"UpdateCollection":  wr(SectionProducts),
-	"ArchiveCollection": wr(SectionProducts),
-	"ListTags":          rd(SectionProducts),
-	"CreateTag":         wr(SectionProducts),
-	"UpdateTag":         wr(SectionProducts),
-	"ArchiveTag":        wr(SectionProducts),
-	"ListCountries":     rd(SectionProducts),
-	"SetCountryActive":  wr(SectionProducts),
+	"GetColorwayCustoms":              rd(SectionProducts),
+	"SetColorwayCustoms":              wr(SectionProducts),
+	"ListStockChangeHistory":          rd(SectionProducts),
+	"ListStockChanges":                rd(SectionProducts),
+	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Q5: curating
+	// a dictionary is a right separate from editing the catalog that consumes it, so their dedicated
+	// management RPCs live in SectionDictionaries (reads + writes), not products. Catalog pickers read
+	// the flat dictionary via the allowlisted GetDictionary, so this does not touch catalog editing.
+	"ListColors":        rd(SectionDictionaries),
+	"CreateColor":       wr(SectionDictionaries),
+	"UpdateColor":       wr(SectionDictionaries),
+	"ArchiveColor":      wr(SectionDictionaries),
+	"ListCollections":   rd(SectionDictionaries),
+	"CreateCollection":  wr(SectionDictionaries),
+	"UpdateCollection":  wr(SectionDictionaries),
+	"ArchiveCollection": wr(SectionDictionaries),
+	"ListTags":          rd(SectionDictionaries),
+	"CreateTag":         wr(SectionDictionaries),
+	"UpdateTag":         wr(SectionDictionaries),
+	"ArchiveTag":        wr(SectionDictionaries),
+	"ListCountries":     rd(SectionDictionaries),
+	"SetCountryActive":  wr(SectionDictionaries),
 	// promo
 	"AddPromo":         wr(SectionPromo),
 	"ListPromos":       rd(SectionPromo),
@@ -237,33 +249,52 @@ var methodRequirements = map[string]Requirement{
 	"UpdateFitting": wr(SectionFittings),
 	"DeleteFitting": wr(SectionFittings),
 	"ListFittings":  rd(SectionFittings),
+	// fitting change requests (S26): structured remark items with dedicated CRUD + carry-over
+	"AddFittingChangeRequest":       wr(SectionFittings),
+	"UpdateFittingChangeRequest":    wr(SectionFittings),
+	"DeleteFittingChangeRequest":    wr(SectionFittings),
+	"ListOpenFittingChangeRequests": rd(SectionFittings),
 	// samples (new-flow NF-04) — part of the fitting/try-on cycle
 	"AddSample":    wr(SectionFittings),
 	"UpdateSample": wr(SectionFittings),
 	"DeleteSample": wr(SectionFittings),
 	"GetSample":    rd(SectionFittings),
 	"ListSamples":  rd(SectionFittings),
+	// sample substitutions (§2.7): dev-time material deviations on a sample
+	"AddSampleSubstitution":    wr(SectionFittings),
+	"DeleteSampleSubstitution": wr(SectionFittings),
+	"ListSampleSubstitutions":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard":           wr(SectionTechCards),
-	"GetTechCard":              rd(SectionTechCards),
-	"UpdateTechCard":           wr(SectionTechCards),
-	"DeleteTechCard":           wr(SectionTechCards),
-	"ListTechCards":            rd(SectionTechCards),
-	"GetStylePipeline":         rd(SectionTechCards),
-	"GetCostingFxRates":        rd(SectionTechCards),
-	"UpsertCostingFxRates":     wr(SectionTechCards),
-	"CreateMaterial":           wr(SectionTechCards),
-	"UpdateMaterial":           wr(SectionTechCards),
-	"ArchiveMaterial":          wr(SectionTechCards),
-	"GetMaterial":              rd(SectionTechCards),
-	"ListMaterials":            rd(SectionTechCards),
-	"AddMaterialPrice":         wr(SectionTechCards),
-	"ListMaterialPrices":       rd(SectionTechCards),
-	"ListTechCardReleases":     rd(SectionTechCards),
-	"GetTechCardRelease":       rd(SectionTechCards),
-	"AddTechCardDevExpense":    wr(SectionTechCards),
-	"DeleteTechCardDevExpense": wr(SectionTechCards),
-	"ListTechCardDevExpenses":  rd(SectionTechCards),
+	"CreateTechCard":     wr(SectionTechCards),
+	"SuggestStyleNumber": rd(SectionTechCards), // Q1: propose the next style number for a season
+	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
+	"AssignTechCardRole":           wr(SectionTechCards),
+	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
+	"ListTechCardRoleAssignments":  rd(SectionTechCards),
+	"ListAdmins":                   rd(SectionTechCards),
+	"GetTechCard":                  rd(SectionTechCards),
+	"UpdateTechCard":               wr(SectionTechCards),
+	"DeleteTechCard":               wr(SectionTechCards),
+	"ListTechCards":                rd(SectionTechCards),
+	"GetStylePipeline":             rd(SectionTechCards),
+	"GetCostingFxRates":            rd(SectionTechCards),
+	"UpsertCostingFxRates":         wr(SectionTechCards),
+	"CreateMaterial":               wr(SectionTechCards),
+	"UpdateMaterial":               wr(SectionTechCards),
+	"ArchiveMaterial":              wr(SectionTechCards),
+	"GetMaterial":                  rd(SectionTechCards),
+	"ListMaterials":                rd(SectionTechCards),
+	"AddMaterialPrice":             wr(SectionTechCards),
+	"ListMaterialPrices":           rd(SectionTechCards),
+	"ListTechCardReleases":         rd(SectionTechCards),
+	"GetTechCardRelease":           rd(SectionTechCards),
+	"AddTechCardDevExpense":        wr(SectionTechCards),
+	"DeleteTechCardDevExpense":     wr(SectionTechCards),
+	"ListTechCardDevExpenses":      rd(SectionTechCards),
+	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
+	"UpsertStyleAssembly": wr(SectionTechCards),
+	"ListStyleAssembly":   rd(SectionTechCards),
+	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
 	"UpdateProductionRun":          wr(SectionProduction),
@@ -282,6 +313,9 @@ var methodRequirements = map[string]Requirement{
 	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
 	"UpsertPackagingBom": wr(SectionInventory),
 	"ListPackagingBom":   rd(SectionInventory),
+	// packaging recipe per product/style + global fallback (PLM rework §2.8, Q3)
+	"UpsertPackagingRecipe": wr(SectionInventory),
+	"ListPackagingRecipe":   rd(SectionInventory),
 	// structured lots / rolls (gap-07 v2 D)
 	"ListMaterialLots": rd(SectionInventory),
 	// tasks (internal team kanban)
@@ -314,6 +348,8 @@ var methodRequirements = map[string]Requirement{
 	"GetShippingOptions":              rd(SectionFulfillment),
 	"VoidShippingLabel":               wr(SectionFulfillment),
 	"SchedulePickup":                  wr(SectionFulfillment),
+	// packer/QC packing spec: order → items + assembly + packaging (read-only projection, WS7 scope 3)
+	"GetOrderPackingSpec": rd(SectionFulfillment),
 	// settings
 	"UpdateSettings":          wr(SectionSettings),
 	"UpsertPaymentMethodFees": wr(SectionSettings),

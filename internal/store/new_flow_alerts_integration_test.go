@@ -50,8 +50,9 @@ func TestDashboardAlertQueries(t *testing.T) {
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", id)
+			cctx := context.Background()
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", id)
 		})
 		return id
 	}
@@ -99,7 +100,10 @@ func TestDashboardAlertQueries(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", staleTC) })
+	// Fresh context: this test's ctx is cancelled by its own `defer cancel()` before t.Cleanup
+	// callbacks run (defers run before Cleanups), which would make this DELETE a no-op and leak
+	// the tech card (style_number is globally UNIQUE) into later tests.
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", staleTC) })
 
 	mkRun := func() int {
 		id, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
@@ -107,7 +111,7 @@ func TestDashboardAlertQueries(t *testing.T) {
 			Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 5}},
 		})
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", id) })
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", id) })
 		return id
 	}
 	old := time.Now().UTC().AddDate(0, 0, -100) // well past the 60-day threshold

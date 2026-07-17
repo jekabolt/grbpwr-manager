@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "comment": "Per-material_class attribute schema (S15). enum_attrs lists the closed value sets for the string-enum attributes of each CTI side-table; these mirror the DB CHECK constraints (migration 0157) and are verified by golden tests. Numeric/free-text attributes are not listed here — their column types and range CHECKs cover them.",
+  "classes": {
+    "fabric": {
+      "enum_attrs": {
+        "fabric_direction": ["lengthwise", "crosswise", "any"]
+      }
+    },
+    "hardware": {
+      "enum_attrs": {}
+    },
+    "thread": {
+      "enum_attrs": {}
+    },
+    "packaging": {
+      "enum_attrs": {}
+    }
+  }
+}

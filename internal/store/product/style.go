@@ -94,6 +94,13 @@ func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion in
 				}
 			}
 		}
+		// P4-flyover M1 (04-MAZE-FLYOVER.md): re-derive the structural composition (S17/WS3-Ф5) from
+		// the style's shell-fabric BOM every save; a manual override already on file is preserved
+		// (entity.ReconcileStyleComposition). A field-tagged error here (a fabric's own composition
+		// does not sum to 100) aborts the whole style save, same as any other validation failure.
+		if err := ReconcileStyleCompositionTx(ctx, rep.DB(), styleID); err != nil {
+			return err
+		}
 		newLockVersion = expectedLockVersion + 1
 		return nil
 	})

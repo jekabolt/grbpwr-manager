@@ -38,6 +38,7 @@ message Dictionary {
   repeated Tag tags = 21; // R9: controlled merchandising tags (product_tags stays until §12 Q4 cutover)
   string sku_contract_version = 22; // R7: canonical SKU contract version, e.g. "grbpwr-sku-v1"
   repeated DictionaryRevision revisions = 23; // R9: per-namespace revision snapshot for cache invalidation
+  repeated CategorySizeSystem category_size_systems = 24; // S10/WS5: category -> permitted size-system(s)
 }
 
 message Collection {

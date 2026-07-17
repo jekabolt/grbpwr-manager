@@ -27,6 +27,22 @@ func (s *Store) AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevE
 			return entity.TechCardDevExpense{}, entity.ErrSampleForeignToCard
 		}
 	}
+	// A linked fitting must belong to this expense's tech card — anchored on it directly OR via the
+	// product it fitted (a colourway's style_id) — so a round's R&D spend is never attributed to the
+	// wrong style (S20/Q8 — this is the attribution the frontend used to dead-code to fitting_id 0).
+	if e.FittingId.Valid {
+		n, err := storeutil.QueryCountNamed(ctx, s.DB,
+			`SELECT COUNT(*) FROM fitting f
+			 LEFT JOIN product p ON p.id = f.product_id
+			 WHERE f.id = :f AND (f.tech_card_id = :tc OR p.style_id = :tc)`,
+			map[string]any{"f": e.FittingId.Int32, "tc": e.TechCardId})
+		if err != nil {
+			return entity.TechCardDevExpense{}, fmt.Errorf("check dev-expense fitting: %w", err)
+		}
+		if n == 0 {
+			return entity.TechCardDevExpense{}, entity.ErrFittingForeignToCard
+		}
+	}
 	id, err := storeutil.ExecNamedLastId(ctx, s.DB, `
 		INSERT INTO tech_card_dev_expense
 			(tech_card_id, kind, description, amount, currency, amount_base, fitting_id, sample_id, incurred_at)

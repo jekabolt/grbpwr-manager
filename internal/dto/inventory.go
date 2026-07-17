@@ -339,6 +339,76 @@ func PackagingBomListToPb(items []entity.PackagingBomItem) []*pb_admin.Packaging
 	return out
 }
 
+// ConvertPbPackagingRecipeToEntity validates a packaging recipe write (PLM rework §2.8, Q3): each
+// line needs a material_id, non-negative quantities and a non-zero total; a material_id may appear at
+// most once. The scope target is validated in the handler and carried on the store call.
+func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]entity.PackagingRecipeInsert, error) {
+	out := make([]entity.PackagingRecipeInsert, 0, len(items))
+	seen := map[int32]bool{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.MaterialId <= 0 {
+			return nil, fmt.Errorf("packaging recipe line needs a material_id")
+		}
+		if seen[it.MaterialId] {
+			return nil, fmt.Errorf("packaging recipe has duplicate material_id %d", it.MaterialId)
+		}
+		seen[it.MaterialId] = true
+		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
+		if err != nil {
+			return nil, err
+		}
+		perItem, err := parseNonNegDecimal(it.QtyPerItem, "qty_per_item")
+		if err != nil {
+			return nil, err
+		}
+		if perOrder.IsZero() && perItem.IsZero() {
+			return nil, fmt.Errorf("packaging recipe material %d has no quantity", it.MaterialId)
+		}
+		out = append(out, entity.PackagingRecipeInsert{
+			MaterialId:  int(it.MaterialId),
+			QtyPerOrder: perOrder,
+			QtyPerItem:  perItem,
+			Active:      it.Active,
+		})
+	}
+	return out, nil
+}
+
+// PackagingRecipeLineToPb converts a stored packaging recipe line to protobuf.
+func PackagingRecipeLineToPb(pr entity.PackagingRecipe) *pb_admin.PackagingRecipeLine {
+	pb := &pb_admin.PackagingRecipeLine{
+		Id:           int32(pr.Id),
+		Scope:        string(pr.Scope),
+		MaterialId:   int32(pr.MaterialId),
+		MaterialName: pr.MaterialName,
+		QtyPerOrder:  pbDecimalFromDecimal(pr.QtyPerOrder),
+		QtyPerItem:   pbDecimalFromDecimal(pr.QtyPerItem),
+		Active:       pr.Active,
+	}
+	if pr.TechCardId.Valid {
+		pb.TechCardId = pr.TechCardId.Int32
+	}
+	if pr.ProductId.Valid {
+		pb.ProductId = pr.ProductId.Int32
+	}
+	if pr.MaterialUnit.Valid {
+		pb.MaterialUnit = pr.MaterialUnit.String
+	}
+	return pb
+}
+
+// PackagingRecipeListToPb converts stored packaging recipe lines to protobuf.
+func PackagingRecipeListToPb(items []entity.PackagingRecipe) []*pb_admin.PackagingRecipeLine {
+	out := make([]*pb_admin.PackagingRecipeLine, 0, len(items))
+	for _, it := range items {
+		out = append(out, PackagingRecipeLineToPb(it))
+	}
+	return out
+}
+
 // MaterialLotToPb converts a stored lot (roll / dye-lot) to protobuf (gap-07 v2 D).
 func MaterialLotToPb(l entity.MaterialLot) *pb_common.MaterialLot {
 	pb := &pb_common.MaterialLot{

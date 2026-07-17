@@ -23,6 +23,37 @@ message SampleInsert {
   repeated int32 media_ids = 10; // photos of the finished sample (outside a fitting); full-replace on update (B-6)
   string pattern_url = 11; // optional snapshot of the pattern iteration this sample was cut from (B-3/gap-03)
   string pattern_note = 12; // optional free-text pattern reference (e.g. «выкройка v2, размер S»)
+  // Round spine (Q7/§2.7): a sample is the OBJECT of a development round.
+  int32 round_number = 13; // the style's iteration index; 0 = server auto-assigns MAX+1 per tech card
+  int32 spec_release_id = 14; // FK tech_card_release(id): the immutable spec/BOM snapshot this sample was sewn from; 0 = unset
+  int32 previous_sample_id = 15; // FK sample(id): the prior round's sample (iteration chain); 0 = server links to the latest prior sample
+}
+
+// SampleSubstitutionInsert records a dev-time deviation from the spec BOM on a sample (§2.7): a BOM
+// line was sewn with a different material. Q2 invariant: this is documentation, never COGS — the
+// authoritative spend stays in the stock ledger (actual) and the BOM line (plan).
+message SampleSubstitutionInsert {
+  int32 sample_id = 1; // required; the sample this substitution was made on
+  int32 bom_item_id = 2; // FK tech_card_bom_item(id): which stable BOM line was replaced; 0 = unset
+  int32 original_material_id = 3; // FK material(id): snapshot of the material the line specified; 0 = unset
+  int32 substituted_material_id = 4; // FK material(id): the material actually used instead; 0 = unset
+  string reason = 5; // why (out of stock, trial, …)
+  google.type.Decimal planned_qty = 6; // optional: planned consumption of the substitute
+  google.type.Decimal actual_qty = 7; // optional: actual consumption of the substitute
+}
+
+// SampleSubstitution is a stored substitution (insert payload + identity, audit stamp and timestamp).
+message SampleSubstitution {
+  int32 id = 1;
+  int32 sample_id = 2;
+  int32 bom_item_id = 3;
+  int32 original_material_id = 4;
+  int32 substituted_material_id = 5;
+  string reason = 6;
+  google.type.Decimal planned_qty = 7;
+  google.type.Decimal actual_qty = 8;
+  string created_by = 9; // audit: acting admin username (server-stamped)
+  google.protobuf.Timestamp created_at = 10;
 }
 
 // SampleCost is the composed cost of a sample in the base currency (confidential; stripped without
@@ -44,4 +75,7 @@ message Sample {
   google.protobuf.Timestamp updated_at = 5;
   SampleCost cost = 6; // set by GetSample; null on list
   repeated MediaFull media = 7; // resolved sample photos (media_ids), display order; on Get and List
+  int32 lock_version = 8; // optimistic-lock token (§2.12/S25); echo back on UpdateSample.expected_lock_version
+  string created_by = 9; // audit: acting admin username, server-stamped once on create
+  string updated_by = 10; // audit: acting admin username, server-stamped on every write
 }

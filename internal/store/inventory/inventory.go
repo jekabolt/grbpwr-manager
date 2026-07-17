@@ -549,8 +549,16 @@ func techCardIdOfTarget(ctx context.Context, db dependency.DB, table string, id 
 func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error) {
 	var out entity.MaterialMovement
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		var err error
-		out, err = adjustInTx(ctx, rep.DB(), ins)
+		db := rep.DB()
+		// Manual adjustments are reservation-aware (S22): a decrease may not drive on-hand below what
+		// is reserved for open orders — that would deepen a packaging oversell. The packaging consume/
+		// release paths pass reservedOpen=0 (they fulfil their own reserve); only this operator-facing
+		// path guards against the soft reservation.
+		reserved, err := openReservedQty(ctx, db, ins.MaterialId)
+		if err != nil {
+			return err
+		}
+		out, err = adjustInTx(ctx, db, ins, reserved)
 		return err
 	})
 	if err != nil {
@@ -562,7 +570,7 @@ func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdju
 // adjustInTx is AdjustMaterialStock's body on the caller's transaction, so multi-material flows
 // (packaging auto-consume) can share one atomic transaction with their bookkeeping (g25-02). Every
 // guard fails BEFORE any write, so a guard failure leaves the shared transaction clean.
-func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error) {
+func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert, reservedOpen decimal.Decimal) (entity.MaterialMovement, error) {
 	if _, err := readMaterialMeta(ctx, db, ins.MaterialId); err != nil {
 		return entity.MaterialMovement{}, err
 	}
@@ -595,6 +603,14 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 		mvType = entity.MaterialMovementWriteoff
 	default:
 		return entity.MaterialMovement{}, fmt.Errorf("invalid adjust mode %q", ins.Mode)
+	}
+
+	// Reservation-aware guard (S22): never let a manual adjustment drive on-hand below the quantity
+	// reserved for open orders — that deepens a packaging oversell. reservedOpen=0 disables the guard
+	// for internal reserve-fulfilling paths (packaging consume).
+	if reservedOpen.IsPositive() && newOnHand.LessThan(reservedOpen) {
+		return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s reserved for open orders, only %s free",
+			entity.ErrMaterialReserved, ins.MaterialId, reservedOpen.String(), before.OnHand.String())
 	}
 
 	if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, before.Avg); err != nil {

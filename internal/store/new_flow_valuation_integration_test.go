@@ -52,21 +52,23 @@ func TestInventoryValuationMaterialsAndStyle(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	runID, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
+	})
 	runRef := sql.NullInt32{Int32: int32(runID), Valid: true}
 
 	sampleID, err := s.Samples().AddSample(ctx, &entity.SampleInsert{
 		TechCardId: tcID, Purpose: "proto", Status: "planned", FabricSource: "sample",
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM sample WHERE id = ?", sampleID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM sample WHERE id = ?", sampleID) })
 	sampleRef := sql.NullInt32{Int32: int32(sampleID), Valid: true}
 
 	mkMaterial := func(name string) int {
@@ -75,8 +77,9 @@ func TestInventoryValuationMaterialsAndStyle(t *testing.T) {
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", id)
+			cctx := context.Background()
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", id)
 		})
 		return id
 	}
@@ -192,20 +195,23 @@ func TestInventoryValuationReceiveLeavesWip(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	runID, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
+	})
 
 	m1, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Recv Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", m1)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", m1)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", m1)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", m1)
 	})
 
 	wipBefore := wip()
@@ -232,9 +238,10 @@ func TestInventoryValuationReceiveLeavesWip(t *testing.T) {
 	inMatID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Recv AuxInput", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
+		cctx := context.Background()
 		for _, id := range []int{outMatID, inMatID} {
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", id)
 		}
 	})
 
@@ -247,14 +254,16 @@ func TestInventoryValuationReceiveLeavesWip(t *testing.T) {
 		OutputMaterialId: sql.NullInt64{Int64: int64(outMatID), Valid: true},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", auxTC) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", auxTC) })
 
 	auxRun, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
 		TechCardId: auxTC, Status: entity.ProductionRunInProgress,
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 100, ReceivedQty: sql.NullInt64{Int64: 100, Valid: true}}},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", auxRun) })
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", auxRun)
+	})
 
 	// feed 10 @ 2 of the input material into the open aux run → +20 WIP.
 	_, err = MS.ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: inMatID, Quantity: dec("50"), UnitCost: nd("2"), Currency: "EUR"})

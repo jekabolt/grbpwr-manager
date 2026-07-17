@@ -496,13 +496,21 @@ type (
 		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, gender, nameSearch string) ([]entity.Model, int, error)
 	}
 
-	// Fittings manages garment try-on sessions with their sizes and media.
+	// Fittings manages garment try-on sessions with their sizes and media, plus the structured S26
+	// change-request items (dedicated CRUD so their id is stable for carry-over).
 	Fittings interface {
 		AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error)
-		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert) error
+		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) error
 		DeleteFitting(ctx context.Context, id int) error
 		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
+		// Structured change requests (S26): individually managed so carried_from_id / carry-over hold.
+		AddFittingChangeRequest(ctx context.Context, cr *entity.FittingChangeRequest) (int, error)
+		UpdateFittingChangeRequest(ctx context.Context, id int, cr *entity.FittingChangeRequest) error
+		DeleteFittingChangeRequest(ctx context.Context, id int) error
+		// ListOpenFittingChangeRequests is the carry-over view: a style's open remark tips from earlier
+		// rounds (beforeRound > 0 scopes to rounds < beforeRound; 0 = all).
+		ListOpenFittingChangeRequests(ctx context.Context, techCardID, beforeRound int) ([]entity.FittingChangeRequest, error)
 	}
 
 	// Tasks manages the internal team kanban (task manager): cards with content,
@@ -547,6 +555,29 @@ type (
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
+		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
+		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
+		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
+		// GetColorwayRecipe returns a colourway's material recipe (usages), the read side of
+		// UpdateColorwayRecipe (H1 fix: the write-path was restored — WS3/S2-S3 — without a matching
+		// read, leaving a full-replace write unsafe to edit partially). Empty, not an error, for a
+		// colourway with no recipe yet.
+		GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error)
+		// SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}.
+		SuggestStyleNumber(ctx context.Context, seasonCode string, seasonYear int) (string, error)
+		// Role assignments (Q5): responsible admin accounts on a card, multi per role.
+		AssignTechCardRole(ctx context.Context, a entity.TechCardRoleAssignment) (entity.TechCardRoleAssignment, error)
+		RemoveTechCardRoleAssignment(ctx context.Context, id int) error
+		ListTechCardRoleAssignments(ctx context.Context, techCardID int) ([]entity.TechCardRoleAssignment, error)
+		// ListStyleAssembly returns a garment style's assembly bill: the auxiliary components (labels/
+		// tags) that physically go on/into it, resolved for display (WS7, §2.8).
+		ListStyleAssembly(ctx context.Context, styleID int) ([]entity.StyleAssembly, error)
+		// UpsertStyleAssembly full-replaces a garment style's assembly bill (empty list clears it);
+		// components must be auxiliary cards. Field-tagged errors on a bad payload (WS7, §2.8).
+		UpsertStyleAssembly(ctx context.Context, styleID int, items []entity.StyleAssemblyInsert, username string) error
+		// GetTechCardNames returns id → name for the given tech cards (cheap header-only lookup used by
+		// the packing spec to label garment styles without an N+1 GetTechCardById).
+		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
@@ -569,7 +600,7 @@ type (
 		// Material catalog (task 10): shared nomenclature a BOM line can optionally link to,
 		// with an append-only price history.
 		CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error)
-		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert) error
+		UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error
 		ArchiveMaterial(ctx context.Context, id int, archived bool) error
 		GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPrice, error)
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
@@ -617,12 +648,16 @@ type (
 	// a cost composed on read from material issues + the dev-expense journal.
 	Samples interface {
 		AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error)
-		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert) error
+		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert, expectedLockVersion int) error
 		DeleteSample(ctx context.Context, id int) error
 		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
 		// ListSamples lists samples; techCardID <= 0 spans all styles (cross-style queue), and
 		// status/purpose are optional string filters ("" = any).
 		ListSamples(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, techCardID int, status, purpose string) ([]entity.Sample, int, error)
+		// Substitutions (§2.7): dev-time material deviations recorded on a sample (Q2: never COGS).
+		AddSampleSubstitution(ctx context.Context, sub *entity.SampleSubstitutionInsert) (int, error)
+		ListSampleSubstitutions(ctx context.Context, sampleID int) ([]entity.SampleSubstitution, error)
+		DeleteSampleSubstitution(ctx context.Context, id int) error
 	}
 
 	// MaterialStock is the material warehouse (new-flow NF-01): the maintained on-hand balance +
@@ -639,9 +674,27 @@ type (
 		UpsertPackagingBom(ctx context.Context, items []entity.PackagingBomItem) error
 		// ListPackagingBom returns the packaging recipe joined with material name/unit.
 		ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem, error)
-		// ConsumePackagingForOrder writes off packaging for a shipped order, idempotently (PK guard) and
-		// best-effort (a short material is skipped, never failing the ship). itemCount = total units.
+		// ConsumePackagingForOrder writes off packaging for a shipped order and closes its reservation
+		// claims, idempotently (PK guard) and best-effort (a short material is skipped, never failing the
+		// ship). itemCount is unused (per-item quantities come from the order's lines).
 		ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error)
+		// ReservePackagingForOrder soft-reserves an order's packaging at placement (S22): resolves the
+		// per-material requirement (product→style→global) and appends idempotent 'reserve' claims. Never
+		// blocks — an oversell is surfaced via available, not refused.
+		ReservePackagingForOrder(ctx context.Context, orderID int, username string) error
+		// ReleasePackagingForOrder closes an order's open packaging claims with 'release' rows (cancel/
+		// refund) — the soft hold is returned without any physical writeoff. Idempotent.
+		ReleasePackagingForOrder(ctx context.Context, orderID int, username string) error
+		// MaterialAvailable returns a material's on_hand, open-reserved and available (on_hand − reserved).
+		MaterialAvailable(ctx context.Context, materialID int) (entity.MaterialAvailability, error)
+		// ListPackagingRecipe returns every packaging recipe (all scopes) joined with material name/unit.
+		ListPackagingRecipe(ctx context.Context) ([]entity.PackagingRecipe, error)
+		// ResolveOrderPackaging returns the packaging materials an order needs (product → style → global),
+		// joined with material name/unit, for the read-only packer packing spec (WS7 scope 3).
+		ResolveOrderPackaging(ctx context.Context, orderID int) ([]entity.OrderPackingSpecPackaging, error)
+		// UpsertPackagingRecipe full-replaces one scope target's recipe lines (the whole global set, or
+		// one style's set, or one product's set).
+		UpsertPackagingRecipe(ctx context.Context, scope entity.PackagingRecipeScope, techCardID, productID sql.NullInt32, items []entity.PackagingRecipeInsert, username string) error
 		// ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D), active-only unless
 		// includeArchived. Traceability registry; valuation stays moving-average.
 		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)

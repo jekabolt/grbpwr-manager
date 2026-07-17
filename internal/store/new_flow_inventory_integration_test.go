@@ -57,8 +57,9 @@ func TestMaterialWarehouse(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID) // cascades stock + price
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID) // cascades stock + price
 	})
 
 	// a tech card + sample so issue_sample movements satisfy the sample_id FK (added in 0108).
@@ -70,7 +71,7 @@ func TestMaterialWarehouse(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) }) // cascades sample
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) }) // cascades sample
 	smID, err := s.Samples().AddSample(ctx, &entity.SampleInsert{TechCardId: tcID, Purpose: "proto", Status: "planned", FabricSource: "sample"})
 	require.NoError(t, err)
 	sampleRef := sql.NullInt32{Int32: int32(smID), Valid: true}
@@ -194,9 +195,10 @@ func TestMaterialCatalogV2(t *testing.T) {
 	tc := s.TechCards()
 	var ids []int
 	t.Cleanup(func() {
+		cctx := context.Background()
 		for _, id := range ids {
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", id)
 		}
 	})
 
@@ -213,15 +215,16 @@ func TestMaterialCatalogV2(t *testing.T) {
 	m2, err := tc.CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")})
 	require.NoError(t, err)
 	ids = append(ids, m2)
-	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}))
+	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}, 0))
 
-	// after a stock movement, the unit of measure is locked.
+	// after a stock movement, the unit of measure is locked. The optimistic-lock version is now 1
+	// (the update above bumped it); pass it so the unit check — not a conflict — is what rejects.
 	_, err = s.MaterialStock().ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: m2, Quantity: decimal.NewFromInt(3)})
 	require.NoError(t, err)
-	err = tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")})
+	err = tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2", Section: "fabric", Unit: str("m"), Code: str("NF-CODE-2")}, 1)
 	require.ErrorIs(t, err, entity.ErrMaterialUnitLocked)
-	// same unit (no change) still updates fine.
-	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}))
+	// same unit (no change) still updates fine (the rejected update did not bump the version).
+	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}, 1))
 }
 
 // TestTechCardIdeaStage exercises new-flow NF-03 at the store level: an `idea` draft persists with
@@ -259,8 +262,9 @@ func TestTechCardIdeaStage(t *testing.T) {
 	id2, err := s.TechCards().AddTechCard(ctx, draft("NF Idea Two"))
 	require.NoError(t, err, "a second idea draft in the same season must coexist (NULL style_number)")
 	t.Cleanup(func() {
+		cctx := context.Background()
 		for _, id := range []int{id1, id2} {
-			_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", id)
+			_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card WHERE id = ?", id)
 		}
 	})
 
@@ -315,11 +319,12 @@ func TestSampleCost(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card_dev_expense WHERE tech_card_id = ?", tcID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM sample WHERE tech_card_id = ?", tcID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card_dev_expense WHERE tech_card_id = ?", tcID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM sample WHERE tech_card_id = ?", tcID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card WHERE id = ?", tcID)
 	})
 
 	sm, err := s.Samples().GetSampleById(ctx, smID)
@@ -426,7 +431,7 @@ func TestTechCardPieces(t *testing.T) {
 
 	tcID, err := s.TechCards().AddTechCard(ctx, build("NF-PC-1", []string{"Black", "Navy"}))
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	// round-trip: pieces come back in order with their per-colourway fabric mapping.
 	card, err := s.TechCards().GetTechCardById(ctx, tcID)
@@ -498,7 +503,7 @@ func TestProductionRunMaterialFlow(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	P := s.ProductionRuns()
 	// planning lines carry no product_id yet (colourways not published) — the FK allows NULL.
@@ -507,13 +512,16 @@ func TestProductionRunMaterialFlow(t *testing.T) {
 		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}, {SizeId: 2, PlannedQty: 8}},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
+	})
 
 	matID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Run Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID)
 	})
 
 	// receive 100 @ 4 EUR (avg 4), issue 21 to the run, return 1.
@@ -568,8 +576,9 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 	outMatID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Dust Bag Stock", Section: "packaging", Unit: sql.NullString{String: "pc", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", outMatID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", outMatID)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", outMatID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", outMatID)
 	})
 
 	// auxiliary tech card that outputs into that material.
@@ -583,7 +592,7 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 		OutputMaterialId: sql.NullInt64{Int64: int64(outMatID), Valid: true},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	// read-back: purpose + output material round-trip.
 	card, err := s.TechCards().GetTechCardById(ctx, tcID)
@@ -603,7 +612,9 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM production_run WHERE id = ?", runID) })
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
+	})
 
 	require.NoError(t, P.ReceiveAuxiliaryProductionRun(ctx, runID, outMatID, "tester"))
 
@@ -654,7 +665,7 @@ func TestMaterialIssueConcurrentShortage(t *testing.T) {
 		ApprovalState:   entity.TechCardApprovalDraft,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 	smID, err := s.Samples().AddSample(ctx, &entity.SampleInsert{TechCardId: tcID, Purpose: "proto", Status: entity.SampleStatusInSewing, FabricSource: "sample"})
 	require.NoError(t, err)
 	sampleRef := sql.NullInt32{Int32: int32(smID), Valid: true}
@@ -662,8 +673,9 @@ func TestMaterialIssueConcurrentShortage(t *testing.T) {
 	matID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Race Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID)
 	})
 
 	MS := s.MaterialStock()
@@ -737,8 +749,9 @@ func TestMaterialReceiptNoFXRate(t *testing.T) {
 	matID, err := s.TechCards().CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF NoFX Fabric", Section: "fabric", Unit: sql.NullString{String: "m", Valid: true}})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID)
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE material_id = ?", matID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", matID)
 	})
 
 	MS := s.MaterialStock()
@@ -830,7 +843,7 @@ func TestBomSectionDrift(t *testing.T) {
 		},
 	})
 	require.NoError(t, err, "widened BOM sections (decoration/other) must pass the live CHECK")
-	t.Cleanup(func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", tcID) })
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
 	card, err := s.TechCards().GetTechCardById(ctx, tcID)
 	require.NoError(t, err)

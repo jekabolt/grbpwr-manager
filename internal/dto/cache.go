@@ -30,6 +30,7 @@ type Dict struct {
 	BackgroundHeroColor         string
 	ProductTags                 []string
 	Colors                      []entity.Color
+	CategorySizeSystems         []entity.CategorySizeSystem
 }
 
 var (
@@ -262,6 +263,24 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			Name: c.Name,
 			Hex:  c.Hex.String,
 		})
+	}
+
+	for _, cs := range dict.CategorySizeSystems {
+		skuSystem := pb_common.SizeSkuSystem_SIZE_SKU_SYSTEM_UNKNOWN
+		if mapped, ok := sizeSKUSystemEntityPBMap[cs.SkuSystem]; ok {
+			skuSystem = mapped
+		}
+		pbCS := &pb_common.CategorySizeSystem{
+			Id:        int32(cs.ID),
+			SkuSystem: skuSystem,
+		}
+		if cs.CategoryID.Valid {
+			pbCS.CategoryId = cs.CategoryID.Int32
+		}
+		if cs.TypeID.Valid {
+			pbCS.TypeId = cs.TypeID.Int32
+		}
+		commonDict.CategorySizeSystems = append(commonDict.CategorySizeSystems, pbCS)
 	}
 
 	return commonDict

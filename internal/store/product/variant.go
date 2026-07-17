@@ -31,6 +31,15 @@ func (s *Store) CreateVariant(ctx context.Context, colorwayID, sizeID int) (enti
 		if st == entity.ColorwayStatusArchived {
 			return fmt.Errorf("colourway %d: %w", colorwayID, entity.ErrColorwayArchived)
 		}
+		// S10/WS5: the size must belong to a system permitted for the OWNING STYLE's category (not
+		// just any size in the dictionary) -- server-side, not just a UI filter.
+		path, err := loadColorwayStyleCategoryPath(ctx, rep.DB(), colorwayID)
+		if err != nil {
+			return fmt.Errorf("load style category for colourway %d: %w", colorwayID, err)
+		}
+		if verr := entity.ValidateSizeAgainstCategory("size_id", path, cache.CategoryLabel(path), cache.GetCategorySizeSystems(), sz); verr != nil {
+			return verr
+		}
 		exists, err := storeutil.QueryNamedOne[struct {
 			N int `db:"n"`
 		}](ctx, rep.DB(), `SELECT COUNT(*) AS n FROM product_size WHERE product_id = :pid AND size_id = :sid`,
@@ -91,4 +100,19 @@ func getVariantByID(ctx context.Context, db dependency.DB, variantID int) (entit
 	return storeutil.QueryNamedOne[entity.Variant](ctx, db,
 		`SELECT id, quantity, product_id, size_id, sku, status FROM product_size WHERE id = :id`,
 		map[string]any{"id": variantID})
+}
+
+// loadColorwayStyleCategoryPath loads the category triple (top/sub/type) of the STYLE that owns a
+// colourway (S10/WS5): CreateVariant validates the requested size against this, not the colourway's
+// own row (a colourway carries no category -- category is a style fact, R4/§14.7).
+func loadColorwayStyleCategoryPath(ctx context.Context, db dependency.DB, colorwayID int) (entity.StyleCategoryPath, error) {
+	row, err := storeutil.QueryNamedOne[entity.StyleCategoryPath](ctx, db, `
+		SELECT sty.top_category_id AS top_category_id, sty.sub_category_id AS sub_category_id, sty.type_id AS type_id
+		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
+		WHERE p.id = :id`, map[string]any{"id": colorwayID})
+	if err != nil {
+		return entity.StyleCategoryPath{}, fmt.Errorf("load colourway %d style category: %w", colorwayID, err)
+	}
+	return row, nil
 }

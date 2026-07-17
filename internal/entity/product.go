@@ -208,6 +208,13 @@ type ColorwayBodyInsert struct {
 	MinTier int16 `db:"min_tier" valid:"-"`
 	// HiddenForNonQualified hides the product entirely from non-qualified tiers.
 	HiddenForNonQualified bool `db:"hidden_for_non_qualified" valid:"-"`
+	// CompositionEntries is the style's structured fibre composition (S17/M1 fix), resolved
+	// server-side from style_composition alongside the legacy free-text Composition above — never
+	// instead of it (M1: composition used to be silently overloaded with a JSON encoding of this same
+	// data once style_composition gained rows; that overload is removed, this typed field is the
+	// replacement). Populated in Go from the JSON aggregate query.go's styleCompositionEntriesSelect
+	// produces (db:"-": not a plain scanned column, unmarshalled by the caller).
+	CompositionEntries []CompositionEntry `db:"-" valid:"-"`
 }
 
 // ColorwayPrice represents a product price in a specific currency

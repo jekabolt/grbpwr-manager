@@ -31,7 +31,6 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		SkuSeason:        &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_FW, Year: 2025},
 		Stage:            pb_common.TechCardStage_TECH_CARD_STAGE_FIT,
 		ApprovalState:    pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_APPROVED,
-		ApprovedBy:       "lead",
 		ReleasedAt:       revDate,
 		MeasurementUnit:  pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
 		TargetGender:     pb_common.GenderEnum_GENDER_ENUM_MALE,
@@ -39,7 +38,6 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		BaseModelId:      7,
 		BaseSampleSizeId: 4,
 		Concept:          "boxy field jacket",
-		RevisionDate:     revDate,
 		SizeIds:          []int32{4, 5, 6},
 		MoodboardMedia: []*pb_common.TechCardMediaItem{
 			{MediaId: 20, Kind: pb_common.TechCardMediaKind_TECH_CARD_MEDIA_KIND_REFERENCE},
@@ -51,9 +49,6 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		},
 		Callouts: []*pb_common.TechCardCallout{
 			{Number: 1, Part: "collar", Description: "two-piece", Dimensions: "h=4cm", MediaId: 11},
-		},
-		Revisions: []*pb_common.TechCardRevision{
-			{Version: "v2", RevisionDate: revDate, Author: "tech", Section: "materials", ChangeNote: "graded"},
 		},
 		Details: []*pb_common.TechCardDetail{
 			{Key: "silhouette", Text: "boxy, hip length", MediaIds: []int32{11, 12}},
@@ -82,9 +77,6 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if got.Concept.String != "boxy field jacket" {
 		t.Errorf("concept mismatch: %+v", got.Concept)
 	}
-	if want := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC); !got.RevisionDate.Valid || !got.RevisionDate.Time.Equal(want) {
-		t.Errorf("revision_date not normalized: %+v", got.RevisionDate)
-	}
 	if len(got.SizeIds) != 3 || got.SizeIds[2] != 6 {
 		t.Errorf("size ids mismatch: %+v", got.SizeIds)
 	}
@@ -103,8 +95,8 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	if len(got.Details) != 1 || got.Details[0].Key.String != "silhouette" || len(got.Details[0].MediaIds) != 2 || got.Details[0].MediaIds[1] != 12 {
 		t.Errorf("details mismatch: %+v", got.Details)
 	}
-	if got.ApprovalState != entity.TechCardApprovalApproved || got.ApprovedBy.String != "lead" || !got.ReleasedAt.Valid {
-		t.Errorf("approval mismatch: state=%v by=%+v released=%+v", got.ApprovalState, got.ApprovedBy, got.ReleasedAt)
+	if got.ApprovalState != entity.TechCardApprovalApproved || !got.ReleasedAt.Valid {
+		t.Errorf("approval mismatch: state=%v released=%+v", got.ApprovalState, got.ReleasedAt)
 	}
 	if got.MeasurementUnit != entity.TechCardUnitMm {
 		t.Errorf("measurement_unit mismatch: %v", got.MeasurementUnit)
@@ -163,7 +155,6 @@ func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 		"base not in range":       {StyleNumber: "x", Name: "y", BaseSampleSizeId: 9, SizeIds: []int32{4, 5}},
 		"moodboard media id zero": {StyleNumber: "x", Name: "y", MoodboardMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
 		"technical media id zero": {StyleNumber: "x", Name: "y", TechnicalMedia: []*pb_common.TechCardMediaItem{{MediaId: 0}}},
-		"version too long":        {StyleNumber: "x", Name: "y", Version: string(make([]byte, 65))},
 		"detail media zero":       {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{0}}}},
 		"detail media dup":        {StyleNumber: "x", Name: "y", Details: []*pb_common.TechCardDetail{{Key: "k", MediaIds: []int32{5, 5}}}},
 	}
@@ -329,8 +320,6 @@ func TestConvertTechCardPieces(t *testing.T) {
 			{Name: "Body", PiecesPerGarment: -2}}),
 		"invalid grainline": baseTechCardWithPieces([]*pb_common.TechCardPiece{
 			{Name: "Body", Grainline: "diagonal"}}),
-		"unknown callout_number": baseTechCardWithPieces([]*pb_common.TechCardPiece{
-			{Name: "Body", CalloutNumber: i32(7)}}),
 		// R1/§14.3: colorway_id is required (> 0). Its membership in the style is validated in the store
 		// (the DTO no longer has a payload colourway list to range-check a positional index against).
 		"colorway_id zero": baseTechCardWithPieces([]*pb_common.TechCardPiece{
@@ -347,6 +336,18 @@ func TestConvertTechCardPieces(t *testing.T) {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 			t.Errorf("%s: expected validation error, got nil", name)
 		}
+	}
+
+	// S8 orphan-control: a callout_number with no matching callout is NO LONGER a parse error — it is
+	// carried through and the store marks the piece detached (a piece may have recipe history and must
+	// survive its source callout's removal). Was a hard reject before WS4.
+	orphan := baseTechCardWithPieces([]*pb_common.TechCardPiece{{Name: "Body", CalloutNumber: i32(7)}})
+	got3, err := ConvertPbTechCardInsertToEntity(orphan)
+	if err != nil {
+		t.Fatalf("unknown callout_number must parse (store detaches), got err=%v", err)
+	}
+	if len(got3.Pieces) != 1 || !got3.Pieces[0].CalloutNumber.Valid || got3.Pieces[0].CalloutNumber.Int32 != 7 {
+		t.Errorf("callout_number 7 must be carried through for the store to detach: %+v", got3.Pieces)
 	}
 }
 
@@ -612,22 +613,17 @@ func TestConvertTechCardSignoffs(t *testing.T) {
 func TestConvertTechCardZeroTimestampsAreNull(t *testing.T) {
 	zero := timestamppb.New(time.Time{})
 	in := &pb_common.TechCardInsert{
-		StyleNumber:  "ST-060",
-		Name:         "Hoodie",
-		RevisionDate: zero,
-		ReleasedAt:   zero,
-		ApprovedAt:   zero,
-		Revisions:    []*pb_common.TechCardRevision{{Version: "1", RevisionDate: zero}},
+		StyleNumber: "ST-060",
+		Name:        "Hoodie",
+		ReleasedAt:  zero,
+		ApprovedAt:  zero,
 	}
 	got, err := ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.RevisionDate.Valid || got.ReleasedAt.Valid || got.ApprovedAt.Valid {
-		t.Errorf("header zero timestamps should be NULL: rev=%+v rel=%+v app=%+v", got.RevisionDate, got.ReleasedAt, got.ApprovedAt)
-	}
-	if got.Revisions[0].RevisionDate.Valid {
-		t.Errorf("revision zero date should be NULL: %+v", got.Revisions[0].RevisionDate)
+	if got.ReleasedAt.Valid || got.ApprovedAt.Valid {
+		t.Errorf("header zero timestamps should be NULL: rel=%+v app=%+v", got.ReleasedAt, got.ApprovedAt)
 	}
 }
 

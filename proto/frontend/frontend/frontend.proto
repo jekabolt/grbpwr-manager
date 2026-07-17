@@ -607,7 +607,7 @@ message StorefrontColorwayDisplay {
   string collection_code = 4;
   common.GenderEnum target_gender = 5;
   string fit = 6;
-  string composition = 7;
+  string composition = 7; // legacy free-text ONLY (M1 fix) — never a JSON encoding of composition_entries
   string care_instructions = 8;
   repeated common.ColorwayInsertTranslation translations = 9; // resolved: override -> style -> default
   // Merchandising facts the PDP/cards render (S-final finding: the lean projection had no source for
@@ -618,6 +618,11 @@ message StorefrontColorwayDisplay {
   string model_wears_size_code = 13; // public size code (e.g. "M"), never a size_id
   repeated string category_labels = 14; // resolved top/sub/type names, storefront-locale neutral
   google.protobuf.Timestamp updated_at = 15; // freshness for JSON-LD/sitemap
+  // composition_entries is the structured fibre composition (S17/M1 fix), populated from
+  // style_composition; empty when the style has no structural composition data yet. Additive,
+  // typed replacement for the JSON-in-composition-string overload that was proposed and reverted —
+  // composition (above) stays legacy plain text always, never version- or data-gated JSON.
+  repeated common.CompositionEntry composition_entries = 16;
 }
 
 message StorefrontColorway {

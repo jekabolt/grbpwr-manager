@@ -37,7 +37,7 @@ func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int,
 	return nil
 }
 
-func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation, bomRes bomResolver) error {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -60,10 +60,13 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
-			"bom_item_index":   o.BomItemIndex,
-			"callout_number":   o.CalloutNumber,
-			"placement":        o.Placement,
-			"display_order":    i,
+			// Resolve by stable line_key (preferred) or the legacy positional index (S2/S3); *_index
+			// kept for the transition.
+			"bom_item_id":    resolveBomRef(bomRes, o.BomLineKey, o.BomItemIndex),
+			"bom_item_index": o.BomItemIndex,
+			"callout_number": o.CalloutNumber,
+			"placement":      o.Placement,
+			"display_order":  i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -86,6 +89,7 @@ func insertTechCardLabels(ctx context.Context, db dependency.DB, tcID int, label
 			"attachment":    l.Attachment,
 			"size":          l.Size,
 			"note":          l.Note,
+			"bom_item_id":   l.BomItemId,
 			"display_order": i,
 		})
 	}
@@ -260,7 +264,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
 		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
 		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note,
-		       operation_type, zone, bom_item_index, callout_number, placement
+		       operation_type, zone, bom_item_id, bom_item_index, callout_number, placement
 		FROM tech_card_operation
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, operation_number IS NULL, operation_number, display_order`, map[string]any{"ids": ids})
@@ -273,7 +277,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `
-		SELECT tech_card_id, label_type, content, placement, attachment, size, note
+		SELECT tech_card_id, label_type, content, placement, attachment, size, note, bom_item_id
 		FROM tech_card_label
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

@@ -235,11 +235,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		{"brand", pb.Brand, maxVarchar255},
 		{"collection", pb.Collection, maxVarchar255},
 		{"status", pb.Status, maxVarchar255},
-		{"version", pb.Version, maxVarchar64},
-		{"designer", pb.Designer, maxVarchar255},
-		{"constructor", pb.Constructor, maxVarchar255},
-		{"technologist", pb.Technologist, maxVarchar255},
-		{"approved_by", pb.ApprovedBy, maxVarchar255},
 	} {
 		if len(c.val) > c.max {
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
@@ -331,6 +326,21 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, fmt.Errorf("output_material_id is only for auxiliary cards")
 	}
 
+	// WS7 aux_subtype: only an auxiliary card may carry one; a sellable card must leave it UNKNOWN. An
+	// auxiliary card with UNKNOWN is allowed (unclassified) and stored NULL — the DB gate
+	// (chk_tech_card_aux_subtype_purpose) enforces the same invariant.
+	var auxSubtype sql.NullString
+	if pb.AuxSubtype != pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN {
+		if purpose != entity.TechCardPurposeAuxiliary {
+			return nil, fmt.Errorf("aux_subtype is only for auxiliary cards")
+		}
+		st := techCardAuxSubtypeFromPb(pb.AuxSubtype)
+		if !entity.ValidTechCardAuxSubtypes[st] {
+			return nil, fmt.Errorf("aux_subtype is invalid")
+		}
+		auxSubtype = sql.NullString{String: string(st), Valid: true}
+	}
+
 	// base_sample_size_id, when set, must be part of the declared size range: the
 	// POM grade radiates from the base size, so a base outside the graded columns
 	// would leave the future measurement chart without an origin. An empty size
@@ -386,22 +396,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		})
 	}
 
-	revisions := make([]entity.TechCardRevision, 0, len(pb.Revisions))
-	for _, r := range pb.Revisions {
-		if len(r.Version) > maxVarchar64 {
-			return nil, fmt.Errorf("revision version must be at most %d characters", maxVarchar64)
-		}
-		if len(r.Author) > maxVarchar255 || len(r.Section) > maxVarchar255 {
-			return nil, fmt.Errorf("revision author and section must be at most %d characters", maxVarchar255)
-		}
-		revisions = append(revisions, entity.TechCardRevision{
-			Version:      nullStringFromPb(r.Version),
-			RevisionDate: nullDateFromPbTimestamp(r.RevisionDate),
-			Author:       nullStringFromPb(r.Author),
-			Section:      nullStringFromPb(r.Section),
-			ChangeNote:   nullStringFromPb(r.ChangeNote),
-		})
-	}
+	// Q1: revisions are a server-stamped auto-journal, not a client input — they are not parsed here.
 
 	details, err := parseTechCardDetails(pb.Details)
 	if err != nil {
@@ -483,48 +478,43 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	return &entity.TechCardInsert{
-		StyleNumber:      nullStringFromPb(styleNumber),
-		Purpose:          purpose,
-		OutputMaterialId: outputMaterialId,
-		Name:             pb.Name,
-		Brand:            nullStringFromPb(pb.Brand),
-		SeasonCode:       sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
-		SeasonYear:       sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
-		Collection:       nullStringFromPb(pb.Collection),
-		CategoryId:       nullInt32FromPb(pb.CategoryId),
-		TargetGender:     gender,
-		Stage:            stage,
-		Status:           nullStringFromPb(pb.Status),
-		ApprovalState:    approvalState,
-		ApprovedBy:       nullStringFromPb(pb.ApprovedBy),
-		ApprovedAt:       nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:       nullTimeFromPbTimestamp(pb.ReleasedAt),
-		Version:          nullStringFromPb(pb.Version),
-		RevisionDate:     nullDateFromPbTimestamp(pb.RevisionDate),
-		BaseModelId:      nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId: nullInt32FromPb(pb.BaseSampleSizeId),
-		Designer:         nullStringFromPb(pb.Designer),
-		Constructor:      nullStringFromPb(pb.Constructor),
-		Technologist:     nullStringFromPb(pb.Technologist),
-		MeasurementUnit:  unit,
-		Concept:          nullStringFromPb(pb.Concept),
-		Notes:            nullStringFromPb(pb.Notes),
-		SizeIds:          sizeIds,
-		Media:            media,
-		Callouts:         callouts,
-		Revisions:        revisions,
-		Details:          details,
-		BomItems:         bomItems,
-		Construction:     construction,
-		Operations:       operations,
-		Labels:           labels,
-		Packaging:        packaging,
-		Costing:          costing,
-		Issues:           issues,
-		SizeQuantities:   sizeQuantities,
-		Signoffs:         signoffs,
-		Patterns:         patterns,
-		Pieces:           pieces,
+		StyleNumber:       nullStringFromPb(styleNumber),
+		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
+		Purpose:           purpose,
+		OutputMaterialId:  outputMaterialId,
+		AuxSubtype:        auxSubtype,
+		Name:              pb.Name,
+		Brand:             nullStringFromPb(pb.Brand),
+		SeasonCode:        sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
+		SeasonYear:        sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
+		Collection:        nullStringFromPb(pb.Collection),
+		CategoryId:        nullInt32FromPb(pb.CategoryId),
+		TargetGender:      gender,
+		Stage:             stage,
+		Status:            nullStringFromPb(pb.Status),
+		ApprovalState:     approvalState,
+		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
+		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
+		MeasurementUnit:   unit,
+		Concept:           nullStringFromPb(pb.Concept),
+		Notes:             nullStringFromPb(pb.Notes),
+		SizeIds:           sizeIds,
+		Media:             media,
+		Callouts:          callouts,
+		Details:           details,
+		BomItems:          bomItems,
+		Construction:      construction,
+		Operations:        operations,
+		Labels:            labels,
+		Packaging:         packaging,
+		Costing:           costing,
+		Issues:            issues,
+		SizeQuantities:    sizeQuantities,
+		Signoffs:          signoffs,
+		Patterns:          patterns,
+		Pieces:            pieces,
 	}, nil
 }
 
@@ -643,73 +633,90 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		})
 	}
 
-	revisions := make([]*pb_common.TechCardRevision, 0, len(tc.Revisions))
-	for _, r := range tc.Revisions {
-		revisions = append(revisions, &pb_common.TechCardRevision{
+	sizeIds := intsToInt32(tc.SizeIds)
+
+	// orderQtyBySize resolves each colourway usage's size_run_total the same way the cost estimate
+	// does (style_cost_estimate.go) — the style's declared per-size order quantity (size_quantities),
+	// 0/absent when the card has none yet.
+	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	for _, q := range tc.SizeQuantities {
+		orderQtyBySize[q.SizeId] = q.OrderQty
+	}
+
+	return &pb_common.TechCard{
+		Id:              int32(tc.Id),
+		LockVersion:     int32(tc.LockVersion),
+		CreatedAt:       timestamppb.New(tc.CreatedAt),
+		UpdatedAt:       timestamppb.New(tc.UpdatedAt),
+		CreatedBy:       tc.CreatedBy,
+		UpdatedBy:       tc.UpdatedBy,
+		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
+		Revisions:       techCardRevisionsToPb(tc.Revisions),
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber:       tc.StyleNumber.String,
+			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
+			Purpose:           techCardPurposeToPb(tc.Purpose),
+			OutputMaterialId:  int32(tc.OutputMaterialId.Int64),
+			AuxSubtype:        techCardAuxSubtypeToPb(tc.AuxSubtype),
+			Name:              tc.Name,
+			Brand:             pbStringFromNull(tc.Brand),
+			SkuSeason:         skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
+			Collection:        pbStringFromNull(tc.Collection),
+			CategoryId:        pbInt32FromNull(tc.CategoryId),
+			TargetGender:      pbGenderFromNull(tc.TargetGender),
+			Stage:             pbTechCardStage(tc.Stage),
+			Status:            pbStringFromNull(tc.Status),
+			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
+			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
+			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
+			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
+			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
+			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
+			Concept:           pbStringFromNull(tc.Concept),
+			Notes:             pbStringFromNull(tc.Notes),
+			SizeIds:           sizeIds,
+			MoodboardMedia:    moodboardMedia,
+			TechnicalMedia:    technicalMedia,
+			Callouts:          callouts,
+			Details:           techCardDetailsToPb(tc.Details),
+			BomItems:          techCardBomItemsToPb(tc.BomItems),
+			Construction:      techCardConstructionToPb(tc.Construction),
+			Operations:        techCardOperationsToPb(tc.Operations),
+			Labels:            techCardLabelsToPb(tc.Labels),
+			Packaging:         techCardPackagingToPb(tc.Packaging),
+			Costing:           techCardCostingToPb(tc, fx),
+			Issues:            techCardIssuesToPb(tc.Issues),
+			SizeQuantities:    techCardSizeQuantitiesToPb(tc.SizeQuantities),
+			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
+			Patterns:          techCardPatternsToPb(tc.Patterns),
+			Pieces:            techCardPiecesToPb(tc.Pieces),
+		},
+		ResolvedMoodboardMedia: resolvedMoodboard,
+		ResolvedTechnicalMedia: resolvedTechnical,
+		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
+		// recipe (H1 fix) resolved against this style's own BOM items.
+		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
+		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
+		// free-text TechCardInsert.composition (which this card doesn't even expose on the wire).
+		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
+	}
+}
+
+// techCardRevisionsToPb emits the server-stamped auto-journal (Q1) for display: who/what/when.
+func techCardRevisionsToPb(revs []entity.TechCardRevision) []*pb_common.TechCardRevision {
+	out := make([]*pb_common.TechCardRevision, 0, len(revs))
+	for _, r := range revs {
+		out = append(out, &pb_common.TechCardRevision{
 			Version:      pbStringFromNull(r.Version),
 			RevisionDate: pbTimestampFromNullTime(r.RevisionDate),
 			Author:       pbStringFromNull(r.Author),
 			Section:      pbStringFromNull(r.Section),
+			Action:       pbStringFromNull(r.Action),
 			ChangeNote:   pbStringFromNull(r.ChangeNote),
+			CreatedAt:    pbTimestampFromNullTime(r.CreatedAt),
 		})
 	}
-
-	sizeIds := intsToInt32(tc.SizeIds)
-
-	return &pb_common.TechCard{
-		Id:          int32(tc.Id),
-		LockVersion: int32(tc.LockVersion),
-		CreatedAt:   timestamppb.New(tc.CreatedAt),
-		UpdatedAt:   timestamppb.New(tc.UpdatedAt),
-		TechCard: &pb_common.TechCardInsert{
-			StyleNumber:      tc.StyleNumber.String,
-			Purpose:          techCardPurposeToPb(tc.Purpose),
-			OutputMaterialId: int32(tc.OutputMaterialId.Int64),
-			Name:             tc.Name,
-			Brand:            pbStringFromNull(tc.Brand),
-			SkuSeason:        skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
-			Collection:       pbStringFromNull(tc.Collection),
-			CategoryId:       pbInt32FromNull(tc.CategoryId),
-			TargetGender:     pbGenderFromNull(tc.TargetGender),
-			Stage:            pbTechCardStage(tc.Stage),
-			Status:           pbStringFromNull(tc.Status),
-			ApprovalState:    pbTechCardApprovalState(tc.ApprovalState),
-			ApprovedBy:       pbStringFromNull(tc.ApprovedBy),
-			ApprovedAt:       pbTimestampFromNullTime(tc.ApprovedAt),
-			ReleasedAt:       pbTimestampFromNullTime(tc.ReleasedAt),
-			Version:          pbStringFromNull(tc.Version),
-			RevisionDate:     pbTimestampFromNullTime(tc.RevisionDate),
-			BaseModelId:      pbInt32FromNull(tc.BaseModelId),
-			BaseSampleSizeId: pbInt32FromNull(tc.BaseSampleSizeId),
-			Designer:         pbStringFromNull(tc.Designer),
-			Constructor:      pbStringFromNull(tc.Constructor),
-			Technologist:     pbStringFromNull(tc.Technologist),
-			MeasurementUnit:  pbTechCardMeasurementUnit(tc.MeasurementUnit),
-			Concept:          pbStringFromNull(tc.Concept),
-			Notes:            pbStringFromNull(tc.Notes),
-			SizeIds:          sizeIds,
-			MoodboardMedia:   moodboardMedia,
-			TechnicalMedia:   technicalMedia,
-			Callouts:         callouts,
-			Revisions:        revisions,
-			Details:          techCardDetailsToPb(tc.Details),
-			BomItems:         techCardBomItemsToPb(tc.BomItems),
-			Construction:     techCardConstructionToPb(tc.Construction),
-			Operations:       techCardOperationsToPb(tc.Operations),
-			Labels:           techCardLabelsToPb(tc.Labels),
-			Packaging:        techCardPackagingToPb(tc.Packaging),
-			Costing:          techCardCostingToPb(tc, fx),
-			Issues:           techCardIssuesToPb(tc.Issues),
-			SizeQuantities:   techCardSizeQuantitiesToPb(tc.SizeQuantities),
-			Signoffs:         techCardSignoffsToPb(tc.Signoffs),
-			Patterns:         techCardPatternsToPb(tc.Patterns),
-			Pieces:           techCardPiecesToPb(tc.Pieces),
-		},
-		ResolvedMoodboardMedia: resolvedMoodboard,
-		ResolvedTechnicalMedia: resolvedTechnical,
-		// Derived, output-only (R1/§3.3): a style's colourways are its products.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways),
-	}
+	return out
 }
 
 // techCardDetailsToPb emits the construction-description aspects (+ media) for display.
@@ -760,6 +767,7 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		LockVersion:   int32(tc.LockVersion),
 		PreviewUrl:    tc.PreviewURL,
 		Purpose:       techCardPurposeToPb(tc.Purpose),
+		AuxSubtype:    techCardAuxSubtypeToPb(tc.AuxSubtype),
 	}
 }
 
@@ -889,6 +897,67 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 	return out, nil
 }
 
+// ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
+// parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
+// the store, S2/S3), so there is no positional range check here. size_id membership in the style's
+// range is enforced by the FK / store, not here.
+func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
+	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
+	for i, u := range pbs {
+		if len(u.Placement) > maxVarchar255 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].placement", i), "too long", "", fmt.Sprintf("max %d characters", maxVarchar255))
+		}
+		if len(u.Color) > maxVarchar255 || len(u.Pantone) > maxVarchar64 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].color", i), "color/pantone too long", "", "")
+		}
+		consumption, err := nullDecimalFromPb(u.Consumption)
+		if err != nil {
+			return nil, fmt.Errorf("usages[%d].consumption: %w", i, err)
+		}
+		if err := validateDecimalScale(consumption, "usage consumption", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		quantity, err := nullDecimalFromPb(u.Quantity)
+		if err != nil {
+			return nil, fmt.Errorf("usages[%d].quantity: %w", i, err)
+		}
+		if err := validateDecimalScale(quantity, "usage quantity", bomQtyMaxFrac, bomQtyLimit); err != nil {
+			return nil, err
+		}
+		scs := make([]entity.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
+		for _, sc := range u.SizeConsumptions {
+			c, err := nullDecimalFromPb(sc.Consumption)
+			if err != nil {
+				return nil, fmt.Errorf("usages[%d].size_consumptions: %w", i, err)
+			}
+			if !c.Valid || c.Decimal.IsNegative() {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].size_consumptions", i), "consumption must be a non-negative number", "", "")
+			}
+			scs = append(scs, entity.TechCardBomSizeConsumption{SizeId: int(sc.SizeId), Consumption: c.Decimal})
+		}
+		var bomItemIndex, pieceIndex sql.NullInt32
+		if u.BomItemIndex != nil {
+			bomItemIndex = sql.NullInt32{Int32: *u.BomItemIndex, Valid: true}
+		}
+		if u.PieceIndex != nil {
+			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
+		}
+		out = append(out, entity.TechCardColorwayUsage{
+			BomLineKey:       strings.TrimSpace(u.BomLineKey),
+			PieceLineKey:     strings.TrimSpace(u.PieceLineKey),
+			BomItemIndex:     bomItemIndex,
+			PieceIndex:       pieceIndex,
+			Placement:        normalizedPlacementNull(u.Placement),
+			Color:            nullStringFromPb(u.Color),
+			Pantone:          nullStringFromPb(u.Pantone),
+			Consumption:      consumption,
+			Quantity:         quantity,
+			SizeConsumptions: scs,
+		})
+	}
+	return out, nil
+}
+
 // parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
 // mapping addresses its colourway by explicit colorway_id = product.id (R1/§14.3; the store validates
 // membership against product.style_id) and the BOM positionally (bom_item_index / fusing_bom_item_index);
@@ -927,11 +996,11 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		}
 		var calloutNumber sql.NullInt32
 		if p.CalloutNumber != nil {
-			n := *p.CalloutNumber
-			if !calloutNumbers[int(n)] {
-				return nil, fmt.Errorf("piece %q callout_number %d does not match any callout", p.Name, n)
-			}
-			calloutNumber = sql.NullInt32{Int32: n, Valid: true}
+			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
+			// orphan-control): the store marks such a piece detached — it may carry recipe history and
+			// must survive its source callout's removal — rather than failing the whole save. The store
+			// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+			calloutNumber = sql.NullInt32{Int32: *p.CalloutNumber, Valid: true}
 		}
 
 		materials := make([]entity.TechCardPieceMaterial, 0, len(p.Materials))
@@ -957,6 +1026,8 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			}
 			materials = append(materials, entity.TechCardPieceMaterial{
 				ColorwayID:         int(m.ColorwayId),
+				BomLineKey:         strings.TrimSpace(m.BomLineKey),       // stable ref (WS3 follow-up); store prefers it over the index
+				FusingBomLineKey:   strings.TrimSpace(m.FusingBomLineKey), //
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
 				Note:               nullStringFromPb(m.Note),
@@ -965,6 +1036,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 
 		out = append(out, entity.TechCardPiece{
 			Name:             p.Name,
+			LineKey:          strings.TrimSpace(p.LineKey), // stable wire identity (WS4); empty → store mints one
 			PiecesPerGarment: perGarment,
 			Mirrored:         p.Mirrored,
 			Grainline:        grainline,
@@ -1067,6 +1139,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		}
 
 		out = append(out, entity.TechCardBomItem{
+			// LineKey is the stable client token the server keyed-reconciles by (S2/S3); empty on a
+			// legacy payload, in which case the store mints one. id/material_snapshot are read-only.
+			LineKey:         strings.TrimSpace(b.LineKey),
 			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
@@ -1119,8 +1194,13 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
 // (R1/§3.3): a style's colourways are its products, not writable through the style. Full colourway
-// detail (dev/lab-dip, recipe, media, prices) is read via the Colorway RPCs, not here.
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway) []*pb_common.AdminColorwayRef {
+// merchandising detail (dev/lab-dip, media, prices) is read via the Colorway RPCs, not here. The
+// recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
+// colourway's material recipe alongside its identity — the recipe used to be write-only
+// (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
+// resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
+// account without costing:read, same as the rest of the tech-card read).
+func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.AdminColorwayRef {
 	if len(cws) == 0 {
 		return nil
 	}
@@ -1132,6 +1212,29 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway) []*pb_common.AdminC
 			BaseSku:    c.BaseSku.String,
 			ColorCode:  c.ColorCode,
 			Status:     pb_common.ColorwayLifecycleStatus(c.Status),
+			Usages:     ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
+		})
+	}
+	return out
+}
+
+// compositionEntriesToPb emits a style's structured fibre composition (S17/M1 fix) — the typed
+// replacement for overloading the free-text composition string with an encoded array of the same
+// data. Shared by the tech-card read (ConvertEntityTechCardToPb) and the storefront/colourway read
+// (dto/storefront.go storefrontDisplay): both project the SAME style_composition rows, just through
+// different store queries (composition_read.go for the style read, query.go's
+// styleCompositionEntriesSelect for the colourway/storefront read).
+func compositionEntriesToPb(entries []entity.CompositionEntry) []*pb_common.CompositionEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.CompositionEntry, 0, len(entries))
+	for i := range entries {
+		e := &entries[i]
+		out = append(out, &pb_common.CompositionEntry{
+			FiberCode: e.FiberCode,
+			Name:      e.Name,
+			Percent:   pbDecimalFromDecimal(e.Percent),
 		})
 	}
 	return out
@@ -1161,13 +1264,21 @@ func optionalStringFromNull(value sql.NullString) *string {
 	return &result
 }
 
-// techCardUsagesToPb emits a colourway's usages, each with its computed per-garment
-// line_total and whole-run size_run_total (resolved against the referenced BOM article).
-func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+// ConvertRecipeUsagesToPb emits a colourway's usages, each with its computed per-garment
+// line_total and whole-run size_run_total (resolved against the referenced BOM article). The
+// counterpart read-side of ParseRecipeUsages. Exported: used both by the tech-card read
+// (techCardColorwayRefsToPb, for the constructor view) and directly by GetColorwayByID (H1 fix —
+// recipe is colourway-owned, 01-DOMAIN-MODEL §2.3, so GetColorwayByID is the minimum surface that
+// must return it).
+func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
 	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
 	for i := range usages {
 		u := &usages[i]
-		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
+		// resolveUsageBom prefers the durable bom_item_id FK, falling back to the legacy positional
+		// index (style_cost_estimate.go) — NOT bomItemAtIndex alone: a usage created via bom_line_key
+		// (S2/S3) may round-trip with bom_item_index unset, and bomItemAtIndex would then wrongly show
+		// no line_total/size_run_total even though the FK resolved fine.
+		bom := resolveUsageBom(bomItems, u)
 		var bomItemIndex *int32
 		if u.BomItemIndex.Valid {
 			v := u.BomItemIndex.Int32
@@ -1187,6 +1298,7 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
 			BomItemIndex:     bomItemIndex,
+			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
 			Placement:        pbStringFromNull(u.Placement),
 			Color:            pbStringFromNull(u.Color),
 			Pantone:          pbStringFromNull(u.Pantone),
@@ -1194,6 +1306,7 @@ func techCardUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity
 			Quantity:         pbDecimalFromNull(u.Quantity),
 			SizeConsumptions: sizeCons,
 			PieceIndex:       pieceIndex,
+			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 		})
@@ -1231,16 +1344,20 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 				ColorwayId:         int64(m.ColorwayID),
 				BomItemIndex:       bomIdx,
 				FusingBomItemIndex: fusingIdx,
+				BomItemId:          m.BomItemId.Int64,       // OUTPUT: resolved FK (S2/S3); 0 = unset
+				FusingBomItemId:    m.FusingBomItemId.Int64, // OUTPUT: resolved FK; 0 = unset
 				Note:               pbStringFromNull(m.Note),
 			})
 		}
 		out = append(out, &pb_common.TechCardPiece{
 			Name:             p.Name,
+			LineKey:          p.LineKey,
 			PiecesPerGarment: int32(p.PiecesPerGarment),
 			Mirrored:         p.Mirrored,
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			CalloutNumber:    calloutNumber,
+			Detached:         p.Detached,
 			Note:             pbStringFromNull(p.Note),
 			Materials:        materials,
 		})
@@ -1262,6 +1379,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
+			Id:              int64(b.Id),
+			LineKey:         b.LineKey,
+			MaterialSnapshot: string(b.MaterialSnapshot),
 			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
 			Name:            b.Name,
@@ -1521,13 +1641,14 @@ func pbTimestampFromNullTime(nt sql.NullTime) *timestamppb.Timestamp {
 // The JSON blob itself is not carried here — it is parsed separately by the read handler.
 func ConvertTechCardReleaseMetaToPb(m entity.TechCardReleaseMeta) *pb_common.TechCardReleaseMeta {
 	return &pb_common.TechCardReleaseMeta{
-		Id:         int32(m.Id),
-		TechCardId: int32(m.TechCardId),
-		Version:    pbStringFromNull(m.Version),
-		ReleasedBy: pbStringFromNull(m.ReleasedBy),
-		UnitCost:   pbDecimalFromNull(m.UnitCost),
-		Currency:   pbStringFromNull(m.Currency),
-		CreatedAt:  timestamppb.New(m.CreatedAt),
+		Id:            int32(m.Id),
+		TechCardId:    int32(m.TechCardId),
+		ReleaseNumber: int32(m.ReleaseNumber),
+		Version:       pbStringFromNull(m.Version),
+		ReleasedBy:    pbStringFromNull(m.ReleasedBy),
+		UnitCost:      pbDecimalFromNull(m.UnitCost),
+		Currency:      pbStringFromNull(m.Currency),
+		CreatedAt:     timestamppb.New(m.CreatedAt),
 	}
 }
 
@@ -1543,6 +1664,71 @@ func techCardPurposeToPb(p entity.TechCardPurpose) pb_common.TechCardPurpose {
 	}
 }
 
+// styleNumberSourceFromPb maps the provenance enum to the stored string; UNKNOWN defaults to
+// `generated` (the server-proposed default). An explicit MANUAL survives so the handler enforces
+// the strict override contract.
+func styleNumberSourceFromPb(s pb_common.StyleNumberSource) entity.StyleNumberSource {
+	if s == pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_MANUAL {
+		return entity.StyleNumberSourceManual
+	}
+	return entity.StyleNumberSourceGenerated
+}
+
+// styleNumberSourceToPb maps the stored provenance string back to the enum (default GENERATED).
+func styleNumberSourceToPb(s entity.StyleNumberSource) pb_common.StyleNumberSource {
+	if s == entity.StyleNumberSourceManual {
+		return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_MANUAL
+	}
+	return pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
+}
+
+var techCardRoleToPbMap = map[entity.TechCardRole]pb_common.TechCardRole{
+	entity.RoleDesigner:     pb_common.TechCardRole_TECH_CARD_ROLE_DESIGNER,
+	entity.RoleConstructor:  pb_common.TechCardRole_TECH_CARD_ROLE_CONSTRUCTOR,
+	entity.RoleTechnologist: pb_common.TechCardRole_TECH_CARD_ROLE_TECHNOLOGIST,
+	entity.RolePatternMaker: pb_common.TechCardRole_TECH_CARD_ROLE_PATTERN_MAKER,
+	entity.RoleGrader:       pb_common.TechCardRole_TECH_CARD_ROLE_GRADER,
+	entity.RoleApprover:     pb_common.TechCardRole_TECH_CARD_ROLE_APPROVER,
+	entity.RoleOther:        pb_common.TechCardRole_TECH_CARD_ROLE_OTHER,
+}
+
+// TechCardRoleToPb maps a stored role to its enum (UNKNOWN when unset/unrecognised).
+func TechCardRoleToPb(r entity.TechCardRole) pb_common.TechCardRole {
+	return techCardRoleToPbMap[r]
+}
+
+// TechCardRoleFromPb maps the role enum to the stored string ("" for UNKNOWN, which the caller
+// rejects via entity.ValidTechCardRoles).
+func TechCardRoleFromPb(r pb_common.TechCardRole) entity.TechCardRole {
+	for ent, pb := range techCardRoleToPbMap {
+		if pb == r {
+			return ent
+		}
+	}
+	return ""
+}
+
+// TechCardRoleAssignmentToPb maps one role assignment to the wire (resolved username included).
+func TechCardRoleAssignmentToPb(a entity.TechCardRoleAssignment) *pb_common.TechCardRoleAssignment {
+	return &pb_common.TechCardRoleAssignment{
+		Id:            int32(a.Id),
+		TechCardId:    int32(a.TechCardId),
+		Role:          TechCardRoleToPb(a.Role),
+		AdminId:       int32(a.AdminId),
+		AdminUsername: a.AdminUsername,
+		AssignedBy:    a.AssignedBy,
+		AssignedAt:    timestamppb.New(a.AssignedAt),
+	}
+}
+
+func techCardRoleAssignmentsToPb(as []entity.TechCardRoleAssignment) []*pb_common.TechCardRoleAssignment {
+	out := make([]*pb_common.TechCardRoleAssignment, 0, len(as))
+	for _, a := range as {
+		out = append(out, TechCardRoleAssignmentToPb(a))
+	}
+	return out
+}
+
 // techCardPurposeFromPb maps the R6 numeric enum to the stored purpose string ("" for UNKNOWN, which
 // the caller rejects via ValidTechCardPurposes).
 func techCardPurposeFromPb(p pb_common.TechCardPurpose) entity.TechCardPurpose {
@@ -1554,4 +1740,41 @@ func techCardPurposeFromPb(p pb_common.TechCardPurpose) entity.TechCardPurpose {
 	default:
 		return ""
 	}
+}
+
+// auxSubtypePbByEntity is the single source for the aux_subtype enum<->string mapping, so the two
+// direction helpers below can never drift from each other.
+var auxSubtypePbByEntity = map[entity.TechCardAuxSubtype]pb_common.TechCardAuxSubtype{
+	entity.AuxSubtypeBrandLabel: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BRAND_LABEL,
+	entity.AuxSubtypeCareLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_CARE_LABEL,
+	entity.AuxSubtypeSizeLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_SIZE_LABEL,
+	entity.AuxSubtypeHangtag:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
+	entity.AuxSubtypeSticker:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_STICKER,
+	entity.AuxSubtypeDustBag:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_DUST_BAG,
+	entity.AuxSubtypeBox:        pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BOX,
+	entity.AuxSubtypeInsert:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
+	entity.AuxSubtypeHanger:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
+	entity.AuxSubtypeOther:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_OTHER,
+}
+
+// techCardAuxSubtypeToPb maps the nullable stored aux_subtype to the proto enum (UNKNOWN when NULL/unset).
+func techCardAuxSubtypeToPb(s sql.NullString) pb_common.TechCardAuxSubtype {
+	if !s.Valid {
+		return pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN
+	}
+	if v, ok := auxSubtypePbByEntity[entity.TechCardAuxSubtype(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN
+}
+
+// techCardAuxSubtypeFromPb maps the proto enum to the stored string ("" for UNKNOWN, which the caller
+// rejects via ValidTechCardAuxSubtypes).
+func techCardAuxSubtypeFromPb(p pb_common.TechCardAuxSubtype) entity.TechCardAuxSubtype {
+	for ent, pb := range auxSubtypePbByEntity {
+		if pb == p {
+			return ent
+		}
+	}
+	return ""
 }

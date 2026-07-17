@@ -38,6 +38,19 @@ message Size {
   SizeSkuSystem sku_system = 7;
 }
 
+// CategorySizeSystem maps a category-tree node to a permitted SizeSkuSystem (S10/WS5, migration
+// 0175). A row targets EITHER category_id (a broad category/sub-category node) OR type_id (a specific
+// leaf type) -- never both set; 0 means unset. The admin size picker resolves a style's category
+// chain against this table (most specific match wins: type_id, then category_id) to filter which
+// size systems/sizes it offers; CreateVariant and the style's size-range write (UpdateTechCard)
+// enforce the same rule server-side.
+message CategorySizeSystem {
+  int32 id = 1;
+  int32 category_id = 2; // 0 = unset (matches on type_id instead); FK Category.id
+  int32 type_id = 3; // 0 = unset (matches on category_id instead); FK Category.id
+  SizeSkuSystem sku_system = 4;
+}
+
 // Color is a controlled colour-dictionary entry. code is exactly 3 chars and unique; it feeds the
 // colour segment of the SKU and is referenced by product.color_code.
 message Color {
@@ -240,6 +253,19 @@ message ColorwayPrice {
 message ColorwayPriceInsert {
   string currency = 1;
   google.type.Decimal price = 2;
+}
+
+// CompositionEntry is one fibre share of a style's structured composition (S17), resolved with its
+// dictionary display name. M1 fix: the typed replacement for overloading the free-text `composition`
+// field with an encoded array of these once style_composition gains rows — that overload is removed;
+// `composition` on the wire is legacy plain text ONLY, always, and composition_entries (StorefrontColorwayDisplay,
+// TechCard) is the structured projection, populated from style_composition, empty when the style has
+// none yet. percent mirrors style_composition.percent (DECIMAL(5,2)): a decimal, not int32, because an
+// equal-split derivation (S17, DeriveStyleComposition) can produce fractional shares (e.g. 33.33).
+message CompositionEntry {
+  string fiber_code = 1;
+  string name = 2;
+  google.type.Decimal percent = 3;
 }
 
 enum StockChangeSource {

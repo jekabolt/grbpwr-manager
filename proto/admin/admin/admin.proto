@@ -99,6 +99,18 @@ service AdminService {
     };
   }
 
+  // UpdateColorwayRecipe replaces a colourway's material recipe (usages) — the write-path cut in the
+  // R1 merge (R2/R4: the recipe is a colourway-owned sub-aggregate with its own concurrency).
+  // Optimistically locked on the shared tech_card.lock_version; each usage references a style BOM
+  // line by its stable line_key (S2/S3), resolved to a real bom_item_id FK. Restores the previously
+  // accepted-but-never-written ColorwayDevelopmentInsert.usages (the silent no-op, A3.4).
+  rpc UpdateColorwayRecipe(UpdateColorwayRecipeRequest) returns (UpdateColorwayRecipeResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/colorways/{colorway_id}/recipe"
+      body: "*"
+    };
+  }
+
   // Gets a colourway by its id.
   rpc GetColorwayByID(GetColorwayByIDRequest) returns (GetColorwayByIDResponse) {
     option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}"};
@@ -193,6 +205,14 @@ service AdminService {
   // UI loads the whole chart before editing, because UpdateStyleSizeChart is a full-replace.
   rpc GetStyleSizeChart(GetStyleSizeChartRequest) returns (GetStyleSizeChartResponse) {
     option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
+  }
+
+  // GetStyleCutList is the first real consumer of the piece.mirrored flag (Q6): a read-only cut-list
+  // for production. For each cut-piece it expands the quantity (pieces_per_garment × 2 for a mirrored
+  // pair) and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
+  // projection over the tech card — no marker/CAD export, no mutable table.
+  rpc GetStyleCutList(GetStyleCutListRequest) returns (GetStyleCutListResponse) {
+    option (google.api.http) = {get: "/api/admin/styles/{tech_card_id}/cut-list"};
   }
 
   // UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5). A colourway
@@ -433,6 +453,17 @@ service AdminService {
   // money spent developing and making it. Cost/margin fields are costing:read-gated.
   rpc GetStyleEconomics(GetStyleEconomicsRequest) returns (GetStyleEconomicsResponse) {
     option (google.api.http) = {get: "/api/admin/metrics/style-economics"};
+  }
+
+  // GetStyleCostEstimate returns the transparent estimated (plan) cost of one style colourway
+  // (Q4): a line-by-line material breakdown resolved via the price ladder
+  // (bom_item.unit_price → latest material_price → base via costing FX), each line carrying its
+  // price source/date/currency, plus the typed cost articles (cmt/hardware/packaging/logistics/
+  // overhead) and defect %, and a plan-vs-fact comparison (estimate vs production-run actual vs
+  // the order-time cost snapshot). All money is costing:read-gated; the estimate is a read
+  // projection and never writes product.cost_price.
+  rpc GetStyleCostEstimate(GetStyleCostEstimateRequest) returns (GetStyleCostEstimateResponse) {
+    option (google.api.http) = {get: "/api/admin/metrics/style-cost-estimate"};
   }
 
   // GetChannelRoasSettled returns per-channel ROAS/CAC computed from the AUTHORITATIVE settled order
@@ -725,6 +756,41 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/sample/list"};
   }
 
+  // SAMPLE SUBSTITUTIONS (§2.7): dev-time material deviations on a sample.
+  rpc AddSampleSubstitution(AddSampleSubstitutionRequest) returns (AddSampleSubstitutionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/sample/substitution/add"
+      body: "*"
+    };
+  }
+  rpc DeleteSampleSubstitution(DeleteSampleSubstitutionRequest) returns (DeleteSampleSubstitutionResponse) {
+    option (google.api.http) = {delete: "/api/admin/sample/substitution/{id}"};
+  }
+  rpc ListSampleSubstitutions(ListSampleSubstitutionsRequest) returns (ListSampleSubstitutionsResponse) {
+    option (google.api.http) = {get: "/api/admin/sample/{sample_id}/substitutions"};
+  }
+
+  // FITTING CHANGE REQUESTS (S26): dedicated CRUD (stable id) + the carry-over view.
+  rpc AddFittingChangeRequest(AddFittingChangeRequestRequest) returns (AddFittingChangeRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/change-request/add"
+      body: "*"
+    };
+  }
+  rpc UpdateFittingChangeRequest(UpdateFittingChangeRequestRequest) returns (UpdateFittingChangeRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/fitting/change-request/update"
+      body: "*"
+    };
+  }
+  rpc DeleteFittingChangeRequest(DeleteFittingChangeRequestRequest) returns (DeleteFittingChangeRequestResponse) {
+    option (google.api.http) = {delete: "/api/admin/fitting/change-request/{id}"};
+  }
+  // Declared last (see ListModels ordering note) so the fixed /open path is not shadowed.
+  rpc ListOpenFittingChangeRequests(ListOpenFittingChangeRequestsRequest) returns (ListOpenFittingChangeRequestsResponse) {
+    option (google.api.http) = {get: "/api/admin/fitting/change-request/open"};
+  }
+
   // TASK MANAGER
   // Internal team kanban (NOT customer orders). Same list-after-{id} route
   // ordering as fitting/models: GET /task/list is declared AFTER GET /task/{id}
@@ -969,6 +1035,43 @@ service AdminService {
     };
   }
 
+  // SuggestStyleNumber proposes the next free style number for a season (Q1): {SEASON}{YY}-{SEQ}, a
+  // per-season monotonic sequence. Advisory — the client accepts it (style_number_source=GENERATED)
+  // or overrides it (MANUAL) on the tech-card write; the global UNIQUE(style_number) is authoritative.
+  rpc SuggestStyleNumber(SuggestStyleNumberRequest) returns (SuggestStyleNumberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/suggest-style-number"
+      body: "*"
+    };
+  }
+
+  // AssignTechCardRole assigns an admin account a role on a tech card (Q5), multi per role.
+  rpc AssignTechCardRole(AssignTechCardRoleRequest) returns (AssignTechCardRoleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/role/assign"
+      body: "*"
+    };
+  }
+
+  // RemoveTechCardRoleAssignment removes one role assignment by id.
+  rpc RemoveTechCardRoleAssignment(RemoveTechCardRoleAssignmentRequest) returns (RemoveTechCardRoleAssignmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/role/remove"
+      body: "*"
+    };
+  }
+
+  // ListTechCardRoleAssignments lists a card's role assignments with resolved usernames (Q5).
+  rpc ListTechCardRoleAssignments(ListTechCardRoleAssignmentsRequest) returns (ListTechCardRoleAssignmentsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/roles"};
+  }
+
+  // ListAdmins is the lightweight admin-account picker source for role assignment (id + username
+  // only), gated tech_cards:read so a role-assigner need not hold the broader accounts:read.
+  rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse) {
+    option (google.api.http) = {get: "/api/admin/admins/pick"};
+  }
+
   // GetTechCard returns a tech card by id with its nested sections resolved.
   rpc GetTechCard(GetTechCardRequest) returns (GetTechCardResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{id}"};
@@ -1138,6 +1241,41 @@ service AdminService {
   // ListPackagingBom returns the packaging recipe (material name/unit + per-order/per-item quantities).
   rpc ListPackagingBom(ListPackagingBomRequest) returns (ListPackagingBomResponse) {
     option (google.api.http) = {get: "/api/admin/inventory/packaging-bom"};
+  }
+
+  // UpsertPackagingRecipe full-replaces one scope target's packaging recipe (PLM rework §2.8, Q3): the
+  // whole global set, or one style's set, or one product's set (scope = global|style|product).
+  rpc UpsertPackagingRecipe(UpsertPackagingRecipeRequest) returns (UpsertPackagingRecipeResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/packaging-recipe/upsert"
+      body: "*"
+    };
+  }
+  // ListPackagingRecipe returns every packaging recipe (all scopes) with material name/unit.
+  rpc ListPackagingRecipe(ListPackagingRecipeRequest) returns (ListPackagingRecipeResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory/packaging-recipe"};
+  }
+
+  // UpsertStyleAssembly full-replaces a garment style's ASSEMBLY bill (WS7, §2.8): the auxiliary items
+  // (labels/tags) that physically go on/into it. Distinct from packaging (on the shipment). Empty items
+  // clears the bill. Every component must be an auxiliary tech card.
+  rpc UpsertStyleAssembly(UpsertStyleAssemblyRequest) returns (UpsertStyleAssemblyResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/style-assembly/upsert"
+      body: "*"
+    };
+  }
+  // ListStyleAssembly returns a garment style's assembly bill, resolved with component name/aux_subtype
+  // and the output material (the warehouse material consumed in production).
+  rpc ListStyleAssembly(ListStyleAssemblyRequest) returns (ListStyleAssemblyResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{style_id}/style-assembly"};
+  }
+
+  // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
+  // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
+  // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
+  rpc GetOrderPackingSpec(GetOrderPackingSpecRequest) returns (GetOrderPackingSpecResponse) {
+    option (google.api.http) = {get: "/api/admin/fulfillment/{order_uuid}/packing-spec"};
   }
 
   // ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D).
@@ -1554,6 +1692,17 @@ message UpdateColorwayResponse {
   int32 lock_version = 1; // the new shared lock_version
 }
 
+message UpdateColorwayRecipeRequest {
+  int32 colorway_id = 1;
+  // expected_colorway_version echoes the shared tech_card.lock_version (R4); a mismatch -> Aborted.
+  int32 expected_colorway_version = 2;
+  repeated common.TechCardColorwayUsage usages = 3; // the full recipe (full-replace for this colourway)
+}
+
+message UpdateColorwayRecipeResponse {
+  int32 lock_version = 1; // the new shared lock_version after the recipe write
+}
+
 // StylePatch is the narrow set of catalogue-style facts UpdateStyle owns (R4/§14.7-8). It deliberately
 // does NOT reuse the heavy TechCardInsert, so a style-catalogue edit can never full-replace the PLM
 // children (BOM/POM/ops). category_id stays a PLM/UpdateTechCard fact; canonical style translations
@@ -1613,6 +1762,12 @@ message GetColorwayByIDResponse {
   // admin GetColorwayByID response, never on the shared ColorwayFull, so it cannot leak to the
   // storefront read path.
   ColorwayCostInfo cost_info = 2;
+  // usages is this colourway's material recipe (H1 fix: the recipe is colourway-owned — S2/S3,
+  // 01-DOMAIN-MODEL §2.3 — so GetColorwayByID is the minimum surface that must return it; a
+  // full-replace UpdateColorwayRecipe is unsafe to edit-partially without a matching read). Lives
+  // here rather than on the shared common.ColorwayFull so it never reaches the storefront read
+  // path (admin.proto only). Money fields are stripped without costing:read.
+  repeated common.TechCardColorwayUsage usages = 3;
 }
 
 // ColorwayCostInfo is the admin-only view of a product's confidential cost of goods and where
@@ -2970,6 +3125,7 @@ message GetFittingResponse {
 message UpdateFittingRequest {
   int32 id = 1;
   common.FittingInsert fitting = 2;
+  int32 expected_lock_version = 3; // from GetFitting; a mismatch means a concurrent edit -> ABORTED (S25)
 }
 
 message UpdateFittingResponse {}
@@ -2993,9 +3149,70 @@ message AddSampleResponse {
 message UpdateSampleRequest {
   int32 id = 1;
   common.SampleInsert sample = 2;
+  int32 expected_lock_version = 3; // from GetSample; a mismatch means a concurrent edit -> ABORTED (S25)
 }
 
 message UpdateSampleResponse {}
+
+// SAMPLE SUBSTITUTIONS (§2.7): dev-time material deviations recorded on a sample.
+
+message AddSampleSubstitutionRequest {
+  common.SampleSubstitutionInsert substitution = 1;
+}
+
+message AddSampleSubstitutionResponse {
+  int32 id = 1;
+}
+
+message ListSampleSubstitutionsRequest {
+  int32 sample_id = 1;
+}
+
+message ListSampleSubstitutionsResponse {
+  repeated common.SampleSubstitution substitutions = 1;
+}
+
+message DeleteSampleSubstitutionRequest {
+  int32 id = 1;
+}
+
+message DeleteSampleSubstitutionResponse {}
+
+// FITTING CHANGE REQUESTS (S26): dedicated CRUD so items have a STABLE id (carried_from_id / carry-over
+// depend on it), separate from the fitting full-replace.
+
+message AddFittingChangeRequestRequest {
+  common.FittingChangeRequestInsert change_request = 1;
+}
+
+message AddFittingChangeRequestResponse {
+  int32 id = 1;
+}
+
+message UpdateFittingChangeRequestRequest {
+  int32 id = 1;
+  common.FittingChangeRequestInsert change_request = 2;
+}
+
+message UpdateFittingChangeRequestResponse {}
+
+message DeleteFittingChangeRequestRequest {
+  int32 id = 1;
+}
+
+message DeleteFittingChangeRequestResponse {}
+
+// ListOpenFittingChangeRequests returns the OPEN structured remarks from a style's earlier rounds — the
+// carry-over view shown when opening the next round (task 2). before_round scopes to items raised
+// strictly before that round (0 = every round).
+message ListOpenFittingChangeRequestsRequest {
+  int32 tech_card_id = 1; // required; the style
+  int32 before_round = 2; // 0 = all rounds; >0 = only items from rounds < before_round
+}
+
+message ListOpenFittingChangeRequestsResponse {
+  repeated common.FittingChangeRequest change_requests = 1;
+}
 
 message DeleteSampleRequest {
   int32 id = 1;
@@ -3890,6 +4107,129 @@ message GetStyleEconomicsResponse {
   StyleEconomics economics = 1;
 }
 
+// StyleCutListFabric is, for one colourway, which fabric (and optional fusing / клеевая) BOM line a
+// cut-piece is cut from. Names come from the BOM line so the cut-list is self-contained.
+message StyleCutListFabric {
+  int64 colorway_id = 1; // product.id
+  int64 bom_item_id = 2; // the fabric BOM line (0 = unset)
+  string fabric_name = 3; // the fabric BOM line's name
+  int64 fusing_bom_item_id = 4; // the interlining/клеевая BOM line (0 = none)
+  string fusing_name = 5;
+}
+
+// StyleCutListPiece is one cut-piece expanded for production (Q6): total_per_garment folds the
+// mirrored pair into the count (pieces_per_garment × 2 when mirrored), and fabrics lists the material
+// per colourway.
+message StyleCutListPiece {
+  int32 piece_id = 1;
+  string name = 2;
+  int32 pieces_per_garment = 3;
+  bool mirrored = 4; // cut as a mirrored pair (left+right)
+  int32 total_per_garment = 5; // pieces_per_garment × (mirrored ? 2 : 1)
+  string grainline = 6; // долевая
+  bool fused = 7;
+  repeated StyleCutListFabric fabrics = 8;
+}
+
+message GetStyleCutListRequest {
+  int32 tech_card_id = 1;
+}
+
+// GetStyleCutListResponse is the read-only production cut-list projection over a style's cut-pieces.
+message GetStyleCutListResponse {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  repeated StyleCutListPiece pieces = 4;
+}
+
+// StyleCostPriceSource is the Q4 price-ladder level a material line resolved to.
+enum StyleCostPriceSource {
+  STYLE_COST_PRICE_SOURCE_UNKNOWN = 0;
+  STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT = 1; // plan-1: bom_item.unit_price (the plan snapshot on the line)
+  STYLE_COST_PRICE_SOURCE_CATALOG_LATEST = 2; // plan-2: latest material_price (fallback when the line has no snapshot)
+  STYLE_COST_PRICE_SOURCE_NONE = 3; // no price at all — line understates the estimate
+}
+
+// StyleCostMaterialLine is one BOM material's contribution to the estimated per-garment cost, with
+// full provenance so the operator can see WHERE each number came from (Q4 transparency).
+message StyleCostMaterialLine {
+  int64 bom_item_id = 1;
+  string material_name = 2;
+  string section = 3; // BOM section (fabric|lining|trim|hardware|…)
+  string unit = 4; // metre|piece|…
+  google.type.Decimal consumption = 5; // per-garment usage (measured Consumption or countable Quantity)
+  google.type.Decimal unit_price = 6; // resolved plan unit price, in `currency`
+  string currency = 7;
+  StyleCostPriceSource price_source = 8;
+  google.protobuf.Timestamp price_date = 9; // material_price.valid_from when catalog_latest; unset otherwise
+  google.type.Decimal wastage_pct = 10;
+  google.type.Decimal line_total_base = 11; // per-garment cost folded to base (EUR); set only when convertible
+  bool has_base = 12; // false when the line's currency has no FX rate → excluded from the base total
+}
+
+// StyleCostArticleLine is one typed manual cost article (cmt/hardware/packaging/logistics/overhead).
+message StyleCostArticleLine {
+  string kind = 1; // cmt|hardware|packaging|logistics|overhead
+  google.type.Decimal amount = 2; // per-unit, in the costing currency
+  string currency = 3;
+  google.type.Decimal amount_base = 4; // folded to base (EUR); set only when convertible
+  bool has_base = 5;
+}
+
+// StyleCostKindVariance compares the estimate to the production actual for one cost kind, per unit
+// (base EUR) — the line-by-line plan/fact discrepancy.
+message StyleCostKindVariance {
+  string kind = 1; // materials|cmt|hardware|packaging|logistics|overhead
+  google.type.Decimal estimate_base = 2;
+  google.type.Decimal actual_base = 3;
+  google.type.Decimal variance = 4; // actual − estimate
+  bool has_actual = 5;
+}
+
+// StyleCostComparison ties the plan estimate to the two downstream facts (Q4 scope 2). The three
+// figures are deliberately distinct: an estimate is NOT an actual is NOT the booked COGS snapshot.
+message StyleCostComparison {
+  google.type.Decimal estimate_unit_cost_base = 1; // plan (this estimate)
+  google.type.Decimal actual_unit_cost_base = 2; // production-run actual ÷ received (existing channel, not recomputed)
+  bool has_actual = 3;
+  google.type.Decimal snapshot_cost_base = 4; // current product.cost_price — the order-time COGS basis
+  string snapshot_source = 5; // cost_price_source: manual|tech_card|production_run
+  bool has_snapshot = 6;
+  google.type.Decimal estimate_vs_actual = 7; // actual − estimate
+  google.type.Decimal estimate_vs_snapshot = 8; // snapshot − estimate
+  google.type.Decimal actual_vs_snapshot = 9; // snapshot − actual
+  repeated StyleCostKindVariance by_kind = 10; // per-cost-kind plan/fact discrepancy
+  string caveat = 11;
+}
+
+// StyleCostEstimate is the transparent plan cost of one colourway (Q4).
+message StyleCostEstimate {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  int64 colorway_id = 4; // the colourway priced (primary colourway when the request omitted one)
+  string base_currency = 5;
+  repeated StyleCostMaterialLine materials = 6;
+  google.type.Decimal materials_per_unit_base = 7; // Σ material lines, base EUR
+  repeated StyleCostArticleLine articles = 8; // typed manual articles
+  google.type.Decimal defect_pct = 9;
+  google.type.Decimal unit_cost_base = 10; // (materials + articles) × (1 + defect%/100), base EUR
+  int32 order_qty = 11; // Σ size order_qty (the size run)
+  google.type.Decimal order_cost_base = 12; // unit_cost_base × order_qty
+  string caveat = 13; // catalog fallback used, uncosted line, missing FX, …
+  StyleCostComparison comparison = 14;
+}
+
+message GetStyleCostEstimateRequest {
+  int32 tech_card_id = 1;
+  int64 colorway_id = 2; // 0 = the style's primary colourway
+}
+
+message GetStyleCostEstimateResponse {
+  StyleCostEstimate estimate = 1;
+}
+
 // ChannelSettledRoasRow is one marketing channel's settled-revenue economics over a period (task 20
 // step 2): settled base revenue attributed to the channel via server-side last-non-direct click,
 // order and first-time-customer counts, and — when operator spend exists for the channel — spend,
@@ -4610,6 +4950,50 @@ message CreateTechCardResponse {
   int32 id = 1;
 }
 
+message SuggestStyleNumberRequest {
+  common.SkuSeason sku_season = 1; // the season to propose an article for (code + year, required)
+}
+
+message SuggestStyleNumberResponse {
+  string style_number = 1; // proposed {SEASON}{YY}-{SEQ}; advisory, subject to the global UNIQUE at write
+}
+
+message AssignTechCardRoleRequest {
+  int32 tech_card_id = 1;
+  common.TechCardRole role = 2;
+  int32 admin_id = 3; // FK admins(id)
+}
+
+message AssignTechCardRoleResponse {
+  common.TechCardRoleAssignment assignment = 1;
+}
+
+message RemoveTechCardRoleAssignmentRequest {
+  int32 id = 1;
+}
+
+message RemoveTechCardRoleAssignmentResponse {}
+
+message ListTechCardRoleAssignmentsRequest {
+  int32 tech_card_id = 1;
+}
+
+message ListTechCardRoleAssignmentsResponse {
+  repeated common.TechCardRoleAssignment assignments = 1;
+}
+
+// AdminRef is a lightweight admin-account reference for the role-assignment picker.
+message AdminRef {
+  int32 id = 1;
+  string username = 2;
+}
+
+message ListAdminsRequest {}
+
+message ListAdminsResponse {
+  repeated AdminRef admins = 1;
+}
+
 message GetTechCardRequest {
   int32 id = 1;
 }
@@ -4722,6 +5106,10 @@ message CreateMaterialResponse {
 
 message UpdateMaterialRequest {
   common.Material material = 1; // material.id selects the row
+  // expected_lock_version is the material.lock_version the caller last read (optimistic lock,
+  // S25). A mismatch means the row changed underneath the caller — the update is rejected with
+  // Aborted and the caller should reload and retry.
+  int32 expected_lock_version = 2;
 }
 
 message UpdateMaterialResponse {}
@@ -5007,6 +5395,127 @@ message ListPackagingBomRequest {}
 
 message ListPackagingBomResponse {
   repeated PackagingBomItem items = 1;
+}
+
+// PackagingRecipeLine is one stored line of a packaging recipe for a scope target (PLM rework §2.8,
+// Q3): a material consumed on ship — qty_per_order once per shipment (a box) plus qty_per_item × the
+// order's unit count (a dust bag). Resolution at order time is product → style → global (first match
+// wins). material_name / material_unit are resolved server-side for display and ignored on write.
+message PackagingRecipeLine {
+  int32 id = 1; // read-only
+  string scope = 2; // global | style | product
+  int32 tech_card_id = 3; // set iff scope=style
+  int32 product_id = 4; // set iff scope=product
+  int32 material_id = 5;
+  string material_name = 6; // read-only (display)
+  string material_unit = 7; // read-only (display)
+  google.type.Decimal qty_per_order = 8; // consumed once per shipped order, >= 0
+  google.type.Decimal qty_per_item = 9; // consumed per unit in the order, >= 0
+  bool active = 10;
+}
+
+// PackagingRecipeItem is one writable recipe line; the scope target is carried by the request.
+message PackagingRecipeItem {
+  int32 material_id = 1;
+  google.type.Decimal qty_per_order = 2; // >= 0
+  google.type.Decimal qty_per_item = 3; // >= 0
+  bool active = 4;
+}
+
+// UpsertPackagingRecipeRequest full-replaces the recipe lines of ONE scope target. scope selects the
+// target: tech_card_id is required iff scope=style, product_id iff scope=product, neither for global.
+// An empty items list clears that target's recipe.
+message UpsertPackagingRecipeRequest {
+  string scope = 1; // global | style | product
+  int32 tech_card_id = 2; // set iff scope=style
+  int32 product_id = 3; // set iff scope=product
+  repeated PackagingRecipeItem items = 4;
+}
+
+message UpsertPackagingRecipeResponse {}
+
+message ListPackagingRecipeRequest {}
+
+message ListPackagingRecipeResponse {
+  repeated PackagingRecipeLine items = 1;
+}
+
+// StyleAssemblyLine is one stored line of a garment style's assembly bill (WS7, §2.8): an auxiliary item
+// (labels/tags) on/into the garment, with qty and print/position notes. component_name/component_aux_subtype/
+// output_material_* and size_name are resolved server-side for display and ignored on write.
+message StyleAssemblyLine {
+  int32 id = 1; // read-only
+  int32 style_id = 2;
+  int32 component_tech_card_id = 3; // auxiliary tech card
+  string component_name = 4; // read-only (display)
+  common.TechCardAuxSubtype component_aux_subtype = 5; // read-only (display)
+  int32 size_id = 6; // garment-size scope; 0 = all sizes
+  string size_name = 7; // read-only (display)
+  google.type.Decimal qty = 8; // > 0
+  string print_note = 9; // what to print (artwork ref / text)
+  string position_note = 10; // where/how it is attached
+  bool active = 11;
+  int32 output_material_id = 12; // component's warehouse material (COGS/production link); 0 = none
+  string output_material_name = 13; // read-only (display)
+}
+
+// StyleAssemblyItem is one writable assembly line; the style target is carried by the request.
+message StyleAssemblyItem {
+  int32 component_tech_card_id = 1; // an auxiliary tech card
+  int32 size_id = 2; // garment-size scope; 0 = all sizes
+  google.type.Decimal qty = 3; // > 0
+  string print_note = 4;
+  string position_note = 5;
+  bool active = 6;
+}
+
+// UpsertStyleAssemblyRequest full-replaces one style's assembly bill. Empty items clears it.
+message UpsertStyleAssemblyRequest {
+  int32 style_id = 1;
+  repeated StyleAssemblyItem items = 2;
+}
+
+message UpsertStyleAssemblyResponse {}
+
+message ListStyleAssemblyRequest {
+  int32 style_id = 1;
+}
+
+message ListStyleAssemblyResponse {
+  repeated StyleAssemblyLine items = 1;
+}
+
+// OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
+// and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.
+message OrderPackingSpecItem {
+  int32 order_item_id = 1;
+  int32 product_id = 2;
+  int32 variant_id = 3;
+  int32 style_id = 4;
+  string style_name = 5;
+  string sku = 6;
+  string size_name = 7;
+  google.type.Decimal quantity = 8;
+  repeated StyleAssemblyLine assembly = 9;
+}
+
+// OrderPackingSpecPackaging is one packaging material the order needs (WS2 resolution product → style →
+// global), summed across the order.
+message OrderPackingSpecPackaging {
+  int32 material_id = 1;
+  string material_name = 2;
+  string material_unit = 3;
+  google.type.Decimal qty = 4;
+}
+
+message GetOrderPackingSpecRequest {
+  string order_uuid = 1;
+}
+
+message GetOrderPackingSpecResponse {
+  string order_uuid = 1;
+  repeated OrderPackingSpecItem items = 2;
+  repeated OrderPackingSpecPackaging packaging = 3;
 }
 
 message ListMaterialLotsRequest {

@@ -66,9 +66,30 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 		b.UnitPrice = nil
 		b.Currency = ""
 	}
-	// PR6 R1: colourways (and their usage recipe with per-line cost figures) are no longer part of the
-	// style read payload, so there are no usage LineTotal/SizeRunTotal to strip here. Per-colourway
-	// costing was under Costing.colorway_costs, already dropped by `ins.Costing = nil` above.
+	// H1 fix: colourway refs now carry their recipe (Usages), each with a derived per-line
+	// line_total/size_run_total — money computed from the (now redacted) BOM unit_price. Strip it the
+	// same way GetColorwayByID does for the same message type.
+	for _, c := range tc.Colorways {
+		if c == nil {
+			continue
+		}
+		stripTechCardColorwayUsageCosting(c.Usages)
+	}
+}
+
+// stripTechCardColorwayUsageCosting clears the derived per-line money (line_total/size_run_total) on
+// a colourway recipe for an account without costing:read, keeping the structure (article reference,
+// placement, colour, consumption/quantity) — the same "structure stays, money goes" shape as
+// stripStyleCostEstimate. Shared by stripTechCardCosting (nested under TechCard.colorways) and
+// GetColorwayByID (top-level usages field, H1 fix). Safe on nil entries.
+func stripTechCardColorwayUsageCosting(usages []*pb_common.TechCardColorwayUsage) {
+	for _, u := range usages {
+		if u == nil {
+			continue
+		}
+		u.LineTotal = nil
+		u.SizeRunTotal = nil
+	}
 }
 
 // stripMaterialCosting clears a catalog material's current price. The material's descriptive
@@ -118,6 +139,46 @@ func stripReleaseMetaCosting(m *pb_common.TechCardReleaseMeta) {
 	}
 	m.UnitCost = nil
 	m.Currency = ""
+}
+
+// stripProductionRunCosting redacts the confidential money on a production run for an account
+// without costing:read (Q5 RBAC symmetry / A3.2-#3). It closes the last asymmetry in the costing
+// boundary: TechCard/Material/DevExpense money was already field-shaped, but a run's ACTUAL cost
+// (the plan snapshot, the cost articles, and the computed actual/variance/materials-from-stock
+// summary) was gated only by the production section — so a `production:read` role without costing
+// saw more money about the fact than a `tech_cards:read` role without costing saw about the plan.
+// Quantities (planned/received/defect), the defect rate, marker data and provenance flags stay —
+// a production role still sees "how many units / how many defects", just not "at what cost". Safe
+// on nil; symmetric with the strip* helpers above.
+func stripProductionRunCosting(r *pb_common.ProductionRun) {
+	if r == nil {
+		return
+	}
+	r.PlannedUnitCost = nil // frozen plan snapshot (money)
+	r.PlannedCurrency = ""
+	if r.Run != nil {
+		r.Run.Costs = nil // actual cost articles (amount / amount_base) are confidential
+	}
+	stripProductionRunActualsCosting(r.Actuals)
+}
+
+// stripProductionRunActualsCosting clears the money-bearing figures of a run's computed plan/fact
+// summary, keeping the quantity totals, the defect rate and the provenance flags. Safe on nil.
+func stripProductionRunActualsCosting(a *pb_common.ProductionRunActuals) {
+	if a == nil {
+		return
+	}
+	a.ActualTotalBase = nil
+	a.ActualUnitCost = nil
+	a.ByKind = nil
+	a.PlannedTotalBase = nil
+	a.UnitCostVariance = nil
+	a.TotalVariance = nil
+	a.MaterialsFromStockBase = nil
+	a.ByColorway = nil
+	a.UnattributedMaterialsBase = nil
+	// Kept (not money): base_currency, planned/received/defect qty totals, defect_pct_actual,
+	// has_base, mixed_materials_sources, has_uncosted_issues.
 }
 
 // costingRedactedFieldNames are proto field names carrying confidential COGS/margin. They are
@@ -238,6 +299,44 @@ func stripStyleEconomicsCosting(resp *pb_admin.GetStyleEconomicsResponse) {
 		// Clears unit_cost/revenue_cost/gross_margin/gross_margin_pct; keeps revenue/units/has_cost.
 		redactCostingFieldsDeep(e.Sales.ProtoReflect())
 	}
+}
+
+// stripStyleCostEstimate redacts every money figure from a cost-estimate response for an account
+// without costing:read (task 19 / Q4). The material and article STRUCTURE stays — line identity,
+// section, unit, per-garment consumption, and the price-provenance label — so a cost-blind
+// constructor still sees WHAT the estimate is built from, just not the prices, totals, or the
+// plan/fact comparison (which is entirely cost data). Safe on nil.
+func stripStyleCostEstimate(resp *pb_admin.GetStyleCostEstimateResponse) {
+	if resp == nil || resp.Estimate == nil {
+		return
+	}
+	e := resp.Estimate
+	for _, ml := range e.Materials {
+		if ml == nil {
+			continue
+		}
+		ml.UnitPrice = nil
+		ml.Currency = ""
+		ml.LineTotalBase = nil
+		ml.HasBase = false
+		// price_source (a provenance label) and consumption/section/unit stay; price_date is tied to
+		// the redacted catalog price, so drop it too.
+		ml.PriceDate = nil
+	}
+	e.MaterialsPerUnitBase = nil
+	for _, al := range e.Articles {
+		if al == nil {
+			continue
+		}
+		al.Amount = nil
+		al.Currency = ""
+		al.AmountBase = nil
+		al.HasBase = false
+	}
+	e.DefectPct = nil
+	e.UnitCostBase = nil
+	e.OrderCostBase = nil
+	e.Comparison = nil // estimate-vs-actual-vs-snapshot is all money
 }
 
 // techCardInsertHasCostingData reports whether a write payload carries confidential cost

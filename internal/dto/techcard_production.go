@@ -224,6 +224,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Note:            nullStringFromPb(o.Note),
 			OperationType:   opType,
 			Zone:            zone,
+			BomLineKey:      strings.TrimSpace(o.BomLineKey), // stable ref (WS3 follow-up); store prefers it over the index
 			BomItemIndex:    bomItemIndex,
 			CalloutNumber:   nullInt32FromPb(o.CalloutNumber),
 			Placement:       normalizedPlacementNull(o.Placement),
@@ -252,6 +253,7 @@ func parseTechCardLabels(pbs []*pb_common.TechCardLabel) ([]entity.TechCardLabel
 			Attachment: nullStringFromPb(l.Attachment),
 			Size:       nullStringFromPb(l.Size),
 			Note:       nullStringFromPb(l.Note),
+			BomItemId:  nullInt32FromPb(l.BomItemId), // §2.8 link to the physical label material's BOM line
 		})
 	}
 	return out, nil
@@ -400,6 +402,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
 			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
 			BomItemIndex:    bomItemIndex,
+			BomItemId:       o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
 			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
 			Placement:       pbStringFromNull(o.Placement),
 		})
@@ -582,6 +585,7 @@ func techCardLabelsToPb(labels []entity.TechCardLabel) []*pb_common.TechCardLabe
 			Attachment: pbStringFromNull(l.Attachment),
 			Size:       pbStringFromNull(l.Size),
 			Note:       pbStringFromNull(l.Note),
+			BomItemId:  l.BomItemId.Int32, // §2.8 link (0 = unlinked)
 		})
 	}
 	return out
