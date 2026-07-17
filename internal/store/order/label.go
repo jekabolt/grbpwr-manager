@@ -15,7 +15,7 @@ import (
 // SetShipmentLabel persists the carrier-generated shipping-label fields on an order's shipment and
 // freezes the order's SKU identity — atomically, in one transaction (problem 035). The first
 // persisted label is a lifecycle point equivalent to first sale: it re-snapshots each line's
-// product_sku from the current live variant and stamps sku_locked_at on the order's products, so a
+// variant_sku_snapshot from the current live variant and stamps sku_locked_at on the order's products, so a
 // confirmed-but-still-unlocked order (a historical/anomalous or alternative confirmation flow) can
 // never have its SKUs drift after a label exists. A line with no live variant SKU is a hard failure
 // and rolls back the whole call, so no label is saved without a resolvable frozen identity.
@@ -36,7 +36,7 @@ func (s *Store) SetShipmentLabel(ctx context.Context, orderUUID string, label en
 			return fmt.Errorf("can't get order by uuid: %w", err)
 		}
 		// Freeze the SKU identity in the same tx as the label persist: re-snapshot each line's
-		// product_sku from the live variant, reject a line with no live variant SKU, then stamp
+		// variant_sku_snapshot from the live variant, reject a line with no live variant SKU, then stamp
 		// sku_locked_at. A failure here rolls back the label write below — no partial freeze.
 		if err := freezeAndResnapshotOrderSKUs(ctx, txDB, order.Id); err != nil {
 			return fmt.Errorf("can't freeze order SKUs at label: %w", err)
@@ -117,8 +117,8 @@ func (s *Store) GetOrderParcelItems(ctx context.Context, orderID int) ([]entity.
 		oi.quantity,
 		oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 		-- variant SKU on the customs line — the immutable frozen order snapshot (NOT NULL, no live/base
-		-- fallback so order history never shifts under a later catalogue remint, problem 023).
-		oi.product_sku AS sku,
+		-- fallback so order history never shifts under a later catalogue remint, problems 019/023).
+		oi.variant_sku_snapshot AS sku,
 		p.hs_code,
 		p.country_of_origin,
 		p.country_code,

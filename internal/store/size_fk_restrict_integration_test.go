@@ -54,8 +54,8 @@ func TestSizeDeleteRestricted(t *testing.T) {
 	psID := exec(`INSERT INTO product_size (product_id, size_id, quantity) VALUES (?, ?, 5)`, prodID, sizeID)
 	orderID := exec(`INSERT INTO customer_order (uuid, order_status_id, currency, total_price)
 		VALUES (CONCAT('T18-', UUID_SHORT()), (SELECT MIN(id) FROM order_status), 'EUR', 100)`)
-	oiID := exec(`INSERT INTO order_item (order_id, product_id, product_price, product_price_base, quantity, size_id, product_sku)
-		VALUES (?, ?, 100, 100, 1, ?, 'SS26-00001-BLK')`, orderID, prodID, sizeID)
+	oiID := exec(`INSERT INTO order_item (order_id, product_id, variant_id, product_price, product_price_base, quantity, size_id, variant_sku_snapshot)
+		VALUES (?, ?, ?, 100, 100, 1, ?, 'SS26-00001-BLK')`, orderID, prodID, psID, sizeID)
 	tcsmID := exec(`INSERT INTO tech_card_size_measurement (tech_card_id, size_id, measurement_name_id, measurement_value)
 		VALUES (?, ?, ?, 10.0)`, styleID, sizeID, nameID)
 

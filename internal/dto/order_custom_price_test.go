@@ -14,9 +14,8 @@ import (
 func TestConvertCustomOrderItemPositivePrice(t *testing.T) {
 	mk := func(price string) *pb_common.CustomOrderItemInsert {
 		return &pb_common.CustomOrderItemInsert{
-			ProductId:   1,
+			VariantId:   1,
 			Quantity:    1,
-			SizeId:      1,
 			CustomPrice: &pb_decimal.Decimal{Value: price},
 		}
 	}
@@ -44,7 +43,7 @@ func TestConvertCustomOrderItemPositivePrice(t *testing.T) {
 	}
 
 	// a missing custom_price is still required
-	if _, err := ConvertCustomOrderItemInsertToEntity(&pb_common.CustomOrderItemInsert{ProductId: 1}, "EUR"); err == nil {
+	if _, err := ConvertCustomOrderItemInsertToEntity(&pb_common.CustomOrderItemInsert{VariantId: 1}, "EUR"); err == nil {
 		t.Errorf("nil custom_price: expected error, got nil")
 	}
 

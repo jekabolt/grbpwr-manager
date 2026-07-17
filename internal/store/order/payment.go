@@ -420,7 +420,7 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 }
 
 // freezeAndResnapshotOrderSKUs is the SKU freeze at first sale (task 07/15). It re-snapshots each
-// order line's product_sku from the CURRENT product_size.sku — UNCONDITIONALLY, so a live variant SKU
+// order line's variant_sku_snapshot from the CURRENT product_size.sku — UNCONDITIONALLY, so a live variant SKU
 // that changed in the checkout->payment window (while the colourway was still unlocked) is captured on
 // the paid line — then verifies every line resolved to a live variant SKU, and finally stamps
 // sku_locked_at on every product in the order so the identity is frozen from now on. The frozen order
@@ -434,10 +434,13 @@ func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE order_item oi
 		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
-		SET oi.product_sku = ps.sku
+		JOIN product p ON p.id = oi.product_id
+		SET oi.variant_id = ps.id,
+		    oi.variant_sku_snapshot = ps.sku,
+		    oi.base_sku_snapshot = COALESCE(p.sku, oi.base_sku_snapshot)
 		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"oid": orderID}); err != nil {
-		return fmt.Errorf("re-snapshot order_item.product_sku: %w", err)
+		return fmt.Errorf("re-snapshot order_item variant identity: %w", err)
 	}
 	// Every paid line must have a live variant SKU (product_size.sku) — else we cannot establish the
 	// identity we are about to freeze. Missing row or NULL/empty SKU both fail via the LEFT JOIN.

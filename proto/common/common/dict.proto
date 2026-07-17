@@ -46,6 +46,7 @@ message Collection {
   int32 count_women = 3;
   string code = 4; // R9: stable code, FK target for tech_card.collection_id resolution
   bool archived = 5; // R9: archive-not-delete
+  int32 id = 6; // R9: admin-only dictionary PK (Update/ArchiveCollection address by id); storefront resolves by code/name
 }
 
 // Country is an ISO 3166-1 alpha-2 controlled dictionary (R9). Arbitrary creation is forbidden — the

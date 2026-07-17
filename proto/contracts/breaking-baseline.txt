@@ -1,12 +1,22 @@
 FIELD_NO_DELETE|proto/admin/admin/admin.proto|Previously present field \"7\" with name \"season\" on message \"ListTechCardsRequest\" was deleted.
 FIELD_NO_DELETE|proto/common/common/filter.proto|Previously present field \"6\" with name \"color\" on message \"FilterConditions\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" with name \"product_id\" on message \"CustomOrderItemInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" with name \"product_id\" on message \"OrderItemAdjustment\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" with name \"product_id\" on message \"OrderItemInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"2\" with name \"size_id\" on message \"OrderItemAdjustment\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"CustomOrderItemInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"OrderItemInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardColorwayCost\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardPieceColorwayMaterial\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"31\" with name \"product_ids\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"41\" with name \"colorways\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.
+FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"2\" with name \"product_id\" on message \"NotifyMeRequest\" was deleted.
+FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"3\" with name \"size_id\" on message \"NotifyMeRequest\" was deleted.
+FIELD_SAME_JSON_NAME|proto/common/common/order.proto|Field \"14\" with name \"variant_sku_snapshot\" on message \"OrderItem\" changed option \"json_name\" from \"sku\" to \"variantSkuSnapshot\".
 FIELD_SAME_JSON_NAME|proto/common/common/product.proto|Field \"2\" with name \"colorway_id\" on message \"StockChange\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
+FIELD_SAME_NAME|proto/common/common/order.proto|Field \"14\" on message \"OrderItem\" changed name from \"sku\" to \"variant_sku_snapshot\".
 FIELD_SAME_NAME|proto/common/common/product.proto|Field \"2\" on message \"StockChange\" changed name from \"product_id\" to \"colorway_id\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualFull\" changed type from \"common.Product\" to \"common.Colorway\".

@@ -82,6 +82,86 @@ func joinConditions(conditions []string) string {
 	return result
 }
 
+// resolvedVariantRow is the product_size projection used to resolve an order line's variant addressing.
+type resolvedVariantRow struct {
+	ID        int    `db:"id"`
+	ProductID int    `db:"product_id"`
+	SizeID    int    `db:"size_id"`
+	SKU       string `db:"sku"`
+}
+
+// resolveVariantAddressing fills each line's canonical variant fields (VariantID, ProductId, SizeId,
+// VariantSKU) from whichever addressing the caller supplied: the public variant_sku (storefront submit),
+// the internal variant_id (admin custom order), or an already-resolved (product_id, size_id) pair (order
+// re-validation loaded from the DB). (product_id, size_id) is UNIQUE on product_size, so the pair path is
+// unambiguous. It is idempotent (re-resolving a resolved line reproduces the same fields). Lines that map
+// to no live product_size are left with ProductId==0 so the availability check downstream drops them as
+// an out-of-stock adjustment, identified by the retained VariantSKU. Read-only: variants are archived,
+// never deleted (FK RESTRICT), so the pair a SKU resolves to is stable under the later FOR UPDATE lock.
+func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) error {
+	var params []interface{}
+	var conds []string
+	for i := range items {
+		it := &items[i]
+		switch {
+		case it.ProductId != 0 && it.SizeId != 0:
+			conds = append(conds, "(product_id = ? AND size_id = ?)")
+			params = append(params, it.ProductId, it.SizeId)
+		case it.VariantID != 0:
+			conds = append(conds, "id = ?")
+			params = append(params, it.VariantID)
+		case it.VariantSKU != "":
+			conds = append(conds, "sku = ?")
+			params = append(params, it.VariantSKU)
+		}
+	}
+	if len(conds) == 0 {
+		return nil
+	}
+	query := `SELECT id, product_id, size_id, COALESCE(sku, '') AS sku FROM product_size WHERE ` + joinConditions(conds)
+	var rows []resolvedVariantRow
+	if err := db.SelectContext(ctx, &rows, query, params...); err != nil {
+		return fmt.Errorf("resolve variant addressing: %w", err)
+	}
+	byID := make(map[int]int, len(rows))
+	bySKU := make(map[string]int, len(rows))
+	byPair := make(map[[2]int]int, len(rows))
+	for i := range rows {
+		byID[rows[i].ID] = i
+		if rows[i].SKU != "" {
+			bySKU[rows[i].SKU] = i
+		}
+		byPair[[2]int{rows[i].ProductID, rows[i].SizeID}] = i
+	}
+	for i := range items {
+		it := &items[i]
+		idx := -1
+		switch {
+		case it.ProductId != 0 && it.SizeId != 0:
+			if j, ok := byPair[[2]int{it.ProductId, it.SizeId}]; ok {
+				idx = j
+			}
+		case it.VariantID != 0:
+			if j, ok := byID[it.VariantID]; ok {
+				idx = j
+			}
+		case it.VariantSKU != "":
+			if j, ok := bySKU[it.VariantSKU]; ok {
+				idx = j
+			}
+		}
+		if idx < 0 {
+			continue // unresolved: dropped downstream as an out-of-stock adjustment
+		}
+		r := rows[idx]
+		it.VariantID = r.ID
+		it.ProductId = r.ProductID
+		it.SizeId = r.SizeID
+		it.VariantSKU = r.SKU
+	}
+	return nil
+}
+
 func validateOrderItemsStockAvailability(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	return validateOrderItemsStockAvailabilityWithLock(ctx, rep, items, currency, false)
 }
@@ -93,6 +173,12 @@ func validateOrderItemsStockAvailabilityForUpdate(ctx context.Context, rep depen
 func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, currency string, forUpdate bool) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	if len(items) == 0 {
 		return nil, nil, &entity.ValidationError{Message: "zero items to validate"}
+	}
+
+	// Resolve the public/internal variant addressing to the denormalised (product_id, size_id) pair the
+	// rest of this path keys on, plus the stable variant_id/variant_sku snapshots the insert writes.
+	if err := resolveVariantAddressing(ctx, rep.DB(), items); err != nil {
+		return nil, nil, fmt.Errorf("can't resolve variant addressing: %w", err)
 	}
 
 	prdIds := getProductIdsFromItems(items)
@@ -142,6 +228,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: item.QuantityDecimal(),
 				AdjustedQuantity:  decimal.Zero,
 				Reason:            entity.AdjustmentReasonOutOfStock,
@@ -155,6 +242,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: requestedQty,
 				AdjustedQuantity:  prdSize.QuantityDecimal(),
 				Reason:            entity.AdjustmentReasonQuantityReduced,
@@ -166,6 +254,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: item.QuantityDecimal(),
 				AdjustedQuantity:  decimal.Zero,
 				Reason:            entity.AdjustmentReasonOutOfStock,
@@ -214,6 +303,9 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 	if len(items) == 0 {
 		return nil, nil, &entity.ValidationError{Message: "zero items to validate"}
 	}
+	if err := resolveVariantAddressing(ctx, rep.DB(), items); err != nil {
+		return nil, nil, fmt.Errorf("can't resolve variant addressing: %w", err)
+	}
 	prdIds := getProductIdsFromItems(items)
 	prds, err := getProductsByIds(ctx, rep, prdIds)
 	if err != nil {
@@ -250,6 +342,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: item.QuantityDecimal(),
 				AdjustedQuantity:  decimal.Zero,
 				Reason:            entity.AdjustmentReasonOutOfStock,
@@ -262,6 +355,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: requestedQty,
 				AdjustedQuantity:  prdSize.QuantityDecimal(),
 				Reason:            entity.AdjustmentReasonQuantityReduced,
@@ -272,6 +366,7 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: item.QuantityDecimal(),
 				AdjustedQuantity:  decimal.Zero,
 				Reason:            entity.AdjustmentReasonOutOfStock,
@@ -353,9 +448,15 @@ func calculateTotalAmount(items []entity.ProductInfoProvider, currency string) (
 }
 
 func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
+	// Key on the caller-supplied variant identity, not the (product_id, size_id) pair: merge runs before
+	// resolveVariantAddressing on the create paths, so the pair is still zero for storefront (variant_sku)
+	// and admin (variant_id) input. Keying on all four fields merges genuinely identical lines while
+	// keeping distinct unresolved lines separate (so each surfaces its own adjustment).
 	type itemKey struct {
-		ProductId int
-		SizeId    int
+		VariantSKU string
+		VariantID  int
+		ProductId  int
+		SizeId     int
 	}
 
 	mergedItems := make(map[itemKey]entity.OrderItemInsert)
@@ -365,7 +466,7 @@ func mergeOrderItems(items []entity.OrderItemInsert) []entity.OrderItemInsert {
 			continue
 		}
 
-		key := itemKey{ProductId: item.ProductId, SizeId: item.SizeId}
+		key := itemKey{VariantSKU: item.VariantSKU, VariantID: item.VariantID, ProductId: item.ProductId, SizeId: item.SizeId}
 
 		if existingItem, ok := mergedItems[key]; ok {
 			existingItem.Quantity = existingItem.QuantityDecimal().Add(item.QuantityDecimal())
@@ -393,6 +494,7 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) (
 			adjustments = append(adjustments, entity.OrderItemAdjustment{
 				ProductId:         item.ProductId,
 				SizeId:            item.SizeId,
+				VariantSKU:        item.VariantSKU,
 				RequestedQuantity: requestedQty,
 				AdjustedQuantity:  maxQuantity.Round(0),
 				Reason:            entity.AdjustmentReasonQuantityCapped,

@@ -146,12 +146,13 @@ service AdminService {
     };
   }
 
-  // Forces a product's confidential cost_price to be (re)seeded from a tech card, overriding
-  // any manual value. If tech_card_id is set it also becomes the product's primary card;
-  // otherwise the product's existing primary card is used.
-  rpc SyncColorwayCostFromStyle(SyncColorwayCostFromStyleRequest) returns (SyncColorwayCostFromStyleResponse) {
+  // SyncColorwayCostFromOwningStyle (re)seeds a colourway's confidential cost_price from its owning
+  // style's primary card, overriding any manual value. R4/p019: it derives the style from the owner
+  // relation and never repoints it — cost provenance is separated from ownership. Was
+  // SyncColorwayCostFromStyle.
+  rpc SyncColorwayCostFromOwningStyle(SyncColorwayCostFromOwningStyleRequest) returns (SyncColorwayCostFromOwningStyleResponse) {
     option (google.api.http) = {
-      post: "/api/admin/product/cost/sync-from-tech-card"
+      post: "/api/admin/colorways/{colorway_id}/cost/sync"
       body: "*"
     };
   }
@@ -164,6 +165,89 @@ service AdminService {
   // Lists stock changes with simplified format for reporting.
   rpc ListStockChanges(ListStockChangesRequest) returns (ListStockChangesResponse) {
     option (google.api.http) = {get: "/api/admin/stock-changes"};
+  }
+
+  // DICTIONARY MANAGER (R9)
+  // Controlled merch dictionaries: colour / collection / tag, plus the closed ISO country dictionary.
+  // Every mutation carries expected_version (optimistic concurrency on the namespace's
+  // dictionary_revision, 0 = unconditional) and returns the new revision. There is no delete: an in-use
+  // entry is archived (FK RESTRICT). Country is closed — only activation toggles (the full ISO set is
+  // seeded), so it has no create/rename/archive.
+
+  rpc ListColors(ListColorsRequest) returns (ListColorsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/colors"};
+  }
+  rpc CreateColor(CreateColorRequest) returns (CreateColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors"
+      body: "*"
+    };
+  }
+  rpc UpdateColor(UpdateColorRequest) returns (UpdateColorResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/colors/{code}"
+      body: "*"
+    };
+  }
+  rpc ArchiveColor(ArchiveColorRequest) returns (ArchiveColorResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/colors/{code}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/collections"};
+  }
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections"
+      body: "*"
+    };
+  }
+  rpc UpdateCollection(UpdateCollectionRequest) returns (UpdateCollectionResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/collections/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveCollection(ArchiveCollectionRequest) returns (ArchiveCollectionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/collections/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/tags"};
+  }
+  rpc CreateTag(CreateTagRequest) returns (CreateTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags"
+      body: "*"
+    };
+  }
+  rpc UpdateTag(UpdateTagRequest) returns (UpdateTagResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/dictionaries/tags/{id}"
+      body: "*"
+    };
+  }
+  rpc ArchiveTag(ArchiveTagRequest) returns (ArchiveTagResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/tags/{id}/archive"
+      body: "*"
+    };
+  }
+
+  rpc ListCountries(ListCountriesRequest) returns (ListCountriesResponse) {
+    option (google.api.http) = {get: "/api/admin/dictionaries/countries"};
+  }
+  rpc SetCountryActive(SetCountryActiveRequest) returns (SetCountryActiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/dictionaries/countries/{code}/active"
+      body: "*"
+    };
   }
 
   // PROMO MANAGER
@@ -1368,19 +1452,23 @@ message ColorwayCostInfo {
   int32 primary_tech_card_id = 5;
 }
 
-message SyncColorwayCostFromStyleRequest {
-  int32 product_id = 1;
-  // tech_card_id optionally repoints the product's primary card before seeding; 0 = use the
-  // product's existing primary card.
-  int32 tech_card_id = 2;
+message SyncColorwayCostFromOwningStyleRequest {
+  int64 colorway_id = 1; // R8: renamed from product_id (same FK target = product.id)
+  reserved "product_id";
+  // R4/p019: the style is derived from the owner relation (the colourway's primary card) and is NEVER
+  // repointed by a cost sync — cost provenance is separated from ownership. tech_card_id is removed.
+  reserved 2;
+  reserved "tech_card_id";
+  uint64 expected_version = 3;
 }
 
-message SyncColorwayCostFromStyleResponse {
+message SyncColorwayCostFromOwningStyleResponse {
   // the cost_price written, in base currency.
   google.type.Decimal cost_price = 1;
   string currency = 2;
-  // the tech card the cost was sourced from.
+  // the tech card the cost was sourced from (the owning style's primary card).
   int32 tech_card_id = 3;
+  common.ColorwayCostSource source = 4; // R4: where the synced cost came from (STYLE)
 }
 
 // Lifecycle transition requests (R6). expected_version echoes tech_card.lock_version for future
@@ -1415,12 +1503,16 @@ message TransitionColorwayStatusResponse {
 
 message UpdateVariantStockRequest {
   common.StockAdjustmentMode mode = 1; // Required: "set" for absolute value, "adjust" for delta
-  int32 product_id = 2; // Required: product ID
-  int32 size_id = 3; // Required: size ID
+  // R2/p012: stock is addressed by the stable variant id (product_size.id), never the (product_id,
+  // size_id) pair — and it NEVER creates a variant (unknown -> NOT_FOUND). Identity change -> old numbers
+  // reserved.
+  reserved 2, 3;
+  reserved "product_id", "size_id";
   int32 quantity = 4; // Required: final value for "set", delta amount for "adjust" (always unsigned)
   common.StockAdjustmentDirection direction = 5; // Required for "adjust" mode, ignored for "set"
   common.StockChangeReason reason = 6; // Required: reason for stock adjustment
   optional string comment = 7; // Optional, but required for reason=OTHER
+  int64 variant_id = 8; // Required: the variant to adjust (product_size.id)
 }
 
 message UpdateVariantStockResponse {}
@@ -1449,6 +1541,118 @@ message SetColorwayCustomsRequest {
 }
 
 message SetColorwayCustomsResponse {}
+
+// ==================== Dictionary CRUD (R9) ====================
+// Controlled merch dictionaries. Every mutation carries expected_version (0 = unconditional) and echoes
+// the new common.DictionaryRevision so a client can advance its cached revision without a round-trip.
+
+message ListColorsRequest {
+  bool include_archived = 1;
+}
+message ListColorsResponse {
+  repeated common.Color colors = 1;
+}
+message CreateColorRequest {
+  string code = 1; // [A-Z0-9]{3}, unique; immutable once created (R9)
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message CreateColorResponse {
+  common.Color color = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateColorRequest {
+  string code = 1; // immutable lookup key — never rewritten (R9); changes name/hex only
+  string name = 2;
+  string hex = 3;
+  uint64 expected_version = 4;
+}
+message UpdateColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveColorRequest {
+  string code = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveColorResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCollectionsRequest {
+  bool include_archived = 1;
+}
+message ListCollectionsResponse {
+  repeated common.Collection collections = 1;
+}
+message CreateCollectionRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateCollectionResponse {
+  common.Collection collection = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateCollectionRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveCollectionRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveCollectionResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListTagsRequest {
+  bool include_archived = 1;
+}
+message ListTagsResponse {
+  repeated common.Tag tags = 1;
+}
+message CreateTagRequest {
+  string name = 1; // code is derived from the name (stable slug, R9)
+  uint64 expected_version = 2;
+}
+message CreateTagResponse {
+  common.Tag tag = 1;
+  common.DictionaryRevision revision = 2;
+}
+message UpdateTagRequest {
+  int32 id = 1;
+  string name = 2; // display name only; code is immutable (R9)
+  uint64 expected_version = 3;
+}
+message UpdateTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+message ArchiveTagRequest {
+  int32 id = 1;
+  uint64 expected_version = 2;
+}
+message ArchiveTagResponse {
+  common.DictionaryRevision revision = 1;
+}
+
+message ListCountriesRequest {
+  bool active_only = 1;
+}
+message ListCountriesResponse {
+  repeated common.Country countries = 1;
+}
+message SetCountryActiveRequest {
+  string code = 1; // ISO 3166-1 alpha-2
+  bool active = 2;
+  uint64 expected_version = 3;
+}
+message SetCountryActiveResponse {
+  common.DictionaryRevision revision = 1;
+}
 
 message ListStockChangeHistoryRequest {
   google.protobuf.Timestamp date_from = 1;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -47,12 +48,11 @@ func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderI
 	quantity := decimal.NewFromInt32(pbOrderItem.OrderItem.Quantity).Round(0)
 
 	return entity.OrderItemInsert{
-		ProductId:             int(pbOrderItem.OrderItem.ProductId),
+		VariantSKU:            pbOrderItem.OrderItem.VariantSku,
 		ProductPrice:          price,
 		ProductSalePercentage: salePercentage,
 		ProductPriceWithSale:  priceWithSale,
 		Quantity:              quantity,
-		SizeId:                int(pbOrderItem.OrderItem.SizeId),
 	}, nil
 }
 
@@ -141,9 +141,8 @@ func ConvertCustomOrderItemInsertToEntity(pb *pb_common.CustomOrderItemInsert, c
 		return entity.OrderItemInsert{}, fmt.Errorf("custom_order_item_insert: custom_price must be positive")
 	}
 	return entity.OrderItemInsert{
-		ProductId:             int(pb.ProductId),
+		VariantID:             int(pb.VariantId),
 		Quantity:              decimal.NewFromInt32(pb.Quantity).Round(0),
-		SizeId:                int(pb.SizeId),
 		ProductPrice:          price,
 		ProductSalePercentage: decimal.Zero,
 		ProductPriceWithSale:  price,
@@ -160,9 +159,8 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 	var items []entity.OrderItemInsert
 	for _, item := range commonOrder.Items {
 		newItem := entity.OrderItemInsert{
-			ProductId: int(item.ProductId),
-			Quantity:  decimal.NewFromInt32(item.Quantity).Round(0),
-			SizeId:    int(item.SizeId),
+			VariantSKU: item.VariantSku,
+			Quantity:   decimal.NewFromInt32(item.Quantity).Round(0),
 		}
 		items = append(items, newItem)
 	}
@@ -254,17 +252,15 @@ func ConvertPbOrderItemInsertToEntity(pbOrderItem *pb_common.OrderItemInsert) (*
 	}
 
 	return &entity.OrderItemInsert{
-		ProductId: int(pbOrderItem.ProductId),
-		Quantity:  quantityDecimal.Round(0),
-		SizeId:    int(pbOrderItem.SizeId),
+		VariantSKU: pbOrderItem.VariantSku,
+		Quantity:   quantityDecimal.Round(0),
 	}, nil
 }
 
 func ConvertEntityOrderItemInsertToPb(orderItem *entity.OrderItemInsert) *pb_common.OrderItemInsert {
 	return &pb_common.OrderItemInsert{
-		ProductId: int32(orderItem.ProductId),
-		Quantity:  int32(orderItem.Quantity.IntPart()),
-		SizeId:    int32(orderItem.SizeId),
+		VariantSku: orderItem.VariantSKU,
+		Quantity:   int32(orderItem.Quantity.IntPart()),
 	}
 }
 
@@ -290,14 +286,22 @@ func ConvertEntityOrderItemAdjustmentsToPb(adjustments []entity.OrderItemAdjustm
 	pb := make([]*pb_common.OrderItemAdjustment, 0, len(adjustments))
 	for _, a := range adjustments {
 		pb = append(pb, &pb_common.OrderItemAdjustment{
-			ProductId:         int32(a.ProductId),
-			SizeId:            int32(a.SizeId),
-			RequestedQuantity: &pb_decimal.Decimal{Value: a.RequestedQuantity.String()},
-			AdjustedQuantity:  &pb_decimal.Decimal{Value: a.AdjustedQuantity.String()},
-			Reason:            ConvertEntityAdjustmentReasonToPb(a.Reason),
+			VariantSkuSnapshot: a.VariantSKU,
+			RequestedQuantity:  &pb_decimal.Decimal{Value: a.RequestedQuantity.String()},
+			AdjustedQuantity:   &pb_decimal.Decimal{Value: a.AdjustedQuantity.String()},
+			Reason:             ConvertEntityAdjustmentReasonToPb(a.Reason),
 		})
 	}
 	return pb
+}
+
+// orderItemSizeName resolves the public size code/name for an order line from the size cache, for the
+// GA4 item_variant / display snapshot. Empty if the size is unknown.
+func orderItemSizeName(sizeId int) string {
+	if sz, ok := cache.GetSizeById(sizeId); ok {
+		return sz.Name
+	}
+	return ""
 }
 
 func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *pb_common.OrderItem {
@@ -311,7 +315,7 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *p
 		})
 	}
 
-	// orderItem.SKU is already the variant SKU: the snapshot (order_item.product_sku) or, for legacy
+	// orderItem.SKU is already the variant SKU: the snapshot (order_item.variant_sku_snapshot) or, for legacy
 	// lines, the live product_size.sku — resolved in the order fetch query. No size suffix to append.
 	sku := orderItem.SKU
 
@@ -329,7 +333,9 @@ func ConvertEntityOrderItemToPb(orderItem *entity.OrderItem, currency string) *p
 		SubCategoryId:         orderItem.SubCategoryId.Int32,
 		TypeId:                int32(orderItem.TypeId.Int32),
 		ProductBrand:          orderItem.ProductBrand,
-		Sku:                   sku,
+		VariantSkuSnapshot:    sku,
+		BaseSkuSnapshot:       orderItem.ProductBaseSKU,
+		SizeNameSnapshot:      orderItemSizeName(orderItem.SizeId),
 		Preorder:              timestamppb.New(orderItem.Preorder.Time),
 		OrderItem:             ConvertEntityOrderItemInsertToPb(&orderItem.OrderItemInsert),
 		Translations:          pbTranslations,
@@ -453,7 +459,9 @@ func convertOrderItem(e *entity.OrderItem, currency string) *pb_common.OrderItem
 		SubCategoryId:         e.SubCategoryId.Int32,
 		TypeId:                int32(e.TypeId.Int32),
 		ProductBrand:          e.ProductBrand,
-		Sku:                   e.SKU,
+		VariantSkuSnapshot:    e.SKU,
+		BaseSkuSnapshot:       e.ProductBaseSKU,
+		SizeNameSnapshot:      orderItemSizeName(e.SizeId),
 		Color:                 e.Color,
 		Slug:                  e.Slug,
 		Preorder:              timestamppb.New(e.Preorder.Time),
@@ -465,9 +473,8 @@ func convertOrderItem(e *entity.OrderItem, currency string) *pb_common.OrderItem
 // convertOrderItemInsert converts a nested struct or fields of entity.OrderItem to pb_common.OrderItemInsert
 func convertOrderItemInsert(e entity.OrderItemInsert) *pb_common.OrderItemInsert {
 	return &pb_common.OrderItemInsert{
-		ProductId: int32(e.ProductId),
-		Quantity:  int32(e.Quantity.IntPart()),
-		SizeId:    int32(e.SizeId),
+		VariantSku: e.VariantSKU,
+		Quantity:   int32(e.Quantity.IntPart()),
 	}
 }
 

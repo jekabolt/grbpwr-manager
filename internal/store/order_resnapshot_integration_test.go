@@ -84,8 +84,8 @@ func TestPaymentResnapshotsLiveSKU(t *testing.T) {
 		oid, err := res.LastInsertId()
 		require.NoError(t, err)
 		_, err = testDB.ExecContext(ctx,
-			`INSERT INTO order_item (order_id, product_id, product_price, product_price_base, quantity, size_id, product_sku)
-			 VALUES (?, ?, 100, 100, 1, ?, ?)`, oid, prodID, sizeA, checkoutSKU)
+			`INSERT INTO order_item (order_id, product_id, variant_id, product_price, product_price_base, quantity, size_id, variant_sku_snapshot)
+			 VALUES (?, ?, (SELECT id FROM product_size WHERE product_id = ? AND size_id = ?), 100, 100, 1, ?, ?)`, oid, prodID, prodID, sizeA, sizeA, checkoutSKU)
 		require.NoError(t, err)
 		_, err = testDB.ExecContext(ctx,
 			`INSERT INTO payment (order_id, payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done)
@@ -104,7 +104,7 @@ func TestPaymentResnapshotsLiveSKU(t *testing.T) {
 	}
 	lineSKU := func(oid int64) string {
 		var sku string
-		require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COALESCE(product_sku,'') FROM order_item WHERE order_id = ?`, oid).Scan(&sku))
+		require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COALESCE(variant_sku_snapshot,'') FROM order_item WHERE order_id = ?`, oid).Scan(&sku))
 		return sku
 	}
 	locked := func(prodID int) bool {
