@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -53,6 +54,10 @@ type Server struct {
 	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
 	// Empty means any https host is accepted (scheme/format validation still applies).
 	embedAllowedHosts []string
+	// aiOps drafts tech-card sewing operations from a plain-language description via
+	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
+	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
+	aiOps *openrouter.Client
 }
 
 // New creates a new server with admin handlers.
@@ -69,6 +74,7 @@ func New(
 	labelProvider dependency.LabelProvider,
 	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
+	aiOps *openrouter.Client,
 ) *Server {
 	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
@@ -87,6 +93,7 @@ func New(
 		revalCtx:          revalCtx,
 		revalCancel:       revalCancel,
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
+		aiOps:             aiOps,
 	}
 }
 
